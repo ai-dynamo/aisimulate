@@ -8,6 +8,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use super::ReplayMode;
+use super::participant::WorkloadParticipant;
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
 use crate::replay::loadgen::{
@@ -84,6 +85,8 @@ enum AdmissionSource {
         driver: WorkloadDriver,
         pending_agentic_runtime_feedback: PendingAgenticRuntimeFeedback,
     },
+    /// An externally owned reactive workload; replay owns only the clock.
+    External(Box<dyn WorkloadParticipant>),
 }
 
 /// Runtime feedback collected beside the workload driver until the current
@@ -116,6 +119,8 @@ pub(crate) struct AdmissionQueue<Metadata = NoReplayMetadata> {
     source: AdmissionSource,
     mode: ReplayMode,
     metadata: PhantomData<Metadata>,
+    /// Cancels requested by an external participant, awaiting the runtime.
+    participant_cancels: Vec<Uuid>,
 }
 
 impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
@@ -124,6 +129,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             source: AdmissionSource::Requests(source),
             mode,
             metadata: PhantomData,
+            participant_cancels: Vec::new(),
         }
     }
 
@@ -132,6 +138,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             source: AdmissionSource::GeneratedRequests(source),
             mode: ReplayMode::Concurrency { max_in_flight },
             metadata: PhantomData,
+            participant_cancels: Vec::new(),
         }
     }
 
@@ -143,7 +150,36 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             },
             mode,
             metadata: PhantomData,
+            participant_cancels: Vec::new(),
         }
+    }
+
+    pub(crate) fn new_external(participant: Box<dyn WorkloadParticipant>, mode: ReplayMode) -> Self {
+        Self {
+            source: AdmissionSource::External(participant),
+            mode,
+            metadata: PhantomData,
+            participant_cancels: Vec::new(),
+        }
+    }
+
+    /// True when an external participant has a timer due at or before `now_ms`.
+    /// The runtime polls such a participant before settling pass completions
+    /// at the same instant, so a workload deadline wins a tie with the engine.
+    pub(crate) fn external_timer_due(&mut self, now_ms: f64) -> bool {
+        match &mut self.source {
+            AdmissionSource::External(participant) => participant
+                .next_wakeup_ms()
+                .is_some_and(|wakeup_ms| wakeup_ms.is_finite() && wakeup_ms <= now_ms),
+            _ => false,
+        }
+    }
+
+    /// Take the cancels the external participant requested at this instant.
+    /// The runtime applies them natively before admitting the same step's
+    /// submissions.
+    pub(crate) fn take_participant_cancels(&mut self) -> Vec<Uuid> {
+        std::mem::take(&mut self.participant_cancels)
     }
 
     pub(crate) fn mode(&self) -> ReplayMode {
@@ -151,6 +187,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     }
 
     pub(crate) fn next_ready_time_ms(&mut self) -> Option<f64> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            return participant
+                .next_wakeup_ms()
+                .filter(|wakeup_ms| wakeup_ms.is_finite());
+        }
         match (&self.mode, &mut self.source) {
             // Deliberately lenient: this peek cannot distinguish an empty queue from a
             // malformed front request, but every caller drains before it peeks, and the
@@ -167,7 +208,8 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 driver.next_ready_time_ms()
             }
             (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_))
-            | (_, AdmissionSource::GeneratedRequests(_)) => None,
+            | (_, AdmissionSource::GeneratedRequests(_))
+            | (_, AdmissionSource::External(_)) => None,
         }
     }
 
@@ -193,6 +235,45 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         retain_artifact_hashes: bool,
         mut map: impl FnMut(ReplayReadyArrival<Metadata>) -> T,
     ) -> Result<Vec<T>> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            // The participant owns its own concurrency policy; replay supplies
+            // only the logical clock and the cluster's in-flight count.
+            let step = participant.advance_to(now_ms, cluster_in_flight)?;
+            // Validate the whole step before any admission side effect.
+            for request in &step.submits {
+                if request.uuid.is_none() {
+                    anyhow::bail!(
+                        "workload participant submitted a request without a uuid at {now_ms}ms; \
+                         callbacks are keyed by request identity"
+                    );
+                }
+            }
+            self.participant_cancels.extend(step.cancels);
+            return Ok(step
+                .submits
+                .into_iter()
+                .map(|mut request| {
+                    request.arrival_timestamp_ms = Some(now_ms);
+                    let (session_id, turn_index) = request
+                        .replay_context
+                        .as_ref()
+                        .map(|context| (context.session_id.clone(), context.turn_index))
+                        .unwrap_or_default();
+                    map(ReplayReadyArrival {
+                        request: ReplayRequestPayload::materialized(request),
+                        arrival_time_ms: now_ms,
+                        scheduled_ready_at_ms: now_ms,
+                        authored_request_id: None,
+                        play_id: None,
+                        dispatched_at_ms: now_ms,
+                        metadata: Metadata::from_hashes(None),
+                        replay_hashes: None,
+                        session_id,
+                        turn_index,
+                    })
+                })
+                .collect());
+        }
         match (&self.mode, &mut self.source) {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => {
                 // Validate the due prefix before removing requests or invoking `map`.
@@ -299,6 +380,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             (ReplayMode::Trace, AdmissionSource::GeneratedRequests(_)) => {
                 anyhow::bail!("generated requests require concurrency admission")
             }
+            (_, AdmissionSource::External(_)) => {
+                unreachable!("external participants are drained before mode dispatch")
+            }
             (ReplayMode::Concurrency { .. }, AdmissionSource::Workload { driver, .. }) => {
                 // The driver owns the session cap and only ever holds active sessions'
                 // turns in its heap, so drain everything ready in heap (i.e. limit=usize MAX).
@@ -374,6 +458,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            // Aggregated terminals are also the physical release.
+            participant.on_terminal(uuid, now_ms, status)?;
+            return participant.on_quiescent(uuid, now_ms);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
@@ -386,6 +475,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            return participant.on_terminal(uuid, now_ms, status);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
@@ -393,13 +485,24 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     }
 
     pub(crate) fn on_request_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            return participant.on_quiescent(uuid, now_ms);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_quiescent(uuid, now_ms)
     }
 
-    pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+    pub(crate) fn on_output_token(
+        &mut self,
+        uuid: Uuid,
+        token_id: u32,
+        now_ms: f64,
+    ) -> Result<()> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            return participant.on_output_token(uuid, token_id, now_ms);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
@@ -410,9 +513,14 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic())
     }
 
-    pub(crate) fn defer_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+    pub(crate) fn defer_output_token(
+        &mut self,
+        uuid: Uuid,
+        token_id: u32,
+        now_ms: f64,
+    ) -> Result<()> {
         if !self.is_agentic() {
-            return CoreAdmissionSource::on_output_token(self, uuid, token_id);
+            return CoreAdmissionSource::on_output_token(self, uuid, token_id, now_ms);
         }
         let AdmissionSource::Workload {
             driver,
@@ -622,6 +730,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             AdmissionSource::Requests(pending) => pending.is_empty(),
             AdmissionSource::GeneratedRequests(source) => source.remaining() == 0,
             AdmissionSource::Workload { driver, .. } => driver.is_drained(),
+            AdmissionSource::External(participant) => participant.is_drained(),
         }
     }
 
@@ -635,6 +744,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             AdmissionSource::Requests(pending) => pending.len(),
             AdmissionSource::GeneratedRequests(source) => source.remaining(),
             AdmissionSource::Workload { driver, .. } => driver.total_turns(),
+            AdmissionSource::External(participant) => participant.total_requests(),
         }
     }
 
@@ -705,8 +815,8 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
         )
     }
 
-    fn on_output_token(&mut self, request_id: Uuid, token_id: u32) -> Result<()> {
-        AdmissionQueue::on_output_token(self, request_id, token_id)
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
+        AdmissionQueue::on_output_token(self, request_id, token_id, now_ms)
     }
 
     fn on_terminal(

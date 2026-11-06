@@ -2488,7 +2488,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             if self.defer_drive {
                 self.step_tokens.push((signal.uuid, token_id));
             }
@@ -2733,9 +2734,14 @@ where
     fn release_ready_arrivals(&mut self) -> Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
-        for mut ready in
-            CoreAdmissionSource::drain_ready(&mut self.admission, self.now_ms, cluster_in_flight)?
-        {
+        let arrivals =
+            CoreAdmissionSource::drain_ready(&mut self.admission, self.now_ms, cluster_in_flight)?;
+        // Participant cancels use the native cancel path before this step's
+        // submissions are admitted and before any worker commits its next pass.
+        for uuid in self.admission.take_participant_cancels() {
+            released_any |= self.cancel_dynamic(uuid)?.is_some();
+        }
+        for mut ready in arrivals {
             if self.encoder.is_some() {
                 self.register_parked_arrival(&mut ready)?;
                 self.encoder
@@ -3133,7 +3139,13 @@ where
             };
             // Settle idle deadlines first: a frontend delivery may hand the
             // request to an idle prefill worker at this same timestamp.
-            let mut changed = settle(self)?;
+            // A participant timer due now wins a tie with pass completions at
+            // this instant (see the aggregated runtime).
+            let mut changed = false;
+            if self.admission.external_timer_due(self.now_ms) {
+                changed |= self.release_ready_arrivals()?;
+            }
+            changed |= settle(self)?;
             changed |= self.prune_stale_transfer_events();
             let prefill = self.prefill_placement.advance_clock(self.now_ms)?;
             let decode = self.decode_placement.advance_clock(self.now_ms)?;
@@ -4279,7 +4291,9 @@ where
         // The caller returns this causal terminal immediately. Server cleanup
         // and quiescence retain their real committed-pass/transfer deadlines.
         self.step_terminals.retain(|(id, _)| *id != uuid);
-        self.drive_pending = !self.is_workload_done();
+        if self.defer_drive {
+            self.drive_pending = !self.is_workload_done();
+        }
         Ok(Some(ReplayTerminalStatus::Canceled))
     }
 

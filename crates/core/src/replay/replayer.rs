@@ -24,6 +24,7 @@ use crate::replay::artifact::{
 use crate::replay::components::{
     AdmissionQueue, DetokenizationLatency, DetokenizationStage, NoReplayMetadata,
     ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode, TokenizationLatency,
+    WorkloadParticipant,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
@@ -260,6 +261,9 @@ pub enum ReplayRuntimeInput {
     /// Requires `ReplaySpec::max_in_flight`; open-loop inputs remain unchanged.
     GeneratedRequests(crate::replay::loadgen::GeneratedRequests),
     Workload(WorkloadDriver),
+    /// A reactive workload owned outside Replay and hosted by the native
+    /// runtime event loop. Replay owns only the logical clock.
+    External(Box<dyn WorkloadParticipant>),
 }
 
 /// Built-in engine-only composition: Round-robin placement and fixed capacity.
@@ -804,6 +808,12 @@ fn prepare_belady_oracle(
                 .prepare_belady_requests(engine_block_size)
                 .map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))?
         }
+        ReplayRuntimeInput::External(_) => {
+            return Err(ReplayError::InvalidSpec(
+                "belady requires a complete open-loop input trace; an external workload participant is reactive"
+                    .into(),
+            ));
+        }
         ReplayRuntimeInput::GeneratedRequests(_) => {
             return Err(ReplayError::InvalidSpec(
                 "belady requires a complete open-loop input trace; generated requests are unsupported"
@@ -893,6 +903,9 @@ fn admission_queue<Metadata: ReplayAdmissionMetadata>(
             AdmissionQueue::new_generated_requests(requests, max_in_flight)
         }
         ReplayRuntimeInput::Workload(driver) => AdmissionQueue::new_workload(driver, mode),
+        ReplayRuntimeInput::External(participant) => {
+            AdmissionQueue::new_external(participant, mode)
+        }
     })
 }
 
@@ -992,6 +1005,8 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
         ReplayRuntimeInput::Workload(driver) => {
             driver.set_deterministic_request_ids(1);
         }
+        // The participant owns request identity; it supplies deterministic ids itself.
+        ReplayRuntimeInput::External(_) => {}
     }
 }
 
@@ -1529,5 +1544,355 @@ mod generated_replay_tests {
                 .to_string()
                 .contains("generated requests require max_in_flight")
         );
+    }
+
+    /// Reactive participant: submits `first` at `start_ms`; once `first`
+    /// reaches a terminal state it parks a successor behind a workload-owned
+    /// deadline `think_ms` later. Records every host interaction.
+    struct ChainParticipant {
+        start_ms: f64,
+        think_ms: f64,
+        phase: u8,
+        successor_at_ms: Option<f64>,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ChainParticipant {
+        fn id(index: usize) -> Uuid {
+            Uuid::from_u128(index as u128 + 1000)
+        }
+    }
+
+    impl WorkloadParticipant for ChainParticipant {
+        fn next_wakeup_ms(&mut self) -> Option<f64> {
+            match self.phase {
+                0 => Some(self.start_ms),
+                2 => self.successor_at_ms,
+                _ => None,
+            }
+        }
+
+        fn advance_to(
+            &mut self,
+            now_ms: f64,
+            _cluster_in_flight: usize,
+        ) -> AnyResult<crate::replay::ParticipantStep> {
+            let mut step = crate::replay::ParticipantStep::default();
+            match self.phase {
+                0 if now_ms >= self.start_ms => {
+                    self.log.lock().unwrap().push(format!("submit0@{now_ms}"));
+                    step.submits.push(request_with(0));
+                    self.phase = 1;
+                }
+                2 if now_ms >= self.successor_at_ms.unwrap() => {
+                    self.log.lock().unwrap().push(format!("submit1@{now_ms}"));
+                    step.submits.push(request_with(1));
+                    self.successor_at_ms = None;
+                    self.phase = 3;
+                }
+                _ => {}
+            }
+            Ok(step)
+        }
+
+        fn on_output_token(
+            &mut self,
+            request_id: Uuid,
+            _token_id: u32,
+            now_ms: f64,
+        ) -> AnyResult<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("token {request_id}@{now_ms}"));
+            Ok(())
+        }
+
+        fn on_terminal(
+            &mut self,
+            request_id: Uuid,
+            now_ms: f64,
+            status: crate::replay::ReplayTerminalStatus,
+        ) -> AnyResult<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("terminal {request_id} {status:?}@{now_ms}"));
+            if request_id == Self::id(0) {
+                self.successor_at_ms = Some(now_ms + self.think_ms);
+                self.phase = 2;
+            } else {
+                self.phase = 4;
+            }
+            Ok(())
+        }
+
+        fn is_drained(&self) -> bool {
+            self.phase == 4
+        }
+
+        fn total_requests(&self) -> usize {
+            2
+        }
+    }
+
+    fn request_with(index: usize) -> DirectRequest {
+        DirectRequest {
+            uuid: Some(ChainParticipant::id(index)),
+            // The host must overwrite this with the logical submission time.
+            arrival_timestamp_ms: Some(-1.0),
+            ..request(index)
+        }
+    }
+
+    fn at(entry: &str) -> f64 {
+        entry.rsplit('@').next().unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn external_participant_is_hosted_by_the_native_loop_in_both_topologies() {
+        for disagg in [false, true] {
+            for cap in [None, Some(1)] {
+                let mut spec = spec(Backend::Vllm, disagg, 1, false);
+                spec.max_in_flight = cap;
+                let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let report = Replayer::new(spec, ReplayEngineFactory::new())
+                    .unwrap()
+                    .with_runtime_input(ReplayRuntimeInput::External(Box::new(ChainParticipant {
+                        start_ms: 3.0,
+                        think_ms: 50.0,
+                        phase: 0,
+                        successor_at_ms: None,
+                        log: log.clone(),
+                    })))
+                    .run()
+                    .unwrap();
+                let log = log.lock().unwrap().clone();
+                let label = format!("disagg={disagg} cap={cap:?}: {log:?}");
+                assert_eq!(report.request_counts.completed_requests, 2, "{label}");
+                // The workload deadline, not the engine, set the first submit.
+                assert_eq!(at(&log[0]), 3.0, "{label}");
+                // The successor was dynamic: it was submitted only after the
+                // first request's terminal callback, exactly think_ms later.
+                let terminal = log
+                    .iter()
+                    .position(|entry| entry.starts_with("terminal")
+                            && entry.contains(&ChainParticipant::id(0).to_string()))
+                    .unwrap_or_else(|| panic!("no first terminal: {label}"));
+                let submit1 = log.iter().position(|e| e.starts_with("submit1")).unwrap();
+                assert!(terminal < submit1, "{label}");
+                assert!(at(&log[terminal]) > 3.0, "{label}");
+                assert_eq!(at(&log[submit1]), at(&log[terminal]) + 50.0, "{label}");
+                assert!(log.iter().any(|e| e.starts_with("token")), "{label}");
+                assert!(report.throughput.duration_ms >= at(&log[submit1]), "{label}");
+            }
+        }
+    }
+
+    /// Slow engine: every pass takes 10ms, so a 4ms deadline lands mid-pass.
+    fn slow_spec(disagg: bool) -> ReplaySpec {
+        let mut spec = spec(Backend::Vllm, disagg, 1, false);
+        spec.max_in_flight = None;
+        let mut engine: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
+        let slow = TimingModelConfig::Fixed {
+            prefill_ms: 10.0,
+            decode_ms: 10.0,
+        };
+        engine.rank.timing_model = slow.clone();
+        for role in [&mut engine.prefill, &mut engine.decode].into_iter().flatten() {
+            role.rank.timing_model = slow.clone();
+        }
+        spec.engine = serde_json::to_value(engine).unwrap();
+        spec
+    }
+
+    /// Submits request 0, cancels it (at a workload deadline, or reacting to
+    /// its first token), then submits request 1 once the cancel's terminal
+    /// arrives.
+    struct CancelParticipant {
+        cancel_at_ms: Option<f64>,
+        token_seen: bool,
+        resume_at_ms: Option<f64>,
+        phase: u8,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorkloadParticipant for CancelParticipant {
+        fn next_wakeup_ms(&mut self) -> Option<f64> {
+            match self.phase {
+                0 => Some(0.0),
+                1 => self.cancel_at_ms,
+                3 => self.resume_at_ms,
+                _ => None,
+            }
+        }
+
+        fn advance_to(
+            &mut self,
+            now_ms: f64,
+            _cluster_in_flight: usize,
+        ) -> AnyResult<crate::replay::ParticipantStep> {
+            let mut step = crate::replay::ParticipantStep::default();
+            match self.phase {
+                0 => {
+                    step.submits.push(request_with(0));
+                    self.phase = 1;
+                }
+                1 if self.token_seen || self.cancel_at_ms.is_some_and(|at| now_ms >= at) => {
+                    self.log.lock().unwrap().push(format!("cancel@{now_ms}"));
+                    step.cancels.push(ChainParticipant::id(0));
+                    self.phase = 2;
+                }
+                3 => {
+                    self.log.lock().unwrap().push(format!("submit1@{now_ms}"));
+                    step.submits.push(request_with(1));
+                    self.phase = 4;
+                }
+                _ => {}
+            }
+            Ok(step)
+        }
+
+        fn on_output_token(&mut self, id: Uuid, _token: u32, now_ms: f64) -> AnyResult<()> {
+            self.log.lock().unwrap().push(format!("token {id}@{now_ms}"));
+            if id == ChainParticipant::id(0) {
+                self.token_seen = true;
+            }
+            Ok(())
+        }
+
+        fn on_terminal(
+            &mut self,
+            id: Uuid,
+            now_ms: f64,
+            status: crate::replay::ReplayTerminalStatus,
+        ) -> AnyResult<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("terminal {id} {status:?}@{now_ms}"));
+            if id == ChainParticipant::id(0) {
+                self.resume_at_ms = Some(now_ms);
+                self.phase = 3;
+            } else {
+                self.phase = 5;
+            }
+            Ok(())
+        }
+
+        fn on_quiescent(&mut self, id: Uuid, now_ms: f64) -> AnyResult<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("quiescent {id}@{now_ms}"));
+            Ok(())
+        }
+
+        fn is_drained(&self) -> bool {
+            self.phase == 5
+        }
+
+        fn total_requests(&self) -> usize {
+            2
+        }
+    }
+
+    fn run_cancel(disagg: bool, cancel_at_ms: Option<f64>) -> Vec<String> {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        Replayer::new(slow_spec(disagg), ReplayEngineFactory::new())
+            .unwrap()
+            .with_runtime_input(ReplayRuntimeInput::External(Box::new(CancelParticipant {
+                cancel_at_ms,
+                token_seen: false,
+                resume_at_ms: None,
+                phase: 0,
+                log: log.clone(),
+            })))
+            .run()
+            .unwrap();
+        let log = log.lock().unwrap().clone();
+        log
+    }
+
+    fn entries<'a>(log: &'a [String], prefix: &str, id: Uuid) -> Vec<&'a String> {
+        let id = id.to_string();
+        log.iter()
+            .filter(|e| e.starts_with(prefix) && (prefix == "cancel" || e.contains(&id)))
+            .collect()
+    }
+
+    #[test]
+    fn participant_deadline_cancels_inside_a_pass_exactly_once() {
+        for disagg in [false, true] {
+            let log = run_cancel(disagg, Some(4.0));
+            let label = format!("disagg={disagg}: {log:?}");
+            let first = ChainParticipant::id(0);
+            // The 4ms deadline fired inside the 10ms pass, before any token.
+            assert_eq!(entries(&log, "cancel", first).len(), 1, "{label}");
+            assert_eq!(at(entries(&log, "cancel", first)[0]), 4.0, "{label}");
+            let terminals = entries(&log, "terminal", first);
+            assert_eq!(terminals.len(), 1, "{label}");
+            assert!(terminals[0].contains("Canceled"), "{label}");
+            assert_eq!(at(terminals[0]), 4.0, "{label}");
+            assert!(entries(&log, "token", first).is_empty(), "{label}");
+            // Quiescence is delivered once, no earlier than the terminal.
+            let quiescent = entries(&log, "quiescent", first);
+            assert_eq!(quiescent.len(), 1, "{label}");
+            assert!(at(quiescent[0]) >= 4.0, "{label}");
+            // The terminal released the successor at the same instant, and
+            // it ran to completion.
+            let second = ChainParticipant::id(1);
+            assert_eq!(at(entries(&log, "submit1", second)[0]), 4.0, "{label}");
+            let done = entries(&log, "terminal", second);
+            assert_eq!(done.len(), 1, "{label}");
+            assert!(done[0].contains("Completed"), "{label}");
+        }
+    }
+
+    #[test]
+    fn participant_token_reaction_cancels_at_the_token_instant() {
+        for disagg in [false, true] {
+            let log = run_cancel(disagg, None);
+            let label = format!("disagg={disagg}: {log:?}");
+            let first = ChainParticipant::id(0);
+            let tokens = entries(&log, "token", first);
+            assert!(!tokens.is_empty(), "{label}");
+            let terminals = entries(&log, "terminal", first);
+            assert_eq!(terminals.len(), 1, "{label}");
+            assert!(terminals[0].contains("Canceled"), "{label}");
+            // Cancel and terminal happen at the token's own timestamp, and
+            // no output is delivered after the cancel.
+            let token_at = at(tokens[tokens.len() - 1]);
+            assert_eq!(at(entries(&log, "cancel", first)[0]), token_at, "{label}");
+            assert_eq!(at(terminals[0]), token_at, "{label}");
+            let terminal_index = log.iter().position(|e| e == terminals[0]).unwrap();
+            assert!(
+                log[terminal_index..].iter().all(|e| !e.starts_with(&format!("token {first}"))),
+                "{label}"
+            );
+            assert_eq!(entries(&log, "quiescent", first).len(), 1, "{label}");
+            assert_eq!(entries(&log, "terminal", ChainParticipant::id(1)).len(), 1, "{label}");
+        }
+    }
+
+    #[test]
+    fn participant_deadline_wins_a_tie_with_pass_completion() {
+        for disagg in [false, true] {
+            // The control run cancels on the first token, so its token time is
+            // exactly when the engine's first output lands.
+            let control = run_cancel(disagg, None);
+            let first = ChainParticipant::id(0);
+            let tie_ms = at(entries(&control, "token", first)[0]);
+            let log = run_cancel(disagg, Some(tie_ms));
+            let label = format!("disagg={disagg} tie={tie_ms}: {log:?}");
+            // The deadline coincides with the pass completion and wins: the
+            // request is canceled at that instant and its output never lands.
+            assert_eq!(at(entries(&log, "cancel", first)[0]), tie_ms, "{label}");
+            let terminals = entries(&log, "terminal", first);
+            assert_eq!(terminals.len(), 1, "{label}");
+            assert!(terminals[0].contains("Canceled"), "{label}");
+            assert_eq!(at(terminals[0]), tie_ms, "{label}");
+            assert!(entries(&log, "token", first).is_empty(), "{label}");
+        }
     }
 }

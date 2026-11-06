@@ -118,6 +118,7 @@ pub use canonical::{
 };
 pub use capture::{CANONICAL_SELECTOR_SEED, ReplayCaptureOptions, ReplayDeterminism};
 pub use components::TrafficStats;
+pub use components::{ParticipantStep, WorkloadParticipant};
 #[doc(hidden)]
 pub use components::{NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation};
 pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};

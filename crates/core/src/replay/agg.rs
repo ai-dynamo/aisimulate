@@ -648,7 +648,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             if self.detokenization.is_some() {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
@@ -878,11 +879,17 @@ where
     fn release_ready_arrivals(&mut self) -> anyhow::Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
-        for mut ready in self.admission.drain_ready_compact(
+        let arrivals = self.admission.drain_ready_compact(
             self.now_ms,
             cluster_in_flight,
             self.artifact_sink.is_some(),
-        )? {
+        )?;
+        // Participant cancels use the native cancel path before this step's
+        // submissions are admitted and before any worker commits its next pass.
+        for uuid in self.admission.take_participant_cancels() {
+            released_any |= self.cancel_dynamic(uuid)?.is_some();
+        }
+        for mut ready in arrivals {
             if self.encoder.is_some() {
                 self.register_parked_arrival(&mut ready)?;
                 self.encoder
@@ -1193,6 +1200,12 @@ where
         let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = false;
+            // A participant timer due now wins a tie with pass completions at
+            // this instant: its cancels and submissions land before the
+            // engine's outputs are delivered or any worker commits a pass.
+            if self.admission.external_timer_due(self.now_ms) {
+                changed |= self.release_ready_arrivals()?;
+            }
             // Settle idle deadlines first: a completion below may release a
             // queued placement and submit it to that same idle worker.
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;

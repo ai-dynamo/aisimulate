@@ -5,12 +5,14 @@ mod admission;
 mod detokenization;
 mod encoder;
 mod engine;
+mod participant;
 mod tokenization;
 mod types;
 
 pub(crate) use admission::{AdmissionQueue, ReplayReadyArrival};
 pub use admission::{NoReplayMetadata, ReplayAdmissionMetadata};
 pub use detokenization::DetokenizationLatency;
+pub use participant::{ParticipantStep, WorkloadParticipant};
 pub(crate) use detokenization::{DetokenizationStage, PassReceipt};
 pub(crate) use encoder::EncoderPool;
 pub(crate) use engine::EngineComponent;
