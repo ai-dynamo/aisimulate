@@ -22,7 +22,7 @@ use aiperf_exchange_model::dispatch::{ReplayTerminalStatus, RequestObserver};
 use aiperf_exchange_model::measure::observe::CompletionError;
 use aiperf_exchange_model::measure::{ModelResponseMetadata, TurnDispatchOutcome};
 use aiperf_request_execution::execution::{
-    Execution, ExecutionError, Observation, Outcome, Request,
+    Execution, ExecutionError, Observation, Request, RequestOutcome,
 };
 use aisimulate_core::engine::{
     Command, Engine, EngineConfig, EngineFactory, Output, Request as ModelRequest,
@@ -128,7 +128,7 @@ struct State {
     scripts: BTreeMap<Uuid, ResponseScript>,
     report_errors: Vec<String>,
     pending_reports: usize,
-    retained_settled: BTreeMap<Uuid, Outcome>,
+    retained_settled: BTreeMap<Uuid, RequestOutcome>,
     failure: Option<String>,
 }
 
@@ -267,7 +267,7 @@ impl ModelExecution {
 
     /// Original settled operation retained when its accounting future was dropped.
     /// Its retention proves operation custody, not successful report processing.
-    pub fn retained_settled_outcome(&self, uuid: Uuid) -> Option<Outcome> {
+    pub fn retained_settled_outcome(&self, uuid: Uuid) -> Option<RequestOutcome> {
         self.state.borrow().retained_settled.get(&uuid).cloned()
     }
 
@@ -338,7 +338,7 @@ impl Drop for RequestGuard<'_> {
 struct SettledReportGuard<'a> {
     execution: &'a ModelExecution,
     uuid: Uuid,
-    outcome: Option<Outcome>,
+    outcome: Option<RequestOutcome>,
 }
 impl Drop for SettledReportGuard<'_> {
     fn drop(&mut self) {
@@ -365,7 +365,7 @@ impl Execution for ModelExecution {
         true
     }
 
-    fn discard_turn(&self, uuid: Uuid) {
+    fn discard_request(&self, uuid: Uuid) {
         self.state.borrow_mut().scripts.remove(&uuid);
         self.cancel_request(uuid.as_u128());
     }
@@ -393,7 +393,7 @@ impl Execution for ModelExecution {
         cancel: &'a CancellationToken,
         observer: &'a dyn RequestObserver,
         callback: &'a mut dyn FnMut(Observation),
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Outcome>, ExecutionError>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<RequestOutcome>, ExecutionError>> + 'a>> {
         // Transfer script custody before the future is polled: dropping even an
         // unpolled inference cannot leave an orphaned registered response.
         let script = self
@@ -680,7 +680,7 @@ impl Execution for ModelExecution {
             };
             let mut metadata = script.model_response;
             // Native offline replies intentionally carry no endpoint metadata;
-            // emitted engine IDs remain available separately on Outcome.
+            // emitted engine IDs remain available separately on RequestOutcome.
             if !is_native_reply {
                 metadata.output_token_ids = Some(tokens.clone());
                 if metadata.content.is_none() {
@@ -719,7 +719,7 @@ impl Execution for ModelExecution {
             let mut report = SettledReportGuard {
                 execution: self,
                 uuid,
-                outcome: Some(Outcome {
+                outcome: Some(RequestOutcome {
                     dispatch,
                     output_token_ids: Some(tokens),
                 }),

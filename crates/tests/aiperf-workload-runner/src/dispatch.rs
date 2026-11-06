@@ -165,7 +165,7 @@ impl Dispatcher {
         let outcome = self
             .execution
             .infer(
-                Request::from_turn(turn, &model, ids, Vec::new()),
+                Request::from_scheduled_request(turn, &model, ids, Vec::new()),
                 &cancel,
                 observer,
                 &mut callback,
@@ -273,7 +273,7 @@ impl TurnDispatcher for Dispatcher {
         self.execution.close_session(session);
     }
     fn discard_turn(&self, uuid: uuid::Uuid) {
-        self.execution.discard_turn(uuid);
+        self.execution.discard_request(uuid);
     }
     async fn finish_reports(&self) -> anyhow::Result<()> {
         Ok(self.execution.finish_reports().await?)
