@@ -4246,13 +4246,51 @@ where
             return Ok(None);
         }
         let handoff_id = state.handoff_id;
+        // Once the handoff has completed the request is decoding and its
+        // coordinator has no cleanup left to issue (`begin_cleanup` is a no-op
+        // for a complete coordinator), so the decode engine must be told
+        // directly or the request would keep running as an untracked zombie.
+        let decoding = state.coordinator.is_complete();
+        let decode_worker_idx = state.decode_worker_idx();
         self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
+        if decoding {
+            self.cancel_running_decode(uuid, decode_worker_idx)?;
+        }
         self.drive_pending_actions()?;
         // The caller returns this causal terminal immediately. Server cleanup
         // and quiescence retain their real committed-pass/transfer deadlines.
         self.step_terminals.retain(|(id, _)| *id != uuid);
         self.drive_pending = !self.is_workload_done();
         Ok(Some(ReplayTerminalStatus::Canceled))
+    }
+
+    /// Remove a decoding request from its decode scheduler at the current
+    /// instant and retire it. `discard_pending_output` also covers a pass the
+    /// worker has already committed, whose outputs must never reach the caller.
+    fn cancel_running_decode(&mut self, uuid: Uuid, worker_idx: Option<usize>) -> Result<()> {
+        let worker_idx = worker_idx
+            .ok_or_else(|| anyhow!("decoding request {uuid} has no decode worker to cancel"))?;
+        let effects = self.decode_engine.apply_command(
+            worker_idx,
+            Command::CancelRequest {
+                request_id: uuid,
+                discard_pending_output: true,
+            },
+            self.now_ms,
+        )?;
+        if !matches!(
+            effects.result,
+            CommandResult::Applied | CommandResult::Noop
+        ) {
+            bail!("decode cancellation for {uuid} returned an unexpected scheduler result");
+        }
+        self.apply_auxiliary_decode_observations(
+            effects.engine_events,
+            KvIngestBoundary::SchedulerCommand,
+        )?;
+        self.process_lifecycle_events(effects.lifecycle_events)?;
+        self.cancel_decode_route(uuid)?;
+        self.finish_logical_request(uuid, true)
     }
 
     pub(crate) fn next_dynamic_timestamp(&mut self) -> Option<f64> {

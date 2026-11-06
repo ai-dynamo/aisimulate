@@ -90,6 +90,56 @@ fn real_kv_router_reuses_cached_prefix_on_the_same_prefill_worker() {
     assert_eq!(report.request_counts.completed_requests, 2);
 }
 
+/// Independent native pull-driver control for the dynamically-fed real router.
+#[cfg(feature = "kv-router-proof")]
+#[test]
+fn real_kv_disaggregated_reports_match_native_pull_driver_bytes() {
+    use aisimulate_core::replay::{DirectRequest, ReplayComposition, ReplayDeterminism,
+        ReplayCaptureOptions, ReplaySpec, Replayer, loadgen::SteppableReplay};
+    use dynamo_mocker::placement::{KvReplayComposition, MockerConfig};
+    let rank = EngineConfig {
+        timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 1.0 },
+        block_size: 8, max_num_seqs: 64, enable_prefix_caching: true,
+        enable_chunked_prefill: false, async_scheduling: Some(false), ..Default::default()
+    };
+    let config = ReplayEngineConfig { rank: rank.clone(), ..Default::default() };
+    let make_composition = || {
+        let mut args = MockerConfig::default(); args.engine.engine = rank.clone();
+        KvReplayComposition::disaggregated(args.clone(), args, 2, 2, None, None, None)
+    };
+    let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+        "version":1,"topology":{"kind":"disaggregated",
+            "prefill":{"initial_workers":2},"decode":{"initial_workers":2},"handoff_latency_ms":0.0},
+        "engine": config,"requests": (0..4).map(|index| serde_json::json!({
+            "id":format!("request-{index}"),"arrival_time_ms":index as f64 * 10.0,
+            "input_tokens":64,"input_token_ids":(0..64).collect::<Vec<u32>>(),"output_tokens":2,
+        })).collect::<Vec<_>>()
+    })).unwrap();
+    let capture = ReplayCaptureOptions { capture_per_request:true,
+        determinism:ReplayDeterminism::CanonicalV1, ..Default::default() };
+    let reference = Replayer::with_composition(spec, ReplayEngineFactory::new(), make_composition())
+        .unwrap().with_capture_options(capture).run().unwrap();
+    let mut composition = make_composition();
+    composition.set_determinism(ReplayDeterminism::CanonicalV1).unwrap();
+    let mut candidate = SteppableDisagg::<_, dynamo_mocker::placement::RouterEventObservation,
+        dynamo_mocker::placement::KvReplayMetadata>::with_placements(
+        config, &ReplayEngineFactory::new(), 2, 2,
+        |pdp, pt, ddp, dt| composition.create_disaggregated_placements(pdp, pt, ddp, dt),
+    ).unwrap();
+    candidate.set_capture_per_request(true);
+    for index in 0..4 {
+        candidate.advance_now_ms(index as f64 * 10.0);
+        candidate.submit(DirectRequest { uuid:Some(uuid::Uuid::from_u128(index+1)),
+            arrival_timestamp_ms:Some(index as f64 * 10.0), tokens:(0..64).collect(),
+            max_output_tokens:2, ..Default::default() }).unwrap();
+        for _ in 0..1000 { if candidate.is_idle() { break; } candidate.step().unwrap(); }
+        assert!(candidate.is_idle());
+    }
+    let actual = candidate.take_report(candidate.now_ms()).unwrap();
+    assert_eq!(serde_json::to_vec(&reference).unwrap(), serde_json::to_vec(&actual).unwrap(),
+        "all aggregate, routing, handoff, cache and per-request fields must retain exact values");
+}
+
 #[test]
 fn simulator_owned_agentx_branches_cross_actual_prefill_decode_handoff() {
     let directory = tempfile::tempdir().unwrap();
