@@ -396,7 +396,7 @@ pub(crate) fn build_plans(
         identity_source: identity_source.clone(),
         endpoint_resolver: resolver.clone(),
         samplers: &samplers,
-        materializer: Arc::new(aiperf_dataset::EndpointRequestMaterializer),
+        materializer: Arc::new(aiperf_dataset::TraceHashAwareRequestMaterializer),
         defer_grpc_operations: false,
         ignore_trace_delays: run.cfg.ignore_trace_delays,
         end_conversation_on_truncation: prepared.end_conversation_on_truncation,

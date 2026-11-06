@@ -142,7 +142,11 @@ impl Dispatcher {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("prepared request body absent"))?
             .to_wire()?;
-        let body: serde_json::Value = serde_json::from_slice(&wire)?;
+        let body: serde_json::Value = if turn.trace_hash_ids.is_some() && wire.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&wire)?
+        };
         let model = turn
             .effective_model
             .as_deref()
