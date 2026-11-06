@@ -22,11 +22,13 @@ use crate::{
 use aiperf_clock::clock::Clock;
 use aiperf_clock_runtime::{cancellation::RunCancellation, clock::SimClock};
 use aiperf_engine_kernel::phase_report::PhasedScheduledRunReport;
+use aiperf_engine_kernel::scheduled::NativeRecordSink;
 use aiperf_engine_phase::phase_runtime::run_scheduled_phases_with_cancellation;
 use aiperf_exchange_model::{
     dispatch::{ReplayTerminalStatus as AiperfTerminal, RequestObserver},
     measure::{TurnDispatchOutcome, observe::CompletionError},
 };
+use aiperf_metrics_model::{Phase, ingest::RecordIngest};
 use aiperf_request_execution::execution::{
     Execution, ExecutionError, Observation, Request, RequestOutcome,
 };
@@ -35,6 +37,7 @@ use aisimulate_core::replay::{
 };
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
@@ -49,6 +52,56 @@ use std::{
 use tokio::{sync::Notify, task::LocalSet};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+/// Phase identity and typed-record capture for one scheduled plan.
+///
+/// The phase-local `NativeMetricsObserver` is the only observer that receives
+/// the engine's request metadata. This sink is attached per plan and receives
+/// that observer's post-drain `RecordIngest` rows, so no second observer and no
+/// per-request phase lookup are involved.
+struct HostedRecordSink {
+    phase: Phase,
+    phase_index: usize,
+    authored_phase_index: Option<usize>,
+    profiling_index: Option<usize>,
+    phase_name: Rc<str>,
+    phase_kind: &'static str,
+    captured: Rc<RefCell<Vec<HostedPhaseRecords>>>,
+}
+
+impl NativeRecordSink for HostedRecordSink {
+    fn on_native_records(&self, mut records: Vec<(Uuid, RecordIngest)>) {
+        for (_, record) in &mut records {
+            record.phase_index = self.authored_phase_index;
+            record.profiling_index = self.profiling_index;
+            record.phase_name = self
+                .authored_phase_index
+                .map(|_| self.phase_name.to_string());
+            record.phase_kind = Some(Cow::Borrowed(self.phase_kind));
+        }
+        self.captured.borrow_mut().push(HostedPhaseRecords {
+            phase: self.phase,
+            phase_index: self.phase_index,
+            phase_name: self.phase_name.to_string(),
+            phase_kind: self.phase_kind,
+            records,
+        });
+    }
+}
+
+/// One phase's exact typed native records, captured after drain.
+pub struct HostedPhaseRecords {
+    /// Engine-recorded credit phase for this plan.
+    pub phase: Phase,
+    /// Zero-based position in the resolved phase program.
+    pub phase_index: usize,
+    /// Stable phase identifier from the plan.
+    pub phase_name: String,
+    /// `warmup` or `profiling`.
+    pub phase_kind: &'static str,
+    /// Engine `RecordIngest` rows with the phase position stamped.
+    pub records: Vec<(Uuid, RecordIngest)>,
+}
 
 /// A same-instant re-poll loop that never parks on the clock is a livelock.
 const MAX_SAME_INSTANT_POLLS: u32 = 100_000;
@@ -302,7 +355,31 @@ struct Shared {
     dispatcher: Rc<Dispatcher>,
     execution: Rc<ParticipantExecution>,
     clock: Rc<SimClock>,
+    captured_records: Rc<RefCell<Vec<HostedPhaseRecords>>>,
     result: RefCell<Option<Result<PhasedScheduledRunReport>>>,
+}
+
+/// Typed AIPerf-side results retained after the Replayer consumes the participant.
+///
+/// Records come from each phase's own `NativeMetricsObserver`; their metadata is
+/// engine-produced and only the phase position is stamped by the capture sink.
+pub struct HostedTypedReport {
+    /// AIPerf's phase report, including per-phase native metric summaries.
+    pub phased: PhasedScheduledRunReport,
+    /// Exact typed records grouped by phase, in resolved phase order.
+    pub records: Vec<HostedPhaseRecords>,
+    /// Logical run end at finalization.
+    pub virtual_end_ns: i64,
+    /// Participant dispatch provenance, retained independently of the metrics.
+    pub dispatch: HostedDispatchEvidence,
+}
+
+/// Dispatch-side evidence retained with a typed hosted report.
+pub struct HostedDispatchEvidence {
+    /// Dispatcher request rows exactly as captured, in issue order.
+    pub requests: Vec<serde_json::Value>,
+    /// Requests submitted to the participant execution loop.
+    pub submitted_requests: usize,
 }
 
 /// AIPerf-side results retained after the Replayer consumes the participant.
@@ -328,6 +405,35 @@ impl HostedRunHandle {
             "requests": records.as_slice(),
             "virtual_end_ns": self.shared.clock.now_ns(),
         }))
+    }
+
+    /// Consume the run into typed phase and native-record results.
+    ///
+    /// Each phase's records are the rows its own `NativeMetricsObserver`
+    /// produced; per-phase summaries remain in `phased.reports`. The dispatcher
+    /// rows are retained as dispatch evidence and are never reparsed.
+    pub fn into_typed_report(self) -> Result<HostedTypedReport> {
+        let phased = self
+            .shared
+            .result
+            .borrow_mut()
+            .take()
+            .context("native-hosted AIPerf run did not complete")??;
+        let virtual_end_ns = self.shared.clock.now_ns();
+        let mut records = std::mem::take(&mut *self.shared.captured_records.borrow_mut());
+        records.sort_by_key(|phase| phase.phase_index);
+        let mut requests = std::mem::take(&mut *self.shared.dispatcher.records.borrow_mut());
+        crate::workload::label_occurrences(&mut requests);
+        let submitted_requests = self.shared.execution.state.borrow().total;
+        Ok(HostedTypedReport {
+            phased,
+            records,
+            virtual_end_ns,
+            dispatch: HostedDispatchEvidence {
+                requests,
+                submitted_requests,
+            },
+        })
     }
 }
 
@@ -494,7 +600,32 @@ pub fn native_hosted(
     );
     let prep = lower_scheduled(run, &head, cancel.clone(), identity_source)?;
     let clock = Rc::new(SimClock::new());
-    let plans = build_plans(run, &prep, clock.clone())?;
+    let mut plans = build_plans(run, &prep, clock.clone())?;
+    // Typed capture uses each phase's own native-metrics observer. The sink is
+    // per phase and receives the post-drain records; it never adds an observer.
+    let captured_records = Rc::new(RefCell::new(Vec::new()));
+    let mut profiling_index = 0;
+    for (phase_index, plan) in plans.iter_mut().enumerate() {
+        let measured_index = if prep.phases[phase_index].common().exclude_from_results {
+            None
+        } else {
+            let index = profiling_index;
+            profiling_index += 1;
+            Some(index)
+        };
+        plan.native_record_sink = Some(Rc::new(HostedRecordSink {
+            phase: match plan.ancillary.phase {
+                aiperf_timing::Phase::Warmup => aiperf_metrics_model::Phase::Warmup,
+                aiperf_timing::Phase::Profiling => aiperf_metrics_model::Phase::Profiling,
+            },
+            phase_index,
+            authored_phase_index: prep.origins[phase_index],
+            profiling_index: measured_index,
+            phase_name: Rc::from(plan.config.id.as_str()),
+            phase_kind: plan.config.kind.as_str(),
+            captured: captured_records.clone(),
+        }));
+    }
     let execution = ParticipantExecution::new(clock.clone());
     let dispatcher = Rc::new(Dispatcher {
         execution: execution.clone(),
@@ -504,6 +635,7 @@ pub fn native_hosted(
         dispatcher: dispatcher.clone(),
         execution,
         clock: clock.clone(),
+        captured_records,
         result: RefCell::new(None),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()

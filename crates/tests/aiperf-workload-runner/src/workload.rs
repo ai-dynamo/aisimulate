@@ -23,7 +23,7 @@ use aiperf_engine_phase::{
 use aiperf_exchange_model::TextTokenizer;
 use aiperf_protocol::protocol_dto::PhaseSpec;
 use anyhow::{Context, Result, ensure};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
 
 /// Validate and retain the run's authored default endpoint policy.
 pub(crate) fn default_endpoint_profile(
@@ -57,15 +57,12 @@ pub(crate) struct Head {
 }
 
 pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Head> {
+    aiperf_engine_input::execution_input::validate_run_scenario(run)?;
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
     input.get("dataset").context("dataset missing")?;
     let phases: Vec<PhaseSpec> = serde_json::from_value(input["phases"].clone())?;
     ensure!(!phases.is_empty(), "explicit phases required");
-    ensure!(
-        input.pointer("/tokenizer/name").and_then(|v| v.as_str()) == Some("builtin"),
-        "proof requires explicit builtin tokenizer"
-    );
     let models: aiperf_protocol::protocol_dto::ModelsSpec = run
         .cfg
         .models
@@ -75,8 +72,7 @@ pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Hea
     ensure!(models.items.len() == 1, "proof requires exactly one model");
     let raw_input: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
         serde_json::from_str(raw.get())?;
-    let tokenizer: Arc<dyn TextTokenizer> =
-        Arc::new(aiperf_tokenizers::TiktokenTokenizer::builtin());
+    let tokenizer = resolve_tokenizer(run)?;
     let kind = aiperf_config::model::workload_kind::workload_kind(&run.cfg);
     let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
         .map_err(anyhow::Error::msg)?;
@@ -89,6 +85,91 @@ pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Hea
         kind,
         legacy_weka,
     })
+}
+
+/// Resolve the authored tokenizer without substituting an unsupported source.
+///
+/// Supported forms are the exact `builtin` sentinel, an existing local
+/// `tokenizer.json` file or model directory, and an authored Hugging Face
+/// repository id whose exact revision is already staged in the Hugging Face
+/// cache (`offline_snapshot_directory`). The proof never substitutes a different
+/// revision, downloads an unpinned `main`, or falls back to the built-in
+/// tokenizer. Repository acquisition is a synchronous cache read, so it happens
+/// before `native_hosted` enters its local Tokio runtime.
+fn resolve_tokenizer(run: &aiperf_config::model::BenchmarkRun) -> Result<Arc<dyn TextTokenizer>> {
+    let config = run.cfg.tokenizer.as_ref().context(
+        "proof requires an explicit tokenizer; set tokenizer.name to \"builtin\", an existing \
+         local tokenizer file or directory, or a Hugging Face repository id",
+    )?;
+    ensure!(
+        !config.apply_chat_template,
+        "proof does not apply tokenizer chat templates; set tokenizer.apply_chat_template=false"
+    );
+    ensure!(
+        config.server_url.is_none(),
+        "proof does not support server-side tokenization; tokenizer.server_url must be absent"
+    );
+    ensure!(
+        config.per_model.is_empty(),
+        "proof supports one tokenizer for the single model; tokenizer.per_model must be empty"
+    );
+    let name = config.name.as_deref().context(
+        "proof requires an explicit tokenizer.name; set \"builtin\", an existing local tokenizer \
+         file or directory, or a Hugging Face repository id",
+    )?;
+    let revision = config.revision.as_str();
+    ensure!(
+        !revision.trim().is_empty(),
+        "tokenizer.revision must not be empty"
+    );
+
+    if name == "builtin" {
+        return Ok(Arc::new(aiperf_tokenizers::TiktokenTokenizer::builtin()));
+    }
+    if name.parse::<aiperf_tokenizers::TiktokenEncoding>().is_ok() {
+        anyhow::bail!(
+            "unsupported tokenizer {name:?}: the proof accepts \"builtin\", an existing local \
+             tokenizer file or directory, or a Hugging Face repository id; other built-in \
+             tiktoken encodings are not supported"
+        );
+    }
+
+    let load_directory = |directory: &Path| -> Result<Arc<dyn TextTokenizer>> {
+        aiperf_tokenizers::HuggingFaceTokenizer::from_directory(directory)
+            .map(|tokenizer| Arc::new(tokenizer) as Arc<dyn TextTokenizer>)
+            .with_context(|| format!("loading tokenizer directory {}", directory.display()))
+    };
+
+    let path = Path::new(name);
+    if path.is_dir() {
+        return load_directory(path);
+    }
+    // The oracle's local source is directory-only; the AISim proof also accepts
+    // an explicit `tokenizer.json` file so a calibration can stage one file.
+    if path.is_file() {
+        return aiperf_tokenizers::HuggingFaceTokenizer::from_file(path)
+            .map(|tokenizer| Arc::new(tokenizer) as Arc<dyn TextTokenizer>)
+            .with_context(|| format!("loading local tokenizer file {name:?}"));
+    }
+    if aiperf_tokenizers::is_local_tokenizer_path(name) {
+        anyhow::bail!(
+            "local tokenizer path {name:?} is not an existing tokenizer file or directory"
+        );
+    }
+    ensure!(
+        aiperf_tokenizers::is_hugging_face_repository_id(name),
+        "unsupported tokenizer {name:?}: expected \"builtin\", an existing local tokenizer file or \
+         directory, or a Hugging Face repository id"
+    );
+
+    let context = format!(
+        "loading tokenizer {name:?} revision {revision:?}: the exact revision must be pre-staged \
+         in the Hugging Face cache or passed as an explicit local tokenizer file or directory"
+    );
+    match aiperf_tokenizers::offline_snapshot_directory(name, revision) {
+        Ok(directory) => load_directory(&directory).context(context),
+        Err(error) => Err(anyhow::Error::new(error).context(context)),
+    }
 }
 
 pub fn execute(
@@ -178,25 +259,16 @@ pub(crate) fn lower_scheduled(
         "typed workload {kind:?} has no simulator execution binding"
     );
     let (mut prepared, phases, origins) = if legacy_weka {
-        let raw_dataset: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
-            serde_json::from_str(
-                raw_input
-                    .get("dataset")
-                    .context("raw dataset missing")?
-                    .get(),
-            )?;
         let traces = acquire(
             dataset,
-            raw_dataset
-                .get("records")
-                .context("inline records required")?,
+            raw_input.get("dataset").context("raw dataset missing")?,
         )?;
         let seed = run.random_seed.unwrap_or(0);
         let (corpus, hash_namespace) = match dataset
             .pointer("/prompts/corpus")
             .and_then(|value| value.as_str())
         {
-            Some("coding") => (
+            None | Some("coding") => (
                 aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?,
                 aiperf_rng::namespace::DATASET_CODING_CONTENT_CORPUS,
             ),
@@ -206,12 +278,6 @@ pub(crate) fn lower_scheduled(
             ),
             _ => anyhow::bail!("proof requires explicit prompts.corpus coding or sonnet"),
         };
-        ensure!(
-            dataset
-                .get("weka_nested_timestamp_basis")
-                .is_none_or(|basis| basis.is_null() || basis == "auto"),
-            "proof currently supports only automatic nested timestamp basis; explicit absolute/relative is not silently ignored"
-        );
         let hash_seed = aiperf_rng::PythonRandomGenerator::derive_child_seed(seed, hash_namespace);
         let prepared = prepare_legacy_agentic(
             run,
@@ -451,26 +517,68 @@ pub(crate) fn label_occurrences(records: &mut [serde_json::Value]) {
 
 fn acquire(
     dataset: &serde_json::Value,
-    records: &serde_json::value::RawValue,
+    descriptor: &serde_json::value::RawValue,
 ) -> Result<Vec<(String, aiperf_agentx::trace::WekaTrace)>> {
-    // Source payload never round-trips through Value: WEKA hash IDs are i128.
-    let documents =
-        match serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(records.get()) {
-            Ok(documents) => documents,
-            Err(_) => vec![records.to_owned()],
-        };
-    let (traces, _) = aiperf_agentx::loader::load_weka_traces_from_documents(
-        documents,
-        "inline AISim proof",
-        dataset["entries"].as_u64().map(|n| n as usize),
-        dataset
-            .pointer("/synthesis/max_context_length")
-            .and_then(|v| v.as_i64()),
-        dataset
-            .pointer("/synthesis/max_osl")
-            .and_then(|v| v.as_i64()),
-        None,
-    )
-    .map_err(anyhow::Error::msg)?;
-    Ok(traces)
+    use aiperf_engine_input::legacy_weka::{
+        LegacyWekaSource, legacy_weka_source, load_local_legacy_weka_traces,
+    };
+    ensure!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "prepare the native workload before entering an executor"
+    );
+    let (source, _) = legacy_weka_source(descriptor)?;
+    let max_context = dataset
+        .pointer("/synthesis/max_context_length")
+        .and_then(|value| value.as_i64());
+    let max_osl = dataset
+        .pointer("/synthesis/max_osl")
+        .and_then(|value| value.as_i64());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            match source {
+                LegacyWekaSource::File {
+                    path,
+                    records,
+                    entries,
+                    basis,
+                } => {
+                    load_local_legacy_weka_traces(
+                        path,
+                        records,
+                        entries,
+                        max_context,
+                        max_osl,
+                        basis,
+                    )
+                    .await
+                }
+                LegacyWekaSource::HuggingFace {
+                    name,
+                    subset,
+                    split,
+                    revision,
+                    entries,
+                    basis,
+                } => {
+                    let (traces, _) = aiperf_agentx::hf_dataset::load_hf_weka_traces(
+                        aiperf_agentx::hf_dataset::HfDatasetRef {
+                            name,
+                            subset,
+                            split,
+                            revision,
+                            max_rows: None,
+                        },
+                        entries,
+                        max_context,
+                        max_osl,
+                        basis,
+                    )
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                    Ok(traces)
+                }
+            }
+        })
 }
