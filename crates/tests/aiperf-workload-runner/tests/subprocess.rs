@@ -23,14 +23,24 @@ fn runner_binary() -> std::path::PathBuf {
 fn request(directory: &std::path::Path) -> Value {
     let mut cfg = aiperf_config::model::BenchmarkConfig::default();
     cfg.datasets = Some(vec![serde_json::from_value(json!({"type":"file","format":"weka_trace","options":{},"sampling":"sequential","prompts":{"corpus":"coding"},"synthesis":{"speedup_ratio":1.0,"prefix_len_multiplier":1.0,"prefix_root_multiplier":1,"prompt_len_multiplier":1.0,"output_len_multiplier":1.0,"cache_bust_target":"none"},"records":{"id":"finite-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[1,2],"api_time":0.001},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[1,2,3],"api_time":0.001}]}})).unwrap()]);
-    cfg.models = Some(serde_json::from_value(json!({"strategy":"round_robin","items":[{"name":"model"}]})).unwrap());
-    cfg.tokenizer = Some(serde_json::from_value(json!({"name":"builtin"})).unwrap());
+    cfg.models = Some(aiperf_config::model::models::Models {
+        strategy:aiperf_config::model::models::ModelStrategy::RoundRobin,
+        items:vec![aiperf_config::model::models::ModelItem { name:"model".into(),..Default::default() }],
+    });
+    cfg.tokenizer = Some(aiperf_config::model::tokenizer::Tokenizer {
+        name:Some("builtin".into()),revision:"main".into(),trust_remote_code:false,
+        apply_chat_template:false,server_url:None,per_model:Default::default(),
+    });
     cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"requests":2,"grace_period":1.0}])).unwrap());
     cfg.finite_replay = Some(true);
     cfg.trajectory_start_min_ratio = Some(0.0);
     cfg.trajectory_start_max_ratio = Some(0.0);
     let run = aiperf_config::model::BenchmarkRun { benchmark_id:"independent-proof".into(),artifact_dir:directory.into(),cfg,cli_command:None,label:String::new(),random_seed:Some(42),planned_replay_traces:Default::default(),authored_corpus_bounds:None,sweep_id:None,trial:0,variation:None,variables:Default::default() };
-    serde_json::to_value(aiperf_protocol::runner_v2::RunRequestV2 { protocol_version:2,run }).unwrap()
+    let frame = aiperf_protocol::runner_v2::RunRequestV2 { protocol_version:2,run };
+    let encoded = serde_json::to_vec(&frame).expect("encode complete native request fixture");
+    let decoded = aiperf_protocol::runner_v2::decode_run_request_v2(&encoded).expect("fixture must pass native strict codec before spawning a child");
+    aiperf_engine_input::execution_input::factory_workload_input_resolved(&decoded.run).expect("fixture must pass native workload projection before spawning a child");
+    serde_json::from_slice(&encoded).unwrap()
 }
 
 fn branch_request(directory:&std::path::Path) -> String {
@@ -113,6 +123,27 @@ fn finite_native_workload_writes_body_bearing_proof_artifact() {
     assert_eq!(report["requests"].as_array().unwrap().len(),2);
     assert!(report["requests"][0]["request"]["body"]["messages"].is_array());
     assert!(events.iter().any(|event|event["event"] == "phase_progress"));
+}
+
+#[test]
+fn authored_corpus_selection_changes_actual_native_request_bodies() {
+    let mut bodies = Vec::new();
+    for corpus in ["coding","sonnet"] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frame = request(directory.path());
+        frame["run"]["cfg"]["datasets"][0]["prompts"]["corpus"] = json!(corpus);
+        let mut child = Command::new(runner_binary()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut input = child.stdin.take().unwrap();
+        writeln!(input,"{frame}").unwrap();
+        input.flush().unwrap();
+        let events:Vec<Value> = BufReader::new(child.stdout.take().unwrap()).lines().map(|line|serde_json::from_str(&line.unwrap()).unwrap()).collect();
+        assert!(child.wait().unwrap().success());
+        drop(input);
+        assert_eq!(events.last().unwrap()["outcome"],"succeeded","corpus={corpus}: {events:#?}");
+        let report:Value = serde_json::from_slice(&std::fs::read(directory.path().join("aisim-library-proof.json")).unwrap()).unwrap();
+        bodies.push(report["requests"][0]["request"]["body"].clone());
+    }
+    assert_ne!(bodies[0],bodies[1],"authored corpus must reach native prompt synthesis");
 }
 
 #[test]
