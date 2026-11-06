@@ -22,7 +22,7 @@ fn runner_binary() -> std::path::PathBuf {
 
 fn request(directory: &std::path::Path) -> Value {
     let mut cfg = aiperf_config::model::BenchmarkConfig::default();
-    cfg.datasets = Some(vec![serde_json::from_value(json!({"type":"file","format":"weka_trace","sampling":"sequential","prompts":{"corpus":"coding"},"synthesis":{"speedup_ratio":1.0,"prefix_len_multiplier":1.0,"prefix_root_multiplier":1,"prompt_len_multiplier":1.0,"output_len_multiplier":1.0,"cache_bust_target":"none"},"records":{"id":"finite-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[1,2],"api_time":0.001},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[1,2,3],"api_time":0.001}]}})).unwrap()]);
+    cfg.datasets = Some(vec![serde_json::from_value(json!({"type":"file","format":"weka_trace","options":{},"sampling":"sequential","prompts":{"corpus":"coding"},"synthesis":{"speedup_ratio":1.0,"prefix_len_multiplier":1.0,"prefix_root_multiplier":1,"prompt_len_multiplier":1.0,"output_len_multiplier":1.0,"cache_bust_target":"none"},"records":{"id":"finite-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[1,2],"api_time":0.001},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[1,2,3],"api_time":0.001}]}})).unwrap()]);
     cfg.models = Some(serde_json::from_value(json!({"strategy":"round_robin","items":[{"name":"model"}]})).unwrap());
     cfg.tokenizer = Some(serde_json::from_value(json!({"name":"builtin"})).unwrap());
     cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"requests":2,"grace_period":1.0}])).unwrap());
@@ -113,6 +113,51 @@ fn finite_native_workload_writes_body_bearing_proof_artifact() {
     assert_eq!(report["requests"].as_array().unwrap().len(),2);
     assert!(report["requests"][0]["request"]["body"]["messages"].is_array());
     assert!(events.iter().any(|event|event["event"] == "phase_progress"));
+}
+
+#[test]
+fn artifact_collision_still_emits_exactly_one_failed_terminal() {
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("aisim-library-proof.json");
+    std::fs::write(&artifact,b"existing-owned-output").unwrap();
+    let mut child = Command::new(runner_binary()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    writeln!(input,"{}",request(directory.path())).unwrap();
+    input.flush().unwrap();
+    let output = child.stdout.take().unwrap();
+    let events:Vec<Value> = BufReader::new(output).lines().map(|line|serde_json::from_str(&line.unwrap()).unwrap()).collect();
+    assert!(child.wait().unwrap().success());
+    drop(input);
+    assert_eq!(events.iter().filter(|event|event["event"] == "run_terminal").count(),1);
+    assert_eq!(events.last().unwrap()["outcome"],"failed");
+    assert_eq!(events.last().unwrap()["stage"],"reporting");
+    assert_eq!(std::fs::read(artifact).unwrap(),b"existing-owned-output");
+}
+
+#[test]
+fn malformed_control_at_virtual_wait_cannot_be_reported_as_cancelled() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = Command::new(runner_binary()).arg("--proof-wait-for-cancel").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    writeln!(input,"{}",request(directory.path())).unwrap();
+    input.flush().unwrap();
+    let mut sent = false;
+    let mut events = Vec::new();
+    for line in BufReader::new(child.stdout.take().unwrap()).lines() {
+        let event:Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if event["metrics"]["proof_rendezvous_waiting"] == 1.0 {
+            writeln!(input,"{{\"protocol_version\":2,\"command_id\":\"invalid\",\"command\":{{\"type\":\"pause\"}}}}").unwrap();
+            input.flush().unwrap();
+            sent = true;
+        }
+        events.push(event);
+    }
+    assert!(child.wait().unwrap().success());
+    drop(input);
+    assert!(sent);
+    assert_eq!(events.last().unwrap()["outcome"],"failed");
+    assert_eq!(events.last().unwrap()["stage"],"protocol");
+    assert_eq!(events.iter().filter(|event|event["event"] == "run_terminal").count(),1);
 }
 
 #[test]

@@ -24,7 +24,12 @@ pub fn execute(run: &aiperf_config::model::BenchmarkRun, cancel: RunCancellation
     let traces = acquire(dataset,raw_dataset.get("records").context("inline records required")?)?;
     let tokenizer: Arc<dyn TextTokenizer> = Arc::new(aiperf_tokenizers::TiktokenTokenizer::builtin());
     let seed = run.random_seed.unwrap_or(0);
-    let corpus = aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?;
+    let corpus = match dataset.pointer("/prompts/corpus").and_then(|value|value.as_str()) {
+        Some("coding") => aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?,
+        Some("sonnet") => aiperf_dataset_synthesis::corpus::tokenize_sonnet_corpus(tokenizer.as_ref())?,
+        _ => anyhow::bail!("proof requires explicit prompts.corpus coding or sonnet"),
+    };
+    ensure!(dataset.get("weka_nested_timestamp_basis").is_none_or(|basis|basis.is_null() || basis == "auto"),"proof currently supports only automatic nested timestamp basis; explicit absolute/relative is not silently ignored");
     let hash_seed = aiperf_rng::PythonRandomGenerator::derive_child_seed(seed, aiperf_rng::namespace::DATASET_CODING_CONTENT_CORPUS);
     let mut prepared = prepare_legacy_agentic(run, &phases, dataset, &traces, corpus.into(), hash_seed, tokenizer.clone(), false)?;
     let (phases, origins) = prepare_legacy_agentic_phases(run, &phases, dataset, input["system_idle_gap_cap_seconds"].as_f64(), &prepared)?;

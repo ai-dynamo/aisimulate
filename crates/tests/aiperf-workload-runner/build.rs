@@ -4,11 +4,37 @@
 //! Bind provenance to the source actually used by this standalone build.
 
 use std::{path::{Path,PathBuf},process::Command};
+fn git(path:&Path,args:&[&str]) -> Option<String> {
+    let output = Command::new("git").arg("-C").arg(path).args(args).output().ok()?;
+    output.status.success().then(||String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
 fn revision(path:&Path) -> String {
-    let output = Command::new("git").arg("-C").arg(path).args(["rev-parse","HEAD"]).output();
-    match output {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        _ => "unavailable".into(),
+    let Some(revision) = git(path,&["rev-parse","HEAD"]) else { return "unavailable".into(); };
+    for name in ["HEAD","index","packed-refs"] {
+        if let Some(file) = git(path,&["rev-parse","--git-path",name]) {
+            let file = PathBuf::from(file);
+            let file = if file.is_absolute() { file } else {path.join(file)};
+            println!("cargo:rerun-if-changed={}",file.display());
+        }
+    }
+    if let Some(reference) = git(path,&["symbolic-ref","-q","HEAD"]) {
+        if let Some(file) = git(path,&["rev-parse","--git-path",&reference]) {
+            let file = PathBuf::from(file);
+            let file = if file.is_absolute() {file} else {path.join(file)};
+            println!("cargo:rerun-if-changed={}",file.display());
+        }
+    }
+    if let Some(root) = git(path,&["rev-parse","--show-toplevel"]) {
+        // Watch source files as well as refs: source edits can change the
+        // provenance even when HEAD and the staging index remain unchanged.
+        if let Some(files) = git(path,&["ls-files"]) {
+            for file in files.lines() { println!("cargo:rerun-if-changed={}",Path::new(&root).join(file).display()); }
+        }
+    }
+    match git(path,&["status","--porcelain","--untracked-files=normal"]) {
+        Some(status) if status.is_empty() => revision,
+        Some(_) => format!("{revision}+dirty"),
+        None => format!("{revision}+worktree-state-unavailable"),
     }
 }
 fn main() {
