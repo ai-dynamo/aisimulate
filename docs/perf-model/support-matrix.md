@@ -11,7 +11,7 @@ queries, Replay feature support, and measured accuracy are separate results.
 
 | Path | Required evidence | Coverage boundary |
 | --- | --- | --- |
-| `op_level` + `SILICON` | Registered graph and required collected operation data | A model can construct while a later shape lacks data. Analytical-only operations retain their own source labels. |
+| `op_level` + `SILICON` | Registered graph and required collected operation data | A model can construct while a later shape lacks data. Analytical-only operations retain their own source labels. Linear-attention operations (Mamba2, GDN, KDA) require a table with rows for each kernel the model runs; a missing table or kernel is a construction miss, and only the other modes keep their analytic estimate. |
 | `op_level` + `HYBRID` / `EMPIRICAL` | Applicable analytical operations and permitted calibration/transfer slices | A transfer is an estimate, not a newly measured cell. Missing calibration remains an error. |
 | `op_level` + `SOL` | Analytical operation and system specifications | Lower-bound modeling does not certify a serving runtime or kernel accuracy. |
 | `fpm_interpolation`, `method: direct` | Verified architecture metadata, resource profile, genuine phase measurements | Exact identity and measured brackets; no out-of-domain extrapolation or analytical graph. |

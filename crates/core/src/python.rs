@@ -3096,6 +3096,9 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
                 "estimator": estimator,
                 "timing_source": provider,
                 "data_version": data_version,
+                "database_mode": matches!(estimator, Some("op_level" | "fpm_interpolation"))
+                    .then(|| config.get("database_mode").cloned())
+                    .flatten(),
                 "data_identity": data_identity,
                 "data_version_unavailable_reason": data_version.is_none().then_some(
                     "selected estimator does not expose a data version"
@@ -4854,6 +4857,34 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn timing_provenance_reports_the_database_mode_only_for_database_estimators() {
+        let external = |estimation_mode: &str| TimingModelConfig::External {
+            provider: "aic".into(),
+            config: serde_json::json!({
+                "estimation_mode": estimation_mode,
+                "backend_version": "0.24.0",
+                "database_mode": "HYBRID",
+            }),
+        };
+        let op_level = timing_provenance(&external("op_level"));
+        assert_eq!(op_level["estimator"], "op_level");
+        assert_eq!(op_level["data_version"], "0.24.0");
+        assert_eq!(op_level["database_mode"], "HYBRID");
+        // The resolved request always carries a database mode; a whole-forward
+        // estimator uses no database, so its provenance reports none.
+        let regression = timing_provenance(&external("fpm_regression"));
+        assert_eq!(regression["estimator"], "fpm_regression");
+        assert!(regression["data_version"].is_null());
+        assert!(regression["database_mode"].is_null());
+        let fixed = timing_provenance(&TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        });
+        assert_eq!(fixed["estimator"], "fixed");
+        assert!(fixed.get("database_mode").is_none());
+    }
 
     #[test]
     fn replay_coverage_errors_preserve_the_original_chain() {
