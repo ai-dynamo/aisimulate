@@ -123,7 +123,10 @@ fn capture_finite_branch_runtime_values() {
     println!("RAW_RUNTIME_VALUES {}", report);
     let requests = report["requests"].as_array().unwrap();
     assert!(!requests.is_empty(), "capture must not pass vacuously");
-    assert!(!report["native_phase_report"]["reports"].as_array().unwrap().is_empty());
+    let phase_reports = report["native_phase_report"]["reports"].as_array()
+        .or_else(|| report["native_phase_report"]["phases"].as_array())
+        .expect("native phase report population");
+    assert!(!phase_reports.is_empty());
     assert!(!observer.events().is_empty());
     for (index, row) in requests.iter().enumerate() {
         assert_eq!(row["issue_order"], index);

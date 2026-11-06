@@ -68,6 +68,7 @@ impl Dispatcher {
             "effective_model": turn.effective_model,
             "cache_bust_marker": turn.cache_bust_marker,
             "cache_bust_target": turn.cache_bust_target,
+            "target": turn.endpoint_path,
         });
         self.records.borrow_mut().push(serde_json::json!({
             "request": identity,
