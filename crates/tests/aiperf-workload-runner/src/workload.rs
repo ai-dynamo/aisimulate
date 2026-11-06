@@ -23,7 +23,7 @@ use aiperf_engine_phase::{
 use aiperf_exchange_model::TextTokenizer;
 use aiperf_protocol::protocol_dto::PhaseSpec;
 use anyhow::{Context, Result, ensure};
-use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
+use std::{path::Path, rc::Rc, sync::Arc};
 
 /// Validate and retain the run's authored default endpoint policy.
 pub(crate) fn default_endpoint_profile(
