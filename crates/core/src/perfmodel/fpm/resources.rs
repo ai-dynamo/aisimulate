@@ -238,8 +238,10 @@ pub enum FpmMambaCacheMode {
 /// non-KV memory limit or a capacity that can be scaled to another setting.
 ///
 /// The three optional prefix-caching fields record the settings that the probe
-/// ran with. They are evidence only: selection, sizing and replay do not read
-/// them, and the simulated deployment decides prefix caching.
+/// ran with. Selection and sizing do not read them. Grouped prefix caching
+/// needs a probe that ran with prefix caching, and replay then hashes prompts
+/// in blocks of `hash_block_size_tokens`. For a linear profile, the simulated
+/// deployment decides prefix caching.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmRuntimeMemoryConfig {

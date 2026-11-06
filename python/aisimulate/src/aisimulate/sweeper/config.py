@@ -36,7 +36,11 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
+from ..config.engine import (
+    NgramSpeculationConfig,
+    ReplayEstimationMode,
+    grouped_prefix_caching_requirements,
+)
 
 
 class OptimizationTarget(str, Enum):
@@ -1250,7 +1254,7 @@ class SearchSpace(BaseModel):
         profile = load_fpm_profile(self.fpm_profile)
         if not any(deployment.resources.cache_layout == "grouped" for deployment in profile.deployments):
             return self
-        from .search_space import _fpm_parallel_configs, _parallel_role
+        from .search_space import _fpm_parallel_configs, _parallel_role, _role_runtime
 
         for mode in self.deployment_mode:
             configs = _fpm_parallel_configs(self, mode)
@@ -1273,7 +1277,15 @@ class SearchSpace(BaseModel):
                     if role != "agg" or self.aic_nextn or self.speculation is not None:
                         raise ValueError("grouped FPM cache requires aggregated vLLM without speculative decoding")
                     if self.agg_enable_prefix_caching:
-                        raise ValueError("grouped FPM cache requires agg_enable_prefix_caching=false for cold replay")
+                        # The search has no prefix_match_unit. Each candidate is checked again with its own budget.
+                        grouped_prefix_caching_requirements(
+                            deployment,
+                            backend_version=self.requested_backend_version("vllm"),
+                            architecture=profile.architecture,
+                            prefix_match_unit=None,
+                            max_batched_tokens=_role_runtime(self, "vllm", "agg")[0],
+                            field="agg_enable_prefix_caching",
+                        )
                     if self.agg_native_host_offload is not None:
                         raise ValueError("grouped FPM cache supports only HBM without host offload")
                     if self.agg_num_gpu_blocks is not None or self.agg_kv_bytes_per_token != "auto":
