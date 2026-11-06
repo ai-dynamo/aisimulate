@@ -15,11 +15,8 @@
 //! surface. Advanced engine and adapter contracts remain available through
 //! their explicit module paths.
 
-// Replay allocates and frees kilobyte-to-megabyte buffers every pass. glibc
-// serves those sizes from fragmented free lists; jemalloc's size classes do not
-// search. Python and other native libraries in the process keep their own
-// allocators: jemalloc's symbols are prefixed, and its TLS model is safe to
-// load through `dlopen`.
+// jemalloc as the Rust global allocator. Its symbols are prefixed (`_rjem_`), so
+// CPython and C code keep the system allocator.
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
