@@ -656,3 +656,15 @@ def test_composite_weights_respect_child_weight_shields() -> None:
     assert dispatch.get_weights() == 0.0
     assert OverlapOp("o", group_a=[dispatch], group_b=[]).get_weights() == 0.0
     assert FallbackOp("f", primary=dispatch, fallback=[]).get_weights() == 0.0
+
+
+def test_mamba2_view_exposes_decode_leaves():
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.perf_database import get_database
+
+    table = fetch_table_view(get_database("h200_sxm", "trtllm", "1.3.0rc20"), "_mamba2_data")
+    decode = [by_batch for phases in table.values() for by_batch in phases.get("generation", {}).values()]
+    assert decode
+    assert all(
+        isinstance(batch, int) and leaf["latency"] > 0 for by_batch in decode for batch, leaf in by_batch.items()
+    )
