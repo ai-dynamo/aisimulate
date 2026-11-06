@@ -36,6 +36,7 @@ impl<T> G1Acquire<T> {
 
 mod g1_manager;
 mod grouped;
+mod grouped_prefix;
 pub(crate) mod sglang_backend;
 mod state_cache_manager;
 mod vllm_backend;
