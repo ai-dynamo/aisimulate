@@ -661,6 +661,7 @@ impl Execution for ModelExecution {
             let mut tokens = Vec::new();
             let mut last_content_ns = None;
             let mut rejected = false;
+            let mut cached_tokens = None;
             loop {
                 if cancel.is_cancelled() {
                     return Ok(None);
@@ -673,6 +674,7 @@ impl Execution for ModelExecution {
                 let output = mailbox.outputs.borrow_mut().pop_front();
                 if let Some(output) = output {
                     rejected = output.rejected;
+                    cached_tokens = output.cached_tokens.or(cached_tokens);
                     if let Some(token) = output.token_id {
                         let at_ns = self.now();
                         if tokens.is_empty() && !script.is_tool_only {
@@ -763,6 +765,7 @@ impl Execution for ModelExecution {
                 aiperf_exchange_model::dispatch::ObservedUsage {
                     prompt_tokens: Some(input_tokens),
                     completion_tokens: Some(tokens.len()),
+                    prompt_cache_read_tokens: cached_tokens,
                     ..Default::default()
                 },
             );
@@ -845,17 +848,30 @@ impl SimEventSource for ModelExecution {
         let mut state = self.state.borrow_mut();
         if let Some(deployment) = state.deployment.as_mut() {
             let before_ms = deployment.now_ms();
-            let outcome = deployment.step_until(now_ns as f64 / 1_000_000.0).map_err(source_error)?;
-            let made_progress = outcome.end_ms > before_ms || !outcome.events.is_empty();
-            if outcome.end_ms > now_ns as f64 / 1_000_000.0 {
+            let next_ms = deployment.next_event_ms();
+            let clock_ms = now_ns as f64 / 1_000_000.0;
+            // Retain the engine's original f64 deadline when its ceiling is the
+            // selected integer-nanosecond instant; never move a future event back.
+            let until_ms = next_ms.filter(|at_ms| (at_ms * 1_000_000.0).ceil() <= now_ns as f64)
+                .map_or(clock_ms, |at_ms| clock_ms.max(at_ms));
+            let outcome = deployment.step_until(until_ms).map_err(source_error)?;
+            let made_progress = outcome.end_ms > before_ms || !outcome.events.is_empty()
+                || next_ms.is_some_and(|at_ms| at_ms <= until_ms);
+            if (outcome.end_ms * 1_000_000.0).ceil() > now_ns as f64 {
                 return Err(source_error("deployment advanced beyond committed virtual time"));
             }
+            let admissions = outcome.events.iter().map(|event| {
+                (event.uuid, deployment.request_admission(event.uuid))
+            }).collect::<BTreeMap<_, _>>();
             for event in outcome.events {
+                if matches!(event.terminal_status, Some(aisimulate_core::replay::ReplayTerminalStatus::Failed | aisimulate_core::replay::ReplayTerminalStatus::Canceled)) {
+                    return Err(source_error(format!("deployment request {} terminated as {:?}", event.uuid, event.terminal_status)));
+                }
                 let output = Output {
                     request_id: event.uuid, token_id: event.token_id,
                     completed: event.terminal_status.is_some(),
                     rejected: event.terminal_status == Some(aisimulate_core::replay::ReplayTerminalStatus::Rejected),
-                    cached_tokens: None,
+                    cached_tokens: admissions.get(&event.uuid).copied().flatten().map(|(_, reused)| reused),
                 };
                 if let Some(mailbox) = state.requests.get(&event.uuid.as_u128()) {
                     mailbox.outputs.borrow_mut().push_back(output);
