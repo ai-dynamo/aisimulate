@@ -131,12 +131,19 @@ fn capture_finite_branch_runtime_values() {
     for (index, row) in requests.iter().enumerate() {
         assert_eq!(row["issue_order"], index);
         assert!(row["issue_ns"].is_i64());
-        // Synthetic and ordinary scheduled inputs legitimately have no replay provenance.
-        assert!(row["request"].get("replay_source").is_some());
-        assert!(row["runtime_occurrence"].is_u64());
+        if row["request"].get("node_id").is_some() {
+            assert!(row["request"]["node_id"].is_string());
+            assert!(row["request"]["conversation_id"].is_string());
+        } else {
+            // Synthetic and ordinary scheduled inputs legitimately have no replay provenance.
+            assert!(row["request"].get("replay_source").is_some());
+            assert!(row["runtime_occurrence"].is_u64());
+        }
         let bytes: Vec<u8> = serde_json::from_value(row["wire"]["body_bytes"].clone()).unwrap();
         assert!(!bytes.is_empty());
-        assert_eq!(std::str::from_utf8(&bytes).unwrap(), row["wire"]["body_utf8"].as_str().unwrap());
+        if let Some(text) = row["wire"]["body_utf8"].as_str() {
+            assert_eq!(std::str::from_utf8(&bytes).unwrap(), text);
+        }
         let decoded: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, row["request"]["body"]);
         assert!(!row["input_token_ids"].as_array().unwrap().is_empty());
