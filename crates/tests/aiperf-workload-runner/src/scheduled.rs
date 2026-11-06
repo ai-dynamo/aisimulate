@@ -36,7 +36,7 @@ pub(crate) fn prepare(
             ..Default::default()
         },
     )?;
-    let formats = aiperf_engine_input::dataset_builders::builtin_dataset_formats();
+    let formats = aiperf_dataset_loaders::LoaderRegistry::with_core_formats()?;
     let context = DatasetInputContext {
         cancellation: Some(cancellation),
         dataset_formats: &formats,
