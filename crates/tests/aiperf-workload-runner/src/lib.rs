@@ -27,7 +27,10 @@ pub fn execute(
     observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
 ) -> anyhow::Result<serde_json::Value> {
     workload::execute(
-        run, cancellation, observer, None,
+        run,
+        cancellation,
+        observer,
+        None,
         std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
         None,
     )
@@ -70,8 +73,13 @@ pub fn execute_with_identity_seed(
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
 ) -> anyhow::Result<serde_json::Value> {
     workload::execute(
-        run, cancellation, observer, model_factory,
-        std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(identity_seed)),
+        run,
+        cancellation,
+        observer,
+        model_factory,
+        std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
+            identity_seed,
+        )),
         None,
     )
 }
@@ -89,8 +97,13 @@ pub fn execute_with_deployment(
     identity_seed: [u8; 32],
 ) -> anyhow::Result<serde_json::Value> {
     workload::execute(
-        run, cancellation, observer, None,
-        std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(identity_seed)),
+        run,
+        cancellation,
+        observer,
+        None,
+        std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
+            identity_seed,
+        )),
         Some((deployment, admission_capacity)),
     )
 }

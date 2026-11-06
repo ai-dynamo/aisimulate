@@ -6,8 +6,8 @@
 use aiperf_dispatch::turn::TurnToSend;
 use aiperf_engine_kernel::scheduled::TurnDispatcher;
 use aiperf_exchange_model::{dispatch::RequestObserver, measure::TurnDispatchOutcome};
-use aiperf_request_execution::model_input::OpenAiRequestEncoder;
 use aiperf_request_execution::execution::{Execution, Observation, Request};
+use aiperf_request_execution::model_input::OpenAiRequestEncoder;
 use async_trait::async_trait;
 use std::{cell::RefCell, rc::Rc};
 use tokio_util::sync::CancellationToken;
@@ -84,14 +84,20 @@ impl Dispatcher {
             "output_token_ids": null,
             "observations": [],
         }));
-        let mut capture = CaptureGuard { dispatcher: self, index, returned: false };
+        let mut capture = CaptureGuard {
+            dispatcher: self,
+            index,
+            returned: false,
+        };
         let wire = turn
             .request_body
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("prepared request body absent"))?
             .to_wire()?;
         let body: serde_json::Value = serde_json::from_slice(&wire)?;
-        let model = turn.effective_model.as_deref()
+        let model = turn
+            .effective_model
+            .as_deref()
             .or_else(|| body["model"].as_str())
             .ok_or_else(|| anyhow::anyhow!("prepared request model absent"))?
             .to_owned();
@@ -187,9 +193,12 @@ impl Dispatcher {
                     row["output_token_ids"] = serde_json::json!(outcome.output_token_ids);
                     row["terminal"] = serde_json::json!(dispatch.terminal);
                     row["completion_error"] = serde_json::json!(match dispatch.completion_error {
-                        aiperf_exchange_model::measure::observe::CompletionError::Unknown => "unknown",
-                        aiperf_exchange_model::measure::observe::CompletionError::Absent => "absent",
-                        aiperf_exchange_model::measure::observe::CompletionError::Present => "present",
+                        aiperf_exchange_model::measure::observe::CompletionError::Unknown =>
+                            "unknown",
+                        aiperf_exchange_model::measure::observe::CompletionError::Absent =>
+                            "absent",
+                        aiperf_exchange_model::measure::observe::CompletionError::Present =>
+                            "present",
                     });
                     row["response_text"] = serde_json::json!(dispatch.response_text);
                     row["prompt_tokens"] = serde_json::json!(dispatch.prompt_tokens);
@@ -212,7 +221,12 @@ impl Dispatcher {
                     // Retain the complete Debug witness rather than omit fields
                     // or invent absent HTTP/capture measurements.
                     row["http_debug"] = serde_json::json!(format!("{:?}", dispatch.http));
-                    row["chat_capture_debug"] = serde_json::json!(dispatch.chat_capture.as_ref().map(|capture| format!("{capture:?}")));
+                    row["chat_capture_debug"] = serde_json::json!(
+                        dispatch
+                            .chat_capture
+                            .as_ref()
+                            .map(|capture| format!("{capture:?}"))
+                    );
                 }
                 Ok(None) => row["status"] = serde_json::json!("cancelled_none"),
                 Err(error) => {

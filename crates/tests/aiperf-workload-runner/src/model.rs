@@ -233,18 +233,27 @@ impl ModelExecution {
         capacity: usize,
     ) -> Result<Rc<Self>, ExecutionError> {
         if capacity == 0 || capacity > Semaphore::MAX_PERMITS || !deployment.is_idle() {
-            return Err(ExecutionError::Failed("invalid deployment admission or initial ownership".into()));
+            return Err(ExecutionError::Failed(
+                "invalid deployment admission or initial ownership".into(),
+            ));
         }
         deployment.set_capture_per_request(true);
         Ok(Rc::new(Self {
             clock,
             state: RefCell::new(State {
-                engine: None, deployment: Some(deployment), pending: None,
-                requests: BTreeMap::new(), active: BTreeSet::new(), scripts: BTreeMap::new(),
-                report_errors: Vec::new(), pending_reports: 0,
-                retained_settled: BTreeMap::new(), failure: None,
+                engine: None,
+                deployment: Some(deployment),
+                pending: None,
+                requests: BTreeMap::new(),
+                active: BTreeSet::new(),
+                scripts: BTreeMap::new(),
+                report_errors: Vec::new(),
+                pending_reports: 0,
+                retained_settled: BTreeMap::new(),
+                failure: None,
             }),
-            capacity: Semaphore::new(capacity), events: RefCell::new(Vec::new()),
+            capacity: Semaphore::new(capacity),
+            events: RefCell::new(Vec::new()),
             reports_ready: Notify::new(),
             // Not used for native deployments: their own collector is authoritative.
             reporting: RefCell::new(crate::reporting::BackendReporting::new(0, 0)),
@@ -257,10 +266,14 @@ impl ModelExecution {
     }
 
     /// Drain backend measurements independently of the application's phase report.
-    pub(crate) fn take_backend_report(&self, end_ms: f64) -> Result<aisimulate_core::replay::ReplayReport, ExecutionError> {
+    pub(crate) fn take_backend_report(
+        &self,
+        end_ms: f64,
+    ) -> Result<aisimulate_core::replay::ReplayReport, ExecutionError> {
         if let Some(deployment) = self.state.borrow_mut().deployment.as_mut() {
-            return deployment.take_report(end_ms)
-                .map_err(|error| ExecutionError::Failed(format!("deployment report failed: {error}")));
+            return deployment.take_report(end_ms).map_err(|error| {
+                ExecutionError::Failed(format!("deployment report failed: {error}"))
+            });
         }
         Ok(self.reporting.borrow_mut().take_report(end_ms))
     }
@@ -270,7 +283,10 @@ impl ModelExecution {
         let state = self.state.borrow();
         state.failure.is_none()
             && state.engine.as_ref().is_none_or(Engine::is_drained)
-            && state.deployment.as_ref().is_none_or(|deployment| deployment.is_idle())
+            && state
+                .deployment
+                .as_ref()
+                .is_none_or(|deployment| deployment.is_idle())
             && state.pending.is_none()
             && state.requests.is_empty()
     }
@@ -314,26 +330,32 @@ impl ModelExecution {
                 if let Err(error) = deployment.cancel(Uuid::from_u128(id)) {
                     state.failure = Some(format!("deployment cancellation failed: {error}"));
                 }
-                self.events.borrow_mut().push(ModelEvent::Cancelled { request_id: id, at_ns: self.now() });
+                self.events.borrow_mut().push(ModelEvent::Cancelled {
+                    request_id: id,
+                    at_ns: self.now(),
+                });
                 return;
             }
-            match state.engine.as_mut().expect("engine backend selected").apply_command_effects(
-                SchedulerCommand::new(
-                    0,
-                    Command::CancelRequest {
-                        request_id: Uuid::from_u128(id),
-                        discard_pending_output: true,
-                    },
-                ),
-                self.now() as f64 / 1_000_000.0,
-            ) {
+            match state
+                .engine
+                .as_mut()
+                .expect("engine backend selected")
+                .apply_command_effects(
+                    SchedulerCommand::new(
+                        0,
+                        Command::CancelRequest {
+                            request_id: Uuid::from_u128(id),
+                            discard_pending_output: true,
+                        },
+                    ),
+                    self.now() as f64 / 1_000_000.0,
+                ) {
                 Ok(effects) => {
                     for rank in effects.by_rank {
                         for retired in rank.effects.retired_requests {
-                            self.reporting.borrow_mut().on_cancel(
-                                retired,
-                                self.now() as f64 / 1_000_000.0,
-                            );
+                            self.reporting
+                                .borrow_mut()
+                                .on_cancel(retired, self.now() as f64 / 1_000_000.0);
                         }
                     }
                 }
@@ -536,10 +558,12 @@ impl Execution for ModelExecution {
             }
             // An absent population delegates token generation to the engine's
             // request-UUID/ordinal stream, exactly as native offline execution.
-            let population = script.output_token_ids.as_ref().map(|ids| {
-                ids.iter().take(cap).copied().collect::<Vec<_>>()
-            });
-            let is_native_reply = script.output_token_ids.is_none() && script.response_text.is_none();
+            let population = script
+                .output_token_ids
+                .as_ref()
+                .map(|ids| ids.iter().take(cap).copied().collect::<Vec<_>>());
+            let is_native_reply =
+                script.output_token_ids.is_none() && script.response_text.is_none();
             let capped = script
                 .output_token_ids
                 .as_ref()
@@ -587,72 +611,93 @@ impl Execution for ModelExecution {
                     let start_ms = start_ns as f64 / 1_000_000.0;
                     deployment.advance_now_ms(start_ms);
                     if deployment.now_ms() != start_ms {
-                        return Err(ExecutionError::Failed("deployment has an unprocessed event before request arrival".into()));
+                        return Err(ExecutionError::Failed(
+                            "deployment has an unprocessed event before request arrival".into(),
+                        ));
                     }
-                    let assigned = deployment.submit(aisimulate_core::replay::DirectRequest {
-                        tokens: request.input_token_ids,
-                        max_output_tokens: population_len,
-                        output_token_ids: population,
-                        uuid: Some(uuid),
-                        // Match original offline ingress: application lineage stays
-                        // in AIPerf; physical requests carry no replay-session context.
-                        arrival_timestamp_ms: Some(start_ns as f64 / 1_000_000.0),
-                        images: request.images.into_iter().map(|image| aisimulate_core::engine::ImageSpec {
-                            identity: image.identity, token_start: image.token_start, token_end: image.token_end,
-                            encoder: aisimulate_core::engine::EncoderShape {
-                                sequences: image.encoder.sequences, patch_tokens: image.encoder.patch_tokens,
-                                transformer_tokens: image.encoder.transformer_tokens, output_tokens: image.encoder.output_tokens,
-                            }, embedding_bytes: image.embedding_bytes,
-                        }).collect(),
-                        ..Default::default()
-                    }).map_err(|error| ExecutionError::Failed(error.to_string()))?;
+                    let assigned = deployment
+                        .submit(aisimulate_core::replay::DirectRequest {
+                            tokens: request.input_token_ids,
+                            max_output_tokens: population_len,
+                            output_token_ids: population,
+                            uuid: Some(uuid),
+                            // Match original offline ingress: application lineage stays
+                            // in AIPerf; physical requests carry no replay-session context.
+                            arrival_timestamp_ms: Some(start_ns as f64 / 1_000_000.0),
+                            images: request
+                                .images
+                                .into_iter()
+                                .map(|image| aisimulate_core::engine::ImageSpec {
+                                    identity: image.identity,
+                                    token_start: image.token_start,
+                                    token_end: image.token_end,
+                                    encoder: aisimulate_core::engine::EncoderShape {
+                                        sequences: image.encoder.sequences,
+                                        patch_tokens: image.encoder.patch_tokens,
+                                        transformer_tokens: image.encoder.transformer_tokens,
+                                        output_tokens: image.encoder.output_tokens,
+                                    },
+                                    embedding_bytes: image.embedding_bytes,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        })
+                        .map_err(|error| ExecutionError::Failed(error.to_string()))?;
                     if assigned != uuid {
-                        deployment.cancel(assigned).map_err(|error| ExecutionError::Failed(error.to_string()))?;
-                        return Err(ExecutionError::Failed("deployment changed explicit request identity".into()));
+                        deployment
+                            .cancel(assigned)
+                            .map_err(|error| ExecutionError::Failed(error.to_string()))?;
+                        return Err(ExecutionError::Failed(
+                            "deployment changed explicit request identity".into(),
+                        ));
                     }
                 } else {
-                state
-                    .engine.as_mut().expect("engine backend selected")
-                    .apply_command_effects(
-                        SchedulerCommand::new(
-                            0,
-                            Command::Submit(ModelRequest {
-                                request_id: uuid,
-                                tokens: request.input_token_ids,
-                                max_output_tokens: population_len,
-                                output_token_ids: population,
-                                session_id: Some(request.prepared.runtime_session_id.clone()),
-                                cache_salt: None,
-                                images: request
-                                    .images
-                                    .into_iter()
-                                    .map(|image| aisimulate_core::engine::ImageSpec {
-                                        identity: image.identity,
-                                        token_start: image.token_start,
-                                        token_end: image.token_end,
-                                        encoder: aisimulate_core::engine::EncoderShape {
-                                            sequences: image.encoder.sequences,
-                                            patch_tokens: image.encoder.patch_tokens,
-                                            transformer_tokens: image.encoder.transformer_tokens,
-                                            output_tokens: image.encoder.output_tokens,
-                                        },
-                                        embedding_bytes: image.embedding_bytes,
-                                    })
-                                    .collect(),
-                                kv_hint: None,
-                            }),
-                        ),
+                    state
+                        .engine
+                        .as_mut()
+                        .expect("engine backend selected")
+                        .apply_command_effects(
+                            SchedulerCommand::new(
+                                0,
+                                Command::Submit(ModelRequest {
+                                    request_id: uuid,
+                                    tokens: request.input_token_ids,
+                                    max_output_tokens: population_len,
+                                    output_token_ids: population,
+                                    session_id: Some(request.prepared.runtime_session_id.clone()),
+                                    cache_salt: None,
+                                    images: request
+                                        .images
+                                        .into_iter()
+                                        .map(|image| aisimulate_core::engine::ImageSpec {
+                                            identity: image.identity,
+                                            token_start: image.token_start,
+                                            token_end: image.token_end,
+                                            encoder: aisimulate_core::engine::EncoderShape {
+                                                sequences: image.encoder.sequences,
+                                                patch_tokens: image.encoder.patch_tokens,
+                                                transformer_tokens: image
+                                                    .encoder
+                                                    .transformer_tokens,
+                                                output_tokens: image.encoder.output_tokens,
+                                            },
+                                            embedding_bytes: image.embedding_bytes,
+                                        })
+                                        .collect(),
+                                    kv_hint: None,
+                                }),
+                            ),
+                            start_ns as f64 / 1_000_000.0,
+                        )
+                        .map_err(|error| ExecutionError::Failed(error.to_string()))?;
+                    // CommandEffects contains ownership/lifecycle deltas, not output;
+                    // actual outputs arrive exclusively from complete_pass.
+                    self.reporting.borrow_mut().on_submit(
+                        uuid,
                         start_ns as f64 / 1_000_000.0,
-                    )
-                    .map_err(|error| ExecutionError::Failed(error.to_string()))?;
-                // CommandEffects contains ownership/lifecycle deltas, not output;
-                // actual outputs arrive exclusively from complete_pass.
-                self.reporting.borrow_mut().on_submit(
-                    uuid,
-                    start_ns as f64 / 1_000_000.0,
-                    input_tokens,
-                    population_len,
-                );
+                        input_tokens,
+                        population_len,
+                    );
                 }
                 state.requests.insert(id, mailbox.clone());
             }
@@ -727,19 +772,26 @@ impl Execution for ModelExecution {
                 }
             }
             let end_ns = self.now();
-            let terminal = mailbox.terminal.borrow().filter(|terminal| *terminal != ReplayTerminalStatus::Completed).unwrap_or_else(|| if rejected {
-                ReplayTerminalStatus::Rejected
-            } else {
-                script.terminal
-            });
+            let terminal = mailbox
+                .terminal
+                .borrow()
+                .filter(|terminal| *terminal != ReplayTerminalStatus::Completed)
+                .unwrap_or_else(|| {
+                    if rejected {
+                        ReplayTerminalStatus::Rejected
+                    } else {
+                        script.terminal
+                    }
+                });
             let physical_terminal = *mailbox.terminal.borrow();
-            let completion_error = if rejected || physical_terminal == Some(ReplayTerminalStatus::Failed) {
-                CompletionError::Present
-            } else {
-                // Scripted provider error presence is authoritative independently
-                // of its terminal label; Unknown must remain Unknown.
-                script.completion_error
-            };
+            let completion_error =
+                if rejected || physical_terminal == Some(ReplayTerminalStatus::Failed) {
+                    CompletionError::Present
+                } else {
+                    // Scripted provider error presence is authoritative independently
+                    // of its terminal label; Unknown must remain Unknown.
+                    script.completion_error
+                };
             let response_text = match script.response_text {
                 Some(text) => text,
                 None if is_native_reply => {
@@ -824,9 +876,13 @@ pub(crate) fn deployment_deadline_ns(at_ms: f64) -> Result<i64, SimDriveError> {
         return Err(source_error("invalid deployment event deadline"));
     }
     let mut ns = (at_ms * 1_000_000.0).ceil() as i64;
-    while ns > 0 && (ns - 1) as f64 / 1_000_000.0 >= at_ms { ns -= 1; }
+    while ns > 0 && (ns - 1) as f64 / 1_000_000.0 >= at_ms {
+        ns -= 1;
+    }
     while ns as f64 / 1_000_000.0 < at_ms {
-        ns = ns.checked_add(1).ok_or_else(|| source_error("deployment deadline overflow"))?;
+        ns = ns
+            .checked_add(1)
+            .ok_or_else(|| source_error("deployment deadline overflow"))?;
     }
     Ok(ns)
 }
@@ -863,9 +919,10 @@ impl SimEventSource for ModelExecution {
             return Err(source_error(error));
         }
         if let Some(deployment) = state.deployment.as_mut() {
-            return deployment.next_event_ms().map(|at_ms| {
-                Ok(deployment_deadline_ns(at_ms)?.max(self.now()))
-            }).transpose();
+            return deployment
+                .next_event_ms()
+                .map(|at_ms| Ok(deployment_deadline_ns(at_ms)?.max(self.now())))
+                .transpose();
         }
         let engine = state.engine.as_ref().expect("engine backend selected");
         if engine.next_internal_deadline_ms().is_some() {
@@ -894,35 +951,57 @@ impl SimEventSource for ModelExecution {
             // reaching the physical deadline; no floating tolerance is required.
             let until_ms = clock_ms;
             let outcome = deployment.step_until(until_ms).map_err(source_error)?;
-            let made_progress = outcome.end_ms > before_ms || !outcome.events.is_empty()
+            let made_progress = outcome.end_ms > before_ms
+                || !outcome.events.is_empty()
                 || next_ms.is_some_and(|at_ms| at_ms <= until_ms);
             if outcome.end_ms > clock_ms {
-                return Err(source_error("deployment advanced beyond committed virtual time"));
+                return Err(source_error(
+                    "deployment advanced beyond committed virtual time",
+                ));
             }
-            let admissions = outcome.events.iter().map(|event| {
-                (event.uuid, deployment.request_admission(event.uuid))
-            }).collect::<BTreeMap<_, _>>();
+            let admissions = outcome
+                .events
+                .iter()
+                .map(|event| (event.uuid, deployment.request_admission(event.uuid)))
+                .collect::<BTreeMap<_, _>>();
             for event in outcome.events {
                 let output = Output {
-                    request_id: event.uuid, token_id: event.token_id,
+                    request_id: event.uuid,
+                    token_id: event.token_id,
                     completed: event.terminal_status.is_some(),
-                    rejected: event.terminal_status == Some(aisimulate_core::replay::ReplayTerminalStatus::Rejected),
-                    cached_tokens: admissions.get(&event.uuid).copied().flatten().map(|(_, reused)| reused),
+                    rejected: event.terminal_status
+                        == Some(aisimulate_core::replay::ReplayTerminalStatus::Rejected),
+                    cached_tokens: admissions
+                        .get(&event.uuid)
+                        .copied()
+                        .flatten()
+                        .map(|(_, reused)| reused),
                 };
                 if let Some(mailbox) = state.requests.get(&event.uuid.as_u128()) {
                     if let Some(status) = event.terminal_status {
                         *mailbox.terminal.borrow_mut() = Some(match status {
-                            aisimulate_core::replay::ReplayTerminalStatus::Completed => ReplayTerminalStatus::Completed,
-                            aisimulate_core::replay::ReplayTerminalStatus::Rejected => ReplayTerminalStatus::Rejected,
-                            aisimulate_core::replay::ReplayTerminalStatus::Canceled => ReplayTerminalStatus::Canceled,
-                            aisimulate_core::replay::ReplayTerminalStatus::Failed => ReplayTerminalStatus::Failed,
+                            aisimulate_core::replay::ReplayTerminalStatus::Completed => {
+                                ReplayTerminalStatus::Completed
+                            }
+                            aisimulate_core::replay::ReplayTerminalStatus::Rejected => {
+                                ReplayTerminalStatus::Rejected
+                            }
+                            aisimulate_core::replay::ReplayTerminalStatus::Canceled => {
+                                ReplayTerminalStatus::Canceled
+                            }
+                            aisimulate_core::replay::ReplayTerminalStatus::Failed => {
+                                ReplayTerminalStatus::Failed
+                            }
                         });
                     }
                     mailbox.outputs.borrow_mut().push_back(output);
                     mailbox.ready.notify_one();
                 }
             }
-            return Ok(SimStep { end_ns: now_ns, made_progress });
+            return Ok(SimStep {
+                end_ns: now_ns,
+                made_progress,
+            });
         }
         if let Some((pass_id, end_ms, end_ns)) = state.pending.take() {
             if now_ns < end_ns {
@@ -932,7 +1011,9 @@ impl SimEventSource for ModelExecution {
                 ));
             }
             let completed = state
-                .engine.as_mut().expect("engine backend selected")
+                .engine
+                .as_mut()
+                .expect("engine backend selected")
                 .complete_pass(pass_id, end_ms)
                 .map_err(source_error)?;
             self.events.borrow_mut().push(ModelEvent::PassCompleted {
@@ -954,7 +1035,9 @@ impl SimEventSource for ModelExecution {
             // Crucial: return to the existing quiescence pump. Do not execute
             // another pass while these observations await application delivery.
         } else if let Some(started) = state
-            .engine.as_mut().expect("engine backend selected")
+            .engine
+            .as_mut()
+            .expect("engine backend selected")
             .execute_pass(now_ns as f64 / 1_000_000.0)
             .map_err(source_error)?
         {

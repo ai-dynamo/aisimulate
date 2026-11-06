@@ -38,7 +38,8 @@ impl BackendReporting {
         if at_ms > self.now_ms {
             let dt_ms = at_ms - self.now_ms;
             let decode_worker_seconds = self.decode_workers as f64 * dt_ms / 1000.0;
-            self.collector.add_worker_seconds(0.0, decode_worker_seconds);
+            self.collector
+                .add_worker_seconds(0.0, decode_worker_seconds);
             self.now_ms = at_ms;
         }
     }
@@ -57,7 +58,14 @@ impl BackendReporting {
         // This composition directly submits to one aggregated Engine: there is
         // no router queue, replica choice, or cross-rank placement operation.
         self.collector.on_route_immediate(
-            request_id, ReplayRequestPool::Agg, 0, 0, 0, 0, None, None,
+            request_id,
+            ReplayRequestPool::Agg,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
         );
         self.collector.on_decode_assigned(request_id, 0);
     }
@@ -66,14 +74,14 @@ impl BackendReporting {
     pub(crate) fn on_pass_started(&mut self, at_ms: f64, effects: &PassStartEffects) {
         self.advance_to(at_ms);
         for admission in &effects.admissions {
-            self.collector.on_admit(
+            self.collector
+                .on_admit(admission.request_id, at_ms, admission.reused_input_tokens);
+            self.collector.on_pool_admission_with_tier_attribution(
                 admission.request_id,
+                ReplayRequestPool::Agg,
                 at_ms,
                 admission.reused_input_tokens,
-            );
-            self.collector.on_pool_admission_with_tier_attribution(
-                admission.request_id, ReplayRequestPool::Agg, at_ms,
-                admission.reused_input_tokens, None,
+                None,
             );
         }
     }

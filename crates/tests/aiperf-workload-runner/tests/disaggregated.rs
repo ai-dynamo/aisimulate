@@ -19,7 +19,10 @@ fn simulator_owned_agentx_branches_cross_actual_prefill_decode_handoff() {
     let frame = aiperf_protocol::runner_v2::decode_run_request_v2(raw.as_bytes()).unwrap();
     let config = ReplayEngineConfig {
         rank: EngineConfig {
-            timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 2.0 },
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 2.0,
+            },
             max_num_seqs: 64,
             enable_prefix_caching: false,
             enable_chunked_prefill: false,
@@ -33,8 +36,11 @@ fn simulator_owned_agentx_branches_cross_actual_prefill_decode_handoff() {
         &frame.run,
         aiperf_clock_runtime::cancellation::RunCancellation::new(),
         Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
-        Box::new(deployment), 64, [7; 32],
-    ).expect("shared AgentX over real disaggregated deployment");
+        Box::new(deployment),
+        64,
+        [7; 32],
+    )
+    .expect("shared AgentX over real disaggregated deployment");
     assert_eq!(report["engine_drained"], true);
     assert_eq!(report["requests"].as_array().unwrap().len(), 4);
     let backend = &report["backend_report"];

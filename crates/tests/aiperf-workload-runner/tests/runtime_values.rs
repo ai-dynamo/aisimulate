@@ -11,8 +11,15 @@ use std::{path::PathBuf, rc::Rc};
 mod run_fixture;
 
 fn identity_seed_from_hex(value: &str) -> [u8; 32] {
-    assert_eq!(value.len(), 64, "identity seed must contain exactly 64 hexadecimal digits");
-    assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()), "identity seed must be hexadecimal");
+    assert_eq!(
+        value.len(),
+        64,
+        "identity seed must contain exactly 64 hexadecimal digits"
+    );
+    assert!(
+        value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "identity seed must be hexadecimal"
+    );
     std::array::from_fn(|index| u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap())
 }
 
@@ -33,82 +40,115 @@ fn capture_finite_branch_runtime_values() {
     let observer = Rc::new(aiperf_timing::RecordingPhaseObserver::default());
     // Only this capture harness reads the environment. The library receives an
     // explicit run-local owner, never ambient process identity configuration.
-    let identity_seed_hex = std::env::var_os("AISIM_RUNTIME_VALUES_IDENTITY_SEED")
-        .map(|value| value.into_string().expect("identity seed must be UTF-8 hexadecimal"));
+    let identity_seed_hex = std::env::var_os("AISIM_RUNTIME_VALUES_IDENTITY_SEED").map(|value| {
+        value
+            .into_string()
+            .expect("identity seed must be UTF-8 hexadecimal")
+    });
     let identity_seed = identity_seed_hex.as_deref().map(identity_seed_from_hex);
     // Fixed timing overrides are opt-in to this evidence target only. Ordinary
     // library and executable defaults remain exactly as before.
     let override_config = std::env::var_os("AISIM_RUNTIME_VALUES_ENGINE_CONFIG")
         .map(|path| serde_json::from_slice::<EngineConfig>(&std::fs::read(path).unwrap()).unwrap());
-    let disaggregated = std::env::var("AISIM_RUNTIME_VALUES_TOPOLOGY").as_deref() == Ok("disaggregated");
+    let disaggregated =
+        std::env::var("AISIM_RUNTIME_VALUES_TOPOLOGY").as_deref() == Ok("disaggregated");
     let (report, model_manifest) = if disaggregated {
         let config = override_config.unwrap_or_else(|| EngineConfig {
-            timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 1.0 },
-            max_num_seqs: 64, enable_prefix_caching: false,
-            enable_chunked_prefill: false, async_scheduling: Some(false), ..Default::default()
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            max_num_seqs: 64,
+            enable_prefix_caching: false,
+            enable_chunked_prefill: false,
+            async_scheduling: Some(false),
+            ..Default::default()
         });
         let deployment = aisimulate_core::replay::loadgen::SteppableDisagg::new(
-            aisimulate_core::replay::ReplayEngineConfig { rank: config.clone(), ..Default::default() },
-            &aisimulate_core::replay::ReplayEngineFactory::new(), 1, 1,
-        ).unwrap();
-        let report = aisim_aiperf_workload_runner::execute_with_deployment(
-            &request.run, aiperf_clock_runtime::cancellation::RunCancellation::new(),
-            observer.clone(), Box::new(deployment), 64,
-            identity_seed.expect("disaggregated differential requires explicit identities"),
-        ).unwrap();
-        (report, json!({"engine_config":config,"topology":"disaggregated","prefill_workers":1,"decode_workers":1}))
-    } else { match override_config {
-        Some(config) => {
-            let capacity = std::env::var("AISIM_RUNTIME_VALUES_ADMISSION_CAPACITY")
-                .ok()
-                .map(|value| value.parse::<usize>().unwrap())
-                .unwrap_or(config.max_num_seqs);
-            let manifest = json!({"engine_config":config,"admission_capacity":capacity,"selection":"explicit_test_override"});
-            let factory = EngineFactory::new(config).unwrap();
-            let report = match identity_seed {
-                Some(seed) => aisim_aiperf_workload_runner::execute_with_identity_seed(
-                    &request.run,
-                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
-                    observer.clone(),
-                    seed,
-                    Some((&factory, capacity)),
-                ),
-                None => aisim_aiperf_workload_runner::execute_with_engine_factory(
-                    &request.run,
-                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
-                    observer.clone(),
-                    &factory,
-                    capacity,
-                ),
-            }.unwrap();
-            (report, manifest)
-        }
-        None => {
-            let config = EngineConfig {
-                timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 1.0 },
-                max_num_seqs: 64,
-                enable_prefix_caching: false,
-                enable_chunked_prefill: false,
-                async_scheduling: Some(false),
+            aisimulate_core::replay::ReplayEngineConfig {
+                rank: config.clone(),
                 ..Default::default()
-            };
-            let report = match identity_seed {
-                Some(seed) => aisim_aiperf_workload_runner::execute_with_identity_seed(
-                    &request.run,
-                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
-                    observer.clone(),
-                    seed,
-                    None,
-                ),
-                None => aisim_aiperf_workload_runner::execute(
-                    &request.run,
-                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
-                    observer.clone(),
-                ),
-            }.unwrap();
-            (report, json!({"engine_config":config,"admission_capacity":64,"selection":"unchanged_library_default"}))
+            },
+            &aisimulate_core::replay::ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let report = aisim_aiperf_workload_runner::execute_with_deployment(
+            &request.run,
+            aiperf_clock_runtime::cancellation::RunCancellation::new(),
+            observer.clone(),
+            Box::new(deployment),
+            64,
+            identity_seed.expect("disaggregated differential requires explicit identities"),
+        )
+        .unwrap();
+        (
+            report,
+            json!({"engine_config":config,"topology":"disaggregated","prefill_workers":1,"decode_workers":1}),
+        )
+    } else {
+        match override_config {
+            Some(config) => {
+                let capacity = std::env::var("AISIM_RUNTIME_VALUES_ADMISSION_CAPACITY")
+                    .ok()
+                    .map(|value| value.parse::<usize>().unwrap())
+                    .unwrap_or(config.max_num_seqs);
+                let manifest = json!({"engine_config":config,"admission_capacity":capacity,"selection":"explicit_test_override"});
+                let factory = EngineFactory::new(config).unwrap();
+                let report = match identity_seed {
+                    Some(seed) => aisim_aiperf_workload_runner::execute_with_identity_seed(
+                        &request.run,
+                        aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                        observer.clone(),
+                        seed,
+                        Some((&factory, capacity)),
+                    ),
+                    None => aisim_aiperf_workload_runner::execute_with_engine_factory(
+                        &request.run,
+                        aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                        observer.clone(),
+                        &factory,
+                        capacity,
+                    ),
+                }
+                .unwrap();
+                (report, manifest)
+            }
+            None => {
+                let config = EngineConfig {
+                    timing_model: TimingModelConfig::Fixed {
+                        prefill_ms: 1.0,
+                        decode_ms: 1.0,
+                    },
+                    max_num_seqs: 64,
+                    enable_prefix_caching: false,
+                    enable_chunked_prefill: false,
+                    async_scheduling: Some(false),
+                    ..Default::default()
+                };
+                let report = match identity_seed {
+                    Some(seed) => aisim_aiperf_workload_runner::execute_with_identity_seed(
+                        &request.run,
+                        aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                        observer.clone(),
+                        seed,
+                        None,
+                    ),
+                    None => aisim_aiperf_workload_runner::execute(
+                        &request.run,
+                        aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                        observer.clone(),
+                    ),
+                }
+                .unwrap();
+                (
+                    report,
+                    json!({"engine_config":config,"admission_capacity":64,"selection":"unchanged_library_default"}),
+                )
+            }
         }
-    }};
+    };
     let manifest = json!({
         "format":"aisim-runtime-values-manifest-v1",
         "aisim_source":env!("AISIM_SOURCE_REVISION"),
@@ -121,26 +161,46 @@ fn capture_finite_branch_runtime_values() {
     });
     // Publish through the same format owner as the original offline writer.
     // The byte comparator reads this file directly, without reserialization.
-    let backend_report_bytes = aiperf_report_io::report::serialize_sorted_python_report_json(
-        &report["backend_report"],
-    ).unwrap();
+    let backend_report_bytes =
+        aiperf_report_io::report::serialize_sorted_python_report_json(&report["backend_report"])
+            .unwrap();
     assert_ne!(report["backend_report"], Value::Null);
-    std::fs::write(output_root.join("backend-report.json"), backend_report_bytes).unwrap();
+    std::fs::write(
+        output_root.join("backend-report.json"),
+        backend_report_bytes,
+    )
+    .unwrap();
     let mut per_request_bytes = Vec::new();
-    for record in report["backend_per_request"].as_array().expect("backend request population") {
+    for record in report["backend_per_request"]
+        .as_array()
+        .expect("backend request population")
+    {
         serde_json::to_writer(&mut per_request_bytes, record).unwrap();
         per_request_bytes.push(b'\n');
     }
-    std::fs::write(output_root.join("backend-per-request.jsonl"), per_request_bytes).unwrap();
+    std::fs::write(
+        output_root.join("backend-per-request.jsonl"),
+        per_request_bytes,
+    )
+    .unwrap();
     std::fs::write(output_root.join("run-request.json"), raw.as_bytes()).unwrap();
-    std::fs::write(output_root.join("model-manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
-    std::fs::write(output_root.join("aisim-runtime-values-raw.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    std::fs::write(
+        output_root.join("model-manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        output_root.join("aisim-runtime-values-raw.json"),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
     println!("RUN_REQUEST {}", raw);
     println!("MODEL_MANIFEST {}", manifest);
     println!("RAW_RUNTIME_VALUES {}", report);
     let requests = report["requests"].as_array().unwrap();
     assert!(!requests.is_empty(), "capture must not pass vacuously");
-    let phase_reports = report["native_phase_report"]["reports"].as_array()
+    let phase_reports = report["native_phase_report"]["reports"]
+        .as_array()
         .or_else(|| report["native_phase_report"]["phases"].as_array())
         .expect("native phase report population");
     assert!(!phase_reports.is_empty());

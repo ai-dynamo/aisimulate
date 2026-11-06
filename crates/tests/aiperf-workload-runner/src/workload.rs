@@ -30,11 +30,18 @@ pub(crate) fn default_endpoint_profile(
     run: &aiperf_config::model::BenchmarkRun,
     registry: &aiperf_endpoints::EndpointRegistry,
 ) -> Result<aiperf_endpoints::profile_validation::ValidatedEndpointProfileV2> {
-    let profiles = aiperf_endpoints::profile_validation::validate_endpoint_profiles_v2(run, registry)?;
-    let profile = profiles.into_iter().find(|profile| {
-        profile.profile_id == aiperf_engine_kernel::endpoint_plan::DEFAULT_ENDPOINT_PROFILE_ID
-    }).context("default endpoint profile missing")?;
-    ensure!(!profile.config.use_server_token_count, "offline simulation cannot supply server token counts");
+    let profiles =
+        aiperf_endpoints::profile_validation::validate_endpoint_profiles_v2(run, registry)?;
+    let profile = profiles
+        .into_iter()
+        .find(|profile| {
+            profile.profile_id == aiperf_engine_kernel::endpoint_plan::DEFAULT_ENDPOINT_PROFILE_ID
+        })
+        .context("default endpoint profile missing")?;
+    ensure!(
+        !profile.config.use_server_token_count,
+        "offline simulation cannot supply server token counts"
+    );
     Ok(profile)
 }
 
@@ -73,7 +80,15 @@ pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Hea
     let kind = aiperf_config::model::workload_kind::workload_kind(&run.cfg);
     let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
         .map_err(anyhow::Error::msg)?;
-    Ok(Head { input, raw_input, phases, models, tokenizer, kind, legacy_weka })
+    Ok(Head {
+        input,
+        raw_input,
+        phases,
+        models,
+        tokenizer,
+        kind,
+        legacy_weka,
+    })
 }
 
 pub fn execute(
@@ -82,26 +97,43 @@ pub fn execute(
     observer: Rc<dyn aiperf_timing::PhaseObserver>,
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
     identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
-    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>, usize)>,
+    deployment: Option<(
+        Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>,
+        usize,
+    )>,
 ) -> Result<serde_json::Value> {
     let head = parse_head(run)?;
     if head.kind == aiperf_config::model::workload_kind::WorkloadKind::Graph && !head.legacy_weka {
         let prepared = crate::graph::prepare(
-            run, head.raw_input.get("dataset").context("raw graph dataset missing")?,
-            head.tokenizer.as_ref(), &head.phases,
+            run,
+            head.raw_input
+                .get("dataset")
+                .context("raw graph dataset missing")?,
+            head.tokenizer.as_ref(),
+            &head.phases,
         )?;
-        return crate::graph::execute(run, prepared, head.phases, cancel, observer, model_factory, deployment);
+        return crate::graph::execute(
+            run,
+            prepared,
+            head.phases,
+            cancel,
+            observer,
+            model_factory,
+            deployment,
+        );
     }
     let prep = lower_scheduled(run, &head, cancel.clone(), identity_source)?;
     let clock = Rc::new(SimClock::new());
     let engine = if let Some((deployment, capacity)) = deployment {
         ModelExecution::from_deployment(clock.clone(), deployment, capacity)?
-    } else { match model_factory {
-        Some((factory, capacity)) => {
-            ModelExecution::from_factory(clock.clone(), factory, capacity)?
+    } else {
+        match model_factory {
+            Some((factory, capacity)) => {
+                ModelExecution::from_factory(clock.clone(), factory, capacity)?
+            }
+            None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
         }
-        None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
-    }};
+    };
     let dispatcher = Rc::new(Dispatcher {
         execution: engine.clone(),
         records: RefCell::new(Vec::new()),
@@ -129,7 +161,15 @@ pub(crate) fn lower_scheduled(
     cancel: RunCancellation,
     identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
 ) -> Result<ScheduledPrep> {
-    let Head { input, raw_input, phases, models, tokenizer, kind, legacy_weka } = head;
+    let Head {
+        input,
+        raw_input,
+        phases,
+        models,
+        tokenizer,
+        kind,
+        legacy_weka,
+    } = head;
     let legacy_weka = *legacy_weka;
     let dataset = input.get("dataset").context("dataset missing")?;
     let phases = phases.clone();
@@ -138,59 +178,59 @@ pub(crate) fn lower_scheduled(
         "typed workload {kind:?} has no simulator execution binding"
     );
     let (mut prepared, phases, origins) = if legacy_weka {
-    let raw_dataset: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
-        serde_json::from_str(
-            raw_input
-                .get("dataset")
-                .context("raw dataset missing")?
-                .get(),
+        let raw_dataset: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_str(
+                raw_input
+                    .get("dataset")
+                    .context("raw dataset missing")?
+                    .get(),
+            )?;
+        let traces = acquire(
+            dataset,
+            raw_dataset
+                .get("records")
+                .context("inline records required")?,
         )?;
-    let traces = acquire(
-        dataset,
-        raw_dataset
-            .get("records")
-            .context("inline records required")?,
-    )?;
-    let seed = run.random_seed.unwrap_or(0);
-    let (corpus, hash_namespace) = match dataset
-        .pointer("/prompts/corpus")
-        .and_then(|value| value.as_str())
-    {
-        Some("coding") => (
-            aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?,
-            aiperf_rng::namespace::DATASET_CODING_CONTENT_CORPUS,
-        ),
-        Some("sonnet") => (
-            aiperf_dataset_synthesis::corpus::tokenize_sonnet_corpus(tokenizer.as_ref())?,
-            aiperf_rng::namespace::DATASET_PROMPT_CORPUS,
-        ),
-        _ => anyhow::bail!("proof requires explicit prompts.corpus coding or sonnet"),
-    };
-    ensure!(
-        dataset
-            .get("weka_nested_timestamp_basis")
-            .is_none_or(|basis| basis.is_null() || basis == "auto"),
-        "proof currently supports only automatic nested timestamp basis; explicit absolute/relative is not silently ignored"
-    );
-    let hash_seed = aiperf_rng::PythonRandomGenerator::derive_child_seed(seed, hash_namespace);
-    let prepared = prepare_legacy_agentic(
-        run,
-        &phases,
-        dataset,
-        &traces,
-        corpus.into(),
-        hash_seed,
-        tokenizer.clone(),
-        false,
-    )?;
-    let (phases, origins) = prepare_legacy_agentic_phases(
-        run,
-        &phases,
-        dataset,
-        input["system_idle_gap_cap_seconds"].as_f64(),
-        &prepared,
-    )?;
-    (prepared, phases, origins)
+        let seed = run.random_seed.unwrap_or(0);
+        let (corpus, hash_namespace) = match dataset
+            .pointer("/prompts/corpus")
+            .and_then(|value| value.as_str())
+        {
+            Some("coding") => (
+                aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?,
+                aiperf_rng::namespace::DATASET_CODING_CONTENT_CORPUS,
+            ),
+            Some("sonnet") => (
+                aiperf_dataset_synthesis::corpus::tokenize_sonnet_corpus(tokenizer.as_ref())?,
+                aiperf_rng::namespace::DATASET_PROMPT_CORPUS,
+            ),
+            _ => anyhow::bail!("proof requires explicit prompts.corpus coding or sonnet"),
+        };
+        ensure!(
+            dataset
+                .get("weka_nested_timestamp_basis")
+                .is_none_or(|basis| basis.is_null() || basis == "auto"),
+            "proof currently supports only automatic nested timestamp basis; explicit absolute/relative is not silently ignored"
+        );
+        let hash_seed = aiperf_rng::PythonRandomGenerator::derive_child_seed(seed, hash_namespace);
+        let prepared = prepare_legacy_agentic(
+            run,
+            &phases,
+            dataset,
+            &traces,
+            corpus.into(),
+            hash_seed,
+            tokenizer.clone(),
+            false,
+        )?;
+        let (phases, origins) = prepare_legacy_agentic_phases(
+            run,
+            &phases,
+            dataset,
+            input["system_idle_gap_cap_seconds"].as_f64(),
+            &prepared,
+        )?;
+        (prepared, phases, origins)
     } else {
         let prepared = crate::scheduled::prepare(
             run,
@@ -225,7 +265,15 @@ pub(crate) fn lower_scheduled(
         phases.iter().any(|phase| phase.common().is_warmup()),
     )?;
     prepared.resident_endpoint_binding = Some(binding);
-    Ok(ScheduledPrep { prepared, phases, origins, model: model.clone(), tokenizer: tokenizer.clone(), identity_source, resolver })
+    Ok(ScheduledPrep {
+        prepared,
+        phases,
+        origins,
+        model: model.clone(),
+        tokenizer: tokenizer.clone(),
+        identity_source,
+        resolver,
+    })
 }
 
 /// Build every phase plan against the supplied clock. Plans own all state
@@ -235,7 +283,15 @@ pub(crate) fn build_plans(
     prep: &ScheduledPrep,
     clock: Rc<SimClock>,
 ) -> Result<Vec<aiperf_engine_phase::phase_runtime::ScheduledPhasePlan>> {
-    let ScheduledPrep { prepared, phases, origins, model, tokenizer, identity_source, resolver } = prep;
+    let ScheduledPrep {
+        prepared,
+        phases,
+        origins,
+        model,
+        tokenizer,
+        identity_source,
+        resolver,
+    } = prep;
     let samplers = aiperf_dataset::sampler::SamplerRegistry::with_builtin_strategies()?;
     let factory = PreparedNativeConversationSourceFactory {
         identity_source: identity_source.clone(),
@@ -310,8 +366,7 @@ fn run_with_engine(
     cancel: RunCancellation,
 ) -> Result<serde_json::Value> {
     let mut result = None;
-    let event_source: Rc<dyn aiperf_clock_runtime::clock::driver::SimEventSource> =
-        engine.clone();
+    let event_source: Rc<dyn aiperf_clock_runtime::clock::driver::SimEventSource> = engine.clone();
     drive_sim_with_source(clock.clone(), event_source, |_| async {
         result = Some(
             run_scheduled_phases_with_cancellation(
@@ -374,8 +429,14 @@ fn run_with_engine(
 pub(crate) fn label_occurrences(records: &mut [serde_json::Value]) {
     let mut occurrences = std::collections::BTreeMap::<String, Vec<String>>::new();
     for row in records.iter_mut() {
-        let template = row["request"]["conversation_id"].as_str().unwrap_or("").to_owned();
-        let session = row["request"]["correlation_id"].as_str().unwrap_or("").to_owned();
+        let template = row["request"]["conversation_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        let session = row["request"]["correlation_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
         let sessions = occurrences.entry(template).or_default();
         let occurrence = match sessions.iter().position(|existing| *existing == session) {
             Some(index) => index,

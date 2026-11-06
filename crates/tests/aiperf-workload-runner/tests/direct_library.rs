@@ -41,16 +41,17 @@ fn direct_library_executes_native_scheduled_synthetic_and_conversation_sources()
             "type":"concurrency", "name":"profiling", "exclude_from_results":false,
             "seamless":false, "concurrency":1, "requests":2, "grace_period":1.0
         }]);
-        let native = aiperf_protocol::runner_v2::decode_run_request_v2(
-            &serde_json::to_vec(&frame).unwrap(),
-        ).unwrap();
+        let native =
+            aiperf_protocol::runner_v2::decode_run_request_v2(&serde_json::to_vec(&frame).unwrap())
+                .unwrap();
         let report = aisim_aiperf_workload_runner::execute_with_identity_seed(
             &native.run,
             aiperf_clock_runtime::cancellation::RunCancellation::new(),
             std::rc::Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
             [41; 32],
             None,
-        ).expect("shared native scheduled lowering and actual model execution");
+        )
+        .expect("shared native scheduled lowering and actual model execution");
         let rows = report["requests"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "one request cap governs shared scheduling");
         assert_eq!(report["model_submitted_count"], 2);
@@ -63,10 +64,19 @@ fn direct_library_executes_native_scheduled_synthetic_and_conversation_sources()
             assert_eq!(row["output_token_ids"].as_array().unwrap().len(), 2);
         }
         if frame["run"]["cfg"]["datasets"][0]["format"] == "multi_turn" {
-            assert_eq!(rows[0]["request"]["correlation_id"], rows[1]["request"]["correlation_id"]);
+            assert_eq!(
+                rows[0]["request"]["correlation_id"],
+                rows[1]["request"]["correlation_id"]
+            );
             assert_eq!(rows[1]["request"]["turn_index"], 1);
             assert!(rows[1]["issue_ns"].as_i64().unwrap() >= rows[0]["end_ns"].as_i64().unwrap());
-            assert!(rows[1]["request"]["body"]["messages"].as_array().unwrap().len() > 1);
+            assert!(
+                rows[1]["request"]["body"]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+                    > 1
+            );
         }
     }
 }
@@ -131,10 +141,9 @@ fn authored_corpus_selection_changes_actual_native_request_bodies() {
         let directory = tempfile::tempdir().unwrap();
         let mut frame = request(directory.path());
         frame["run"]["cfg"]["datasets"][0]["prompts"]["corpus"] = json!(corpus);
-        let native = aiperf_protocol::runner_v2::decode_run_request_v2(
-            &serde_json::to_vec(&frame).unwrap(),
-        )
-        .unwrap();
+        let native =
+            aiperf_protocol::runner_v2::decode_run_request_v2(&serde_json::to_vec(&frame).unwrap())
+                .unwrap();
         let report = aisim_aiperf_workload_runner::execute(
             &native.run,
             aiperf_clock_runtime::cancellation::RunCancellation::new(),
