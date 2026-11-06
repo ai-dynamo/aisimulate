@@ -109,6 +109,8 @@ def _engine_args_payload(
     context_length = sample.get(f"{role}_context_length") or sample.get("context_length")
     if context_length is not None:
         payload["max_model_len"] = int(context_length)
+    if role == "agg" and payload["enable_prefix_caching"] and sample.get("fpm_profile") is not None:
+        _add_grouped_prefix_caching(payload, sample, backend_version=backend_version)
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
@@ -203,6 +205,43 @@ def _engine_args_payload(
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
+
+
+def _add_grouped_prefix_caching(payload: dict[str, Any], sample: dict[str, Any], *, backend_version: str) -> None:
+    """Give a grouped FPM rank with prefix caching the keys that the Rust gate needs, after the shared check."""
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+    from ..config.engine import grouped_prefix_caching_requirements
+
+    profile = load_fpm_profile(sample["fpm_profile"])
+    # A profile without grouped deployments keeps its candidate path as it was.
+    if all(deployment.resources.cache_layout != "grouped" for deployment in profile.deployments):
+        return
+    deployment = profile.select(
+        model=str(sample["model_name"]),
+        system=_role_hardware_sku(sample, "agg"),
+        backend=str(sample["backend"]),
+        backend_version=backend_version,
+        tp_size=int(sample["tp"]),
+        pp_size=int(sample["pp"]),
+        attention_dp_size=int(sample["attention_dp"]),
+        moe_tp_size=int(sample["moe_tp"]),
+        moe_ep_size=int(sample["moe_ep"]),
+    )
+    if deployment.resources.cache_layout != "grouped":
+        return
+    # The search gate checks the largest budget of the domain. Each candidate is checked with its own, before replay.
+    payload["prefix_match_unit"] = grouped_prefix_caching_requirements(
+        deployment,
+        backend_version=backend_version,
+        architecture=profile.architecture,
+        prefix_match_unit=None,
+        max_batched_tokens=int(sample["agg_max_num_batched_tokens"]),
+        field="agg_enable_prefix_caching",
+    )
+    payload["vllm_version"] = deployment.backend_version
+    # vLLM always sizes its pool with a model length, and the Rust gate refuses a rank without one.
+    payload.setdefault("max_model_len", profile.context_length)
 
 
 def _profile_kv_args(sample: dict[str, Any], role: str, backend_version: str) -> dict[str, Any]:

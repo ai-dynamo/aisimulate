@@ -21,6 +21,7 @@ from typing import Any
 import yaml
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.engine import grouped_prefix_caching_requirements
 
 from .config_profile import _cache_group_shapes, linear_block_size, linear_runtime_resources
 from .fpm import fpm_cli_args
@@ -148,8 +149,23 @@ def _configs(
     if request.fpm_profile is not None:
         engine["fpm_profile"] = request.fpm_profile.model_dump(mode="json")
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
-        if request.profile_deployment().resources.cache_layout == "grouped":
-            worker.setdefault("kv_cache", {})["prefix_caching"] = False
+        deployment = request.profile_deployment()
+        resources = deployment.resources
+        if resources.cache_layout == "grouped":
+            # Replay reuses prefixes only when the deployment passes the grouped prefix-caching requirements that the
+            # prediction checks. Otherwise the plan keeps the cold replay.
+            try:
+                grouped_prefix_caching_requirements(
+                    deployment,
+                    backend_version=deployment.backend_version,
+                    architecture=request.fpm_profile.architecture,
+                    prefix_match_unit=None,
+                    max_batched_tokens=worker["scheduler"]["max_batched_tokens"],
+                )
+                prefix_caching = True
+            except ValueError:
+                prefix_caching = False
+            worker.setdefault("kv_cache", {})["prefix_caching"] = prefix_caching
         else:
             # Replay of a linear profile with runtime probe evidence uses the measured block size.
             observed = _probe_observed_resources(request)

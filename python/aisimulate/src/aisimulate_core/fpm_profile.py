@@ -127,8 +127,10 @@ class FpmRuntimeMemoryProfile(_ProfileModel):
     This capacity already accounts for runtime graph and workspace reservations.
     It is not a non-KV memory limit and must not be rescaled to another setting.
     The three optional prefix-caching fields record the settings that the probe
-    ran with. They are evidence only: selection, sizing and replay do not read
-    them, and the simulated deployment decides prefix caching.
+    ran with. Selection and sizing do not read them. Grouped prefix caching
+    needs a probe that ran with prefix caching, and replay then hashes prompts
+    in blocks of ``hash_block_size_tokens``. For a linear profile, the
+    simulated deployment decides prefix caching.
     """
 
     kv_cache_bytes: Annotated[int, Field(gt=0, le=2**53)]
