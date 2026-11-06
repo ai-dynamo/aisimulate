@@ -122,7 +122,7 @@ struct Mailbox {
 }
 struct State {
     engine: Option<Engine>,
-    deployment: Option<Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>>,
+    deployment: Option<Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>>,
     pending: Option<(PassId, f64, i64)>,
     requests: BTreeMap<u128, Rc<Mailbox>>,
     active: BTreeSet<u128>,
@@ -228,7 +228,7 @@ impl ModelExecution {
     /// Bind a native deployment with its own placement, P/D handoff and collector.
     pub fn from_deployment(
         clock: Rc<SimClock>,
-        mut deployment: Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>,
+        mut deployment: Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>,
         capacity: usize,
     ) -> Result<Rc<Self>, ExecutionError> {
         if capacity == 0 || capacity > Semaphore::MAX_PERMITS || !deployment.is_idle() {

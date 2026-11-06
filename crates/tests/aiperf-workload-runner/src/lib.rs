@@ -85,7 +85,7 @@ pub fn execute_with_deployment(
     run: &aiperf_config::model::BenchmarkRun,
     cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
     observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
-    deployment: Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>,
+    deployment: Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>,
     admission_capacity: usize,
     identity_seed: [u8; 32],
 ) -> anyhow::Result<serde_json::Value> {

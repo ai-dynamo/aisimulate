@@ -339,7 +339,7 @@ pub(crate) fn execute(
     run: &aiperf_config::model::BenchmarkRun, input: PreparedRunnerGraphInput,
     phases: Vec<aiperf_protocol::protocol_dto::PhaseSpec>, cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
     observer: Rc<dyn aiperf_timing::PhaseObserver>, model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
-    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>, usize)>,
+    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>, usize)>,
 ) -> Result<serde_json::Value> {
     let clock = Rc::new(SimClock::new());
     let model = if let Some((deployment, capacity)) = deployment {

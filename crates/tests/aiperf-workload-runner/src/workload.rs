@@ -48,7 +48,7 @@ pub fn execute(
     )>,
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
     identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
-    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>, usize)>,
+    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>, usize)>,
 ) -> Result<serde_json::Value> {
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
