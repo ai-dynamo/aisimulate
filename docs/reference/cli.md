@@ -245,8 +245,12 @@ the raw objective values in `objectives`. Use `recommendation.json` for the comp
 
 Normal prediction output includes timing provenance without `--detail`. The
 `prediction_provenance` summary maps each worker role to its effective `estimator`,
-`timing_source`, and `data_version`. Operation-level AIC timing reports the resolved
+`timing_source`, `data_version` and `database_mode`. Operation-level AIC timing reports the resolved
 performance-database backend version, including resolution of version aliases.
+`database_mode` is the selected performance-database mode of the `op_level` and
+`fpm_interpolation` estimators, for example `HYBRID` after automatic selection
+degraded a `SILICON` request over a missing linear-attention table; `fpm_regression`
+and `fpm_learned` report null, and fixed/polynomial timing omits the key.
 FPM estimators report the resolved profile revision as `data_version` and preserve
 the profile model/revision in `data_identity`. Without a profile revision, they
 report a null version with a reason. Fixed/polynomial timing also has no data
