@@ -1653,11 +1653,21 @@ mod tests {
     #[test]
     fn hicache_load_survives_cancellation_and_split_with_matching_event_hashes() {
         let (mut manager, sink) = hicache_manager(16, 0.0, 1.0);
+        // The device event view must track resident device pages through every transition.
+        let (mut seen_events, mut router) = (0, std::collections::HashSet::new());
+        let mut check_router = |manager: &mut SglangKvManager| {
+            manager.flush_events();
+            apply_router_events(&sink, &mut seen_events, &mut router);
+            assert_router_matches_tree(manager, &router);
+            router.len()
+        };
         let tokens = (0..20).collect::<Vec<_>>();
         let cached = manager.allocate_for_request(&tokens[..16]).unwrap();
         manager.finish(&tokens[..16], cached.lease);
         manager.complete_host_boundary(0.0);
+        assert_eq!(check_router(&mut manager), 4);
         manager.evict(16);
+        assert_eq!(check_router(&mut manager), 0);
         let mut lease = lease_with_hashes(&tokens, 4);
         assert_eq!(
             manager.admission_host_match(&mut lease, 4),
@@ -1669,6 +1679,7 @@ mod tests {
         manager.begin_host_pass(1.0);
         assert_eq!(manager.load_host_prefix(&lease, &tokens, 16, 24), Some(16));
         assert_eq!(manager.host_load_end_ms(), 5.0);
+        assert_eq!(check_router(&mut manager), 4);
         assert_eq!(
             manager.allocate_for_request_lease_capped(&tokens, &mut lease, 16),
             Some(16)
@@ -1678,13 +1689,16 @@ mod tests {
             manager.allocate_for_request_lease(&tokens[..8], &mut second),
             Some(8)
         );
+        assert_eq!(check_router(&mut manager), 4);
         manager.abort(lease);
         manager.abort(second);
         manager.evict(64);
         assert_eq!(manager.cache.protected_size, 16);
+        // The cancelled load keeps its reloaded pages resident until the transfer completes.
+        assert_eq!(check_router(&mut manager), 4);
         manager.advance_host(5.0);
         manager.evict(64);
-        manager.flush_events();
+        assert_eq!(check_router(&mut manager), 0);
         assert_eq!(manager.cache.available_tokens(), 64);
         assert_eq!(manager.cache.protected_size, 0);
         let events = sink.clone_events();
@@ -2467,7 +2481,11 @@ mod tests {
         router: &mut std::collections::HashSet<SequenceHash>,
     ) {
         let events = sink.clone_events();
-        for event in &events[*seen_events..] {
+        // HostPinned events track HiCache's host copy, not device residency.
+        for event in events[*seen_events..]
+            .iter()
+            .filter(|event| event.tier == KvEventTier::Device)
+        {
             match &event.data {
                 KvEventData::Stored(stored) => {
                     if let Some(parent_hash) = stored.parent_hash {
@@ -2491,7 +2509,7 @@ mod tests {
     }
 
     /// The router view must equal the chained hashes of the radix tree's pages,
-    /// and only tree pages may carry a hash.
+    /// and only tree pages may carry a hash. Host-only HiCache edges have no pages.
     fn assert_router_matches_tree(
         mgr: &SglangKvManager,
         router: &std::collections::HashSet<SequenceHash>,
