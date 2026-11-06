@@ -668,7 +668,8 @@ fn grid_hold(
 }
 
 /// 1-D curve past the sweep end: hold the k_tail-median boundary util; power
-/// is the median of the tail anchors' powers (intensive, not SOL-rescaled).
+/// is the median of the tail anchors' powers (intensive, not SOL-rescaled),
+/// NaN when any tail anchor has none ([`hold_power`]).
 fn grid_hold_1d(
     cfg: &OpInterpConfig,
     data: &Node,
@@ -712,7 +713,7 @@ fn grid_hold_1d(
     if !(sol_q.is_finite() && sol_q > 0.0) {
         return Err(miss(cfg, coords, "non-positive SOL at query"));
     }
-    Ok((sol_q / median(&mut utils), median(&mut powers)))
+    Ok((sol_q / median(&mut utils), hold_power(&mut powers)))
 }
 
 /// One selected hold anchor: a measured leaf with its blend weight.
@@ -985,6 +986,17 @@ fn median(values: &mut [f64]) -> f64 {
         values[n / 2]
     } else {
         (values[n / 2 - 1] + values[n / 2]) / 2.0
+    }
+}
+
+/// Boundary-hold power: the median of the anchors' powers, or NaN
+/// (uncovered) when any anchor has no power (AISIM-1973 P6). `median` sorts
+/// NaN last, so it would otherwise borrow a finite power from the others.
+fn hold_power(powers: &mut [f64]) -> f64 {
+    if powers.iter().all(|p| p.is_finite()) {
+        median(powers)
+    } else {
+        f64::NAN
     }
 }
 
@@ -1404,7 +1416,7 @@ impl SiteIndex {
             if !(sol_q.is_finite() && sol_q > 0.0) {
                 return Err(miss(cfg, coords, "non-positive SOL at query"));
             }
-            return Ok((sol_q / median(&mut utils), median(&mut powers)));
+            return Ok((sol_q / median(&mut utils), hold_power(&mut powers)));
         }
 
         let (c_lo, leaf_lo) = curve[idx - 1];
@@ -2156,6 +2168,57 @@ mod tests {
         let held = query_value(&cfg, &t, &[4096.0, 4096.0, 1024.0]).unwrap();
         approx(held.power, 30.0); // median of [20, 30, 40]
         approx(held.energy, 30.0 * held.latency);
+    }
+
+    /// AISIM-1973 P6: a boundary hold whose selected anchors include one with
+    /// unknown (NaN) power holds NaN power; latency is bit-identical to the
+    /// all-powered tail. A NaN anchor outside the k_tail tail is not selected,
+    /// so the median power stays finite.
+    #[test]
+    fn boundary_hold_power_is_nan_when_any_tail_anchor_is_unpowered() {
+        let lat1 = |c: &[f64]| 0.001 * c[0];
+        let sol: &dyn Fn(&[f64]) -> f64 = &lat1;
+        let grid_cfg = OpInterpConfig {
+            axes: &["size"],
+            resolver: Resolver::Grid {
+                k_tail: 3,
+                nn_leaves: 4,
+            },
+            sol_fn: sol,
+            value_transform: ValueTransform::Raw,
+            transform_axis: None,
+        };
+        let site_cfg = gemm_cfg(&gemm_lat);
+        let grid = |powers: [f64; 4]| {
+            let mut t = Node::branch();
+            for (sz, p) in [1024u32, 2048, 4096, 8192].into_iter().zip(powers) {
+                t.insert_value(&[sz], LeafValue::with_power(lat1(&[sz as f64]), p));
+            }
+            query_value(&grid_cfg, &t, &[65536.0]).unwrap()
+        };
+        let site = |powers: [f64; 4]| {
+            let mut t = Node::branch();
+            for (m, p) in [16u32, 32, 64, 128].into_iter().zip(powers) {
+                let lat = gemm_lat(&[m as f64, 4096.0, 1024.0]);
+                t.insert_value(&[m, 4096, 1024], LeafValue::with_power(lat, p));
+            }
+            query_value(&site_cfg, &t, &[4096.0, 4096.0, 1024.0]).unwrap()
+        };
+        let holds: [&dyn Fn([f64; 4]) -> LeafValue; 2] = [&grid, &site];
+        for hold in holds {
+            // Tail = the last three anchors, powers [20, 30, 40] -> median 30.
+            let powered = hold([10.0, 20.0, 30.0, 40.0]);
+            approx(powered.power, 30.0); // blend_power = energy / latency
+            // An unselected NaN anchor leaves the tail fully powered.
+            approx(hold([f64::NAN, 20.0, 30.0, 40.0]).power, 30.0);
+            // One selected anchor unpowered: NaN power, unchanged latency.
+            let partial = hold([10.0, 20.0, f64::NAN, 40.0]);
+            assert!(
+                partial.power.is_nan() && partial.energy.is_nan(),
+                "{partial:?}"
+            );
+            assert_eq!(partial.latency.to_bits(), powered.latency.to_bits());
+        }
     }
 
     #[test]
