@@ -457,7 +457,7 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention, supported short-convolution state and fixed per-request state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Runtime observation import does not accept their cache groups yet. The measured Kimi K3 profile route in the table below is not affected.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention, supported short-convolution state and fixed per-request state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Runtime observation import on vLLM 0.31.0 maps their recurrent-state and one-block-per-request cache specs to `state` groups. The measured Kimi K3 profile route in the table below is not affected.
 
 ### Parallelism support and guided CLI coverage
 
@@ -746,7 +746,7 @@ Import checks each kind of claim against the measured groups:
 - A `cache_groups` claim must have the same groups as the measurement: the same
   kinds, layer counts, block sizes, page sizes and windows. Import does not
   compare group names or order. A group without a `sliding_window` has a null
-  window.
+  window. A state group also compares its `blocks_per_request`.
 - A `cache_layout: grouped` claim matches the grouped measurement.
 - A `cache_layout: linear` claim needs every measured group to be an attention
   group without a window.
@@ -760,8 +760,8 @@ both values and stops that configuration.
 For a `cache_layout: linear` or `kv_bytes_per_token` claim, import gives the
 measured bytes per token. If these are not a whole number, import says that no
 integer claim can match. If the measurement has no per-token cache size, import
-names the first measured group that has a window or convolution state. Correct
-or remove the override. If the runtime changed, run
+names the first measured group that has a window, convolution state or fixed
+per-request state. Correct or remove the override. If the runtime changed, run
 `onboard probe-runtime` again. Import also compares the scheduler limits and
 the precision with the probe's values. Provenance records each override that
 matches as checked against the probe.
@@ -799,11 +799,11 @@ have one integer per layer. The declared `num_hidden_layers` must be a positive
 integer; fractional counts are rejected rather than rounded or truncated.
 Conflicting window fields and encoder-decoder configs also fail.
 
-One limit applies today. Runtime observation import accepts only vLLM
-`FullAttentionSpec` and `SlidingWindowSpec` cache groups, so a probe whose
-runtime reports another cache spec, such as vLLM's `MambaSpec` for its Mamba,
-Gated DeltaNet and KDA layers, is imported as incomplete with a diagnostic
-naming the spec, and no profile draft is written.
+On vLLM 0.27.0 and 0.28.0, runtime observation import
+accepts only vLLM `FullAttentionSpec` and `SlidingWindowSpec` cache groups. A
+probe whose runtime reports another cache spec, such as vLLM's `MambaSpec` for
+its Mamba, Gated DeltaNet and KDA layers, is imported as incomplete. The
+diagnostic names the spec, and no profile draft is written.
 
 The direct `collector --fpm` path detects these layouts with the same markers.
 The rule for unrecognized architectures applies only at intake. No FPM attention
@@ -824,11 +824,10 @@ that names no architecture. Onboarding passes the profile's architecture with
 `--model-architecture`, so the second example differs only on the direct
 collector path.
 
-The FPM profile can hold per-request state groups, as described in
-[grouped cache review](#review-grouped-cache-resources). Planned work covers
-importing cache groups other than full or sliding attention, including runtime
-state groups, and guided collection for these layouts. Until then, use a
-qualified model-specific collection path and verified cache profile.
+The FPM profile holds per-request state groups, and the vLLM 0.31.0 runtime
+probe imports them. Guided collection for these layouts is planned.
+Until then, use a qualified model-specific collection path and verified cache
+profile.
 
 ### Review grouped cache resources
 
@@ -1383,7 +1382,7 @@ Save source research and outstanding questions after each meaningful finding wit
 
 ### Choose or author the instrumentation bundle
 
-Omit `--instrumentation` for the audited bundled vLLM 0.27.0 adapter. For the inspected vLLM 0.28.0/Dynamo build, export the complete [campaign-local example](../../../python/aisimulate/collector/fpm_forward/runtime/vllm-0.28.0.example.json) into a fresh directory:
+Omit `--instrumentation` for the audited bundled vLLM 0.27.0 and 0.31.0 adapters. For the inspected vLLM 0.28.0/Dynamo build, export the complete [campaign-local example](../../../python/aisimulate/collector/fpm_forward/runtime/vllm-0.28.0.example.json) into a fresh directory:
 
 ```bash
 python - <<'PY'
@@ -1400,6 +1399,10 @@ PY
 ```
 
 Run the export with Python from the installed AISimulate environment. In a source checkout, set `PYTHONPATH=python/aisimulate` when running it from the repository root. The example contains runnable worker/scheduler adapters, source notes and exact installed-source hashes. Its [source audit](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/vllm-0.28.0.md) identifies the inspected immutable image. Inspect your image's actual source before using it. A mismatch produces unresolved evidence with the observed hashes; investigate the patch and update its mapping/tests before creating a new bundle. Source inspection and CPU fakes establish implementation readiness. Only a successful live probe and independent import establish evidence for your selected campaign.
+
+The bundled vLLM 0.31.0 adapter reads the 0.31.0 allocation model. Each cache tensor lists its `layers` and has a `layer_stride`, and every layer view has the block axis first. Tensors of different groups can share bytes only for the same block ID, because a block ID belongs to one group at a time. The adapter maps `MambaSpec`, `KpoolTailSpec` and `CircularBufferSpec` to `state` groups with `blocks_per_request` from the spec. This is the steady count: the blocks that a running request holds between block boundaries. It is `1 + k` for a `MambaSpec` with `k` speculative blocks in both Mamba cache modes, and 1 for the other two classes. In align mode, vLLM's startup sizing counts `2 + k + c` blocks per `MambaSpec` group, where `c` is the number of prefill checkpoint blocks. After a request crosses a block boundary in align mode, a `MambaSpec` group also holds the previous state block for one or two steps. The block stays for two steps with async scheduling, which vLLM 0.31.0 turns on by default, and for one step without it. The steady count leaves out the startup count and the previous block. The adapter reports a spec class that no cache kind models, such as `RSWASpec`, and HiSparse placement as unsupported. It records `enable_prefix_caching`, `mamba_cache_mode` and the hash block size per phase. Import stores these values for every phase in the provenance, because a decode phase can turn prefix caching off for its measurement. The runtime memory record holds the values of the first phase that the role collects: prefill for an aggregated or prefill role, decode for a decode role. Import refuses `mamba_cache_mode: all`, which no cache kind models, and the runner rejects a backend policy that passes `--mamba-cache-mode` while it observes memory. A probe of a `Glm5NextForConditionalGeneration` model adds `--language-model-only`, so it measures the cache capacity of the text decoder that collection loads. As an example, the GB300 probes of 2026-11-02 and 2026-11-04 observed GLM-5.3-Flash at TP 4. They recorded one attention group of 22 layers and five state groups of one block each. With an `fp8_e4m3` KV cache, the pool block is 13,045,120 bytes. The source audit gives the same values.
+
+Import checks the `kv_cache_max_concurrency` that each vLLM 0.31.0 scheduler records against the cache groups of that scheduler. vLLM divides the pool blocks by the blocks that its startup sizing counts for one request at `max_model_len` in all groups. For a full-attention group, it counts `max_model_len` divided by the block size, rounded up. For a `MambaSpec` group, it counts `2 + k + c` blocks in align mode and `1 + k` blocks in `none` mode. For a `KpoolTailSpec` or `CircularBufferSpec` group, it counts 1 block. Import refuses a record whose concurrency gives another count. A layout with a sliding-window group keeps the other checks only. vLLM's count for such a group also covers the tokens in flight, which this check does not model.
 
 For another pin, create a fresh bundle using the same public manifest fields. This abbreviated template illustrates the structure; replace the revision and hashes with inspected values and declare every imported adapter file:
 
@@ -1425,7 +1428,7 @@ Use the [runnable hooks](../../../python/aisimulate/collector/fpm_forward/runtim
 
 New launches verify the frozen bundle's bytes and import its declared modules from their exact paths, including in spawned workers. For a campaign-local adapter, include `instrumentation_binding: observed_binding()` in every worker and scheduler observation after the native lifecycle hook, importing `observed_binding` from the collector's `fpm_runtime_instrumentation` entrypoint. The bundled observer demonstrates this call. Do not copy the launch's declared binding as evidence: missing receipts or contradictory imported sources leave memory import incomplete. Saved campaigns without this binding remain readable with `import_binding: unverified_legacy`; resuming them does not retroactively verify their imports or rewrite their bundles.
 
-The runner supplies `AISIMULATE_RUNTIME_CONTEXT`, `AISIMULATE_RUNTIME_INSTRUMENTATION` and `AISIMULATE_RUNTIME_OBSERVATION_DIR`. The context binds attempt, configuration, phase, bundle, exact launch facts and expected ranks. Worker files use `schema_version: aisimulate-runtime-observation/v1`, the same binding, `kind: worker`, DP/TP/PP coordinates, actual runtime/config/hardware evidence, a lifecycle record, raw cache data and `unresolved_fields`. Schedulers use `kind: scheduler`, a DP coordinate and null TP/PP coordinates. They report initial free blocks, null/permanent reservation IDs and group-to-pool mapping.
+The runner supplies `AISIMULATE_RUNTIME_CONTEXT`, `AISIMULATE_RUNTIME_INSTRUMENTATION` and `AISIMULATE_RUNTIME_OBSERVATION_DIR`. The context binds attempt, configuration, phase, bundle, exact launch facts and expected ranks. Worker files use `schema_version: aisimulate-runtime-observation/v1`, the same binding, `kind: worker`, DP/TP/PP coordinates, actual runtime/config/hardware evidence, a lifecycle record, raw cache data and `unresolved_fields`. Schedulers use `kind: scheduler`, a DP coordinate and null TP/PP coordinates. They report initial free blocks, null/permanent reservation IDs and group-to-pool mapping. A vLLM 0.31.0 scheduler also records the scheduler block size, the hash block size and the Mamba cache mode. It records the startup capacity too, as `kv_cache_size_tokens` and `kv_cache_max_concurrency`.
 
 A worker's physical view has this shape (illustrative values, not model geometry):
 
@@ -1441,7 +1444,7 @@ A worker's physical view has this shape (illustrative values, not model geometry
 }
 ```
 
-Retain real shapes and byte strides, including KV-plane-first layouts. Obtain the block axis and kernel block size from the initialized backend; do not guess an axis because its length happens to equal the pool block count. Record backing storages once and every allocation's full storage size, declared `shared_by`, byte offset and packed block stride. Read the runtime spec's padded page size rather than reconstructing an older formula. Keep full/sliding/convolution retention distinct, report unknown specs, and require vLLM 0.28's `extra_retained_tokens` to be explicitly zero for this representation. Hash the actual loaded config file, not the host-side planning copy; config identity does not attest checkpoint weight contents.
+Retain real shapes and byte strides, including KV-plane-first layouts. On vLLM 0.27.0 and 0.28.0, obtain the block axis from the initialized backend. On vLLM 0.31.0 every view has the block axis first, and the adapter checks the view length against the block count. Do not guess an axis because its length happens to equal the pool block count. Take the kernel block size from the initialized model runner. On vLLM 0.31.0, an MLA indexer view takes its storage block size instead, and a Mamba view takes the group block size. Record backing storages once. Record every allocation's full storage size, declared `shared_by` (0.27.0 and 0.28.0) or `layers` and `layer_stride` (0.31.0), byte offset and packed block stride. Read the runtime spec's padded page size rather than reconstructing an older formula. Keep full/sliding/convolution retention distinct, keep state groups distinct, report unknown specs, and require vLLM 0.28's `extra_retained_tokens` to be explicitly zero for this representation. Hash the actual loaded config file, not the host-side planning copy; config identity does not attest checkpoint weight contents.
 
 ### Preview, execute, import and review
 
@@ -1474,11 +1477,11 @@ aisimulate onboard import-observations \
 
 Use the [existing Slurm or Kubernetes deployment prerequisites](#choose-the-collection-executor), including required mounts and a caller-owned Slurm allocation. Every selected configuration runs the phases required by its role, covering all worker ranks and one scheduler per DP rank; explicit aggregated and role-less historical requests run both prefill and decode. Sampling caps limit diagnostic points; they do not shrink the reviewed context, scheduler limits, memory fraction or capture settings. Use `--resume --execute` with the same inputs to continue an interrupted probe. Instrumentation or runtime-setting changes require a fresh compatible attempt/output; retain failed evidence.
 
-`observations.json` is a runner-owned index of immutable launch manifests, frozen bundles and raw artifacts. CPU import rechecks their hashes, exact identity/build/precision/settings, ranks and lifecycle, actual tensor/storage accounting, retention and pool reservations. It compares compatible phases/ranks and retains their individual values before taking the limiting usable capacity. An observer's `passed` or `status` field cannot authorize a profile.
+`observations.json` is a runner-owned index of immutable launch manifests, frozen bundles and raw artifacts. CPU import rechecks their hashes, exact identity/build/precision/settings, ranks and lifecycle, actual tensor/storage accounting, retention and pool reservations. It compares compatible phases/ranks and retains their individual values before taking the limiting usable capacity. For vLLM 0.31.0 records, it also retains the prefix-caching values of each phase. An observer's `passed` or `status` field cannot authorize a profile.
 
 Import writes a validation result for every selected configuration and fresh `request.yaml`/`fpm-model-profile.json` drafts for complete configurations. Partial success is preserved and the command exits nonzero for any incomplete configuration. It registers evidence and drafts in the same checkpoint without accepting them or overwriting prior accepted profiles. Present each complete draft for the existing [review/edit/accept workflow](#preserve-partial-profile-review). Preserve observed values and provenance when recording user overrides. For a linear profile, a `kv_cache_bytes` override must be a whole multiple of the smallest capacity that fills whole cache blocks in every measured group. vLLM allocates whole blocks. Runtime-affecting edits require a fresh compatible probe. Bundle/evidence changes invalidate dependent acceptance and collection references while preserving history.
 
-After acceptance, continue ordinary planning and formal timing collection. Observed memory/layout does not establish timing availability, query coverage or serving accuracy. Formal collection automatically inherits the imported profile’s verified bundle and launch evidence; no extra public instrumentation flag is needed on `collect-fpm`. Its deployment options must match the accepted probe. After collection, `runtime-compatibility.json` checks the actual runtime, group geometry and usable capacity against that accepted bound. The existing timing publication and accuracy stages still apply.
+After acceptance, continue ordinary planning and formal timing collection. Observed memory/layout does not establish timing availability, query coverage or serving accuracy. Formal collection automatically inherits the imported profile’s verified bundle and launch evidence; no extra public instrumentation flag is needed on `collect-fpm`. Its deployment options must match the accepted probe. After collection, `runtime-compatibility.json` checks the actual runtime, group geometry and usable capacity against that accepted bound. For vLLM 0.31.0 records, it also checks the prefix-caching values of each phase against the accepted probe. The existing timing publication and accuracy stages still apply.
 
 #### Bind independently collected phases to an accepted profile
 
@@ -1518,7 +1521,7 @@ Explicit bindings also review these archived collection controls under `/collect
 
 The environment controls above must each appear at most once as an exact `{name, value}` entry. Their absence from the probe is recorded as `{ "missing": true }`, without inferring a historical default. All remaining backend policy and deployment fields pass the strict launch comparison, including `DYN_BENCH_KV_WARMUP` and `DYN_BENCH_PREFILL_REAL_SEED`; unknown CLI or environment overrides fail. Collection-control review authorizes only a memory compatibility comparison. It does not establish timing or measurement equivalence: preserve the original source artifacts and independently require the ordinary timing, measurement-quality and repeatability checks. No archived policy or request is rewritten.
 
-Each phase is independently checked under its own frozen launch and instrumentation, including artifact containment and hashes, worker/scheduler ranks, tensor geometry and physical capacity. The serving role qualifies only after every required phase passes against the same accepted profile. A Hugging Face repository name and its exact local snapshot spelling can compare as the same model only after their immutable revision, configuration hash and sidecar hashes agree and each observed spelling independently passes the checkpoint-path validator. The report retains those spelling differences and original runtime settings. Other effective settings and geometry remain exact; every phase/rank must provide at least the accepted usable capacity.
+Each phase is independently checked under its own frozen launch and instrumentation, including artifact containment and hashes, worker/scheduler ranks, tensor geometry and physical capacity. For vLLM 0.31.0 records, the prefix-caching values of each bound phase must match the same phase of the accepted probe. The serving role qualifies only after every required phase passes against the same accepted profile. A Hugging Face repository name and its exact local snapshot spelling can compare as the same model only after their immutable revision, configuration hash and sidecar hashes agree and each observed spelling independently passes the checkpoint-path validator. The report retains those spelling differences and original runtime settings. Other effective settings and geometry remain exact; every phase/rank must provide at least the accepted usable capacity.
 
 The result contains per-phase `provenance`, original `binding` and compatibility details, the minimum compatible capacity, and an absolute `inputs` list of byte hashes for all consulted source, plan, checkpoint, index, launch, raw and instrumentation files. Save the report separately and recheck those inputs before subsequent CPU prediction or publication. Distinct historical attempts remain distinct; do not merge indexes, rewrite old labels or modify accepted values to make a comparison pass. This compatibility report does not change profile acceptance, timing measurements, estimator behavior, repeatability policy or accuracy qualification.
 
@@ -1527,7 +1530,7 @@ The result contains per-phase `provenance`, original `binding` and compatibility
 | Missing or duplicate ranks | Actual launched worker/DP counts, process failures and per-rank logs. Never fill a missing rank with another rank's record. |
 | Missing warm-up/capture evidence | Native initialization failure, incomplete lifecycle hooks, or an unobserved capture outcome. Requested graph settings alone are insufficient. |
 | Source/config hash mismatch | Installed vendor patches, selected backend source, actual model-cache mount and loaded revision. Preserve both hashes and the old attempt. |
-| Storage/alias/padding mismatch | Actual untyped storage, byte strides/offsets, backend block axis and runtime `shared_by` declarations. Do not flatten groups or count shared storage twice. |
+| Storage/alias/padding mismatch | Actual untyped storage, byte strides/offsets, backend block axis and runtime `shared_by` or `layers` declarations. Do not flatten groups or count shared storage twice. |
 | Retention/pool mismatch | Unsupported spec, additional retained tokens, reservations, multiple pools, watermark, compressed storage or offload. A positive byte count does not make these semantics representable. |
 | Phase/rank graph disagreement | Effective settings and native graph resolution across all ranks and required phases of the same request. Keep the raw records and rerun with the intended serving policy. Separate prefill and decode requests may intentionally use different graph settings. |
 

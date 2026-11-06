@@ -132,7 +132,9 @@ field is left out of the serialized record. `align` requires
 `enable_prefix_caching` to be `true`. vLLM's `all` mode is not modeled and is
 rejected. Rust exports the mode type as `FpmMambaCacheMode`. These fields are
 evidence of the probe's settings. Selection, sizing and replay do not read them
-yet. The simulated deployment decides prefix caching.
+yet. The simulated deployment decides prefix caching. The vLLM 0.31.0 runtime
+probe fills these fields from the prefill phase of an aggregated or prefill
+role. A decode role takes them from its decode phase.
 
 Each group has a unique `name`, `kind` (`attention`, `convolution` or `state`),
 positive `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional

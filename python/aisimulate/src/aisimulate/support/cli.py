@@ -638,7 +638,10 @@ def _review_config_profile(
         print("  Synthetic validation traffic and SLAs do not determine these collection limits.")
         print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
         if draft.resolved.get("cache_layout") == "grouped":
-            print("  Grouped pages retain full history or the declared window, with separate convolution state.")
+            print(
+                "  Grouped pages retain full history or the declared window. "
+                "State groups hold a fixed block count per request."
+            )
             print("  Group page_size_bytes sums every group layer per rank; verify runtime block sizes and padding.")
             print(
                 "  Config-derived pages are minimum packed tensor estimates; edit cache_groups for runtime allocation."
@@ -648,16 +651,26 @@ def _review_config_profile(
         memory = request.profile_deployment().resources
         print(f"  Memory source: {memory.memory_source}.")
         if not memory.memory_ready:
+            from collector.fpm_forward.bundled_instrumentation import bundled_instrumentation
+
             print("  No activation or non-KV byte estimate is required.")
             print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
-            if request.identity.framework_version == "0.27.0":
-                print("  Memory is observed during initialized vLLM 0.27.0 collection.")
+            version = request.identity.framework_version
+            # Collection observes pending memory only on vLLM 0.27.0 (collector runner._observe_runtime_memory
+            # and support/plan.py). Another bundled version observes pending memory in runtime probes only.
+            if version == "0.27.0":
+                print(f"  Memory is observed during initialized vLLM {version} probes and collection.")
                 print(
                     "  Collection policy: synchronous scheduling in both phases, "
                     "matching supported prefill benchmarking."
                 )
+            elif bundled_instrumentation(version) is not None:
+                print(f"  Memory is observed during initialized vLLM {version} probes only.")
             else:
-                print("  Memory observation currently supports vLLM 0.27.0; this version can collect timings only.")
+                print(
+                    "  Memory observation needs a bundled or campaign-local instrumentation bundle for this vLLM "
+                    "version. Without one, this version can collect timings only."
+                )
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
         if draft.resolved.get("comm_quant_mode") != "half":
@@ -927,8 +940,10 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
     # matching per-token size then gives back a linear profile.
     if draft.layout_markers:
         lines.append(
-            "Importing cache groups other than full or sliding attention (for example recurrent state) is not "
-            "supported yet. Import reports such probes as incomplete."
+            "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from "
+            "vLLM 0.31.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, "
+            "as unsupported runtime cache specs (guide: "
+            "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
         )
     elif not draft.declares_window:
         lines.append(
