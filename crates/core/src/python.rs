@@ -695,13 +695,11 @@ struct IterationPricing {
     /// How a mixed operation-graph rank's operations split into prefill and
     /// decode evidence, per operation-name list the model reports.
     mixed_splits: Mutex<Vec<Arc<MixedSplit>>>,
-    /// Each working operation-graph rank's evidence before correction, by
-    /// its query and whether diagnostics are captured.
-    rank_evidence: quick_cache::sync::Cache<(RankQuery, bool), Arc<RankEvidence>>,
 }
 
 /// One working rank's operation evidence before correction, each part with
 /// whether it is prefill: one part for a pure rank, up to two for a mixed one.
+/// The rank's memo entry keeps it ([`AicTimingModel::native_rank_evidence`]).
 type RankEvidence = Vec<(Arc<ValidatedTimingPhase>, bool)>;
 
 /// The prefill and decode parts of a mixed operation-graph rank with the
@@ -806,7 +804,6 @@ impl IterationPricing {
                 .is_none()
                 .then(|| quick_cache::sync::Cache::new(256)),
             mixed_splits: Mutex::default(),
-            rank_evidence: quick_cache::sync::Cache::new(1024),
         }))
     }
 
@@ -1058,7 +1055,6 @@ impl AicTimingModel {
             cache: (!detail).then(|| quick_cache::sync::Cache::new(256)),
             // Fitted estimators report no operation evidence.
             mixed_splits: Mutex::default(),
-            rank_evidence: quick_cache::sync::Cache::new(1),
         };
         Ok(Self {
             engine: Python::with_gil(|py| py.None()),
@@ -1803,7 +1799,8 @@ impl AicTimingModel {
     /// operations and values form the same phase evidence; values form it
     /// under name lists that every rank with the same operations shares, a
     /// pure rank's or each part of a mixed rank's. A rank's evidence before
-    /// correction depends only on its query, so it is built once per query.
+    /// correction depends only on its pricing and query, so it is built once
+    /// per rank-memo entry and returned with every hit.
     fn native_rank_evidence(
         &self,
         pricing: &IterationPricing,
@@ -1821,19 +1818,14 @@ impl AicTimingModel {
             let Some(kind) = IterationKind::of(query) else {
                 continue;
             };
-            let key = (*query, capture);
-            let parts = match pricing.rank_evidence.get(&key) {
-                Some(parts) => parts,
-                None => {
-                    let parts = Arc::new(if capture {
-                        self.rank_diagnostics_parts(pricing, index, kind, query, rank)?
-                    } else {
-                        Self::rank_value_parts(pricing, index, kind, query, rank)?
-                    });
-                    pricing.rank_evidence.insert(key, Arc::clone(&parts));
-                    parts
+            // The memo keys `rank` by this query and the detail `capture` selects.
+            let parts = rank.derived(|rank| -> Result<RankEvidence> {
+                if capture {
+                    self.rank_diagnostics_parts(pricing, index, kind, query, rank)
+                } else {
+                    Self::rank_value_parts(pricing, index, kind, query, rank)
                 }
-            };
+            })?;
             for (phase, prefill) in parts.iter() {
                 evidence.push((
                     Self::corrected_phase(Arc::clone(phase), correction)?,
@@ -9560,7 +9552,9 @@ mod tests {
             )
         };
         // DP=3 passes mixing pure, mixed and idle ranks, each priced twice so
-        // that cached iterations and rank evidence are recorded too.
+        // that cached iterations are recorded too. The last pass moves the
+        // first pass's work to other DP ranks, so its rank evidence comes
+        // from the rank memo's entries.
         let groups = [
             vec![
                 prefill_work(0, 4, 4096, 1024),
@@ -9581,6 +9575,11 @@ mod tests {
                 decode_work(0, 16, 16 * 513, 1 << 20),
                 mixed(1, 1, 128, 1, 1025),
                 decode_work(2, 2, 2 * 700, 1 << 20),
+            ],
+            vec![
+                mixed(0, 1, 512, 8, 1025),
+                prefill_work(1, 4, 4096, 1024),
+                decode_work(2, 32, 32 * 1025, 1 << 20),
             ],
         ];
         for capture in [false, true] {
@@ -9663,6 +9662,53 @@ mod tests {
             assert!(prefill_layouts >= 2, "{prefill_layouts}");
             assert!(decode_layouts >= 2, "{decode_layouts}");
         }
+    }
+
+    #[test]
+    fn rank_memo_entries_keep_their_rank_evidence() {
+        pyo3::prepare_freethreaded_python();
+        let Some(mut timing) =
+            packaged_op_level_timing("rank_memo_entries_keep_their_rank_evidence", true)
+        else {
+            return;
+        };
+        let model = Arc::clone(&timing.iteration.as_ref().unwrap().model);
+        let ranks = [
+            prefill_work(0, 1, 512, 0),
+            decode_work(1, 8, 8 * 1025, 1 << 20),
+        ];
+        let mut kept = Vec::new();
+        for (capture, detail) in [(false, RankDetail::Values), (true, RankDetail::Diagnostics)] {
+            timing.diagnostic_model = capture.then(|| Arc::clone(&model));
+            let pricing = timing.iteration.as_ref().unwrap();
+            let IterationQuery::Native(dispatch) = pricing.query else {
+                panic!("a packaged operation graph prices natively");
+            };
+            let queries: Vec<_> = ranks
+                .iter()
+                .map(|rank| AicTimingModel::rank_query(dispatch, rank).unwrap().unwrap())
+                .collect();
+            let evidence = timing
+                .price_iteration(pricing, &queries, &ranks, capture)
+                .unwrap()
+                .evidence;
+            // One part per pure rank, in rank order; each rank's memo entry
+            // keeps the part its pricing recorded.
+            assert_eq!(evidence.len(), ranks.len());
+            for (query, (phase, _)) in queries.iter().zip(&evidence) {
+                let entry = model
+                    .estimate_native_iteration(&[AicTimingModel::rank_metrics(query)], detail)
+                    .unwrap()
+                    .unwrap();
+                let parts = entry.ranks[0]
+                    .derived(|_| -> Result<RankEvidence> { bail!("the entry keeps no evidence") })
+                    .unwrap();
+                assert!(Arc::ptr_eq(&parts[0].0, phase));
+            }
+            kept.push(Arc::clone(&evidence[0].0));
+        }
+        // Values and diagnostics are kept on separate entries.
+        assert!(!Arc::ptr_eq(&kept[0], &kept[1]));
     }
 
     #[test]
