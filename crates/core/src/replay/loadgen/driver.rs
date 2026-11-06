@@ -1106,32 +1106,30 @@ impl WorkloadDriver {
             self.agentic_profile.as_mut().unwrap().never_issued_requests += censored;
             return Ok(true);
         }
-        let mut progressed = false;
         let lanes = self.agentic_profile.as_ref().unwrap().active_plays.len();
+        // Only a client-finished play needs replacing, so lanes are scanned
+        // only after some play has finished. Lane order, rather than terminal
+        // feedback arrival order, makes simultaneous replacement source
+        // selection deterministic. A replacement rewrites only its own lane.
         let SchedulingPolicy::Agentic(state) = &self.policy else {
             unreachable!()
         };
-        // Only a client-finished play needs replacing, so the lanes are
-        // scanned only after some play has finished. Iterating lanes, rather
-        // than terminal feedback arrival order, makes simultaneous replacement
-        // source selection deterministic. A replacement rewrites only its own
-        // lane, so later lanes read the same plays as before it.
-        if state.finished_unscanned {
-            for lane in 0..lanes {
-                let play_index = self.agentic_profile.as_ref().unwrap().active_plays[lane];
-                let SchedulingPolicy::Agentic(state) = &self.policy else {
-                    unreachable!()
-                };
-                if state.plays[play_index].client_finished {
-                    self.append_agentic_profile_play(lane, now_ms)?;
-                    progressed = true;
-                }
-            }
-            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
-                unreachable!()
-            };
-            state.finished_unscanned = false;
+        let finished_lanes: Vec<usize> = if state.finished_unscanned {
+            let active = &self.agentic_profile.as_ref().unwrap().active_plays;
+            (0..lanes)
+                .filter(|&lane| state.plays[active[lane]].client_finished)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut progressed = !finished_lanes.is_empty();
+        for lane in finished_lanes {
+            self.append_agentic_profile_play(lane, now_ms)?;
         }
+        let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            unreachable!()
+        };
+        state.finished_unscanned = false;
         // Both watchdogs shift only currently scheduled workload timers. Future
         // causal delays are created on their dependency event without warping
         // engine, router, transfer or timeout clocks. Shifting timers changes
@@ -2177,7 +2175,7 @@ impl WorkloadDriver {
             node_to_play,
             ready_nodes: vec![0; agentic_plays.len()],
             plays: agentic_plays,
-            finished_unscanned: true,
+            finished_unscanned: false,
             lanes: Vec::new(),
             next_pending_play: 0,
             lifecycle: Vec::new(),
@@ -2523,7 +2521,7 @@ impl WorkloadDriver {
             node_to_play,
             ready_nodes: vec![0; plays.len()],
             plays,
-            finished_unscanned: true,
+            finished_unscanned: false,
             lanes,
             next_pending_play,
             lifecycle: Vec::new(),
@@ -6168,33 +6166,30 @@ mod tests {
         );
     }
 
-    /// The per-play ready counts and finished-play flag must agree with the
-    /// node timers and play flags they stand in for.
-    fn assert_profile_bookkeeping(driver: &WorkloadDriver) -> Vec<usize> {
+    /// Per-play ready counts, checked against the `Ready` nodes and
+    /// scheduled timers they stand in for.
+    fn ready_counts(driver: &WorkloadDriver) -> Vec<usize> {
         let SchedulingPolicy::Agentic(state) = &driver.policy else {
             panic!("profile drivers are agentic")
         };
         assert_eq!(state.ready_nodes.len(), state.plays.len());
         for (index, play) in state.plays.iter().enumerate() {
-            let count = |pending: &dyn Fn(usize) -> bool| {
-                play.nodes.iter().filter(|&&node| pending(node)).count()
-            };
-            let timers = count(&|node| driver.sessions[node].next_ready_at_ms.is_some());
-            let ready = count(&|node| state.node_states[node] == AgenticNodeState::Ready);
+            let ready = play
+                .nodes
+                .iter()
+                .filter(|&&node| state.node_states[node] == AgenticNodeState::Ready)
+                .count();
+            let timers = play
+                .nodes
+                .iter()
+                .filter(|&&node| driver.sessions[node].next_ready_at_ms.is_some())
+                .count();
             assert_eq!(
                 (state.ready_nodes[index], ready),
                 (timers, timers),
                 "play {index}"
             );
         }
-        let profile = driver.agentic_profile.as_ref().unwrap();
-        assert!(
-            state.finished_unscanned
-                || profile
-                    .active_plays
-                    .iter()
-                    .all(|&play| !state.plays[play].client_finished)
-        );
         state.ready_nodes.clone()
     }
 
@@ -6227,13 +6222,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(assert_profile_bookkeeping(&driver), vec![1]);
+        assert_eq!(ready_counts(&driver), vec![1]);
 
         // Dispatching the root moves its count to the spawned child's timer.
         driver.advance_agentic_profile(0.0).unwrap();
         let root = driver.pop_ready(0.0, usize::MAX);
         assert_eq!(root.len(), 1);
-        assert_eq!(assert_profile_bookkeeping(&driver), vec![1]);
+        assert_eq!(ready_counts(&driver), vec![1]);
         assert_eq!(driver.next_ready_time_ms(), Some(5.0));
 
         // A failed root skips the scheduled child and the blocked continuation,
@@ -6241,12 +6236,12 @@ mod tests {
         driver
             .on_causal_terminal(root[0].request_uuid, 1.0, ReplayTerminalStatus::Failed)
             .unwrap();
-        assert_eq!(assert_profile_bookkeeping(&driver), vec![0]);
+        assert_eq!(ready_counts(&driver), vec![0]);
         assert_eq!(driver.next_ready_time_ms(), Some(1.0));
 
         // Replacement clears the flag and brings the new play's ready root.
         assert!(driver.advance_agentic_profile(1.0).unwrap());
-        assert_eq!(assert_profile_bookkeeping(&driver), vec![0, 1]);
+        assert_eq!(ready_counts(&driver), vec![0, 1]);
         let SchedulingPolicy::Agentic(state) = &driver.policy else {
             unreachable!()
         };
@@ -6255,7 +6250,7 @@ mod tests {
 
         // The admission cutoff censors the unissued replacement root.
         assert!(driver.advance_agentic_profile(100.0).unwrap());
-        assert_eq!(assert_profile_bookkeeping(&driver), vec![0, 0]);
+        assert_eq!(ready_counts(&driver), vec![0, 0]);
     }
 
     #[test]
