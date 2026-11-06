@@ -1568,15 +1568,10 @@ https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834
 from `traces.jsonl` in the SemiAnalysis dataset
 https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
 at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
-The original dataset card is preserved as `fixtures/DATASET_CARD.md`.
-
-The following files under `python/aisimulate/tools/simulation_perf_gate/fixtures/`
-are unmodified copies of the same upstream paths at that revision:
-
-- `plots/distributions_log.png`
-- `plots/distributions_linear.png`
-- `plots/subagent_distributions_log.png`
-- `plots/subagent_distributions_linear.png`
+`python/aisimulate/tools/simulation_perf_gate/fixtures/DATASET_CARD.md` is adapted
+from upstream `README.md` at the same revision. Modified by NVIDIA: omitted the
+distribution-plot section and added a source and scope note. The remaining
+upstream text and license declaration are retained.
 
 Upstream authors: SemiAnalysis. The upstream card supplies no separate
 copyright or NOTICE statement. License: Apache License 2.0, declared in the
