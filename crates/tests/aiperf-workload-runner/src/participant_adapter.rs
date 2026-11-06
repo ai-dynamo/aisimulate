@@ -443,7 +443,12 @@ impl WorkloadParticipant for AgentXParticipant {
     ) -> Result<()> {
         let state = self.shared.execution.state.borrow();
         if let Some(mailbox) = state.live.get(&request_id.as_u128()) {
-            *mailbox.prompt_cache_read_tokens.borrow_mut() = Some(tokens);
+            // The first reporting role owns prompt cache usage. A later
+            // decode-side zero describes transferred KV, not prefill hits.
+            mailbox
+                .prompt_cache_read_tokens
+                .borrow_mut()
+                .get_or_insert(tokens);
         } else if !state.retired.contains(&request_id.as_u128()) {
             bail!("cache usage for unknown request {request_id}");
         }

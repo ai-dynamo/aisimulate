@@ -235,7 +235,7 @@ pub(crate) fn lower_scheduled(
         let prepared = crate::scheduled::prepare(
             run,
             raw_input.get("dataset").context("raw dataset missing")?,
-            &models,
+            models,
             tokenizer.as_ref(),
             cancel.clone(),
         )?;
@@ -306,7 +306,7 @@ pub(crate) fn build_plans(
         whole_corpus_positions: false,
         run_sampler: aiperf_multiturn::RunScopedSampler::new(),
     };
-    let resources = native_scheduled_resources(&phases);
+    let resources = native_scheduled_resources(phases);
     let root = aiperf_rng::RngRoot::new(run.random_seed);
     let dataset_root = aiperf_rng::RngRoot::new(prepared.random_seed.or(run.random_seed));
     let mut plans = Vec::new();
@@ -324,7 +324,7 @@ pub(crate) fn build_plans(
             measured_index,
             origins[index],
             phase,
-            phase_seamless_to_next(&phases, index),
+            phase_seamless_to_next(phases, index),
             &prepared.full_view(),
             model,
             prepared.default_output_tokens,
@@ -351,7 +351,7 @@ pub(crate) fn build_plans(
             aiperf_engine_kernel::request_rate::SlotDrawAddress::for_worker_group(0, 0, 1),
             None,
             aiperf_distributed_model::ModuloWorkerGroupPartition::direct(),
-            user_centric_phase_scope(&phases, index),
+            user_centric_phase_scope(phases, index),
         )?);
     }
     Ok(plans)

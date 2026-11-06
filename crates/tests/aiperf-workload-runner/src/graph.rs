@@ -504,9 +504,9 @@ impl ModelSink {
         let cancel = CancellationToken::new();
         let event_error = RefCell::new(None);
         let mut callback = |observation: Observation| {
-            self.records.borrow_mut()[index]["observations"]
-                .as_array_mut()
-                .map(|rows| rows.push(serde_json::json!(format!("{observation:?}"))));
+            if let Some(rows) = self.records.borrow_mut()[index]["observations"].as_array_mut() {
+                rows.push(serde_json::json!(format!("{observation:?}")));
+            }
             if matches!(observation, Observation::FirstToken { .. }) {
                 if let Err(error) = self.events.emit(GraphExecutionEvent::FirstToken {
                     trace_id: self.trace_id.clone(),

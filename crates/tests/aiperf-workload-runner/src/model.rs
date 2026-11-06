@@ -776,12 +776,10 @@ impl Execution for ModelExecution {
                 .terminal
                 .borrow()
                 .filter(|terminal| *terminal != ReplayTerminalStatus::Completed)
-                .unwrap_or_else(|| {
-                    if rejected {
-                        ReplayTerminalStatus::Rejected
-                    } else {
-                        script.terminal
-                    }
+                .unwrap_or(if rejected {
+                    ReplayTerminalStatus::Rejected
+                } else {
+                    script.terminal
                 });
             let physical_terminal = *mailbox.terminal.borrow();
             let completion_error =
@@ -889,27 +887,6 @@ pub(crate) fn deployment_deadline_ns(at_ms: f64) -> Result<i64, SimDriveError> {
 
 fn source_error(error: impl fmt::Display) -> SimDriveError {
     SimDriveError::EventSource(error.to_string())
-}
-
-#[cfg(test)]
-mod deployment_clock_tests {
-    use super::deployment_deadline_ns;
-
-    #[test]
-    fn deadline_mapping_preserves_forward_clock_values() {
-        for ns in [0, 1, 122, 123, 124, 999_999, 1_000_001, 123_456_789] {
-            assert_eq!(deployment_deadline_ns(ns as f64 / 1_000_000.0).unwrap(), ns);
-        }
-    }
-
-    #[test]
-    fn deadline_mapping_never_runs_a_physical_event_early() {
-        for at_ms in [0.000_123_4, 1.000_000_1, 7.171_883_2] {
-            let ns = deployment_deadline_ns(at_ms).unwrap();
-            assert!(ns as f64 / 1_000_000.0 >= at_ms);
-            assert!((ns - 1) as f64 / 1_000_000.0 < at_ms);
-        }
-    }
 }
 
 impl SimEventSource for ModelExecution {
@@ -1075,5 +1052,26 @@ impl SimEventSource for ModelExecution {
     }
     fn is_idle(&self) -> bool {
         self.is_drained()
+    }
+}
+
+#[cfg(test)]
+mod deployment_clock_tests {
+    use super::deployment_deadline_ns;
+
+    #[test]
+    fn deadline_mapping_preserves_forward_clock_values() {
+        for ns in [0, 1, 122, 123, 124, 999_999, 1_000_001, 123_456_789] {
+            assert_eq!(deployment_deadline_ns(ns as f64 / 1_000_000.0).unwrap(), ns);
+        }
+    }
+
+    #[test]
+    fn deadline_mapping_never_runs_a_physical_event_early() {
+        for at_ms in [0.000_123_4, 1.000_000_1, 7.171_883_2] {
+            let ns = deployment_deadline_ns(at_ms).unwrap();
+            assert!(ns as f64 / 1_000_000.0 >= at_ms);
+            assert!((ns - 1) as f64 / 1_000_000.0 < at_ms);
+        }
     }
 }

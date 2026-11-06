@@ -2461,6 +2461,10 @@ where
         {
             return Ok(());
         }
+        if let Some(tokens) = signal.cached_tokens {
+            self.admission
+                .on_prompt_cache_read_tokens(signal.uuid, tokens, self.now_ms)?;
+        }
         let disposition =
             self.flow
                 .inspect_prefill_signal(&signal, self.now_ms, &mut self.collector)?;
