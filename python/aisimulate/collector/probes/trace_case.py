@@ -120,15 +120,35 @@ def _run_row(run_func, row, perf_path: str, device: str, extra: dict) -> None:
         run_func(*row, perf_filename=perf_path, device=device, **extra)
 
 
+def installed_version(backend: str) -> str:
+    """The framework release in this container, read as collect.py reads it."""
+    if backend == "vllm":
+        from vllm.version import __version__
+
+        return __version__
+    if backend == "sglang":
+        from importlib.metadata import version
+
+        return version("sglang")
+    import tensorrt_llm
+
+    return tensorrt_llm.__version__
+
+
 def run(args: dict[str, str], out_dir: Path) -> dict:
     import torch
     from torch.profiler import ProfilerActivity, profile
 
+    from collector.framework_manifest import require_collector_runtime
     from collector.helper import TRACE_CHILD_DIR_ENV, get_sm_version
 
     select = {k: v for k, v in args.items() if not k.startswith("env.")}
     env = {k[len("env.") :]: v for k, v in args.items() if k.startswith("env.")}
     backend, op = select.pop("backend"), select.pop("op")
+    # the release the table is collected with, as a collection would refuse any other: a family
+    # pinned apart from the default (vLLM gemm/moe/kda) runs in its own image
+    version = installed_version(backend)
+    require_collector_runtime(backend, version, requested_ops={op}, model_path=select.get("model_path"))
     sm = get_sm_version()
     row = planned_row(backend, op, sm, **select)
     entry, run_func = _resolve(backend, op)
@@ -166,6 +186,7 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
     kernels = sorted(set().union(*(set(k) for k, t in traced if t or not timed)))
     return {
         "backend": backend,
+        "framework_version": version,
         "op": op,
         "sm": sm,
         "select": select,

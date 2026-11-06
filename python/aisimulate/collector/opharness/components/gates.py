@@ -3,17 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Component: the path gates of gates.yaml, scheduled and graded.
 
-  plan   --fw <backend> --sm <sm> --out <dir> [--repo <checkpoint> | --family <prefix>]
-         A shard plan (``<dir>/<backend>.yaml``) with one ``probe.trace_case`` shard per
-         gate planned on that SM (plus one per ``also`` case), for the collection pipeline:
-         collect.py runs each planned case once under the profiler. A gate whose select
-         matches no planned case on the SM is not a gate there.
-  grade  --fw <backend> --sm <sm> --results <dir> [--version <v>]
-         For every gate in scope, the ``probe_trace_case.json`` of its shards (found under
-         ``<dir>``) against the serving record of its repo and kv on the same SM (probe_driver
-         campaigns), through path_diff.diff; verdicts land in the workspace,
-         results/pathdiff/<sm>/<fw>-<version>/<gate>.json. ``no_serving`` SMs get a
-         platform-floor verdict. The version defaults to the manifest's default.
+A gate runs at the release its op is collected with (collector/framework_manifest.yaml: the
+framework default, or a family pin such as vLLM gemm/moe/kda): its trace runs in that image
+and its serving record is probed at that release. Every command scopes by ``--fw`` (a comma
+list; default every backend), ``--op`` (the gates whose case, or an ``also`` case, is that op:
+one op across the frameworks), ``--repo`` or ``--family``.
+
+  plan   --sm <sm> --out <dir> [scope] [--serving <campaign dir>]
+         One shard plan per (backend, release), ``<dir>/<backend>-<version>.yaml``, with a
+         ``probe.trace_case`` shard per gate planned on that SM (plus one per ``also`` case);
+         ``--serving`` appends that campaign's probe.serving shards of the same (backend,
+         release), so one job per plan runs both sides. A gate whose select matches no
+         planned case on the SM is not a gate there.
+  grade  --sm <sm> --results <dir> [<dir> ...] [scope]
+         Every gate in scope: the ``probe_trace_case.json`` of its shards (found under the
+         result dirs) against the serving record of its repo, kv, isl and release on the same
+         SM (probe_driver campaigns), through path_diff.diff; verdicts land in the workspace,
+         results/pathdiff/<sm>/<backend>-<version>/<gate>.json. ``no_serving`` SMs get a
+         platform-floor verdict.
 
 The table is the one home of the gates; workflow_check reads it through ``gates_in_scope``.
 """
@@ -22,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import re
@@ -55,13 +63,35 @@ def _matches(backend: str, op: str, sm: int, select: dict) -> bool:
     return sum(1 for case in cases if case_matches(case, select)) == 1
 
 
-def gates_in_scope(fw: str, sm: str | None = None, table: Path = TABLE) -> list[dict]:
-    """The gates of backend ``fw``; with ``sm`` ("sm100"), only those planned on that SM."""
-    gates = [g for g in load(table)["gates"] if g["backend"] == fw]
+def _ops(gate: dict) -> list[str]:
+    return [gate["op"], *(a["op"] for a in gate.get("also") or [])]
+
+
+def gates_in_scope(
+    fw: str | None = None, sm: str | None = None, table: Path = TABLE, op: str | None = None
+) -> list[dict]:
+    """The gates of backend ``fw`` (a comma list; None: every backend), of ``op`` when given;
+    with ``sm`` ("sm100"), only those planned on that SM."""
+    fws = set(fw.split(",")) if fw else None
+    gates = [g for g in load(table)["gates"] if (fws is None or g["backend"] in fws) and (op is None or op in _ops(g))]
     if sm is None:
         return gates
     n = int(str(sm).removeprefix("sm"))
-    return [g for g in gates if _matches(fw, g["op"], n, g["select"])]
+    return [g for g in gates if _matches(g["backend"], g["op"], n, g["select"])]
+
+
+@functools.cache
+def op_version(backend: str, op: str) -> str:
+    """The release (backend, op) is collected with: the framework default or its family pin."""
+    sys.path.insert(0, str(COLLECTOR.parent))
+    from collector.framework_manifest import resolve_op_runtime
+
+    return resolve_op_runtime(backend, op).version
+
+
+def gate_version(gate: dict) -> str:
+    """The release a gate runs at; its ``also`` cases share it (tested)."""
+    return op_version(gate["backend"], gate["op"])
 
 
 _PHASE = {"context": "prefill", "generation": "decode"}
@@ -107,17 +137,33 @@ def _cases(gate: dict) -> list[tuple[str, dict]]:
     return out
 
 
-def shard_plan(fw: str, sm: str, repo: str | None = None, family: str | None = None) -> dict:
-    """The probe.trace_case shards of the gates in scope on ``sm``; ``repo`` / ``family`` narrow
-    them as workflow_check scopes onboard_model / new_op_collector."""
-    shards = []
-    for g in gates_in_scope(fw, sm):
+def shard_plans(
+    sm: str,
+    fw: str | None = None,
+    op: str | None = None,
+    repo: str | None = None,
+    family: str | None = None,
+) -> dict[tuple[str, str], dict]:
+    """{(backend, release): pipeline shard plan} of the gates in scope on ``sm``; ``repo`` /
+    ``family`` narrow them as workflow_check scopes onboard_model / new_op_collector."""
+    plans: dict[tuple[str, str], dict] = {}
+    for g in gates_in_scope(fw, sm, op=op):
         if (repo and g["repo"] != repo) or (family and not g["gate"].startswith(family)):
             continue
+        doc = plans.setdefault((g["backend"], gate_version(g)), {"backend": g["backend"], "shards": []})
         for name, select in _cases(g):
-            op = select.pop("op", g["op"])
-            shards.append({"op": SHARD_OP, "name": name, "case_filter": case_filter(fw, op, select, g.get("env"))})
-    return {"backend": fw, "shards": shards}
+            case_op = select.pop("op", g["op"])
+            filt = case_filter(g["backend"], case_op, select, g.get("env"))
+            doc["shards"].append({"op": SHARD_OP, "name": name, "case_filter": filt})
+    return plans
+
+
+def serving_shards(campaign: Path, backend: str, version: str) -> list[dict]:
+    """The probe.serving shards probe_driver emitted for (backend, release) in a campaign."""
+    shards = []
+    for f in sorted(Path(campaign).glob(f"shards/tp*/{backend}-{version}.yaml")):
+        shards += yaml.safe_load(f.read_text())["shards"]
+    return shards
 
 
 def verdict_dir(sm: str, fw: str, version: str) -> Path:
@@ -128,47 +174,51 @@ def verdict_dir(sm: str, fw: str, version: str) -> Path:
     return probe_driver.ROOT / "results" / "pathdiff" / sm / f"{fw}-{version}"
 
 
-def _manifest_default(fw: str) -> str:
-    manifest = yaml.safe_load((COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"][fw]
-    return str(manifest["default"]["version"])
+def _trace(results: list[Path], name: str, version: str) -> Path | None:
+    """The trace of shard ``name`` among the result dirs, from a run at ``version`` when one
+    says so (a trace from another release fails the runtime check and grades invalid)."""
+    found = [f for d in results for f in sorted(Path(d).rglob(f"{SHARD_OP}__{name}/probe_trace_case.json"))]
+    for f in found:
+        if (json.loads(f.read_text()).get("result") or {}).get("framework_version") in (version, None):
+            return f
+    return found[0] if found else None
 
 
-def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
-    """Grade every gate in scope; returns {gate: verdict}."""
+def grade(
+    sm: str, results: list[Path], fw: str | None = None, op: str | None = None, repo: str | None = None
+) -> dict[tuple[str, str], str]:
+    """Grade every gate in scope; returns {(backend, gate): verdict}."""
     sys.path.insert(0, str(HERE))
     import path_diff
     import probe_driver
 
-    version = version or _manifest_default(fw)
-    out_dir = verdict_dir(sm, fw, version)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    hints = load()["hints"][fw]
     verdicts = {}
-    for g in gates_in_scope(fw, sm):
+    for g in gates_in_scope(fw, sm, op=op):
+        if repo and g["repo"] != repo:
+            continue
+        backend, version, key = g["backend"], gate_version(g), (g["backend"], g["gate"])
+        out_dir = verdict_dir(sm, backend, version)
+        out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{g['gate']}.json"
         floor = (g.get("no_serving") or {}).get(sm)
         if floor:
-            record = {"verdict": "platform-floor", "gate_name": g["gate"], "repo": g["repo"], "framework": fw}
+            record = {"verdict": "platform-floor", "gate_name": g["gate"], "repo": g["repo"], "framework": backend}
             record.update(version=version, sm=sm, note=floor, graded_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
             out.write_text(json.dumps(record, indent=1))
-            verdicts[g["gate"]] = "platform-floor"
+            verdicts[key] = "platform-floor"
             continue
-        files = [
-            next(iter(sorted(results.rglob(f"{SHARD_OP}__{name}/probe_trace_case.json"))), None)
-            for name, _ in _cases(g)
-        ]
+        files = [_trace(results, name, version) for name, _ in _cases(g)]
         if not all(files):
-            verdicts[g["gate"]] = "missing-trace"
+            verdicts[key] = "missing-trace"
             continue
         out.unlink(missing_ok=True)
         roles, phase = gate_target(g["op"], g["select"])
         rc = path_diff.diff(
             [str(f) for f in files],
             g["repo"],
-            fw,
+            backend,
             version,
             sm,
-            hints[g["hint"]],
             save=str(out),
             kv_dtype=g["kv"],
             gate_name=g["gate"],
@@ -176,7 +226,7 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
             phase=phase,
             isl=g.get("isl", probe_driver.DEFAULT_ISL),
         )
-        verdicts[g["gate"]] = "no-serving-record" if rc == 2 else json.loads(out.read_text())["verdict"]
+        verdicts[key] = "no-serving-record" if rc == 2 else json.loads(out.read_text())["verdict"]
     return verdicts
 
 
@@ -184,26 +234,30 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan")
-    p.add_argument("--fw", required=True)
-    p.add_argument("--sm", required=True, help="e.g. sm100")
-    p.add_argument("--out", required=True, type=Path)
-    p.add_argument("--repo", default=None, help="only the gates that name this checkpoint")
-    p.add_argument("--family", default=None, help="only the gates whose name starts with this family")
     g = sub.add_parser("grade")
-    g.add_argument("--fw", required=True)
-    g.add_argument("--sm", required=True)
-    g.add_argument("--results", required=True, type=Path, help="unpacked pipeline result dir (shard dirs inside)")
-    g.add_argument("--version", default=None)
+    for parser in (p, g):
+        parser.add_argument("--sm", required=True, help="e.g. sm100")
+        parser.add_argument("--fw", default=None, help="comma list of backends (default: every backend)")
+        parser.add_argument("--op", default=None, help="only the gates of this collector op, across the backends")
+        parser.add_argument("--repo", default=None, help="only the gates that name this checkpoint")
+    p.add_argument("--family", default=None, help="only the gates whose name starts with this family")
+    p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--serving", default=None, type=Path, help="a probe_driver campaign dir whose shards to add")
+    g.add_argument("--results", required=True, nargs="+", type=Path, help="unpacked pipeline result dirs")
     args = ap.parse_args()
     if args.cmd == "plan":
         args.out.mkdir(parents=True, exist_ok=True)
-        doc = shard_plan(args.fw, args.sm, args.repo, args.family)
-        (args.out / f"{args.fw}.yaml").write_text(yaml.safe_dump(doc, sort_keys=False, width=1000))
-        print(f"{len(doc['shards'])} probe shards -> {args.out / f'{args.fw}.yaml'}")
+        plans = shard_plans(args.sm, args.fw, args.op, args.repo, args.family)
+        for (backend, version), doc in sorted(plans.items()):
+            if args.serving:
+                doc["shards"] = serving_shards(args.serving, backend, version) + doc["shards"]
+            path = args.out / f"{backend}-{version}.yaml"
+            path.write_text(yaml.safe_dump(doc, sort_keys=False, width=1000))
+            print(f"{len(doc['shards'])} shards -> {path}  (trigger with --frameworks {backend}:{version})")
         return 0
-    verdicts = grade(args.fw, args.sm, args.results, args.version)
-    for gate, verdict in sorted(verdicts.items()):
-        print(f"{gate:44} {verdict}")
+    verdicts = grade(args.sm, args.results, args.fw, args.op, args.repo)
+    for (backend, gate), verdict in sorted(verdicts.items()):
+        print(f"{backend:7} {gate:44} {verdict}")
     return 0 if all(v in ("aligned", "platform-floor") for v in verdicts.values()) else 1
 
 

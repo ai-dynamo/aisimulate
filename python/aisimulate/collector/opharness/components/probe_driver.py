@@ -8,8 +8,11 @@ renders for that system -> one ``probe.serving`` shard per run for the collectio
 pipeline -> the job's raws -> records -> the per-model matrix. A campaign lives in
 ``<workspace>/campaigns/<name>/`` on the control machine and is never committed:
 
-  --plan --system S                     print the runs (--backends, --only, --full)
-  --emit-shards --system S --url-base U render, bundle and upload every run; shard plans in shards/tp<N>/
+  --plan --system S                     print the runs (--backends, --only, --full, --isl, --version)
+  --gates [--op OP]                     the runs instead: what the path gates in scope read (repo, kv,
+                                        isl, release), every backend unless --backends names some
+  --emit-shards --system S --url-base U render, bundle and upload every run; shard plans in
+                                        shards/tp<N>/<backend>-<version>.yaml, one job each
   --import-raws DIR                     file a job result's raws into raw/ (the job must have run this emit)
   --records                             raw/ -> records.jsonl (kernels labeled with the SM each raw ran on)
   --matrix                              matrix-<fw>-<version>.yaml: verdict and deployed identity per model
@@ -415,9 +418,11 @@ def enumerate_runs(
     backends: list[str],
     only: list[str] | None = None,
     isl: int = DEFAULT_ISL,
+    version: str | None = None,
 ) -> list[dict]:
     """The runs of a campaign for one system. ``isl`` is the probes' prompt length: shape-
-    conditional paths (DSA prefill below 256 query tokens) are visible only at their length."""
+    conditional paths (DSA prefill below 256 query tokens) are visible only at their length.
+    ``version`` is the release probed (default: the framework default; ``full``: every pin)."""
     sm = system_sm(system)
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
     # topology_policy.tp_required: checkpoints whose representative probe must run at a
@@ -448,7 +453,9 @@ def enumerate_runs(
     runs = []
     for backend in backends:
         be = targets["backends"][backend]
-        versions = be["versions"] if full else [be["versions"][-1]]
+        versions = be["versions"] if full else [version or be["default_version"]]
+        if any(v not in be["images"] for v in versions):
+            raise ValueError(f"{backend} pins no release {versions}; the manifest pins {be['versions']}")
         for fam_name, fam in targets["families"].items():
             if fam.get("derive") and "checkpoints" not in fam:
                 fam["checkpoints"] = derive_roster_checkpoints(fam, targets, only)
@@ -509,6 +516,43 @@ def enumerate_runs(
                                     }
                                 )
     return runs
+
+
+def kv_class(kv) -> str:
+    """auto resolves to the model dtype (bf16 for these models): the unquantized aliases are
+    one class, fp8 (fp8, fp8_e4m3) its own."""
+    return "fp8" if (kv or "").startswith("fp8") else "unquant"
+
+
+def gate_runs(targets: dict, system: str, backends: list[str], op: str | None = None) -> list[dict]:
+    """The serving runs the path gates in scope read on this system's SM: per gate, its repo
+    at its kv class, prompt length (``isl``) and release (gates.gate_version). A gate with no
+    roster run is reported; a ``no_serving`` floor needs none."""
+    import copy
+
+    sys.path.insert(0, str(_HERE))
+    import gates
+
+    sm = system_sm(system)
+    need: dict[tuple[str, str, int], dict[tuple[str, str], list[str]]] = {}
+    for g in gates.gates_in_scope(",".join(backends), sm, op=op):
+        if sm in (g.get("no_serving") or {}):
+            continue
+        key = (g["backend"], gates.gate_version(g), int(g.get("isl", DEFAULT_ISL)))
+        need.setdefault(key, {}).setdefault((g["repo"], kv_class(g["kv"])), []).append(g["gate"])
+    runs: dict[str, dict] = {}
+    for (backend, version, isl), wanted in sorted(need.items()):
+        repos = sorted({repo for repo, _ in wanted})
+        got = [
+            r
+            for r in enumerate_runs(copy.deepcopy(targets), system, False, [backend], repos, isl, version)
+            if "skip" not in r and (r["repo"], kv_class(r["kv_dtype"])) in wanted
+        ]
+        runs.update((r["id"], r) for r in got)
+        for (repo, kv), names in sorted(wanted.items()):
+            if not any((r["repo"], kv_class(r["kv_dtype"])) == (repo, kv) for r in got):
+                print(f"gate_runs: no {backend} {version} run for {repo} kv={kv} ({', '.join(names)})", file=sys.stderr)
+    return list(runs.values())
 
 
 def _generator_src_commit() -> dict:
@@ -589,8 +633,8 @@ def emit_shards(runs: list[dict], cdir: Path, url_base: str, upload: bool = True
     under WORK) go into ``bundles/<id>.tgz``; ``bundles/<id>.json`` names the probe script, its
     argv and the execution fingerprint. Both go to ``url_base`` (the WebDAV share);
     collector/probes/serving.py fetches them in the job and writes ``raw_<id>.json`` into the
-    shard dir. Shard plans land in ``shards/tp<N>/<backend>.yaml``: a tp>1 run needs a job with
-    that many GPUs (AISIM_GPU_NUM)."""
+    shard dir. Shard plans land in ``shards/tp<N>/<backend>-<version>.yaml``: one job per plan,
+    in that release's image, with that many GPUs for a tp>1 run (AISIM_GPU_NUM)."""
     import tarfile
     import urllib.error
     import urllib.request
@@ -600,7 +644,7 @@ def emit_shards(runs: list[dict], cdir: Path, url_base: str, upload: bool = True
     for sub in ("inputs", "bundles"):
         (cdir / sub).mkdir(parents=True)
     src_info = _generator_src_commit()
-    plans: dict[tuple[int, str], list[dict]] = {}
+    plans: dict[tuple[int, str, str], list[dict]] = {}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     if upload:  # WebDAV refuses a PUT (409) into a missing collection: create each level; an existing one answers 405
         scheme, _, rest = url_base.partition("://")
@@ -641,14 +685,13 @@ def emit_shards(runs: list[dict], cdir: Path, url_base: str, upload: bool = True
                 req = urllib.request.Request(f"{url_base}/{f.name}", data=f.read_bytes(), method="PUT")
                 opener.open(req, timeout=600).close()
         shard = {"op": "probe.serving", "name": tgz.stem[:120], "case_filter": f"spec={url_base}/{spec_file.name}"}
-        plans.setdefault((int(run.get("tp", 1)), run["backend"]), []).append(shard)
-    for (tp, backend), shards in sorted(plans.items()):
+        plans.setdefault((int(run.get("tp", 1)), run["backend"], run["version"]), []).append(shard)
+    for (tp, backend, version), shards in sorted(plans.items()):
         d = cdir / "shards" / f"tp{tp}"
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{backend}.yaml").write_text(
-            yaml.safe_dump({"backend": backend, "shards": shards}, sort_keys=False, width=1000)
-        )
-        print(f"{d / f'{backend}.yaml'}: {len(shards)} probe.serving shards (tp{tp})")
+        plan_file = d / f"{backend}-{version}.yaml"
+        plan_file.write_text(yaml.safe_dump({"backend": backend, "shards": shards}, sort_keys=False, width=1000))
+        print(f"{plan_file}: {len(shards)} probe.serving shards (tp{tp}; --frameworks {backend}:{version})")
     (cdir / "plan.json").write_text(json.dumps(runs, indent=1))
     skipped = [r for r in runs if "skip" in r]
     print(f"plan: {cdir / 'plan.json'} ({len(runs) - len(skipped)} runs, {len(skipped)} skipped)")
@@ -697,15 +740,17 @@ def import_raws(result_dir: Path, cdir: Path) -> None:
 
 
 def load_targets(path) -> dict:
-    """targets.yaml with each backend's probed version and image taken from
-    collector/framework_manifest.yaml (the framework default pin, digest image),
-    the one home of a pin."""
+    """targets.yaml with each backend's releases and images taken from
+    collector/framework_manifest.yaml, the one home of a pin: the framework default and every
+    family pin (a family collected at another release is probed at that release)."""
     targets = yaml.safe_load(Path(path).read_text())
     manifest = yaml.safe_load((HARNESS.parent / "framework_manifest.yaml").read_text())
     for fw, be in targets["backends"].items():
-        pin = manifest["frameworks"][fw]["default"]
-        be["versions"] = [str(pin["version"])]
-        be["images"] = {str(pin["version"]): pin["images"]["default"]}
+        spec = manifest["frameworks"][fw]
+        pins = [spec["default"], *(spec.get("families") or {}).values()]
+        be["default_version"] = str(spec["default"]["version"])
+        be["images"] = {str(pin["version"]): pin["images"]["default"] for pin in pins}
+        be["versions"] = list(be["images"])
     return targets
 
 
@@ -1256,19 +1301,18 @@ def matrix_cell(run: dict, cdir: Path, rec: dict | None, custom: dict) -> dict:
 
 
 def build_matrix(targets: dict, cdir: Path) -> list[Path]:
-    """One matrix file per backend of the campaign. Cells are the RENDERED runs (kv-variant
-    runs are path_diff evidence, not the deployed identity of a model x backend cell)."""
+    """One matrix file per (backend, release) of the campaign. Cells are the RENDERED runs
+    (kv-variant runs are path_diff evidence, not the deployed identity of a model x backend cell)."""
     runs = load_plan(cdir)
     recs = load_records(cdir)
     sm = next((r["sm"] for r in runs if r.get("sm")), None)
     custom = _custom_args(targets, sm) if sm else {}
     written = []
-    for be in sorted({r["backend"] for r in runs if r.get("backend")}):
-        cells, version = {}, None
+    for be, version in sorted({(r["backend"], r["version"]) for r in runs if r.get("version")}):
+        cells = {}
         for run in runs:
-            if run.get("backend") != be or run.get("kv_dtype"):
+            if run.get("backend") != be or run.get("version") != version or run.get("kv_dtype"):
                 continue
-            version = run.get("version", version)
             cell = matrix_cell(run, cdir, recs.get(run.get("id")), custom)
             if (run.get("golden_facts") or {}).get("applied") is False:
                 cell["golden_facts"] = "not_applied: " + str(run["golden_facts"].get("reason", ""))[:120]
@@ -1302,10 +1346,13 @@ def main() -> None:
     ap.add_argument("--targets", type=Path, default=HARNESS / "targets.yaml")
     ap.add_argument("--campaign", help="campaign name: <workspace>/campaigns/<name>/ (default: the --system)")
     ap.add_argument("--system", help="the system the campaign renders for and runs on, e.g. b200_sxm")
-    ap.add_argument("--backends", default="sglang", help="comma list: sglang,vllm,trtllm")
+    ap.add_argument("--backends", default=None, help="comma list (default: sglang; with --gates every backend)")
     ap.add_argument("--only", default=None, help="comma list of repo substrings — only matching checkpoints")
     ap.add_argument("--full", action="store_true", help="all variants and topologies (default: representative tp1)")
     ap.add_argument("--isl", type=int, default=DEFAULT_ISL, help="the probes' prompt length (a gate may need another)")
+    ap.add_argument("--version", default=None, help="the release probed (default: the framework default)")
+    ap.add_argument("--gates", action="store_true", help="the runs the gates in scope read")
+    ap.add_argument("--op", default=None, help="with --gates: only the gates of this collector op")
     ap.add_argument("--plan", action="store_true", help="print the runs")
     ap.add_argument("--emit-shards", action="store_true", help="render, bundle and upload; write shard plans")
     ap.add_argument("--url-base", default=None, help="WebDAV directory the probe.serving shards fetch from")
@@ -1334,11 +1381,15 @@ def main() -> None:
         return
     if not args.system:
         ap.error("--plan and --emit-shards need --system")
-    pats = [p.strip() for p in (args.only or "").split(",") if p.strip()]
-    # --only scopes the roster derivation too: a single checkpoint needs only its own fetched config
-    runs = enumerate_runs(targets, args.system, args.full, args.backends.split(","), pats or None, args.isl)
-    if pats:
-        runs = [r for r in runs if any(p in (r.get("repo") or "") for p in pats)]
+    backends = (args.backends or ("sglang,vllm,trtllm" if args.gates else "sglang")).split(",")
+    if args.gates:
+        runs = gate_runs(targets, args.system, backends, args.op)
+    else:
+        pats = [p.strip() for p in (args.only or "").split(",") if p.strip()]
+        # --only scopes the roster derivation too: a single checkpoint needs only its own fetched config
+        runs = enumerate_runs(targets, args.system, args.full, backends, pats or None, args.isl, args.version)
+        if pats:
+            runs = [r for r in runs if any(p in (r.get("repo") or "") for p in pats)]
     if args.plan:
         for r in runs:
             print(json.dumps(r))

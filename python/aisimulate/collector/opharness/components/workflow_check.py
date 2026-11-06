@@ -146,12 +146,15 @@ def _gates_module():
     return mod
 
 
-def declared_gates(fw: str, version: str, sm: str | None = None) -> set:
-    """Gate names gates.yaml declares for backend ``fw`` (the version graded is the manifest's;
-    ``version`` names the verdict directory). With ``sm``, only gates whose case is planned on
-    that SM and that SM is not a ``no_serving`` floor for: the plan decides where a gate exists,
-    and a floor gets a platform-floor verdict instead. Coverage checks pass sm=None."""
-    rows = _gates_module().gates_in_scope(fw, sm, GATES_TABLE)
+def declared_gates(fw: str, version: str, sm: str | None = None, op: str | None = None) -> set:
+    """Gate names gates.yaml declares for backend ``fw`` at ``version``: a gate runs at the
+    release its op is collected with (gates.gate_version), so a family pinned apart from the
+    default has its gates under its own version. With ``op``, only that op's gates. With
+    ``sm``, only gates whose case is planned on that SM and that SM is not a ``no_serving``
+    floor for: the plan decides where a gate exists, and a floor gets a platform-floor verdict
+    instead. Coverage checks pass sm=None."""
+    gm = _gates_module()
+    rows = [g for g in gm.gates_in_scope(fw, sm, GATES_TABLE, op=op) if gm.gate_version(g) == str(version)]
     if sm is not None:
         rows = [g for g in rows if sm not in (g.get("no_serving") or {})]
     return {g["gate"] for g in rows}
@@ -221,12 +224,13 @@ def uncovered(fw: str, ops: list, gates: list) -> list:
 
 def pred_gates_aligned(p):
     """Every gate declared for (fw, version), minus platform floors on this SM, has a verdict
-    file that names this framework/version and reads 'aligned'. --param repo= or family=
-    narrows the scope to the gates that name the repo or start with the family; without a
-    filter, every registry op must also be covered (a rebuilt gate set once kept 19 of 32)."""
+    file that names this framework/version and reads 'aligned'. --param op=, repo= or family=
+    narrows the scope to one op's gates (an upgrade done op by op), the gates that name the
+    repo, or those starting with the family; without a filter, every registry op must also be
+    covered (a rebuilt gate set once kept 19 of 32)."""
     sm, fw, version = p["sm"], p["fw"], p["version"]
-    expected = declared_gates(fw, version, sm)
-    if not p.get("repo") and not p.get("family"):
+    expected = declared_gates(fw, version, sm, p.get("op"))
+    if not p.get("repo") and not p.get("family") and not p.get("op"):
         gaps = uncovered(fw, registry_ops(fw), _gates_module().gates_in_scope(fw, None, GATES_TABLE))
         if gaps:
             return False, f"registry ops no gate names (add a gates.yaml row or an UNGATED reason): {gaps[:4]}"

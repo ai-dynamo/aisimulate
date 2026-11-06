@@ -157,7 +157,7 @@ def test_spans_and_launchers_are_not_orphans(pd):
 def _targets_for(repo: str, variants: list[str], **extra) -> dict:
     return {
         "topologies": [{"tp": 1, "evidence": "real"}, {"tp": 2, "evidence": "real"}],
-        "backends": {"vllm": {"versions": ["0.29.0"], "images": {"0.29.0": "img"}}},
+        "backends": {"vllm": {"default_version": "0.29.0", "versions": ["0.29.0"], "images": {"0.29.0": "img"}}},
         "families": {"fam": {"checkpoints": [{"repo": repo, "profile": "bfloat16", "variants": variants}]}},
         **extra,
     }

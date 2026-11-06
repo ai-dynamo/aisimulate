@@ -37,20 +37,16 @@ def wc(tmp_path, monkeypatch):
 def _gates_table(wc, rows, planned=None):
     """A scratch gates.yaml for backend vllm. ``planned`` maps SM -> gate names whose case the
     plan holds there (default: every gate on every SM); it stands in for the op plan."""
-    doc = {"hints": {"vllm": {"H": "x"}}, "gates": []}
+    doc = {"gates": []}
     for row in rows:
         row = {"gate": row} if isinstance(row, str) else row
         base = {"backend": "vllm", "op": "gemm", "select": {"_gate": row["gate"]}, "repo": "org/m", "kv": "auto"}
-        doc["gates"].append({**base, "hint": "H", **row})
+        doc["gates"].append({**base, **row})
     wc.GATES_TABLE.write_text(yaml.safe_dump(doc))
     names = {g["gate"] for g in doc["gates"]}
-    wc._gates_module()._matches = lambda backend, op, sm, select: select["_gate"] in (planned or {}).get(sm, names)
-
-
-def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0"):
-    d = wc._results() / "pathdiff" / "sm90" / "vllm-0.29.0"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / f"{gate}.json").write_text(json.dumps({"verdict": verdict, "framework": fw, "version": version}))
+    gm = wc._gates_module()
+    gm._matches = lambda backend, op, sm, select: select["_gate"] in (planned or {}).get(sm, names)
+    gm.gate_version = lambda g: g.get("version", "0.29.0")  # stands in for the manifest pin
 
 
 def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0", repo="org/m"):
@@ -96,6 +92,17 @@ def test_repo_and_family_narrow_the_gates_in_scope(wc):
     assert ok is False and "no gate verdict names org/other" in reason
 
 
+def test_a_gate_belongs_to_the_release_its_op_is_collected_with(wc):
+    """vLLM gemm/moe/kda are pinned apart from the default: their gates are not the default
+    release's, and an upgrade done op by op checks one op's gates."""
+    _gates_table(wc, ["dsa_ctx_M", {"gate": "gemm_M", "version": "0.31.0"}, {"gate": "moe_M", "op": "moe"}])
+    assert wc.declared_gates("vllm", "0.29.0") == {"dsa_ctx_M", "moe_M"}
+    assert wc.declared_gates("vllm", "0.31.0") == {"gemm_M"}
+    assert wc.declared_gates("vllm", "0.29.0", op="moe") == {"moe_M"}
+    _verdict(wc, "moe_M")
+    assert wc.pred_gates_aligned({**P, "op": "moe"}) == (True, "1 gates in scope, all aligned")
+
+
 def test_pin_is_reads_the_manifest_default_or_a_family_pin(wc):
     manifest = yaml.safe_load((wc.COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"]["vllm"]
     default = str(manifest["default"]["version"])
@@ -123,16 +130,16 @@ def test_gate_coverage_is_checked_against_the_registry_not_the_table(wc, monkeyp
     monkeypatch.setattr(wc, "registry_ops", lambda fw: ops)
     gdn = lambda name, phase: {"gate": name, "op": "gdn", "select": {"_gate": name, "phase": phase}}
     _gates_table(wc, ["gemm_bf16_Llama", gdn("gdn_ctx_Qwen", "context")])
-    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.29.0", "sm": "sm90"})
     assert not ok and "gdn:generation" in reason and "msa_context_module" in reason
     assert "compute_scale" not in reason  # listed in UNGATED with its reason
     msa = {"gate": "msa_ctx_M3", "op": "msa_context_module"}
     _gates_table(wc, ["gemm_bf16_Llama", gdn("gdn_ctx_Qwen", "context"), gdn("gdn_gen_Qwen", "generation"), msa])
-    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.29.0", "sm": "sm90"})
     assert not ok and "without a verdict" in reason  # covered now; the verdicts are still missing
     # an op the table does not know is a finding, never silently gate-free
     monkeypatch.setattr(wc, "registry_ops", lambda fw: ["brand_new_op"])
-    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.29.0", "sm": "sm90"})
     assert not ok and "brand_new_op" in reason
 
 
@@ -159,12 +166,12 @@ def test_the_plan_and_no_serving_floors_decide_the_gates_on_an_sm(wc):
     ]
     _gates_table(wc, rows, planned={100: {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1"}})
     full = {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1", "dsa_ctx_fp8_s512"}
-    assert wc.declared_gates("vllm", "0.30.0") == full
-    assert wc.declared_gates("vllm", "0.30.0", "sm120") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
-    assert wc.declared_gates("vllm", "0.30.0", "sm89") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
-    assert wc.declared_gates("vllm", "0.30.0", "sm90") == full
+    assert wc.declared_gates("vllm", "0.29.0") == full
+    assert wc.declared_gates("vllm", "0.29.0", "sm120") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
+    assert wc.declared_gates("vllm", "0.29.0", "sm89") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
+    assert wc.declared_gates("vllm", "0.29.0", "sm90") == full
     # on SM100 the plan holds only the two MLA cases: the DSA gate is not a gate there
-    assert wc.declared_gates("vllm", "0.30.0", "sm100") == {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1"}
+    assert wc.declared_gates("vllm", "0.29.0", "sm100") == {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1"}
 
 
 def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_scope(wc):

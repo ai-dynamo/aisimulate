@@ -99,11 +99,18 @@ def _fake_torch(monkeypatch, events):
     monkeypatch.setitem(sys.modules, "torch.autograd", torch.autograd)
 
 
+def _pinned(monkeypatch, version="pinned"):
+    """The container holds the release the op pins (the check itself has its own test)."""
+    monkeypatch.setattr(trace_case, "installed_version", lambda backend: version)
+    monkeypatch.setattr("collector.framework_manifest.require_collector_runtime", lambda *a, **k: None)
+
+
 def test_trace_case_runs_the_planned_row_with_its_perf_file_discarded(monkeypatch, tmp_path):
     # a custom op launching its kernel directly carries self device time on the CPU side: it
     # is the op, not a kernel
     events = [_Event("gemm_kernel"), _Event("vllm::fp8_gemm_nt_op", "cpu"), _Event("Memcpy HtoD (Pageable -> Device)")]
     _fake_torch(monkeypatch, events)
+    _pinned(monkeypatch)
     calls = []
 
     def run_func(a, b, *, perf_filename, device):
@@ -117,6 +124,7 @@ def test_trace_case_runs_the_planned_row_with_its_perf_file_discarded(monkeypatc
     out = trace_case.run({"backend": "vllm", "op": "gemm", "m": "4096"}, tmp_path)
     assert out["kernels"] == ["gemm_kernel"] and out["failed"] is False and out["select"] == {"m": "4096"}
     assert out["timed_only"] is False  # the row timed outside benchmark_with_power: the whole run
+    assert out["framework_version"] == "pinned"
     assert calls[0][:2] == (4096, 7) and not Path(calls[0][2]).exists()  # the scratch perf file is gone
 
     def broken(*row, perf_filename, device):
@@ -189,6 +197,7 @@ def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tm
     from collector import helper
 
     _fake_torch(monkeypatch, [_Event("parent_gemm")])
+    _pinned(monkeypatch)
 
     def spawning_run(*row, perf_filename, device):
         child_dir = Path(os.environ[helper.TRACE_CHILD_DIR_ENV])
@@ -223,6 +232,7 @@ def test_planned_row_narrows_a_sweep_field_to_a_subset_of_its_planned_values():
 
 def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
     _fake_torch(monkeypatch, [_Event("fused_kda")])
+    _pinned(monkeypatch)
     seen = {}
 
     def run_func(*row, perf_filename, device):
@@ -236,3 +246,12 @@ def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
     out = trace_case.run({"backend": "vllm", "op": "kda", "env.AIS_KDA_DECODE_PATHS": "fused"}, tmp_path)
     assert seen["paths"] == "fused" and out["env"] == {"AIS_KDA_DECODE_PATHS": "fused"} and out["select"] == {}
     assert "AIS_KDA_DECODE_PATHS" not in os.environ
+
+
+def test_trace_case_refuses_a_release_the_op_does_not_pin(monkeypatch, tmp_path):
+    """vLLM gemm is pinned to 0.31.0 next to a 0.30.0 default: traced in the default image, the
+    gate compared another release's kernels than the table's."""
+    _fake_torch(monkeypatch, [_Event("gemm_kernel")])
+    monkeypatch.setattr(trace_case, "installed_version", lambda backend: "0.30.0")
+    with pytest.raises(RuntimeError, match=r"requires exactly 0\.31\.0, found 0\.30\.0"):
+        trace_case.run({"backend": "vllm", "op": "gemm", "m": "1"}, tmp_path)

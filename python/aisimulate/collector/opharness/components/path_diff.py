@@ -37,10 +37,7 @@ import probe_driver
 
 
 def _kv_equiv(a, b):
-    # auto resolves to the model dtype (bf16 for these models); treat the
-    # unquantized aliases as one class, fp8 as its own.
-    norm = lambda x: "fp8" if (x or "").startswith("fp8") else "unquant"
-    return norm(a) == norm(b)
+    return probe_driver.kv_class(a) == probe_driver.kv_class(b)
 
 
 # ---------------------------------------------------------------- the target
@@ -175,7 +172,7 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
     }
 
 
-def select_serving(record: dict, phase: str | None, op_hint: str | None) -> tuple[set, bool]:
+def select_serving(record: dict, phase: str | None) -> tuple[set, bool]:
     """Serving kernels for the comparison, scoped to `phase`.
 
     Phase truth is the record's `kernel_phases` (every kernel the device tables saw, by
@@ -186,8 +183,6 @@ def select_serving(record: dict, phase: str | None, op_hint: str | None) -> tupl
     kphases = record.get("kernel_phases") or {}
     pool = set(record.get("orphan_kernels") or [])
     for op in record.get("ops") or []:
-        if op_hint and not re.search(op_hint, " ".join([op.get("op") or ""] + (op.get("kernels") or [])), re.I):
-            continue
         pool |= set(op.get("kernels") or [])
     kernels, scoped = set(), phase is not None
     for k in pool:
@@ -254,7 +249,6 @@ def diff(
     framework: str,
     version: str,
     sm: str,
-    op_hint: str | None,
     save: str | None = None,
     kv_dtype: str | None = None,
     gate_name: str | None = None,
@@ -277,7 +271,7 @@ def diff(
             f"(tp={serving['runtime'].get('tp')} kv={serving['runtime'].get('kv_cache_dtype')})",
             file=sys.stderr,
         )
-    srv_kernels, phase_scoped = select_serving(serving, phase, op_hint)
+    srv_kernels, phase_scoped = select_serving(serving, phase)
     srv_backends, _ = probe_driver.label_kernels(srv_kernels, sm)
     g = grade(col_kernels, srv_kernels, target_roles, cap.get("error"), lambda k: probe_driver.kernel_role(k, sm))
     files = [capture_files] if isinstance(capture_files, (str, Path)) else list(capture_files)
@@ -294,7 +288,6 @@ def diff(
         "capture_env": cap.get("env"),
         "capture_run_error": cap.get("error"),
         "kv_dtype": kv_dtype,
-        "op_hint": op_hint,
         "gate_name": gate_name,
         "target_roles": g["target_roles"],
         "phase": phase,
@@ -334,7 +327,6 @@ def main() -> int:
     ap.add_argument("--version", required=True)
     ap.add_argument("--sm", required=True, help="e.g. sm100: the SM both sides ran on")
     ap.add_argument("--kv-dtype", default=None, help="fp8|auto|bf16 (auto and bf16 are one class)")
-    ap.add_argument("--op-hint", default=None, help="regex over serving op labels/kernels to scope the comparison")
     ap.add_argument("--target-roles", required=True, help="comma list of taxonomy roles the capture must prove")
     ap.add_argument("--phase", default=None, choices=["prefill", "decode", "profile_run"])
     ap.add_argument(
@@ -348,7 +340,6 @@ def main() -> int:
         args.framework,
         args.version,
         args.sm,
-        args.op_hint,
         args.save,
         args.kv_dtype,
         None,

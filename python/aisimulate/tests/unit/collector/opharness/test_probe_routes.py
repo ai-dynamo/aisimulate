@@ -72,7 +72,7 @@ def _run(pd, backend, tp=1, system="b200_sxm"):
 def test_emit_writes_a_spec_per_run_with_bundle_and_out_paths(pd, backend, tp, script, expect):
     cdir = pd.campaign_dir("c")
     pd.emit_shards([_run(pd, backend, tp)], cdir, "http://share/c", upload=False)
-    (shard,) = yaml.safe_load((cdir / "shards" / f"tp{tp}" / f"{backend}.yaml").read_text())["shards"]
+    (shard,) = yaml.safe_load((cdir / "shards" / f"tp{tp}" / f"{backend}-1.yaml").read_text())["shards"]
     rid = f"{backend}_tp{tp}"
     assert shard["op"] == "probe.serving" and shard["case_filter"] == f"spec=http://share/c/{rid}.json"
     spec = json.loads((cdir / "bundles" / f"{rid}.json").read_text())
@@ -190,3 +190,34 @@ def test_the_serving_probe_runs_the_spec_script_on_the_unpacked_bundle(monkeypat
     assert out["raw"] == "raw_r1.json" and out["failed"] is False
     assert seen["cmd"][1].endswith("opharness/components/probes/probe_vllm.py") and seen["x"] == "1"
     assert seen["offline"] == "1" and os.path.exists(tmp_path / "raw_r1.json")
+
+
+def test_a_gate_campaign_probes_what_each_gate_reads(pd, monkeypatch, capsys):
+    """--gates: per gate, its repo at its kv class, prompt length and release. vLLM gemm is
+    pinned to 0.31.0 apart from the 0.30.0 default; the DSA s512 gate reads a 512-token record;
+    a no_serving floor needs no run; a repo the roster lacks is reported."""
+    sys.path.insert(0, str(COMPONENTS))
+    import gates
+
+    def gate(name, op, repo, kv, **extra):
+        return {"gate": name, "backend": "vllm", "op": op, "repo": repo, "kv": kv, "select": {}, **extra}
+
+    rows = [
+        gate("dsa_s512", "dsa_context_module", "org/m", "fp8", isl=512),
+        gate("gemm", "gemm", "org/m", "auto"),
+        gate("floor", "gemm", "org/m", "fp8", no_serving={"sm100": "cannot serve"}),
+        gate("lost", "gemm", "org/x", "auto"),
+    ]
+    monkeypatch.setattr(gates, "gates_in_scope", lambda fw, sm, op=None: rows)
+    monkeypatch.setattr(gates, "gate_version", lambda g: "0.31.0" if g["op"] == "gemm" else "0.30.0")
+
+    def roster(targets, system, full, backends, only, isl, version):
+        return [
+            dict(_run(pd, "vllm"), id=f"{kv}-{isl}-{version}", repo="org/m", kv_dtype=kv, isl=isl, version=version)
+            for kv in (None, "fp8")
+        ]
+
+    monkeypatch.setattr(pd, "enumerate_runs", roster)
+    runs = pd.gate_runs({}, "b200_sxm", ["vllm"])
+    assert sorted(r["id"] for r in runs) == ["None-4096-0.31.0", "fp8-512-0.30.0"]
+    assert "org/x kv=unquant (lost)" in capsys.readouterr().err

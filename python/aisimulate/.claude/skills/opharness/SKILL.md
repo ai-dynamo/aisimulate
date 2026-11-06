@@ -33,10 +33,10 @@ case plans `results/<sm>/cases/`, rule-7 rechecks `results/<sm>/rechecks/`. A ga
 
 ```
 python3 components/workflow_check.py <workflow> --param fw=vllm --param version=0.30.0 --param sm=sm100
-python3 components/probe_driver.py --system b200_sxm --backends vllm --only <repos> --emit-shards --url-base <share>
-python3 components/probe_driver.py --campaign b200_sxm --import-raws <job result dir> --records --matrix
-python3 components/gates.py plan --fw <fw> --sm <sm> --out <dir>                       # probe.trace_case shard plan
-python3 components/gates.py grade --fw <fw> --sm <sm> --results <job result dir>       # verdicts per gate
+python3 components/probe_driver.py --campaign <c> --system b200_sxm --gates --op <op> --emit-shards --url-base <share>
+python3 components/gates.py plan --sm sm100 --op <op> --serving <campaign dir> --out <dir>  # one plan per (backend, release)
+python3 components/probe_driver.py --campaign <c> --import-raws <job result dir> --records --matrix  # per job
+python3 components/gates.py grade --sm sm100 --op <op> --results <job result dirs>      # verdicts per gate
 python3 components/case_inventory.py --fw <fw> --version <ver> --sm <sm> --base <rev>    # CPU plan diff (no image)
 python3 components/case_inventory.py --fw <fw> --skips [--ops a,b]                      # rule-7 recheck skeleton
 collect.py --backend <fw> --ops probe.trace_case --case-filter op=<op>,<field>=<value>,...  # one planned case, in the image

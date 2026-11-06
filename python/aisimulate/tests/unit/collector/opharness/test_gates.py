@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """gates.yaml names every path gate as one planned collector case: the probe.trace_case
-shard it schedules must select exactly one planned case, fit the pipeline's case-filter
-charset, and grade with a hint its backend defines. A gate whose case is planned on no
+shard it schedules must select exactly one planned case and fit the pipeline's case-filter
+charset. A gate whose case is planned on no
 SM grades nothing (the GLM-5 DSA module capture once timed 128 heads, a cell no plan holds)."""
 
 import importlib.util
@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -35,7 +36,6 @@ def _ids():
 def test_every_gate_names_one_planned_case(gates, gate_id):
     name, backend = gate_id.split("@")
     (gate,) = [g for g in gates.load()["gates"] if g["gate"] == name and g["backend"] == backend]
-    assert gate["hint"] in gates.load()["hints"][backend]
     cases = gates._cases(gate)
     planned_on = [sm for sm in (90, 100) if gates._matches(backend, gate["op"], sm, gate["select"])]
     assert planned_on, f"{gate_id}: select {gate['select']} matches no single planned case on SM90 or SM100"
@@ -45,12 +45,37 @@ def test_every_gate_names_one_planned_case(gates, gate_id):
 
 
 def test_shard_plans_parse_as_pipeline_plans(gates, tmp_path):
-    plan = gates.shard_plan("sglang", "sm100")
+    (plan,) = gates.shard_plans("sm100", "sglang").values()
     assert plan["backend"] == "sglang" and plan["shards"]
     assert all(
         s["op"] == "probe.trace_case" and s["case_filter"].startswith("backend=sglang,op=") for s in plan["shards"]
     )
     assert len({s["name"] for s in plan["shards"]}) == len(plan["shards"])
+
+
+def test_a_gate_runs_at_the_release_its_op_is_collected_with(gates):
+    """vLLM gemm/moe/kda/attention are pinned to 0.31.0 next to the 0.30.0 default: their gates
+    were traced in the default image and graded against default-release serving records. Each
+    (backend, release) is its own job; an also case shares its gate's release."""
+    plans = gates.shard_plans("sm90", "vllm")
+    assert set(plans) == {("vllm", "0.30.0"), ("vllm", "0.31.0")}
+    gemm = {s["name"] for s in plans[("vllm", "0.31.0")]["shards"]}
+    assert "gemm_fp8block_DeepSeek-V3.2" in gemm and "dsa_ctx_bf16_DeepSeek-V3.2" not in gemm
+    for g in gates.load()["gates"]:
+        assert {gates.op_version(g["backend"], op) for op in gates._ops(g)} == {gates.gate_version(g)}, g["gate"]
+
+
+def test_one_op_is_planned_across_the_frameworks(gates, tmp_path):
+    plans = gates.shard_plans("sm100", op="dsa_context_module")
+    assert {backend for backend, _ in plans} == {"vllm", "sglang", "trtllm"}
+    assert all("op=dsa_context_module," in s["case_filter"] for p in plans.values() for s in p["shards"])
+    # a campaign's serving shards of the same (backend, release) join the job's plan
+    camp = tmp_path / "camp" / "shards" / "tp1"
+    camp.mkdir(parents=True)
+    serving = {"op": "probe.serving", "name": "abc", "case_filter": "spec=http://share/abc.json"}
+    (camp / "sglang-0.5.21.yaml").write_text(yaml.safe_dump({"backend": "sglang", "shards": [serving]}))
+    assert gates.serving_shards(tmp_path / "camp", "sglang", "0.5.21") == [serving]
+    assert gates.serving_shards(tmp_path / "camp", "vllm", "0.30.0") == []
 
 
 @pytest.mark.parametrize(
@@ -74,10 +99,10 @@ def test_the_op_decides_what_a_gate_proves(gates, op, select, roles, phase):
 
 
 def test_plan_narrows_to_a_repo_or_family(gates):
-    by_repo = gates.shard_plan("vllm", "sm90", repo="Qwen/Qwen3.5-0.8B")["shards"]
+    by_repo = [s for p in gates.shard_plans("sm90", "vllm", repo="Qwen/Qwen3.5-0.8B").values() for s in p["shards"]]
     assert by_repo and all("Qwen3.5-0.8B" in s["name"] for s in by_repo)
-    by_family = gates.shard_plan("vllm", "sm90", family="gdn_")["shards"]
-    assert {s["name"] for s in by_family} == {"gdn_ctx_Qwen3.5-0.8B", "gdn_gen_Qwen3.5-0.8B"}
+    (by_family,) = gates.shard_plans("sm90", "vllm", family="gdn_").values()
+    assert {s["name"] for s in by_family["shards"]} == {"gdn_ctx_Qwen3.5-0.8B", "gdn_gen_Qwen3.5-0.8B"}
 
 
 def test_a_prefill_gate_reads_the_serving_record_of_its_prompt_length(gates):

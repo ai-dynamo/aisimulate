@@ -45,21 +45,31 @@ pipeline (the `aisim-campaign` skill). Nothing generated is committed.
 
 - **Workspace.** `AIS_PROBE_WORKSPACE` (default `collector/opharness/workspace/`,
   git-ignored) holds `configs/`, `dummy_models/`, `campaigns/<name>/` and `results/`.
+- **Releases.** A gate runs at the release its op is collected with
+  (`collector/framework_manifest.yaml`: the framework default or a family pin, e.g. vLLM
+  gemm/moe/kda at 0.31.0 next to a 0.30.0 default). `probe.trace_case` refuses any other
+  installed release, and its serving record is probed at that release; every plan is one
+  job per (backend, release).
 - **Serving probes.** A campaign is one system: `probe_driver.py --system <system>
-  --backends <fw> --only <repos> --emit-shards --url-base <share dir>` renders each run's
-  golden config for that system, uploads its inputs (dummy model dir and rendered config)
-  and writes `probe.serving` shard plans per tp under `campaigns/<name>/shards/`
-  (`collector/probes/serving.py` runs `probes/probe_<fw>.py` in the job). Then
-  `--import-raws <job result dir>` (only shards that ran this emit), `--records` (kernels
-  labeled with the rules of the SM each raw ran on) and `--matrix`. Two campaigns'
-  matrices for the same models (old pin, new pin) diff into the identity report.
-- **Gates.** `gates.py plan --fw <fw> --sm <sm> --out <dir>` writes the `probe.trace_case`
-  shards for one SM (collect.py runs each planned case once under the profiler, its
-  measurement child processes included); `gates.py grade --fw <fw> --sm <sm> --results
-  <job result dir>` grades them against the serving records of the same SM and writes the
-  verdicts to `results/pathdiff/<sm>/<fw>-<version>/`. A gate exists on an SM where its case
-  is planned; `no_serving` marks an SM where the model cannot be served, which gets a
-  `platform-floor` verdict.
+  --gates [--op <op>] --emit-shards --url-base <share dir>` renders a golden config for
+  each serving record the gates in scope read (repo, kv, prompt length, release; or
+  `--backends <fw> --only <repos> [--isl N] [--version V]` for a roster cut), uploads its
+  inputs (dummy model dir and rendered config) and writes `probe.serving` shard plans under
+  `campaigns/<name>/shards/tp<N>/<backend>-<version>.yaml` (`collector/probes/serving.py`
+  runs `probes/probe_<fw>.py` in the job). Then `--import-raws <job result dir>` (only
+  shards that ran this emit), `--records` (kernels labeled with the rules of the SM each raw
+  ran on) and `--matrix`. Two campaigns' matrices for the same models (old pin, new pin)
+  diff into the identity report.
+- **Gates.** `gates.py plan --sm <sm> [--op <op> | --fw <fw>] --serving <campaign dir>
+  --out <dir>` writes one plan per (backend, release): the campaign's serving shards and a
+  `probe.trace_case` shard per gate (collect.py runs each planned case once under the
+  profiler, its measurement child processes included, keeping the kernels of
+  `benchmark_with_power`'s timed region). `gates.py grade --sm <sm> [--op <op>] --results
+  <job result dirs>` grades each gate against the serving record of its repo, kv, prompt
+  length and release on the same SM, on the kernels of the roles and phase its op decides,
+  and writes the verdicts to `results/pathdiff/<sm>/<backend>-<version>/`. A gate exists on
+  an SM where its case is planned; `no_serving` marks an SM where the model cannot be
+  served, which gets a `platform-floor` verdict.
 - **SM.** A campaign's SM is its system's (`src/aisimulate_core/systems/<system>.yaml`);
   a record's is the one its raw reports. Records keep every kernel the taxonomy labels, so
   after a taxonomy edit re-run `--records` before grading. SM103 uses the SM100 rules where every framework

@@ -2,26 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Path gates: each names ONE planned collector case, traced on a GPU by
 #   collect.py --ops probe.trace_case --case-filter backend=..,op=..,<select>
-# and graded by path_diff against the serving record of `repo` at kv `kv`, scoped by the
-# backend's `hint` regex. A gate whose select matches no planned case on an SM is not a gate
-# there (the plan decides). `no_serving` names SMs where serving cannot run the model at all
-# (a serving fact, not a plan fact); `also` traces further planned cases into the same
-# verdict; `env` is a capture-only switch the collector reads; `isl` grades against a serving
-# record probed at that prompt length (probe_driver.py --isl). The version graded is the
-# manifest's framework default.
-hints:
-  vllm: {GEMM: gemm|linear|proj|nvjet|gemvx|cublas|deepgemm|scaled_mm|quant|cutlass, MOE: moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant,
-    GDN: gdn|delta|conv1d|linear|mamba|gated|recurrent, DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant, ATTN: attn|attention|flash|fwd|unified,
-    ENC: vision|vit|patch|encoder|flash|attn, DSA: mla|dsa|attn|indexer|flash|mqa|sparse|gemm|proj|deepgemm|quant, GEMM_M1: gemm|linear|proj|nvjet|gemvx|cublas|cutlass|skinny,
-    KDA: kda|delta|conv1d|linear|attn_res|gated|recurr, MSA: attn|sparse|msa|topk|index|score|merge}
-  sglang: {ATT: attn|attention|flash|fwd|triton, DSA: mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk, MSA: attn|sparse|msa|topk|index|score|merge|block,
-    GEMM: gemm|linear|proj|deepgemm|cutlass|cublas|quant, MOE: moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_, GDN: gdn|delta|conv1d|linear|mamba|gated|recurr,
-    DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant, GLM5: mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk,
-    KDA: kda|delta|conv1d|linear|attn_res|gated|recurr, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant, ENC: vision|vit|patch|encoder|flash|attn}
-  trtllm: {ATT: attn|attention|fmha|mha|flash|xqa, DSA: mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha, GEMM: gemm|linear|proj|deepgemm|cutlass|cublas|quant,
-    MOE: moe|expert|grouped|fused_moe|deepgemm|topk|routing|cutlass, GDN: gdn|delta|conv1d|linear|mamba|gated|recurr, DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant|fmha,
-    ENC: vision|vit|patch|encoder|flash|attn|fmha, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant|nvjet|cublas, MAMBA: mamba|ssm|chunk|scan|conv1d|selective|causal|state,
-    MSA: attn|sparse|msa|topk|index|score|merge|block}
+# and graded by path_diff against the serving record of `repo` at kv `kv`, on the kernels
+# of the roles and phase the op decides (gates.gate_target). A gate runs at the release its
+# op is collected with (the manifest's default or family pin, gates.gate_version). A gate
+# whose select matches no planned case on an SM is not a gate there (the plan decides).
+# `no_serving` names SMs where serving cannot run the model at all (a serving fact, not a
+# plan fact); `also` traces further planned cases into the same verdict; `env` is a
+# capture-only switch the collector reads; `isl` grades against a serving record probed at
+# that prompt length (default 4096; a prefill case's length must match it).
 gates:
 - gate: gemm_fp8block_DeepSeek-V3.2
   backend: vllm
@@ -31,14 +19,12 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: GEMM
 - gate: gemm_bf16_Llama-3.1-8B
   backend: vllm
   op: gemm
   select: {gemm_type: bfloat16, m: 4096, n: 4096, k: 4096}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: GEMM
 - gate: moe_fp8block_DeepSeek-V3.2
   backend: vllm
   op: moe
@@ -47,21 +33,18 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: MOE
 - gate: moe_bf16_gemma4-26B-A4B
   backend: vllm
   op: moe
   select: {moe_type: bfloat16, model_name: google/gemma-4-26B-A4B, hidden_size: 2816, inter_size: 704, topk: 8, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   repo: google/gemma-4-26B-A4B
   kv: auto
-  hint: MOE
 - gate: moe_mxfp4_gpt-oss-120b
   backend: vllm
   op: moe
   select: {moe_type: w4a16_mxfp4, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   repo: openai/gpt-oss-120b
   kv: auto
-  hint: MOE
 - gate: mla_ctx_bf16_DeepSeek-V3
   backend: vllm
   op: mla_context_module
@@ -69,7 +52,6 @@ gates:
     prefix_len: 0}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MLA
 - gate: mla_ctx_fp8_DeepSeek-R1
   backend: vllm
   op: mla_context_module
@@ -80,7 +62,6 @@ gates:
       fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem, sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist'}
   repo: deepseek-ai/DeepSeek-R1
   kv: fp8
-  hint: MLA
 - gate: mla_gen_fp8_DeepSeek-R1
   backend: vllm
   op: mla_generation_module
@@ -91,7 +72,6 @@ gates:
       fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem, sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist'}
   repo: deepseek-ai/DeepSeek-R1
   kv: fp8
-  hint: MLA
 - gate: mla_bmm_gen_DeepSeek-V3
   backend: vllm
   op: mla_bmm_gen_pre
@@ -101,21 +81,18 @@ gates:
     select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MLA
 - gate: gdn_ctx_Qwen3.5-0.8B
   backend: vllm
   op: gdn
   select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
-  hint: GDN
 - gate: gdn_gen_Qwen3.5-0.8B
   backend: vllm
   op: gdn
   select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
-  hint: GDN
 - gate: dsv4_csa_ctx_DeepSeek-V4-Flash-FP8
   backend: vllm
   op: dsv4_csa_context_module
@@ -124,7 +101,6 @@ gates:
       no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: fp8
-  hint: DSV4
 - gate: dsv4_csa_gen_DeepSeek-V4-Flash-FP8
   backend: vllm
   op: dsv4_csa_generation_module
@@ -133,7 +109,6 @@ gates:
       no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: fp8
-  hint: DSV4
 - gate: dsv4_hca_ctx_DeepSeek-V4-Flash-FP8
   backend: vllm
   op: dsv4_hca_context_module
@@ -142,7 +117,6 @@ gates:
       no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: fp8
-  hint: DSV4
 - gate: dsv4_hca_gen_DeepSeek-V4-Flash-FP8
   backend: vllm
   op: dsv4_hca_generation_module
@@ -151,7 +125,6 @@ gates:
       no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: fp8
-  hint: DSV4
 - gate: dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8
   backend: vllm
   op: dsv4_paged_mqa_logits_module
@@ -160,28 +133,24 @@ gates:
       no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: fp8
-  hint: DSV4
 - gate: attn_ctx_Llama-3.1-8B
   backend: vllm
   op: attention_context
   select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, kv_cache_dtype: bfloat16, attn_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: ATTN
 - gate: attn_gen_Llama-3.1-8B
   backend: vllm
   op: attention_generation
   select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: ATTN
 - gate: encoder_attn_Qwen3-VL-2B
   backend: vllm
   op: encoder_attention
   select: {batch_size: 1, seq_len: 1024, num_heads: 16, head_dim: 64}
   repo: Qwen/Qwen3-VL-2B-Instruct
   kv: auto
-  hint: ENC
 - gate: dsa_ctx_bf16_DeepSeek-V3.2
   backend: vllm
   op: dsa_context_module
@@ -192,7 +161,6 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: auto
-  hint: DSA
 - gate: dsa_ctx_bf16_s4096_DeepSeek-V3.2
   backend: vllm
   op: dsa_context_module
@@ -202,7 +170,6 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: auto
-  hint: DSA
 - gate: dsa_ctx_fp8_s512_DeepSeek-V3.2
   backend: vllm
   op: dsa_context_module
@@ -213,7 +180,6 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: DSA
 - gate: dsa_ctx_fp8_s4096_DeepSeek-V3.2
   backend: vllm
   op: dsa_context_module
@@ -223,7 +189,6 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: DSA
 - gate: dsa_gen_fp8_DeepSeek-V3.2
   backend: vllm
   op: dsa_generation_module
@@ -233,14 +198,12 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: DSA
 - gate: gemm_bf16_m1_Llama-3.1-8B
   backend: vllm
   op: gemm
   select: {gemm_type: bfloat16, m: 1, n: 4096, k: 4096}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: GEMM_M1
 - gate: gemm_fp8block_m1_DeepSeek-V3.2
   backend: vllm
   op: gemm
@@ -249,7 +212,6 @@ gates:
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: GEMM_M1
 - gate: kda_gen_Kimi-K3
   backend: vllm
   op: kda
@@ -259,7 +221,6 @@ gates:
       exist on this box'}
   repo: moonshotai/Kimi-K3
   kv: auto
-  hint: KDA
 - gate: msa_ctx_MiniMax-M3
   backend: vllm
   op: msa_context_module
@@ -267,7 +228,6 @@ gates:
     prefix_len: 0}
   repo: MiniMaxAI/MiniMax-M3
   kv: auto
-  hint: MSA
 - gate: msa_gen_MiniMax-M3
   backend: vllm
   op: msa_generation_module
@@ -275,7 +235,6 @@ gates:
     prefix_len: 0}
   repo: MiniMaxAI/MiniMax-M3
   kv: auto
-  hint: MSA
 - gate: kda_ctx_Kimi-K3
   backend: vllm
   op: kda
@@ -284,28 +243,24 @@ gates:
       exist on this box'}
   repo: moonshotai/Kimi-K3
   kv: auto
-  hint: KDA
 - gate: attn_ctx_Llama-3.1-8B
   backend: sglang
   op: attention_context
   select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: ATT
 - gate: attn_gen_Llama-3.1-8B
   backend: sglang
   op: attention_generation
   select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: ATT
 - gate: attn_ctx_hd512_gemma-4-26B-A4B
   backend: sglang
   op: attention_context
   select: {batch_size: 1, input_len: 4096, num_heads: 16, num_kv_heads: 2, head_dim: 512, window_size: 0, kv_cache_dtype: bfloat16, attn_dtype: bfloat16}
   repo: google/gemma-4-26B-A4B
   kv: auto
-  hint: ATT
 - gate: dsa_ctx_bf16_DeepSeek-V3.2
   backend: sglang
   op: dsa_context_module
@@ -315,7 +270,6 @@ gates:
       / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: auto
-  hint: DSA
 - gate: dsa_gen_bf16_DeepSeek-V3.2
   backend: sglang
   op: dsa_generation_module
@@ -324,7 +278,6 @@ gates:
       / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: auto
-  hint: DSA
 - gate: dsa_ctx_fp8_DeepSeek-V3.2
   backend: sglang
   op: dsa_context_module
@@ -334,7 +287,6 @@ gates:
       / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: DSA
 - gate: dsa_gen_fp8_DeepSeek-V3.2
   backend: sglang
   op: dsa_generation_module
@@ -343,7 +295,6 @@ gates:
       / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
-  hint: DSA
 - gate: msa_ctx_MiniMax-M3
   backend: sglang
   op: msa_context_module
@@ -351,7 +302,6 @@ gates:
     prefix_len: 0}
   repo: MiniMaxAI/MiniMax-M3
   kv: auto
-  hint: MSA
 - gate: msa_gen_MiniMax-M3
   backend: sglang
   op: msa_generation_module
@@ -359,7 +309,6 @@ gates:
     prefix_len: 0}
   repo: MiniMaxAI/MiniMax-M3
   kv: auto
-  hint: MSA
 - gate: mla_ctx_DeepSeek-V3
   backend: sglang
   op: mla_context
@@ -368,7 +317,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: DSA
 - gate: mla_gen_DeepSeek-V3
   backend: sglang
   op: mla_generation
@@ -377,7 +325,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: DSA
 - gate: gemm_fp8block_DeepSeek-V3
   backend: sglang
   op: gemm
@@ -386,7 +333,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: GEMM
 - gate: moe_fp8block_DeepSeek-V3
   backend: sglang
   op: moe
@@ -395,21 +341,18 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MOE
 - gate: gdn_ctx_Qwen3.5-0.8B
   backend: sglang
   op: gdn
   select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32, batch_sizes: [1], seq_lens: [4096]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
-  hint: GDN
 - gate: gdn_gen_Qwen3.5-0.8B
   backend: sglang
   op: gdn
   select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32, batch_sizes: [1]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
-  hint: GDN
 - gate: dsv4_csa_ctx_DeepSeek-V4-Flash-FP8
   backend: sglang
   op: dsv4_csa_context_module
@@ -418,7 +361,6 @@ gates:
       capture); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_csa_gen_DeepSeek-V4-Flash-FP8
   backend: sglang
   op: dsv4_csa_generation_module
@@ -427,7 +369,6 @@ gates:
       capture); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_hca_ctx_DeepSeek-V4-Flash-FP8
   backend: sglang
   op: dsv4_hca_context_module
@@ -436,7 +377,6 @@ gates:
       capture); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_hca_gen_DeepSeek-V4-Flash-FP8
   backend: sglang
   op: dsv4_hca_generation_module
@@ -445,7 +385,6 @@ gates:
       capture); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8
   backend: sglang
   op: dsv4_paged_mqa_logits_module
@@ -454,7 +393,6 @@ gates:
       capture); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: glm5_dsa_attn_GLM-5
   backend: sglang
   op: glm5_dsa_attn_module
@@ -463,7 +401,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: zai-org/GLM-5
   kv: auto
-  hint: GLM5
 - gate: glm5_mqa_logits_GLM-5
   backend: sglang
   op: glm5_mqa_logits_module
@@ -472,7 +409,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: zai-org/GLM-5
   kv: auto
-  hint: GLM5
 - gate: glm5_topk_GLM-5
   backend: sglang
   op: glm5_topk_module
@@ -481,7 +417,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: zai-org/GLM-5
   kv: auto
-  hint: GLM5
 - gate: kda_ctx_Kimi-K3
   backend: sglang
   op: kda
@@ -490,7 +425,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: moonshotai/Kimi-K3
   kv: auto
-  hint: KDA
 - gate: kda_gen_Kimi-K3
   backend: sglang
   op: kda
@@ -499,7 +433,6 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: moonshotai/Kimi-K3
   kv: auto
-  hint: KDA
 - gate: mla_bmm_gen_DeepSeek-V3
   backend: sglang
   op: mla_bmm_gen_pre
@@ -511,28 +444,24 @@ gates:
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MLA
 - gate: encoder_attn_Qwen3-VL-2B
   backend: sglang
   op: encoder_attention
   select: {batch_size: 1, seq_len: 1024, num_heads: 16, head_dim: 64}
   repo: Qwen/Qwen3-VL-2B-Instruct
   kv: auto
-  hint: ENC
 - gate: attn_ctx_Llama-3.1-8B
   backend: trtllm
   op: attention_context
   select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, kv_cache_dtype: bfloat16, attn_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: ATT
 - gate: attn_gen_Llama-3.1-8B
   backend: trtllm
   op: attention_generation
   select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: auto
-  hint: ATT
 - gate: dsa_ctx_bf16_DeepSeek-V3.2
   backend: trtllm
   op: dsa_context_module
@@ -542,7 +471,6 @@ gates:
       MoE/MLA floors; no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: auto
-  hint: DSA
 - gate: dsa_gen_bf16_DeepSeek-V3.2
   backend: trtllm
   op: dsa_generation_module
@@ -552,7 +480,6 @@ gates:
       MoE/MLA floors; no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: auto
-  hint: DSA
 - gate: mla_ctx_bf16_DeepSeek-V3
   backend: trtllm
   op: mla_context_module
@@ -563,7 +490,6 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: DSA
 - gate: mla_gen_bf16_DeepSeek-V3
   backend: trtllm
   op: mla_generation_module
@@ -574,7 +500,6 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: DSA
 - gate: gemm_fp8block_DeepSeek-V3
   backend: trtllm
   op: gemm
@@ -584,7 +509,6 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: GEMM
 - gate: moe_fp8block_DeepSeek-V3
   backend: trtllm
   op: moe
@@ -594,28 +518,24 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MOE
 - gate: gdn_ctx_Qwen3.5-0.8B
   backend: trtllm
   op: gdn
   select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
-  hint: GDN
 - gate: attn_ctx_fp8_Llama-3.1-8B
   backend: trtllm
   op: attention_context
   select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, kv_cache_dtype: fp8, attn_dtype: bfloat16}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: fp8
-  hint: ATT
 - gate: attn_gen_fp8_Llama-3.1-8B
   backend: trtllm
   op: attention_generation
   select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: fp8}
   repo: meta-llama/Meta-Llama-3.1-8B
   kv: fp8
-  hint: ATT
 - gate: mla_ctx_fp8_DeepSeek-V3
   backend: trtllm
   op: mla_context_module
@@ -626,7 +546,6 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: fp8
-  hint: DSA
 - gate: mla_gen_fp8_DeepSeek-V3
   backend: trtllm
   op: mla_generation_module
@@ -637,7 +556,6 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: fp8
-  hint: DSA
 - gate: dsv4_csa_ctx_DeepSeek-V4-Flash-FP8
   backend: trtllm
   op: dsv4_csa_context_module
@@ -645,7 +563,6 @@ gates:
   no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_csa_gen_DeepSeek-V4-Flash-FP8
   backend: trtllm
   op: dsv4_csa_generation_module
@@ -653,7 +570,6 @@ gates:
   no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_hca_ctx_DeepSeek-V4-Flash-FP8
   backend: trtllm
   op: dsv4_hca_context_module
@@ -661,7 +577,6 @@ gates:
   no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: dsv4_hca_gen_DeepSeek-V4-Flash-FP8
   backend: trtllm
   op: dsv4_hca_generation_module
@@ -669,35 +584,30 @@ gates:
   no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
   repo: sgl-project/DeepSeek-V4-Flash-FP8
   kv: auto
-  hint: DSV4
 - gate: encoder_attn_Qwen3-VL-2B
   backend: trtllm
   op: encoder_attention
   select: {batch_size: 1, seq_len: 1024, num_heads: 16, head_dim: 64}
   repo: Qwen/Qwen3-VL-2B-Instruct
   kv: auto
-  hint: ENC
 - gate: gdn_gen_Qwen3.5-0.8B
   backend: trtllm
   op: gdn
   select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
-  hint: GDN
 - gate: mla_attn_ctx_bf16_DeepSeek-V3
   backend: trtllm
   op: mla_context
   select: {input_len: 4096, batch_size: 1, kv_cache_dtype: bfloat16, num_heads: 128, tp_size: 1, is_context_phase: true}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MLA
 - gate: mla_attn_gen_bf16_DeepSeek-V3
   backend: trtllm
   op: mla_generation
   select: {input_len: 4095, batch_size: 1, kv_cache_dtype: bfloat16, num_heads: 128, tp_size: 1, is_context_phase: false}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MLA
 - gate: mla_bmm_gen_DeepSeek-V3
   backend: trtllm
   op: mla_bmm_gen_pre
@@ -710,21 +620,18 @@ gates:
       no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3
   kv: auto
-  hint: MLA
 - gate: mamba2_ctx_Nemotron-H-56B
   backend: trtllm
   op: mamba2
   select: {phase: context, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128, batch_sizes: [1], seq_lens: [4096]}
   repo: nvidia/Nemotron-H-56B-Base-8K
   kv: auto
-  hint: MAMBA
 - gate: mamba2_gen_Nemotron-H-56B
   backend: trtllm
   op: mamba2
   select: {phase: generation, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128, batch_sizes: [1]}
   repo: nvidia/Nemotron-H-56B-Base-8K
   kv: auto
-  hint: MAMBA
 - gate: msa_ctx_MiniMax-M3
   backend: trtllm
   op: msa_context_module
@@ -743,7 +650,6 @@ gates:
       — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already grades for real'}
   repo: MiniMaxAI/MiniMax-M3
   kv: auto
-  hint: MSA
 - gate: msa_gen_MiniMax-M3
   backend: trtllm
   op: msa_generation_module
@@ -762,4 +668,3 @@ gates:
       — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already grades for real'}
   repo: MiniMaxAI/MiniMax-M3
   kv: auto
-  hint: MSA
