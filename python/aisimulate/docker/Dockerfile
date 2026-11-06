@@ -69,8 +69,11 @@ RUN set -e; \
 # then the standalone auditwheel tool repairs and retags that exact wheel.
 # Compiling in this manylinux_2_28 image ensures repair never tries to claim a
 # policy older than the glibc symbols in the native extension.
+# jemalloc fixes its page size at build time and aborts on a kernel with larger
+# pages. aarch64 kernels use 4K or 64K pages (Grace runs 64K), so build for 64K.
 RUN cd /workspace/python/aisimulate && \
     mkdir -p /workspace/unrepaired-dist && \
+    if [ "$(uname -m)" = aarch64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi && \
     MATURIN_PEP517_ARGS="--auditwheel skip" \
         uv build --wheel --out-dir /workspace/unrepaired-dist && \
     set -- /workspace/unrepaired-dist/*.whl && \

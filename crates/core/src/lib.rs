@@ -15,6 +15,15 @@
 //! surface. Advanced engine and adapter contracts remain available through
 //! their explicit module paths.
 
+// Replay allocates and frees kilobyte-to-megabyte buffers every pass. glibc
+// serves those sizes from fragmented free lists; jemalloc's size classes do not
+// search. Python and other native libraries in the process keep their own
+// allocators: jemalloc's symbols are prefixed, and its TLS model is safe to
+// load through `dlopen`.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub mod engine;
 // The mirror contains compatibility and diagnostics helpers that are reached
 // only from the optional Python surface or parity harnesses.
