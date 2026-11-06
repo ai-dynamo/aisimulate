@@ -253,9 +253,38 @@ pub fn execute(
         .iter()
         .filter(|event| event["event"] == "cancelled")
         .count();
-    Ok(
-        serde_json::json!({"format":"aisim-aiperf-library-proof-v1","native_phase_report":report,"requests":dispatcher.records.borrow().as_slice(),"requests_coverage":"settled outcomes only; cancelled ownership is retained in model_trace","model_trace":model_trace,"model_submitted_count":submitted_count,"model_cancelled_count":cancelled_count,"virtual_end_ns":clock.now_ns(),"engine_drained":true,"proof_rendezvous_entered":rendezvous.as_ref().is_some_and(|source|source.entered.get())}),
-    )
+    // Assign occurrence labels after execution: instrumentation cannot affect
+    // source sampling, dispatch order, callbacks, or the scheduler's frontier.
+    // Distinct runtime sessions sharing a source template get distinct labels;
+    // all turns in the same runtime session keep that occurrence.
+    let mut occurrences = std::collections::BTreeMap::<String, Vec<String>>::new();
+    let mut records = dispatcher.records.borrow_mut();
+    for row in records.iter_mut() {
+        let template = row["request"]["conversation_id"].as_str().unwrap_or("").to_owned();
+        let session = row["request"]["correlation_id"].as_str().unwrap_or("").to_owned();
+        let sessions = occurrences.entry(template).or_default();
+        let occurrence = match sessions.iter().position(|existing| *existing == session) {
+            Some(index) => index,
+            None => {
+                sessions.push(session);
+                sessions.len() - 1
+            }
+        };
+        row["runtime_occurrence"] = serde_json::json!(occurrence);
+    }
+    Ok(serde_json::json!({
+        "format": "aisim-aiperf-library-proof-v1",
+        "capture_format": "aisim-runtime-values-raw-v1",
+        "native_phase_report": report,
+        "requests": records.as_slice(),
+        "requests_coverage": "all dispatcher-issued requests, including cancelled None and dropped futures; absent observations remain null",
+        "model_trace": model_trace,
+        "model_submitted_count": submitted_count,
+        "model_cancelled_count": cancelled_count,
+        "virtual_end_ns": clock.now_ns(),
+        "engine_drained": true,
+        "proof_rendezvous_entered": rendezvous.as_ref().is_some_and(|source|source.entered.get()),
+    }))
 }
 
 fn acquire(

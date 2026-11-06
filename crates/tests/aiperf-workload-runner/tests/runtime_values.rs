@@ -1,0 +1,98 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Raw comparison evidence, not a numerical-equivalence assertion.
+
+use aisimulate_core::engine::{EngineConfig, EngineFactory, TimingModelConfig};
+use serde_json::{Value, json};
+use std::{path::PathBuf, rc::Rc};
+
+#[path = "support/run_fixture.rs"]
+mod run_fixture;
+
+#[test]
+fn capture_finite_branch_runtime_values() {
+    let temporary = tempfile::tempdir().unwrap();
+    let output_root = std::env::var_os("AISIM_RUNTIME_VALUES_OUTPUT_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temporary.path().to_owned());
+    std::fs::create_dir_all(&output_root).unwrap();
+    // A supplied native frame is consumed verbatim; do not rewrite its artifact
+    // path, seed, dataset, model, phase, or other original configuration.
+    let raw = match std::env::var_os("AISIM_RUNTIME_VALUES_RUN_REQUEST") {
+        Some(path) => std::fs::read_to_string(path).unwrap(),
+        None => run_fixture::branch_request(&output_root),
+    };
+    let request = aiperf_protocol::runner_v2::decode_run_request_v2(raw.as_bytes()).unwrap();
+    let observer = Rc::new(aiperf_timing::RecordingPhaseObserver::default());
+    // Fixed timing overrides are opt-in to this evidence target only. Ordinary
+    // library and executable defaults remain exactly as before.
+    let override_config = std::env::var_os("AISIM_RUNTIME_VALUES_ENGINE_CONFIG")
+        .map(|path| serde_json::from_slice::<EngineConfig>(&std::fs::read(path).unwrap()).unwrap());
+    let (report, model_manifest) = match override_config {
+        Some(config) => {
+            let capacity = std::env::var("AISIM_RUNTIME_VALUES_ADMISSION_CAPACITY")
+                .ok()
+                .map(|value| value.parse::<usize>().unwrap())
+                .unwrap_or(config.max_num_seqs);
+            let manifest = json!({"engine_config":config,"admission_capacity":capacity,"selection":"explicit_test_override"});
+            let factory = EngineFactory::new(config).unwrap();
+            let report = aisim_aiperf_workload_runner::execute_with_engine_factory(
+                &request.run,
+                aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                observer.clone(),
+                &factory,
+                capacity,
+            ).unwrap();
+            (report, manifest)
+        }
+        None => {
+            let config = EngineConfig {
+                timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 1.0 },
+                max_num_seqs: 64,
+                enable_prefix_caching: false,
+                enable_chunked_prefill: false,
+                async_scheduling: Some(false),
+                ..Default::default()
+            };
+            let report = aisim_aiperf_workload_runner::execute(
+                &request.run,
+                aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                observer.clone(),
+            ).unwrap();
+            (report, json!({"engine_config":config,"admission_capacity":64,"selection":"unchanged_library_default"}))
+        }
+    };
+    let manifest = json!({
+        "format":"aisim-runtime-values-manifest-v1",
+        "aisim_source":env!("AISIM_SOURCE_REVISION"),
+        "aiperf_source":env!("AIPERF_SOURCE_REVISION"),
+        "model":model_manifest,
+        "phase_observer_events":observer.events(),
+        "claim":"raw captured runtime values; numerical equivalence not asserted",
+    });
+    std::fs::write(output_root.join("run-request.json"), raw.as_bytes()).unwrap();
+    std::fs::write(output_root.join("model-manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    std::fs::write(output_root.join("aisim-runtime-values-raw.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    println!("RUN_REQUEST {}", raw);
+    println!("MODEL_MANIFEST {}", manifest);
+    println!("RAW_RUNTIME_VALUES {}", report);
+    let requests = report["requests"].as_array().unwrap();
+    assert!(!requests.is_empty(), "capture must not pass vacuously");
+    assert!(!report["native_phase_report"]["reports"].as_array().unwrap().is_empty());
+    assert!(!observer.events().is_empty());
+    for (index, row) in requests.iter().enumerate() {
+        assert_eq!(row["issue_order"], index);
+        assert!(row["issue_ns"].is_i64());
+        assert!(!row["request"]["replay_source"].is_null());
+        assert!(row["runtime_occurrence"].is_u64());
+        let bytes: Vec<u8> = serde_json::from_value(row["wire"]["body_bytes"].clone()).unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(std::str::from_utf8(&bytes).unwrap(), row["wire"]["body_utf8"].as_str().unwrap());
+        let decoded: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, row["request"]["body"]);
+        assert!(!row["input_token_ids"].as_array().unwrap().is_empty());
+        assert_ne!(row["status"], "issued");
+        assert_ne!(row["status"], "infer_pending");
+    }
+}
