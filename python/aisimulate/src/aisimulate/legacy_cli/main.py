@@ -2104,10 +2104,15 @@ def _execute_tasks(
 
     Returns:
         tuple:
-            - The experiment name with the overall best throughput ("chosen experiment").
+            - The chosen experiment: prefer SLA-compliant full-target load matches,
+              then compliant partial-load results, then closest-SLA diagnostics;
+              compare scores within the best available group.
             - Dictionary of best config DataFrames per experiment (or per serving mode if merged).
             - Dictionary of Pareto frontier DataFrames per experiment (or mode).
-            - Dictionary of best throughput values per experiment (or mode).
+            - Dictionary of comparison scores per experiment (or mode): throughput
+              for default picking, GPU-capped results, or SLA diagnostics under a
+              GPU budget; inverse GPU count for compliant full-target load matches
+              and unbudgeted sizing, including diagnostics.
             - Dictionary of estimated latencies per experiment. Each value is a
               dict with keys ``"ttft"``, ``"tpot"``, ``"request_latency"``
               extracted from the rank-1 config.
@@ -2213,10 +2218,35 @@ def _execute_tasks(
 
     if mode == "default" and len(tasks) > 2:
         best_configs, best_throughputs, pareto_fronts, pareto_x_axis = merge_experiment_results_by_mode(
-            tasks, best_configs, pareto_fronts, pareto_x_axis, top_n
+            tasks,
+            best_configs,
+            pareto_fronts,
+            pareto_x_axis,
+            top_n,
+            target_request_rate=target_request_rate,
+            target_concurrency=target_concurrency,
+            max_total_gpus=max_total_gpus,
         )
 
-    chosen_exp = max(best_throughputs, key=best_throughputs.get) if best_throughputs else "none"
+    eligible_scores = best_throughputs
+    if target_request_rate is not None or target_concurrency is not None:
+        nonempty_scores = {name: score for name, score in best_throughputs.items() if not best_configs[name].empty}
+        sla_scores = {
+            name: score for name, score in nonempty_scores.items() if best_configs[name].iloc[0]["sla_satisfied"]
+        }
+        # A feasible partial load takes priority over an SLA-failing diagnostic.
+        eligible_scores = sla_scores or nonempty_scores
+        full_target_scores = {
+            name: score
+            for name, score in sla_scores.items()
+            if best_configs[name].iloc[0]["load_satisfied"] and best_configs[name].iloc[0]["gpu_budget_satisfied"]
+        }
+        # Inverse-GPU scores and capped-throughput scores have different units.
+        eligible_scores = full_target_scores or eligible_scores
+    if not eligible_scores:
+        logger.warning("No nonempty configuration found for the target load.")
+        return "none", {}, pareto_fronts, best_throughputs, best_latencies, outcomes
+    chosen_exp = max(eligible_scores, key=eligible_scores.get)
 
     log_final_summary(
         chosen_exp=chosen_exp,  # for summary
