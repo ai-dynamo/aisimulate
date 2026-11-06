@@ -394,6 +394,8 @@ struct Shared {
     coverage_plan: aiperf_engine_kernel::profile_metric_coverage::ProfileMetricCoveragePlan,
     metrics_config: aiperf_metrics_model::MetricsConfig,
     prepared_roots: usize,
+    initial_lanes: Arc<aiperf_engine_kernel::agentic_tree::AgenticLanePlan>,
+    tree_specs: Arc<Vec<aiperf_engine_kernel::agentic_tree::TreeSpec>>,
     result: RefCell<Option<Result<PhasedScheduledRunReport>>>,
 }
 
@@ -432,6 +434,18 @@ pub struct HostedRunHandle {
 }
 
 impl HostedRunHandle {
+    /// Immutable initial cuts selected by the shared workload, before execution.
+    /// Comparative native load generators can consume these exact source cuts
+    /// instead of silently drawing a different starting workload.
+    pub fn initial_lanes(&self) -> &aiperf_engine_kernel::agentic_tree::AgenticLanePlan {
+        &self.shared.initial_lanes
+    }
+
+    /// Full recorded intervals backing initial cuts; no live scheduling state.
+    pub fn source_tree_specs(&self) -> &[aiperf_engine_kernel::agentic_tree::TreeSpec] {
+        &self.shared.tree_specs
+    }
+
     /// Opt into compact dispatch evidence before any workload request is submitted.
     pub fn use_compact_dispatch_evidence(&self) -> Result<()> {
         ensure!(
@@ -824,6 +838,8 @@ pub fn native_hosted(
             .metrics_config
             .clone(),
         prepared_roots: prep.prepared.agentic_trees.len(),
+        initial_lanes: prep.prepared.agentic_lanes.clone(),
+        tree_specs: prep.prepared.agentic_trees.clone(),
         result: RefCell::new(None),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()
