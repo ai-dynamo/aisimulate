@@ -52,8 +52,13 @@ pub struct ReplaySchedulerMetricsSnapshot {
     pub kv_cache_used_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kv_cache_capacity_bytes: Option<u64>,
-    /// Legacy/backend-native block utilization, or physical byte utilization
-    /// for grouped caches (which have no scalar total block capacity).
+    /// Cached grouped-cache bytes that no request holds; present only with
+    /// grouped prefix caching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_cached_bytes: Option<u64>,
+    /// Legacy/backend-native block utilization, or active byte utilization for
+    /// grouped caches. With grouped prefix caching, cached bytes that no request
+    /// holds count in `physical_cache_usage` only.
     pub active_cache_usage: f64,
     /// Physical resident utilization; equal to active utilization for SGLang.
     pub physical_cache_usage: f64,
@@ -916,6 +921,7 @@ mod tests {
             total_blocks: 0,
             kv_cache_used_bytes: Some(1024),
             kv_cache_capacity_bytes: Some(2048),
+            kv_cache_cached_bytes: None,
             active_cache_usage: 0.5,
             physical_cache_usage: 0.5,
             running_requests: 1,

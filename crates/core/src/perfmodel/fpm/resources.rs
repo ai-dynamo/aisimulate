@@ -40,8 +40,10 @@ pub enum FpmCacheKind {
 /// can be more than the bytes of the group's own layers. Its
 /// `block_size_tokens` is the block size of vLLM's state spec, as the runtime
 /// probe records it: the Mamba block (the scheduler block in `align` mode,
-/// `max_model_len` in mode `none`) or the ring block. Sizing and replay do not
-/// read it yet.
+/// `max_model_len` in mode `none`) or the ring block. Sizing and replay with
+/// prefix caching off do not read it. Grouped prefix caching reads it as the
+/// Mamba block of `align` mode, and every group's block enters the scheduler
+/// block, the least common multiple of the group blocks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmCacheGroup {
@@ -65,9 +67,9 @@ pub struct FpmCacheGroup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocks_per_request: Option<u32>,
     /// Whether vLLM's manager for this group takes part in prefix caching. A
-    /// ring spec does not. Replay with prefix caching on needs it on every
-    /// group, and does not read it yet. `None` in a profile imported before
-    /// this field existed.
+    /// ring spec does not. A rank with `kv_cache_groups` and
+    /// `enable_prefix_caching` refuses a group that leaves it unset. `None`
+    /// in a profile imported before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_cacheable: Option<bool>,
     /// The payload that a P/D transfer moves for one block of this group,

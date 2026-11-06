@@ -4,10 +4,6 @@
 //! Request-owned cache groups sharing one rank-local physical budget. Byte
 //! mode replays them cold. Block mode keeps the blocks of every group in one
 //! block pool, so that cached blocks stay until eviction.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the scheduler does not use block mode yet")
-)]
 
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, PrefixHit, VllmBlockPool,
@@ -112,11 +108,31 @@ pub(crate) struct GroupStateLease {
 pub(crate) struct GroupedBlockPool {
     pool: VllmBlockPool,
     page_size_bytes: u64,
+    /// The most active blocks seen since the last reset, for tests that
+    /// observe a step's peak after the step.
+    #[cfg(test)]
+    peak_active_blocks: std::cell::Cell<usize>,
 }
 
 impl GroupedBlockPool {
     pub(crate) fn capacity_blocks(&self) -> usize {
         self.pool.capacity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peak_active_blocks(&self) -> usize {
+        self.peak_active_blocks.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_peak_active_blocks(&self) {
+        self.peak_active_blocks.set(self.pool.num_active());
+    }
+
+    fn note_peak(&self) {
+        #[cfg(test)]
+        self.peak_active_blocks
+            .set(self.peak_active_blocks.get().max(self.pool.num_active()));
     }
 
     pub(crate) fn key_hit(&self, group: u16, hash: SequenceHash) -> Option<PrefixHit> {
@@ -135,14 +151,19 @@ impl GroupedBlockPool {
     /// Turn the pinned hits into request references. The copies follow the
     /// order of `hits`.
     pub(crate) fn activate(&mut self, reservation: &mut BlockReservation) -> Vec<BlockCopyId> {
-        self.pool
+        let copies = self
+            .pool
             .activate_keys(reservation)
             .map(|(_, id)| id)
-            .collect()
+            .collect();
+        self.note_peak();
+        copies
     }
 
     pub(crate) fn take_private(&mut self, reservation: &mut BlockReservation) -> BlockCopyId {
-        self.pool.allocate_private(reservation)
+        let id = self.pool.allocate_private(reservation);
+        self.note_peak();
+        id
     }
 
     /// Publish a private block. Returns whether `key` became visible.
@@ -233,9 +254,38 @@ impl GroupedKvPool {
             mode: GroupedMode::Blocks(GroupedBlockPool {
                 pool,
                 page_size_bytes,
+                #[cfg(test)]
+                peak_active_blocks: std::cell::Cell::new(0),
             }),
             ..Self::new(groups, capacity_bytes)
         }
+    }
+
+    fn debug_assert_byte_mode(&self) {
+        debug_assert!(
+            matches!(self.mode, GroupedMode::Bytes),
+            "the byte-mode API is not called in block mode"
+        );
+    }
+
+    /// Pool blocks that the groups hold for a forward over
+    /// `computed_before..computed_after`, in either mode.
+    pub(crate) fn projected_blocks(
+        &self,
+        computed_before: usize,
+        computed_after: usize,
+    ) -> Option<usize> {
+        self.project(computed_before, computed_after)
+            .map(|lease| lease.ranges.iter().map(std::ops::Range::len).sum())
+    }
+
+    /// Pool blocks that the state groups hold for every running request.
+    pub(crate) fn fixed_request_blocks(&self) -> usize {
+        self.groups
+            .iter()
+            .filter(|group| group.kind == FpmCacheKind::State)
+            .map(|group| group.blocks_per_request.unwrap_or(0) as usize)
+            .sum()
     }
 
     fn project(&self, computed_before: usize, computed_after: usize) -> Option<GroupedLease> {
@@ -267,6 +317,7 @@ impl GroupedKvPool {
         computed_before: usize,
         computed_after: usize,
     ) -> Option<u64> {
+        self.debug_assert_byte_mode();
         self.project(computed_before, computed_after)
             .map(|lease| lease.bytes)
     }
@@ -274,6 +325,7 @@ impl GroupedKvPool {
     /// Bytes that the state groups hold for every running request, whatever
     /// its context length.
     pub(crate) fn fixed_request_bytes(&self) -> u64 {
+        self.debug_assert_byte_mode();
         self.groups
             .iter()
             .filter(|group| group.kind == FpmCacheKind::State)
@@ -292,6 +344,7 @@ impl GroupedKvPool {
         computed_before: usize,
         computed_after: usize,
     ) -> bool {
+        self.debug_assert_byte_mode();
         let Some(projected) = self.project(computed_before, computed_after) else {
             return false;
         };
@@ -308,6 +361,7 @@ impl GroupedKvPool {
     }
 
     pub(crate) fn release(&mut self, lease: &mut Option<GroupedLease>) {
+        self.debug_assert_byte_mode();
         if let Some(lease) = lease.take() {
             self.used_bytes -= lease.bytes;
             self.active_blocks -= lease.blocks();

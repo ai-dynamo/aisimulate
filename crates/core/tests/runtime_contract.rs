@@ -178,6 +178,116 @@ fn grouped_cache_replay_emits_physical_bytes_without_scalar_block_capacity() {
 }
 
 #[test]
+fn grouped_prefix_cache_replay_reports_reuse() {
+    const GLM_PAGE: u64 = 13_045_120;
+    for (version, checkpoint) in [("0.31.0", None), ("0.32.0", Some(0))] {
+        let samples = Arc::new(Mutex::new(Vec::new()));
+        let turn_one: Vec<u32> = (0..9000).collect();
+        let mut turn_two = turn_one.clone();
+        turn_two.extend(100_000..104_000);
+        let mut first = request("turn-1", 0.0, turn_one.len(), 4);
+        first.input_token_ids = Some(turn_one);
+        let mut second = request("turn-2", 1_000.0, turn_two.len(), 4);
+        second.input_token_ids = Some(turn_two);
+        let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![first, second]);
+        let rank = &mut spec.engine["rank"];
+        rank["enable_prefix_caching"] = true.into();
+        rank["prefix_match_unit"] = 2176.into();
+        rank["vllm_version"] = version.into();
+        rank["max_model_len"] = 131_072.into();
+        rank["max_num_batched_tokens"] = 8192.into();
+        rank["kv_cache_capacity_bytes"] = (74 * GLM_PAGE).into();
+        let mut groups = vec![
+            serde_json::json!({"name":"mla", "kind":"attention", "num_layers":22, "block_size_tokens":2176, "page_size_bytes":GLM_PAGE, "prefix_cacheable":true}),
+            serde_json::json!({"name":"kpool_tail", "kind":"state", "num_layers":11, "block_size_tokens":4, "page_size_bytes":GLM_PAGE, "blocks_per_request":1, "prefix_cacheable":false}),
+        ];
+        for i in 0..4 {
+            let mut group = serde_json::json!({"name":format!("kda_{i}"), "kind":"state", "num_layers":4, "block_size_tokens":2176, "page_size_bytes":GLM_PAGE, "blocks_per_request":1, "prefix_cacheable":true});
+            if let Some(blocks) = checkpoint {
+                group["prefill_checkpoint_blocks"] = blocks.into();
+            }
+            groups.push(group);
+        }
+        rank["kv_cache_groups"] = serde_json::Value::Array(groups);
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_telemetry_observer(
+                1.0,
+                Box::new(RecordingTelemetryObserver {
+                    samples: Arc::clone(&samples),
+                }),
+            )
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 2, "{version}");
+        // The second turn reuses 8,704 of its 13,000 prompt tokens.
+        let expected_ratio = 8704.0 / (9000.0 + 13_000.0);
+        assert!(
+            (report.prefix_cache_reused_ratio - expected_ratio).abs() < 1e-9,
+            "{version}: {}",
+            report.prefix_cache_reused_ratio
+        );
+        let samples = samples.lock().unwrap();
+        let mut saw_cached_bytes = false;
+        for sample in samples.iter() {
+            for row in &sample.decode_scheduler_metrics {
+                assert_eq!(row.total_blocks, 0);
+                assert_eq!(row.kv_cache_capacity_bytes, Some(74 * GLM_PAGE));
+                let cached = row
+                    .kv_cache_cached_bytes
+                    .expect("block mode reports cached bytes");
+                assert_eq!(cached % GLM_PAGE, 0);
+                saw_cached_bytes |= cached > 0;
+                let emitted = serde_json::to_value(row).unwrap();
+                assert_eq!(emitted["kv_cache_cached_bytes"], cached);
+            }
+        }
+        assert!(saw_cached_bytes, "{version}");
+    }
+}
+
+#[test]
+fn grouped_prefix_hit_above_the_pool_is_a_livelock() {
+    // The geometry of grouped_prefix_hit_that_needs_more_blocks_than_the_pool_waits
+    // in grouped_tests.rs. vLLM's startup check counts no block of a hit
+    // inside a block, so five blocks validate for a max_model_len of 34. The
+    // second prompt hits 12 tokens inside a block and then needs seven
+    // blocks. vLLM keeps it waiting, and with nothing running nothing evicts
+    // the hit blocks. Replay reports the livelock and drops no request.
+    for (version, checkpoint) in [("0.31.0", None), ("0.32.0", Some(0))] {
+        let mut first = request("first", 0.0, 13, 1);
+        first.input_token_ids = Some((0..13).collect());
+        let mut second = request("second", 1_000.0, 33, 1);
+        second.input_token_ids = Some((0..33).collect());
+        let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![first, second]);
+        let rank = &mut spec.engine["rank"];
+        rank["enable_prefix_caching"] = true.into();
+        rank["prefix_match_unit"] = 4.into();
+        rank["vllm_version"] = version.into();
+        rank["max_model_len"] = 34.into();
+        rank["kv_cache_capacity_bytes"] = (5 * 64).into();
+        let mut state = serde_json::json!({"name":"state", "kind":"state", "num_layers":1, "block_size_tokens":16, "page_size_bytes":64, "blocks_per_request":1, "prefix_cacheable":true});
+        if let Some(blocks) = checkpoint {
+            state["prefill_checkpoint_blocks"] = blocks.into();
+        }
+        rank["kv_cache_groups"] = serde_json::json!([
+            {"name":"full", "kind":"attention", "num_layers":1, "block_size_tokens":16, "page_size_bytes":64, "prefix_cacheable":true},
+            state,
+        ]);
+        let error = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "replay invariant violated: offline replay detected an effect-free zero-duration pass with 1 in-flight requests remaining",
+            "{version}"
+        );
+    }
+}
+
+#[test]
 fn replay_accept_length_counts_decode_work_before_output_truncation() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         for (rates, lengths, forwards, expected_average) in [

@@ -87,7 +87,11 @@ def _cache_percent(workers: list[dict[str, Any]]) -> float | None:
     capacities = [worker.get("kv_cache_capacity_bytes") for worker in workers]
     if all(value is not None and value > 0 for value in capacities):
         used = [worker.get("kv_cache_used_bytes") for worker in workers]
-        return 100 * sum(used) / sum(capacities) if all(value is not None for value in used) else None
+        if any(value is None for value in used):
+            return None
+        # Cached blocks that no request holds stay resident. A pool without prefix caching reports none.
+        cached = sum(worker.get("kv_cache_cached_bytes") or 0 for worker in workers)
+        return 100 * (sum(used) + cached) / sum(capacities)
     capacities = [worker.get("total_blocks") for worker in workers]
     usage = [worker.get("physical_cache_usage") for worker in workers]
     if all(value is not None and value > 0 for value in capacities) and all(value is not None for value in usage):
@@ -124,6 +128,7 @@ def _sample(row: Mapping[str, Any], *, aggregated: bool) -> dict[str, Any]:
                 "total_blocks",
                 "kv_cache_used_bytes",
                 "kv_cache_capacity_bytes",
+                "kv_cache_cached_bytes",
                 "active_cache_usage",
                 "physical_cache_usage",
                 "running_requests",

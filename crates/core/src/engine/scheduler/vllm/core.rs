@@ -25,14 +25,16 @@ use crate::engine::common::utils::{
 };
 use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::kv_manager::AllocationRequirement;
+use crate::engine::kv_manager::{
+    AdmissionLimits, G1Manager, GroupedKvPool, GroupedPrefixRules, VllmRuleVersion,
+};
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
-use crate::engine::kv_manager::{G1Manager, GroupedKvPool};
 use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
 use crate::engine::scheduler::vllm::host_offload::{
     CompletedLoad, HostLookup, HostTransferProgress, StartLoad, VllmHostOffloadAdapter,
     VllmHostRequestState,
 };
-use crate::engine::scheduler::vllm::policy::{self, AdmissionDecision, PolicySequence};
+use crate::engine::scheduler::vllm::policy::{self, AdmissionDecision};
 use crate::engine::scheduler::vllm::request::RequestKvState;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionEvent, AdmissionInvariant, AdmissionStage,
@@ -936,8 +938,7 @@ impl VllmCore {
             args.state_cache,
             args.kv_cache_bytes_per_token,
             args.aic_nextn.is_some(),
-        )
-        .with_prefix_match_unit(args.prefix_match_unit);
+        );
         if let Some(order) = native_host_offload
             .as_ref()
             .and_then(VllmHostOffloadAdapter::store_source_hold)
@@ -945,12 +946,42 @@ impl VllmCore {
             kv_manager.hold_native_store_sources(order);
         }
         if !args.kv_cache_groups.is_empty() {
-            kv_manager.set_grouped_cache(GroupedKvPool::new(
-                args.kv_cache_groups.clone(),
-                args.kv_cache_capacity_bytes
-                    .expect("validated grouped cache capacity"),
-            ));
+            let capacity_bytes = args
+                .kv_cache_capacity_bytes
+                .expect("validated grouped cache capacity");
+            if args.enable_prefix_caching {
+                let unit = args
+                    .prefix_match_unit
+                    .expect("validated grouped prefix_match_unit");
+                let version = args
+                    .vllm_version
+                    .as_deref()
+                    .and_then(VllmRuleVersion::parse)
+                    .expect("validated vllm_version");
+                let rules = GroupedPrefixRules::new(&args.kv_cache_groups, unit, version)
+                    .expect("validated grouped prefix rules");
+                kv_manager.set_grouped_cache(GroupedKvPool::with_prefix_cache(
+                    args.kv_cache_groups.clone(),
+                    capacity_bytes,
+                    args.kv_cache_groups[0].page_size_bytes,
+                ));
+                kv_manager.set_grouped_prefix_rules(
+                    rules,
+                    AdmissionLimits {
+                        max_in_flight_tokens: args
+                            .max_concurrent_batches
+                            .saturating_mul(args.max_num_batched_tokens.unwrap_or(usize::MAX)),
+                        max_model_len: args.max_model_len.unwrap_or(usize::MAX),
+                    },
+                );
+            } else {
+                kv_manager.set_grouped_cache(GroupedKvPool::new(
+                    args.kv_cache_groups.clone(),
+                    capacity_bytes,
+                ));
+            }
         }
+        let kv_manager = kv_manager.with_prefix_match_unit(args.prefix_match_unit);
         Ok(Self {
             kv_manager,
             belady_oracle: None,
@@ -1917,8 +1948,11 @@ impl VllmCore {
             metrics.total_blocks = 0;
             metrics.kv_cache_used_bytes = Some(pool.used_bytes());
             metrics.kv_cache_capacity_bytes = Some(pool.capacity_bytes());
+            metrics.kv_cache_cached_bytes = pool.block_pool().map(|_| pool.cached_bytes());
             metrics.gpu_cache_usage_perc = pool.used_bytes() as f64 / pool.capacity_bytes() as f64;
-            metrics.physical_gpu_cache_usage_perc = metrics.gpu_cache_usage_perc;
+            // Cached blocks that no request holds stay resident.
+            metrics.physical_gpu_cache_usage_perc =
+                (pool.used_bytes() + pool.cached_bytes()) as f64 / pool.capacity_bytes() as f64;
         }
         metrics
     }
@@ -2223,7 +2257,10 @@ impl VllmCore {
                     .requests
                     .get_mut(&uuid)
                     .expect("waiting request missing from state");
-                let mut cost = request.sequence.prefill_cost(&self.kv_manager);
+                let mut cost = self.kv_manager.lookup_native_prefill_cost(
+                    &request.sequence.sequence,
+                    &mut request.sequence.lease,
+                );
                 if request.sequence.sequence.enable_prefix_caching()
                     && let Some(counts) = &mut self.g1_prefix_cache_lookup
                 {
@@ -2295,6 +2332,7 @@ impl VllmCore {
                                 raw_prefill_cost
                                     .as_ref()
                                     .expect("fresh admission must retain its G1 lookup"),
+                                self.kv_manager.grouped_prefix_rules().is_some(),
                             ) {
                                 decision
                             } else {
@@ -2350,6 +2388,7 @@ impl VllmCore {
                         grouped_minimum_forward_bytes = self
                             .kv_manager
                             .grouped()
+                            .filter(|pool| pool.block_pool().is_none())
                             .zip(self.state.requests.get(&uuid))
                             .and_then(|(pool, request)| {
                                 let known_tokens = request.sequence.len();
@@ -2927,14 +2966,17 @@ impl VllmCore {
         let request = self
             .state
             .requests
-            .get(&uuid)
+            .get_mut(&uuid)
             .unwrap_or_else(|| panic!("schedule_request: {uuid} missing from state.requests"));
         request.debug_assert_invariants(uuid);
         let cached_prefix_tokens = if request.num_computed_tokens == 0 {
             match prefill_cost {
                 Some(cost) => cost.cached_tokens,
                 None => {
-                    let cost = request.sequence.prefill_cost(&self.kv_manager);
+                    let cost = self.kv_manager.lookup_native_prefill_cost(
+                        &request.sequence.sequence,
+                        &mut request.sequence.lease,
+                    );
                     if request.sequence.sequence.enable_prefix_caching()
                         && let Some(counts) = &mut self.g1_prefix_cache_lookup
                     {
@@ -2957,6 +2999,7 @@ impl VllmCore {
         } else {
             0
         };
+        let request = &self.state.requests[&uuid];
         let effective_computed_before = request.num_computed_tokens + cached_prefix_tokens;
         let prompt_len = request.sequence.num_input_tokens();
         let prompt_before = effective_computed_before.min(prompt_len);
@@ -2980,12 +3023,23 @@ impl VllmCore {
             return Ok(ScheduleOutcome::Blocked);
         }
 
-        let desired_tokens = self.align_state_prefill(
-            effective_computed_before,
-            prompt_len,
-            request.sequence.len(),
-            remaining_known_tokens.min(*token_budget),
-        );
+        let desired_tokens = match self.kv_manager.grouped_prefix_rules() {
+            // The grouped rule table owns the split of its vLLM version.
+            Some(rules) => rules.align_split(
+                effective_computed_before,
+                prompt_len,
+                request.sequence.len(),
+                remaining_known_tokens.min(*token_budget),
+                request.sequence.lease.grouped_junction(),
+                self.args.max_num_batched_tokens.unwrap_or(usize::MAX),
+            ),
+            None => self.align_state_prefill(
+                effective_computed_before,
+                prompt_len,
+                request.sequence.len(),
+                remaining_known_tokens.min(*token_budget),
+            ),
+        };
         // Speculative positions consume scheduler budget but are not committed
         // sequence/KV state until verification accepts them.
         let scheduled_drafts = draft_tokens.min(token_budget.saturating_sub(desired_tokens));
@@ -2999,20 +3053,41 @@ impl VllmCore {
 
         let desired_computed_after = effective_computed_before + desired_tokens;
         if let Some(pool) = self.kv_manager.grouped() {
-            let required = pool
-                .required_bytes(effective_computed_before, desired_computed_after)
-                .ok_or_else(|| anyhow::anyhow!("grouped KV forward byte calculation overflowed"))?;
-            anyhow::ensure!(
-                required <= pool.capacity_bytes(),
-                "request {uuid} grouped KV forward needs {required} bytes for {desired_tokens} scheduled tokens after {effective_computed_before} computed tokens, exceeding the entire {}-byte cache pool{}; reduce max_num_batched_tokens or increase cache memory",
-                pool.capacity_bytes(),
-                match pool.fixed_request_bytes() {
-                    0 => String::new(),
-                    fixed => format!(
-                        "; the fixed state blocks of one request take {fixed} bytes of this pool"
-                    ),
-                }
-            );
+            if let Some(blocks) = pool.block_pool() {
+                let required = pool
+                    .projected_blocks(effective_computed_before, desired_computed_after)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("grouped KV forward block calculation overflowed")
+                    })?;
+                anyhow::ensure!(
+                    required <= blocks.capacity_blocks(),
+                    "request {uuid} grouped KV forward needs {required} blocks for {desired_tokens} scheduled tokens after {effective_computed_before} computed tokens, exceeding the entire {}-block cache pool{}; reduce max_num_batched_tokens or increase cache memory",
+                    blocks.capacity_blocks(),
+                    match pool.fixed_request_blocks() {
+                        0 => String::new(),
+                        fixed => format!(
+                            "; the fixed state blocks of one request take {fixed} blocks of this pool"
+                        ),
+                    }
+                );
+            } else {
+                let required = pool
+                    .required_bytes(effective_computed_before, desired_computed_after)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("grouped KV forward byte calculation overflowed")
+                    })?;
+                anyhow::ensure!(
+                    required <= pool.capacity_bytes(),
+                    "request {uuid} grouped KV forward needs {required} bytes for {desired_tokens} scheduled tokens after {effective_computed_before} computed tokens, exceeding the entire {}-byte cache pool{}; reduce max_num_batched_tokens or increase cache memory",
+                    pool.capacity_bytes(),
+                    match pool.fixed_request_bytes() {
+                        0 => String::new(),
+                        fixed => format!(
+                            "; the fixed state blocks of one request take {fixed} bytes of this pool"
+                        ),
+                    }
+                );
+            }
         }
         let mut actual_computed_after = desired_computed_after;
         let host_offload_enabled = self.native_host_offload.is_some();
@@ -3077,6 +3152,10 @@ impl VllmCore {
                 NativeAllocation::CapacityExhausted => {}
             }
 
+            if from_waiting && !policy::waiting_allocation_may_preempt(&self.kv_manager) {
+                actual_computed_after = effective_computed_before;
+                break;
+            }
             let Some(preempted) = self.policy_preempt(pressure_at_ms) else {
                 actual_computed_after = effective_computed_before;
                 break;
