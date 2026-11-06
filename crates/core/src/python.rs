@@ -3,6 +3,7 @@
 
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -4831,6 +4832,35 @@ fn engine_launch_from_replay_role_json(
     convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
+/// Report each counted Weka request's `(input, output)` lengths to `on_request`.
+///
+/// An exception from `on_request` stops the scan before more input is read
+/// and propagates unchanged.
+#[pyfunction]
+fn scan_weka_requests(
+    py: Python<'_>,
+    path: PathBuf,
+    block_size: u64,
+    on_request: Py<PyAny>,
+) -> PyResult<()> {
+    let mut raised = None;
+    let scanned = py.allow_threads(|| {
+        crate::replay::loadgen::scan_weka_requests(&path, block_size, &mut |input, output| {
+            Python::with_gil(|py| match on_request.call1(py, (input, output)) {
+                Ok(_) => ControlFlow::Continue(()),
+                Err(error) => {
+                    raised = Some(error);
+                    ControlFlow::Break(())
+                }
+            })
+        })
+    });
+    if let Some(error) = raised {
+        return Err(error);
+    }
+    scanned.map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4841,6 +4871,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_timing_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
+    module.add_function(wrap_pyfunction!(scan_weka_requests, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
 }
