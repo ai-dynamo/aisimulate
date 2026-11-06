@@ -54,7 +54,7 @@ fn request(directory: &std::path::Path) -> Value {
         name:Some("builtin".into()),revision:"main".into(),trust_remote_code:false,
         apply_chat_template:false,server_url:None,per_model:Default::default(),
     });
-    cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"requests":2,"grace_period":1.0}])).unwrap());
+    cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"grace_period":1.0}])).unwrap());
     cfg.finite_replay = Some(true);
     cfg.trajectory_start_min_ratio = Some(0.0);
     cfg.trajectory_start_max_ratio = Some(0.0);
@@ -70,7 +70,8 @@ fn branch_request(directory:&std::path::Path) -> String {
     let initial = request(directory);
     let bytes = serde_json::to_vec(&initial).unwrap();
     let mut native = aiperf_protocol::runner_v2::decode_run_request_v2(&bytes).unwrap();
-    native.run.cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"sessions":1,"grace_period":1.0}])).unwrap());
+    // Finite native replay ends on selected-tree exhaustion, never on an
+    // authored request/session/duration cutoff. Reuse the complete base phase.
     let Some(aiperf_config::model::dataset::Dataset::File(dataset)) = native.run.cfg.datasets.as_mut().and_then(|rows|rows.first_mut()) else { panic!("file dataset required"); };
     // Wide signed hashes are exact raw source, not serde_json::Value numbers.
     let raw = r#"{"id":"branch-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[184467440737095516170,184467440737095516171],"api_time":0.001},{"t":0.002,"type":"subagent","agent_id":"child-proof","subagent_type":"Explore","duration_ms":5,"status":"completed","models":["model"],"requests":[{"t":0.002,"type":"n","model":"model","in":16,"out":2,"hash_ids":[-184467440737095516170,-184467440737095516171],"api_time":0.001},{"t":0.004,"type":"n","model":"model","in":24,"out":2,"hash_ids":[-184467440737095516170,-184467440737095516171,-184467440737095516172],"api_time":0.001}]},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[184467440737095516170,184467440737095516171,184467440737095516172],"api_time":0.001}]}"#;
