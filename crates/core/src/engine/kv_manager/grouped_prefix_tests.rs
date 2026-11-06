@@ -1124,6 +1124,36 @@ fn align_split_with_a_checkpoint_block_ports_vllm_0320() {
 }
 
 #[test]
+fn align_split_needs_a_mamba_state_group() {
+    // vLLM splits only with Mamba layers in align mode (v0.31 `sched:354-356`,
+    // `:695-697`, v0.32 `sched:377-379`, `:724-726`). Without a state rule
+    // every chunk is the desired count, on both rows.
+    let full = [attention("full", 64, None)];
+    let windowed = [attention("full", 64, None), attention("swa", 64, Some(128))];
+    // A tail ring, such as the GLM `KpoolTailSpec`, is not a MambaSpec.
+    let ring = [attention("full", 64, None), state("ring", 4, false, false)];
+    for version in [VllmRuleVersion::V0_31_0, VllmRuleVersion::V0_32_0] {
+        for groups in [&full[..], &windowed[..], &ring[..]] {
+            let r = GroupedPrefixRules::new(groups, 64, version).unwrap();
+            // The last block boundary of the prompt is no stop.
+            assert_eq!(split(&r, 0, 300, 300, 300, 0), 300, "{version:?}");
+            // A chunk that ends below the prompt keeps its length.
+            assert_eq!(split(&r, 0, 1000, 1000, 500, 0), 500, "{version:?}");
+            // A start inside a block runs past the next boundary.
+            assert_eq!(split(&r, 100, 1000, 1000, 500, 0), 500, "{version:?}");
+            // The junction is no stop.
+            assert_eq!(split(&r, 64, 1000, 1000, 800, 640), 800, "{version:?}");
+        }
+        // A state group keeps the split: the floor of 8,192 to 2,176.
+        assert_eq!(
+            split(&rules_glm(version, false), 0, 9000, 9000, 8192, 0),
+            6528,
+            "{version:?}"
+        );
+    }
+}
+
+#[test]
 fn partial_tail_moves_one_unit_down_on_vllm_0320() {
     // At hash 4 the 0.32.0 tail, `(prompt - 1) / hash * hash`, is 8,996,
     // between the last stop 8,704 and the prompt (v0.32 sched:517-525,
