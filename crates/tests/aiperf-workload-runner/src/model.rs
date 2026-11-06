@@ -622,6 +622,7 @@ impl Execution for ModelExecution {
                                 max_output_tokens: population_len,
                                 output_token_ids: population,
                                 session_id: Some(request.prepared.runtime_session_id.clone()),
+                                cache_salt: None,
                                 images: request
                                     .images
                                     .into_iter()
