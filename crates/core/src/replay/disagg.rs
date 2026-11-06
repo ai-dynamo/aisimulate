@@ -1091,6 +1091,10 @@ where
     admission: AdmissionQueue<Metadata>,
     /// Encoder pool every arrival crosses before the language workers, if any.
     encoder: Option<EncoderPool<ReadyArrival<ReplayRequestPayload, Metadata>>>,
+    /// Canceled clients whose encoder batch or transfer must finish physically.
+    encoder_canceled: HashSet<Uuid>,
+    /// Decode cancels whose committed pass still owns physical work.
+    decode_cancel_pending: HashMap<Uuid, usize>,
     prefill_engine: EngineComponent<Observation>,
     decode_engine: EngineComponent<Observation>,
     prefill_placement: PlacementPolicyImpl,
@@ -1297,6 +1301,8 @@ where
             step_terminals: Vec::new(),
             step_quiescent: Vec::new(),
             encoder: None,
+            encoder_canceled: HashSet::new(),
+            decode_cancel_pending: HashMap::new(),
         })
     }
 
@@ -2658,6 +2664,26 @@ where
             }
             changed = true;
         }
+        let mut released = self
+            .decode_cancel_pending
+            .iter()
+            .filter_map(|(uuid, scheduler)| {
+                match self
+                    .decode_engine
+                    .request_has_committed_pass(*scheduler, *uuid)
+                {
+                    Ok(false) => Some(Ok(*uuid)),
+                    Ok(true) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        released.sort_unstable();
+        for uuid in released {
+            self.decode_cancel_pending.remove(&uuid);
+            self.finish_logical_request(uuid, true)?;
+            changed = true;
+        }
         Ok(changed)
     }
 
@@ -2807,6 +2833,12 @@ where
         };
         let released_any = !ready.is_empty();
         for (arrival, ready_ms) in ready {
+            if let Some(uuid) = arrival.request.metadata().uuid
+                && self.encoder_canceled.remove(&uuid)
+            {
+                self.admission.on_request_quiescent(uuid, self.now_ms)?;
+                continue;
+            }
             let uuid = self.admit_ready(arrival, true)?;
             self.collector.on_encoder_ready(uuid, ready_ms);
         }
@@ -4288,6 +4320,41 @@ where
     }
 
     pub(crate) fn cancel_dynamic(&mut self, uuid: Uuid) -> Result<Option<ReplayTerminalStatus>> {
+        if self.encoder.as_ref().is_some_and(|encoder| {
+            encoder.contains(|arrival| arrival.request.metadata().uuid == Some(uuid))
+        }) {
+            if !self.encoder_canceled.insert(uuid) {
+                return Ok(None);
+            }
+            self.collector
+                .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
+            self.admission.on_request_causal_terminal(
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+            if !self.admission.knows_preparation_request(uuid) {
+                self.progress.inc_completed();
+            }
+            return Ok(Some(ReplayTerminalStatus::Canceled));
+        }
+        if self
+            .detokenization
+            .as_mut()
+            .is_some_and(|stage| stage.cancel_terminal(uuid))
+        {
+            self.collector
+                .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
+            self.admission.on_request_causal_terminal(
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+            if self.awaiting_receipt.remove(&uuid) == Some(true) {
+                self.admission.on_request_quiescent(uuid, self.now_ms)?;
+            }
+            return Ok(Some(ReplayTerminalStatus::Canceled));
+        }
         let Some(state) = self.flow.requests.get(&uuid) else {
             return Ok(None);
         };
@@ -4321,6 +4388,9 @@ where
     fn cancel_running_decode(&mut self, uuid: Uuid, worker_idx: Option<usize>) -> Result<()> {
         let worker_idx = worker_idx
             .ok_or_else(|| anyhow!("decoding request {uuid} has no decode worker to cancel"))?;
+        let committed = self
+            .decode_engine
+            .request_has_committed_pass(worker_idx, uuid)?;
         let effects = self.decode_engine.apply_command(
             worker_idx,
             Command::CancelRequest {
@@ -4338,7 +4408,12 @@ where
         )?;
         self.process_lifecycle_events(effects.lifecycle_events)?;
         self.cancel_decode_route(uuid)?;
-        self.finish_logical_request(uuid, true)
+        if committed {
+            self.decode_cancel_pending.insert(uuid, worker_idx);
+            Ok(())
+        } else {
+            self.finish_logical_request(uuid, true)
+        }
     }
 
     pub(crate) fn next_dynamic_timestamp(&mut self) -> Option<f64> {

@@ -188,6 +188,15 @@ impl DetokenizationStage {
         self.next_entry += 1;
     }
 
+    /// Cancel a response not yet received by its client. This only removes the
+    /// pending client terminal; committed detokenizer service time is unchanged.
+    pub(crate) fn cancel_terminal(&mut self, request_id: Uuid) -> bool {
+        let before = self.terminals.len();
+        self.terminals
+            .retain(|Reverse(pending)| pending.request_id != request_id);
+        self.terminals.len() != before
+    }
+
     /// Finished requests the client has not received yet.
     pub(crate) fn len(&self) -> usize {
         self.terminals.len()

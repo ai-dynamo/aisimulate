@@ -72,6 +72,8 @@ where
     admission: AdmissionQueue<Metadata>,
     /// Encoder pool every arrival crosses before the language workers, if any.
     encoder: Option<EncoderPool<ReplayReadyArrival<Metadata>>>,
+    /// Canceled clients whose non-preemptive encoder work still owns a deadline.
+    encoder_canceled: std::collections::HashSet<Uuid>,
     requests: FxHashMap<Uuid, AggRequestState>,
     engine: EngineComponent<Observation>,
     collector: TraceCollector,
@@ -194,6 +196,7 @@ where
             profile_canceled_requests: 0,
             profile_unsettled_requests: 0,
             encoder: None,
+            encoder_canceled: Default::default(),
         })
     }
 
@@ -952,6 +955,12 @@ where
         };
         let released_any = !ready.is_empty();
         for (arrival, ready_ms) in ready {
+            if let Some(uuid) = arrival.request.metadata().uuid
+                && self.encoder_canceled.remove(&uuid)
+            {
+                self.admission.on_request_quiescent(uuid, self.now_ms)?;
+                continue;
+            }
             let uuid = self.admit_ready(arrival, true)?;
             self.collector.on_encoder_ready(uuid, ready_ms);
         }
@@ -3575,6 +3584,38 @@ where
         &mut self,
         uuid: Uuid,
     ) -> anyhow::Result<Option<ReplayTerminalStatus>> {
+        if self.encoder.as_ref().is_some_and(|encoder| {
+            encoder.contains(|arrival| arrival.request.metadata().uuid == Some(uuid))
+        }) {
+            if !self.encoder_canceled.insert(uuid) {
+                return Ok(None);
+            }
+            self.collector
+                .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
+            self.admission.on_request_causal_terminal(
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+            if !self.admission.knows_preparation_request(uuid) {
+                self.progress.inc_completed();
+            }
+            return Ok(Some(ReplayTerminalStatus::Canceled));
+        }
+        if self
+            .detokenization
+            .as_mut()
+            .is_some_and(|stage| stage.cancel_terminal(uuid))
+        {
+            self.collector
+                .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
+            self.admission.on_request_terminal(
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+            return Ok(Some(ReplayTerminalStatus::Canceled));
+        }
         let Some((phase, scheduler_id)) = self
             .requests
             .get(&uuid)
