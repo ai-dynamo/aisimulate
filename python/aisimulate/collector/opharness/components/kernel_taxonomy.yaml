@@ -9,9 +9,8 @@
 # Matching: regex, first match wins, applied to the NORMALIZED kernel name
 # (probe_driver.normalize_kernel), over the rules whose `sms` lists the run's SM
 # (a rule without `sms` applies to every SM). Unmatched kernels stay unlabeled
-# and show up as the record's unclassified_kernels. Merged 2026-11-04 from the
-# five per-SM files (sm89/sm90/sm100/sm103/sm120); each SM's filtered rule list
-# is identical, in order, to its former file.
+# and show up as the record's unclassified_kernels. Names are device kernels
+# only: both sides drop CPU-side ops and runtime calls before labeling.
 
 schema: aic-kernel-taxonomy/v2
 
@@ -19,7 +18,7 @@ rules:
   - {backend: vllm_kernel, role: infra,
      match: "flashinfer_concat_mla_k|ConcatMLAKKernel|BatchQKApplyRotaryPosIds"}
   - {backend: fa3, role: attention,
-     match: "^flash::(FlashAttnFwd|prepare_varlen)|^sgl_kernel::fwd$|vllmvllm_flash_attncuteflash_fwd_sm90|^_vllm_fa3_C::fwd$"}
+     match: "^flash::(FlashAttnFwd|prepare_varlen)|vllmvllm_flash_attncuteflash_fwd_sm90"}
   - {backend: flashmla, role: attention,
      match: "flash_fwd_splitkv_mla|flash_fwd_mla_combine|fwd_kvcache_mla|get_mla_metadata|flash_mla"}
   - {backend: dsa_nsa, role: attention,
@@ -111,7 +110,7 @@ rules:
   - {backend: framework_native, role: kvcache,
      match: "^alloc_decode_kernel$|^compute_position_kernel$|_fused_slot_clear_kernel|_page_table_positions_kernel|_build_swa_token_ids_kernel|_causal_swa_page_indices_kernel|_combine_topk_swa_indices_kernel|_expand_prefill_causally_kernel|_init_compressed_attn_metadata_kernel|plan_compress_(decode|prefill)_kernel|cp_gather_and_upconvert_fp8_kv_cache_page"}
   - {backend: framework_native, role: norm_rope,
-     match: "^_fused_embed_norm_kernel$|^_fused_norm_rope_kernel$|_triton_mrope_forward|^rotary_kernel$|^layer_norm_fwd_kernel$|LayerNormGatedFunction|_bilinear_pos_embed_kernel|^_hc_head_kernel$"}
+     match: "^_fused_embed_norm_kernel$|^_fused_norm_rope_kernel$|_triton_mrope_forward|^rotary_kernel$|^layer_norm_fwd_kernel$|_bilinear_pos_embed_kernel|^_hc_head_kernel$"}
   - {backend: framework_native, role: routing,
      match: "_combined_routing_compute|_combined_routing_memset|route_radix_kernel"}
   - {backend: torch, role: gemm,
@@ -236,12 +235,8 @@ rules:
      match: "^randperm_handle_duplicate_keys_kernel$|warpMergeSortKVInPlace"}
   - {backend: cutlass_fmha_sm100, role: attention, sms: [sm100, sm103],
      match: "cutlass::fmha::kernel::Sm100Fmha"}
-  - {backend: infra, role: infra, sms: [sm89],
-     match: "^vllm::(moe_forward|unified_mla_attention_with_output)$"}
   - {backend: dsa_nsa, role: dsa_indexer, sms: [sm100, sm103],
      match: "^deep_gemm::(sched::)?sm100_(paged_)?mqa_logits|flashinfer::sparse_topk::IndexerTopK"}
-  - {backend: infra, role: infra, sms: [sm89],
-     match: "^ChunkGatedDeltaRuleFunction$"}
   - {backend: deepgemm, role: gemm, sms: [sm100, sm103],
      match: "^deep_gemm::sm100_fp8_fp4_gemm|^deep_gemm::sm100_fp8_gemm"}
   - {backend: triton, role: attention, sms: [sm89],

@@ -119,3 +119,15 @@ def test_a_prefill_gate_reads_the_serving_record_of_its_prompt_length(gates):
         if phase == "prefill" and length and length != g.get("isl", probe_driver.DEFAULT_ISL):
             wrong.append(f"{g['gate']}@{g['backend']}: case length {length}, serving isl {g.get('isl')}")
     assert wrong == []
+
+
+def test_a_no_serving_floor_names_an_sm_where_the_gate_exists(gates):
+    """36 of 59 floors named an SM whose plan holds no such case (the gate is not there, so the
+    floor was never read); 8 more stood for a probe nobody had re-run yet."""
+    dead = [
+        f"{g['gate']}@{g['backend']}:{sm}"
+        for g in gates.load()["gates"]
+        for sm in g.get("no_serving") or {}
+        if not gates._matches(g["backend"], g["op"], int(sm.removeprefix("sm")), g["select"])
+    ]
+    assert dead == []

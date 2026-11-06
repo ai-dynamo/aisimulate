@@ -176,7 +176,7 @@ def test_the_plan_and_no_serving_floors_decide_the_gates_on_an_sm(wc):
 
 def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_scope(wc):
     """Rule 7: a pin bump re-checks every collector/skips.py entry in scope, by source or run."""
-    p = {"fw": "vllm", "version": "0.33.0", "sm": "sm90", "ops": "dsv4_hca_context_module"}
+    p = {"fw": "vllm", "version": "0.33.0", "sm": "sm90", "op": "dsv4_hca_context_module"}
     ok, reason = wc.pred_skips_rechecked(p)
     assert ok is False and "no recheck record" in reason
     ci = wc._case_inventory_module()
@@ -213,6 +213,9 @@ def test_case_set_no_regression_reads_the_recorded_plan_diff(wc):
     (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     ok, reason = wc.pred_case_set_no_regression(p)
     assert ok is False and "paged_mqa" in reason
+    # an upgrade done op by op: another op's regression is that op's step
+    assert wc.pred_case_set_no_regression({**p, "op": "moe"})[0] is True
+    assert wc.pred_case_set_no_regression({**p, "op": "moe,dsv4_paged_mqa_logits_module"})[0] is False
     doc["diff"] = {"regressions": [], "explained": ["moe: cases 10 -> 8, skips.py ['dtype=nvfp4']"], "additions": []}
     (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     ok, reason = wc.pred_case_set_no_regression(p)

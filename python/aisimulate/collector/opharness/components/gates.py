@@ -70,10 +70,13 @@ def _ops(gate: dict) -> list[str]:
 def gates_in_scope(
     fw: str | None = None, sm: str | None = None, table: Path = TABLE, op: str | None = None
 ) -> list[dict]:
-    """The gates of backend ``fw`` (a comma list; None: every backend), of ``op`` when given;
-    with ``sm`` ("sm100"), only those planned on that SM."""
+    """The gates of backend ``fw`` and op ``op`` (comma lists; None: every one); with ``sm``
+    ("sm100"), only those planned on that SM."""
     fws = set(fw.split(",")) if fw else None
-    gates = [g for g in load(table)["gates"] if (fws is None or g["backend"] in fws) and (op is None or op in _ops(g))]
+    ops = set(op.split(",")) if op else None
+    gates = [
+        g for g in load(table)["gates"] if (fws is None or g["backend"] in fws) and (ops is None or ops & set(_ops(g)))
+    ]
     if sm is None:
         return gates
     n = int(str(sm).removeprefix("sm"))
@@ -238,7 +241,7 @@ def main() -> int:
     for parser in (p, g):
         parser.add_argument("--sm", required=True, help="e.g. sm100")
         parser.add_argument("--fw", default=None, help="comma list of backends (default: every backend)")
-        parser.add_argument("--op", default=None, help="only the gates of this collector op, across the backends")
+        parser.add_argument("--op", default=None, help="only the gates of these collector ops (comma list), across the backends")
         parser.add_argument("--repo", default=None, help="only the gates that name this checkpoint")
     p.add_argument("--family", default=None, help="only the gates whose name starts with this family")
     p.add_argument("--out", required=True, type=Path)

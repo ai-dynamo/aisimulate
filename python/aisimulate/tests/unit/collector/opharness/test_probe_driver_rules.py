@@ -4,6 +4,7 @@
 contract, and the orphan keep rule that framework-mode probes depend on."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -270,3 +271,19 @@ def test_the_roster_floor_is_every_model_path_the_case_yamls_declare(pd):
     # orgs a fixed org list did not know, and a repo named only in a comment
     assert {"stepfun-ai/Step-3.7-Flash", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "meta-models/Muse-Glimmer-30B"} <= repos
     assert "zai-org/GLM-5.3-FP8" not in repos
+
+
+def test_a_roster_repo_without_a_dummy_needs_no_config(pd, tmp_path, monkeypatch):
+    """--only DeepSeek-V3 also matches nvidia/DeepSeek-V3.1-NVFP4: a repo nobody built a dummy for
+    is reported as skipped, not a stop for the whole campaign; a dummy without its config is."""
+    monkeypatch.setattr(pd, "ROOT", tmp_path)
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "dummy_models").mkdir()
+    manifest = {"variants": [{"repo": "org/built", "variant": "built__rep"}]}
+    (tmp_path / "dummy_models" / "variants_manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(pd, "derived_repos", lambda fam, targets: ["org/built", "org/unbuilt"])
+    with pytest.raises(SystemExit, match="org/built has dummies but no fetched config"):
+        pd.derive_roster_checkpoints({}, {})
+    monkeypatch.setattr(pd, "derive_profile", lambda repo, configs: "bf16")
+    cks = {ck["repo"]: ck for ck in pd.derive_roster_checkpoints({}, {})}
+    assert cks["org/built"]["variants"] == ["rep"] and cks["org/unbuilt"]["variants"] == []

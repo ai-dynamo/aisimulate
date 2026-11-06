@@ -58,6 +58,13 @@ def pred_pin_is(p):
     return False, f"framework_manifest.yaml pins {p['fw']} at {sorted(set(pins))}, want {p['version']}"
 
 
+def _op_scope(p) -> set[str] | None:
+    """--param op=a[,b]: the collector ops a check is scoped to (an upgrade done op by op, or a
+    family pin's ops); None for the whole framework."""
+    ops = {op for op in str(p.get("op") or "").split(",") if op}
+    return ops or None
+
+
 def pred_case_set_no_regression(p):
     """The collector's case plan for (fw, sm) was recorded and diffed against a
     base revision (components/case_inventory.py, CPU only): no op left the plan
@@ -65,7 +72,7 @@ def pred_case_set_no_regression(p):
     accounting for it. Case-set regressions are derivable before any
     collection: job 469988017 lost paged_mqa (op out of plan), the V4-Pro topk
     calibration (a getter's drop) and the sglang mla_context_module table (no
-    producer) — all visible in a plan diff."""
+    producer) — all visible in a plan diff. --param op= scopes it to those ops' lines."""
     inv = _results() / p["sm"] / "cases" / f"{p['fw']}-{p['version']}.yaml"
     if not inv.exists():
         return False, f"no case plan ({inv}) — run components/case_inventory.py --base <rev>"
@@ -78,6 +85,9 @@ def pred_case_set_no_regression(p):
     if "diff" not in doc:
         return False, "case plan has no diff against a base revision (recorded with --base none)"
     d = doc["diff"]
+    ops = _op_scope(p)
+    if ops:  # every diff line starts "<op>: "
+        d = {k: [line for line in d.get(k) or [] if line.split(":", 1)[0] in ops] for k in d}
     base = (meta.get("base") or {}).get("rev")
     if d.get("regressions"):
         return False, f"{len(d['regressions'])} case-set regressions vs {base} — {d['regressions'][0]}"
@@ -92,7 +102,7 @@ def pred_skips_rechecked(p):
     entry in scope for this backend is re-checked, by a source check or a run,
     and kept or deleted. results/<sm>/rechecks/<fw>-<version>.yaml records one
     item per entry (components/case_inventory.py --skips lists them; --param
-    ops=a,b narrows a family pin to the entries naming its ops): its key,
+    op=a,b narrows it to the entries naming those ops): its key,
     outcome kept|deleted, how source|run, and a ref (framework file:symbol or a
     run id). A kept entry needs its evidence; a deleted one must be gone.
     Deviation notes are comments at the code and are re-checked in review.
@@ -100,8 +110,8 @@ def pred_skips_rechecked(p):
     swept num_heads=96 on B200 and failed 362 cases 'unexpected': a conclusion
     about what a backend cannot run belongs in skips.py, where the plan reads it."""
     ci = _case_inventory_module()
-    ops = [op for op in str(p.get("ops") or "").split(",") if op]
-    in_scope = {ci.skip_key(entry) for entry in ci.skips_in_scope(p["fw"], ops or None)}
+    ops = _op_scope(p)
+    in_scope = {ci.skip_key(entry) for entry in ci.skips_in_scope(p["fw"], sorted(ops) if ops else None)}
     rec_path = _results() / p["sm"] / "rechecks" / f"{p['fw']}-{p['version']}.yaml"
     if not rec_path.exists():
         return False, f"{len(in_scope)} skips.py entries in scope, no recheck record ({rec_path})"
@@ -229,7 +239,7 @@ def pred_gates_aligned(p):
     repo, or those starting with the family; without a filter, every registry op must also be
     covered (a rebuilt gate set once kept 19 of 32)."""
     sm, fw, version = p["sm"], p["fw"], p["version"]
-    expected = declared_gates(fw, version, sm, p.get("op"))
+    expected = declared_gates(fw, version, sm, p.get("op"))  # a comma list, as gates_in_scope takes it
     if not p.get("repo") and not p.get("family") and not p.get("op"):
         gaps = uncovered(fw, registry_ops(fw), _gates_module().gates_in_scope(fw, None, GATES_TABLE))
         if gaps:

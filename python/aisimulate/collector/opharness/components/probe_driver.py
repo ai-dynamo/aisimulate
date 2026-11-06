@@ -215,7 +215,7 @@ def derived_repos(fam: dict, targets: dict) -> list[str]:
     families, plus probe-only extra_repos."""
     mentioned = collector_mentioned_repos()
     # owner-decided exclusions live in targets.yaml roster.excluded (each entry
-    # carries decided_by/reason); any OTHER missing config is a hard stop.
+    # carries decided_by/reason); check_coverage holds the floor.
     excluded = {e["repo"] for e in (fam.get("excluded") or [])}
     owned_elsewhere = {
         ck["repo"] for f in targets["families"].values() if not f.get("derive") for ck in f.get("checkpoints", [])
@@ -246,13 +246,13 @@ def derive_roster_checkpoints(fam: dict, targets: dict, only: list[str] | None =
     overrides = fam.get("checkpoint_overrides") or {}
     out = []
     for repo in repos:
+        if repo not in variants_of:  # no dummy yet: never probed here, enumerate_runs reports it
+            out.append({"repo": repo, "profile": None, "variants": []})
+            continue
         profile = derive_profile(repo, ROOT / "configs")
         if profile == "MISSING":
-            raise SystemExit(
-                f"derive_roster: no fetched config for {repo} — OWNER DECISION NEEDED "
-                f"(fetch the config, or the owner records an exclusion in targets.yaml roster.excluded)"
-            )
-        ck = {"repo": repo, "profile": profile, "variants": variants_of.get(repo, [])}
+            raise SystemExit(f"derive_roster: {repo} has dummies but no fetched config — fetch_inputs.py {repo}")
+        ck = {"repo": repo, "profile": profile, "variants": variants_of[repo]}
         ov = dict(overrides.get(repo) or {})
         if "profile" in ov:  # explicit pin wins, but derivation drift is loud
             if ov["profile"] != profile:
