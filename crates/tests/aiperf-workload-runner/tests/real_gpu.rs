@@ -31,10 +31,10 @@ fn h100_measured_op_tables_drive_native_agentx_with_shape_dependent_passes() {
     let memory_engine = serde_json::from_value(serde_json::json!({
         "schema_version":aisimulate_core::perfmodel::ENGINE_CONFIG_SCHEMA_VERSION,
         "model_name":config.model,"system_name":config.system,
-        "systems_path":systems,"backend":"vllm","backend_version":"0.24.0","forward_model":"op_level",
+        "systems_path":systems,"backend":BackendKind::Vllm,"backend_version":"0.24.0","forward_model":"op_level",
         "tp_size":1,"pp_size":1,"attention_dp_size":1,"kv_block_size":16,
-        "weight_dtype":"bfloat16","activation_dtype":"bfloat16","kv_cache_dtype":"bfloat16",
-        "strict_provenance":true,"database_mode":"silicon"
+        "weight_dtype":aisimulate_core::DataType::Bfloat16,"activation_dtype":aisimulate_core::DataType::Bfloat16,"kv_cache_dtype":aisimulate_core::DataType::Bfloat16,
+        "strict_provenance":true,"database_mode":DatabaseMode::Silicon
     })).expect("complete matching native memory engine identity");
     let (timing,memory) = CanonicalTimingModel::new_with_geometry(config,KvCacheEstimateRequest {
         engine:memory_engine,max_num_tokens:4096,max_batch_size:8,
