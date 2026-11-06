@@ -70,7 +70,8 @@ impl WorkloadParticipant for DeadlineParticipant {
         } else if !self.cancel_issued && self.cancel_at_ms.is_some_and(|at| at <= now_ms) {
             self.cancel_issued = true;
             self.facts.borrow_mut().push(Fact::Cancel(now_ms));
-            step.cancels.push(REQUEST);
+            // Repeating the same cancellation must not duplicate either callback.
+            step.cancels.extend([REQUEST, REQUEST]);
         }
         Ok(step)
     }
@@ -305,15 +306,21 @@ fn assert_canceled_once(report: &ReplayReport, facts: &[Fact], at_ms: f64) -> f6
 fn encoder_cancellation(disagg: bool) {
     let (control, _) = run(disagg, Scenario::Encoder, None);
     // 1ms preprocessing + 10ms encoder forward + 1ms embedding transfer.
-    assert!(record(&control).first_admit_ms.unwrap() >= 12.0);
-    let (report, facts) = run(disagg, Scenario::Encoder, Some(4.0));
-    assert_canceled_once(&report, &facts, 4.0);
-    assert_eq!(record(&report).first_admit_ms, None, "{facts:?}");
-    assert_eq!(record(&report).output_length, 0, "{facts:?}");
-    assert!(
-        facts.iter().all(|fact| !matches!(fact, Fact::Token(_))),
-        "{facts:?}"
-    );
+    assert_eq!(record(&control).first_admit_ms, Some(12.0));
+    // Cancel once during the committed encoder forward (1-11ms), then
+    // separately during its embedding transfer (11-12ms). Neither boundary
+    // may claim physical quiescence before the original 12ms delivery time.
+    for cancel_at_ms in [4.0, 11.5] {
+        let (report, facts) = run(disagg, Scenario::Encoder, Some(cancel_at_ms));
+        let quiescent_ms = assert_canceled_once(&report, &facts, cancel_at_ms);
+        assert_eq!(quiescent_ms, 12.0, "disagg={disagg}: {facts:?}");
+        assert_eq!(record(&report).first_admit_ms, None, "{facts:?}");
+        assert_eq!(record(&report).output_length, 0, "{facts:?}");
+        assert!(
+            facts.iter().all(|fact| !matches!(fact, Fact::Token(_))),
+            "{facts:?}"
+        );
+    }
 }
 
 #[test]
@@ -352,9 +359,8 @@ fn disaggregated_participant_cancels_response_awaiting_detokenization() {
     receipt_cancellation(true);
 }
 
-#[test]
-fn disaggregated_decode_cancel_waits_for_committed_pass_before_quiescence() {
-    let (_, control) = run(true, Scenario::Decode, None);
+fn committed_decode_cancellation(disagg: bool) {
+    let (_, control) = run(disagg, Scenario::Decode, None);
     let tokens = control
         .iter()
         .filter_map(|fact| match fact {
@@ -365,11 +371,16 @@ fn disaggregated_decode_cancel_waits_for_committed_pass_before_quiescence() {
     assert_eq!(tokens.len(), 4, "{control:?}");
     let (first_token_ms, next_pass_end_ms) = (tokens[0], tokens[1]);
     assert_eq!(next_pass_end_ms, first_token_ms + 10.0);
-    // By the first decode output the zero-latency handoff has completed. The
-    // next 10ms decode pass commits at that instant; cancel 4ms into it.
+    // In disaggregated replay the zero-latency handoff has completed by the
+    // first decode output. Both topologies commit the next 10ms pass then;
+    // cancel 4ms into it (14ms in the aggregated case, with pass end at 20ms).
+    if !disagg {
+        assert_eq!(first_token_ms, 10.0);
+        assert_eq!(next_pass_end_ms, 20.0);
+    }
     let cancel_at_ms = first_token_ms + 4.0;
     assert!(cancel_at_ms < next_pass_end_ms);
-    let (report, facts) = run(true, Scenario::Decode, Some(cancel_at_ms));
+    let (report, facts) = run(disagg, Scenario::Decode, Some(cancel_at_ms));
     let delivered_tokens = facts
         .iter()
         .filter_map(|fact| match fact {
@@ -383,4 +394,14 @@ fn disaggregated_decode_cancel_waits_for_committed_pass_before_quiescence() {
         quiescent_ms, next_pass_end_ms,
         "the causal terminal must not release a committed decode pass early: {facts:?}"
     );
+}
+
+#[test]
+fn aggregated_decode_cancel_waits_for_committed_pass_before_quiescence() {
+    committed_decode_cancellation(false);
+}
+
+#[test]
+fn disaggregated_decode_cancel_waits_for_committed_pass_before_quiescence() {
+    committed_decode_cancellation(true);
 }

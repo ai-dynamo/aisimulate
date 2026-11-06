@@ -154,6 +154,10 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         }
     }
 
+    pub(crate) fn is_external(&self) -> bool {
+        matches!(self.source, AdmissionSource::External(_))
+    }
+
     pub(crate) fn new_external(
         participant: Box<dyn WorkloadParticipant>,
         mode: ReplayMode,

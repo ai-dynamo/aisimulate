@@ -74,6 +74,8 @@ where
     encoder: Option<EncoderPool<ReplayReadyArrival<Metadata>>>,
     /// Canceled clients whose non-preemptive encoder work still owns a deadline.
     encoder_canceled: std::collections::HashSet<Uuid>,
+    /// External clients canceled before their committed worker pass settled.
+    cancel_pending_pass: Vec<(Uuid, usize)>,
     requests: FxHashMap<Uuid, AggRequestState>,
     engine: EngineComponent<Observation>,
     collector: TraceCollector,
@@ -197,6 +199,7 @@ where
             profile_unsettled_requests: 0,
             encoder: None,
             encoder_canceled: Default::default(),
+            cancel_pending_pass: Vec::new(),
         })
     }
 
@@ -828,7 +831,15 @@ where
             }
             changed = true;
         }
-
+        let pending = std::mem::take(&mut self.cancel_pending_pass);
+        for (uuid, scheduler) in pending {
+            if self.engine.request_has_committed_pass(scheduler, uuid)? {
+                self.cancel_pending_pass.push((uuid, scheduler));
+            } else {
+                self.admission.defer_quiescent(uuid, self.now_ms)?;
+                changed = true;
+            }
+        }
         Ok(changed)
     }
 
@@ -3620,6 +3631,14 @@ where
             return Ok(None);
         };
 
+        let committed = if self.admission.is_external() {
+            scheduler_id
+                .map(|scheduler| self.engine.request_has_committed_pass(scheduler, uuid))
+                .transpose()?
+                .unwrap_or(false)
+        } else {
+            false
+        };
         match phase {
             super::state::AggRequestPhase::QueuedAtRouter => {
                 if !self.placement.cancel_pending(uuid) {
@@ -3660,12 +3679,22 @@ where
         self.requests.remove(&uuid).ok_or_else(|| {
             anyhow::anyhow!("offline replay lost request state while canceling {uuid}")
         })?;
-        CoreAdmissionSource::on_terminal(
-            &mut self.admission,
-            uuid,
-            self.now_ms,
-            ReplayTerminalStatus::Canceled,
-        )?;
+        if committed {
+            self.cancel_pending_pass
+                .push((uuid, scheduler_id.expect("committed pass has scheduler")));
+            self.admission.defer_causal_terminal(
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+        } else {
+            CoreAdmissionSource::on_terminal(
+                &mut self.admission,
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+        }
         if !self.admission.knows_preparation_request(uuid) {
             self.progress.inc_completed();
         }
