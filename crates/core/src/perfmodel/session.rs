@@ -11,18 +11,16 @@
 //! op lists from an [`crate::perfmodel::engine::spec::EngineSpec`].
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
-
-use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 use crate::common::error::AicError;
+use crate::memo::Memo;
 use crate::operators::base::PerformanceResult;
 use crate::operators::op::MemoField;
-use crate::operators::util_empirical::ProvenanceTier;
 use crate::operators::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
 
-/// The engine op list an [`OpQueryCache`] entry belongs to.
+/// The engine op list an [`OpMemo`] entry belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OpList {
     Context = 0,
@@ -32,31 +30,28 @@ pub(crate) enum OpList {
 /// Results of ops whose result depends on one runtime field
 /// ([`Op::memo_field`]), kept across walks of one engine's op lists. Such a
 /// result is a pure function of the op and that field, so a walk at a new KV
-/// shape re-prices only the ops that read it. Each entry keeps the provenance
-/// tier its lookups fired, which every hit notes again.
-pub(crate) struct OpQueryCache {
+/// shape re-prices only the ops that read it. Debug builds re-price every hit.
+pub(crate) struct OpMemo {
     /// Each op's field by list and index, computed once from the lists.
     fields: [Box<[Option<MemoField>]>; 2],
-    capacity: usize,
     /// Keyed by list, index and field value ([`Self::key`]).
-    results: Mutex<FxHashMap<u64, (PerformanceResult, ProvenanceTier)>>,
+    results: Memo<u64, PerformanceResult>,
 }
 
-impl OpQueryCache {
-    /// A cache for walks of `context_ops` and `generation_ops`; it starts
+impl OpMemo {
+    /// A memo for walks of `context_ops` and `generation_ops`; it starts
     /// over once it holds `capacity` results.
     pub(crate) fn new(capacity: usize, context_ops: &[Op], generation_ops: &[Op]) -> Self {
         let fields = |ops: &[Op]| ops.iter().map(Op::memo_field).collect();
         Self {
             fields: [fields(context_ops), fields(generation_ops)],
-            capacity,
-            results: Mutex::default(),
+            results: Memo::flat(capacity).verifying_hits(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.results.lock().map_or(0, |results| results.len())
+        self.results.len()
     }
 
     /// The entry key of the op at `index` of `list` with its field at `value`.
@@ -78,47 +73,14 @@ impl OpQueryCache {
         let Some(field) = self.fields[list as usize].get(index).copied().flatten() else {
             return query();
         };
-        let value = field.of(ctx);
-        let key = Self::key(list, index, value);
-        let cached = self
-            .results
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-            .cloned();
-        if let Some((result, tier)) = cached {
-            #[cfg(debug_assertions)]
-            {
-                let repriced = query();
-                assert!(
-                    repriced.as_ref().is_ok_and(|repriced| *repriced == result),
-                    "op {index} of {list:?} at {field:?} {value} prices as {repriced:?}, \
-                     not its cached {result:?}"
-                );
-            }
-            db.note_provenance(tier);
-            return Ok(result);
-        }
-        // Observe exactly the tiers this query fires, then restore the
-        // caller's: the accumulator keeps the maximum of both either way.
-        let outer = db.take_provenance();
-        let result = query();
-        let tier = db.take_provenance();
-        db.note_provenance(outer);
-        db.note_provenance(tier);
-        let result = result?;
-        let mut results = self.results.lock().unwrap_or_else(PoisonError::into_inner);
-        if results.len() >= self.capacity {
-            results.clear();
-        }
-        results.insert(key, (result.clone(), tier));
-        Ok(result)
+        self.results
+            .get_or_price(db, Self::key(list, index, field.of(ctx)), query)
     }
 }
 
-/// [`OpQueryCache::query`] through `cache` when there is one.
+/// [`OpMemo::query`] through `cache` when there is one.
 fn shared_query(
-    cache: Option<&OpQueryCache>,
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     list: OpList,
     index: usize,
@@ -364,7 +326,7 @@ pub(crate) fn run_context_ops_with<'a>(
 pub(crate) fn run_context_ops_planned<'a>(
     ops: &'a [Op],
     plan: Option<&OpListPlan>,
-    cache: Option<&OpQueryCache>,
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     batch_size: u32,
     effective_isl: u32,
@@ -545,7 +507,7 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
 pub(crate) fn run_generation_ops_step_planned<'a>(
     ops: &'a [Op],
     plan: Option<&OpListPlan>,
-    cache: Option<&OpQueryCache>,
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     batch_size: u32,
     beam_width: u32,
@@ -650,12 +612,12 @@ pub(crate) fn generation_op_runtime(
 /// (passes 1 and 2) or the decode pass, its index in its op list, the op,
 /// its runtime context, its RAW result and the divisor the total applies to
 /// it (pass 2's `scale_factor`, otherwise 1). `cache`, when given, answers
-/// single-coordinate ops ([`OpQueryCache`]).
+/// single-coordinate ops ([`OpMemo`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mix_step_ops<'a>(
     context_ops: &'a [Op],
     generation_ops: &'a [Op],
-    cache: Option<&OpQueryCache>,
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     ctx_tokens: u32,
     gen_tokens: u32,
