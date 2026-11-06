@@ -80,7 +80,9 @@ pub struct StateSpaceTable {
 ///
 /// The same TRT-LLM floor also covers Mamba2 (`mamba2_aliases`): rc29
 /// persists the token-major context convolution
-/// (`causal_conv1d_fn_token_major`) where rc20 persisted `causal_conv1d_fn`.
+/// (`causal_conv1d_fn_token_major`) where rc20 persisted `causal_conv1d_fn`,
+/// and the decode state update under `selective_state_update_flashinfer` or
+/// `selective_state_update_triton` where rc20 held no such rows.
 ///
 /// Versions are compared as PEP 440; an unparseable version gets no profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +113,10 @@ impl GdnAliasProfile {
             (Self::TrtllmPhysical, "causal_conv1d_fn", "context") => {
                 &["causal_conv1d_fn_token_major"]
             }
+            (Self::TrtllmPhysical, "selective_state_update", "generation") => &[
+                "selective_state_update_flashinfer",
+                "selective_state_update_triton",
+            ],
             _ => &[],
         }
     }
@@ -2083,6 +2089,94 @@ mod tests {
         let table =
             in_memory_mamba2_table("trtllm", "1.3.0rc29", &[("mamba_chunk_scan_combined", 3.0)]);
         assert!(query_mamba2_conv(&table).is_err());
+    }
+
+    fn in_memory_mamba2_decode_table(
+        backend: &str,
+        version: &str,
+        rows: &[(&str, f64)],
+    ) -> StateSpaceTable {
+        let mut by_keys: BTreeMap<Mamba2Key, Node> = BTreeMap::new();
+        for &(kernel_source, latency) in rows {
+            let key = Mamba2Key {
+                kernel_source: kernel_source.to_string(),
+                phase: "generation".to_string(),
+                d_model: 8192,
+                d_state: 128,
+                d_conv: 4,
+                nheads: 128,
+                head_dim: 64,
+                n_groups: 8,
+                chunk_size: 256,
+            };
+            let node = by_keys.entry(key).or_insert_with(Node::branch);
+            insert_first_wins(node, &[1], LeafValue::latency_only(latency));
+        }
+        let table = StateSpaceTable::new(PathBuf::from("test-data"), backend, version);
+        assert!(
+            table
+                .mamba2
+                .set(Ok(Mamba2Grids {
+                    by_keys: prepare_nodes(by_keys),
+                }))
+                .is_ok()
+        );
+        table
+    }
+
+    fn query_mamba2_update(table: &StateSpaceTable) -> Result<f64, AicError> {
+        let dummy_sol = |_: f64, _: f64| 1.0;
+        table
+            .query_mamba2(
+                "selective_state_update",
+                "generation",
+                1,
+                1,
+                8192,
+                128,
+                4,
+                128,
+                64,
+                8,
+                256,
+                &dummy_sol,
+            )
+            .map(|v| v.latency)
+    }
+
+    #[test]
+    fn trtllm_rc29_mamba2_decode_update_resolves_flashinfer_then_triton_labels() {
+        let table = in_memory_mamba2_decode_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[
+                ("selective_state_update", 1.0),
+                ("selective_state_update_flashinfer", 2.0),
+                ("selective_state_update_triton", 3.0),
+            ],
+        );
+        assert_eq!(query_mamba2_update(&table).unwrap(), 2.0);
+        let table = in_memory_mamba2_decode_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[("selective_state_update_triton", 3.0)],
+        );
+        assert_eq!(query_mamba2_update(&table).unwrap(), 3.0);
+        // Without a physical row the merged logical lane still serves.
+        let table = in_memory_mamba2_decode_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[("selective_state_update", 1.0)],
+        );
+        assert_eq!(query_mamba2_update(&table).unwrap(), 1.0);
+        // rc20 persisted no FlashInfer label: no alias, a physical-only table misses (SOL at the
+        // operator).
+        let table = in_memory_mamba2_decode_table(
+            "trtllm",
+            "1.3.0rc20",
+            &[("selective_state_update_flashinfer", 2.0)],
+        );
+        assert!(query_mamba2_update(&table).is_err());
     }
 
     /// One Mamba2 shape written through the parquet loader: a context row at
