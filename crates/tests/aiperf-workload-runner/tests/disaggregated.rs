@@ -51,6 +51,45 @@ fn simulator_owned_agentx_uses_real_dynamo_kv_placement_for_both_pools() {
     }
 }
 
+#[cfg(feature = "kv-router-proof")]
+#[test]
+fn real_kv_router_reuses_cached_prefix_on_the_same_prefill_worker() {
+    use aisimulate_core::replay::{DirectRequest, ReplayComposition, ReplayDeterminism, loadgen::SteppableReplay};
+    use dynamo_mocker::placement::{KvReplayComposition, MockerConfig};
+    let rank = EngineConfig {
+        timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 1.0 },
+        block_size: 8, max_num_seqs: 64, enable_prefix_caching: true,
+        enable_chunked_prefill: false, async_scheduling: Some(false), ..Default::default()
+    };
+    let mut args = MockerConfig::default();
+    args.engine.engine = rank.clone();
+    let mut composition = KvReplayComposition::disaggregated(args.clone(), args, 2, 2, None, None, None);
+    composition.set_determinism(ReplayDeterminism::CanonicalV1).unwrap();
+    let mut deployment = SteppableDisagg::<_, dynamo_mocker::placement::RouterEventObservation,
+        dynamo_mocker::placement::KvReplayMetadata>::with_placements(
+        ReplayEngineConfig { rank, ..Default::default() }, &ReplayEngineFactory::new(), 2, 2,
+        |pdp, pt, ddp, dt| composition.create_disaggregated_placements(pdp, pt, ddp, dt),
+    ).unwrap();
+    deployment.set_capture_per_request(true);
+    let first = uuid::Uuid::from_u128(501);
+    let second = uuid::Uuid::from_u128(502);
+    for id in [first, second] {
+        deployment.submit(DirectRequest { uuid: Some(id), tokens: (0..64).collect(), max_output_tokens: 2, ..Default::default() }).unwrap();
+        for _ in 0..1000 {
+            if deployment.is_idle() { break; }
+            deployment.step().unwrap();
+        }
+        assert!(deployment.is_idle(), "actual physical work must drain");
+    }
+    let report = deployment.take_report(deployment.now_ms()).unwrap();
+    let first_record = report.per_request.iter().find(|row| row.uuid == first.to_string()).unwrap();
+    let second_record = report.per_request.iter().find(|row| row.uuid == second.to_string()).unwrap();
+    assert_eq!(first_record.prefill_worker_idx, second_record.prefill_worker_idx);
+    assert!(second_record.first_admission_reused_input_tokens > 0,
+        "same-worker selection must reflect actual cache reuse, not only tie-breaking");
+    assert_eq!(report.request_counts.completed_requests, 2);
+}
+
 #[test]
 fn simulator_owned_agentx_branches_cross_actual_prefill_decode_handoff() {
     let directory = tempfile::tempdir().unwrap();
