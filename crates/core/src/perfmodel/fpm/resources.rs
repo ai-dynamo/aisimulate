@@ -115,11 +115,57 @@ impl FpmCacheGroup {
     }
 }
 
+/// Observed vLLM align layout: one attention group and equally padded Mamba
+/// groups share one physical pool. Internal prefill checkpoint slots are absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FpmMambaCache {
+    pub state_storage: String,
+    pub block_size_tokens: u32,
+    pub page_size_bytes: u64,
+    pub state_groups: u32,
+    pub prefix_match_unit: u32,
+    pub num_speculative_states: u32,
+}
+
+impl FpmMambaCache {
+    fn validate(&self) -> Result<(), AicError> {
+        if self.state_storage != "full_state" {
+            return Err(invalid(
+                "mamba_align requires state_storage=full_state; use cache_layout=unmodeled for ReplaySSM or RecoverSSM",
+            ));
+        }
+        if self.block_size_tokens < 2
+            || self.page_size_bytes == 0
+            || self.page_size_bytes > MAX_EXACT_BYTES
+            || self.state_groups == 0
+            || self.prefix_match_unit == 0
+            || !self
+                .block_size_tokens
+                .is_multiple_of(self.prefix_match_unit)
+            || !self
+                .page_size_bytes
+                .is_multiple_of(u64::from(self.block_size_tokens))
+            || self.num_speculative_states > 5
+            || self
+                .page_size_bytes
+                .checked_mul(u64::from(self.state_groups))
+                .is_none_or(|bytes| bytes > MAX_EXACT_BYTES)
+        {
+            return Err(invalid("invalid observed Mamba shared-pool geometry"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FpmCacheLayout {
+    MambaAlign,
     Linear,
     Grouped,
+    /// Observed allocation without a supported cache allocator model.
+    Unmodeled,
 }
 
 /// Cache capacity observed for the exact deployment and scheduler settings.
@@ -172,6 +218,8 @@ pub struct FpmResourceConfig {
     pub cache_layout: FpmCacheLayout,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_groups: Vec<FpmCacheGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_cache: Option<FpmMambaCache>,
     pub max_num_tokens: u32,
     pub max_batch_size: u32,
     pub provenance: String,
@@ -200,7 +248,28 @@ impl FpmResourceConfig {
                 ));
             }
         }
+        if self.mamba_cache.is_some() != (self.cache_layout == FpmCacheLayout::MambaAlign) {
+            return Err(invalid("mamba_cache requires cache_layout=mamba_align"));
+        }
         match self.cache_layout {
+            FpmCacheLayout::MambaAlign
+                if self.runtime_memory.is_some()
+                    && self.kv_bytes_per_token.is_none()
+                    && self.cache_groups.is_empty() =>
+            {
+                let cache = self.mamba_cache.as_ref().unwrap();
+                cache.validate()?;
+                let bytes = self.runtime_memory.as_ref().unwrap().kv_cache_bytes;
+                if !bytes.is_multiple_of(cache.page_size_bytes) || bytes <= cache.page_size_bytes {
+                    return Err(invalid(
+                        "Mamba pool must contain whole physical pages and a reserved null page",
+                    ));
+                }
+            }
+            FpmCacheLayout::Unmodeled
+                if self.runtime_memory.is_some()
+                    && self.kv_bytes_per_token.is_none()
+                    && self.cache_groups.is_empty() => {}
             FpmCacheLayout::Linear
                 if self.cache_groups.is_empty()
                     && self
@@ -251,6 +320,11 @@ impl FpmResourceConfig {
     }
 
     pub fn require_memory(&self) -> Result<(), AicError> {
+        if self.cache_layout == FpmCacheLayout::Unmodeled {
+            return Err(invalid(
+                "unmodeled FPM cache supports timing queries only; cache sizing and replay require a supported cache layout",
+            ));
+        }
         if self.runtime_memory.is_none() && self.declared_bytes().iter().any(Option::is_none) {
             return Err(invalid(
                 "FPM memory is pending runtime profiling; collect and finalize runtime memory or provide all four declared non-KV resource values before simulation",
@@ -304,6 +378,8 @@ pub struct FpmCacheBudget {
     pub request_peak_cache_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_occupancy_cache_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_cache: Option<serde_json::Value>,
 }
 
 impl ForwardPassPerfModelConfig {
@@ -362,11 +438,23 @@ impl ForwardPassPerfModelConfig {
         .map_err(|error| invalid(format!("FPM resource profile: {error}")))?;
         resources.validate()?;
         if execution.is_some()
-            && (resources.cache_layout != FpmCacheLayout::Linear
+            && (resources.cache_layout == FpmCacheLayout::Grouped
                 || resources.runtime_memory.is_none())
         {
             return Err(invalid(
-                "speculative-round FPM resources require observed runtime memory and a linear cache",
+                "speculative-round FPM resources require observed runtime memory and a linear, mamba_align, or unmodeled cache",
+            ));
+        }
+        if let Some(cache) = &resources.mamba_cache
+            && (cache.num_speculative_states != self.nextn
+                || self.worker_type != ForwardPassWorkerType::Aggregated
+                || self.attention_dp != 1
+                || self.cp_size.unwrap_or(1) != 1
+                || self.dcp.unwrap_or(1) != 1
+                || self.moe_ep_size.unwrap_or(1) != 1)
+        {
+            return Err(invalid(
+                "Mamba profile requires aggregated pure-TP execution and the measured speculative depth",
             ));
         }
         Ok(Some(resources))
@@ -490,6 +578,9 @@ impl FpmResourceConfig {
         context: u64,
     ) -> Result<FpmCacheBudget, AicError> {
         self.validate()?;
+        if self.cache_layout == FpmCacheLayout::Unmodeled {
+            self.require_memory()?;
+        }
         if request.memory_fraction_kind != "of_total" {
             return Err(invalid(
                 "vLLM FPM resources require memory_fraction_kind='of_total'",
@@ -580,9 +671,34 @@ impl FpmResourceConfig {
                 }),
             )
         };
+        let replay_cache = self.mamba_cache.as_ref().map(|cache| {
+            let mut state = serde_json::json!({
+                "bytes_per_request": cache.page_size_bytes * u64::from(cache.state_groups),
+            });
+            if cache.num_speculative_states > 0 {
+                state["num_speculative_states"] = cache.num_speculative_states.into();
+            }
+            serde_json::json!({
+                "block_size": cache.block_size_tokens,
+                "prefix_match_unit": cache.prefix_match_unit,
+                "num_gpu_blocks": total / cache.page_size_bytes - 1,
+                "kv_cache_bytes_per_token": cache.page_size_bytes / u64::from(cache.block_size_tokens),
+                "state_cache": state,
+            })
+        });
         let token_count = |bytes| self.kv_bytes_per_token.map(|rate| bytes / rate);
         let footprint = |tokens: u64, chunk: u32| {
-            let bytes = if self.cache_layout == FpmCacheLayout::Linear {
+            let bytes = if let Some(cache) = &self.mamba_cache {
+                let pages = tokens.div_ceil(u64::from(cache.block_size_tokens));
+                // Peak includes old/new state plus a partial attention source.
+                pages
+                    .checked_add(
+                        u64::from(cache.state_groups)
+                            * (2 + u64::from(cache.num_speculative_states))
+                            + 1,
+                    )
+                    .and_then(|pages| pages.checked_mul(cache.page_size_bytes))
+            } else if self.cache_layout == FpmCacheLayout::Linear {
                 tokens.checked_mul(self.kv_bytes_per_token.unwrap())
             } else {
                 self.cache_groups.iter().try_fold(0u64, |sum, group| {
@@ -625,6 +741,7 @@ impl FpmResourceConfig {
             cache_groups: self.cache_groups.clone(),
             request_peak_cache_bytes,
             request_occupancy_cache_bytes,
+            replay_cache,
         })
     }
 }
@@ -666,6 +783,7 @@ mod tests {
             kv_bytes_per_token: None,
             cache_layout: FpmCacheLayout::Grouped,
             cache_groups: vec![group(Some(32))],
+            mamba_cache: None,
             max_num_tokens: 128,
             max_batch_size: 8,
             provenance: "Hand-derived rank-local byte fixture".into(),
@@ -700,6 +818,55 @@ mod tests {
             }),
             ..resources()
         }
+    }
+
+    #[test]
+    fn mamba_budget_counts_one_shared_pool_null_page_and_scratch_states() {
+        let mut resources = runtime_resources();
+        resources.cache_layout = FpmCacheLayout::MambaAlign;
+        resources.cache_groups.clear();
+        resources.runtime_memory.as_mut().unwrap().kv_cache_bytes = 640;
+        resources.mamba_cache = Some(FpmMambaCache {
+            state_storage: "full_state".into(),
+            block_size_tokens: 8,
+            page_size_bytes: 64,
+            state_groups: 2,
+            prefix_match_unit: 2,
+            num_speculative_states: 3,
+        });
+        let mut request = request();
+        request.cuda_graph_reserved_bytes = 0;
+        let budget = resources.estimate_budget(&request, 16).unwrap();
+        assert_eq!(budget.total_kv_size_bytes, 640);
+        assert_eq!(budget.total_kv_size_tokens, None);
+        assert_eq!(budget.request_peak_cache_bytes, 832);
+        assert_eq!(
+            budget.replay_cache.unwrap(),
+            serde_json::json!({
+                "block_size": 8, "prefix_match_unit": 2, "num_gpu_blocks": 9,
+                "kv_cache_bytes_per_token": 8,
+                "state_cache": {"bytes_per_request": 128, "num_speculative_states": 3},
+            })
+        );
+        for policy in ["replayssm", "recoverssm"] {
+            resources.mamba_cache.as_mut().unwrap().state_storage = policy.into();
+            assert!(
+                resources
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("state_storage=full_state")
+            );
+        }
+        resources.mamba_cache.as_mut().unwrap().state_storage = "full_state".into();
+        let mut missing_policy = serde_json::to_value(&resources).unwrap();
+        missing_policy["mamba_cache"]
+            .as_object_mut()
+            .unwrap()
+            .remove("state_storage");
+        assert!(serde_json::from_value::<FpmResourceConfig>(missing_policy).is_err());
+        resources.runtime_memory.as_mut().unwrap().kv_cache_bytes = 641;
+        assert!(resources.validate().is_err());
     }
 
     fn role_config() -> ForwardPassPerfModelConfig {
@@ -776,6 +943,40 @@ mod tests {
         assert_eq!(budget.memory_breakdown, None);
         query.cuda_graph_reserved_bytes = 20;
         assert!(resources.estimate_budget(&query, 4096).is_err());
+    }
+
+    #[test]
+    fn unmodeled_observed_cache_never_supplies_a_simulated_capacity() {
+        let mut config = round_config();
+        for deployment in config.fpm_profile.as_mut().unwrap()["deployments"]
+            .as_array_mut()
+            .unwrap()
+        {
+            let resources = deployment["resources"].as_object_mut().unwrap();
+            resources.insert("cache_layout".into(), "unmodeled".into());
+            resources.remove("kv_bytes_per_token");
+        }
+        let resources = config.fpm_resources().unwrap().unwrap();
+        assert!(
+            resources
+                .require_memory()
+                .unwrap_err()
+                .to_string()
+                .contains("unmodeled")
+        );
+        assert!(
+            resources
+                .estimate_budget(&request(), 4096)
+                .unwrap_err()
+                .to_string()
+                .contains("unmodeled")
+        );
+        let mut invalid = resources.clone();
+        invalid.kv_bytes_per_token = Some(10);
+        assert!(invalid.validate().is_err());
+        invalid.kv_bytes_per_token = None;
+        invalid.runtime_memory = None;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
