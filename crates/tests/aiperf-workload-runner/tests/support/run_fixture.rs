@@ -6,53 +6,54 @@
 use serde_json::{Value, json};
 
 pub fn request(directory: &std::path::Path) -> Value {
-    let mut cfg = aiperf_config::model::BenchmarkConfig::default();
-    // Populate EVERY nonnullable required section from the native direct-wire
-    // inventory. Defaults remain owned by each public config type.
-    cfg.endpoint = Some(serde_json::from_value(json!({
-        "urls":["http://127.0.0.1:1"],"url_strategy":"round_robin","type":"chat","streaming":true,
-        "allow_empty_content":false,"use_legacy_max_tokens":false,"use_server_token_count":false,
-        "per_chunk_usage":false,"timeout_seconds":30.0,"connection_reuse":"pooled","ssl_verify":true,
-        "connection_limit":64,"keepalive_timeout":15.0,"download_video_content":false,
-        "polling_interval_seconds":1.0,"extra":{},"headers":{},"http2":false,
-        "wait_for_model_timeout":0.0,"wait_for_model_interval":1.0,"wait_for_model_mode":"models","proxy_from_env":false
-    })).expect("complete endpoint policy"));
-    cfg.transport = Some(aiperf_config::model::transport::Transport::Http);
-    cfg.runtime = Some(Default::default());
-    cfg.metrics = Some(Default::default());
-    cfg.artifacts = Some(aiperf_config::model::artifacts::Artifacts {
-        inputs_path: "inputs.json".into(),
-        ..Default::default()
-    });
-    cfg.gpu_telemetry = Some(Default::default());
-    cfg.server_metrics = Some(Default::default());
-    cfg.network_latency = Some(Default::default());
-    cfg.export = Some(serde_json::from_value(json!({
-        "visibility":{"dev_mode":false,"show_internal_metrics":false,"show_experimental_metrics":false},
-        "genai_perf":{"enabled":false,"json":false,"csv":false},
-        "console_txt":{"enabled":false,"width":140,"title":"AISim proof","metrics":{},"model_names":[],"usage_diff_threshold_pct":10.0,"osl_mismatch_threshold_pct":5.0,"osl_mismatch_max_tokens":50.0},
-        "server_metrics":{"json":false,"csv":false},"plugin_exporters":[]
-    })).expect("complete disabled export policy"));
-    cfg.datasets = Some(vec![serde_json::from_value(json!({"type":"file","format":"weka_trace","options":{},"sampling":"sequential","prompts":{"corpus":"coding"},"synthesis":{"speedup_ratio":1.0,"prefix_len_multiplier":1.0,"prefix_root_multiplier":1,"prompt_len_multiplier":1.0,"output_len_multiplier":1.0,"cache_bust_target":"none"},"records":{"id":"finite-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[1,2],"api_time":0.001},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[1,2,3],"api_time":0.001}]}})).unwrap()]);
-    cfg.models = Some(aiperf_config::model::models::Models {
-        strategy: aiperf_config::model::models::ModelStrategy::RoundRobin,
-        items: vec![aiperf_config::model::models::ModelItem {
-            name: "model".into(),
+    // Every nonnullable direct-wire section uses its owning native type.
+    let cfg = aiperf_config::model::BenchmarkConfig {
+        endpoint: Some(serde_json::from_value(json!({
+            "urls":["http://127.0.0.1:1"],"url_strategy":"round_robin","type":"chat","streaming":true,
+            "allow_empty_content":false,"use_legacy_max_tokens":false,"use_server_token_count":false,
+            "per_chunk_usage":false,"timeout_seconds":30.0,"connection_reuse":"pooled","ssl_verify":true,
+            "connection_limit":64,"keepalive_timeout":15.0,"download_video_content":false,
+            "polling_interval_seconds":1.0,"extra":{},"headers":{},"http2":false,
+            "wait_for_model_timeout":0.0,"wait_for_model_interval":1.0,"wait_for_model_mode":"models","proxy_from_env":false
+        })).expect("complete endpoint policy")),
+        transport: Some(aiperf_config::model::transport::Transport::Http),
+        runtime: Some(Default::default()),
+        metrics: Some(Default::default()),
+        artifacts: Some(aiperf_config::model::artifacts::Artifacts {
+            inputs_path: "inputs.json".into(),
             ..Default::default()
-        }],
-    });
-    cfg.tokenizer = Some(aiperf_config::model::tokenizer::Tokenizer {
-        name: Some("builtin".into()),
-        revision: "main".into(),
-        trust_remote_code: false,
-        apply_chat_template: false,
-        server_url: None,
-        per_model: Default::default(),
-    });
-    cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"grace_period":1.0}])).unwrap());
-    cfg.finite_replay = Some(true);
-    cfg.trajectory_start_min_ratio = Some(0.0);
-    cfg.trajectory_start_max_ratio = Some(0.0);
+        }),
+        gpu_telemetry: Some(Default::default()),
+        server_metrics: Some(Default::default()),
+        network_latency: Some(Default::default()),
+        export: Some(serde_json::from_value(json!({
+            "visibility":{"dev_mode":false,"show_internal_metrics":false,"show_experimental_metrics":false},
+            "genai_perf":{"enabled":false,"json":false,"csv":false},
+            "console_txt":{"enabled":false,"width":140,"title":"AISim proof","metrics":{},"model_names":[],"usage_diff_threshold_pct":10.0,"osl_mismatch_threshold_pct":5.0,"osl_mismatch_max_tokens":50.0},
+            "server_metrics":{"json":false,"csv":false},"plugin_exporters":[]
+        })).expect("complete disabled export policy")),
+        datasets: Some(vec![serde_json::from_value(json!({"type":"file","format":"weka_trace","options":{},"sampling":"sequential","prompts":{"corpus":"coding"},"synthesis":{"speedup_ratio":1.0,"prefix_len_multiplier":1.0,"prefix_root_multiplier":1,"prompt_len_multiplier":1.0,"output_len_multiplier":1.0,"cache_bust_target":"none"},"records":{"id":"finite-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[1,2],"api_time":0.001},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[1,2,3],"api_time":0.001}]}})).unwrap()]),
+        models: Some(aiperf_config::model::models::Models {
+            strategy: aiperf_config::model::models::ModelStrategy::RoundRobin,
+            items: vec![aiperf_config::model::models::ModelItem {
+                name: "model".into(),
+                ..Default::default()
+            }],
+        }),
+        tokenizer: Some(aiperf_config::model::tokenizer::Tokenizer {
+            name: Some("builtin".into()),
+            revision: "main".into(),
+            trust_remote_code: false,
+            apply_chat_template: false,
+            server_url: None,
+            per_model: Default::default(),
+        }),
+        phases: Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"grace_period":1.0}])).unwrap()),
+        finite_replay: Some(true),
+        trajectory_start_min_ratio: Some(0.0),
+        trajectory_start_max_ratio: Some(0.0),
+        ..Default::default()
+    };
     let run = aiperf_config::model::BenchmarkRun {
         benchmark_id: "independent-proof".into(),
         artifact_dir: directory.into(),
