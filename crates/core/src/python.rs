@@ -3,6 +3,7 @@
 
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,6 +13,7 @@ use crate::engine::{
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, ValidatedTimingPhase,
     VisionShape,
 };
+use crate::memo::{Memo, OnThread};
 use crate::perfmodel::engine::runtime::{
     IterationDispatch, MixedPass, PerOpSlotValue, RankDetail, RankPricing,
 };
@@ -658,7 +660,27 @@ impl IterationKind {
 type RankQuery = [u32; 5];
 
 /// A group iteration: every rank's query in DP order.
-type IterationKey = Vec<RankQuery>;
+/// A group iteration: every rank's query in DP order, and whether operation
+/// diagnostics are captured.
+type IterationKey = (Vec<RankQuery>, bool);
+
+/// [`IterationKey`] borrowed, so a hit allocates nothing.
+#[derive(Clone, Copy)]
+struct IterationKeyRef<'a>(&'a [RankQuery], bool);
+
+impl Hash for IterationKeyRef<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hashes as the owned tuple does: the slice, then the flag.
+        self.0.hash(state);
+        self.1.hash(state);
+    }
+}
+
+impl quick_cache::Equivalent<IterationKey> for IterationKeyRef<'_> {
+    fn equivalent(&self, key: &IterationKey) -> bool {
+        self.0 == key.0.as_slice() && self.1 == key.1
+    }
+}
 
 /// A recorded rank estimate's kind, the rank's query and the bits of the
 /// iteration's correction.
@@ -690,7 +712,7 @@ struct IterationPricing {
     /// Priced iterations keyed by the complete ordered rank list. Absent while
     /// the model collects lookup coverage, which counts every invocation, and
     /// when the estimator reads per-request detail the key does not hold.
-    cache: Option<quick_cache::sync::Cache<IterationKey, Arc<PricedIteration>>>,
+    memo: Option<Memo<IterationKey, Arc<PricedIteration>>>,
     /// How a mixed operation-graph rank's operations split into prefill and
     /// decode evidence, per operation-name list the model reports.
     mixed_splits: Mutex<Vec<Arc<MixedSplit>>>,
@@ -798,10 +820,10 @@ impl IterationPricing {
             model: Arc::clone(model),
             query: IterationQuery::Native(dispatch),
             mix_step_passes: native.mix_step_passes(),
-            cache: model
+            memo: model
                 .fpm_query_coverage()?
                 .is_none()
-                .then(|| quick_cache::sync::Cache::new(256)),
+                .then(|| Memo::clock(256)),
             mixed_splits: Mutex::default(),
         }))
     }
@@ -824,6 +846,7 @@ impl IterationPricing {
 }
 
 /// One priced group iteration and the evidence each invocation records.
+#[derive(Debug)]
 struct PricedIteration {
     total_ms: f64,
     /// The detailed whole-model FPM estimate, when diagnostics are captured.
@@ -853,7 +876,7 @@ struct AicTimingModel {
     /// Capture-only history of group iterations priced as one forward.
     fpm_iteration_evidence:
         Mutex<std::collections::BTreeMap<FpmIterationKey, crate::FpmEstimateEvidence>>,
-    phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, Arc<ValidatedTimingPhase>>,
+    phase_memo: Memo<PhaseEvidenceKey, Arc<ValidatedTimingPhase>>,
     /// Present when the rank hosts the vision tower.
     vision: Option<VisionTimer>,
     /// `None` keeps the per-rank phase pricing for every pass.
@@ -865,7 +888,7 @@ struct AicTimingModel {
 /// replay drops when no evidence capture was requested.
 struct VisionTimer {
     model: Arc<ForwardPassPerfModel>,
-    cache: quick_cache::sync::Cache<VisionShape, Arc<ValidatedTimingPhase>>,
+    memo: Memo<VisionShape, Arc<ValidatedTimingPhase>>,
 }
 
 impl AicTimingModel {
@@ -951,7 +974,7 @@ impl AicTimingModel {
         }
         let vision = vision.then(|| VisionTimer {
             model: Arc::clone(&model),
-            cache: quick_cache::sync::Cache::new(64),
+            memo: Memo::clock(64),
         });
         let phase_provider = AicPhaseProvider::Native(Arc::clone(&native));
         let iteration = IterationPricing::for_replay(
@@ -982,7 +1005,7 @@ impl AicTimingModel {
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
             fpm_evidence: Mutex::default(),
             fpm_iteration_evidence: Mutex::default(),
-            phase_cache: quick_cache::sync::Cache::new(128),
+            phase_memo: Memo::clock(128),
             vision,
             iteration,
         })
@@ -1051,7 +1074,7 @@ impl AicTimingModel {
             model: Arc::clone(&model),
             query: IterationQuery::Fitted { detail },
             mix_step_passes: None,
-            cache: (!detail).then(|| quick_cache::sync::Cache::new(256)),
+            memo: (!detail).then(|| Memo::clock(256)),
             // Fitted estimators report no operation evidence.
             mixed_splits: Mutex::default(),
         };
@@ -1067,7 +1090,7 @@ impl AicTimingModel {
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
             fpm_evidence: Mutex::default(),
             fpm_iteration_evidence: Mutex::default(),
-            phase_cache: quick_cache::sync::Cache::new(1),
+            phase_memo: Memo::clock(1),
             vision: None,
             iteration: Some(iteration),
         })
@@ -1094,27 +1117,24 @@ impl AicTimingModel {
             .vision
             .as_ref()
             .context("this rank does not host the vision encoder")?;
-        if let Some(phase) = timer.cache.get(&shape) {
-            return Ok(phase);
-        }
-        let entries = timer
-            .model
-            .vision_operations(&[crate::EncoderImageShape {
-                sequences: shape.encoder.sequences,
-                patch_tokens: shape.encoder.patch_tokens,
-                transformer_tokens: shape.encoder.transformer_tokens,
-                output_tokens: shape.encoder.output_tokens,
-                images: shape.count,
-            }])
-            .map_err(|error| anyhow!("AIC vision evaluation failed: {error}"))?;
-        ensure!(
-            !entries.is_empty(),
-            "AIC vision encoder returned no operation evidence for {} image(s)",
-            shape.count
-        );
-        let phase = Arc::new(phase_evidence_from_native_entries(entries)?);
-        timer.cache.insert(shape, Arc::clone(&phase));
-        Ok(phase)
+        timer.memo.get_or_price(&OnThread, shape, || {
+            let entries = timer
+                .model
+                .vision_operations(&[crate::EncoderImageShape {
+                    sequences: shape.encoder.sequences,
+                    patch_tokens: shape.encoder.patch_tokens,
+                    transformer_tokens: shape.encoder.transformer_tokens,
+                    output_tokens: shape.encoder.output_tokens,
+                    images: shape.count,
+                }])
+                .map_err(|error| anyhow!("AIC vision evaluation failed: {error}"))?;
+            ensure!(
+                !entries.is_empty(),
+                "AIC vision encoder returned no operation evidence for {} image(s)",
+                shape.count
+            );
+            Ok(Arc::new(phase_evidence_from_native_entries(entries)?))
+        })
     }
 
     fn predict_phase_evidence(
@@ -1131,10 +1151,23 @@ impl AicTimingModel {
                 std::sync::OnceLock::new();
             return Ok(Arc::clone(EMPTY.get_or_init(Default::default)));
         }
-        let key = (batch_size, isl, osl, prefix, prefill);
-        if let Some(phase) = self.phase_cache.get(&key) {
-            return Ok(phase);
-        }
+        self.phase_memo
+            .get_or_price(&OnThread, (batch_size, isl, osl, prefix, prefill), || {
+                self.phase_evidence_uncached(batch_size, isl, osl, prefix, mode, prefill)
+                    .map(Arc::new)
+            })
+    }
+
+    /// [`Self::predict_phase_evidence`] of nonzero work, priced by the model.
+    fn phase_evidence_uncached(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        mode: &str,
+        prefill: bool,
+    ) -> Result<ValidatedTimingPhase> {
         if let Some(model) = &self.diagnostic_model {
             let entries = model.static_phase_diagnostics(batch_size, isl, prefix, prefill)?;
             ensure!(
@@ -1155,13 +1188,9 @@ impl AicTimingModel {
                 })
                 .collect::<Result<Vec<_>>>()?;
             // Diagnostics are name-folded in first-encounter order.
-            let phase = Arc::new(ValidatedTimingPhase::from_name_folded_operations(
-                operations,
-            )?);
-            self.phase_cache.insert(key, Arc::clone(&phase));
-            return Ok(phase);
+            return ValidatedTimingPhase::from_name_folded_operations(operations);
         }
-        let phase = match &self.phase_provider {
+        Ok(match &self.phase_provider {
             AicPhaseProvider::Fitted => {
                 return Err(anyhow!(
                     "a regression or learned estimator has no {mode} operation evidence"
@@ -1215,10 +1244,7 @@ impl AicTimingModel {
                 );
                 phase_evidence_from_entries(entries)?
             }
-        };
-        let phase = Arc::new(phase);
-        self.phase_cache.insert(key, Arc::clone(&phase));
-        Ok(phase)
+        })
     }
 
     #[cfg(test)]
@@ -2226,30 +2252,23 @@ impl TimingModel for AicTimingModel {
             _ => {}
         }
         let capture = self.diagnostic_model.is_some();
-        let whole_model = matches!(
-            pricing.query,
-            IterationQuery::Native(IterationDispatch::WholeModel { .. })
-        );
-        let cached = pricing
-            .cache
-            .as_ref()
-            .and_then(|cache| cache.get(&queries))
-            .filter(|priced| !(capture && whole_model && priced.estimate.is_none()));
-        let (priced, hit) = match cached {
-            Some(priced) => (priced, true),
-            None => (
-                Arc::new(self.price_iteration(pricing, &queries, ranks, capture)?),
-                false,
-            ),
+        let price = || {
+            self.price_iteration(pricing, &queries, ranks, capture)
+                .map(Arc::new)
+        };
+        let priced = match &pricing.memo {
+            Some(memo) => memo.get_or_price_by(
+                &OnThread,
+                &IterationKeyRef(&queries, capture),
+                |key| (key.0.to_vec(), key.1),
+                price,
+            )?,
+            None => price()?,
         };
         self.record_iteration(&priced, &queries)?;
-        let iteration = IterationMs {
+        Ok(Some(IterationMs {
             total_ms: priced.total_ms,
-        };
-        if let Some(cache) = pricing.cache.as_ref().filter(|_| !hit) {
-            cache.insert(queries, priced);
-        }
-        Ok(Some(iteration))
+        }))
     }
 
     fn predict_vision_ms(&self, shapes: &[VisionShape]) -> Result<Option<f64>> {
@@ -5904,7 +5923,7 @@ mod tests {
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
             fpm_evidence: Mutex::default(),
             fpm_iteration_evidence: Mutex::default(),
-            phase_cache: quick_cache::sync::Cache::new(128),
+            phase_memo: Memo::clock(128),
             vision: None,
             iteration: None,
         }
@@ -6024,7 +6043,7 @@ mod tests {
             } else {
                 (batch as u32, length as u32 - 1, 2, 0, false)
             };
-            let cached = native.phase_cache.get(&key);
+            let cached = native.phase_memo.peek(&key).map(|(phase, _)| phase);
             let predict = |timing: &AicTimingModel| {
                 if prefill {
                     timing.predict_prefill_ms(batch, length, prefix)
@@ -6035,7 +6054,10 @@ mod tests {
             };
             assert_eq!(predict(&native).to_bits(), predict(&bridge).to_bits());
             if let Some(cached) = cached {
-                assert!(Arc::ptr_eq(&cached, &native.phase_cache.get(&key).unwrap()));
+                assert!(Arc::ptr_eq(
+                    &cached,
+                    &native.phase_memo.peek(&key).unwrap().0
+                ));
             }
             let actual = native.evidence_summary().unwrap();
             let expected = bridge.evidence_summary().unwrap();
@@ -6806,7 +6828,7 @@ mod tests {
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Decode, false).unwrap();
         let pricing = timing.iteration.as_ref().unwrap();
         assert_eq!(pricing.query, IterationQuery::Fitted { detail: true });
-        assert!(pricing.cache.is_none());
+        assert!(pricing.memo.is_none());
         for i in [3, 8, 21] {
             let rank = ranks(i);
             let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
@@ -8825,7 +8847,7 @@ mod tests {
                 .iteration
                 .as_ref()
                 .unwrap()
-                .cache
+                .memo
                 .as_ref()
                 .unwrap()
                 .len()
@@ -9049,9 +9071,9 @@ mod tests {
             // Replay fixes capture at construction; each mode prices and
             // caches its own evidence.
             timing.diagnostic_model = capture.then(|| Arc::clone(&model));
-            timing.phase_cache.clear();
+            timing.phase_memo.clear();
             let pricing = timing.iteration.as_ref().unwrap();
-            pricing.cache.as_ref().unwrap().clear();
+            pricing.memo.as_ref().unwrap().clear();
             let timing = &timing;
             // Pure passes whose per-request means divide exactly: the
             // canonical query prices the same static phase, and the rank's
@@ -9318,7 +9340,7 @@ mod tests {
             .collect();
         tuned.tune_with_fpms(&iterations).unwrap();
         let model = Arc::clone(&pricing.model);
-        pricing.cache.as_ref().unwrap().clear();
+        pricing.memo.as_ref().unwrap().clear();
         timing.corrections = Some(Arc::clone(&model));
         let factor = |query: [u32; 5]| {
             model
@@ -9446,7 +9468,7 @@ mod tests {
             .collect();
         tuned.tune_with_fpms(&iterations).unwrap();
         let model = Arc::clone(&pricing.model);
-        pricing.cache.as_ref().unwrap().clear();
+        pricing.memo.as_ref().unwrap().clear();
         assert!(model.corrects_native_estimates());
         timing.corrections = Some(Arc::clone(&model));
 
@@ -9547,7 +9569,7 @@ mod tests {
                 .iteration
                 .as_ref()
                 .unwrap()
-                .cache
+                .memo
                 .as_ref()
                 .unwrap()
                 .clear();
@@ -9799,8 +9821,8 @@ mod tests {
             timing.evidence_summary().unwrap().decode.energy_wms,
             Some(1_600_000.0)
         );
-        let cached = timing.phase_cache.get(&(2, 127, 2, 0, false)).unwrap();
-        let again = timing.phase_cache.get(&(2, 127, 2, 0, false)).unwrap();
+        let cached = timing.phase_memo.peek(&(2, 127, 2, 0, false)).unwrap().0;
+        let again = timing.phase_memo.peek(&(2, 127, 2, 0, false)).unwrap().0;
         assert!(Arc::ptr_eq(&cached, &again));
         assert_eq!(cached.to_phase().energy_wms, Some(1_600.0));
         // Distinct coordinates must never reuse the preceding shape's result.
@@ -10037,7 +10059,7 @@ mod tests {
         let mut timing = Python::with_gil(|py| python_timing_model(py.None(), false));
         timing.phase_provider = AicPhaseProvider::NativeEntries(vec![row("seed", 1.0, 2.0, "sol")]);
         timing.predict_decode_ms(1, 65, 64, 1024).unwrap();
-        let cached = timing.phase_cache.get(&(1, 63, 2, 0, false)).unwrap();
+        let cached = timing.phase_memo.peek(&(1, 63, 2, 0, false)).unwrap().0;
         let before = timing.evidence_summary().unwrap();
         timing.phase_provider = AicPhaseProvider::NativeEntries(Vec::new());
         for _ in 0..2 {
@@ -10046,10 +10068,10 @@ mod tests {
                 error.to_string(),
                 "AIC static_gen returned empty operation evidence for nonzero work"
             );
-            assert!(timing.phase_cache.get(&(1, 127, 2, 0, false)).is_none());
+            assert!(timing.phase_memo.peek(&(1, 127, 2, 0, false)).is_none());
             assert!(Arc::ptr_eq(
                 &cached,
-                &timing.phase_cache.get(&(1, 63, 2, 0, false)).unwrap()
+                &timing.phase_memo.peek(&(1, 63, 2, 0, false)).unwrap().0
             ));
             let after = timing.evidence_summary().unwrap();
             assert_bits(&after.prefill, &before.prefill);
@@ -10073,10 +10095,10 @@ mod tests {
                     for _ in 0..2 {
                         let error = timing.predict_decode_ms(1, 129, 128, 1024).unwrap_err();
                         assert_eq!(error.to_string(), checked.to_string());
-                        assert!(timing.phase_cache.get(&(1, 127, 2, 0, false)).is_none());
+                        assert!(timing.phase_memo.peek(&(1, 127, 2, 0, false)).is_none());
                         assert!(Arc::ptr_eq(
                             &cached,
-                            &timing.phase_cache.get(&(1, 63, 2, 0, false)).unwrap()
+                            &timing.phase_memo.peek(&(1, 63, 2, 0, false)).unwrap().0
                         ));
                         let after = timing.evidence_summary().unwrap();
                         assert_bits(&after.prefill, &before.prefill);

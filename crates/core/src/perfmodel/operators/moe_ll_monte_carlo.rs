@@ -10,15 +10,12 @@
 //! traffic and then collapses it onto physical TX/RX endpoints; the `P^2`
 //! logical routes never receive `P^2` independent bandwidth budgets.
 
-use std::sync::OnceLock;
-
-use quick_cache::sync::{Cache, DefaultLifecycle};
-use quick_cache::{DefaultHashBuilder, OptionsBuilder, UnitWeighter};
 use rand_chacha::ChaCha8Rng;
 use rand08::seq::SliceRandom;
 use rand08::{Rng, SeedableRng};
 
 use crate::common::error::AicError;
+use crate::memo::{Memo, OnThread};
 
 pub(crate) const MONTE_CARLO_TRIALS: u32 = 4_096;
 const MONTE_CARLO_CACHE_CAPACITY: usize = 4_096;
@@ -114,43 +111,22 @@ impl MonteCarloRequest {
     }
 }
 
-fn monte_carlo_cache() -> Cache<MonteCarloRequest, f64> {
-    let options = OptionsBuilder::new()
-        .estimated_items_capacity(MONTE_CARLO_CACHE_CAPACITY)
-        .weight_capacity(MONTE_CARLO_CACHE_CAPACITY as u64)
-        .shards(MONTE_CARLO_CACHE_SHARDS)
-        .build()
-        .expect("valid static DeepEP-LL Monte Carlo cache options");
-    Cache::with_options(
-        options,
-        UnitWeighter,
-        DefaultHashBuilder::default(),
-        DefaultLifecycle::default(),
-    )
+/// Finite P50 estimates by request. A request determines its estimate, so
+/// any owner is sound; [`crate::perf_database::moe_a2a::MoeA2aTable`] keeps
+/// one for as long as its tables live.
+pub(crate) fn memo() -> Memo<MonteCarloRequest, f64> {
+    Memo::clock_sharded(MONTE_CARLO_CACHE_CAPACITY, MONTE_CARLO_CACHE_SHARDS)
+        .storing_only(|p50_ms: &f64| p50_ms.is_finite())
 }
-
-static MONTE_CARLO_CACHE: OnceLock<Cache<MonteCarloRequest, f64>> = OnceLock::new();
 
 /// Return the P50 variable latency. The caller adds fitted startup latency
-/// exactly once after the cached Monte Carlo estimate.
-pub(crate) fn estimate(request: MonteCarloRequest) -> Result<f64, AicError> {
-    let cache = MONTE_CARLO_CACHE.get_or_init(monte_carlo_cache);
-    estimate_with_cache(cache, request)
-}
-
-fn estimate_with_cache(
-    cache: &Cache<MonteCarloRequest, f64>,
+/// exactly once after the memoized Monte Carlo estimate.
+pub(crate) fn estimate(
+    memo: &Memo<MonteCarloRequest, f64>,
     request: MonteCarloRequest,
 ) -> Result<f64, AicError> {
     let request = request.cache_key();
-    if let Some(p50_ms) = cache.get(&request) {
-        return Ok(p50_ms);
-    }
-    let p50_ms = estimate_uncached(request)?;
-    if p50_ms.is_finite() {
-        cache.insert(request, p50_ms);
-    }
-    Ok(p50_ms)
+    memo.get_or_price(&OnThread, request, || estimate_uncached(request))
 }
 
 fn estimate_uncached(request: MonteCarloRequest) -> Result<f64, AicError> {
@@ -701,10 +677,10 @@ mod tests {
     fn repeated_request_hits_the_bounded_cache() {
         let mut req = request(RoutingDistribution::from_workload_name("power_law_1.01"));
         req.per_rank_tokens = 17;
-        let cache = monte_carlo_cache();
-        let first = estimate_with_cache(&cache, req).unwrap();
+        let cache = memo();
+        let first = estimate(&cache, req).unwrap();
         let after_first = cache.len();
-        let second = estimate_with_cache(&cache, req).unwrap();
+        let second = estimate(&cache, req).unwrap();
         let after_second = cache.len();
         assert_eq!(first, second);
         assert_eq!(after_first, 1);
@@ -714,28 +690,25 @@ mod tests {
 
     #[test]
     fn cache_ignores_exact_bandwidth_and_isolates_donor_mode() {
-        let cache = monte_carlo_cache();
+        let cache = memo();
         let mut exact = request(RoutingDistribution::Balanced);
         exact.nvl_bandwidth_bits = 1.0_f64.to_bits();
         exact.ib_bandwidth_bits = 2.0_f64.to_bits();
-        let exact_ms = estimate_with_cache(&cache, exact).unwrap();
+        let exact_ms = estimate(&cache, exact).unwrap();
 
         let exact_other_bandwidth = MonteCarloRequest {
             nvl_bandwidth_bits: 200e9_f64.to_bits(),
             ib_bandwidth_bits: 50e9_f64.to_bits(),
             ..exact
         };
-        assert_eq!(
-            estimate_with_cache(&cache, exact_other_bandwidth).unwrap(),
-            exact_ms
-        );
+        assert_eq!(estimate(&cache, exact_other_bandwidth).unwrap(), exact_ms);
         assert_eq!(cache.len(), 1);
 
         let donor = MonteCarloRequest {
             calibration_mode: LlCalibrationMode::SingleDomainDonor,
             ..exact_other_bandwidth
         };
-        assert!(estimate_with_cache(&cache, donor).unwrap() > 0.0);
+        assert!(estimate(&cache, donor).unwrap() > 0.0);
         assert_eq!(cache.len(), 2);
     }
 
