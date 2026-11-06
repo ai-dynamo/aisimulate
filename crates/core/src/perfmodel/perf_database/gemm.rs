@@ -18,9 +18,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use quick_cache::sync::{Cache, DefaultLifecycle};
-use quick_cache::{DefaultHashBuilder, OptionsBuilder, UnitWeighter};
-
 use super::interpolation::Grid3;
 use super::perf_interp::{
     LeafValue, Node, OpInterpConfig, PreparedGrid, Resolver, SiteIndex, ValueTransform,
@@ -30,6 +27,7 @@ use crate::common::enums::GemmQuantMode;
 use crate::common::error::AicError;
 use crate::common::system_spec::SystemSpec;
 use crate::config::{PerfDbSources, PerfSource};
+use crate::memo::{Memo, OnThread};
 use crate::operators::base::SolComponents;
 use crate::perf_database::parquet_loader::PerfReader;
 
@@ -45,45 +43,14 @@ struct GemmQueryKey {
     k: u32,
 }
 
-// Quick Cache is the intended pattern for hot, high-cardinality scalar-query
-// memoization in the perf database. DSA's `sparse` map is deliberately
-// different: it holds a small, unbounded set of lazily loaded table objects,
-// rather than memoizing high-volume scalar results.
-fn gemm_query_cache() -> Cache<GemmQueryKey, LeafValue> {
-    let options = OptionsBuilder::new()
-        .estimated_items_capacity(GEMM_QUERY_CACHE_CAPACITY)
-        .weight_capacity(GEMM_QUERY_CACHE_CAPACITY as u64)
-        .shards(GEMM_QUERY_CACHE_SHARDS)
-        .build()
-        .expect("valid static GEMM query cache options");
-    Cache::with_options(
-        options,
-        UnitWeighter,
-        DefaultHashBuilder::default(),
-        DefaultLifecycle::default(),
+/// Successful GEMM query leaves. Non-finite leaves are returned but priced
+/// again next time.
+fn gemm_query_memo() -> Memo<GemmQueryKey, LeafValue> {
+    Memo::clock_sharded(GEMM_QUERY_CACHE_CAPACITY, GEMM_QUERY_CACHE_SHARDS).storing_only(
+        |value: &LeafValue| {
+            value.latency.is_finite() && value.power.is_finite() && value.energy.is_finite()
+        },
     )
-}
-
-#[inline(always)]
-fn resolve_gemm_query_cached<F>(
-    cache: &Cache<GemmQueryKey, LeafValue>,
-    key: GemmQueryKey,
-    resolve: F,
-) -> Result<LeafValue, AicError>
-where
-    F: FnOnce() -> Result<LeafValue, AicError>,
-{
-    if let Some(value) = cache.get(&key) {
-        return Ok(value);
-    }
-
-    let value = resolve()?;
-    // Preserve resolver behavior by returning non-finite results, but do
-    // not make them sticky cache hits for later queries.
-    if value.latency.is_finite() && value.power.is_finite() && value.energy.is_finite() {
-        cache.insert(key, value);
-    }
-    Ok(value)
 }
 
 /// GEMM-family perf-data owner for one logical
@@ -113,7 +80,7 @@ pub struct GemmTable {
     /// Successful finite GEMM query leaves (`{latency, power, energy}`),
     /// keyed by normalized quant and shape and bounded independently for
     /// each shard.
-    query_cache: OnceLock<Cache<GemmQueryKey, LeafValue>>,
+    query_memo: OnceLock<Memo<GemmQueryKey, LeafValue>>,
 }
 
 /// 3-D GEMM tables keyed by quant name -> m -> n -> k -> measured leaf
@@ -249,7 +216,7 @@ impl GemmTable {
             gemm: OnceLock::new(),
             compute_scale: OnceLock::new(),
             scale_matrix: OnceLock::new(),
-            query_cache: OnceLock::new(),
+            query_memo: OnceLock::new(),
         })
     }
 
@@ -287,8 +254,8 @@ impl GemmTable {
             n,
             k,
         };
-        let cache = self.query_cache.get_or_init(gemm_query_cache);
-        resolve_gemm_query_cached(cache, key, || {
+        let memo = self.query_memo.get_or_init(gemm_query_memo);
+        memo.get_or_price(&OnThread, key, || {
             let grids = self.load_gemm()?;
             let quant_name = lookup_quant.name();
             let (_, index) = grids.by_quant.get(quant_name).ok_or_else(|| {
@@ -853,7 +820,7 @@ mod tests {
     use super::*;
 
     fn query_cache_len(table: &GemmTable) -> usize {
-        table.query_cache.get().map_or(0, Cache::len)
+        table.query_memo.get().map_or(0, Memo::len)
     }
 
     /// Per-channel bit patterns of a query leaf, for exact-identity asserts
@@ -1090,35 +1057,21 @@ mod tests {
     }
 
     #[test]
-    fn gemm_query_cache_enforces_production_per_shard_bound() {
-        let cache = gemm_query_cache();
-        let key = |m| GemmQueryKey {
-            quant: GemmQuantMode::Bfloat16,
-            m,
-            n: 32,
-            k: 32,
-        };
-        let per_shard_capacity = GEMM_QUERY_CACHE_CAPACITY / GEMM_QUERY_CACHE_SHARDS;
-
-        assert_eq!(per_shard_capacity, 2_048);
-        assert_eq!(cache.num_shards(), GEMM_QUERY_CACHE_SHARDS);
-        assert_eq!(cache.shard_capacity(), per_shard_capacity as u64);
-        assert_eq!(cache.capacity(), GEMM_QUERY_CACHE_CAPACITY as u64);
-
-        let target_shard = cache.shard_index(&key(0));
-        let keys: Vec<_> = (0..)
-            .map(key)
-            .filter(|key| cache.shard_index(key) == target_shard)
-            .take(per_shard_capacity + 1)
-            .collect();
-        assert_eq!(keys.len(), 2_049);
-
-        for (value, key) in keys.into_iter().enumerate() {
-            cache.insert(key, LeafValue::latency_only(value as f64));
+    fn gemm_query_memo_stays_within_its_capacity() {
+        let memo = gemm_query_memo();
+        for m in 0..(GEMM_QUERY_CACHE_CAPACITY as u32 + 4_096) {
+            let key = GemmQueryKey {
+                quant: GemmQuantMode::Bfloat16,
+                m,
+                n: 32,
+                k: 32,
+            };
+            memo.get_or_price(&OnThread, key, || {
+                Ok::<_, AicError>(LeafValue::latency_only(f64::from(m)))
+            })
+            .unwrap();
         }
-
-        assert_eq!(cache.len(), per_shard_capacity);
-        assert!(cache.len() < GEMM_QUERY_CACHE_CAPACITY);
+        assert!(memo.len() <= GEMM_QUERY_CACHE_CAPACITY);
     }
 
     #[test]
@@ -1129,7 +1082,7 @@ mod tests {
         const THREADS: usize = 4;
         const EXPECTED: f64 = 1.25;
 
-        let cache = Arc::new(gemm_query_cache());
+        let cache = Arc::new(gemm_query_memo());
         let barrier = Arc::new(Barrier::new(THREADS));
         let resolutions = Arc::new(AtomicUsize::new(0));
         let key = GemmQueryKey {
@@ -1144,12 +1097,13 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 let resolutions = Arc::clone(&resolutions);
                 std::thread::spawn(move || {
-                    resolve_gemm_query_cached(&cache, key, || {
-                        resolutions.fetch_add(1, Ordering::Relaxed);
-                        barrier.wait();
-                        Ok(LeafValue::latency_only(EXPECTED))
-                    })
-                    .unwrap()
+                    cache
+                        .get_or_price(&OnThread, key, || {
+                            resolutions.fetch_add(1, Ordering::Relaxed);
+                            barrier.wait();
+                            Ok::<_, AicError>(LeafValue::latency_only(EXPECTED))
+                        })
+                        .unwrap()
                 })
             })
             .collect();
@@ -1166,10 +1120,11 @@ mod tests {
         assert_eq!(resolutions.load(Ordering::Relaxed), THREADS);
         assert_eq!(cache.len(), 1);
 
-        let cached = resolve_gemm_query_cached(&cache, key, || -> Result<LeafValue, AicError> {
-            panic!("cache hit unexpectedly invoked the resolver")
-        })
-        .unwrap();
+        let cached = cache
+            .get_or_price(&OnThread, key, || -> Result<LeafValue, AicError> {
+                panic!("cache hit unexpectedly invoked the resolver")
+            })
+            .unwrap();
         assert_eq!(
             leaf_bits(cached),
             leaf_bits(LeafValue::latency_only(EXPECTED))

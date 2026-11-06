@@ -35,10 +35,10 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use quick_cache::sync::{Cache, DefaultLifecycle};
-use quick_cache::{DefaultHashBuilder, Equivalent, OptionsBuilder, UnitWeighter};
+use quick_cache::Equivalent;
 
 use crate::common::error::AicError;
+use crate::memo::{Memo, OnThread};
 use crate::perfmodel::kd_tree::{KdTree, NeighborCollector};
 
 /// Empirical provenance tiers, mirroring Python's `PROVENANCE_ORDER`
@@ -163,7 +163,7 @@ pub struct UtilGrid {
     mins: Vec<f64>,
     spans: Vec<f64>,
     index: Option<KdTree>,
-    query_cache: Arc<OnceLock<UtilQueryCache>>,
+    query_memo: Arc<OnceLock<Memo<UtilQueryKey, f64>>>,
     /// Transfer tag of the reference slice this grid was built from
     /// (`xshape` / `xquant` / ...), when borrowed from a sibling.
     pub reference_provenance: Option<&'static str>,
@@ -171,8 +171,6 @@ pub struct UtilGrid {
 
 const UTIL_QUERY_CACHE_CAPACITY: usize = 32_768;
 const UTIL_QUERY_CACHE_SHARDS: usize = 16;
-
-type UtilQueryCache = Cache<UtilQueryKey, f64>;
 
 #[derive(Debug, PartialEq, Eq)]
 struct UtilQueryKey(Box<[u64]>);
@@ -226,19 +224,10 @@ fn hash_util_query<H: Hasher>(len: usize, bits: impl Iterator<Item = u64>, state
     }
 }
 
-fn util_query_cache() -> UtilQueryCache {
-    let options = OptionsBuilder::new()
-        .estimated_items_capacity(UTIL_QUERY_CACHE_CAPACITY)
-        .weight_capacity(UTIL_QUERY_CACHE_CAPACITY as u64)
-        .shards(UTIL_QUERY_CACHE_SHARDS)
-        .build()
-        .expect("valid static util query cache options");
-    Cache::with_options(
-        options,
-        UnitWeighter,
-        DefaultHashBuilder::default(),
-        DefaultLifecycle::default(),
-    )
+/// Finite utilizations of indexed queries; others are priced again.
+fn util_query_memo() -> Memo<UtilQueryKey, f64> {
+    Memo::clock_sharded(UTIL_QUERY_CACHE_CAPACITY, UTIL_QUERY_CACHE_SHARDS)
+        .storing_only(|util: &f64| util.is_finite())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -309,7 +298,7 @@ impl UtilGrid {
                 mins: Vec::new(),
                 spans: Vec::new(),
                 index: None,
-                query_cache: Arc::new(OnceLock::new()),
+                query_memo: Arc::new(OnceLock::new()),
                 reference_provenance: None,
             };
         }
@@ -348,7 +337,7 @@ impl UtilGrid {
             mins,
             spans,
             index,
-            query_cache: Arc::new(OnceLock::new()),
+            query_memo: Arc::new(OnceLock::new()),
             reference_provenance: None,
         }
     }
@@ -369,37 +358,44 @@ impl UtilGrid {
             .enumerate()
             .map(|(a, &v)| ((log_floor(v) - self.mins[a]) / self.spans[a]).clamp(0.0, 1.0))
             .collect();
-        let (nearest, cache) =
-            if let Some(index) = self.index.as_ref().filter(|index| index.can_query(&q)) {
-                let cache = self.query_cache.get_or_init(util_query_cache);
-                if let Some(value) = cache.get(&UtilQueryRef(&q)) {
-                    return Some(value);
-                }
-                let mut nearest = NearestTwo::default();
-                index.search(self.norm.as_slice(), &q, &mut nearest);
-                (nearest, Some(cache))
-            } else {
-                // Preserve the former behavior for tiny, non-finite, ragged,
-                // or dimension-mismatched grids that cannot use the index.
-                let mut nearest = NearestTwo::default();
-                for (sample, row) in self.norm.iter().enumerate() {
-                    let distance_squared = row
-                        .iter()
-                        .zip(&q)
-                        .map(|(&x, &y)| (x - y) * (x - y))
-                        .sum::<f64>();
-                    nearest.consider(Neighbor {
-                        sample,
-                        distance: distance_squared.sqrt(),
-                        distance_squared,
-                    });
-                }
-                (nearest, None)
-            };
+        if let Some(index) = self.index.as_ref().filter(|index| index.can_query(&q)) {
+            let memo = self.query_memo.get_or_init(util_query_memo);
+            let Ok(util) = memo.get_or_price_by(
+                &OnThread,
+                &UtilQueryRef(&q),
+                |q| UtilQueryKey::new(q.0),
+                || {
+                    let mut nearest = NearestTwo::default();
+                    index.search(self.norm.as_slice(), &q, &mut nearest);
+                    Ok::<_, std::convert::Infallible>(self.interpolate(nearest))
+                },
+            );
+            return Some(util);
+        }
+        // Preserve the former behavior for tiny, non-finite, ragged, or
+        // dimension-mismatched grids that cannot use the index.
+        let mut nearest = NearestTwo::default();
+        for (sample, row) in self.norm.iter().enumerate() {
+            let distance_squared = row
+                .iter()
+                .zip(&q)
+                .map(|(&x, &y)| (x - y) * (x - y))
+                .sum::<f64>();
+            nearest.consider(Neighbor {
+                sample,
+                distance: distance_squared.sqrt(),
+                distance_squared,
+            });
+        }
+        Some(self.interpolate(nearest))
+    }
 
+    /// Inverse-distance blend of the (at most two) nearest samples; an exact
+    /// hit returns its sample unchanged.
+    fn interpolate(&self, nearest: NearestTwo) -> f64 {
         let second = nearest.second;
         let nearest = nearest.nearest.expect("non-empty util grid");
-        let util = if nearest.distance == 0.0 {
+        if nearest.distance == 0.0 {
             self.utils[nearest.sample]
         } else {
             let mut weighted = 0.0;
@@ -410,13 +406,7 @@ impl UtilGrid {
                 weight_sum += w;
             }
             weighted / weight_sum
-        };
-        if util.is_finite() {
-            if let Some(cache) = cache {
-                cache.insert(UtilQueryKey::new(&q), util);
-            }
         }
-        Some(util)
     }
 }
 
@@ -916,12 +906,12 @@ mod tests {
         let first = grid.util(&[2.0]).unwrap();
         let second = grid.util(&[2.0]).unwrap();
         assert_eq!(first.to_bits(), second.to_bits());
-        assert_eq!(grid.query_cache.get().unwrap().len(), 1);
+        assert_eq!(grid.query_memo.get().unwrap().len(), 1);
 
         let low = grid.util(&[0.5]).unwrap();
         let lower = grid.util(&[0.25]).unwrap();
         assert_eq!(low.to_bits(), lower.to_bits());
-        assert_eq!(grid.query_cache.get().unwrap().len(), 2);
+        assert_eq!(grid.query_memo.get().unwrap().len(), 2);
     }
 
     #[test]
@@ -936,12 +926,12 @@ mod tests {
         let first = grid.util(&query).unwrap();
         let second = grid.util(&query).unwrap();
         assert_eq!(first.to_bits(), second.to_bits());
-        assert_eq!(grid.query_cache.get().unwrap().len(), 1);
+        assert_eq!(grid.query_memo.get().unwrap().len(), 1);
 
         let mut distinct = query;
         distinct[4] = 3.0;
         grid.util(&distinct).unwrap();
-        assert_eq!(grid.query_cache.get().unwrap().len(), 2);
+        assert_eq!(grid.query_memo.get().unwrap().len(), 2);
     }
 
     #[test]
@@ -953,7 +943,7 @@ mod tests {
         ]);
 
         assert!(grid.util(&[1.0]).unwrap().is_nan());
-        assert_eq!(grid.query_cache.get().unwrap().len(), 0);
+        assert_eq!(grid.query_memo.get().unwrap().len(), 0);
     }
 
     #[test]
@@ -1010,7 +1000,7 @@ mod tests {
 
         approx(grid.util(&[1.0]).unwrap(), 0.2);
         approx(grid.util(&[128.0]).unwrap(), 0.8);
-        assert!(grid.query_cache.get().is_none());
+        assert!(grid.query_memo.get().is_none());
     }
 
     #[test]

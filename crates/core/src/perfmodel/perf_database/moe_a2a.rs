@@ -63,6 +63,8 @@ use super::source_resolution::PrioritizedSource;
 use super::{SourceResolver, kernel_source_ok};
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
+use crate::memo::Memo;
+use crate::operators::moe_ll_monte_carlo::{self, MonteCarloRequest};
 use crate::perf_database::parquet_loader::{PerfReader, PerfRow};
 
 /// `(comm_backend, phase, comm_dtype, ep_size, node_num, hidden_size, topk,
@@ -409,9 +411,16 @@ pub struct MoeA2aTable {
     legacy_ll_sources: Vec<PrioritizedSource>,
     legacy_trtllm_alltoall_sources: Vec<PrioritizedSource>,
     grids: OnceLock<Result<MoeA2aGrids, AicError>>,
+    /// DeepEP-LL Monte Carlo P50 estimates ([`moe_ll_monte_carlo::memo`]).
+    monte_carlo: OnceLock<Memo<MonteCarloRequest, f64>>,
 }
 
 impl MoeA2aTable {
+    /// The DeepEP-LL Monte Carlo memo, allocated on first use.
+    pub(crate) fn monte_carlo(&self) -> &Memo<MonteCarloRequest, f64> {
+        self.monte_carlo.get_or_init(moe_ll_monte_carlo::memo)
+    }
+
     /// Construct an empty table for the given data directory. No I/O. Each
     /// perf file is sourced solely from `data_root/<basename>` with no
     /// `kernel_source` filter (pre-shared-layer behaviour).
@@ -451,6 +460,7 @@ impl MoeA2aTable {
             legacy_ll_sources,
             legacy_trtllm_alltoall_sources,
             grids: OnceLock::new(),
+            monte_carlo: OnceLock::new(),
         })
     }
 
