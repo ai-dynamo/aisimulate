@@ -12,6 +12,7 @@ mod dispatch;
 pub mod model;
 mod rendezvous;
 mod reporting;
+mod scheduled;
 mod workload;
 
 /// Execute an accepted native run directly inside the simulator process.
@@ -24,7 +25,10 @@ pub fn execute(
     cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
     observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run, cancellation, observer, None, None)
+    workload::execute(
+        run, cancellation, observer, None, None,
+        std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
+    )
 }
 
 /// Execute the shared native workload against a caller-prepared AISim factory.
@@ -46,6 +50,26 @@ pub fn execute_with_engine_factory(
         observer,
         None,
         Some((factory, admission_capacity)),
+        std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
+    )
+}
+
+/// Execute with reproducible run-local identities for a controlled comparison.
+///
+/// The old product must receive the same identity seed before materialization.
+/// This seed is separate from dataset sampling and does not change normal APIs'
+/// OS-random defaults. An optional model factory preserves the caller's timing
+/// and admission selection exactly as in [`execute_with_engine_factory`].
+pub fn execute_with_identity_seed(
+    run: &aiperf_config::model::BenchmarkRun,
+    cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
+    observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
+    identity_seed: [u8; 32],
+    model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
+) -> anyhow::Result<serde_json::Value> {
+    workload::execute(
+        run, cancellation, observer, None, model_factory,
+        std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(identity_seed)),
     )
 }
 
@@ -61,5 +85,8 @@ pub fn execute_with_control_rendezvous(
     events: aiperf_engine_kernel::event_writer::EventWriterHandle,
     sequencer: std::sync::Arc<aiperf_engine_kernel::event_writer::Sequencer>,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run, cancellation, observer, Some((events, sequencer)), None)
+    workload::execute(
+        run, cancellation, observer, Some((events, sequencer)), None,
+        std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
+    )
 }

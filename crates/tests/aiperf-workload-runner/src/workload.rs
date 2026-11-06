@@ -34,6 +34,7 @@ pub fn execute(
         Arc<aiperf_engine_kernel::event_writer::Sequencer>,
     )>,
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
+    identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
 ) -> Result<serde_json::Value> {
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
@@ -44,12 +45,25 @@ pub fn execute(
         input.pointer("/tokenizer/name").and_then(|v| v.as_str()) == Some("builtin"),
         "proof requires explicit builtin tokenizer"
     );
-    ensure!(
-        dataset["format"] == "weka_trace",
-        "proof supports explicit weka_trace format only"
-    );
+    let models: aiperf_protocol::protocol_dto::ModelsSpec = run
+        .cfg
+        .models
+        .clone()
+        .context("explicit model required")?
+        .into();
+    ensure!(models.items.len() == 1, "proof requires exactly one model");
     let raw_input: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
         serde_json::from_str(raw.get())?;
+    let tokenizer: Arc<dyn TextTokenizer> =
+        Arc::new(aiperf_tokenizers::TiktokenTokenizer::builtin());
+    let kind = aiperf_config::model::workload_kind::workload_kind(&run.cfg);
+    let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
+        .map_err(anyhow::Error::msg)?;
+    ensure!(
+        kind == aiperf_config::model::workload_kind::WorkloadKind::Scheduled || legacy_weka,
+        "typed workload {kind:?} requires its graph execution binding"
+    );
+    let (mut prepared, phases, origins) = if legacy_weka {
     let raw_dataset: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
         serde_json::from_str(
             raw_input
@@ -63,8 +77,6 @@ pub fn execute(
             .get("records")
             .context("inline records required")?,
     )?;
-    let tokenizer: Arc<dyn TextTokenizer> =
-        Arc::new(aiperf_tokenizers::TiktokenTokenizer::builtin());
     let seed = run.random_seed.unwrap_or(0);
     let (corpus, hash_namespace) = match dataset
         .pointer("/prompts/corpus")
@@ -87,7 +99,7 @@ pub fn execute(
         "proof currently supports only automatic nested timestamp basis; explicit absolute/relative is not silently ignored"
     );
     let hash_seed = aiperf_rng::PythonRandomGenerator::derive_child_seed(seed, hash_namespace);
-    let mut prepared = prepare_legacy_agentic(
+    let prepared = prepare_legacy_agentic(
         run,
         &phases,
         dataset,
@@ -104,6 +116,18 @@ pub fn execute(
         input["system_idle_gap_cap_seconds"].as_f64(),
         &prepared,
     )?;
+    (prepared, phases, origins)
+    } else {
+        let prepared = crate::scheduled::prepare(
+            run,
+            raw_input.get("dataset").context("raw dataset missing")?,
+            &models,
+            tokenizer.as_ref(),
+            cancel.clone(),
+        )?;
+        let origins = (0..phases.len()).map(Some).collect::<Vec<_>>();
+        (prepared, phases, origins)
+    };
     let endpoint_id = aiperf_registry::registry_id::RegistryId::new("chat")?;
     let endpoint = aiperf_endpoints::EndpointRegistry::builtin()?.prepare(
         &endpoint_id,
@@ -120,12 +144,6 @@ pub fn execute(
         aiperf_exchange_model::credit::PreparedEndpointReference { key, endpoint_id },
     );
     let resolver = binding.resolver()?;
-    let models: aiperf_protocol::protocol_dto::ModelsSpec = run
-        .cfg
-        .models
-        .clone()
-        .context("explicit model required")?
-        .into();
     let model = &models.items.first().context("one model required")?.name;
     let source = Arc::try_unwrap(prepared.dataset)
         .map_err(|_| anyhow::anyhow!("dataset shared before preparation"))?;
@@ -139,11 +157,12 @@ pub fn execute(
     prepared.resident_endpoint_binding = Some(binding);
     let samplers = aiperf_dataset::sampler::SamplerRegistry::with_builtin_strategies()?;
     let factory = PreparedNativeConversationSourceFactory {
+        identity_source,
         endpoint_resolver: resolver,
         samplers: &samplers,
         materializer: Arc::new(aiperf_dataset::EndpointRequestMaterializer),
         defer_grpc_operations: false,
-        ignore_trace_delays: false,
+        ignore_trace_delays: run.cfg.ignore_trace_delays,
         end_conversation_on_truncation: prepared.end_conversation_on_truncation,
         worker_group_partition: None,
         position_addressed: false,
@@ -188,7 +207,7 @@ pub fn execute(
             &resources,
             None,
             aiperf_config::failure::OnFailure::scheduled_or_default(None),
-            prepared.agentic_cache_bust_target,
+            prepared.marker_target(),
             None,
             prepared.agentic_trees.clone(),
             prepared.agentic_lanes.clone(),

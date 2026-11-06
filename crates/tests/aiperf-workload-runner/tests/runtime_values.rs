@@ -10,6 +10,12 @@ use std::{path::PathBuf, rc::Rc};
 #[path = "support/run_fixture.rs"]
 mod run_fixture;
 
+fn identity_seed_from_hex(value: &str) -> [u8; 32] {
+    assert_eq!(value.len(), 64, "identity seed must contain exactly 64 hexadecimal digits");
+    assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()), "identity seed must be hexadecimal");
+    std::array::from_fn(|index| u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap())
+}
+
 #[test]
 fn capture_finite_branch_runtime_values() {
     let temporary = tempfile::tempdir().unwrap();
@@ -25,6 +31,11 @@ fn capture_finite_branch_runtime_values() {
     };
     let request = aiperf_protocol::runner_v2::decode_run_request_v2(raw.as_bytes()).unwrap();
     let observer = Rc::new(aiperf_timing::RecordingPhaseObserver::default());
+    // Only this capture harness reads the environment. The library receives an
+    // explicit run-local owner, never ambient process identity configuration.
+    let identity_seed_hex = std::env::var_os("AISIM_RUNTIME_VALUES_IDENTITY_SEED")
+        .map(|value| value.into_string().expect("identity seed must be UTF-8 hexadecimal"));
+    let identity_seed = identity_seed_hex.as_deref().map(identity_seed_from_hex);
     // Fixed timing overrides are opt-in to this evidence target only. Ordinary
     // library and executable defaults remain exactly as before.
     let override_config = std::env::var_os("AISIM_RUNTIME_VALUES_ENGINE_CONFIG")
@@ -37,13 +48,22 @@ fn capture_finite_branch_runtime_values() {
                 .unwrap_or(config.max_num_seqs);
             let manifest = json!({"engine_config":config,"admission_capacity":capacity,"selection":"explicit_test_override"});
             let factory = EngineFactory::new(config).unwrap();
-            let report = aisim_aiperf_workload_runner::execute_with_engine_factory(
-                &request.run,
-                aiperf_clock_runtime::cancellation::RunCancellation::new(),
-                observer.clone(),
-                &factory,
-                capacity,
-            ).unwrap();
+            let report = match identity_seed {
+                Some(seed) => aisim_aiperf_workload_runner::execute_with_identity_seed(
+                    &request.run,
+                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                    observer.clone(),
+                    seed,
+                    Some((&factory, capacity)),
+                ),
+                None => aisim_aiperf_workload_runner::execute_with_engine_factory(
+                    &request.run,
+                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                    observer.clone(),
+                    &factory,
+                    capacity,
+                ),
+            }.unwrap();
             (report, manifest)
         }
         None => {
@@ -55,11 +75,20 @@ fn capture_finite_branch_runtime_values() {
                 async_scheduling: Some(false),
                 ..Default::default()
             };
-            let report = aisim_aiperf_workload_runner::execute(
-                &request.run,
-                aiperf_clock_runtime::cancellation::RunCancellation::new(),
-                observer.clone(),
-            ).unwrap();
+            let report = match identity_seed {
+                Some(seed) => aisim_aiperf_workload_runner::execute_with_identity_seed(
+                    &request.run,
+                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                    observer.clone(),
+                    seed,
+                    None,
+                ),
+                None => aisim_aiperf_workload_runner::execute(
+                    &request.run,
+                    aiperf_clock_runtime::cancellation::RunCancellation::new(),
+                    observer.clone(),
+                ),
+            }.unwrap();
             (report, json!({"engine_config":config,"admission_capacity":64,"selection":"unchanged_library_default"}))
         }
     };
@@ -68,6 +97,8 @@ fn capture_finite_branch_runtime_values() {
         "aisim_source":env!("AISIM_SOURCE_REVISION"),
         "aiperf_source":env!("AIPERF_SOURCE_REVISION"),
         "model":model_manifest,
+        "identity":{"selection":if identity_seed.is_some() {"explicit_run_local_seed"} else {"os_random_v4"},"seed_hex":identity_seed_hex},
+
         "phase_observer_events":observer.events(),
         "claim":"raw captured runtime values; numerical equivalence not asserted",
     });

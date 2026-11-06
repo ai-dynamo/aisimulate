@@ -42,6 +42,7 @@ aiperf-clock = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-
 aiperf-clock-runtime = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/clock-runtime" }
 aiperf-config = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/config/config" }
 aiperf-dataset = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/dataset" }
+aiperf-dataset-loaders = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/loaders" }
 aiperf-dataset-synthesis = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/synthesis" }
 aiperf-dispatch = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/dispatch" }
 aiperf-distributed-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/distributed/model" }
@@ -73,7 +74,6 @@ bytes = "1"
 futures = "0.3"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-aiperf-dataset-loaders = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/loaders" }
 aiperf-engine-capture = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/capture" }
 aiperf-engine-request = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/request" }
 aiperf-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/graph" }
