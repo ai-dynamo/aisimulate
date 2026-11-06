@@ -26,16 +26,16 @@ use crate::common::enums::EncoderParallel;
 use crate::common::enums::{DatabaseMode, TransferPolicy};
 use crate::common::error::AicError;
 use crate::fpm::FpmExecutionBinding;
+use crate::memo::Memo;
 use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
-use crate::operators::util_empirical::ProvenanceTier;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
-    ContextOpFilter, OpListPlan, OpQueryCache, QueryMemo, context_op_runtime,
-    generation_op_runtime, get_mix_step_ops, query_context_op, query_generation_op,
-    run_context_ops, run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
+    ContextOpFilter, OpListPlan, OpMemo, QueryMemo, context_op_runtime, generation_op_runtime,
+    get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
+    run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
     run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
@@ -431,9 +431,6 @@ pub(crate) struct RankPricing {
     pub(crate) operations: Option<RankOperationValues>,
     /// [`RankDetail::Diagnostics`] of an operation graph.
     pub(crate) diagnostics: Option<Vec<super::diagnostics::StaticOperationDiagnostics>>,
-    /// The least-confident empirical tier the rank's lookups fired, noted
-    /// again whenever the memo answers in their place.
-    provenance: ProvenanceTier,
     /// What a caller derives from this pricing ([`Self::derived`]).
     derived: OnceLock<Box<dyn std::any::Any + Send + Sync>>,
 }
@@ -505,10 +502,10 @@ impl RankKey {
 /// function of its key, so a hit returns exactly what the dispatch would.
 const RANK_MEMO_CAPACITY: usize = 4096;
 
-/// Single-coordinate op results an [`OpQueryCache`] keeps: one entry per op
+/// Single-coordinate op results an [`OpMemo`] keeps: one entry per op
 /// and token count (or batch size) its rank walks reached. A vLLM DP32 replay
 /// with 8192-token chunks reached about 56,000.
-const OP_CACHE_CAPACITY: usize = 131_072;
+const OP_MEMO_CAPACITY: usize = 131_072;
 
 /// Name lists of walks without name slots (DSv4.1 stages) that
 /// [`Engine::shared_names`] keeps shared.
@@ -819,10 +816,10 @@ pub struct Engine {
     mix_plan: MixStepPlan,
     /// Ranks priced without diagnostics or lookup coverage, by workload;
     /// allocated on first use. See [`Self::rank_pricing`].
-    rank_memo: OnceLock<quick_cache::sync::Cache<RankKey, Arc<RankPricing>>>,
+    rank_memo: OnceLock<Memo<RankKey, Arc<RankPricing>>>,
     /// Single-coordinate op results shared by the rank memo's misses;
     /// allocated on first use. See [`Self::operation_rank_latency_ms`].
-    op_cache: OnceLock<OpQueryCache>,
+    op_memo: OnceLock<OpMemo>,
     /// Name lists of walks without name slots, shared across ranks.
     shared_names: Mutex<Vec<Arc<[String]>>>,
 }
@@ -969,7 +966,7 @@ impl Engine {
             spec_sha256,
             mix_plan: MixStepPlan::new(&spec.context_ops, &spec.generation_ops),
             rank_memo: OnceLock::new(),
-            op_cache: OnceLock::new(),
+            op_memo: OnceLock::new(),
             shared_names: Mutex::default(),
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
@@ -3397,28 +3394,14 @@ impl Engine {
             return self.price_rank(metrics, detail, coverage).map(Arc::new);
         }
         let detail = detail.unwrap_or(RankDetail::Values);
-        let memo = self
-            .rank_memo
-            .get_or_init(|| quick_cache::sync::Cache::new(RANK_MEMO_CAPACITY));
-        let key = RankKey::of(metrics, detail);
-        if let Some(rank) = memo.get(&key) {
-            if rank.provenance != ProvenanceTier::Silicon {
-                self.db.note_provenance(rank.provenance);
-            }
-            return Ok(rank);
-        }
-        // Observe exactly the tiers this dispatch fires, then restore the
-        // caller's: the accumulator keeps the maximum of both either way.
-        let outer = self.db.take_provenance();
-        let priced = self.price_rank(metrics, Some(detail), None);
-        self.db.note_provenance(outer);
-        let rank = Arc::new(priced?);
-        memo.insert(key, Arc::clone(&rank));
-        Ok(rank)
+        self.rank_memo
+            .get_or_init(|| Memo::clock(RANK_MEMO_CAPACITY))
+            .get_or_price(&*self.db, RankKey::of(metrics, detail), || {
+                self.price_rank(metrics, Some(detail), None).map(Arc::new)
+            })
     }
 
-    /// One rank's dispatch with its operations in `detail`, and the tiers
-    /// its lookups fired since the accumulator was last taken.
+    /// One rank's dispatch with its operations in `detail`.
     fn price_rank(
         &self,
         metrics: &ForwardPassMetrics,
@@ -3439,7 +3422,6 @@ impl Engine {
             latency_ms,
             operations: values,
             diagnostics,
-            provenance: self.db.worst_provenance(),
             derived: OnceLock::new(),
         })
     }
@@ -3652,9 +3634,9 @@ impl Engine {
         has_decode: bool,
         operations: &mut OperationObserver,
     ) -> Result<f64, AicError> {
-        let cache = self.op_cache.get_or_init(|| {
-            OpQueryCache::new(OP_CACHE_CAPACITY, &self.context_ops, &self.generation_ops)
-        });
+        let cache = self
+            .op_memo
+            .get_or_init(|| OpMemo::new(OP_MEMO_CAPACITY, &self.context_ops, &self.generation_ops));
         if self.has_dsv41_stages() {
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
@@ -3903,6 +3885,7 @@ pub(crate) mod tests {
 
     use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
     use crate::operators::op::Op;
+    use crate::operators::util_empirical::ProvenanceTier;
     use crate::operators::{
         ContextAttentionOp, ElementwiseOp, GemmOp, GenerationAttentionOp, MoeAllToAllOp,
     };
@@ -5476,7 +5459,6 @@ pub(crate) mod tests {
             latency_ms: 2.0,
             operations: None,
             diagnostics: None,
-            provenance: ProvenanceTier::Silicon,
             derived: OnceLock::new(),
         };
         let builds = std::cell::Cell::new(0);
@@ -5519,13 +5501,13 @@ pub(crate) mod tests {
             );
         }
         for rank in &ranks {
-            let stored = engine
+            let (_, stored) = engine
                 .rank_memo
                 .get()
                 .unwrap()
-                .get(&RankKey::of(rank, RankDetail::Values))
+                .peek(&RankKey::of(rank, RankDetail::Values))
                 .unwrap();
-            assert!(stored.provenance <= fired);
+            assert!(stored <= fired);
         }
     }
 
@@ -5633,7 +5615,7 @@ pub(crate) mod tests {
         // re-prices only attention, yet matches a cold engine's dispatch.
         let engine = build_engine(None);
         let mut cold = build_engine(None);
-        let cache_len = |engine: &Engine| engine.op_cache.get().map_or(0, OpQueryCache::len);
+        let cache_len = |engine: &Engine| engine.op_memo.get().map_or(0, OpMemo::len);
         let pairs = [
             (rank_fpm(2, 1024, 256, 0, 0), rank_fpm(2, 1024, 4096, 0, 0)),
             (
@@ -5651,7 +5633,7 @@ pub(crate) mod tests {
                 let warm = engine
                     .price_rank(metrics, Some(RankDetail::Values), None)
                     .unwrap();
-                cold.op_cache = OnceLock::new();
+                cold.op_memo = OnceLock::new();
                 let fresh = cold
                     .price_rank(metrics, Some(RankDetail::Values), None)
                     .unwrap();
@@ -5670,7 +5652,7 @@ pub(crate) mod tests {
         use crate::session::OpList;
         let engine = build_engine(None);
         let db = engine.database();
-        let cache = OpQueryCache::new(16, &engine.context_ops, &engine.generation_ops);
+        let cache = OpMemo::new(16, &engine.context_ops, &engine.generation_ops);
         // The fixture's leading rmsnorm reads only the token count.
         let op = &engine.context_ops[0];
         assert!(op.memo_field().is_some());
@@ -5684,12 +5666,13 @@ pub(crate) mod tests {
             Ok(result.clone())
         });
         assert_eq!(miss.unwrap(), result);
-        assert_eq!(db.take_provenance(), ProvenanceTier::XQuant);
+        assert_eq!(db.worst_provenance(), ProvenanceTier::XQuant);
         // A hit notes that stored tier although its query, which debug builds
         // re-run, fires none.
+        db.reset_provenance();
         let hit = cache.query(db, OpList::Context, 0, &ctx, || Ok(result.clone()));
         assert_eq!(hit.unwrap(), result);
-        assert_eq!(db.take_provenance(), ProvenanceTier::XShape);
+        assert_eq!(db.worst_provenance(), ProvenanceTier::XShape);
     }
 
     #[test]
