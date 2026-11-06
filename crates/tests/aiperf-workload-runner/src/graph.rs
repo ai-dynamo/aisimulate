@@ -339,9 +339,12 @@ pub(crate) fn execute(
     run: &aiperf_config::model::BenchmarkRun, input: PreparedRunnerGraphInput,
     phases: Vec<aiperf_protocol::protocol_dto::PhaseSpec>, cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
     observer: Rc<dyn aiperf_timing::PhaseObserver>, model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
+    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>, usize)>,
 ) -> Result<serde_json::Value> {
     let clock = Rc::new(SimClock::new());
-    let model = match model_factory { Some((factory, capacity)) => crate::model::ModelExecution::from_factory(clock.clone(), factory, capacity)?, None => crate::model::ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)? };
+    let model = if let Some((deployment, capacity)) = deployment {
+        crate::model::ModelExecution::from_deployment(clock.clone(), deployment, capacity)?
+    } else { match model_factory { Some((factory, capacity)) => crate::model::ModelExecution::from_factory(clock.clone(), factory, capacity)?, None => crate::model::ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)? }};
     let models = run.cfg.models.as_ref().context("explicit graph model required")?;
     ensure!(models.items.len() == 1, "graph proof requires exactly one model");
     ensure!(!input.cache_bust_target.is_enabled(), "graph cache-bust presentation binding is not implemented");

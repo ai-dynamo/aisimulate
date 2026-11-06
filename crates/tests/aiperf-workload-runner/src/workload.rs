@@ -48,6 +48,7 @@ pub fn execute(
     )>,
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
     identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
+    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>, usize)>,
 ) -> Result<serde_json::Value> {
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
@@ -78,7 +79,7 @@ pub fn execute(
             run, raw_input.get("dataset").context("raw graph dataset missing")?,
             tokenizer.as_ref(), &phases,
         )?;
-        return crate::graph::execute(run, prepared, phases, cancel, observer, model_factory);
+        return crate::graph::execute(run, prepared, phases, cancel, observer, model_factory, deployment);
     }
     ensure!(
         kind == aiperf_config::model::workload_kind::WorkloadKind::Scheduled || legacy_weka,
@@ -186,12 +187,14 @@ pub fn execute(
         run_sampler: aiperf_multiturn::RunScopedSampler::new(),
     };
     let clock = Rc::new(SimClock::new());
-    let engine = match model_factory {
+    let engine = if let Some((deployment, capacity)) = deployment {
+        ModelExecution::from_deployment(clock.clone(), deployment, capacity)?
+    } else { match model_factory {
         Some((factory, capacity)) => {
             ModelExecution::from_factory(clock.clone(), factory, capacity)?
         }
         None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
-    };
+    }};
     let dispatcher = Rc::new(Dispatcher {
         execution: engine.clone(),
         records: RefCell::new(Vec::new()),

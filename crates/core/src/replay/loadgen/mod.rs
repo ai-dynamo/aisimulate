@@ -35,7 +35,7 @@ pub use snapshot::{
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
     AgenticSnapshotSelection, PreparedAgenticSnapshots,
 };
-pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
+pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]
 pub use types::CompactReadyTurn;

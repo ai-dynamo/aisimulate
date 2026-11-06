@@ -121,7 +121,8 @@ struct Mailbox {
     ready: Notify,
 }
 struct State {
-    engine: Engine,
+    engine: Option<Engine>,
+    deployment: Option<Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>>,
     pending: Option<(PassId, f64, i64)>,
     requests: BTreeMap<u128, Rc<Mailbox>>,
     active: BTreeSet<u128>,
@@ -206,7 +207,8 @@ impl ModelExecution {
         Rc::new(Self {
             clock,
             state: RefCell::new(State {
-                engine,
+                engine: Some(engine),
+                deployment: None,
                 pending: None,
                 requests: BTreeMap::new(),
                 active: BTreeSet::new(),
@@ -223,6 +225,31 @@ impl ModelExecution {
         })
     }
 
+    /// Bind a native deployment with its own placement, P/D handoff and collector.
+    pub fn from_deployment(
+        clock: Rc<SimClock>,
+        mut deployment: Box<dyn aisimulate_core::replay::loadgen::steppable::SteppableReplay>,
+        capacity: usize,
+    ) -> Result<Rc<Self>, ExecutionError> {
+        if capacity == 0 || capacity > Semaphore::MAX_PERMITS || !deployment.is_idle() {
+            return Err(ExecutionError::Failed("invalid deployment admission or initial ownership".into()));
+        }
+        deployment.set_capture_per_request(true);
+        Ok(Rc::new(Self {
+            clock,
+            state: RefCell::new(State {
+                engine: None, deployment: Some(deployment), pending: None,
+                requests: BTreeMap::new(), active: BTreeSet::new(), scripts: BTreeMap::new(),
+                report_errors: Vec::new(), pending_reports: 0,
+                retained_settled: BTreeMap::new(), failure: None,
+            }),
+            capacity: Semaphore::new(capacity), events: RefCell::new(Vec::new()),
+            reports_ready: Notify::new(),
+            // Not used for native deployments: their own collector is authoritative.
+            reporting: RefCell::new(crate::reporting::BackendReporting::new(0, 0)),
+        }))
+    }
+
     /// Snapshot actual model and callback boundary ordering.
     pub fn trace(&self) -> Vec<ModelEvent> {
         self.events.borrow().clone()
@@ -230,6 +257,10 @@ impl ModelExecution {
 
     /// Drain backend measurements independently of the application's phase report.
     pub(crate) fn take_backend_report(&self, end_ms: f64) -> aisimulate_core::replay::ReplayReport {
+        if let Some(deployment) = self.state.borrow_mut().deployment.as_mut() {
+            return deployment.take_report(end_ms)
+                .expect("drained deployment report must be available");
+        }
         self.reporting.borrow_mut().take_report(end_ms)
     }
 
@@ -237,7 +268,8 @@ impl ModelExecution {
     pub fn is_drained(&self) -> bool {
         let state = self.state.borrow();
         state.failure.is_none()
-            && state.engine.is_drained()
+            && state.engine.as_ref().is_none_or(Engine::is_drained)
+            && state.deployment.as_ref().is_none_or(|deployment| deployment.is_idle())
             && state.pending.is_none()
             && state.requests.is_empty()
     }
@@ -277,7 +309,14 @@ impl ModelExecution {
             // Fixed models have no internal-work deadline and cancellation is
             // valid even with a committed pass. Latch unexpected failures for
             // the source pump rather than panic from a future's Drop.
-            match state.engine.apply_command_effects(
+            if let Some(deployment) = state.deployment.as_mut() {
+                if let Err(error) = deployment.cancel(Uuid::from_u128(id)) {
+                    state.failure = Some(format!("deployment cancellation failed: {error}"));
+                }
+                self.events.borrow_mut().push(ModelEvent::Cancelled { request_id: id, at_ns: self.now() });
+                return;
+            }
+            match state.engine.as_mut().expect("engine backend selected").apply_command_effects(
                 SchedulerCommand::new(
                     0,
                     Command::CancelRequest {
@@ -543,8 +582,32 @@ impl Execution for ModelExecution {
             let mailbox = Rc::new(Mailbox::default());
             {
                 let mut state = self.state.borrow_mut();
+                if let Some(deployment) = state.deployment.as_mut() {
+                    deployment.advance_now_ms(start_ns as f64 / 1_000_000.0);
+                    let assigned = deployment.submit(aisimulate_core::replay::DirectRequest {
+                        tokens: request.input_token_ids,
+                        max_output_tokens: population_len,
+                        output_token_ids: population,
+                        uuid: Some(uuid),
+                        replay_context: Some(aisimulate_core::replay::ReplayRequestContext {
+                            session_id: Some(request.prepared.runtime_session_id.clone()),
+                            ..Default::default()
+                        }),
+                        images: request.images.into_iter().map(|image| aisimulate_core::engine::ImageSpec {
+                            identity: image.identity, token_start: image.token_start, token_end: image.token_end,
+                            encoder: aisimulate_core::engine::EncoderShape {
+                                sequences: image.encoder.sequences, patch_tokens: image.encoder.patch_tokens,
+                                transformer_tokens: image.encoder.transformer_tokens, output_tokens: image.encoder.output_tokens,
+                            }, embedding_bytes: image.embedding_bytes,
+                        }).collect(),
+                        ..Default::default()
+                    }).map_err(|error| ExecutionError::Failed(error.to_string()))?;
+                    if assigned != uuid {
+                        return Err(ExecutionError::Failed("deployment changed explicit request identity".into()));
+                    }
+                } else {
                 state
-                    .engine
+                    .engine.as_mut().expect("engine backend selected")
                     .apply_command_effects(
                         SchedulerCommand::new(
                             0,
@@ -584,6 +647,7 @@ impl Execution for ModelExecution {
                     input_tokens,
                     population_len,
                 );
+                }
                 state.requests.insert(id, mailbox.clone());
             }
             let _guard = RequestGuard {
@@ -747,11 +811,21 @@ fn source_error(error: impl fmt::Display) -> SimDriveError {
 
 impl SimEventSource for ModelExecution {
     fn next_event_ns(&self) -> Result<Option<i64>, SimDriveError> {
-        let state = self.state.borrow();
+        let mut state = self.state.borrow_mut();
         if let Some(error) = &state.failure {
             return Err(source_error(error));
         }
-        if state.engine.next_internal_deadline_ms().is_some() {
+        if let Some(deployment) = state.deployment.as_mut() {
+            return deployment.next_event_ms().map(|at_ms| {
+                let ns = (at_ms * 1_000_000.0).ceil();
+                if !ns.is_finite() || ns >= i64::MAX as f64 {
+                    return Err(source_error("invalid deployment event deadline"));
+                }
+                Ok((ns as i64).max(self.now()))
+            }).transpose();
+        }
+        let engine = state.engine.as_ref().expect("engine backend selected");
+        if engine.next_internal_deadline_ms().is_some() {
             return Err(source_error(
                 "experimental adapter does not support internal-work deadlines",
             ));
@@ -759,7 +833,7 @@ impl SimEventSource for ModelExecution {
         Ok(state
             .pending
             .map(|(_, _, ns)| ns.max(self.now()))
-            .or_else(|| state.engine.is_ready().then(|| self.now())))
+            .or_else(|| engine.is_ready().then(|| self.now())))
     }
     fn set_time_ns(&self, now_ns: i64) -> Result<(), SimDriveError> {
         if now_ns != self.now() {
@@ -769,6 +843,27 @@ impl SimEventSource for ModelExecution {
     }
     fn step(&self, now_ns: i64) -> Result<SimStep, SimDriveError> {
         let mut state = self.state.borrow_mut();
+        if let Some(deployment) = state.deployment.as_mut() {
+            let before_ms = deployment.now_ms();
+            let outcome = deployment.step_until(now_ns as f64 / 1_000_000.0).map_err(source_error)?;
+            let made_progress = outcome.end_ms > before_ms || !outcome.events.is_empty();
+            if outcome.end_ms > now_ns as f64 / 1_000_000.0 {
+                return Err(source_error("deployment advanced beyond committed virtual time"));
+            }
+            for event in outcome.events {
+                let output = Output {
+                    request_id: event.uuid, token_id: event.token_id,
+                    completed: event.terminal_status.is_some(),
+                    rejected: event.terminal_status == Some(aisimulate_core::replay::ReplayTerminalStatus::Rejected),
+                    cached_tokens: None,
+                };
+                if let Some(mailbox) = state.requests.get(&event.uuid.as_u128()) {
+                    mailbox.outputs.borrow_mut().push_back(output);
+                    mailbox.ready.notify_one();
+                }
+            }
+            return Ok(SimStep { end_ns: now_ns, made_progress });
+        }
         if let Some((pass_id, end_ms, end_ns)) = state.pending.take() {
             if now_ns < end_ns {
                 state.pending = Some((pass_id, end_ms, end_ns));
@@ -777,7 +872,7 @@ impl SimEventSource for ModelExecution {
                 ));
             }
             let completed = state
-                .engine
+                .engine.as_mut().expect("engine backend selected")
                 .complete_pass(pass_id, end_ms)
                 .map_err(source_error)?;
             self.events.borrow_mut().push(ModelEvent::PassCompleted {
@@ -799,7 +894,7 @@ impl SimEventSource for ModelExecution {
             // Crucial: return to the existing quiescence pump. Do not execute
             // another pass while these observations await application delivery.
         } else if let Some(started) = state
-            .engine
+            .engine.as_mut().expect("engine backend selected")
             .execute_pass(now_ns as f64 / 1_000_000.0)
             .map_err(source_error)?
         {

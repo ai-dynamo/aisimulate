@@ -34,15 +34,22 @@
 //! than it would in [`crate::replay::Replayer::run`]. A caller that needs that
 //! batch composition must submit its known same-timestamp arrivals before it
 //! advances the steppable runtime.
+//!
+//! [`SteppableDisagg`] is stricter: it also holds the instant on a nonterminal
+//! token, so work the token releases is submitted before the next pass commits.
 
 use std::collections::{HashSet, VecDeque};
 
 use uuid::Uuid;
 
+use super::ReplayRequestPayload;
 use crate::replay::agg::AggRuntimeImpl;
-use crate::replay::components::{AdmissionQueue, NoReplayMetadata, ReplayMode};
-use crate::replay::core::NoEngineEvents;
-use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
+use crate::replay::components::{
+    AdmissionQueue, NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode,
+};
+use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
+use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
+use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
 use crate::replay::protocol::DirectRequest;
 use crate::replay::{ReplayReport, ReplayTerminalStatus, SlaThresholds, WorkerStage};
@@ -399,6 +406,212 @@ impl SteppableReplay for SteppableEngine {
 
     fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
         self.inner.take_report(wall_ms)
+    }
+}
+
+/// Disaggregated prefill/decode topology as a [`SteppableReplay`], driving the
+/// same [`DisaggRuntimeImpl`] that `run()` drives: its prefill and decode
+/// engines, KV handoff and transfer links, and collector. The seam adds no
+/// workload policy of its own.
+///
+/// The placement policy is a parameter so a router that makes real KV-aware
+/// placement decisions composes through [`Self::with_placements`] without a new
+/// seam; the default is round-robin per pool.
+///
+/// Passive-step contract (see `DisaggRuntimeImpl::step_dynamic_until`): a step
+/// returns at its current instant, before the freed or completing worker is
+/// committed to its next pass, whenever it surfaced an output token or a
+/// client terminal. A token can release dependent work and a terminal frees a
+/// slot, so the caller's submissions at that instant join the next physical
+/// batch. Virtual time never advances past an outstanding token or terminal,
+/// nor past the next internal event. [`EngineEvent`] terminals are the client's
+/// causal terminals; server-side cleanup (prefill release, transfer teardown)
+/// keeps running afterwards and [`SteppableReplay::is_idle`] stays false until
+/// it quiesces.
+pub struct SteppableDisagg<
+    PlacementPolicyImpl = PoolRoundRobinPlacement<()>,
+    Observation = NoEngineEvents,
+    Metadata = NoReplayMetadata,
+> where
+    Observation: ReplayEngineObservation,
+    Metadata: ReplayAdmissionMetadata,
+    PlacementPolicyImpl:
+        PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
+{
+    runtime: DisaggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>,
+    live: LiveRequests,
+}
+
+impl SteppableDisagg {
+    /// Build a round-robin disaggregated runtime with the given worker counts.
+    pub fn new(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        num_prefill_workers: usize,
+        num_decode_workers: usize,
+    ) -> anyhow::Result<Self> {
+        Self::with_placements(
+            engine,
+            factory,
+            num_prefill_workers,
+            num_decode_workers,
+            |_, prefill, _, decode| {
+                Ok((
+                    PoolRoundRobinPlacement::new(prefill),
+                    PoolRoundRobinPlacement::new(decode),
+                ))
+            },
+        )
+    }
+}
+
+impl<PlacementPolicyImpl, Observation, Metadata>
+    SteppableDisagg<PlacementPolicyImpl, Observation, Metadata>
+where
+    Observation: ReplayEngineObservation,
+    Metadata: ReplayAdmissionMetadata,
+    PlacementPolicyImpl:
+        PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
+{
+    /// Build a disaggregated runtime whose prefill and decode placements come
+    /// from `create_placements(prefill_dp_size, prefill_topology,
+    /// decode_dp_size, decode_topology)`.
+    pub fn with_placements(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        num_prefill_workers: usize,
+        num_decode_workers: usize,
+        create_placements: impl FnOnce(
+            u32,
+            Vec<WorkerTopology>,
+            u32,
+            Vec<WorkerTopology>,
+        ) -> anyhow::Result<(PlacementPolicyImpl, PlacementPolicyImpl)>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            num_prefill_workers > 0 && num_decode_workers > 0,
+            "disaggregated worker counts must be positive"
+        );
+        let config = crate::replay::OfflineDisaggReplayConfig {
+            prefill_factory: factory.role_factory(&engine, WorkerStage::Prefill, false)?,
+            decode_factory: factory.role_factory(&engine, WorkerStage::Decode, false)?,
+            prefill_startup_time_ms: None,
+            decode_startup_time_ms: None,
+            num_prefill_workers,
+            num_decode_workers,
+            handoff_latency_ms: 0.0,
+        };
+        let runtime = DisaggRuntimeImpl::new_composed(
+            &config,
+            AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
+            false,
+            create_placements,
+        )?
+        .into_steppable();
+        Ok(Self {
+            runtime,
+            live: LiveRequests::default(),
+        })
+    }
+}
+
+impl<PlacementPolicyImpl, Observation, Metadata> SteppableReplay
+    for SteppableDisagg<PlacementPolicyImpl, Observation, Metadata>
+where
+    Observation: ReplayEngineObservation,
+    Metadata: ReplayAdmissionMetadata,
+    PlacementPolicyImpl:
+        PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
+{
+    fn now_ms(&self) -> f64 {
+        self.runtime.now_ms()
+    }
+
+    fn advance_now_ms(&mut self, now_ms: f64) {
+        // Only an idle runtime has no internal event to skip over; with work
+        // outstanding the caller must step to it instead.
+        if now_ms.is_finite() && now_ms > self.runtime.now_ms() && self.runtime.is_workload_done() {
+            self.runtime.advance_now_ms(now_ms);
+        }
+    }
+
+    fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        if let Some(uuid) = request.uuid {
+            if self.live.contains(uuid) {
+                anyhow::bail!("steppable replay request {uuid} is already live");
+            }
+            if self.runtime.collector().contains_request(uuid) {
+                anyhow::bail!("steppable replay request {uuid} is already retained");
+            }
+        }
+        let uuid = self
+            .runtime
+            .submit_dynamic_payload(ReplayRequestPayload::materialized(request))?;
+        self.live.insert(uuid);
+        Ok(uuid)
+    }
+
+    fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
+        let status = self.runtime.cancel_dynamic(uuid)?;
+        if status.is_some() {
+            self.live.uuids.remove(&uuid);
+        }
+        Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
+    }
+
+    fn step_until(&mut self, until_ms: f64) -> anyhow::Result<StepOutcome> {
+        let end_ms = self.runtime.step_dynamic_until(until_ms)?;
+        let mut events = self
+            .runtime
+            .take_step_tokens()
+            .into_iter()
+            .map(|(uuid, token_id)| EngineEvent::token(uuid, token_id))
+            .collect::<Vec<_>>();
+        for (uuid, status) in self.runtime.take_step_terminals() {
+            self.live.uuids.remove(&uuid);
+            events.push(EngineEvent::terminal(uuid, status));
+        }
+        // Server-side quiescence needs no caller action in this seam.
+        self.runtime.take_step_quiescent();
+        Ok(StepOutcome { end_ms, events })
+    }
+
+    fn next_event_ms(&mut self) -> Option<f64> {
+        self.runtime.next_dynamic_timestamp()
+    }
+
+    fn is_idle(&self) -> bool {
+        self.runtime.is_workload_done()
+    }
+
+    fn in_flight(&self) -> usize {
+        self.live.len()
+    }
+
+    fn set_capture_per_request(&mut self, capture: bool) {
+        self.runtime
+            .collector_mut()
+            .set_capture_per_request(capture);
+    }
+
+    fn set_sla_thresholds(&mut self, sla: SlaThresholds) {
+        self.runtime.collector_mut().set_sla_thresholds(sla);
+    }
+
+    fn request_latencies(&self, uuid: Uuid) -> Option<(f64, f64)> {
+        self.runtime.collector().request_latencies(uuid)
+    }
+
+    fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> {
+        self.runtime.collector().request_admission(uuid)
+    }
+
+    fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
+        self.runtime.collector().actual_output_length(uuid)
+    }
+
+    fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
+        self.runtime.take_report_dynamic(wall_ms)
     }
 }
 
@@ -870,5 +1083,155 @@ mod tests {
         let factory = ReplayEngineFactory::new();
 
         assert!(SteppableAgg::new(ReplayEngineConfig::default(), &factory, 0).is_err());
+    }
+
+    #[test]
+    fn disaggregated_replay_streams_tokens_and_one_terminal_through_the_handoff() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        engine.set_capture_per_request(true);
+        let uuid = engine.submit(request(60, 128, 8)).unwrap();
+        assert_eq!(engine.in_flight(), 1);
+
+        let events = drain(&mut engine);
+
+        assert_eq!(
+            events.iter().filter(|event| event.emitted_token).count(),
+            8
+        );
+        let terminals = events
+            .iter()
+            .filter(|event| event.terminal_status.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].uuid, uuid);
+        assert_eq!(
+            terminals[0].terminal_status,
+            Some(ReplayTerminalStatus::Completed)
+        );
+        assert_eq!(engine.in_flight(), 0);
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.request_counts.total_output_tokens, 8);
+        assert_eq!(report.per_request.len(), 1);
+    }
+
+    #[test]
+    fn a_nonterminal_token_holds_its_instant_for_the_next_decision() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        engine.submit(request(61, 128, 16)).unwrap();
+        let outcome = loop {
+            let outcome = engine.step().unwrap();
+            if outcome
+                .events
+                .iter()
+                .any(|event| event.emitted_token && event.terminal_status.is_none())
+            {
+                break outcome;
+            }
+            assert!(!engine.is_idle(), "no nonterminal token was emitted");
+        };
+
+        assert_eq!(outcome.end_ms, engine.now_ms());
+        // The commit half is still owed at this instant, so a child submitted
+        // now joins the pass the worker starts next.
+        assert_eq!(engine.next_event_ms(), Some(engine.now_ms()));
+    }
+
+    #[test]
+    fn disaggregated_bounded_step_never_crosses_the_deadline_or_skips_time() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        engine.submit(request(62, 128, 16)).unwrap();
+
+        let deadline_ms = 0.000_001;
+        let outcome = engine.step_until(deadline_ms).unwrap();
+
+        assert!(outcome.end_ms <= deadline_ms);
+        assert!(!engine.is_idle());
+        // Work is outstanding, so an external idle-gap skip must not move time.
+        let before_ms = engine.now_ms();
+        engine.advance_now_ms(before_ms + 1_000.0);
+        assert_eq!(engine.now_ms(), before_ms);
+    }
+
+    #[test]
+    fn disaggregated_cancellation_is_immediately_terminal_and_cleans_up() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(63, 128, 64)).unwrap();
+        let event = engine.cancel(uuid).unwrap();
+
+        assert_eq!(
+            event.map(|event| event.terminal_status),
+            Some(Some(ReplayTerminalStatus::Canceled))
+        );
+        assert_eq!(engine.in_flight(), 0);
+        assert!(engine.cancel(uuid).unwrap().is_none());
+        let events = drain(&mut engine);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.uuid == uuid && event.terminal_status.is_some()),
+            "a canceled request must not emit a second terminal: {events:?}"
+        );
+        assert!(engine.is_idle());
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.num_requests, 1);
+    }
+
+    #[test]
+    fn disaggregated_report_drain_allows_uuid_reuse_and_rejects_live_duplicates() {
+        let mut engine = SteppableDisagg::new(
+            ReplayEngineConfig::default(),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        let uuid = engine.submit(request(64, 128, 2)).unwrap();
+        let error = engine.submit(request(64, 128, 2)).unwrap_err();
+        assert!(error.to_string().contains("already live"), "{error}");
+        drain(&mut engine);
+        let error = engine.submit(request(64, 128, 2)).unwrap_err();
+        assert!(error.to_string().contains("already retained"), "{error}");
+        assert!(engine.take_report(f64::NAN).is_err());
+        let first = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(first.request_counts.total_output_tokens, 2);
+        assert!(engine.actual_output_length(uuid).is_none());
+
+        assert_eq!(engine.submit(request(64, 128, 3)).unwrap(), uuid);
+        drain(&mut engine);
+        let second = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(second.request_counts.num_requests, 1);
+        assert_eq!(second.request_counts.total_output_tokens, 3);
+    }
+
+    #[test]
+    fn disaggregated_constructor_rejects_empty_pools() {
+        let factory = ReplayEngineFactory::new();
+        assert!(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 0, 1).is_err());
+        assert!(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 0).is_err());
     }
 }
