@@ -90,6 +90,8 @@ rules:
      match: "per_token_group_quant|_static_quant_fp8|_quantize_k_cache|quantize_k_cache"}
   - {backend: vllm_kernel, role: quant,
      match: "scaled_fp8_quant|indexer_k_quant_and_cache"}
+  - {backend: deepgemm, role: quant,
+     match: "^deep_gemm::pack_fp32_into_ue8m0$"}
   - {backend: trtllm_internal, role: quant,
      match: "scaleMatrixPerTensorVec|scale_1x128_kernel|_dequant_nvfp4|_cast_scatter_fp32|_gather_cast_vk"}
   - {backend: framework_native, role: kvcache,
