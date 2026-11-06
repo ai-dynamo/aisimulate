@@ -362,7 +362,7 @@ pub(crate) fn execute(
     })?;
     let report = result.context("graph driver returned without report")??;
     ensure!(model.is_drained(), "graph model retained requests after drain");
-    let backend = model.take_backend_report(clock.now_ns() as f64 / 1_000_000.0);
+    let backend = model.take_backend_report(clock.now_ns() as f64 / 1_000_000.0)?;
     Ok(serde_json::json!({
         "format":"aisim-aiperf-library-proof-v1", "capture_format":"aisim-runtime-values-raw-v1",
         "native_phase_report":{"phases":report.phases,"workload":{"admitted":report.workload.admitted,"completed":report.workload.completed,"cancelled":report.workload.cancelled,"failed":report.workload.failed,"traces_debug":format!("{:?}",report.workload.traces)}},

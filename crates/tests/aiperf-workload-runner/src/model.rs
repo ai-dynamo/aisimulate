@@ -257,12 +257,12 @@ impl ModelExecution {
     }
 
     /// Drain backend measurements independently of the application's phase report.
-    pub(crate) fn take_backend_report(&self, end_ms: f64) -> aisimulate_core::replay::ReplayReport {
+    pub(crate) fn take_backend_report(&self, end_ms: f64) -> Result<aisimulate_core::replay::ReplayReport, ExecutionError> {
         if let Some(deployment) = self.state.borrow_mut().deployment.as_mut() {
             return deployment.take_report(end_ms)
-                .expect("drained deployment report must be available");
+                .map_err(|error| ExecutionError::Failed(format!("deployment report failed: {error}")));
         }
-        self.reporting.borrow_mut().take_report(end_ms)
+        Ok(self.reporting.borrow_mut().take_report(end_ms))
     }
 
     /// True only when engine, committed pass, and application ownership drained.
@@ -726,7 +726,7 @@ impl Execution for ModelExecution {
                 }
             }
             let end_ns = self.now();
-            let terminal = mailbox.terminal.borrow().unwrap_or_else(|| if rejected {
+            let terminal = mailbox.terminal.borrow().filter(|terminal| *terminal != ReplayTerminalStatus::Completed).unwrap_or_else(|| if rejected {
                 ReplayTerminalStatus::Rejected
             } else {
                 script.terminal
@@ -813,8 +813,43 @@ impl Execution for ModelExecution {
     }
 }
 
+/// Least integer clock instant whose forward conversion reaches the deadline.
+/// Multiplication/ceiling alone is not the inverse of ns-to-ms division (123ns).
+fn deployment_deadline_ns(at_ms: f64) -> Result<i64, SimDriveError> {
+    if !at_ms.is_finite() || at_ms < 0.0 || at_ms >= i64::MAX as f64 / 1_000_000.0 {
+        return Err(source_error("invalid deployment event deadline"));
+    }
+    let mut ns = (at_ms * 1_000_000.0).ceil() as i64;
+    while ns > 0 && (ns - 1) as f64 / 1_000_000.0 >= at_ms { ns -= 1; }
+    while ns as f64 / 1_000_000.0 < at_ms {
+        ns = ns.checked_add(1).ok_or_else(|| source_error("deployment deadline overflow"))?;
+    }
+    Ok(ns)
+}
+
 fn source_error(error: impl fmt::Display) -> SimDriveError {
     SimDriveError::EventSource(error.to_string())
+}
+
+#[cfg(test)]
+mod deployment_clock_tests {
+    use super::deployment_deadline_ns;
+
+    #[test]
+    fn deadline_mapping_preserves_forward_clock_values() {
+        for ns in [0, 1, 122, 123, 124, 999_999, 1_000_001, 123_456_789] {
+            assert_eq!(deployment_deadline_ns(ns as f64 / 1_000_000.0).unwrap(), ns);
+        }
+    }
+
+    #[test]
+    fn deadline_mapping_never_runs_a_physical_event_early() {
+        for at_ms in [0.000_123_4, 1.000_000_1, 7.171_883_2] {
+            let ns = deployment_deadline_ns(at_ms).unwrap();
+            assert!(ns as f64 / 1_000_000.0 >= at_ms);
+            assert!((ns - 1) as f64 / 1_000_000.0 < at_ms);
+        }
+    }
 }
 
 impl SimEventSource for ModelExecution {
@@ -825,11 +860,7 @@ impl SimEventSource for ModelExecution {
         }
         if let Some(deployment) = state.deployment.as_mut() {
             return deployment.next_event_ms().map(|at_ms| {
-                let ns = (at_ms * 1_000_000.0).ceil();
-                if !ns.is_finite() || ns >= i64::MAX as f64 {
-                    return Err(source_error("invalid deployment event deadline"));
-                }
-                Ok((ns as i64).max(self.now()))
+                Ok(deployment_deadline_ns(at_ms)?.max(self.now()))
             }).transpose();
         }
         let engine = state.engine.as_ref().expect("engine backend selected");
@@ -855,14 +886,13 @@ impl SimEventSource for ModelExecution {
             let before_ms = deployment.now_ms();
             let next_ms = deployment.next_event_ms();
             let clock_ms = now_ns as f64 / 1_000_000.0;
-            // Retain the engine's original f64 deadline when its ceiling is the
-            // selected integer-nanosecond instant; never move a future event back.
-            let until_ms = next_ms.filter(|at_ms| (at_ms * 1_000_000.0).ceil() <= now_ns as f64)
-                .map_or(clock_ms, |at_ms| clock_ms.max(at_ms));
+            // The selected clock instant is the least forward-converted value
+            // reaching the physical deadline; no floating tolerance is required.
+            let until_ms = clock_ms;
             let outcome = deployment.step_until(until_ms).map_err(source_error)?;
             let made_progress = outcome.end_ms > before_ms || !outcome.events.is_empty()
                 || next_ms.is_some_and(|at_ms| at_ms <= until_ms);
-            if (outcome.end_ms * 1_000_000.0).ceil() > now_ns as f64 {
+            if outcome.end_ms > clock_ms {
                 return Err(source_error("deployment advanced beyond committed virtual time"));
             }
             let admissions = outcome.events.iter().map(|event| {
