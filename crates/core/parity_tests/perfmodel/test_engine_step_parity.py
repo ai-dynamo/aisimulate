@@ -2182,7 +2182,12 @@ _FPM_ROWS = [
 ]
 
 
-def _fpm_write_pair(data_dir) -> None:
+def _fpm_write_pair(data_dir, power_w=None) -> None:
+    """Write the schema-6 pair, or with ``power_w(row_index)`` a schema-8 pair.
+
+    Schema 8 carries the legacy schema-7 execution identity and a float64
+    ``power_w`` column (W per GPU) under the power-window policy.
+    """
     import hashlib
     import json as _json
 
@@ -2225,6 +2230,15 @@ def _fpm_write_pair(data_dir) -> None:
                 "latency_ms": lat,
             }
         )
+    if power_w is not None:
+        for index, row in enumerate(rows):
+            row.update(
+                model_config_sha256="",
+                execution_profile="full",
+                engram_residency="none",
+                input_modality="text",
+                power_w=power_w(index),
+            )
     parquet_path = data_dir / "fpm_forward_perf.parquet"
     pq.write_table(pa.Table.from_pylist(rows), parquet_path)
     digest = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
@@ -2232,9 +2246,13 @@ def _fpm_write_pair(data_dir) -> None:
         _json.dumps(
             {
                 "schema_name": "aic_fpm_forward_perf",
-                "schema_version": 6,
+                "schema_version": 6 if power_w is None else 8,
                 "coordinate_system": "iteration_totals_balanced_v1",
-                "measurement_policy": "dynamo_native_single_sample_v1",
+                "measurement_policy": (
+                    "dynamo_native_single_sample_v1"
+                    if power_w is None
+                    else "dynamo_native_single_sample_power_window_v1"
+                ),
                 "system": "b200_sxm",
                 "backend": "vllm",
                 "backend_version": _FPM_VERSION,
@@ -2247,6 +2265,15 @@ def _fpm_write_pair(data_dir) -> None:
 
 @pytest.fixture(scope="class")
 def fpm_systems_root(tmp_path_factory):
+    yield from _fpm_systems(tmp_path_factory)
+
+
+@pytest.fixture(scope="class")
+def fpm_power_systems_root(tmp_path_factory):
+    yield from _fpm_systems(tmp_path_factory, power_w=lambda index: 300.0 + 10.0 * index)
+
+
+def _fpm_systems(tmp_path_factory, power_w=None):
     import shutil
 
     root = tmp_path_factory.mktemp("fpm_systems")
@@ -2254,7 +2281,7 @@ def fpm_systems_root(tmp_path_factory):
     shutil.copy(f"{pkg_systems}/b200_sxm.yaml", root / "b200_sxm.yaml")
     data_dir = root / "data" / "b200_sxm" / "vllm" / _FPM_VERSION
     data_dir.mkdir(parents=True)
-    _fpm_write_pair(data_dir)
+    _fpm_write_pair(data_dir, power_w)
 
     perf_database.set_systems_paths(f"{root},default")
     rust_engine_step._engine_handle_cache_clear()
@@ -2304,6 +2331,56 @@ _FPM_GENONLY_FROZEN = 4.5
 # engine at introduction (append-only; there is no Python reference).
 _FPM_HYBRID_STATIC_GEN_FROZEN = 4.1246337890625  # (ngram k3, batch 1, isl 1024, osl 2)
 _FPM_HYBRID_MIXED_FROZEN = 18.187255859375  # (ctx 1024, gen 1, isl 1024, osl 2)
+
+
+# AISIM-1973: the same synthetic rows as a schema-8 pair with per-row power
+# 300 W + 10 W * row index. (latency_ms, energy_wms) pinned from the compiled
+# engine at introduction (append-only; there is no Python reference). Each
+# latency equals its schema-6 pin above. Energy is the resolved row's power
+# times its latency: prefill (1, 1024, 0) is row 1 (310 W * 18 ms), decode
+# (4, 4100) is row 12 (420 W * 4.5 ms). The aggregate mixed step reports no
+# FPM energy (D10, AISIM-2001); a generation-only step keeps it.
+_FPM_V8_POWER_FROZEN = {
+    "static_ctx": (18.0, 5580.0),
+    "static_gen": (4.5, 1890.0),
+    "mixed": (18.562552704189983, 0.0),
+    "genonly": (4.5, 1890.0),
+}
+
+
+class TestRustEngineStepFpmPowerParity:
+    """Schema-8 (powered) FPM pins: latency unchanged, energy from row power."""
+
+    def test_fpm_v8_power_pin(self, fpm_power_systems_root, monkeypatch):
+        _prepare_rust_core(monkeypatch)
+        model, backend, database = TestRustEngineStepFpmParity()._build()
+
+        def static(mode, batch, osl):
+            rc = config.RuntimeConfig(batch_size=batch, beam_width=1, isl=1024, osl=osl, prefix=0)
+            summary = backend.run_static(model, database, rc, mode=mode)
+            if mode == "static_ctx":
+                return summary.get_context_latency_dict(), summary.get_context_energy_wms_dict()
+            return summary.get_generation_latency_dict(), summary.get_generation_energy_wms_dict()
+
+        rc = config.RuntimeConfig(batch_size=1, beam_width=1, isl=1024, osl=2, prefix=0)
+        live = {
+            mode: tuple(sum(values.values()) for values in static(mode, batch, osl))
+            for mode, batch, osl in [("static_ctx", 1, 1), ("static_gen", 4, 2)]
+        }
+        live["mixed"] = tuple(backend._get_mix_step_latency(model, database, rc, 1024, 4, 1024, 2, 0)[:2])
+        live["genonly"] = tuple(backend._get_genonly_step_latency(model, database, rc, 4, 1023, 2)[:2])
+        for key, frozen in _FPM_V8_POWER_FROZEN.items():
+            if frozen is None:
+                print(f"\nPIN {key}: {live[key]!r}")
+            else:
+                assert live[key] == frozen, f"{key}: live {live[key]!r} != frozen {frozen!r}"
+        # Power never moves latency: the schema-6 pins of the same points.
+        assert [live[key][0] for key in ("static_ctx", "static_gen", "mixed", "genonly")] == [
+            _FPM_STATIC_FROZEN[("static_ctx", 1, 1024, 1, 0)],
+            _FPM_STATIC_FROZEN[("static_gen", 4, 1024, 2, 0)],
+            _FPM_MIXED_FROZEN[(1024, 4, 1024, 2)],
+            _FPM_GENONLY_FROZEN,
+        ]
 
 
 class TestRustEngineStepFpmHybridParity:
