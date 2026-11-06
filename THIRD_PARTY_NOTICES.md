@@ -457,6 +457,65 @@ The identified upstream revision has no root NOTICE file. The repository's
 Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
 
 
+The repository-root file `crates/core/src/engine/kv_manager/grouped_prefix.rs`
+adapts rules of vLLM v0.31.0, immutable commit
+`db9527a46873454610df6dbedf79a36d6bf1a7f6`, and of vLLM v0.32.0, immutable
+commit `5df63a7203cdb9328d824a27b682e77c7b9928be`.
+One rule table keyed by the vLLM version holds both rows. From
+`kv_cache_coordinator.py`, `grouped_prefix.rs` adapts the hybrid cache-hit
+lookup over the spec groups, the hit alignment, the scheduler block, the pinning
+of the hit blocks before an allocation and the release of the groups in group
+order. From `single_type_kv_cache_manager.py`, it adapts the hit rules of each
+group type, the copy of a hit that ends inside a block, the cached partial-tail
+entry, the state retention and the block lifetimes of an allocation, with the
+checkpoint block of v0.32.0. From `kv_cache_manager.py`, it adapts the hit cap,
+the junction of a hit, the whole-prompt block count of an admission and the
+release of the skipped blocks before an allocation. From `sched/scheduler.py`,
+it adapts the align-mode prefill split, with the checkpoint branch of v0.32.0,
+and the release of a copied hit block at the end of its step. From
+`kv_cache_interface.py`, it adapts the admission cap of a sliding-window group
+and the checkpoint block of v0.32.0, with its position and its validity test.
+From `block_pool.py`, it adapts the lookup of one spec group and the free order
+of cached blocks. From `kv_cache_utils.py`, it adapts the rule that the hash
+block divides the block of every prefix-cacheable group. From `engine/core.py`,
+it adapts the block of the align split, which is the smallest block of the
+prefix-cacheable groups. From `config/vllm.py`, it adapts the bound on in-flight
+tokens that the admission cap uses. The test module ports cases from the
+upstream tests listed below.
+
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/kv_cache_interface.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_utils.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/block_pool.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/config/vllm.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/tests/v1/core/prefix_cache/test_partial_prefix_cache_hits.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_cache_interface.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_utils.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/block_pool.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/config/vllm.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/tests/v1/core/prefix_cache/test_partial_prefix_cache_hits.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/tests/v1/core/test_mamba_align_chunk_split.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/LICENSE
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+This is a modified Rust simulation adaptation, restricted to no speculative
+decoding, no EAGLE, the default retention only and no transient checkpoint
+state. The identified upstream revisions have no root NOTICE file. The
+repository's Apache-2.0 LICENSE supplies the license text; no upstream source
+file is vendored.
+
+
 The inference-mode scope and MSA query-position metadata integration in
 `collector/vllm/collect_mla_module.py` and
 `collector/vllm/collect_msa_module.py` are adapted (modified) from serving
