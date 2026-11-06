@@ -1221,21 +1221,21 @@ impl EngineConfig {
             );
         };
         let rules = GroupedPrefixRules::new(groups, unit, version)?;
-        // Without a model length the rank bounds no prompt, so there is no
-        // full prompt to size the pool for.
-        if let Some(max_model_len) = self.max_model_len {
-            let capacity_blocks = self
-                .kv_cache_capacity_bytes
-                .expect("validated grouped cache capacity")
-                / page_size_bytes;
-            let max_in_flight_tokens = self
-                .max_concurrent_batches()
-                .saturating_mul(self.max_num_batched_tokens);
-            ensure!(
-                capacity_blocks >= rules.startup_blocks(max_model_len, max_in_flight_tokens) as u64,
-                "kv_cache_groups with enable_prefix_caching=true need capacity for the full prompt of max_model_len plus the state blocks of one request"
-            );
-        }
+        // vLLM always sizes the pool with a model length.
+        let Some(max_model_len) = self.max_model_len else {
+            bail!("kv_cache_groups with enable_prefix_caching=true require max_model_len");
+        };
+        let capacity_blocks = self
+            .kv_cache_capacity_bytes
+            .expect("validated grouped cache capacity")
+            / page_size_bytes;
+        let max_in_flight_tokens = self
+            .max_concurrent_batches()
+            .saturating_mul(self.max_num_batched_tokens);
+        ensure!(
+            capacity_blocks >= rules.startup_blocks(max_model_len, max_in_flight_tokens) as u64,
+            "kv_cache_groups with enable_prefix_caching=true need capacity for the full prompt of max_model_len plus the state blocks of one request"
+        );
         Ok(())
     }
 
@@ -2201,6 +2201,9 @@ mod tests {
         let mut small = glm_prefix_wire(Some("0.31.0"), None);
         small["kv_cache_capacity_bytes"] = (10 * GLM_PAGE).into();
         assert!(validation_error(small).contains("need capacity for the full prompt"));
+        let mut unbounded = glm_prefix_wire(Some("0.31.0"), None);
+        unbounded.as_object_mut().unwrap().remove("max_model_len");
+        assert!(validation_error(unbounded).contains("require max_model_len"));
 
         // The geometry rules, in gate order.
         let mut undeclared = glm_prefix_wire(Some("0.31.0"), None);

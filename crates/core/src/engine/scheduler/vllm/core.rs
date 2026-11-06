@@ -971,7 +971,7 @@ impl VllmCore {
                         max_in_flight_tokens: args
                             .max_concurrent_batches
                             .saturating_mul(args.max_num_batched_tokens.unwrap_or(usize::MAX)),
-                        max_model_len: args.max_model_len.unwrap_or(usize::MAX),
+                        max_model_len: args.max_model_len.expect("validated max_model_len"),
                     },
                 );
             } else {
