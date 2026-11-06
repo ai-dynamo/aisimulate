@@ -183,37 +183,33 @@ impl Dispatcher {
         }
         if self.direct_hashes.get()
             && let Some(source) = &turn.trace_hash_ids
+            && let Some(marker) = turn.cache_bust_marker.as_deref()
         {
-            if let Some(marker) = turn.cache_bust_marker.as_deref() {
-                let offset =
-                    usize::try_from(source.cache_bust_token_offset().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "direct trace cache-bust marker has no source token coordinate"
-                        )
-                    })?)?;
-                let offset = if turn
-                    .cache_bust_target
-                    .as_deref()
-                    .is_some_and(|target| target.ends_with("suffix"))
-                {
-                    offset.checked_sub(1).ok_or_else(|| {
-                        anyhow::anyhow!("direct trace suffix marker has no preceding token")
-                    })?
-                } else {
-                    offset
-                };
-                anyhow::ensure!(
-                    offset < ids.len(),
-                    "direct trace marker coordinate is outside the authored token geometry"
-                );
-                // Hash-level representation only: replace one source token at
-                // the recorded carrier coordinate; do not insert tokens or
-                // pretend this is byte-identical text marker tokenization.
-                // Even identities are reserved for exact prepared source IDs;
-                // odd identities are collision-free interned marker/source pairs.
-                // The map spans the run, retaining warmup/profile tree identity.
-                ids[offset] = self.marker_identity(marker, ids[offset])?;
-            }
+            let offset = usize::try_from(source.cache_bust_token_offset().ok_or_else(|| {
+                anyhow::anyhow!("direct trace cache-bust marker has no source token coordinate")
+            })?)?;
+            let offset = if turn
+                .cache_bust_target
+                .as_deref()
+                .is_some_and(|target| target.ends_with("suffix"))
+            {
+                offset.checked_sub(1).ok_or_else(|| {
+                    anyhow::anyhow!("direct trace suffix marker has no preceding token")
+                })?
+            } else {
+                offset
+            };
+            anyhow::ensure!(
+                offset < ids.len(),
+                "direct trace marker coordinate is outside the authored token geometry"
+            );
+            // Hash-level representation only: replace one source token at
+            // the recorded carrier coordinate; do not insert tokens or
+            // pretend this is byte-identical text marker tokenization.
+            // Even identities are reserved for exact prepared source IDs;
+            // odd identities are collision-free interned marker/source pairs.
+            // The map spans the run, retaining warmup/profile tree identity.
+            ids[offset] = self.marker_identity(marker, ids[offset])?;
         }
         {
             let mut records = self.records.borrow_mut();
