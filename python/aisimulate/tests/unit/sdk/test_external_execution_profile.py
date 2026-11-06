@@ -136,7 +136,7 @@ def _dsv4_context_table(path):
     )
 
 
-def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted(profile, monkeypatch):
+def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted_and_priced(profile, monkeypatch):
     config, payload, publish, root, _ = profile
     # Construction checks that each module's phase table holds a row.
     for kind in ("csa", "hca"):
@@ -172,7 +172,16 @@ def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted(profile, m
     payload["basis"] = json.loads(_native.engine_spec_json_from_bincode(spec_bytes))
     payload["ops"] = modules
     publish()
-    RustForwardPassPerfModel.best_available(config).close()  # must not raise
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        # Both modules price the phase: one 1 ms row each at the exact cell,
+        # reported under the shared attention name.
+        assert model.predict_prefill_latency(1, 1024, 0) == 2.0
+        [attention] = model.static_phase_diagnostics(batch_size=1, context_length=1024, prefix=0, prefill=True)
+        assert attention["name"] == "context_attention"
+        assert (attention["latency_ms"], attention["source"]) == (2.0, "silicon")
+    finally:
+        model.close()
 
 
 def test_exact_cells_prefix_and_saved_config(profile):
