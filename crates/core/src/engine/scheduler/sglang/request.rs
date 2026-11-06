@@ -240,14 +240,14 @@ impl SglangRequest {
     }
 }
 
-/// Queue ownership makes each mutable request leave the statistics before its
-/// length can change, then accounts for its new length on re-insertion.
+/// The queue lends requests only by shared reference, so a request leaves the
+/// statistics and continuation count before its length or materialized tokens
+/// can change, then is counted again on re-insertion.
 #[derive(Default)]
 pub(super) struct WaitingQueue {
     requests: VecDeque<SglangRequest>,
     pub(super) stats: QueueStats,
-    /// Queued chunk continuations (`materialized_tokens > 0`), so admission
-    /// looks for one only when it exists.
+    /// Queued chunk continuations (`materialized_tokens > 0`).
     continuations: usize,
 }
 
@@ -309,6 +309,13 @@ impl WaitingQueue {
     }
 
     pub(super) fn has_continuation(&self) -> bool {
+        debug_assert_eq!(
+            self.continuations,
+            self.requests
+                .iter()
+                .filter(|request| request.materialized_tokens > 0)
+                .count(),
+        );
         self.continuations > 0
     }
 }
