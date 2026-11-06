@@ -482,6 +482,8 @@ pub struct AgentXParticipant {
     /// Facts arrived after the last `advance_to`; the host polls us again.
     dirty: bool,
     last_now_ms: f64,
+    /// Diagnostic cadence only; never participates in event selection.
+    last_progress_log_bucket: u64,
 }
 
 impl AgentXParticipant {
@@ -571,8 +573,13 @@ impl WorkloadParticipant for AgentXParticipant {
             .map(|ns| ns as f64 / 1_000_000.0)
     }
 
-    fn advance_to(&mut self, now_ms: f64, _cluster_in_flight: usize) -> Result<ParticipantStep> {
+    fn advance_to(&mut self, now_ms: f64, cluster_in_flight: usize) -> Result<ParticipantStep> {
         let now_ns = participant_deadline_ns(&self.shared.clock, now_ms)?;
+        let fired_deadline_ns = self
+            .shared
+            .clock
+            .next_event_time()
+            .filter(|&ns| ns <= now_ns);
         let was_ready = self.shared.result.borrow().is_some();
         let previous_total = self.shared.execution.state.borrow().total;
         tracing::trace!(
@@ -614,11 +621,17 @@ impl WorkloadParticipant for AgentXParticipant {
             submits.retain(|submit| submit.uuid != Some(*id));
             submits.len() == before
         });
+        // Periodic snapshots expose timer-only progress too, without logging
+        // every heartbeat or changing any simulation deadline.
+        let progress_log_bucket = (now_ms / 1_000_000.0) as u64;
+        let is_periodic_snapshot = progress_log_bucket > self.last_progress_log_bucket;
         if state.total != previous_total
             || !submits.is_empty()
             || !cancels.is_empty()
             || self.shared.result.borrow().is_some() != was_ready
+            || is_periodic_snapshot
         {
+            self.last_progress_log_bucket = progress_log_bucket;
             tracing::debug!(
                 host_ms = now_ms,
                 clock_ns = self.shared.clock.now_ns(),
@@ -628,6 +641,9 @@ impl WorkloadParticipant for AgentXParticipant {
                 total = state.total,
                 submits = submits.len(),
                 cancels = cancels.len(),
+                cluster_in_flight,
+                fired_deadline_ns = ?fired_deadline_ns,
+                is_periodic_snapshot,
                 result_ready = self.shared.result.borrow().is_some(),
                 dirty = self.dirty,
                 woken = self.flag.load(Ordering::SeqCst),
@@ -640,9 +656,11 @@ impl WorkloadParticipant for AgentXParticipant {
     fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
         self.dirty = true;
         self.last_now_ms = now_ms;
-        self.shared
-            .execution
-            .token(request_id, ns_from_ms(now_ms)?, token_id)
+        self.shared.execution.token(
+            request_id,
+            ns_from_ms(now_ms)?.max(self.shared.clock.now_ns()),
+            token_id,
+        )
     }
 
     fn on_prompt_cache_read_tokens(
@@ -683,9 +701,11 @@ impl WorkloadParticipant for AgentXParticipant {
     fn on_terminal(&mut self, request_id: Uuid, now_ms: f64, status: AisimTerminal) -> Result<()> {
         self.dirty = true;
         self.last_now_ms = now_ms;
-        self.shared
-            .execution
-            .terminal(request_id, ns_from_ms(now_ms)?, status)
+        self.shared.execution.terminal(
+            request_id,
+            ns_from_ms(now_ms)?.max(self.shared.clock.now_ns()),
+            status,
+        )
     }
 
     fn is_drained(&self) -> bool {
@@ -822,6 +842,7 @@ pub fn native_hosted(
             waker,
             dirty: true,
             last_now_ms: 0.0,
+            last_progress_log_bucket: 0,
         },
         HostedRunHandle { shared },
     ))
@@ -854,7 +875,38 @@ mod clock_tests {
         assert!(ns_from_ms(horizon as f64 / 1_000_000.0).unwrap() < horizon);
     }
 
-    fn warmup_participant(directory: &std::path::Path) -> (AgentXParticipant, HostedRunHandle) {
+    #[test]
+    fn pump_drains_distinct_ns_deadlines_in_one_host_bucket() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut participant, _handle) =
+            warmup_participant(directory.path(), NativeInputProjection::TraceHashes);
+        participant.local = LocalSet::new();
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let horizon = 9_007_200_000_000_000_i64;
+        {
+            let _enter = participant.runtime.enter();
+            for deadline_ns in [horizon - 1, horizon, horizon + 1] {
+                let clock = participant.shared.clock.clone();
+                let observed = observed.clone();
+                participant.local.spawn_local(async move {
+                    clock.clone().sleep_until(deadline_ns).await;
+                    observed.borrow_mut().push(clock.now_ns());
+                });
+            }
+        }
+        participant.advance_to(0.0, 0).unwrap();
+        let host_ms = participant.next_wakeup_ms().unwrap();
+        assert_eq!(host_ms, 9_007_200_000.0);
+        participant.advance_to(host_ms, 0).unwrap();
+        assert_eq!(*observed.borrow(), [horizon - 1, horizon, horizon + 1]);
+        assert_eq!(participant.next_wakeup_ms(), None);
+        assert_eq!(participant.shared.clock.now_ns(), horizon + 1);
+    }
+
+    fn warmup_participant(
+        directory: &std::path::Path,
+        input: NativeInputProjection,
+    ) -> (AgentXParticipant, HostedRunHandle) {
         let mut frame = clock_test_fixture::request(directory);
         frame["run"]["cfg"]["finite_replay"] = serde_json::json!(false);
         frame["run"]["cfg"]["trajectory_start_min_ratio"] = serde_json::json!(0.5);
@@ -868,7 +920,7 @@ mod clock_tests {
                 .run;
         native_hosted(
             &run,
-            NativeInputProjection::Text,
+            input,
             RunCancellation::new(),
             Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
             Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
@@ -880,55 +932,65 @@ mod clock_tests {
 
     #[test]
     fn rejected_warmup_primer_stops_without_a_far_future_heartbeat() {
-        let directory = tempfile::tempdir().unwrap();
-        let (mut participant, _handle) = warmup_participant(directory.path());
-        let step = participant.advance_to(0.0, 0).unwrap();
-        assert_eq!(step.submits.len(), 1, "one real warmup primer");
-        let id = step.submits[0].uuid.unwrap();
-        participant
-            .on_rejection_cause(id, RejectionCause::ContextOverflow, 1.0)
-            .unwrap();
-        participant
-            .on_terminal(id, 1.0, AisimTerminal::Rejected)
-            .unwrap();
-        let outcome = participant.advance_to(1.0, 0);
-        assert!(
-            outcome.is_err(),
-            "failed warmup must terminate: clock={}ns next={:?} live={} result_ready={}",
-            participant.shared.clock.now_ns(),
-            participant.next_wakeup_ms(),
-            participant.shared.execution.state.borrow().live.len(),
-            participant.shared.result.borrow().is_some(),
-        );
-        let error = outcome.unwrap_err();
-        assert!(
-            format!("{error:#}").contains("warmup root turn"),
-            "{error:#}"
-        );
+        for input in [
+            NativeInputProjection::Text,
+            NativeInputProjection::TraceHashes,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut participant, _handle) = warmup_participant(directory.path(), input);
+            let step = participant.advance_to(0.0, 0).unwrap();
+            assert_eq!(step.submits.len(), 1, "one real warmup primer");
+            let id = step.submits[0].uuid.unwrap();
+            participant
+                .on_rejection_cause(id, RejectionCause::ContextOverflow, 1.0)
+                .unwrap();
+            participant
+                .on_terminal(id, 1.0, AisimTerminal::Rejected)
+                .unwrap();
+            let outcome = participant.advance_to(1.0, 0);
+            assert!(
+                outcome.is_err(),
+                "failed warmup must terminate: clock={}ns next={:?} live={} result_ready={}",
+                participant.shared.clock.now_ns(),
+                participant.next_wakeup_ms(),
+                participant.shared.execution.state.borrow().live.len(),
+                participant.shared.result.borrow().is_some(),
+            );
+            let error = outcome.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("warmup root turn"),
+                "{error:#}"
+            );
+        }
     }
 
     #[test]
     fn profile_duration_and_grace_retire_all_clock_deadlines() {
-        let directory = tempfile::tempdir().unwrap();
-        let (mut participant, handle) = warmup_participant(directory.path());
-        let warmup = participant.advance_to(0.0, 0).unwrap();
-        let id = warmup.submits[0].uuid.unwrap();
-        participant
-            .on_terminal(id, 1.0, AisimTerminal::Completed)
-            .unwrap();
-        participant.advance_to(1.0, 0).unwrap();
-        participant.advance_to(10.0, 0).unwrap();
-        participant.advance_to(1_800_001.0, 0).unwrap();
-        participant.advance_to(1_801_001.0, 0).unwrap();
-        assert!(
-            participant.is_drained(),
-            "phase must stop at 1800s plus grace: clock={}ns next={:?} live={} result_ready={}",
-            participant.shared.clock.now_ns(),
-            participant.next_wakeup_ms(),
-            participant.shared.execution.state.borrow().live.len(),
-            participant.shared.result.borrow().is_some(),
-        );
-        assert_eq!(participant.shared.clock.next_event_time(), None);
-        assert!(handle.into_typed_report().is_ok());
+        for input in [
+            NativeInputProjection::Text,
+            NativeInputProjection::TraceHashes,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut participant, handle) = warmup_participant(directory.path(), input);
+            let warmup = participant.advance_to(0.0, 0).unwrap();
+            let id = warmup.submits[0].uuid.unwrap();
+            participant
+                .on_terminal(id, 1.0, AisimTerminal::Completed)
+                .unwrap();
+            participant.advance_to(1.0, 0).unwrap();
+            participant.advance_to(10.0, 0).unwrap();
+            participant.advance_to(1_800_001.0, 0).unwrap();
+            participant.advance_to(1_801_001.0, 0).unwrap();
+            assert!(
+                participant.is_drained(),
+                "phase must stop at 1800s plus grace: clock={}ns next={:?} live={} result_ready={}",
+                participant.shared.clock.now_ns(),
+                participant.next_wakeup_ms(),
+                participant.shared.execution.state.borrow().live.len(),
+                participant.shared.result.borrow().is_some(),
+            );
+            assert_eq!(participant.shared.clock.next_event_time(), None);
+            assert!(handle.into_typed_report().is_ok());
+        }
     }
 }
