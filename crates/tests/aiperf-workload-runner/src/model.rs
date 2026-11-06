@@ -731,9 +731,12 @@ impl Execution for ModelExecution {
             } else {
                 script.terminal
             });
-            let completion_error = if matches!(terminal, ReplayTerminalStatus::Rejected | ReplayTerminalStatus::Failed) {
+            let physical_terminal = *mailbox.terminal.borrow();
+            let completion_error = if rejected || physical_terminal == Some(ReplayTerminalStatus::Failed) {
                 CompletionError::Present
             } else {
+                // Scripted provider error presence is authoritative independently
+                // of its terminal label; Unknown must remain Unknown.
                 script.completion_error
             };
             let response_text = match script.response_text {
