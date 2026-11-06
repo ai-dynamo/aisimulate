@@ -169,7 +169,7 @@ requests that satisfy `evaluation.sla`. Neither target enables strict rejection
 implicitly. The existing `min_gpus` target retains its mandatory SLA gate.
 
 The native definitions follow ordinary metrics in
-[AIPerf b0276e19398169eb450f5a79db28509dd4bcb48f](https://github.com/ai-dynamo/aiperf/tree/b0276e19398169eb450f5a79db28509dd4bcb48f/src/aiperf/metrics):
+[AIPerf v0.13.0](https://github.com/ai-dynamo/aiperf/tree/v0.13.0/src/aiperf/metrics):
 
 - Each successful request contributes one sample per available metric.
   Failed, canceled, rejected and unfinished requests contribute no samples.

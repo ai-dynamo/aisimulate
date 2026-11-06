@@ -4,7 +4,7 @@
 """AIPerf request metric selectors over the native replay summary.
 
 Native replay reports TTFT, request latency, per-request ITL and user TPS with
-the request populations of ai-dynamo/aiperf b0276e19398169eb450f5a79db28509dd4bcb48f.
+the request populations of ai-dynamo/aiperf v0.13.0.
 Native percentiles use the nearest rank; AIPerf interpolates linearly.
 """
 

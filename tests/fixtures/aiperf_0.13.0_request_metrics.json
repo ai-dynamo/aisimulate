@@ -1,5 +1,5 @@
 {
- "aiperf_revision": "b0276e19398169eb450f5a79db28509dd4bcb48f",
+ "aiperf_revision": "v0.13.0 (794f8bb75f8582f22e412d7e650fc71ca2a3d21a)",
  "generator": "benchmarks/evidence/aiperf-metrics/aiperf_expected.py",
  "row_fields": ["first_token_ms", "last_token_ms", "output_length", "first_content_chunk_tokens", "terminal_status"],
  "cases": [

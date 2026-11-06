@@ -1854,9 +1854,9 @@ OSRB approval.
 - Derived files: the request metric populations in
   `crates/core/src/replay/report.rs` and `crates/core/src/replay/report/bounded.rs`,
   the selector names in `python/aisimulate/src/aisimulate/aiperf_metrics.py`, and
-  `tests/fixtures/aiperf_b0276e19_request_metrics.json`.
-- Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/b0276e19398169eb450f5a79db28509dd4bcb48f),
-  revision `b0276e19398169eb450f5a79db28509dd4bcb48f`.
+  `tests/fixtures/aiperf_0.13.0_request_metrics.json`.
+- Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/v0.13.0),
+  release `v0.13.0` (commit `794f8bb75f8582f22e412d7e650fc71ca2a3d21a`).
 - Original paths: `src/aiperf/metrics/types/ttft_metric.py`,
   `request_latency_metric.py`, `inter_token_latency_metric.py`,
   `output_token_throughput_metrics.py`, and `src/aiperf/metrics/accumulator.py`.

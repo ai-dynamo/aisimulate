@@ -3105,7 +3105,7 @@ mod tests {
     fn request_metrics_match_pinned_aiperf_counts_and_means() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/aiperf_b0276e19_request_metrics.json"
+            "/../../tests/fixtures/aiperf_0.13.0_request_metrics.json"
         )))
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
