@@ -12,7 +12,9 @@
 //! - `next_wakeup_ms` is the earliest logical time at which `advance_to` could
 //!   produce a submission. A participant made runnable by a callback (for
 //!   example a terminal that unblocks a successor) reports a wakeup at or
-//!   before the callback time. Return `None` while parked on an engine fact.
+//!   before the callback time. Return `None` while parked on an engine fact;
+//!   a present deadline must be finite. This is a repeatable peek: observing it
+//!   must not consume readiness or change the next result without a new fact.
 //! - `advance_to(now_ms)` runs the workload until it parks and returns what it
 //!   submitted. After it returns, `next_wakeup_ms` must be `None` or strictly
 //!   later than `now_ms` unless more work was made runnable by a later callback;

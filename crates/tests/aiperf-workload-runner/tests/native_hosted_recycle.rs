@@ -229,8 +229,8 @@ fn native_recycle_waits_for_the_whole_tree_before_the_next_root() {
 
     let mut ordered: Vec<&Vec<&Value>> = trees.values().collect();
     ordered.sort_by_key(|tree| root_issue(tree.as_slice()));
-    let first = *ordered[0];
-    let second = *ordered[1];
+    let first = ordered[0].as_slice();
+    let second = ordered[1].as_slice();
 
     for tree in [first, second] {
         assert_eq!(
