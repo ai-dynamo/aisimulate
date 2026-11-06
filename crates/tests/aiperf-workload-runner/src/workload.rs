@@ -54,9 +54,13 @@ pub(crate) struct Head {
     pub(crate) tokenizer: Arc<dyn TextTokenizer>,
     pub(crate) kind: aiperf_config::model::workload_kind::WorkloadKind,
     pub(crate) legacy_weka: bool,
+    pub(crate) input_projection: crate::participant_adapter::NativeInputProjection,
 }
 
-pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Head> {
+pub(crate) fn parse_head(
+    run: &aiperf_config::model::BenchmarkRun,
+    input_projection: crate::participant_adapter::NativeInputProjection,
+) -> Result<Head> {
     aiperf_engine_input::execution_input::validate_run_scenario(run)?;
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
@@ -72,7 +76,10 @@ pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Hea
     ensure!(models.items.len() == 1, "proof requires exactly one model");
     let raw_input: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
         serde_json::from_str(raw.get())?;
-    let tokenizer = resolve_tokenizer(run)?;
+    let tokenizer: Arc<dyn TextTokenizer> = match input_projection {
+        crate::participant_adapter::NativeInputProjection::Text => resolve_tokenizer(run)?,
+        crate::participant_adapter::NativeInputProjection::TraceHashes => Arc::new(NoTextTokenizer),
+    };
     let kind = aiperf_config::model::workload_kind::workload_kind(&run.cfg);
     let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
         .map_err(anyhow::Error::msg)?;
@@ -84,7 +91,26 @@ pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Hea
         tokenizer,
         kind,
         legacy_weka,
+        input_projection,
     })
+}
+
+/// Direct trace geometry must never enter a text encoder or decoder. A violated
+/// preparation invariant fails immediately rather than being folded into a zero count.
+struct NoTextTokenizer;
+impl TextTokenizer for NoTextTokenizer {
+    fn encode(&self, _text: &str) -> aiperf_exchange_model::TokenizerResult<Vec<u32>> {
+        panic!("direct trace hash invariant: text encoding must not be called")
+    }
+    fn decode(&self, _tokens: &[u32]) -> aiperf_exchange_model::TokenizerResult<String> {
+        panic!("direct trace hash invariant: text reconstruction must not be called")
+    }
+    fn bos_token_id(&self) -> Option<u32> {
+        None
+    }
+    fn eos_token_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Resolve the authored tokenizer without substituting an unsupported source.
@@ -183,7 +209,7 @@ pub fn execute(
         usize,
     )>,
 ) -> Result<serde_json::Value> {
-    let head = parse_head(run)?;
+    let head = parse_head(run, crate::participant_adapter::NativeInputProjection::Text)?;
     if head.kind == aiperf_config::model::workload_kind::WorkloadKind::Graph && !head.legacy_weka {
         let prepared = crate::graph::prepare(
             run,
@@ -247,6 +273,7 @@ pub(crate) fn lower_scheduled(
         tokenizer,
         kind,
         legacy_weka,
+        input_projection,
     } = head;
     let legacy_weka = *legacy_weka;
     let dataset = input.get("dataset").context("dataset missing")?;
@@ -259,25 +286,32 @@ pub(crate) fn lower_scheduled(
         let traces = acquire(
             dataset,
             raw_input.get("dataset").context("raw dataset missing")?,
+            *input_projection,
         )?;
-        let seed = run.random_seed.unwrap_or(0);
-        let (corpus, hash_seed) = aiperf_engine_input::legacy_weka::legacy_weka_corpus(
-            dataset
-                .pointer("/prompts/corpus")
-                .and_then(|value| value.as_str()),
-            tokenizer.as_ref(),
-            seed,
-        )?;
-        let prepared = prepare_legacy_agentic(
-            run,
-            &phases,
-            dataset,
-            &traces,
-            corpus.into(),
-            hash_seed,
-            tokenizer.clone(),
-            false,
-        )?;
+        use aiperf_engine_phase::agentic_replay::prepare::LegacyAgenticPreparation;
+        let projection = match input_projection {
+            crate::participant_adapter::NativeInputProjection::TraceHashes => {
+                LegacyAgenticPreparation::TraceHashes
+            }
+            crate::participant_adapter::NativeInputProjection::Text => {
+                let seed = run.random_seed.unwrap_or(0);
+                let (corpus, hash_base_seed) =
+                    aiperf_engine_input::legacy_weka::legacy_weka_corpus(
+                        dataset
+                            .pointer("/prompts/corpus")
+                            .and_then(|value| value.as_str()),
+                        tokenizer.as_ref(),
+                        seed,
+                    )?;
+                LegacyAgenticPreparation::Text {
+                    corpus: corpus.into(),
+                    hash_base_seed,
+                    tokenizer: tokenizer.clone(),
+                    use_server_token_count: false,
+                }
+            }
+        };
+        let prepared = prepare_legacy_agentic(run, &phases, dataset, &traces, projection)?;
         let (phases, origins) = prepare_legacy_agentic_phases(
             run,
             &phases,
@@ -287,6 +321,10 @@ pub(crate) fn lower_scheduled(
         )?;
         (prepared, phases, origins)
     } else {
+        ensure!(
+            *input_projection == crate::participant_adapter::NativeInputProjection::Text,
+            "direct trace hashes require an authored trace source"
+        );
         let prepared = crate::scheduled::prepare(
             run,
             raw_input.get("dataset").context("raw dataset missing")?,
@@ -298,7 +336,10 @@ pub(crate) fn lower_scheduled(
         (prepared, phases, origins)
     };
     let registry = aiperf_endpoints::EndpointRegistry::builtin()?;
-    let profile = default_endpoint_profile(run, &registry)?;
+    let mut profile = default_endpoint_profile(run, &registry)?;
+    if *input_projection == crate::participant_adapter::NativeInputProjection::TraceHashes {
+        profile.endpoint_id = "aisimulate".to_owned();
+    }
     let endpoint_id = profile.endpoint_id;
     let endpoint = registry.prepare(&endpoint_id, profile.config)?;
     let mut table = aiperf_endpoints::PreparedEndpointTable::new();
@@ -507,6 +548,7 @@ pub(crate) fn label_occurrences(records: &mut [serde_json::Value]) {
 fn acquire(
     dataset: &serde_json::Value,
     descriptor: &serde_json::value::RawValue,
+    projection: crate::participant_adapter::NativeInputProjection,
 ) -> Result<Vec<(String, aiperf_agentx::trace::WekaTrace)>> {
     use aiperf_engine_input::legacy_weka::{
         LegacyWekaSource, legacy_weka_source, load_local_legacy_weka_traces,
@@ -551,21 +593,36 @@ fn acquire(
                     entries,
                     basis,
                 } => {
-                    let (traces, _) = aiperf_agentx::hf_dataset::load_hf_weka_traces(
-                        aiperf_agentx::hf_dataset::HfDatasetRef {
-                            name,
-                            subset,
-                            split,
-                            revision,
-                            max_rows: None,
-                        },
-                        entries,
-                        max_context,
-                        max_osl,
-                        basis,
-                    )
-                    .await
-                    .map_err(anyhow::Error::msg)?;
+                    let source = aiperf_agentx::hf_dataset::HfDatasetRef {
+                        name,
+                        subset,
+                        split,
+                        revision,
+                        max_rows: None,
+                    };
+                    let result = match projection {
+                        crate::participant_adapter::NativeInputProjection::Text => {
+                            aiperf_agentx::hf_dataset::load_hf_weka_traces(
+                                source,
+                                entries,
+                                max_context,
+                                max_osl,
+                                basis,
+                            )
+                            .await
+                        }
+                        crate::participant_adapter::NativeInputProjection::TraceHashes => {
+                            aiperf_agentx::hf_dataset::load_hf_weka_trace_hashes(
+                                source,
+                                entries,
+                                max_context,
+                                max_osl,
+                                basis,
+                            )
+                            .await
+                        }
+                    };
+                    let (traces, _) = result.map_err(anyhow::Error::msg)?;
                     Ok(traces)
                 }
             }

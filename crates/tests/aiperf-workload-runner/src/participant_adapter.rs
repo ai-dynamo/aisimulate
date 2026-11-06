@@ -631,6 +631,15 @@ impl WorkloadParticipant for AgentXParticipant {
     }
 }
 
+/// Input preparation selected once before hosting the shared workload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeInputProjection {
+    /// Reconstruct authored live endpoint text for semantic comparison controls.
+    Text,
+    /// Preserve trace hash identity and recorded token geometry without text/tokenization.
+    TraceHashes,
+}
+
 /// Prepare the real run through the shared lowering and host its plans.
 ///
 /// Everything here is constructed on the calling thread, which must also be the
@@ -638,11 +647,12 @@ impl WorkloadParticipant for AgentXParticipant {
 /// the spawned task is `'static` without borrowing this function's locals.
 pub fn native_hosted(
     run: &aiperf_config::model::BenchmarkRun,
+    input: NativeInputProjection,
     cancel: RunCancellation,
     observer: Rc<dyn aiperf_timing::PhaseObserver>,
     identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
 ) -> Result<(AgentXParticipant, HostedRunHandle)> {
-    let head = parse_head(run)?;
+    let head = parse_head(run, input)?;
     ensure!(
         head.kind != aiperf_config::model::workload_kind::WorkloadKind::Graph || head.legacy_weka,
         "native hosting currently binds the production AgentX scheduled path only"
