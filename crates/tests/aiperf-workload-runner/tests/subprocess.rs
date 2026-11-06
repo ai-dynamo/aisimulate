@@ -6,6 +6,20 @@
 use std::{io::{BufRead,BufReader,Write},process::{Command,Stdio}};
 use serde_json::{Value,json};
 
+fn runner_binary() -> std::path::PathBuf {
+    let path = match option_env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            let test = std::env::current_exe().expect("resolve running integration test");
+            let dependencies = test.parent().expect("integration test has target deps directory");
+            let target = dependencies.parent().expect("deps directory has target profile directory");
+            target.join(format!("aisim-aiperf-workload-runner{}",std::env::consts::EXE_SUFFIX))
+        }
+    };
+    assert!(path.is_file(),"independently built runner binary is missing: {}",path.display());
+    path
+}
+
 fn request(directory: &std::path::Path) -> Value {
     let mut cfg = aiperf_config::model::BenchmarkConfig::default();
     cfg.datasets = Some(vec![serde_json::from_value(json!({"type":"file","format":"weka_trace","sampling":"sequential","prompts":{"corpus":"coding"},"synthesis":{"speedup_ratio":1.0,"prefix_len_multiplier":1.0,"prefix_root_multiplier":1,"prompt_len_multiplier":1.0,"output_len_multiplier":1.0,"cache_bust_target":"none"},"records":{"id":"finite-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[1,2],"api_time":0.001},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[1,2,3],"api_time":0.001}]}})).unwrap()]);
@@ -34,7 +48,7 @@ fn branch_request(directory:&std::path::Path) -> String {
 #[test]
 fn branching_finite_trace_keeps_native_child_body_and_join_frontier() {
     let directory = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(runner_binary()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
     writeln!(input,"{}",branch_request(directory.path())).unwrap();
     input.flush().unwrap();
@@ -60,7 +74,7 @@ fn branching_finite_trace_keeps_native_child_body_and_join_frontier() {
 
 #[test]
 fn capabilities_are_explicit_and_do_not_claim_full_product_support() {
-    let output = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).arg("capabilities").output().unwrap();
+    let output = Command::new(runner_binary()).arg("capabilities").output().unwrap();
     assert!(output.status.success());
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["per_token_ipc"],false);
@@ -72,7 +86,7 @@ fn malformed_complete_request_is_rejected_by_native_codec() {
     let directory = tempfile::tempdir().unwrap();
     let mut frame = request(directory.path());
     frame["unexpected"] = json!(true);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(runner_binary()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     writeln!(child.stdin.take().unwrap(),"{frame}").unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(!output.status.success());
@@ -82,7 +96,7 @@ fn malformed_complete_request_is_rejected_by_native_codec() {
 #[test]
 fn finite_native_workload_writes_body_bearing_proof_artifact() {
     let directory = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(runner_binary()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
     writeln!(input,"{}",request(directory.path())).unwrap();
     input.flush().unwrap();
@@ -104,7 +118,7 @@ fn finite_native_workload_writes_body_bearing_proof_artifact() {
 #[test]
 fn framed_cancel_interrupts_committed_model_virtual_wait() {
     let directory = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).arg("--proof-wait-for-cancel").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(runner_binary()).arg("--proof-wait-for-cancel").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
     writeln!(input,"{}",request(directory.path())).unwrap();
     input.flush().unwrap();
