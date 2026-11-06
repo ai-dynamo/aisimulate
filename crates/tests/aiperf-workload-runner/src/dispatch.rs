@@ -25,6 +25,8 @@ pub struct Dispatcher {
     pub execution: Rc<dyn Execution>,
     pub records: RefCell<Vec<serde_json::Value>>,
     capture: Cell<CaptureMode>,
+    direct_hashes: Cell<bool>,
+    marker_identities: RefCell<std::collections::BTreeMap<(String, u32), u32>>,
 }
 
 // A cancelled phase may drop dispatch rather than poll infer to Ok(None).
@@ -51,7 +53,28 @@ impl Dispatcher {
             execution,
             records: RefCell::new(Vec::new()),
             capture: Cell::new(CaptureMode::Complete),
+            direct_hashes: Cell::new(false),
+            marker_identities: RefCell::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn set_direct_hashes(&self) {
+        self.direct_hashes.set(true);
+    }
+
+    fn marker_identity(&self, marker: &str, source: u32) -> anyhow::Result<u32> {
+        let mut identities = self.marker_identities.borrow_mut();
+        let key = (marker.to_owned(), source);
+        if let Some(id) = identities.get(&key) {
+            return Ok(*id);
+        }
+        let index = u32::try_from(identities.len())?;
+        let id = index
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| anyhow::anyhow!("direct trace marker identity namespace exhausted"))?;
+        identities.insert(key, id);
+        Ok(id)
     }
 
     /// Retain identities, scalar outcomes and cryptographic input witnesses,
@@ -147,7 +170,16 @@ impl Dispatcher {
                 .synthesize_tokens(block_size)
             },
         )?;
-        if let Some(source) = &turn.trace_hash_ids {
+        if self.direct_hashes.get() {
+            for id in &mut ids {
+                *id = id.checked_mul(2).ok_or_else(|| {
+                    anyhow::anyhow!("direct trace source identity namespace exhausted")
+                })?;
+            }
+        }
+        if self.direct_hashes.get()
+            && let Some(source) = &turn.trace_hash_ids
+        {
             if let Some(marker) = turn.cache_bust_marker.as_deref() {
                 let offset =
                     usize::try_from(source.cache_bust_token_offset().ok_or_else(|| {
@@ -173,18 +205,10 @@ impl Dispatcher {
                 // Hash-level representation only: replace one source token at
                 // the recorded carrier coordinate; do not insert tokens or
                 // pretend this is byte-identical text marker tokenization.
-                if offset < ids.len() {
-                    let mut hasher = blake3::Hasher::new();
-                    hasher.update(b"aisim-aiperf-trace-cache-bust-v1");
-                    hasher.update(marker.as_bytes());
-                    hasher.update(&ids[offset].to_le_bytes());
-                    let digest = hasher.finalize();
-                    ids[offset] = u32::from_le_bytes(
-                        digest.as_bytes()[..4]
-                            .try_into()
-                            .expect("four digest bytes"),
-                    );
-                }
+                // Even identities are reserved for exact prepared source IDs;
+                // odd identities are collision-free interned marker/source pairs.
+                // The map spans the run, retaining warmup/profile tree identity.
+                ids[offset] = self.marker_identity(marker, ids[offset])?;
             }
         }
         {

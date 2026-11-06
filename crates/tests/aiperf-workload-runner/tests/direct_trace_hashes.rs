@@ -92,6 +92,31 @@ fn direct_hashes_keep_authored_lengths_branches_and_sticky_marker_without_text()
             row["request"]["input_length"].as_u64().unwrap()
         );
     }
+    let mut markers = std::collections::BTreeMap::new();
+    for row in rows {
+        let marker = row["request"]["cache_bust_marker"]
+            .as_str()
+            .expect("sticky marker");
+        let tokens = row["input_token_ids"].as_array().unwrap();
+        let marked: Vec<_> = tokens
+            .iter()
+            .filter_map(Value::as_u64)
+            .filter(|id| id % 2 == 1)
+            .collect();
+        assert_eq!(marked.len(), 1, "one source-coordinate marker identity");
+        assert!(
+            tokens
+                .iter()
+                .filter_map(Value::as_u64)
+                .filter(|id| id % 2 == 0)
+                .count()
+                > 0
+        );
+        let key = row["request"]["correlation_id"].as_str().unwrap();
+        if let Some(previous) = markers.insert(key, marker) {
+            assert_eq!(previous, marker);
+        }
+    }
     let root = &rows[0]["request"]["root_correlation_id"];
     assert!(
         rows.iter()

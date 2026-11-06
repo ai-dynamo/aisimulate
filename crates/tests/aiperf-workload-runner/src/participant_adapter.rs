@@ -692,6 +692,9 @@ pub fn native_hosted(
         ),
     );
     let dispatcher = Rc::new(Dispatcher::new(execution.clone()));
+    if input == NativeInputProjection::TraceHashes {
+        dispatcher.set_direct_hashes();
+    }
     let shared = Rc::new(Shared {
         dispatcher: dispatcher.clone(),
         execution,
