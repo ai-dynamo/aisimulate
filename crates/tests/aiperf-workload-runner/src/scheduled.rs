@@ -27,7 +27,7 @@ pub(crate) fn prepare(
         "scheduled simulator proof currently requires text-only sources"
     );
     let registry = aiperf_endpoints::EndpointRegistry::builtin()?;
-    let profile = super::workload::default_endpoint_profile(run, &registry)?;
+    let profile = super::workload::default_endpoint_profile(run, &registry, false)?;
     let endpoint = registry.prepare(&profile.endpoint_id, profile.config)?;
     let formats = aiperf_dataset_loaders::LoaderRegistry::with_core_formats()?;
     let context = DatasetInputContext {

@@ -29,6 +29,7 @@ use std::{path::Path, rc::Rc, sync::Arc};
 pub(crate) fn default_endpoint_profile(
     run: &aiperf_config::model::BenchmarkRun,
     registry: &aiperf_endpoints::EndpointRegistry,
+    supports_native_usage: bool,
 ) -> Result<aiperf_endpoints::profile_validation::ValidatedEndpointProfileV2> {
     let profiles =
         aiperf_endpoints::profile_validation::validate_endpoint_profiles_v2(run, registry)?;
@@ -39,8 +40,8 @@ pub(crate) fn default_endpoint_profile(
         })
         .context("default endpoint profile missing")?;
     ensure!(
-        !profile.config.use_server_token_count,
-        "offline simulation cannot supply server token counts"
+        !profile.config.use_server_token_count || supports_native_usage,
+        "text projection cannot supply native server usage; select trace-hash input"
     );
     Ok(profile)
 }
@@ -361,7 +362,11 @@ pub(crate) fn lower_scheduled(
         (prepared, phases, origins)
     };
     let registry = aiperf_endpoints::EndpointRegistry::builtin()?;
-    let mut profile = default_endpoint_profile(run, &registry)?;
+    let mut profile = default_endpoint_profile(
+        run,
+        &registry,
+        *input_projection == crate::participant_adapter::NativeInputProjection::TraceHashes,
+    )?;
     if *input_projection == crate::participant_adapter::NativeInputProjection::TraceHashes {
         profile.endpoint_id = "aisimulate".parse()?;
     }
