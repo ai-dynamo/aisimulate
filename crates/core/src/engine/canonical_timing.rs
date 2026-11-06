@@ -61,41 +61,16 @@ impl CanonicalTimingModel {
                 && memory.engine.backend_version == config.backend_version
                 && memory.engine.parallel.tp_size == config.tp
                 && memory.engine.parallel.pp_size == config.pp
-                && memory.engine.parallel.attention_dp_size.unwrap_or(1) == config.attention_dp,
+                && memory.engine.parallel.attention_dp_size.unwrap_or(1) == config.attention_dp
+                && memory.engine.parallel.moe_tp_size == config.moe_tp_size
+                && memory.engine.parallel.moe_ep_size == config.moe_ep_size,
             "memory request conflicts with canonical timing identity"
         );
         ensure!(
             !memory.options.allow_naive_fallback && !memory.options.allow_hf_config_download,
             "canonical GPU geometry requires native memory estimation without heuristic fallback or downloads"
         );
-        for (name, timing, memory_dtype) in [
-            (
-                "weights",
-                config.gemm_quant_mode.as_ref(),
-                memory.engine.quantization.weight_dtype.as_ref(),
-            ),
-            (
-                "attention",
-                config.fmha_quant_mode.as_ref(),
-                memory.engine.quantization.activation_dtype.as_ref(),
-            ),
-            (
-                "KV cache",
-                config.kvcache_quant_mode.as_ref(),
-                memory.engine.quantization.kv_cache_dtype.as_ref(),
-            ),
-        ] {
-            let timing = timing.ok_or_else(|| {
-                anyhow!("canonical GPU geometry requires explicit {name} precision")
-            })?;
-            let memory_dtype = memory_dtype.ok_or_else(|| {
-                anyhow!("native memory request requires explicit {name} precision")
-            })?;
-            ensure!(
-                serde_json::to_value(memory_dtype)?.as_str() == Some(timing.as_str()),
-                "memory precision conflicts with canonical timing identity for {name}"
-            );
-        }
+        validate_memory_precision(&config, &memory)?;
         ensure!(
             config.systems_paths.len() == 1
                 && memory.engine.systems_path.as_ref() == config.systems_paths.first(),
@@ -173,15 +148,18 @@ fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()
         config.cp_size.unwrap_or(1) == 1 && config.dcp.unwrap_or(1) == 1,
         "canonical Engine timing bridge does not support CP or DCP"
     );
+    validate_moe_topology(
+        config.tp,
+        config.attention_dp,
+        config.moe_tp_size,
+        config.moe_ep_size,
+    )?;
     ensure!(
-        config.moe_tp_size.is_none()
-            && config.moe_ep_size.is_none()
-            && config.moe_quant_mode.is_none()
-            && config.moe_backend.is_none()
+        config.moe_backend.is_none()
             && config.moe_kernel_source.is_none()
             && !config.enable_eplb
             && config.wideep_num_slots.is_none(),
-        "canonical Engine timing bridge does not support explicit MoE topology or kernel controls"
+        "canonical Engine timing bridge does not support explicit MoE kernel controls"
     );
     ensure!(
         config.nextn == 0 && config.speculation.is_none(),
@@ -195,6 +173,54 @@ fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()
         !config.decoder_replay,
         "canonical Engine timing bridge does not support decoder replay"
     );
+    Ok(())
+}
+
+// Explicit MoE dimensions may describe the same tensor-parallel ranks, but
+// this bridge does not introduce expert-parallel or cross-attention-DP work.
+// The canonical owner retains precision and compiles/prices its MoE operators.
+fn validate_moe_topology(
+    tp: u32,
+    attention_dp: u32,
+    moe_tp: Option<u32>,
+    moe_ep: Option<u32>,
+) -> Result<()> {
+    ensure!(
+        matches!((moe_tp, moe_ep), (None, None))
+            || (tp > 0 && attention_dp == 1 && moe_tp == Some(tp) && moe_ep == Some(1)),
+        "canonical Engine timing supports explicit MoE topology only with moe_tp_size=tp, moe_ep_size=1 and attention_dp=1"
+    );
+    Ok(())
+}
+
+#[cfg(any(test, feature = "python"))]
+fn validate_memory_precision(
+    config: &ForwardPassPerfModelConfig,
+    memory: &crate::KvCacheEstimateRequest,
+) -> Result<()> {
+    let quant = &memory.engine.quantization;
+    for (name, timing, memory_dtype) in [
+        ("weights", config.gemm_quant_mode.as_ref(), quant.weight_dtype.as_ref()),
+        ("attention", config.fmha_quant_mode.as_ref(), quant.activation_dtype.as_ref()),
+        ("KV cache", config.kvcache_quant_mode.as_ref(), quant.kv_cache_dtype.as_ref()),
+        ("MoE", config.moe_quant_mode.as_ref(), quant.moe_dtype.as_ref()),
+    ] {
+        // Both absent preserves the canonical owner's MoE default. An explicit
+        // choice on either side must never silently inherit the other's default.
+        if name == "MoE" && timing.is_none() && memory_dtype.is_none() {
+            continue;
+        }
+        let timing = timing.ok_or_else(|| {
+            anyhow!("canonical GPU geometry requires explicit {name} precision")
+        })?;
+        let memory_dtype = memory_dtype.ok_or_else(|| {
+            anyhow!("native memory request requires explicit {name} precision")
+        })?;
+        ensure!(
+            serde_json::to_value(memory_dtype)?.as_str() == Some(timing.as_str()),
+            "memory precision conflicts with canonical timing identity for {name}"
+        );
+    }
     Ok(())
 }
 
@@ -237,12 +263,12 @@ fn validate_memory_topology(
         parallel.cp_size.unwrap_or(1) == 1 && parallel.dcp_size.unwrap_or(1) == 1,
         "canonical native memory geometry does not support CP or DCP"
     );
-    ensure!(
-        parallel.moe_tp_size.is_none()
-            && parallel.moe_ep_size.is_none()
-            && memory.engine.quantization.moe_dtype.is_none(),
-        "canonical native memory geometry does not support explicit MoE topology or precision"
-    );
+    validate_moe_topology(
+        parallel.tp_size,
+        parallel.attention_dp_size.unwrap_or(1),
+        parallel.moe_tp_size,
+        parallel.moe_ep_size,
+    )?;
     ensure!(
         memory
             .engine
@@ -429,18 +455,79 @@ mod tests {
             value.worker_type = role;
             assert!(validate_supported_identity(&value).is_ok());
         }
-        for change in 0..6 {
+        for change in 0..11 {
             let mut value = config();
             match change {
                 0 => value.cp_size = Some(2),
                 1 => value.dcp = Some(2),
                 2 => value.moe_tp_size = Some(2),
                 3 => value.moe_ep_size = Some(2),
-                4 => value.moe_quant_mode = Some("fp8".into()),
+                4 => value.moe_backend = Some("default".into()),
+                5 => value.moe_kernel_source = Some("default".into()),
+                6 => value.enable_eplb = true,
+                7 => value.wideep_num_slots = Some(1),
+                8 => {
+                    value.tp = 8;
+                    value.moe_tp_size = Some(4);
+                    value.moe_ep_size = Some(2);
+                }
+                9 => {
+                    value.attention_dp = 2;
+                    value.moe_tp_size = Some(1);
+                    value.moe_ep_size = Some(1);
+                }
                 _ => value.pp = 2,
             }
             assert!(validate_supported_identity(&value).is_err());
             assert!(CanonicalTimingModel::new(value).is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_moe_precision_and_same_tp_topology_are_admitted() {
+        for precision in ["bfloat16", "fp8"] {
+            let mut value = config();
+            value.moe_quant_mode = Some(precision.into());
+            assert!(validate_supported_identity(&value).is_ok());
+            value.tp = 8;
+            value.moe_tp_size = Some(8);
+            value.moe_ep_size = Some(1);
+            assert!(validate_supported_identity(&value).is_ok());
+        }
+        assert!(validate_moe_topology(0, 1, Some(0), Some(1)).is_err());
+        assert!(validate_moe_topology(8, 1, Some(4), Some(1)).is_err());
+        assert!(validate_moe_topology(8, 1, None, Some(1)).is_err());
+    }
+
+    #[test]
+    fn memory_moe_precision_must_match_without_discarding_explicit_choices() {
+        let memory: crate::KvCacheEstimateRequest = serde_json::from_value(serde_json::json!({
+            "engine": {"schema_version":1,"model_name":"model","system_name":"system",
+                "backend":"vllm","tp_size":8,"pp_size":1,"moe_tp_size":8,"moe_ep_size":1,
+                "weight_dtype":"fp8","activation_dtype":"bfloat16","kv_cache_dtype":"fp8"},
+            "max_num_tokens":128,"max_batch_size":2,"kv_cache_memory_fraction":{"OfTotal":0.9},
+            "options":{"allow_naive_fallback":false,"allow_hf_config_download":false}
+        })).unwrap();
+        let mut value = config();
+        value.gemm_quant_mode = Some("fp8".into());
+        value.fmha_quant_mode = Some("bfloat16".into());
+        value.kvcache_quant_mode = Some("fp8".into());
+        assert!(validate_memory_topology(&memory, value.worker_type).is_ok());
+        assert!(validate_memory_precision(&value, &memory).is_ok());
+        for precision in [crate::DataType::Bfloat16, crate::DataType::Fp8] {
+            let mut candidate = memory.clone();
+            candidate.engine.quantization.moe_dtype = Some(precision);
+            assert!(validate_memory_precision(&value, &candidate).is_err());
+            value.moe_quant_mode = Some(serde_json::to_value(precision).unwrap().as_str().unwrap().into());
+            assert!(validate_memory_precision(&value, &candidate).is_ok());
+            assert!(validate_memory_precision(&value, &memory).is_err());
+            candidate.engine.quantization.moe_dtype = Some(if precision == crate::DataType::Fp8 {
+                crate::DataType::Bfloat16
+            } else {
+                crate::DataType::Fp8
+            });
+            assert!(validate_memory_precision(&value, &candidate).is_err());
+            value.moe_quant_mode = None;
         }
     }
 
@@ -497,7 +584,6 @@ mod tests {
             ("dcp_size", serde_json::json!(2)),
             ("moe_tp_size", serde_json::json!(2)),
             ("moe_ep_size", serde_json::json!(2)),
-            ("moe_dtype", serde_json::json!("fp8")),
         ] {
             let mut wire = base.clone();
             wire["engine"][field] = value;
