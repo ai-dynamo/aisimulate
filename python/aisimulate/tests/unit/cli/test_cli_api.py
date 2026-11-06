@@ -1052,6 +1052,9 @@ class TestCLIRecommendUnit:
                 agg_pp_candidates: list = field(default_factory=lambda: [1])
                 agg_num_gpu_candidates: list = field(default_factory=lambda: [1, 2, 4, 8])
 
+                def _inferred_quant_mode_resets(self):
+                    return {}
+
             return {"agg": FakeTask()}
 
         def fake_execute(tasks, mode, **kwargs):
@@ -1089,6 +1092,9 @@ class TestCLIRecommendUnit:
                 agg_pp_candidates: list = field(default_factory=lambda: [1])
                 agg_num_gpu_candidates: list = field(default_factory=lambda: [1, 2, 4, 8])
 
+                def _inferred_quant_mode_resets(self):
+                    return {}
+
             return {"agg": FakeTask()}
 
         def fake_execute(tasks, mode, **kwargs):
@@ -1122,6 +1128,9 @@ class TestCLIRecommendUnit:
                 moe_backend: str | None = None
                 agg_pp_candidates: list = field(default_factory=lambda: [1])
                 agg_num_gpu_candidates: list = field(default_factory=lambda: [1, 2, 4, 8])
+
+                def _inferred_quant_mode_resets(self):
+                    return {}
 
             return {"agg": FakeTask()}
 
@@ -1165,6 +1174,9 @@ class TestCLIRecommendUnit:
                 prefill_num_gpu_candidates: list = field(default_factory=lambda: [1, 2, 4, 8])
                 decode_pp_candidates: list = field(default_factory=lambda: [1])
                 decode_num_gpu_candidates: list = field(default_factory=lambda: [1, 2, 4, 8])
+
+                def _inferred_quant_mode_resets(self):
+                    return {}
 
             return {"agg": FakeTask(), "disagg": FakeTask(serving_mode="disagg")}
 
@@ -1237,6 +1249,9 @@ class TestCLIRecommendUnit:
                 serving_mode: str = "agg"
                 agg_pp_candidates: list = field(default_factory=lambda: [1])
                 agg_num_gpu_candidates: list = field(default_factory=lambda: [1, 2, 4, 8])
+
+                def _inferred_quant_mode_resets(self):
+                    return {}
 
             return {"agg": FakeTask()}
 

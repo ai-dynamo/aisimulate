@@ -89,6 +89,7 @@ class ModelConfig:
     # reachable context table has no fp8 slice; the runtime resolvers then leave it alone.
     _fmha_quant_mode_from_data: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
     moe_quant_mode: common.MoEQuantMode | None = None
+    _moe_quant_mode_is_explicit: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
     kvcache_quant_mode: common.KVCacheQuantMode | None = None
     fmha_quant_mode: common.FMHAQuantMode | None = None
     comm_quant_mode: common.CommQuantMode | None = common.CommQuantMode.half

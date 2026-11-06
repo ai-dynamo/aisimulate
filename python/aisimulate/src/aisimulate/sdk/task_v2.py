@@ -1126,6 +1126,9 @@ class Task:
         self._gemm_quant_mode_explicit_by_role = {
             role: self._role_attr(role, "gemm_quant_mode") is not None for role in roles
         }
+        self._moe_quant_mode_explicit_by_role = {
+            role: self._role_attr(role, "moe_quant_mode") is not None for role in roles
+        }
         base = _infer_quant_modes_from_raw_config(self._raw_config)
 
         # GPT-OSS on Blackwell (trtllm): default MoE to w4a8_mxfp4_mxfp8 for higher
@@ -2032,6 +2035,7 @@ class Task:
         )
         model_config._gemm_quant_mode_is_explicit = self._gemm_quant_mode_explicit_by_role.get(role, False)
         model_config._fmha_quant_mode_from_data = self._fmha_from_data.get(role, False)
+        model_config._moe_quant_mode_is_explicit = self._moe_quant_mode_explicit_by_role.get(role, False)
         if parallel is not None:
             required_phases = tuple(dict.fromkeys((*self._role_phases(role), *self._required_large_ep_phases(role))))
             resolve_model_config_moe_comm(
@@ -2561,20 +2565,33 @@ class Task:
             out[f.name] = value
         return out
 
+    def _inferred_quant_mode_resets(self) -> dict[str, None]:
+        """``{field: None}`` for each GEMM, MoE and FMHA mode that was inferred rather than set.
+
+        Rebuilding a task from its resolved fields would turn an inferred mode into an
+        explicit override and bypass checkpoint-specific per-layer precision; passing
+        these resets keeps it inferred.
+        """
+        return {
+            name if role == "agg" else f"{role}_{name}": None
+            for name, explicit_by_role in (
+                ("gemm_quant_mode", self._gemm_quant_mode_explicit_by_role),
+                ("moe_quant_mode", self._moe_quant_mode_explicit_by_role),
+                ("fmha_quant_mode", self._fmha_explicit),
+            )
+            for role, explicit in explicit_by_role.items()
+            if not explicit
+        }
+
     def to_yaml(self) -> str:
-        """Serialize public configuration, keeping inferred FMHA modes unset.
+        """Serialize public configuration, keeping inferred GEMM, MoE and FMHA modes unset.
 
         The result is round-trippable through :func:`from_yaml` (modulo
         None fields which are accepted by the constructor as defaults).
         """
         import yaml
 
-        values = self.to_dict()
-        for role, explicit in self._fmha_explicit.items():
-            if not explicit:
-                key = "fmha_quant_mode" if role == "agg" else f"{role}_fmha_quant_mode"
-                values[key] = None
-        return yaml.safe_dump(values, sort_keys=False)
+        return yaml.safe_dump({**self.to_dict(), **self._inferred_quant_mode_resets()}, sort_keys=False)
 
     # =====================================================================
     # sweep.py kwargs builders
