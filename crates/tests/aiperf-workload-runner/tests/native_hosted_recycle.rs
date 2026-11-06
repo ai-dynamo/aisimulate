@@ -317,7 +317,7 @@ fn native_system_idle_cap_pulls_the_next_turn_to_the_cap_deadline() {
     let control_rows = control["requests"].as_array().unwrap();
     assert_eq!(control_rows.len(), 2);
     assert_eq!(
-        control_rows[1]["issue_ns"], 10_002_000_000_i64,
-        "without the cap the turn keeps its recorded 10 s end-to-start delay after the 2 ms return"
+        control_rows[1]["issue_ns"], 10_001_000_000_i64,
+        "recorded delay is 10 s minus the authored 1 ms API time, after the actual 2 ms return"
     );
 }
