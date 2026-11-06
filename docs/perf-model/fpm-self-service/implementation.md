@@ -1565,7 +1565,11 @@ A worker's physical view has this shape (illustrative values, not model geometry
 }
 ```
 
-Retain real shapes and byte strides, including KV-plane-first layouts. Obtain the block axis and kernel block size from the initialized backend; do not guess an axis because its length happens to equal the pool block count. Record backing storages once and every allocation's full storage size, declared `shared_by`, byte offset and packed block stride. Read the runtime spec's padded page size rather than reconstructing an older formula. Keep full/sliding/convolution retention distinct, report unknown specs, and require vLLM 0.28's `extra_retained_tokens` to be explicitly zero for this representation. Hash the actual loaded config file, not the host-side planning copy; config identity does not attest checkpoint weight contents.
+Retain real shapes and byte strides, including KV-plane-first layouts. Obtain the block axis and kernel block size from the initialized backend; do not guess an axis because its length happens to equal the pool block count. Record backing storages once and every allocation's full storage size, declared `shared_by`, byte offset and packed block stride.
+
+vLLM 0.32.0 changes this allocation plan. One backing buffer holds every layer: each `KVCacheTensor` lists one group's `layers` with a `layer_stride`, `block_stride` and `offset`. Layer `l` of block `b` then starts at `offset + l * layer_stride + b * block_stride`. Record these fields as declared, together with `host_resident`, and do not translate them into `shared_by`. Each layer view is the 4D `[B, H, N, C]` tensor from `create_kv_cache_views`, so its block axis is 0. The importer accepts this plan only from a bundle whose audited runtime version is 0.32.0, and accepts the `shared_by` plan only from earlier versions. It proves that pages do not overlap and stay inside the buffer under every `KVCacheLayout`. Groups that alias from the same offset must assign each byte to the same pool block. It rejects host-resident tensors, aliasing within one group and overlapping tensors at different offsets.
+
+Read the runtime spec's padded page size rather than reconstructing an older formula. Keep full/sliding/convolution retention distinct, report unknown specs, and require vLLM 0.28's `extra_retained_tokens` to be explicitly zero for this representation. Hash the actual loaded config file, not the host-side planning copy; config identity does not attest checkpoint weight contents.
 
 ### Preview, execute, import and review
 
@@ -1651,7 +1655,7 @@ The result contains per-phase `provenance`, original `binding` and compatibility
 | Missing or duplicate ranks | Actual launched worker/DP counts, process failures and per-rank logs. Never fill a missing rank with another rank's record. |
 | Missing warm-up/capture evidence | Native initialization failure, incomplete lifecycle hooks, or an unobserved capture outcome. Requested graph settings alone are insufficient. |
 | Source/config hash mismatch | Installed vendor patches, selected backend source, actual model-cache mount and loaded revision. Preserve both hashes and the old attempt. |
-| Storage/alias/padding mismatch | Actual untyped storage, byte strides/offsets, backend block axis and runtime `shared_by` declarations. Do not flatten groups or count shared storage twice. |
+| Storage/alias/padding mismatch | Actual untyped storage, byte strides/offsets, backend block axis and runtime `shared_by` declarations (vLLM 0.32.0: `layers`, `layer_stride` and `block_stride`). Do not flatten groups or count shared storage twice. |
 | Retention/pool mismatch | Unsupported spec, additional retained tokens, reservations, multiple pools, watermark, compressed storage or offload. A positive byte count does not make these semantics representable. |
 | Phase/rank graph disagreement | Effective settings and native graph resolution across all ranks and required phases of the same request. Keep the raw records and rerun with the intended serving policy. Separate prefill and decode requests may intentionally use different graph settings. |
 
