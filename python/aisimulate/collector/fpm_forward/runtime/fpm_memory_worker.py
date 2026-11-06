@@ -11,6 +11,7 @@ try:
     from vllm.distributed import get_pp_group, get_tp_group
     from vllm.v1.worker.gpu_worker import Worker
 except ImportError as error:
+    # Already imported above; the version tuples are needed only for this message.
     from fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS, MEMORY_SUPPORTED_VERSIONS
 
     raise RuntimeError(

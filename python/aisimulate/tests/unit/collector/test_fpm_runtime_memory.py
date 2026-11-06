@@ -160,7 +160,7 @@ def _initialized(*, blocks=100, free=98, packed=False):
     return worker, scheduler, cache_config
 
 
-_Role = enum.Enum("KVCacheGroupRole", {"DEFAULT": "default", "HISPARSE_SOURCE": "hisparse_source"})
+_Role = enum.Enum("KVCacheGroupRole", {"DEFAULT": "default", "HISPARSE_SOURCE": "hisparse_source"}, type=str)
 
 
 def _initialized_layer_strided(*, blocks=100, free=98, layout="layer_outer"):

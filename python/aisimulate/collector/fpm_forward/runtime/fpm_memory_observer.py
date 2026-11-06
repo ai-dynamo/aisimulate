@@ -605,6 +605,7 @@ def _layer_strided_allocations(
         allocations.append(
             {
                 "size": size,
+                # Kept for rebase parity with open PR #700; no reader in this branch uses it.
                 "shared_by": names,
                 "layers": list(names),
                 "layer_stride": layer_stride,
