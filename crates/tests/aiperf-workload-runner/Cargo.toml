@@ -57,7 +57,7 @@ aiperf-request-execution = { path = "../../../../../../../aiperf-rs/.worktrees/p
 aiperf-rng = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/rng" }
 aiperf-tokenizers = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/tokenizers" }
 aiperf-adaptive = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/scheduling/adaptive" }
-aiperf-engine-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/graph" }
+aiperf-engine-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/graph", features = ["streaming"] }
 aiperf-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/graph" }
 aiperf-graph-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/model" }
 aiperf-metrics = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/metrics" }
@@ -75,6 +75,7 @@ path = "tests/real_gpu.rs"
 required-features = ["real-gpu-proof"]
 
 [dev-dependencies]
+aiperf-report-io = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/export/report-io" }
 aiperf-engine-kernel = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/kernel", features = ["test-support"] }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

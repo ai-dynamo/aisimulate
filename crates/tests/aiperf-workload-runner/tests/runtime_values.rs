@@ -102,6 +102,13 @@ fn capture_finite_branch_runtime_values() {
         "phase_observer_events":observer.events(),
         "claim":"raw captured runtime values; numerical equivalence not asserted",
     });
+    // Publish through the same format owner as the original offline writer.
+    // The byte comparator reads this file directly, without reserialization.
+    let backend_report_bytes = aiperf_report_io::report::serialize_sorted_python_report_json(
+        &report["backend_report"],
+    ).unwrap();
+    assert_ne!(report["backend_report"], Value::Null);
+    std::fs::write(output_root.join("backend-report.json"), backend_report_bytes).unwrap();
     std::fs::write(output_root.join("run-request.json"), raw.as_bytes()).unwrap();
     std::fs::write(output_root.join("model-manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     std::fs::write(output_root.join("aisim-runtime-values-raw.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
