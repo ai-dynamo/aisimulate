@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Serializable engine configuration.
 
@@ -228,6 +231,9 @@ impl FrontendConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SglangConfig {
+    /// Per-rank host KV cache for aggregated SGLang workers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hicache: Option<SglangHiCacheConfig>,
     /// Waiting-queue policy.
     pub schedule_policy: SglangSchedulePolicy,
     /// Page-aware prefill-token budget per pass.
@@ -251,6 +257,20 @@ pub struct SglangConfig {
     /// Off, a pass is one forward whose outputs are visible when it ends. See
     /// `crates/core/src/engine/scheduler/sglang/host_loop.rs`.
     pub host_loop: bool,
+    /// SGLang `--disaggregation-decode-enable-radix-cache`. Without it, a
+    /// decode rank keeps each request's KV private, as SGLang's chunk cache
+    /// does; other ranks ignore it.
+    pub disaggregation_decode_enable_radix_cache: bool,
+    /// Per-request decode headroom reserved before a PD transfer (SGLang default: 512).
+    #[serde(default = "default_reserved_decode_tokens")]
+    pub num_reserved_decode_tokens: usize,
+    /// Extra request rows for in-transfer PD decode requests. Unset uses
+    /// twice the requested batch size for explicit limits at or below 32.
+    pub disaggregation_decode_extra_slots: Option<usize>,
+}
+
+const fn default_reserved_decode_tokens() -> usize {
+    512
 }
 
 const fn default_vlm_cache_bytes() -> u64 {
@@ -260,6 +280,7 @@ const fn default_vlm_cache_bytes() -> u64 {
 impl Default for SglangConfig {
     fn default() -> Self {
         Self {
+            hicache: None,
             schedule_policy: SglangSchedulePolicy::Fifo,
             max_prefill_tokens: default_max_prefill_tokens(),
             chunked_prefill_size: default_chunked_prefill_size(),
@@ -267,6 +288,9 @@ impl Default for SglangConfig {
             schedule_conservativeness: default_schedule_conservativeness(),
             vlm_cache_bytes: default_vlm_cache_bytes(),
             host_loop: false,
+            disaggregation_decode_enable_radix_cache: false,
+            num_reserved_decode_tokens: default_reserved_decode_tokens(),
+            disaggregation_decode_extra_slots: None,
         }
     }
 }
@@ -285,6 +309,99 @@ impl SglangConfig {
             self.schedule_conservativeness.is_finite() && self.schedule_conservativeness >= 0.0,
             "sglang.schedule_conservativeness must be finite and non-negative"
         );
+        Ok(())
+    }
+}
+
+/// SGLang host backup trigger.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SglangHiCacheWritePolicy {
+    #[default]
+    WriteThrough,
+    WriteThroughSelective,
+    WriteBack,
+}
+
+/// Physical controls for SGLang's private host cache.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SglangHiCacheConfig {
+    #[serde(default)]
+    pub write_policy: SglangHiCacheWritePolicy,
+    /// Host capacity in pages per attention-DP rank, with the GPU page geometry.
+    pub num_host_blocks: usize,
+    /// Decimal GB/s; zero models instantaneous byte transfer.
+    #[serde(default = "default_host_offload_bandwidth_gbps")]
+    pub d2h_bandwidth_gbps: f64,
+    /// Decimal GB/s; zero models instantaneous byte transfer.
+    #[serde(default = "default_host_offload_bandwidth_gbps")]
+    pub h2d_bandwidth_gbps: f64,
+    #[serde(default)]
+    pub latency_to_first_byte_ms: f64,
+}
+
+impl SglangHiCacheConfig {
+    pub const fn new(num_host_blocks: usize) -> Self {
+        Self {
+            num_host_blocks,
+            write_policy: SglangHiCacheWritePolicy::WriteThrough,
+            d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            latency_to_first_byte_ms: 0.0,
+        }
+    }
+
+    fn validate(&self, engine: &EngineConfig) -> Result<()> {
+        ensure!(
+            engine.backend == Backend::Sglang,
+            "sglang.hicache requires backend=sglang"
+        );
+        ensure!(
+            engine.worker_type == WorkerType::Aggregated,
+            "sglang.hicache requires worker_type=aggregated"
+        );
+        ensure!(
+            engine.enable_prefix_caching,
+            "sglang.hicache requires enable_prefix_caching=true"
+        );
+        ensure!(
+            self.num_host_blocks > 0,
+            "sglang.hicache.num_host_blocks must be positive"
+        );
+        let block_bytes = engine.kv_cache_bytes_per_token
+            .and_then(|bytes| bytes.checked_mul(engine.block_size))
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| anyhow::anyhow!("sglang.hicache requires a positive, representable block_size * kv_cache_bytes_per_token"))?;
+        let capacity_bytes = self
+            .num_host_blocks
+            .checked_mul(block_bytes)
+            .ok_or_else(|| anyhow::anyhow!("sglang.hicache capacity in bytes overflowed"))?;
+        for (name, value) in [
+            ("d2h_bandwidth_gbps", self.d2h_bandwidth_gbps),
+            ("h2d_bandwidth_gbps", self.h2d_bandwidth_gbps),
+            ("latency_to_first_byte_ms", self.latency_to_first_byte_ms),
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "sglang.hicache.{name} must be finite and non-negative"
+            );
+        }
+        for bandwidth in [self.d2h_bandwidth_gbps, self.h2d_bandwidth_gbps] {
+            ensure!(
+                (bandwidth * 1e6).is_finite(),
+                "sglang.hicache bandwidth in bytes/ms is not representable"
+            );
+            let duration = if bandwidth == 0.0 {
+                0.0
+            } else {
+                capacity_bytes as f64 / (bandwidth * 1e6)
+            };
+            ensure!(
+                (duration + self.latency_to_first_byte_ms).is_finite(),
+                "sglang.hicache transfer duration is not representable"
+            );
+        }
         Ok(())
     }
 }
@@ -732,7 +849,8 @@ pub struct EngineConfig {
     /// Optional prompt-plus-output token limit for every backend.
     /// Prompts at or above the limit are rejected; generation stops at the limit.
     pub max_model_len: Option<usize>,
-    /// Maximum concurrently runnable sequences. JSON null means unbounded.
+    /// Maximum concurrently runnable sequences. JSON null removes the explicit
+    /// limit; SGLang then derives its request capacity from KV and context size.
     #[serde(
         default = "default_max_num_seqs",
         serialize_with = "serialize_scheduler_limit"
@@ -1103,6 +1221,9 @@ impl EngineConfig {
     /// Validate rank configuration without constructing a scheduler or timing provider.
     pub fn validate(&self) -> Result<()> {
         self.validate_state_cache()?;
+        if let Some(hicache) = &self.sglang.hicache {
+            hicache.validate(self)?;
+        }
         ensure!(self.num_gpu_blocks > 0, "num_gpu_blocks must be positive");
         ensure!(self.block_size > 0, "block_size must be positive");
         if matches!(self.backend, Backend::Vllm | Backend::Trtllm) {
@@ -1140,6 +1261,20 @@ impl EngineConfig {
             !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
             "sglang.host_loop is not modeled on a decode rank; the decode rank runs the text P/D decode loop"
         );
+        if self.sglang.disaggregation_decode_enable_radix_cache {
+            ensure!(
+                self.backend == Backend::Sglang,
+                "sglang.disaggregation_decode_enable_radix_cache is supported only for backend=sglang"
+            );
+            ensure!(
+                self.worker_type != WorkerType::Decode || self.enable_prefix_caching,
+                "sglang.disaggregation_decode_enable_radix_cache requires enable_prefix_caching=true"
+            );
+            ensure!(
+                self.worker_type != WorkerType::Decode || self.aic_nextn.is_none(),
+                "sglang.disaggregation_decode_enable_radix_cache does not support speculative decoding"
+            );
+        }
         if let Some(frontend) = &self.frontend {
             ensure!(
                 self.backend == Backend::Sglang && self.sglang.host_loop,
@@ -1793,6 +1928,92 @@ mod tests {
         assert!(linear.get("kv_cache_capacity_bytes").is_none());
     }
 
+    fn hicache_config() -> EngineConfig {
+        EngineConfig {
+            backend: Backend::Sglang,
+            block_size: 4,
+            kv_cache_bytes_per_token: Some(250_000),
+            sglang: SglangConfig {
+                hicache: Some(SglangHiCacheConfig::new(32)),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hicache_round_trip_preserves_transfer_controls_and_rejects_bad_geometry() {
+        let mut config = hicache_config();
+        let host = config.sglang.hicache.as_mut().unwrap();
+        host.d2h_bandwidth_gbps = 0.0;
+        host.h2d_bandwidth_gbps = 7.0;
+        host.latency_to_first_byte_ms = 2.0;
+        config.validate().unwrap();
+        let decoded: EngineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(decoded, config);
+        decoded.validate().unwrap();
+
+        let cases: &[InvalidHostConfigCase] = &[
+            (|c| c.backend = Backend::Vllm, "backend=sglang"),
+            (
+                |c| c.worker_type = WorkerType::Decode,
+                "worker_type=aggregated",
+            ),
+            (
+                |c| c.enable_prefix_caching = false,
+                "enable_prefix_caching=true",
+            ),
+            (
+                |c| c.kv_cache_bytes_per_token = None,
+                "kv_cache_bytes_per_token",
+            ),
+            (
+                |c| c.kv_cache_bytes_per_token = Some(usize::MAX),
+                "representable",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().num_host_blocks = 0,
+                "num_host_blocks",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().num_host_blocks = usize::MAX,
+                "overflowed",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().h2d_bandwidth_gbps = -1.0,
+                "h2d_bandwidth_gbps",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().d2h_bandwidth_gbps = f64::NAN,
+                "d2h_bandwidth_gbps",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().latency_to_first_byte_ms = f64::INFINITY,
+                "latency_to_first_byte_ms",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().h2d_bandwidth_gbps = f64::from_bits(1),
+                "duration",
+            ),
+        ];
+        let mut overflow = hicache_config();
+        overflow.sglang.hicache.as_mut().unwrap().h2d_bandwidth_gbps = f64::MAX;
+        assert!(
+            overflow
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("bytes/ms")
+        );
+        for &(mutate, expected) in cases {
+            let mut config = hicache_config();
+            mutate(&mut config);
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
     #[test]
     fn native_host_offload_deserializes_with_default_bandwidths() {
         assert_eq!(DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS, 32.0);
@@ -2345,6 +2566,42 @@ mod tests {
                 .to_string()
                 .contains("schedule_conservativeness")
         );
+    }
+
+    #[test]
+    fn decode_radix_cache_defaults_off_and_rejects_unsupported_combinations() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "worker_type": "decode",
+        }))
+        .unwrap();
+        assert!(!config.sglang.disaggregation_decode_enable_radix_cache);
+
+        let decode_with_radix_cache = || {
+            let mut config = EngineConfig {
+                worker_type: WorkerType::Decode,
+                ..EngineConfig::for_backend(Backend::Sglang)
+            };
+            config.sglang.disaggregation_decode_enable_radix_cache = true;
+            config
+        };
+        decode_with_radix_cache().validate().unwrap();
+
+        let mut vllm = EngineConfig::for_backend(Backend::Vllm);
+        vllm.sglang.disaggregation_decode_enable_radix_cache = true;
+        let mut no_prefix_caching = decode_with_radix_cache();
+        no_prefix_caching.enable_prefix_caching = false;
+        let mut speculative = decode_with_radix_cache();
+        speculative.aic_nextn = Some(1);
+        speculative.aic_nextn_accept_rates = Some("1.0".to_string());
+        for (config, expected) in [
+            (vllm, "backend=sglang"),
+            (no_prefix_caching, "enable_prefix_caching=true"),
+            (speculative, "speculative decoding"),
+        ] {
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModelConfig};
+use aisimulate_core::engine::{Backend, EngineConfig, SglangConfig, TimingModelConfig};
 use aisimulate_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, DirectRequest, ReplayEngineConfig, ReplayEngineFactory,
     ReplayError, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec,
@@ -16,6 +16,10 @@ fn engine(backend: Backend) -> ReplayEngineConfig {
             num_gpu_blocks: 64,
             max_num_seqs: 4,
             max_num_batched_tokens: 64,
+            sglang: SglangConfig {
+                num_reserved_decode_tokens: 0,
+                ..SglangConfig::default()
+            },
             timing_model: TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
                 decode_ms: 1.0,

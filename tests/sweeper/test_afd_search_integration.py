@@ -11,6 +11,7 @@ from aisimulate.sweeper.afd_parallel import (
     AFDInfeasible,
     AFDParallelConfig,
     AFDReasonCategory,
+    AFDTopology,
 )
 from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
 from aisimulate.sweeper.config import SmartSearchConfig
@@ -55,6 +56,35 @@ def _topology(*, n_a_nodes: int = 1, n_f_nodes: int = 1) -> dict:
 def test_afd_rejects_chunked_prefill_control(mode):
     with pytest.raises(ValidationError, match="enable_chunked_prefill is unsupported for AFD"):
         _config(mode, enable_chunked_prefill=True)
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_afd_rejects_decode_radix_cache_at_configuration_time(mode):
+    with pytest.raises(ValidationError, match="decode_radix_cache is unsupported for AFD"):
+        _config(mode, backend=["sglang"], decode_radix_cache=True, decode_enable_prefix_caching=True)
+
+
+def test_afd_decode_companion_rejects_radix_cache_from_direct_sample():
+    config = _config("afd+pd", backend=["sglang"], afd_phase="prefill")
+    topology = AFDTopology(n_a_nodes=1, n_f_nodes=1, gpus_per_node=4, tp_a=2, a_batch_size=16, phase="prefill")
+    parallel = AFDParallelConfig(
+        topology=topology,
+        companion=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 1),
+    )
+    sample = unroll_sample(
+        search_space=config.search_space,
+        selection={
+            "deployment_mode": "afd+pd",
+            "backend": "sglang",
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 4,
+        },
+        parallel_config=parallel,
+    )
+    assert build_backend_deployment(sample, backend_version="test").decode_engine_args is not None
+    sample["decode_radix_cache"] = True
+    with pytest.raises(ValueError, match="requires native SGLang disaggregated decode"):
+        build_backend_deployment(sample, backend_version="test")
 
 
 def _config(mode: str, **search_overrides) -> SmartSearchConfig:
