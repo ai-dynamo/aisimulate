@@ -41,7 +41,10 @@ class FpmCacheGroup(_ProfileModel):
     ``block_size_tokens`` is the block size of vLLM's state spec, as the
     runtime probe records it: the Mamba block (the scheduler block in
     ``align`` mode, ``max_model_len`` in mode ``none``) or the ring block.
-    Sizing and replay do not read it yet.
+    Sizing and replay with prefix caching off do not read it. Grouped prefix
+    caching reads it as the Mamba block of ``align`` mode, and every group's
+    block enters the scheduler block, the least common multiple of the group
+    blocks.
 
     ``blocks_per_request`` counts the pool blocks that a running request holds
     between block boundaries. For a Mamba spec, that is ``1 + k``, where ``k``

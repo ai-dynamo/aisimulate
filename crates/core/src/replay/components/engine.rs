@@ -124,6 +124,7 @@ impl RankMetricsState {
             total_blocks: self.latest.total_blocks,
             kv_cache_used_bytes: self.latest.kv_cache_used_bytes,
             kv_cache_capacity_bytes: self.latest.kv_cache_capacity_bytes,
+            kv_cache_cached_bytes: self.latest.kv_cache_cached_bytes,
             active_cache_usage: self.latest.cache_usage,
             physical_cache_usage: self.latest.physical_cache_usage,
             running_requests: self.latest.running_requests,
