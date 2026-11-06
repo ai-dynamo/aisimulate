@@ -190,6 +190,7 @@ class TestParseHFConfig:
             "n_groups": 8,
             "chunk_size": 128,
             "moe_shared_expert_intermediate_size": 3712,
+            "mamba_ssm_cache_dtype": "bfloat16",
         }
 
         result = _parse_hf_config_json(config)
@@ -206,6 +207,7 @@ class TestParseHFConfig:
         assert extra_params.hybrid_override_pattern == "MEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEM*EMEMEMEM*EMEMEMEME"
         assert extra_params.mamba_num_heads == 64
         assert extra_params.moe_shared_expert_intermediate_size == 3712
+        assert extra_params.mamba_ssm_cache_dtype == "bfloat16"
 
     def test_parse_nemotronh_without_moe(self):
         """Test parsing a NemotronH config without MoE layers (no 'E' in pattern)."""
@@ -240,6 +242,7 @@ class TestParseHFConfig:
         assert extra_params is not None
         assert "E" not in extra_params.hybrid_override_pattern  # No MoE layers
         assert extra_params.moe_shared_expert_intermediate_size == 0
+        assert extra_params.mamba_ssm_cache_dtype == "float32"  # absent field
 
     @pytest.mark.parametrize("architecture", ["NemotronHForCausalLM", "NemotronH_Omni_Reasoning_V3"])
     @pytest.mark.parametrize("attention_names", [("mamba", "attention"), ("linear_attention", "full_attention")])

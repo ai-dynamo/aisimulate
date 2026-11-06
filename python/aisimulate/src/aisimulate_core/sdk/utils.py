@@ -1004,6 +1004,8 @@ def _parse_hf_config_json(config: dict) -> dict:
             # Optional: latent compression dim for routed experts (Nemotron-3-Super).
             # HF config uses None to mean "no compression"; map to 0 here.
             moe_latent_size=config.get("moe_latent_size") or 0,
+            # Optional: SSM state cache dtype; HF config may omit it or set it to None.
+            mamba_ssm_cache_dtype=config.get("mamba_ssm_cache_dtype") or "float32",
         )
         logger.info(
             f"NemotronH hybrid config: pattern={extra_params.hybrid_override_pattern}, "

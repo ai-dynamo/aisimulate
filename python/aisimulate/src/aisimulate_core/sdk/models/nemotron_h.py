@@ -8,6 +8,8 @@ from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
 from aisimulate_core.sdk.models.helpers import mtp_scale_factor
 
+_MAMBA_SSM_CACHE_BYTES = {"float32": 4, "bfloat16": 2, "float16": 2}
+
 
 @register_model("NEMOTRONH")
 class NemotronHModel(BaseModel):
@@ -80,6 +82,11 @@ class NemotronHModel(BaseModel):
         Args:
             hybrid_config: NemotronHConfig containing hybrid_override_pattern and layer parameters
         """
+        if hybrid_config.mamba_ssm_cache_dtype not in _MAMBA_SSM_CACHE_BYTES:
+            raise ValueError(
+                f"Unsupported mamba_ssm_cache_dtype {hybrid_config.mamba_ssm_cache_dtype!r}; "
+                f"expected one of {sorted(_MAMBA_SSM_CACHE_BYTES)}"
+            )
         self._hybrid_config = hybrid_config
         self._build_context_ops()
         self._build_generation_ops()
@@ -95,10 +102,49 @@ class NemotronHModel(BaseModel):
         }
 
     def get_kvcache_elements_per_token(self) -> int:
-        # Mamba state is fixed per request and must be budgeted separately.
+        # Only attention layers hold token-linear KV; the constant per-request
+        # Mamba state is priced in _mamba_state_bytes_per_request.
         tp = self.config.tp_size
         kv_heads = (self._num_kv_heads + tp - 1) // tp
         return self._count_layer_types()["*"] * 2 * kv_heads * self._head_size
+
+    def _mamba_state_bytes_per_request(self) -> float:
+        """Constant Mamba2 state per request on one GPU: the SSM state in the
+        configured cache dtype plus the BF16 convolution window, per Mamba
+        layer, TP-sharded the way the op graph shards heads and groups."""
+        cfg = self._hybrid_config
+        tp = self.config.tp_size
+        nheads_per_gpu = cfg.mamba_num_heads // tp
+        n_groups_per_gpu = max(cfg.n_groups // tp, 1)
+        ssm_bytes = (
+            nheads_per_gpu * cfg.mamba_head_dim * cfg.ssm_state_size * _MAMBA_SSM_CACHE_BYTES[cfg.mamba_ssm_cache_dtype]
+        )
+        conv_channels = nheads_per_gpu * cfg.mamba_head_dim + 2 * n_groups_per_gpu * cfg.ssm_state_size
+        conv_bytes = conv_channels * (cfg.conv_kernel - 1) * 2
+        return self._count_layer_types()["M"] * (ssm_bytes + conv_bytes)
+
+    def get_kvcache_bytes_per_sequence(self, seq_len: int) -> float:
+        seq_len = max(0, seq_len)
+        token_bytes = seq_len * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        return token_bytes + self._mamba_state_bytes_per_request()
+
+    def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
+        per_token = self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        budget = kv_budget_bytes - self._mamba_state_bytes_per_request()
+        if budget <= 0 or per_token <= 0:
+            return 0
+        return int(budget // per_token)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        # Reserve the state for every scheduler slot before budgeting the token
+        # pool: SGLang sizes its Mamba state pool by the request slots up front,
+        # and vLLM V1 takes the state from the shared pool as requests run, so the
+        # per-slot reservation is the conservative bound for both.
+        per_token = self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        budget = kv_budget_bytes - max_batch_size * self._mamba_state_bytes_per_request()
+        if budget <= 0 or per_token <= 0:
+            return 0
+        return int(budget // per_token)
 
     def _build_context_ops(self) -> None:
         """Build the context (prefill) operations pipeline based on hybrid pattern."""
