@@ -16,6 +16,7 @@ predate a documented feature. Record your installed version before comparing
 results or reporting a problem:
 
 ```bash
+aisim --version
 python -c 'import aisimulate; print(aisimulate.__version__)'
 python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
 ```
@@ -98,8 +99,10 @@ aisimulate --help
 Use that same ordering for upgrades. If both distributions have already been
 installed, uninstall `aisimulate` and use `pip install --force-reinstall` for
 the selected `aisim` wheel, because uninstalling the old distribution can remove
-files listed in both RECORDs. Both CLI names remain available after migration;
-Python imports stay `aisimulate` and `aisimulate_core`.
+files listed in both RECORDs. While both distributions are installed, the
+`aisim` and `aisimulate` commands print a warning with the exact repair
+commands for the installed `aisim` version. Both CLI names remain available
+after migration; Python imports stay `aisimulate` and `aisimulate_core`.
 
 Dynamo and other consumers must change their **distribution dependency** to
 `aisim` before sharing the new environment. Do not migrate the historical Dynamo
