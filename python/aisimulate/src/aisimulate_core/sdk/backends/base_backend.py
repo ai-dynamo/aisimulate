@@ -32,6 +32,7 @@ from aisimulate_core.sdk.rust_engine_step import (
     _estimate_decode_step_with_rust,
     estimate_decode_step_breakdown_with_rust,
     estimate_mixed_step_breakdown_with_rust,
+    estimate_static_breakdown_with_power_coverage_with_rust,
     estimate_static_latency_breakdown_with_rust,
     should_use_rust_engine_step,
 )
@@ -53,6 +54,11 @@ def _has_draft_scheme(model: BaseModel) -> bool:
     # the draft hooks is a draft scheme (the test-fake idiom); MTP stays on
     # the legacy nextn accounting baked into the model families.
     return isinstance(scheme, SpecSchemeBase) and not isinstance(scheme, MTPScheme) and type(scheme) is not NullScheme
+
+
+def _is_fpm_model(model: BaseModel) -> bool:
+    """Whether ``model`` was constructed with ``forward_model == "fpm"``."""
+    return getattr(model, "forward_model", "op_level") == "fpm"
 
 
 def _qwen_smart_resize(height: int, width: int, enc_cfg: common.VisionEncoderConfig) -> tuple[int, int]:
@@ -1058,6 +1064,46 @@ class BaseBackend:
         dict[str, str],
         tuple[MoECommFallback, ...],
     ]:
+        return self._run_static_breakdown_with_power_coverage(
+            model,
+            database,
+            runtime_config,
+            mode,
+            stride,
+            latency_correction_scale,
+            img_ctx_tokens=img_ctx_tokens,
+            include_energy=include_energy,
+        )[0]
+
+    def _run_static_breakdown_with_power_coverage(
+        self,
+        model: BaseModel,
+        database: PerfDatabase,
+        runtime_config: RuntimeConfig,
+        mode: str,
+        stride: int = 32,
+        latency_correction_scale: float = 1.0,
+        img_ctx_tokens: int = 0,
+        include_energy: bool = True,
+    ) -> tuple[
+        tuple[
+            dict[str, float],
+            dict[str, float],
+            dict[str, float],
+            dict[str, float],
+            dict[str, str],
+            dict[str, str],
+            tuple[MoECommFallback, ...],
+        ],
+        tuple[float, float] | None,
+    ]:
+        """``_run_static_breakdown`` plus FPM ``(context, generation)`` covered latency.
+
+        FPM runs with energy take the engine's per-query covered latency, so
+        the 0.9 power gate sees decode steps that resolved unpowered rows even
+        though they share one name-folded entry with powered steps. Other runs
+        return ``None`` and keep their name-based coverage.
+        """
         isl_eff = runtime_config.isl + img_ctx_tokens
 
         self._require_rust_engine_step(runtime_config, database, surface="static")
@@ -1065,6 +1111,25 @@ class BaseBackend:
         if img_ctx_tokens:
             rust_runtime_config = copy.copy(runtime_config)
             rust_runtime_config.isl = isl_eff
+        covered_latency_ms: tuple[float, float] | None = None
+        if include_energy and _is_fpm_model(model):
+            breakdown, covered_latency_ms = estimate_static_breakdown_with_power_coverage_with_rust(
+                model,
+                database,
+                rust_runtime_config,
+                mode,
+                stride,
+                latency_correction_scale,
+            )
+        else:
+            breakdown = estimate_static_latency_breakdown_with_rust(
+                model,
+                database,
+                rust_runtime_config,
+                mode,
+                stride,
+                latency_correction_scale,
+            )
         (
             context_latency_dict,
             generation_latency_dict,
@@ -1073,14 +1138,7 @@ class BaseBackend:
             context_source_dict,
             generation_source_dict,
             moe_comm_fallbacks,
-        ) = estimate_static_latency_breakdown_with_rust(
-            model,
-            database,
-            rust_runtime_config,
-            mode,
-            stride,
-            latency_correction_scale,
-        )
+        ) = breakdown
         if mode != "static_gen" and self._has_visual_context_work(model, runtime_config):
             visual_latency, visual_energy, visual_source = self._run_visual_context_phase(
                 model,
@@ -1097,6 +1155,15 @@ class BaseBackend:
                     visual_energy[name] * latency_correction_scale
                 )
                 context_source_dict[name] = visual_source[name]
+            if covered_latency_ms is not None:
+                # Python-priced op-level visual work: covered by its own energy.
+                context_covered_ms, generation_covered_ms = covered_latency_ms
+                context_covered_ms += sum(
+                    latency_ms * latency_correction_scale
+                    for name, latency_ms in visual_latency.items()
+                    if visual_energy[name] > 0
+                )
+                covered_latency_ms = (context_covered_ms, generation_covered_ms)
 
         if not include_energy:
             # Latency-only callers must not observe energy; keep the key sets
@@ -1112,7 +1179,7 @@ class BaseBackend:
             context_source_dict,
             generation_source_dict,
             moe_comm_fallbacks,
-        )
+        ), covered_latency_ms
 
     def run_static_latency_only(
         self,
@@ -1174,7 +1241,7 @@ class BaseBackend:
         Numeric FPM power covers text-only models without a draft scheme whose
         run meets the 0.9 energy-coverage rule. Op-level runs keep raw watts.
         """
-        if getattr(model, "forward_model", "op_level") != "fpm":
+        if not _is_fpm_model(model):
             return False
         return _has_draft_scheme(model) or bool(model.encoder_ops) or not summary.has_sufficient_power_data()
 
@@ -1244,14 +1311,17 @@ class BaseBackend:
             memory_extra["max_seq_len"] = max_seq_len
 
         (
-            context_latency_dict,
-            context_energy_wms_dict,
-            generation_latency_dict,
-            generation_energy_wms_dict,
-            context_source_dict,
-            generation_source_dict,
-            moe_comm_fallbacks,
-        ) = self._run_static_breakdown(
+            (
+                context_latency_dict,
+                context_energy_wms_dict,
+                generation_latency_dict,
+                generation_energy_wms_dict,
+                context_source_dict,
+                generation_source_dict,
+                moe_comm_fallbacks,
+            ),
+            covered_latency_ms,
+        ) = self._run_static_breakdown_with_power_coverage(
             model,
             database,
             runtime_config,
@@ -1328,6 +1398,9 @@ class BaseBackend:
         summary.set_context_source_dict(context_source_dict)
         summary.set_generation_source_dict(generation_source_dict)
         summary.set_moe_comm_fallbacks(moe_comm_fallbacks)
+        if covered_latency_ms is not None:
+            summary.set_context_covered_latency_ms(covered_latency_ms[0])
+            summary.set_generation_covered_latency_ms(covered_latency_ms[1])
 
         # Calculate average power (SIMPLIFIED - just divide! Single operation.)
         encoder_power_avg = encoder_energy_wms / encoder_latency_ms if encoder_latency_ms > 0 else 0.0

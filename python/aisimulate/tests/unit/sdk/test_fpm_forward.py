@@ -2006,7 +2006,7 @@ def _run_static(model, database, mode="static", **runtime):
     from aisimulate.sdk.config import RuntimeConfig
     from aisimulate.sdk.inference_session import InferenceSession
 
-    rc = RuntimeConfig(batch_size=2, beam_width=1, isl=512, osl=2, **runtime)
+    rc = RuntimeConfig(**{"batch_size": 2, "beam_width": 1, "isl": 512, "osl": 2, **runtime})
     return InferenceSession(model, database, get_backend(BACKEND)).run_static(runtime_config=rc, mode=mode)
 
 
@@ -2174,6 +2174,129 @@ class TestFPMPowerPublication:
         assert " W)" not in detail and "avg P = unavailable" in detail
         latency_only = run(None).get_result_dict()
         assert (result["ttft"], result["tpot"]) == (latency_only["ttft"], latency_only["tpot"])
+
+
+def _trajectory_rows(model, decode_steps) -> tuple[list[dict], dict[tuple[str, int], float | None]]:
+    """A powered batch-2, isl-512 prefill row plus one exact decode row per step.
+
+    ``decode_steps`` is ``[(s, latency_ms, watts), ...]``; a batch-2 decode step
+    at ``s = isl + i + 1`` reads ``2 * s`` KV tokens. Returns the rows and a
+    ``(workload_kind, kv) -> watts`` map for :func:`_write_power_pair`.
+    """
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    rows = [_row("prefill", 2, 1024, 0, 40.0, model_path=model.model_path, identity=identity)]
+    watts = {("prefill", 0): 300.0}
+    for s, latency_ms, step_watts in decode_steps:
+        rows.append(_row("decode", 2, 0, 2 * s, latency_ms, model_path=model.model_path, identity=identity))
+        watts["decode", 2 * s] = step_watts
+    rows = [dict(row, backend_version=_POWER_VERSION, cell_id=f"fpm-traj-{i}") for i, row in enumerate(rows)]
+    return rows, watts
+
+
+class TestFPMStaticPowerCoverage:
+    """Coverage of a multi-step static decode trajectory follows each query's power.
+
+    Stride 32 visits ``s = 513, 545, ...``: osl 65 runs two steps of 32
+    repeats, osl 66 adds a final step of 1. Every step folds into the one
+    ``fpm_forward_decode`` entry, so an entry with any energy cannot show how
+    much of its latency had power; the coverage must come from the engine's
+    per-query covered latency instead.
+    """
+
+    @staticmethod
+    def _run(fpm_power_root, decode_steps, *, osl, mode="static_gen"):
+        model = _qwen_fpm()
+        rows, watts = _trajectory_rows(model, decode_steps)
+        database = fpm_power_root(
+            model, lambda row: watts[row["workload_kind"], row["total_kv_read_tokens"]], rows=rows
+        )
+        return _run_static(model, database, mode=mode, osl=osl)
+
+    def test_half_unpowered_decode_trajectory_withholds_watts(self, fpm_power_root):
+        summary = self._run(fpm_power_root, [(513, 6.0, None), (545, 6.0, 450.0)], osl=65)
+        # 32 x 6 ms unpowered + 32 x 6 ms powered: coverage 192 / 384.
+        assert summary.get_generation_latency_dict()["fpm_forward_decode"] == pytest.approx(384.0)
+        assert summary.get_generation_energy_wms_dict()["fpm_forward_decode"] == pytest.approx(192.0 * 450.0)
+        assert summary.get_power_data_coverage() == pytest.approx(0.5)
+        _assert_power_withheld(summary)
+
+    @pytest.mark.parametrize(
+        "powered_ms, unpowered_ms, coverage, published",
+        [(8.9, 1.1, 0.89, False), (9.0, 1.0, 0.9, True)],
+        ids=["0.89_withheld", "0.90_published"],
+    )
+    def test_decode_coverage_threshold(self, fpm_power_root, powered_ms, unpowered_ms, coverage, published):
+        summary = self._run(fpm_power_root, [(513, powered_ms, 450.0), (545, unpowered_ms, None)], osl=65)
+        # 32 repeats of each step: coverage = powered / (powered + unpowered).
+        assert summary.get_power_data_coverage() == pytest.approx(coverage)
+        assert summary.has_sufficient_power_data() is published
+        if published:
+            # Watts are the trajectory's energy over all of its latency.
+            expected = 450.0 * powered_ms / (powered_ms + unpowered_ms)
+            assert summary.get_result_dict()["power_w"] == pytest.approx(expected)
+            assert summary.get_generation_power_avg() == pytest.approx(expected)
+        else:
+            _assert_power_withheld(summary)
+
+    def test_unequal_steps_and_partial_final_stride_weight_coverage_by_latency(self, fpm_power_root):
+        steps = [(513, 6.0, None), (545, 8.0, 450.0), (577, 10.0, 450.0)]
+        summary = self._run(fpm_power_root, steps, osl=66)
+        # Repeats 32, 32 and 1: (32 x 8 + 1 x 10) / (32 x 6 + 32 x 8 + 1 x 10).
+        assert summary.get_generation_latency_dict()["fpm_forward_decode"] == pytest.approx(458.0)
+        assert summary.get_power_data_coverage() == pytest.approx(266.0 / 458.0)
+        _assert_power_withheld(summary)
+        # An unpowered final step of one repeat is weighted by that repeat only.
+        steps = [(513, 6.0, 450.0), (545, 8.0, 450.0), (577, 10.0, None)]
+        summary = self._run(fpm_power_root, steps, osl=66)
+        assert summary.get_power_data_coverage() == pytest.approx(448.0 / 458.0)
+        assert summary.get_result_dict()["power_w"] == pytest.approx(450.0 * 448.0 / 458.0)
+
+    @pytest.mark.parametrize("watts, coverage", [(450.0, 1.0), (None, 0.0)], ids=["powered", "unpowered"])
+    def test_uniform_trajectory_coverage_is_exact(self, fpm_power_root, watts, coverage):
+        summary = self._run(fpm_power_root, [(513, 6.0, watts), (545, 7.0, watts)], osl=65)
+        assert summary.get_power_data_coverage() == coverage
+        assert (summary.get_result_dict()["power_w"] is None) is (watts is None)
+
+    def test_static_coverage_includes_the_unpowered_decode_share(self, fpm_power_root):
+        from aisimulate.legacy_cli.api import _apply_power_coverage_gate
+
+        steps = [(513, 6.0, None), (545, 6.0, 450.0)]
+        summary = self._run(fpm_power_root, steps, osl=65, mode="static")
+        # 40 ms powered prefill, 192 ms unpowered and 192 ms powered decode.
+        assert summary.get_power_data_coverage() == pytest.approx((40.0 + 192.0) / (40.0 + 384.0))
+        _assert_power_withheld(summary)
+        assert _apply_power_coverage_gate(summary, summary.get_result_dict())["power_w"] is None
+
+    def test_disagg_coverage_includes_the_unpowered_decode_share(self, fpm_power_root):
+        from aisimulate.legacy_cli.api import _apply_power_coverage_gate
+        from aisimulate.sdk.config import RuntimeConfig
+        from aisimulate.sdk.inference_session import DisaggInferenceSession
+
+        model = _qwen_fpm()
+        rows, watts = _trajectory_rows(model, [(513, 6.0, None), (545, 6.0, 450.0)])
+        database = fpm_power_root(
+            model, lambda row: watts[row["workload_kind"], row["total_kv_read_tokens"]], rows=rows
+        )
+        backend = get_backend(BACKEND)
+        disagg = DisaggInferenceSession(database, backend, database, backend).run_disagg(
+            "Qwen/Qwen3-0.6B",
+            RuntimeConfig(batch_size=2, beam_width=1, isl=512, osl=65),
+            _model_config(forward_model="fpm"),
+            2,
+            1,
+            _model_config(forward_model="fpm"),
+            2,
+            1,
+        )
+        assert disagg.get_summary_df()["power_w"].iloc[0] is None
+        assert disagg.get_context_power_avg() == pytest.approx(300.0)
+        assert disagg.get_generation_power_avg() is None
+        # The combined summary keeps the decode worker's per-query coverage:
+        # the whole (corrected) prefill and half of the decode trajectory.
+        prefill = disagg.get_context_latency_dict()["fpm_forward_prefill"]
+        decode = disagg.get_generation_latency_dict()["fpm_forward_decode"]
+        assert disagg.get_power_data_coverage() == pytest.approx((prefill + decode / 2) / (prefill + decode))
+        assert _apply_power_coverage_gate(disagg, disagg.get_result_dict())["power_w"] is None
 
 
 def _agg_rows(model) -> list[dict]:
