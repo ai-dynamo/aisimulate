@@ -1255,82 +1255,95 @@ mod tests {
         config
     }
 
-    /// A parent's nonterminal token releases a successor. With a zero-length
-    /// prefill and no handoff latency the successor reaches the decode pool at
-    /// the token's own instant, so it can only join the decode worker's next
-    /// pass if that pass was not committed before the caller submitted it.
-    #[test]
-    fn a_successor_submitted_after_a_nonterminal_token_joins_the_next_decode_pass() {
-        const DECODE_MS: f64 = 5.0;
-        let mut engine = SteppableDisagg::new(
-            fixed_timing_config(0.0, DECODE_MS),
-            &ReplayEngineFactory::new(),
-            1,
-            1,
-        )
-        .unwrap();
-        engine.set_capture_per_request(true);
-        let parent = engine.submit(request(70, 64, 6)).unwrap();
+    /// Decode pass latency proportional to its batch size, so the composition
+    /// of the pass a worker commits is visible in its duration.
+    struct BatchProportionalDecode;
 
-        let token_ms = loop {
+    impl crate::engine::TimingModel for BatchProportionalDecode {
+        fn predict_prefill_ms(
+            &self,
+            _batch_size: usize,
+            _mean_isl: usize,
+            _mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch_size: usize,
+            _active_kv_tokens: usize,
+            _mean_context_length: usize,
+            _total_kv_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(5.0 * batch_size as f64)
+        }
+    }
+
+    /// A nonterminal token is the caller's reaction point. A real P/D successor
+    /// cannot join the decode pass committed at that instant, because its
+    /// prefill takes time, so the property that matters is the batch the
+    /// decode worker commits next: work the caller removes in reaction to the
+    /// token must already be absent from it. The latency model prices a pass by
+    /// its batch size, which makes that composition observable.
+    #[test]
+    fn a_nonterminal_token_holds_the_next_decode_pass_open_to_the_callers_reaction() {
+        let factory = ReplayEngineFactory::with_timing_model(std::sync::Arc::new(
+            BatchProportionalDecode,
+        ));
+        let mut engine =
+            SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 1).unwrap();
+        let first = engine.submit(request(70, 64, 6)).unwrap();
+        let mut other_request = request(71, 64, 6);
+        other_request.tokens = (1_000..1_064).collect();
+        let other = engine.submit(other_request).unwrap();
+
+        let (token_ms, events) = loop {
             let outcome = engine.step().unwrap();
             assert!(
                 outcome
                     .events
                     .iter()
                     .all(|event| event.terminal_status.is_none()),
-                "the parent terminated before emitting a nonterminal token: {:?}",
+                "a request terminated before the first decode pass: {:?}",
                 outcome.events
             );
-            if outcome
-                .events
-                .iter()
-                .any(|event| event.uuid == parent && event.emitted_token)
-            {
-                break outcome.end_ms;
+            if outcome.events.iter().any(|event| event.emitted_token) {
+                break (outcome.end_ms, outcome.events);
             }
-            assert!(!engine.is_idle(), "the parent never emitted a token");
+            assert!(!engine.is_idle(), "no token was emitted");
         };
-        // The parent is still live: this is a branch, not a terminal release.
-        assert_eq!(engine.in_flight(), 1);
-        assert!(engine.actual_output_length(parent).unwrap() < 6);
-        assert_eq!(engine.now_ms(), token_ms);
-
-        let mut successor = request(71, 64, 2);
-        successor.tokens = (1_000..1_064).collect();
-        let child = engine.submit(successor).unwrap();
-        let held = engine.step_until(token_ms).unwrap();
-        assert_eq!(held.end_ms, token_ms);
-        assert!(held.events.is_empty(), "{:?}", held.events);
-        assert_eq!(engine.request_admission(child).unwrap().0, token_ms);
-
-        // Both requests decode in the one pass committed at the token instant.
-        let next = engine.step_until(f64::INFINITY).unwrap();
-        assert!(
-            (next.end_ms - (token_ms + DECODE_MS)).abs() < 1e-9,
-            "expected one decode pass after {token_ms}, ended at {}",
-            next.end_ms
-        );
-        for uuid in [parent, child] {
+        // Both requests decoded in the one batch-of-two pass that just ended,
+        // and neither is terminal: this is a mid-stream reaction point.
+        for uuid in [first, other] {
             assert!(
-                next.events
+                events
                     .iter()
                     .any(|event| event.uuid == uuid && event.emitted_token),
-                "{uuid} missed the shared pass: {:?}",
-                next.events
+                "{uuid} was not in the first decode pass: {events:?}"
             );
         }
+        assert_eq!(engine.in_flight(), 2);
+        assert_eq!(engine.now_ms(), token_ms);
 
-        drain(&mut engine);
-        let report = engine.take_report(engine.now_ms()).unwrap();
-        let record = report
-            .per_request
-            .iter()
-            .find(|record| record.uuid == child.to_string())
-            .expect("successor record");
-        assert_eq!(record.first_admit_ms, Some(token_ms));
-        assert!((record.first_token_ms.unwrap() - (token_ms + DECODE_MS)).abs() < 1e-9);
-        assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+        // React to the token before the worker commits its next pass.
+        let canceled = engine.cancel(other).unwrap().expect("cancel wins");
+        assert_eq!(canceled.terminal_status, Some(ReplayTerminalStatus::Canceled));
+
+        // The next pass holds one request, so it lasts one request's latency.
+        // A pass committed before the cancel would still carry both (10 ms).
+        let next = engine.step_until(f64::INFINITY).unwrap();
+        assert!(
+            (next.end_ms - (token_ms + 5.0)).abs() < 1e-9,
+            "next pass ended at {} after the reaction at {token_ms}",
+            next.end_ms
+        );
+        assert!(
+            next.events
+                .iter()
+                .any(|event| event.uuid == first && event.emitted_token)
+        );
+        assert!(next.events.iter().all(|event| event.uuid != other));
     }
 
     /// Cancel while the KV payload is on the wire, using a real transfer

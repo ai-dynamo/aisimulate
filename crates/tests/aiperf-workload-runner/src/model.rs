@@ -589,10 +589,9 @@ impl Execution for ModelExecution {
                         max_output_tokens: population_len,
                         output_token_ids: population,
                         uuid: Some(uuid),
-                        replay_context: Some(aisimulate_core::replay::ReplayRequestContext {
-                            session_id: Some(request.prepared.runtime_session_id.clone()),
-                            ..Default::default()
-                        }),
+                        // Match original offline ingress: application lineage stays
+                        // in AIPerf; physical requests carry no replay-session context.
+                        arrival_timestamp_ms: Some(start_ns as f64 / 1_000_000.0),
                         images: request.images.into_iter().map(|image| aisimulate_core::engine::ImageSpec {
                             identity: image.identity, token_start: image.token_start, token_end: image.token_end,
                             encoder: aisimulate_core::engine::EncoderShape {
