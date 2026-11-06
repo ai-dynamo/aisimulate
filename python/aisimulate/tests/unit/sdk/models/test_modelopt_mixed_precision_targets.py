@@ -641,6 +641,20 @@ def test_packaged_silicon_covers_the_checkpoint_precision(glm53_export, system, 
         model.close()
 
 
+def test_modelopt_mixed_quant_method_reaches_the_silicon_rows(tmp_path):
+    # The modelopt_mixed header takes the same targets-only path through the
+    # canonical constructor with fallback denied: attention is priced at the
+    # checkpoint precision from the collected DSA rows in both phases.
+    path = _write_export(tmp_path / "export", _GLM_BASE, _glm53_layers(), quant_method="modelopt_mixed")
+    model = RustForwardPassPerfModel.best_available(_silicon(path, "b200_sxm", "vllm", "0.24.0", (4, 1, 4)))
+    try:
+        for attention in _phase_attention(model):
+            assert attention["source"] == "silicon"
+            assert attention["latency_ms"] > 0
+    finally:
+        model.close()
+
+
 def test_coarse_attention_mode_has_no_silicon_rows(glm53, monkeypatch):
     # Negative control: pricing attention at the coarse fp8_static mode (the
     # behaviour without the targets-only rule) selects DSA rows that do not exist.
