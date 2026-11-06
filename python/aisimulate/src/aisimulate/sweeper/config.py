@@ -145,10 +145,6 @@ class OptimizationGoal(BaseModel):
         return self.aiperf.constraints if self.aiperf is not None else []
 
     @property
-    def aiperf_per_chunk_usage(self) -> bool:
-        return self.aiperf is not None and self.aiperf.per_chunk_usage
-
-    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 

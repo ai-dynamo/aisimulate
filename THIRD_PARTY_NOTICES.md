@@ -1851,8 +1851,9 @@ OSRB approval.
 
 ## AIPerf request metric compatibility
 
-- Derived files: `python/aisimulate/src/aisimulate/aiperf_metrics.py`,
-  `tests/test_aiperf_metrics.py`, and
+- Derived files: the request metric populations in
+  `crates/core/src/replay/report.rs` and `crates/core/src/replay/report/bounded.rs`,
+  the selector names in `python/aisimulate/src/aisimulate/aiperf_metrics.py`, and
   `tests/fixtures/aiperf_b0276e19_request_metrics.json`.
 - Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/b0276e19398169eb450f5a79db28509dd4bcb48f),
   revision `b0276e19398169eb450f5a79db28509dd4bcb48f`.
@@ -1862,7 +1863,7 @@ OSRB approval.
 - Copyright: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 - License: Apache-2.0 (the repository's `LICENSE` includes the license text).
 - Modifications: independent implementation of the pinned request metric
-  definitions over native replay records, with synthetic compatibility tests.
+  definitions in native replay reporting, with nearest-rank percentiles.
   The fixture holds values computed by the pinned AIPerf metric classes with
   `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
   No AIPerf runtime dependency or source files are bundled.

@@ -591,7 +591,7 @@ class EngineReplayRunner:
         execution_spec = _materialize_engine_execution_spec(
             spec,
             trace_block_size=self.trace_block_size,
-            record_per_request=output_requirements.capture_per_request or metric_goal.uses_aiperf_metrics,
+            record_per_request=output_requirements.capture_per_request,
             memory_diagnostics=memory_diagnostics,
         )
         if encoder is not None and encoder.mode == "native":
@@ -668,21 +668,6 @@ class EngineReplayRunner:
         }
         if state_sizes:
             report = {**report, "state_cache": state_sizes}
-        if metric_goal.uses_aiperf_metrics:
-            from .aiperf_metrics import summarize_requests
-
-            try:
-                report = {
-                    **report,
-                    **summarize_requests(
-                        report.get("per_request"),
-                        per_chunk_usage=metric_goal.aiperf_per_chunk_usage,
-                    ),
-                }
-            except ValueError as exc:
-                raise InvalidRunnerError(str(exc)) from exc
-            if not output_requirements.capture_per_request:
-                report.pop("per_request", None)
         normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(

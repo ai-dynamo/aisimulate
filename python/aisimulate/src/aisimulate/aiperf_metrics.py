@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AIPerf-compatible request metrics, separate from native token-gap metrics.
+"""AIPerf request metric selectors over the native replay summary.
 
-Definitions: ai-dynamo/aiperf at b0276e19398169eb450f5a79db28509dd4bcb48f,
-src/aiperf/metrics/types/{ttft_metric,request_latency_metric,
-inter_token_latency_metric,output_token_throughput_metrics}.py (Apache-2.0).
-See THIRD_PARTY_NOTICES.md for attribution.
+Native replay reports TTFT, request latency, per-request ITL and user TPS with
+the request populations of ai-dynamo/aiperf b0276e19398169eb450f5a79db28509dd4bcb48f.
+Native percentiles use the nearest rank; AIPerf interpolates linearly.
 """
 
 from __future__ import annotations
@@ -18,40 +17,52 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
+# AIPerf metric -> (selector name prefix, native summary suffix, native sample count).
+_FAMILIES = {
+    "time_to_first_token": ("TTFT", "ttft_ms", "num_ttft_samples"),
+    "request_latency": ("LATENCY", "e2e_latency_ms", "num_e2e_latency_samples"),
+    "inter_token_latency": ("ITL", "itl_ms", "num_tpot_samples"),
+    "output_token_throughput_per_user": (
+        "USER_TPS",
+        "output_token_throughput_per_user",
+        "num_output_token_throughput_per_user_samples",
+    ),
+}
+# AIPerf statistic -> native summary prefix.
+_STATS = {
+    "avg": "mean",
+    "p1": "p1",
+    "p5": "p5",
+    "p10": "p10",
+    "p25": "p25",
+    "p50": "median",
+    "p75": "p75",
+    "p90": "p90",
+    "p95": "p95",
+    "p99": "p99",
+}
 
-class AIPerfMetric(str, Enum):
-    TTFT_AVG = "time_to_first_token.avg"
-    TTFT_P50 = "time_to_first_token.p50"
-    TTFT_P90 = "time_to_first_token.p90"
-    TTFT_P95 = "time_to_first_token.p95"
-    TTFT_P99 = "time_to_first_token.p99"
-    LATENCY_AVG = "request_latency.avg"
-    LATENCY_P50 = "request_latency.p50"
-    LATENCY_P90 = "request_latency.p90"
-    LATENCY_P95 = "request_latency.p95"
-    LATENCY_P99 = "request_latency.p99"
-    ITL_AVG = "inter_token_latency.avg"
-    ITL_P50 = "inter_token_latency.p50"
-    ITL_P90 = "inter_token_latency.p90"
-    ITL_P95 = "inter_token_latency.p95"
-    ITL_P99 = "inter_token_latency.p99"
-    USER_TPS_AVG = "output_token_throughput_per_user.avg"
-    USER_TPS_P50 = "output_token_throughput_per_user.p50"
-    USER_TPS_P90 = "output_token_throughput_per_user.p90"
-    USER_TPS_P95 = "output_token_throughput_per_user.p95"
-    USER_TPS_P99 = "output_token_throughput_per_user.p99"
 
+class _NativeMetric(str, Enum):
     @property
     def maximize(self) -> bool:
         return self.value.startswith("output_token_throughput_per_user.")
 
     @property
     def report_key(self) -> str:
-        return f"aiperf.{self.value}"
+        family, stat = self.value.rsplit(".", 1)
+        return f"{_STATS[stat]}_{_FAMILIES[family][1]}"
 
     @property
     def count_key(self) -> str:
-        return f"aiperf.{self.value.rsplit('.', 1)[0]}.count"
+        return _FAMILIES[self.value.rsplit(".", 1)[0]][2]
+
+
+# Members such as TTFT_P50 = "time_to_first_token.p50".
+AIPerfMetric = _NativeMetric(
+    "AIPerfMetric",
+    {f"{short}_{stat.upper()}": f"{family}.{stat}" for family, (short, _, _) in _FAMILIES.items() for stat in _STATS},
+)
 
 
 class MetricConstraint(BaseModel):
@@ -68,14 +79,10 @@ class MetricConstraint(BaseModel):
 
 
 class AIPerfEvaluation(BaseModel):
-    """Request AIPerf metrics from native per-request records.
-
-    ``constraints`` gate candidates only when strict aggregate filtering is on.
-    """
+    """Aggregate constraints that gate candidates only with strict filtering."""
 
     model_config = ConfigDict(extra="forbid")
 
-    per_chunk_usage: bool = Field(default=False, strict=True)
     constraints: list[MetricConstraint] = Field(default_factory=list)
 
 
@@ -111,65 +118,3 @@ def constraint_violations(report: Mapping[str, float], constraints: Sequence[Met
                 f"{constraint.metric.value}={value:g} violates {constraint.operator} {constraint.threshold:g}"
             )
     return tuple(violations)
-
-
-def summarize_requests(records: object, *, per_chunk_usage: bool = False) -> dict[str, float]:
-    """Match ordinary AIPerf metrics, excluding errors and unfinished requests.
-
-    Latency units are milliseconds. Percentiles use NumPy's linear interpolation.
-    The failure-inflated ``adj_*`` metrics are separate in the pinned AIPerf version.
-    """
-    import numpy as np
-
-    if not isinstance(records, list):
-        raise ValueError("AIPerf metrics require native per-request records")
-    samples: dict[str, list[float]] = {
-        "time_to_first_token": [],
-        "request_latency": [],
-        "inter_token_latency": [],
-        "output_token_throughput_per_user": [],
-    }
-    for record in records:
-        if not isinstance(record, dict) or record.get("terminal_status") not in {
-            "completed",
-            "failed",
-            "canceled",
-            "rejected",
-        }:
-            raise ValueError("AIPerf metrics require records with terminal_status")
-        if record["terminal_status"] != "completed":
-            continue
-        output = record.get("output_length")
-        if type(output) is not int or output < 0:
-            raise ValueError("AIPerf metrics require a nonnegative integer output_length")
-        if output == 0:
-            continue
-        times = [record.get(key) for key in ("arrival_time_ms", "first_token_ms", "last_token_ms")]
-        if any(type(t) not in (int, float) or not math.isfinite(t) for t in times):
-            raise ValueError("AIPerf metrics require finite arrival and content-token timestamps")
-        arrival, first, last = times
-        if not arrival <= first <= last:
-            raise ValueError("AIPerf content-token timestamps must be ordered")
-        samples["time_to_first_token"].append(first - arrival)
-        samples["request_latency"].append(last - arrival)
-        if output < 2:
-            continue
-        first_chunk = record.get("first_content_chunk_tokens") if per_chunk_usage else None
-        if first_chunk is not None and type(first_chunk) is not int:
-            raise ValueError("first_content_chunk_tokens must be an integer or null")
-        # AIPerf falls back to one when usage is absent, zero, or inconsistent.
-        divisor = output - first_chunk if first_chunk is not None and 0 < first_chunk < output else output - 1
-        itl = (last - first) / divisor
-        samples["inter_token_latency"].append(itl)
-        if itl > 0:
-            samples["output_token_throughput_per_user"].append(1000.0 / itl)
-
-    metrics = {}
-    for name, values in samples.items():
-        prefix = f"aiperf.{name}"
-        metrics[f"{prefix}.count"] = float(len(values))
-        if values:
-            metrics[f"{prefix}.avg"] = float(np.mean(values))
-            for percentile, value in zip((50, 90, 95, 99), np.percentile(values, [50, 90, 95, 99]), strict=True):
-                metrics[f"{prefix}.p{percentile}"] = float(value)
-    return metrics

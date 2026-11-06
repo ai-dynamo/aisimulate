@@ -1472,10 +1472,7 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
     "aiperf",
     [
         None,
-        {
-            "per_chunk_usage": True,
-            "constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 9}],
-        },
+        {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 9}]},
     ],
 )
 def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict(timing, aiperf) -> None:
@@ -1507,12 +1504,11 @@ def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict(timing
     )
     # Saved recommendations require plain JSON values, not enum members.
     validate_json_value(prediction)
-    # The exported prediction reports the same metric definitions the search scored.
+    # The exported prediction keeps the constraints the search applied.
     reloaded = CorePredictionConfig.model_validate(json.loads(json.dumps(prediction)))
     goal = OptimizationGoal.model_validate(prediction_to_replay_spec(reloaded).goal)
-    assert goal.uses_aiperf_metrics and smart.goal.uses_aiperf_metrics
+    assert smart.goal.uses_aiperf_metrics
     assert goal.aiperf == smart.goal.aiperf == config.evaluation.aiperf
-    assert goal.aiperf_per_chunk_usage is (aiperf is not None)
 
 
 def _pd_hardware_config(*, recommend=False, **overrides):

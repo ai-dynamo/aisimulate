@@ -73,6 +73,7 @@ _METRIC_KEYS = (
     "total_gpus",
     "encoder_latency_ms",
     "encoder_gpus",
+    *dict.fromkeys(key for metric in AIPerfMetric for key in (metric.report_key, metric.count_key)),
     "encoder_memory_gib",
     "encoder_power_coverage",
     "encoder_power_w",
@@ -299,11 +300,7 @@ def make_candidate(
     ``pareto`` target, ``pareto_objectives`` must be given; the per-objective raw values are
     stored in ``Candidate.objectives`` (Pareto dominance reads these) and ``score`` carries
     the first objective's value as a headline number (it is not used for ranking)."""
-    metrics = {
-        key: float(value)
-        for key, value in report.items()
-        if (key in _METRIC_KEYS or key.startswith("aiperf.")) and value is not None
-    }
+    metrics = {key: float(value) for key, value in report.items() if key in _METRIC_KEYS and value is not None}
     metrics.update(normalize_power_summary(report))
     if target is OptimizationTarget.PARETO:
         if not pareto_objectives:

@@ -3452,69 +3452,31 @@ def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeyp
         prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
 
 
-@pytest.mark.parametrize("per_chunk_usage, expected_itl", [(False, 7.5), (True, 10.0)])
-def test_runner_requests_aiperf_samples_without_retaining_raw_records(per_chunk_usage, expected_itl):
-    class MetricRuntime(RecordingRuntime):
-        def run_replay_json(self, execution_spec_json):
-            report = json.loads(super().run_replay_json(execution_spec_json))
-            report["per_request"] = [
-                {
-                    "arrival_time_ms": 0,
-                    "first_token_ms": 10,
-                    "last_token_ms": 40,
-                    "output_length": 5,
-                    "first_content_chunk_tokens": 2,
-                    "terminal_status": "completed",
-                }
-            ]
-            return json.dumps(report)
-
-    runtime = MetricRuntime()
-    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0)
-    result = runner.run(
-        _spec(goal={"target": "inter_token_latency.p50", "aiperf": {"per_chunk_usage": per_chunk_usage}})
-    )
-    assert runtime.execution_spec["record_per_request"] is True
-    assert result.metrics["aiperf.inter_token_latency.p50"] == expected_itl
-    assert "native_report" not in result.metadata
+def test_aiperf_selectors_do_not_force_request_capture():
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0).run(_spec(goal={"target": "request_latency.p99"}))
+    assert runtime.execution_spec["record_per_request"] is False
 
 
-def test_runner_rejects_missing_requested_aiperf_evidence():
-    with pytest.raises(InvalidRunnerError, match="per-request records"):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(worker_id=0).run(
-            _spec(goal={"target": "request_latency.p99"})
-        )
-
-
-@pytest.mark.parametrize("capture", [False, True])
 @pytest.mark.parametrize(
     "goal",
     [
-        {"target": "output_token_throughput_per_user.p50", "aiperf": {"per_chunk_usage": True}},
+        {"target": "output_token_throughput_per_user.p50"},
         # Predict compiles evaluation.aiperf without an optimization objective.
-        {"sla": None, "aiperf": {"per_chunk_usage": True, "constraints": []}},
+        {"sla": None, "aiperf": {"constraints": []}},
     ],
 )
-def test_native_aiperf_metrics_use_request_capture(capture, goal):
-    report = (
-        EngineReplayRunnerFactory()
-        .create(0)
-        .run(
-            _spec(goal=goal),
-            output_requirements=ReplayOutputRequirements(capture_per_request=capture),
-        )
-    )
+def test_native_summary_supplies_every_aiperf_selector(goal):
+    from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
+
+    report = EngineReplayRunnerFactory().create(0).run(_spec(goal=goal))
     # Fixed timing: 2 ms prefill, one 1 ms decode, one completed request.
-    for name, expected in [
-        ("time_to_first_token", 2),
-        ("request_latency", 3),
-        ("inter_token_latency", 1),
-        ("output_token_throughput_per_user", 1000),
-    ]:
-        for stat in ("avg", "p50", "p90", "p95", "p99"):
-            assert report.metrics[f"aiperf.{name}.{stat}"] == expected
-    assert report.metrics["aiperf.inter_token_latency.count"] == 1
-    if capture:
-        assert report.metadata["native_report"]["per_request"][0]["first_content_chunk_tokens"] == 1
-    else:
-        assert "native_report" not in report.metadata
+    expected = {
+        "time_to_first_token": 2,
+        "request_latency": 3,
+        "inter_token_latency": 1,
+        "output_token_throughput_per_user": 1000,
+    }
+    for metric in AIPerfMetric:
+        assert metric_value(report.metrics, metric) == expected[metric.value.rsplit(".", 1)[0]], metric
+    assert "native_report" not in report.metadata

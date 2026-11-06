@@ -105,9 +105,7 @@ evaluation:
 | `evaluation.sla.ttft_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.itl_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.e2e_ms` | `null` | `x` | `-` | Positive; mutually exclusive with TTFT plus ITL. |
-| `evaluation.aiperf` | `null` | `x` | `-` | When set, report the [AIPerf metric selectors](../sweeper/optimization-goals.md#aiperf-metric-selectors) as `aiperf.<metric>.<statistic>`. Requires native offline request replay. `recommend` sets it when the target is a selector. |
-| `evaluation.aiperf.per_chunk_usage` | `false` | `x` | `-` | Match AIPerf `--per-chunk-usage`: subtract the first content chunk's token count in ITL. |
-| `evaluation.aiperf.constraints` | `[]` | `x` | `-` | Aggregate constraints with `metric`, `operator` (`lte` or `gte`), and nonnegative `threshold`. `recommend` enforces them only when `optimization.strict_sla` is true. `predict` reports the statistics only. |
+| `evaluation.aiperf.constraints` | `[]` | `x` | `-` | Aggregate constraints on the [AIPerf metric selectors](../sweeper/optimization-goals.md#aiperf-metric-selectors), with `metric`, `operator` (`lte` or `gte`), and nonnegative `threshold`. `recommend` enforces them only when `optimization.strict_sla` is true. `predict` reports the statistics only. |
 
 `goodput` and `goodput_per_gpu` optimization require at least one SLA bound. Planner throughput
 scaling specifically uses the `ttft_ms` plus `itl_ms` form when the recommendation target is

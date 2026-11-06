@@ -1558,9 +1558,7 @@ def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict
         def run(self, spec):
             report = super().run(spec)
             seqs = report.metrics["output_throughput_tok_s"]
-            return ReplayReport(
-                metrics={**report.metrics, "aiperf.request_latency.count": 2.0, "aiperf.request_latency.p99": seqs}
-            )
+            return ReplayReport(metrics={**report.metrics, "num_e2e_latency_samples": 2.0, "p99_e2e_latency_ms": seqs})
 
     base = _config()
     config = SmartSearchConfig(
