@@ -165,10 +165,11 @@ store has a usable fit. Offline prediction/recommendation reject an untrained
 regression instead of fabricating a latency. The current aggregated regression
 retains its four workload stores; dedicated roles retain one each.
 
-The returned provenance records the requested and selected modes, failed
-selection attempts, effective backend version, data policy, selected root,
-and complete estimator configuration. Its resolved config pins the selected
-mode with deny so saved replay input repeats that selection.
+The returned provenance records the requested and selected estimation and
+database modes, failed selection attempts, effective backend version, data
+policy, selected root, and complete estimator configuration. Its resolved
+config pins the selected mode with deny so saved replay input repeats that
+selection.
 
 ### Diagnostic source values
 

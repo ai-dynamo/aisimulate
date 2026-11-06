@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::common::enums::DatabaseMode;
 use crate::perfmodel::engine::runtime::{RankDetail, RankPricing};
 use crate::perfmodel::engine::spec::EncoderImageShape;
 use crate::perfmodel::engine::{Engine, PerOpValue};
@@ -105,6 +106,14 @@ pub struct ForwardPassPerfProvenance {
     pub requested_estimation_mode: EstimationMode,
     pub selected_estimation_mode: EstimationMode,
     pub selection_failures: Vec<String>,
+    /// Database mode of the request. A native candidate (op_level, fpm_interpolation) records
+    /// the selected mode in `config.database_mode`; the whole-forward estimators leave the
+    /// request's mode there.
+    #[serde(default)]
+    pub requested_database_mode: DatabaseMode,
+    /// Database mode of the selected native engine; `None` for estimators without one.
+    #[serde(default)]
+    pub selected_database_mode: Option<DatabaseMode>,
 }
 
 /// Prediction backend currently used by `ForwardPassPerfModel`.
@@ -854,6 +863,7 @@ impl ForwardPassPerfModel {
         registered: Option<bool>,
     ) -> Result<Self, AicError> {
         let requested_estimation_mode = config.estimation_mode;
+        let requested_database_mode = config.database_mode;
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
@@ -921,6 +931,8 @@ impl ForwardPassPerfModel {
                     requested_estimation_mode,
                     selected_estimation_mode: mode,
                     selection_failures: failures,
+                    requested_database_mode,
+                    selected_database_mode: None,
                 });
                 return Ok(model);
             }
@@ -942,45 +954,64 @@ impl ForwardPassPerfModel {
                     requested_estimation_mode,
                     selected_estimation_mode: mode,
                     selection_failures: failures,
+                    requested_database_mode,
+                    selected_database_mode: None,
                 });
                 return Ok(model);
             }
             let mut candidate = config.clone();
             candidate.estimation_mode = mode;
-            match build_native_candidate(&candidate) {
-                Ok((engine, root, fingerprint)) => {
-                    candidate.backend_version = Some(engine.database().version.clone());
-                    candidate.database_mode = engine.database().database_mode;
-                    candidate.transfer_policy =
-                        Some(transfer_policy_tokens(engine.database().transfer_policy));
-                    candidate.systems_paths = vec![root.clone()];
-                    candidate.fallback_policy = ForwardPassFallbackPolicy::Deny;
-                    let mut model = Self::from_engine(
-                        Arc::new(engine),
-                        candidate.estimator_config.correction_options(),
-                    );
-                    model.set_data_fingerprint(fingerprint);
-                    model.is_correction_enabled = candidate.estimator_config.correction.enabled;
-                    model.query_coverage = candidate
-                        .estimator_config
-                        .fpm_interpolation
-                        .collect_coverage
-                        .then(FpmCoverageState::default);
-                    model.last_warning = (!failures.is_empty()).then(|| failures.join("; "));
-                    model.provenance = Some(ForwardPassPerfProvenance {
-                        config: candidate,
-                        selected_systems_root: Some(root),
-                        requested_estimation_mode,
-                        selected_estimation_mode: mode,
-                        selection_failures: failures,
-                    });
-                    return Ok(model);
+            loop {
+                match build_native_candidate(&candidate) {
+                    Ok((engine, root, fingerprint)) => {
+                        candidate.backend_version = Some(engine.database().version.clone());
+                        candidate.database_mode = engine.database().database_mode;
+                        candidate.transfer_policy =
+                            Some(transfer_policy_tokens(engine.database().transfer_policy));
+                        candidate.systems_paths = vec![root.clone()];
+                        candidate.fallback_policy = ForwardPassFallbackPolicy::Deny;
+                        let mut model = Self::from_engine(
+                            Arc::new(engine),
+                            candidate.estimator_config.correction_options(),
+                        );
+                        model.set_data_fingerprint(fingerprint);
+                        model.is_correction_enabled = candidate.estimator_config.correction.enabled;
+                        model.query_coverage = candidate
+                            .estimator_config
+                            .fpm_interpolation
+                            .collect_coverage
+                            .then(FpmCoverageState::default);
+                        model.last_warning = (!failures.is_empty()).then(|| failures.join("; "));
+                        let selected_database_mode = Some(candidate.database_mode);
+                        model.provenance = Some(ForwardPassPerfProvenance {
+                            config: candidate,
+                            selected_systems_root: Some(root),
+                            requested_estimation_mode,
+                            selected_estimation_mode: mode,
+                            selection_failures: failures,
+                            requested_database_mode,
+                            selected_database_mode,
+                        });
+                        return Ok(model);
+                    }
+                    // A SILICON linear-attention miss of the auto op_level candidate:
+                    // rebuild it in HYBRID, where the missing rows get the analytic
+                    // estimate, before the whole-forward modes.
+                    Err(err @ AicError::LinearAttentionDataMissing(_))
+                        if requested_estimation_mode == EstimationMode::Auto
+                            && mode == EstimationMode::OpLevel
+                            && candidate.database_mode == DatabaseMode::Silicon =>
+                    {
+                        failures.push(format!("{mode:?}: {err}"));
+                        candidate.database_mode = DatabaseMode::Hybrid;
+                    }
+                    Err(err) if can_fallback_to_regression(&err) => {
+                        failures.push(format!("{mode:?}: {err}"));
+                        last_error = Some(err);
+                        break;
+                    }
+                    Err(err) => return Err(err),
                 }
-                Err(err) if can_fallback_to_regression(&err) => {
-                    failures.push(format!("{mode:?}: {err}"));
-                    last_error = Some(err);
-                }
-                Err(err) => return Err(err),
             }
         }
         // Every candidate mode failed. Surface all of them: the last one is

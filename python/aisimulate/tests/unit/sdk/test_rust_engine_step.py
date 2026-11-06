@@ -1135,6 +1135,8 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     model = RustForwardPassPerfModel.best_available(payload)
     provenance = model.diagnostics()["provenance"]
     resolved = provenance["config"]
+    assert provenance["requested_database_mode"] == "SILICON"
+    assert provenance["selected_database_mode"] is None
     assert resolved["estimator_config"]["fpm_regression"]["fit"]["rebuild_interval"] == expected_interval
     assert resolved["estimator_config"]["fpm_regression"]["sampling"] == {
         "bins_per_axis": [4, 4],
@@ -1151,6 +1153,7 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     saved = json.loads(json.dumps(resolved))
     restored = RustForwardPassPerfModel.best_available(saved)
     assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert restored.diagnostics()["provenance"]["requested_database_mode"] == "SILICON"
     assert restored.regression_store_diagnostics() == [
         {"workload_kind": "pure_decode", "ready": False, "retained_observations": 0}
     ]
