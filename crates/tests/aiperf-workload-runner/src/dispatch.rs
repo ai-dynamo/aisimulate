@@ -91,6 +91,8 @@ impl Dispatcher {
         started: &dyn Fn(i64),
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<TurnDispatchOutcome>> {
+        tracing::trace!(request_id = %turn.uuid, phase = ?turn.credit_phase, turn_index = turn.turn_index, input_tokens = turn.input_length, output_limit = turn.max_output_tokens, direct_hashes = self.direct_hashes.get(), now_ns = self.execution.now(), "dispatching prepared workload effect");
+        let request_id = turn.uuid;
         let compact = self.capture.get() == CaptureMode::Compact;
         let index = self.records.borrow().len();
         let identity = serde_json::json!({
@@ -300,6 +302,7 @@ impl Dispatcher {
                 Ok(Some(outcome)) => {
                     let dispatch = &outcome.dispatch;
                     let metadata = &dispatch.model_response;
+                    tracing::trace!(%request_id, terminal = ?dispatch.terminal, start_ns = dispatch.start_ns, end_ns = dispatch.end_ns, context_overflow = metadata.context_overflow, output_tokens = ?dispatch.completion_tokens, "workload effect settled");
                     row["status"] = serde_json::json!("settled");
                     row["start_ns"] = serde_json::json!(dispatch.start_ns);
                     row["end_ns"] = serde_json::json!(dispatch.end_ns);
@@ -358,8 +361,12 @@ impl Dispatcher {
                         );
                     }
                 }
-                Ok(None) => row["status"] = serde_json::json!("cancelled_none"),
+                Ok(None) => {
+                    tracing::trace!(%request_id, now_ns = self.execution.now(), "workload effect cancelled before settlement");
+                    row["status"] = serde_json::json!("cancelled_none");
+                }
                 Err(error) => {
+                    tracing::warn!(%request_id, now_ns = self.execution.now(), "workload effect execution failed; detail retained in bounded diagnostic evidence");
                     row["status"] = serde_json::json!("execution_error");
                     row["execution_error"] = serde_json::json!(error.to_string());
                 }

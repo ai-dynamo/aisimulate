@@ -285,12 +285,25 @@ pub(crate) fn lower_scheduled(
         *kind == aiperf_config::model::workload_kind::WorkloadKind::Scheduled || legacy_weka,
         "typed workload {kind:?} has no simulator execution binding"
     );
+    tracing::debug!(
+        ?input_projection,
+        ?kind,
+        legacy_weka,
+        authored_phases = phases.len(),
+        "preparing shared workload input"
+    );
     let (mut prepared, phases, origins) = if legacy_weka {
+        tracing::debug!(?input_projection, "acquiring complete trace source");
         let traces = acquire(
             dataset,
             raw_input.get("dataset").context("raw dataset missing")?,
             *input_projection,
         )?;
+        tracing::debug!(
+            traces = traces.len(),
+            ?input_projection,
+            "trace source admitted; lowering shared AgentX metadata"
+        );
         use aiperf_engine_phase::agentic_replay::prepare::LegacyAgenticPreparation;
         let projection = match input_projection {
             crate::participant_adapter::NativeInputProjection::TraceHashes => {
@@ -315,6 +328,11 @@ pub(crate) fn lower_scheduled(
             }
         };
         let prepared = prepare_legacy_agentic(run, &phases, dataset, &traces, projection)?;
+        tracing::debug!(
+            roots = prepared.agentic_trees.len(),
+            lanes = prepared.agentic_lanes.lanes.len(),
+            "shared source geometry and lane selection prepared"
+        );
         let (phases, origins) = prepare_legacy_agentic_phases(
             run,
             &phases,
@@ -322,6 +340,10 @@ pub(crate) fn lower_scheduled(
             input["system_idle_gap_cap_seconds"].as_f64(),
             &prepared,
         )?;
+        for (index, phase) in phases.iter().enumerate() {
+            let common = phase.common();
+            tracing::debug!(phase_index = index, phase_name = %common.name, warmup = common.is_warmup(), duration_s = ?common.duration, requests = ?common.requests, grace_s = ?common.grace_period, origin = ?origins[index], "shared phase program lowered");
+        }
         (prepared, phases, origins)
     } else {
         ensure!(

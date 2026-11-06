@@ -27,6 +27,7 @@ blake3 = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 tokio-util = "0.7"
+tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 aiperf-agentx = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/agentx" }
 aiperf-timing = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/scheduling/timing" }
