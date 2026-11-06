@@ -114,6 +114,67 @@ def profile(tmp_path, monkeypatch):
     return config, payload, publish, root, path
 
 
+def _dsv4_context_table(path):
+    """One synthetic row in the module table layout the engine reads (perf_database/dsv4.rs)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table(
+            {
+                "architecture": ["DeepseekV4ForCausalLM"],
+                "mla_dtype": ["bfloat16"],
+                "kv_cache_dtype": ["fp8"],
+                "gemm_type": ["fp8_block"],
+                "num_heads": [16],
+                "tp_size": [1],
+                "batch_size": [1],
+                "isl": [1024],
+                "step": [0],
+                "latency": [1.0],
+            }
+        ),
+        path,
+    )
+
+
+def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted(profile, monkeypatch):
+    config, payload, publish, root, _ = profile
+    # Construction checks that each module's phase table holds a row.
+    for kind in ("csa", "hca"):
+        _dsv4_context_table(root / f"data/h200_sxm/sparse_attention/vllm/1.0/dsv4_{kind}_context_module_perf.parquet")
+    payload["retained_files"] = [
+        {
+            "path": str(p.relative_to(root)),
+            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+            "size_bytes": p.stat().st_size,
+        }
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    ]
+    modules = [
+        {
+            "Dsv4Context": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "attn_kind": kind,
+                "num_heads": 16,
+                "native_heads": 128,
+                "tp_size": 8,
+                "kv_cache_dtype": "fp8",
+                "fmha_quant_mode": "bfloat16",
+                "gemm_quant_mode": "fp8_block",
+                "architecture": "DeepseekV4ForCausalLM",
+            }
+        }
+        for kind in ("Csa", "Hca")
+    ]
+    spec_bytes = bytes(_native.engine_spec_bincode_from_json(json.dumps(dict(payload["basis"], context_ops=modules))))
+    monkeypatch.setattr(engine_module, "compile_engine", lambda *args, **kwargs: spec_bytes)
+    payload["basis"] = json.loads(_native.engine_spec_json_from_bincode(spec_bytes))
+    payload["ops"] = modules
+    publish()
+    RustForwardPassPerfModel.best_available(config).close()  # must not raise
+
+
 def test_exact_cells_prefix_and_saved_config(profile):
     config, _, _, _, _ = profile
     model = RustForwardPassPerfModel.best_available(config)
@@ -220,6 +281,7 @@ def test_rejects_unsupported_modes_before_compilation(profile, field, value):
         ("empty", "invalid measured scope"),
         ("traversal", "bundle-relative"),
         ("duplicate_file", "duplicate retained"),
+        ("duplicate_name", "duplicate operation name"),
         ("extra_field", "unknown field"),
     ],
 )
@@ -245,6 +307,8 @@ def test_profile_admission_fails_closed(profile, change, pattern):
         payload["retained_files"][0]["path"] = "../outside"
     elif change == "duplicate_file":
         payload["retained_files"].append(copy.deepcopy(payload["retained_files"][0]))
+    elif change == "duplicate_name":
+        payload["ops"].append(copy.deepcopy(payload["ops"][0]))
     else:
         payload["unknown"] = True
     publish()
