@@ -217,7 +217,8 @@ def _runtime_config(plan, cell):
         cache_dtype=cell.kv_cache_dtype,
         gpu_memory_utilization=plan.options.gpu_memory_utilization or 0.9,
         num_gpu_blocks_override=None,
-        enable_prefix_caching=cell.workload_kind == "decode" and runner._decode_prefix_caching_mode(cell) == "enabled",
+        enable_prefix_caching=cell.workload_kind == "decode"
+        and runner._decode_prefix_caching_mode(plan, cell) == "enabled",
     )
     resources = plan.deployment_profile(cell).resources
     config["scheduler_config"].update(

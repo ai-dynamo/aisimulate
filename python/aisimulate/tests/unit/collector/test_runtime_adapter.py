@@ -683,10 +683,13 @@ def _fake_campaign(
             "path": str(path.relative_to(tmp_path)),
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        attempt["phases"][phase] = {
-            "launch_manifest": reference(context_path),
-            "artifacts": [{**reference(path), "kind": "observation"} for path in paths],
-        }
+        artifacts = [{**reference(path), "kind": "observation"} for path in paths]
+        if launch["precision"]["kvcache_quant_mode"] != "bfloat16":
+            # The probe stages the model configuration, and the import reads the FMHA label of this KV cache from it.
+            staged = directory / "model-config.json"
+            staged.write_bytes(model_config_path.read_bytes())
+            artifacts.append({**reference(staged), "kind": "runtime-artifact"})
+        attempt["phases"][phase] = {"launch_manifest": reference(context_path), "artifacts": artifacts}
         (tmp_path / "observations.json").write_text(json.dumps(index))
         return [json.loads(path.read_text()) for path in paths]
 
@@ -939,6 +942,53 @@ def test_formal_runtime_hook_preserves_existing_execution_evidence(tmp_path, mon
     evidence = json.loads(files[0].read_text())
     assert evidence["status"] == "observed"
     assert evidence["attention_groups"][0]["backend_class"].startswith("vllm.v1.attention.backends.flashinfer.")
+
+
+def _mark_formal_collection(campaign, monkeypatch):
+    """Give the prefill results directory the collector provenance that a formal collection launch writes."""
+    import json
+
+    original_init = campaign.base.__init__
+
+    def initialized(self):
+        original_init(self)
+        (campaign.root / "prefill" / "collector-provenance.json").write_text(json.dumps({"cell_id": "synthetic"}))
+
+    monkeypatch.setattr(campaign.base, "__init__", initialized)
+
+
+def _execution_evidence(campaign):
+    import json
+
+    files = list((campaign.root / "prefill").glob("fpm-execution-worker-*.json"))
+    assert len(files) == 1
+    return json.loads(files[0].read_text())
+
+
+def test_v031_formal_hook_records_execution_evidence(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    _mark_formal_collection(campaign, monkeypatch)
+    records = campaign.run()
+    assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+    evidence = _execution_evidence(campaign)
+    assert evidence["status"] == "observed"
+    assert evidence["backend_version"] == "0.31.0"
+    # G0 holds two attention groups, one for each of its backends (v1/worker/gpu/attn_utils.py:222-249).
+    assert [group["kv_cache_group_id"] for group in evidence["attention_groups"]] == [0, 0, 1, 2, 3, 4, 5]
+    assert evidence["resolved_config"]["cache_config"]["mamba_cache_mode"] == "align"
+
+
+def test_v031_formal_hook_records_the_hub_config_commit(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    _mark_formal_collection(campaign, monkeypatch)
+    # The top-level config holds the cache commit, and its text config holds None.
+    _hub_loaded_config(campaign, monkeypatch, commit="e" * 40, text_commit=None)
+    records = campaign.run()
+    assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+    assert _execution_evidence(campaign)["resolved_config"]["model_config"]["loaded_config_commit_hash"] == "e" * 40
+    # The observation records read the commit through the same function.
+    for record in records:
+        assert record["resolved_config"]["model_config"]["loaded_config_commit_hash"] == "e" * 40
 
 
 def test_unknown_cache_spec_keeps_its_raw_runtime_fields(tmp_path, monkeypatch):

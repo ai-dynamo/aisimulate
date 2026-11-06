@@ -11,6 +11,7 @@ hardware or timing evidence.
 from __future__ import annotations
 
 import collections
+import hashlib
 import importlib.util
 import json
 import sys
@@ -19,12 +20,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from collector import glm53flash_attention_tokens as seeded
+
+from aisimulate_core.sdk import utils as sdk_utils
 
 pytestmark = pytest.mark.unit
 
 PRODUCER = (
     Path(__file__).resolve().parents[3] / "collector/fpm_forward/runtime/glm53flash/glm53flash_prefix_scheduler.py"
 )
+MANIFEST = PRODUCER.with_name("runtime-source-sha256.json")
+FP8_MODEL, NVFP4_MODEL = "zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"
+FP8_PIN, NVFP4_PIN = "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a", "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"
+# A revision that is not a pin, whose files equal the pinned FP8 files.
+LOADED_REVISION = "04c4e9e95c5da8862dced7e5056455116f83a7e0"
 
 
 @dataclass
@@ -78,6 +87,17 @@ class FakeBase:
 
     def _bench_stop_at_timeout_boundary(self, point_type):
         return False
+
+    def _bench_build_grid(self):
+        # Dynamo 395f0240 materializes the manifest and then plans native warm-up stages (instrumented_scheduler:2718).
+        if self._bench_grid_built:
+            return
+        self._bench_grid_built = True
+        self._bench_grid = collections.deque(self._bench_explicit_points)
+        self._kvwarm_prepare(self._bench_config.mode)
+
+    def _kvwarm_prepare(self, mode):
+        self.warmup_planned.append(mode)
 
     def _bench_pop_next(self, point_type):
         if self._bench_grid and self._bench_grid[0].point_type == point_type:
@@ -222,6 +242,87 @@ class Engine:
         return True
 
 
+class BudgetEngine(Engine):
+    """Schedules like vLLM v0.31.0 with a token budget per step, on hash blocks of ``unit`` tokens.
+
+    Running requests go first, then waiting requests in order (scheduler.py:630, :1073). A prefill chunk that ends
+    before the prompt end is cut to a block boundary when the block fits the budget. Mamba align mode also stops a chunk
+    at the last block boundary of the prompt (scheduler.py:444, :526). A chunk that the cut empties waits:
+    a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:473-480, :724-742,
+    :1134-1135). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2089-2091, :3719-3722),
+    so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill request
+    (output.py:189-191, instrumented_scheduler.py:2078-2085 at ai-dynamo/dynamo@395f0240).
+    """
+
+    def __init__(self, scheduler, *, budget, unit):
+        super().__init__(scheduler, unit=unit)
+        self.budget = budget
+
+    def chunk(self, request, tokens):
+        end = request.computed + tokens
+        if end < len(request.prompt) and self.unit <= self.budget:
+            end = end // self.unit * self.unit
+        last = len(request.prompt) - len(request.prompt) % self.unit
+        if request.computed < last < end:
+            end = last
+        return max(end - request.computed, 0)
+
+    def step(self):
+        s = self.s
+        active = [r for r in s.requests.values() if r.outputs < r.max_tokens]
+        if not active:
+            return False
+        budget, stepped, new_reqs = self.budget, [], []
+        cached = types.SimpleNamespace(req_ids=[], num_computed_tokens=[])
+        for r in [r for r in active if r not in s.waiting]:
+            tokens = min(1, budget) if r.outputs else self.chunk(r, min(len(r.prompt) - r.computed, budget))
+            if tokens:
+                cached.req_ids.append(r.request_id)
+                cached.num_computed_tokens.append(r.computed)
+                stepped.append((r, tokens))
+                budget -= tokens
+        for r in [r for r in s.waiting if r in active]:
+            r.computed = self.hit(r)
+            tokens = self.chunk(r, min(len(r.prompt) - r.computed, budget))
+            if not tokens:
+                break
+            s.waiting.remove(r)
+            new_reqs.append(types.SimpleNamespace(req_id=r.request_id, num_computed_tokens=r.computed))
+            stepped.append((r, tokens))
+            budget -= tokens
+        metrics, scheduled = Metrics(), {}
+        for r, tokens in stepped:
+            scheduled[r.request_id] = tokens
+            if r.outputs:
+                metrics.num_decode_requests += 1
+                metrics.sum_decode_kv_tokens += r.computed
+            else:
+                metrics.num_prefill_requests += 1
+                metrics.sum_prefill_tokens += tokens
+                metrics.sum_prefill_kv_tokens += r.computed
+        for r, tokens in stepped:
+            r.computed += tokens
+            if r.outputs:
+                r.outputs += 1
+            elif r.computed == len(r.prompt):
+                r.outputs = 1
+                for length in range(self.unit, len(r.prompt) + 1, self.unit):
+                    self.cache[r.salt].add(tuple(r.prompt[:length]))
+        total = sum(scheduled.values())
+        out = types.SimpleNamespace(
+            total_num_scheduled_tokens=total,
+            metrics=metrics,
+            scheduled_new_reqs=new_reqs,
+            scheduled_cached_reqs=cached,
+            num_scheduled_tokens=scheduled,
+        )
+        s._update_from_output(out, types.SimpleNamespace(cudagraph_stats=Stats(total, total, 0, "FULL")))
+        for r, _ in stepped:
+            if r.outputs >= r.max_tokens:
+                s.requests.pop(r.request_id, None)
+        return True
+
+
 def make_scheduler(module, tmp_path, points):
     s = module.Glm53FlashPrefixSeedScheduler.__new__(module.Glm53FlashPrefixSeedScheduler)
     s.requests, s.waiting, s.saved, s.clock = {}, [], [], 0
@@ -231,6 +332,7 @@ def make_scheduler(module, tmp_path, points):
     s._bench_phase = "prefill"
     s._bench_block_hasher = None
     s._bench_config = types.SimpleNamespace(output_path=str(tmp_path / "benchmark.json"), mode=points[0].point_type)
+    s._bench_grid_built, s.warmup_planned = False, []
     s._glm_point = s._glm_stage = s._glm_seed = s._glm_rows = None
     s._glm_repetitions, s._glm_rejected, s._glm_point_records = [], [], {}
     s._glm_evidence_count = 0
@@ -239,6 +341,11 @@ def make_scheduler(module, tmp_path, points):
     s._glm_request_set = "test"
     s._glm_tokens = list(range(100, 197))
     s._glm_serving = {"hash_block_size": 4}
+    # vLLM's scheduler configuration with the token budget of the onboarding request, not an unlimited one.
+    s.scheduler_config = types.SimpleNamespace(max_num_batched_tokens=8192)
+    # With prefix caching, vLLM runs GLM-5.3-Flash in Mamba align mode. The block is the hash block of this fake.
+    s.need_mamba_block_aligned_split = True
+    s.cache_config = types.SimpleNamespace(block_size=4)
     s._glm_stage_deadline = 0.0
     s.wall = lambda output: 0.001 * (1 + output.metrics.num_prefill_requests) + 1e-6 * s.clock
     return s
@@ -398,4 +505,429 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
     assert output["input_provenance"]["seed"] == 53
     assert output["input_provenance"]["repetition_evidence_manifest"]["records"] == s._glm_evidence_count
     assert output["producer"]["vllm_package_version"] == "0.31.0"
+    # The derived code keeps its revision. The scheduler file that ran is named separately.
+    assert output["producer"]["instrumentation_revision"] == "54960177085413259859c88bd34ed0734d4c2ea9"
+    assert output["producer"]["runtime_scheduler_revision"] == "395f02405c1dd1835ab73a39f7a5984ae5fd4552"
+    assert output["producer"]["runtime_distribution"] == "ai-dynamo 1.6.0.dev20261010"
     assert output["results"][0]["kv_seed_regime"] == "not_applicable"
+
+
+def test_dynamo_runtime_pins_match_the_ai_dynamo_1_6_0_dev20261010_build():
+    pins = json.loads(MANIFEST.read_text())
+    # The ai-dynamo 1.6.0.dev20261010 build carries these four files of ai-dynamo/dynamo@395f0240.
+    expected = {
+        "dynamo/vllm/instrumented_scheduler.py": "06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e",
+        "dynamo/vllm/benchmark_points.py": "bdc6f2f0bb222498e8542859ed2b4f950d1949868f02f50aaee8199257172f91",
+        "dynamo/vllm/gc_policy.py": "4221e5a20718525559ad4c9e9bee34928ee22dcf2cfdf8036936be2a360153a4",
+        "dynamo/common/forward_pass_metrics.py": "523dfc4e7ccbc5a37dbcf03b331a41b628227ad8a5d9c64fda8abc96dd31b188",
+    }
+    assert {name: pins[name] for name in expected} == expected
+
+
+def test_native_warmup_planning_never_runs_under_the_producer(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    points = [Point("prefill", 1, 1, 32, 0, rows=[[32, 0]])]
+    s = make_scheduler(module, tmp_path, points)
+    s._bench_explicit_points = points
+    s._bench_build_grid()
+    # The native grid build ran. The producer seeds every point through its own stages, so the native warm-up
+    # planning that the grid build calls must not run.
+    assert s._bench_grid_built
+    assert s.warmup_planned == []
+
+
+def test_explicit_decode_points_stay_within_the_measured_context(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+
+    def build(total_kv_read_tokens):
+        points = [Point("decode", 1, 1, 0, total_kv_read_tokens)]
+        s = make_scheduler(module, tmp_path, points)
+        # A run that serves a 1,048,576-token context and measures up to 131,072 tokens. The native decode check
+        # bounds a context by the runtime context only.
+        s._glm_context_policy = module.glm_context_policy(1048576, 131072)
+        s._bench_explicit_points = points
+        s._bench_build_grid()
+        return s
+
+    assert [point.total_kv_read_tokens for point in build(131072)._bench_grid] == [131072]
+    # The artifact states the measured context as kvwarm.max_context, so a deeper point is refused.
+    with pytest.raises(ValueError) as refused:
+        build(262144)
+    assert str(refused.value) == "GLM-5.3-Flash decode context 262144 exceeds the measured context limit 131072"
+
+
+def test_explicit_decode_points_stay_within_the_producer_batch_limit(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+
+    def build(batch_size):
+        points = [Point("decode", 1, batch_size, 0, batch_size * 4096)]
+        s = make_scheduler(module, tmp_path, points)
+        s._glm_context_policy = module.glm_context_policy(1048576, 131072)
+        s._bench_explicit_points = points
+        s._bench_build_grid()
+        return s
+
+    assert [point.batch_size for point in build(32)._bench_grid] == [32]
+    # The artifact states the producer's batch limit as kvwarm.max_batch, and the native decode check allows a batch up
+    # to the running-request limit, so the producer refuses a larger batch.
+    with pytest.raises(ValueError) as refused:
+        build(33)
+    assert str(refused.value) == "GLM-5.3-Flash decode batch 33 exceeds the producer limit 32"
+
+
+def test_explicit_decode_points_prefill_their_suffixes_in_one_step(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+
+    def build(batch_size, budget=None):
+        points = [Point("decode", 1, batch_size, 0, batch_size * 4096)]
+        s = make_scheduler(module, tmp_path, points)
+        # The native hash block of GLM-5.3-Flash at TP4. Each 4,095-token prompt has a seed of 2,176 tokens, so each
+        # request prefills 1,919 tokens before its first decode step.
+        s._glm_serving = {"hash_block_size": 2176}
+        if budget is not None:
+            s.scheduler_config.max_num_batched_tokens = budget
+        s._glm_context_policy = module.glm_context_policy(1048576, 131072)
+        s._bench_explicit_points = points
+        s._bench_build_grid()
+        return s
+
+    accepted = build(4)
+    assert accepted.scheduler_config.max_num_batched_tokens == 8192
+    assert [point.batch_size for point in accepted._bench_grid] == [4]
+    # vLLM would prefill the suffixes of eight requests over two steps, so no repetition would start with the decode
+    # step of all eight requests, and the producer refuses the point before it seeds anything.
+    with pytest.raises(ValueError) as refused:
+        build(8)
+    assert str(refused.value) == (
+        "GLM-5.3-Flash decode point of 8 requests at context 4096 needs 15352 suffix tokens in one step, "
+        "above the token budget 8192"
+    )
+    # The budget is the one that vLLM's scheduler configuration holds.
+    assert [point.batch_size for point in build(8, budget=16384)._bench_grid] == [8]
+    with pytest.raises(ValueError) as refused:
+        build(2, budget=3836)
+    assert str(refused.value) == (
+        "GLM-5.3-Flash decode point of 2 requests at context 4096 needs 3838 suffix tokens in one step, "
+        "above the token budget 3836"
+    )
+    # One request may prefill its suffix over several steps, because no other request can decode before it.
+    assert [point.batch_size for point in build(1, budget=1024)._bench_grid] == [1]
+
+
+def chunked_decode(module, tmp_path, batch_size, budget):
+    """A decode point at context 250 on 64-token hash blocks, scheduled with a token budget.
+
+    Each request has a 249-token prompt and a 192-token seed, so it prefills a suffix of 57 tokens before it decodes.
+    """
+    points = [Point("decode", 1, batch_size, 0, batch_size * 250)]
+    s = make_scheduler(module, tmp_path, points)
+    s._glm_serving = {"hash_block_size": 64}
+    s.scheduler_config.max_num_batched_tokens = budget
+    return s, BudgetEngine(s, budget=budget, unit=64)
+
+
+def test_one_request_records_only_its_decode_steps_after_a_chunked_suffix(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+    # The 16-token budget is below the 64-token block, so vLLM prefills the 57-token suffix in four chunks.
+    s, engine = chunked_decode(module, tmp_path, 1, 16)
+    run(s, engine, "decode")
+
+    ((point, fpms),) = s.saved
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    assert not record["rejected_repetitions"] and len(record["repetitions"]) == 15
+    for repetition in record["repetitions"]:
+        assert repetition["prefill_chunks"] == [[[192, 16]], [[208, 16]], [[224, 16]], [[240, 9]]]
+        # The producer records no step with a prefill request, so the first recorded step is the first decode step,
+        # at the full prompt, and the second one is the measured step.
+        recorded = [
+            (step["num_prefill_requests"], step["num_decode_requests"], step["sum_decode_kv_tokens"])
+            for step in (fpm["scheduled_requests"] for fpm in repetition["fpms"])
+        ]
+        assert recorded == [(0, 1, 249), (0, 1, 250)]
+    assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 250
+
+
+def test_two_requests_whose_suffixes_exceed_the_budget_are_never_in_lockstep(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+    # Two suffixes of 57 tokens need 114 tokens. A budget of 116 prefills both in one step, so they decode together.
+    s, engine = chunked_decode(module, tmp_path, 2, 116)
+    run(s, engine, "decode")
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    assert not record["rejected_repetitions"]
+    for repetition in record["repetitions"]:
+        assert repetition["prefill_chunks"] == [[[192, 57], [192, 57]]]
+        assert repetition["fpms"][0]["scheduled_requests"]["sum_decode_kv_tokens"] == 498
+
+    # A budget of 112 admits the second suffix one step later. The first request then decodes while the second one
+    # prefills, so the first recorded step holds the two requests at contexts 250 and 249, and every repetition is
+    # rejected: the cached prefix cannot grow beyond the seed.
+    (tmp_path / "split").mkdir()
+    s, engine = chunked_decode(module, tmp_path / "split", 2, 112)
+    with pytest.raises(RuntimeError, match="too many rejected repetitions"):
+        run(s, engine, "decode")
+    assert not s.saved
+    first_steps = [record["fpms"][0]["scheduled_requests"] for record in s._glm_rejected]
+    assert [(step["num_decode_requests"], step["sum_decode_kv_tokens"]) for step in first_steps] == [(2, 499)] * 11
+
+
+def align_prefill(module, tmp_path, new):
+    """A prefill point of one request with ``new`` tokens after one block of prefix, on the 2,176-token blocks of
+    GLM-5.3-Flash at TP 4, scheduled like vLLM in Mamba align mode with an 8,192-token budget."""
+    points = [Point("prefill", 1, 1, new, 2176, rows=[[new, 2176]])]
+    s = make_scheduler(module, tmp_path, points)
+    s._glm_serving = {"hash_block_size": 2176}
+    s.cache_config.block_size = 2176
+    s._bench_explicit_points = points
+    return s, BudgetEngine(s, budget=8192, unit=2176)
+
+
+def test_explicit_prefill_points_that_vllm_splits_are_refused_at_grid_build(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    # vLLM stops the chunk of 4,096 new tokens after one block at 4,352, the last block boundary of its prompt. Every
+    # repetition then records two prefill steps, and the producer rejects it.
+    s, engine = align_prefill(module, tmp_path, 4096)
+    with pytest.raises(RuntimeError, match="too many rejected repetitions"):
+        run(s, engine, "prefill")
+    assert not s.saved
+    assert [(record["rejection_reason"], record["prefill_chunks"]) for record in s._glm_rejected] == [
+        ("recorded 2 native FPMs, expected 1", [[[2176, 2176]], [[4352, 1920]]])
+    ] * 11
+    # The grid build refuses the point at engine start, before it seeds anything.
+    (tmp_path / "refused").mkdir()
+    s, _ = align_prefill(module, tmp_path / "refused", 4096)
+    with pytest.raises(ValueError) as refused:
+        s._bench_build_grid()
+    assert str(refused.value) == (
+        "benchmark_id=1: vLLM's Mamba align mode stops the prefill of 4096 new tokens after a prefix of 2176 at 4352, "
+        "a boundary of its 2176-token blocks, so the point runs in more than one step and the producer measures one"
+    )
+    # Two whole blocks after a whole-block prefix end at the last block boundary, so they run in one step.
+    (tmp_path / "blocks").mkdir()
+    s, engine = align_prefill(module, tmp_path / "blocks", 4352)
+    s._bench_build_grid()
+    run(s, engine, "prefill")
+    assert [point.benchmark_id for point, _ in s.saved] == [1]
+    record = json.loads((tmp_path / "blocks" / "benchmark.repetitions.jsonl").read_text())
+    assert not record["rejected_repetitions"]
+    assert all(repetition["prefill_chunks"] == [[[2176, 4352]]] for repetition in record["repetitions"])
+
+
+def hub_stand_in(monkeypatch, cached):
+    """Install a ``huggingface_hub`` that answers every cache lookup with ``cached``. Returns the lookups."""
+    lookups = []
+
+    def try_to_load_from_cache(repo_id, filename, *, revision=None):
+        lookups.append((repo_id, filename, revision))
+        return cached
+
+    hub = types.ModuleType("huggingface_hub")
+    hub.try_to_load_from_cache = try_to_load_from_cache
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    return lookups
+
+
+def test_checkpoint_dir_resolves_folders_and_hub_ids(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    # A folder launch is its own checkpoint folder and needs no cache lookup.
+    lookups = hub_stand_in(monkeypatch, None)
+    assert module.glm_checkpoint_dir(str(tmp_path), LOADED_REVISION) == tmp_path
+    assert lookups == []
+    # A Hub ID launch resolves to the snapshot folder of the loaded revision in the local Hugging Face cache.
+    snapshot = tmp_path / "snapshots" / "04c4e9e9"
+    lookups = hub_stand_in(monkeypatch, str(snapshot / "config.json"))
+    assert module.glm_checkpoint_dir(FP8_MODEL, LOADED_REVISION) == snapshot
+    assert lookups == [(FP8_MODEL, "config.json", LOADED_REVISION)]
+
+
+@pytest.mark.parametrize("cached", [None, object()], ids=["unknown-file", "known-absent-sentinel"])
+def test_checkpoint_dir_refuses_hub_ids_without_cached_files(monkeypatch, cached):
+    module = load_producer(monkeypatch)
+    hub_stand_in(monkeypatch, cached)
+    with pytest.raises(ValueError, match="absent from the local Hugging Face cache"):
+        module.glm_checkpoint_dir(FP8_MODEL, LOADED_REVISION)
+
+
+@pytest.mark.parametrize("revision", ["main", "04c4e9e9", ""], ids=["branch", "abbreviated", "unset"])
+def test_checkpoint_dir_requires_the_40_hex_loaded_revision(monkeypatch, tmp_path, revision):
+    module = load_producer(monkeypatch)
+    hub_stand_in(monkeypatch, str(tmp_path / "config.json"))
+    for model in (str(tmp_path), FP8_MODEL):
+        with pytest.raises(ValueError, match="DYN_FPM_TOKENIZER_REVISION must be the 40-hex revision"):
+            module.glm_checkpoint_dir(model, revision)
+
+
+OTHER_CONFIG = {"architectures": ["Glm5NextForConditionalGeneration"], "hidden_size": 1}
+
+
+def patch_pinned_configs(monkeypatch):
+    """Give the two pinned models different configurations. Returns them as ``(fp8, nvfp4)``."""
+    fp8 = {"architectures": ["Glm5NextForConditionalGeneration"]}
+    nvfp4 = {"architectures": ["Glm5NextForConditionalGeneration"], "quantization_config": {"quant_algo": "NVFP4"}}
+    configs = {FP8_MODEL: {"raw_config": fp8}, NVFP4_MODEL: {"raw_config": nvfp4}}
+    monkeypatch.setattr(sdk_utils, "get_model_config_from_model_path", configs.__getitem__)
+    return fp8, nvfp4
+
+
+def test_pinned_model_resolution_accepts_equal_config_revisions(monkeypatch):
+    module = load_producer(monkeypatch)
+    fp8, nvfp4 = patch_pinned_configs(monkeypatch)
+    # A revision that is no pin is accepted when its configuration equals a pinned model's configuration.
+    assert module.glm_pinned_model(dict(fp8), LOADED_REVISION) == (FP8_MODEL, FP8_PIN)
+    assert module.glm_pinned_model(dict(nvfp4), LOADED_REVISION) == (NVFP4_MODEL, NVFP4_PIN)
+    with pytest.raises(ValueError, match="loaded GLM-5.3-Flash checkpoint matches no pinned model configuration"):
+        module.glm_pinned_model(dict(OTHER_CONFIG), LOADED_REVISION)
+
+
+def test_a_pinned_revision_needs_the_configuration_of_its_model(monkeypatch):
+    module = load_producer(monkeypatch)
+    fp8, nvfp4 = patch_pinned_configs(monkeypatch)
+    assert module.glm_pinned_model(dict(fp8), FP8_PIN) == (FP8_MODEL, FP8_PIN)
+    assert module.glm_pinned_model(dict(nvfp4), NVFP4_PIN) == (NVFP4_MODEL, NVFP4_PIN)
+    # A revision label that contradicts the loaded files must not select another model. This holds for the
+    # configuration of the other pinned model and for a configuration that no pin has.
+    for pin, model, files in (
+        (FP8_PIN, FP8_MODEL, nvfp4),
+        (NVFP4_PIN, NVFP4_MODEL, fp8),
+        (FP8_PIN, FP8_MODEL, OTHER_CONFIG),
+    ):
+        refusal = f"GLM-5.3-Flash checkpoint at pinned revision {pin} does not match the configuration of {model}"
+        with pytest.raises(ValueError) as refused:
+            module.glm_pinned_model(dict(files), pin)
+        assert str(refused.value) == refusal
+
+
+def test_runtime_context_rule(monkeypatch):
+    module = load_producer(monkeypatch)
+    # The runtime context is the configured one. The measured limit stays what the point list may reach.
+    assert module.glm_context_policy(1048576, 131072) == {
+        "measured_context_limit": 131072,
+        "runtime_context_length": 1048576,
+        "native_admission_headroom": 7,
+    }
+    assert module.glm_context_policy(131079, 131072)["measured_context_limit"] == 131072
+    with pytest.raises(ValueError, match="at least the measured context plus seven internal positions"):
+        module.glm_context_policy(131078, 131072)
+
+
+def init_scheduler(module, monkeypatch, *, model, checkpoint):
+    """A producer scheduler whose ``_bench_init`` runs end to end on fakes of the native base and the vLLM config.
+
+    ``checkpoint`` is the folder that holds the loaded checkpoint's ``tokenizer.json``. Its configuration is the
+    pinned FP8 checkpoint's. vLLM loaded the revision that ``DYN_FPM_TOKENIZER_REVISION`` names, as in the launch that
+    the collector renders. Returns the scheduler, the vLLM config and the configuration and tokenizer loads that the
+    producer made.
+    """
+    monkeypatch.setattr(FakeBase, "_bench_init", lambda self, config: setattr(self, "_bench_active", True))
+    for name in (
+        "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT",
+        "DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT",
+        "DYN_FPM_GLM53FLASH_DECODE_CONTEXTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DYN_FPM_TOKENIZER_REVISION", LOADED_REVISION)
+    tokenizer_json = checkpoint / "tokenizer.json"
+    tokenizer_json.write_bytes(b'{"stand-in": "tokenizer.json"}')
+    monkeypatch.setattr(seeded, "TOKENIZER_JSON_SHA256", hashlib.sha256(tokenizer_json.read_bytes()).hexdigest())
+    real_config = sdk_utils.get_model_config_from_model_path
+    loads = {"config": [], "tokenizer": []}
+
+    def load_config(path):
+        loads["config"].append(path)
+        return real_config(FP8_MODEL if path == str(checkpoint) else path)
+
+    monkeypatch.setattr(sdk_utils, "get_model_config_from_model_path", load_config)
+
+    def get_tokenizer(name, **kwargs):
+        loads["tokenizer"].append((name, kwargs["revision"]))
+        return types.SimpleNamespace(vocab_size=seeded.VOCAB_HIGH)
+
+    monkeypatch.setattr(module, "get_tokenizer", get_tokenizer)
+    scheduler = module.Glm53FlashPrefixSeedScheduler.__new__(module.Glm53FlashPrefixSeedScheduler)
+    scheduler._bench_hash_block_size = scheduler.block_size = 2176
+    scheduler.connector = scheduler.ec_connector = None
+    scheduler._bench_explicit_points = object()
+    scheduler._bench_config = types.SimpleNamespace(warmup_iterations=0, collect_imbalanced=True)
+    config = types.SimpleNamespace(
+        model_config=types.SimpleNamespace(
+            model=model,
+            revision=LOADED_REVISION,
+            tokenizer=model,
+            tokenizer_mode="auto",
+            trust_remote_code=False,
+            max_model_len=1048576,
+            enforce_eager=False,
+            architecture="Glm5NextForConditionalGeneration",
+            hf_config=types.SimpleNamespace(model_type="glm5_next"),
+        ),
+        observability_config=types.SimpleNamespace(cudagraph_metrics=True),
+        cache_config=types.SimpleNamespace(
+            enable_prefix_caching=True, mamba_cache_mode="align", prefix_match_unit=None, cache_dtype="fp8_e4m3"
+        ),
+        scheduler_config=types.SimpleNamespace(async_scheduling=False, max_num_batched_tokens=8192),
+        parallel_config=_parallel(4),
+        speculative_config=None,
+    )
+    return scheduler, config, loads
+
+
+@pytest.mark.parametrize("launch", ["folder", "hub-id"])
+def test_bench_init_reads_the_resolved_checkpoint(monkeypatch, tmp_path, launch):
+    module = load_producer(monkeypatch)
+    checkpoint = tmp_path / "snapshots" / "04c4e9e9"
+    checkpoint.mkdir(parents=True)
+    model = str(checkpoint)
+    if launch == "hub-id":
+        model = FP8_MODEL
+        hub_stand_in(monkeypatch, str(checkpoint / "config.json"))
+    scheduler, config, loads = init_scheduler(module, monkeypatch, model=model, checkpoint=checkpoint)
+    scheduler._bench_init(config)
+    recorded = scheduler._glm_input
+    assert recorded["checkpoint_dir"] == str(checkpoint)
+    assert recorded["tokenizer_json_sha256"] == seeded.TOKENIZER_JSON_SHA256
+    # The artifact records the loaded revision and the pinned checkpoint that its configuration matched.
+    assert recorded["tokenizer_revision"] == LOADED_REVISION
+    assert (recorded["pinned_model"], recorded["pinned_revision"]) == (
+        "zai-org/GLM-5.3-Flash",
+        "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+    )
+    # The loaded configuration and the tokenizer file come from the resolved folder. The tokenizer itself still
+    # loads from the launch value at the loaded revision.
+    assert str(checkpoint) in loads["config"]
+    assert loads["tokenizer"] == [(model, LOADED_REVISION)]
+    assert scheduler._glm_context_policy == {
+        "measured_context_limit": 131072,
+        "runtime_context_length": 1048576,
+        "native_admission_headroom": 7,
+    }
+
+
+def test_bench_init_refuses_an_unset_tokenizer_revision(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    scheduler, config, _ = init_scheduler(module, monkeypatch, model=str(tmp_path), checkpoint=tmp_path)
+    # A folder launch without a revision, so vLLM records none.
+    config.model_config.revision = None
+    monkeypatch.delenv("DYN_FPM_TOKENIZER_REVISION")
+    with pytest.raises(ValueError, match="DYN_FPM_TOKENIZER_REVISION must be the 40-hex revision"):
+        scheduler._bench_init(config)
+
+
+@pytest.mark.parametrize("loaded", ["main", FP8_PIN], ids=["hub-default-branch", "other-commit"])
+def test_bench_init_refuses_a_launch_revision_that_differs_from_the_tokenizer_revision(monkeypatch, tmp_path, loaded):
+    module = load_producer(monkeypatch)
+    lookups = hub_stand_in(monkeypatch, str(tmp_path / "config.json"))
+    scheduler, config, loads = init_scheduler(module, monkeypatch, model=FP8_MODEL, checkpoint=tmp_path)
+    # vLLM loads the weights of the revision in its model configuration. A launch by Hub ID without --revision loads
+    # the default branch: vLLM 0.31.0 stores the requested revision as a string subclass whose value is "main".
+    config.model_config.revision = loaded
+    with pytest.raises(ValueError) as refused:
+        scheduler._bench_init(config)
+    assert str(refused.value) == (
+        f"GLM-5.3-Flash launch revision {loaded!r} differs from DYN_FPM_TOKENIZER_REVISION {LOADED_REVISION!r}"
+    )
+    # The producer refuses before it reads the configuration or the tokenizer of a snapshot.
+    assert (lookups, loads) == ([], {"config": [], "tokenizer": []})

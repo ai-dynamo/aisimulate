@@ -259,12 +259,22 @@ def aggregate_cell(
     def _kv_seed_regime(point: dict[str, Any], phase: str) -> str:
         if phase == "prefill" and (not cell.execution_identity[0] or int(point["total_kv_read_tokens"]) == 0):
             return "n/a"
+        reasons = point.get("sample_reasons") or []
+        # A cached prefill states in its point stamps how the engine seeded its prefix, and the warm-up block, which
+        # describes the decode protocol, cannot classify it. A prefix that real forward passes computed is real KV,
+        # the label that the FPM table loader requires for the cached rows of a cell with an execution identity. The
+        # DeepSeek-V4.1 adapter stamps real KV on every point, so a point with that stamp keeps the warm-up
+        # classification below.
+        if phase == "prefill" and "kvwarm_real_kv" not in reasons:
+            if "prefill_real_seed" in reasons:
+                return "real_kv"
+            if "prefill_fake_prefix" in reasons:
+                return "fake_prefix"
         if kvwarm_meta is None:
             return "legacy"
         skip_reason = kvwarm_meta.get("skip_reason")
         if skip_reason in approved_skip_reasons:
             return f"skip:{skip_reason}"
-        reasons = point.get("sample_reasons") or []
         if "kvwarm_real_kv" in reasons:
             if skip_reason:
                 raise ValueError(f"native point reports real KV under warm-up skip_reason={skip_reason!r}")
@@ -284,20 +294,20 @@ def aggregate_cell(
         batch = int(point["batch_size"])
         total_prefill = int(point["total_prefill_tokens"])
         total_kv = int(point["total_kv_read_tokens"])
-        if (
-            cell.execution_identity[0]
-            and (phase == "decode" or total_kv > 0)
-            and _kv_seed_regime(point, phase) != "real_kv"
-        ):
-            raise ValueError("DeepSeek-V4.1 cached prefill/decode publication requires real_kv measurements")
+        regime = _kv_seed_regime(point, phase)
+        if cell.execution_identity[0] and (phase == "decode" or total_kv > 0) and regime != "real_kv":
+            raise ValueError(
+                f"execution-identity cells require real KV measurements for cached prefill and decode, got {regime}"
+            )
         if (
             capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
             and phase == "prefill"
             and total_kv > 0
             and measurement.kv_seed_regime != "real_prefix"
         ):
-            # No FPM template describes this cache layout. The formal prefill regime stays n/a, so only the native
-            # row shows a fake prefix. Decode rows keep the existing classification, which labels them.
+            # No FPM template describes this cache layout. Without an execution identity, the formal prefill regime
+            # stays n/a, so only the native row shows a fake prefix. With one, a real-seeded prefix is labeled real_kv,
+            # so this rule reads the native regime. Decode rows keep the existing classification, which labels them.
             raise ValueError(
                 "cached prefill for this cache layout requires real_prefix seeding, "
                 f"got {measurement.kv_seed_regime or 'unreported'}"
@@ -331,7 +341,7 @@ def aggregate_cell(
                 "total_prefill_tokens": total_prefill,
                 "total_kv_read_tokens": total_kv,
                 "partition_policy": "balanced_v1",
-                "kv_seed_regime": _kv_seed_regime(point, phase),
+                "kv_seed_regime": regime,
                 "latency_ms": max(latency for _rank, latency in measurement.rank_wall_times) * 1000.0,
                 "global_warmup_iterations": plan.options.warmup_iterations,
                 "warmup_repeats": 0,

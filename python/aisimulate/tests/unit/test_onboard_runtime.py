@@ -44,6 +44,7 @@ def _campaign(
     block_tokens=(16, 16),
     layout="attention",
     decode_prefix_caching=True,
+    warmup_iterations=None,
 ):
     index, launches = observation_fixture(
         tmp_path / "probe", dense=True, tp=tp, layout=layout, decode_prefix_caching=decode_prefix_caching
@@ -77,6 +78,8 @@ def _campaign(
             layer_types=["deepseek_sparse_attention" if index % 4 == 3 else "linear_attention" for index in range(45)],
             linear_attn_config={"head_dim": 128},
             num_experts=0,
+            # The probe runs an fp8 KV cache, whose FMHA label is the checkpoint-native fp8 of this NVFP4 checkpoint.
+            quantization_config={"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "FP8"},
         )
     _write(model_path, config)
     checkpoint_model = tmp_path / "model-checkpoint"
@@ -87,6 +90,8 @@ def _campaign(
         launch["identity"]["model_revision"] = "4" * 40
     launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
     launch["collection"]["max_model_len"] = context_length
+    if warmup_iterations is not None:
+        launch["collection"]["warmup_iterations"] = warmup_iterations
     if worker_type is not None:
         launch["worker_type"] = worker_type
         launch["collection"]["cudagraph_mode"] = {
@@ -104,6 +109,11 @@ def _campaign(
     for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
         for ref in [phase["launch_manifest"], *phase["artifacts"]]:
             path = index.parent / ref["path"]
+            if path.name == "model-config.json":
+                # The probe stages the model configuration that the launch names.
+                path.write_bytes(model_path.read_bytes())
+                ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                continue
             value = json.loads(path.read_text())
             value["launch"] = launch
             if ref.get("kind") == "observation":
@@ -195,6 +205,7 @@ def _campaign(
                         "precision": precision,
                         "collection_deployment": launch["deployment"],
                         **({"resource_overrides": resource_overrides} if resource_overrides else {}),
+                        **({"warmup_iterations": warmup_iterations} if warmup_iterations is not None else {}),
                     },
                 }
                 for name in ("tp2", "incomplete")
@@ -748,6 +759,7 @@ def _imported(
     block_tokens=(16, 16),
     layout="attention",
     decode_prefix_caching=True,
+    warmup_iterations=None,
 ):
     checkpoint, index, _ = _campaign(
         tmp_path,
@@ -761,12 +773,51 @@ def _imported(
         block_tokens=block_tokens,
         layout=layout,
         decode_prefix_caching=decode_prefix_caching,
+        warmup_iterations=warmup_iterations,
     )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
     request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     return checkpoint, index, request, result["configurations"]["tp2"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "launched", "flag"),
+    [(0, 0, ["--fpm-warmup-iterations", "0"]), (None, 5, None)],
+    ids=["set", "default"],
+)
+def test_warmup_iterations_flow_from_the_checkpoint_to_the_launch_and_the_collector_command(
+    tmp_path, capsys, configured, launched, flag
+):
+    from aisimulate.support.fpm import fpm_cli_args
+    from aisimulate.support.runtime import checkpoint_launch
+
+    # Import succeeds only when the launch from the checkpoint inputs equals the launch that the probe saved.
+    checkpoint, _, request, _ = _imported(tmp_path, capsys, warmup_iterations=configured)
+    _, launch, _ = checkpoint_launch(_load(checkpoint), "tp2", checkpoint)
+    assert launch["collection"]["warmup_iterations"] == launched
+    assert request.collection.warmup_iterations == configured
+    command = fpm_cli_args(request, output_dir=tmp_path / "c", plan_only=True)
+    if flag is None:
+        assert "--fpm-warmup-iterations" not in command
+    else:
+        position = command.index("--fpm-warmup-iterations")
+        assert command[position : position + 2] == flag
+
+
+def test_request_without_warmup_iterations_keeps_its_identity(tmp_path):
+    from aisimulate.support.plan import request_id
+
+    checkpoint, _, _ = _campaign(tmp_path, model="example/model")
+    payload = _load(checkpoint).configurations["tp2"].draft_request
+    request = SupportRequest.model_validate(payload)
+    for dumped in (request.model_dump(mode="json"), request.model_dump(mode="json", exclude_none=True)):
+        assert "warmup_iterations" not in dumped["collection"]
+    # Computed before the field existed, so a saved request without it keeps the identity of its collection.
+    assert request_id(request) == "onboarding-5c6d7d093c812afbd24896bf52f326ae41372178b176eff2c0dd2d9d6ab8676a"
+    warmed = SupportRequest.model_validate({**payload, "collection": {**payload["collection"], "warmup_iterations": 0}})
+    assert request_id(warmed) != request_id(request)
 
 
 # The dense probe fixture measures two full-attention groups of 128 bytes per 16-token block: 16 bytes per token.
@@ -1270,6 +1321,7 @@ def _completed_runtime_collection(
     block_tokens=(16, 16),
     layout="attention",
     decode_prefix_caching=True,
+    warmup_iterations=None,
 ):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
@@ -1293,6 +1345,7 @@ def _completed_runtime_collection(
         block_tokens=block_tokens,
         layout=layout,
         decode_prefix_caching=decode_prefix_caching,
+        warmup_iterations=warmup_iterations,
     )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
@@ -1658,6 +1711,19 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
     assert state.configurations["tp2"].acceptance is None
     state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_formal_collection_and_finalization_keep_the_request_warmup_iterations(tmp_path, capsys):
+    from aisimulate.support.finalization import finalize
+
+    # The plan takes its count from the collector command, and the plan builder compares it with the probe launch.
+    # Finalization compares the saved options with the options of the reviewed request, so the count reaches both.
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, warmup_iterations=0)
+    saved = json.loads(next((root / "fpm-artifacts").glob("*/collection-plan.json")).read_text())
+    assert saved["options"]["global_warmup_iterations"] == 0
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    assert SupportRequest.from_yaml(target / "request.yaml").collection.warmup_iterations == 0
 
 
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])

@@ -96,8 +96,8 @@ def main() -> None:
     if real_prefill_requested and not (dsv41_adapter or glm53flash_adapter):
         # Native cached-prefill seeding is separate from decode warm-up:
         # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L3326
-        # The source-checked V4.1 and GLM-5.3-Flash adapters own their real-KV
-        # prefill paths; GLM's pinned Dynamo predates _bench_realseed_on.
+        # The source-checked V4.1 and GLM-5.3-Flash adapters seed their own cached
+        # prefill, so they do not need the native real-seed path.
         required_methods.add("_bench_realseed_on")
     missing_methods = sorted(name for name in required_methods if not hasattr(InstrumentedScheduler, name))
     audit = {

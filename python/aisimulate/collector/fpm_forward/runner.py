@@ -48,6 +48,13 @@ from aisimulate.fpm_contract import (
 )
 
 from .config import FPM_KV_WARMUP_DEFAULTS, with_kv_warmup_defaults
+from .glm53flash_points import (
+    GLM_ARCHITECTURE,
+    GLM_POINTS_ORIGIN,
+    GLM_SMOKE_MANIFEST,
+    glm_measured_context,
+    glm_smoke_subset,
+)
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
 from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
@@ -116,6 +123,11 @@ _FPM_VLLM_PREFILL_ARGS = ("--no-async-scheduling",)
 #     step (26.5 ms -> 121 ms at (batch 256, 2.1M KV) on M2.7 tp4+EP), while
 #     production steady-state decode has no such per-step hash (requests stay
 #     resident). Disabling is the serving-faithful choice here.
+#   * Exception: GLM-5.3-Flash (every strategy, single included) -- prefix
+#     caching stays ON, in its runtime probes too: the GLM producer seeds real
+#     KV through prefix caching in every strategy, and readiness and
+#     finalization compare each phase's prefix-caching evidence with the
+#     accepted probe.
 _FPM_VLLM_DECODE_FAKE_KV_ARGS = ("--no-enable-prefix-caching",)
 # Must stay in sync with the engine's _kvwarm_warm_eligible strategy set.
 # pure_tp added 2026-08-20: the "moe_tp balanced by construction" immunity
@@ -127,6 +139,8 @@ REMOTE_EXIT_MARKER = "__FPM_REMOTE_EXIT_CODE__="
 REMOTE_FILES_MARKER = "__FPM_REMOTE_FILES__="
 REMOTE_WORKDIR = "/tmp/fpm-bench"
 _MEMORY_OBSERVER_FILES = ("fpm_memory_observer.py", "fpm_memory_worker.py", "fpm_memory_scheduler.py")
+# The source-pinned runtime adapters under runtime/, by model architecture.
+_ADAPTER_DIRS = {"DeepseekV41ForCausalLM": "dsv41", GLM_ARCHITECTURE: "glm53flash"}
 
 
 def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
@@ -149,6 +163,15 @@ def _observe_runtime_execution(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
         getattr(plan, "runtime_backend_version", None) in EXECUTION_SUPPORTED_VERSIONS
         and not cell.execution_identity[0]
     )
+
+
+def _glm_collection(plan: FPMCollectionPlan) -> bool:
+    """Whether the cells of a plan run the GLM-5.3-Flash producer.
+
+    A runtime probe measures Dynamo's generic grid, so only collection cells run the producer.
+    """
+    architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    return architecture == GLM_ARCHITECTURE and getattr(plan, "probe_sampling", None) is None
 
 
 def _utc_now() -> str:
@@ -1130,24 +1153,45 @@ def _frozen_points(plan: FPMCollectionPlan) -> str | None:
     return canonical
 
 
-def _stage_points_file(plan: FPMCollectionPlan, cell_dir: Path) -> list[Path]:
+def _cell_points(plan: FPMCollectionPlan, cell: FPMCell, *, smoke: bool) -> tuple[str, str] | None:
+    """Return the canonical JSON and the SHA-256 of the point list that a cell measures, or None for the native grid."""
     canonical = _frozen_points(plan)
     if canonical is None:
+        if _glm_collection(plan):
+            raise ValueError(
+                "GLM-5.3-Flash collection requires a frozen point list; plan with the accepted runtime probe"
+            )
+        return None
+    if smoke and getattr(plan.options, "benchmark_points_origin", None) != GLM_POINTS_ORIGIN:
+        raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
+    if not smoke:
+        return canonical, plan.options.benchmark_points_sha256
+    # The smoke measures points of the generated list, so it runs under the plan hash of formal collection. Every cell
+    # of the plan stages the same subset, which holds the points of the phases that the plan collects.
+    hash_block_size = plan.deployment_profile(cell).resources.runtime_memory.hash_block_size_tokens
+    _, subset, subset_sha256 = glm_smoke_subset(json.loads(canonical), hash_block_size, plan.options.workload_kinds)
+    return subset, subset_sha256
+
+
+def _stage_points_file(plan: FPMCollectionPlan, cell_dir: Path, *, cell: FPMCell, smoke: bool = False) -> list[Path]:
+    points = _cell_points(plan, cell, smoke=smoke)
+    if points is None:
         return []
     path = cell_dir / POINTS_FILENAME
-    path.write_bytes(canonical.encode("utf-8"))
+    path.write_bytes(points[0].encode("utf-8"))
     return [path]
 
 
-def _record_points_receipts(resource, pods, plan, cell, attempt_id: str, *, phase: str) -> None:
-    if _frozen_points(plan) is None:
+def _record_points_receipts(resource, pods, plan, cell, attempt_id: str, *, phase: str, smoke: bool = False) -> None:
+    points = _cell_points(plan, cell, smoke=smoke)
+    if points is None:
         return
     payload = json.dumps(
         {
             "plan_sha256": plan.sha256,
             "cell_id": cell.cell_id,
             "attempt_id": attempt_id,
-            "sha256": plan.options.benchmark_points_sha256,
+            "sha256": points[1],
             "phase": phase,
         },
         sort_keys=True,
@@ -1176,8 +1220,9 @@ def _record_points_receipts(resource, pods, plan, cell, attempt_id: str, *, phas
         )
 
 
-def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> None:
-    if _frozen_points(plan) is None:
+def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str, *, smoke: bool = False) -> None:
+    points = _cell_points(plan, cell, smoke=smoke)
+    if points is None:
         return
     owners = sorted(raw_root.rglob(COLLECTOR_PROVENANCE_FILENAME))
     if not owners:
@@ -1186,13 +1231,37 @@ def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> No
         "plan_sha256": plan.sha256,
         "cell_id": cell.cell_id,
         "attempt_id": attempt_id,
-        "sha256": plan.options.benchmark_points_sha256,
+        "sha256": points[1],
         "phase": "after",
     }
     for owner in owners:
         path = owner.parent / POINTS_RECEIPT_FILENAME
         if json.loads(path.read_text()) != expected:
             raise ValueError(f"runtime benchmark-points receipt mismatch: {path}")
+
+
+def _adapter_python_path(architecture: str | None, resolved_env: dict[str, dict[str, Any]]) -> dict[str, str] | None:
+    """Return the PYTHONPATH entry of the runtime adapter of an architecture, or None for one without an adapter."""
+    adapter = _ADAPTER_DIRS.get(architecture)
+    if adapter is None:
+        return None
+    # Image layout belongs to this source-pinned adapter. An explicitly
+    # configured path uses the existing deployment environment interface;
+    # both preflight and generated run.sh receive the same resolved value.
+    configured = resolved_env.get("PYTHONPATH")
+    if configured is None:
+        paths_file = Path(__file__).parent / "runtime" / adapter / "runtime-paths.json"
+        python_path = json.loads(paths_file.read_text())["python_path"]
+    else:
+        python_path = configured.get("value")
+    model = "V4.1" if adapter == "dsv41" else "GLM-5.3-Flash"
+    if not isinstance(python_path, str) or not python_path:
+        raise ValueError(f"{model} PYTHONPATH must name explicit absolute runtime paths")
+    paths = python_path.split(":")
+    if any(not part or not PurePosixPath(part).is_absolute() or "\n" in part or "\r" in part for part in paths):
+        raise ValueError(f"{model} PYTHONPATH must name explicit absolute runtime paths")
+    python_path = ":".join([REMOTE_WORKDIR, *(part for part in paths if part != REMOTE_WORKDIR)])
+    return {"name": "PYTHONPATH", "value": python_path}
 
 
 def _cell_generator_overrides(
@@ -1202,10 +1271,8 @@ def _cell_generator_overrides(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
-    explicit_points = _frozen_points(plan)
+    points = _cell_points(plan, cell, smoke=smoke)
     enforce_eager = bool(getattr(plan.options, "enforce_eager", False))
-    if explicit_points is not None and smoke:
-        raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     unsupported_base = set(base) - {"K8sConfig", "generator_dynamo_version"}
     if unsupported_base:
         raise ValueError(f"FPM runner accepts deployment-only Generator inputs, got {sorted(unsupported_base)}")
@@ -1237,8 +1304,8 @@ def _cell_generator_overrides(
     ]
     if enforce_eager:
         scheduler_args.append("--enforce-eager")
-    if explicit_points is not None:
-        payload = json.loads(explicit_points)
+    if points is not None:
+        payload = json.loads(points[0])
         if not payload[cell.workload_kind]:
             raise ValueError(f"benchmark-points manifest has no {cell.workload_kind} points for this cell")
         scheduler_args.extend(["--benchmark-points-file", f"{REMOTE_WORKDIR}/{POINTS_FILENAME}"])
@@ -1348,8 +1415,9 @@ def _cell_generator_overrides(
         # native runtime initialization avoids measuring a different engine.
         model_args.extend(["--trust-remote-code", "--reasoning-parser=glm45"])
     if architecture == "Glm5NextForConditionalGeneration":
-        # The GLM-5.3-Flash FPM producer loads the text decoder only (docs/glm53flash-fpm.md:70-73),
-        # so a runtime probe measures the cache capacity of the deployment that collection uses.
+        # The GLM-5.3-Flash FPM producer loads the text decoder only (see the engine arguments of the vLLM producer
+        # section in docs/glm53flash-fpm.md), so a runtime probe measures the cache capacity of the deployment that
+        # collection uses.
         model_args.append("--language-model-only")
     env = [
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
@@ -1409,6 +1477,42 @@ def _cell_generator_overrides(
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
             ]
         )
+    glm_collection = _glm_collection(plan)
+    if glm_collection:
+        # The producer runs five warm-ups per point and refuses the global warm-up of Dynamo.
+        if plan.options.warmup_iterations != 0:
+            raise ValueError(
+                "GLM-5.3-Flash collection requires warmup_iterations 0. The producer runs its own warm-ups"
+            )
+        # The producer records the actual CUDA graph dispatch of every measured step and requires synchronous
+        # scheduling. Prefill always runs synchronously, and memory observation requests it for decode already.
+        model_args.append("--cudagraph-metrics")
+        if cell.workload_kind == "decode" and "--no-async-scheduling" not in model_args:
+            model_args.append("--no-async-scheduling")
+        # The first two values activate the source-checked producer. It measures every point of the frozen list as
+        # given, reads the tokenizer and the configuration of the checkpoint at the revision that the engine loads,
+        # and measures up to the context that the list was generated for.
+        launch = getattr(plan, "runtime_launch", None)
+        fpm_profile = getattr(plan, "fpm_profile", None)
+        if launch is None and fpm_profile is None:
+            raise ValueError(
+                "GLM-5.3-Flash collection requires a probe launch or an FPM profile that names the model revision"
+            )
+        revision = launch["identity"]["model_revision"] if launch is not None else fpm_profile.model_revision
+        # vLLM loads the weights of this revision, and the producer reads the configuration and the tokenizer of the
+        # same revision. Without the flag, vLLM loads the default branch of a Hub ID. The probe launch passes it above.
+        if "--revision" not in model_args:
+            model_args.extend(["--revision", revision])
+        env.extend(
+            {"name": name, "value": value}
+            for name, value in {
+                "DYN_FPM_GLM53FLASH_REAL_KV": "1",
+                "DYN_FPM_GLM53FLASH_PREFIX_SEED": "1",
+                "DYN_FPM_BENCH_COLLECT_IMBALANCED": "1",
+                "DYN_FPM_TOKENIZER_REVISION": revision,
+                "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": str(glm_measured_context(plan.options)),
+            }.items()
+        )
     total_gpus = cell.topology.total_gpus
     generated = {
         "ServiceConfig": service,
@@ -1466,23 +1570,9 @@ def _cell_generator_overrides(
         if existing is not None and existing != item:
             raise ValueError(f"conflicting FPM environment value for {name}")
         resolved_env[name] = copy.deepcopy(item)
-    if architecture == "DeepseekV41ForCausalLM":
-        # Image layout belongs to this source-pinned adapter. An explicitly
-        # configured path uses the existing deployment environment interface;
-        # both preflight and generated run.sh receive the same resolved value.
-        configured = resolved_env.get("PYTHONPATH")
-        if configured is None:
-            adapter = Path(__file__).parent / "runtime" / "dsv41" / "runtime-paths.json"
-            python_path = json.loads(adapter.read_text())["python_path"]
-        else:
-            python_path = configured.get("value")
-        if not isinstance(python_path, str) or not python_path:
-            raise ValueError("V4.1 PYTHONPATH must name explicit absolute runtime paths")
-        paths = python_path.split(":")
-        if any(not part or not PurePosixPath(part).is_absolute() or "\n" in part or "\r" in part for part in paths):
-            raise ValueError("V4.1 PYTHONPATH must name explicit absolute runtime paths")
-        python_path = ":".join([REMOTE_WORKDIR, *(part for part in paths if part != REMOTE_WORKDIR)])
-        resolved_env["PYTHONPATH"] = {"name": "PYTHONPATH", "value": python_path}
+    if architecture == "DeepseekV41ForCausalLM" or glm_collection:
+        # A GLM-5.3-Flash runtime probe runs without the producer and keeps the import path of the image.
+        resolved_env["PYTHONPATH"] = _adapter_python_path(architecture, resolved_env)
     readiness = resolved_env.get(READINESS_TIMEOUT_ENV, {}).get("value", DEFAULT_READINESS_TIMEOUT_SECONDS)
     if isinstance(readiness, bool) or not re.fullmatch(r"[1-9][0-9]*", str(readiness)) or int(readiness) > 3600:
         raise ValueError(f"{READINESS_TIMEOUT_ENV} must be an integer from 1 through 3600")
@@ -1520,7 +1610,7 @@ def _cell_generator_overrides(
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
         raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
-        prefix_caching = _decode_prefix_caching_mode(cell)
+        prefix_caching = _decode_prefix_caching_mode(plan, cell)
         policy_disables = any(
             str(argument) == "--no-enable-prefix-caching" or str(argument).startswith("--no-enable-prefix-caching=")
             for argument in policy_args
@@ -1530,7 +1620,14 @@ def _cell_generator_overrides(
             for argument in policy_args
         )
         if prefix_caching == "enabled" and policy_disables:
-            raise ValueError(f"FPM decode strategy {cell.parallel_strategy!r} requires prefix caching for KV warm-up")
+            if cell.parallel_strategy in KVWARM_STRATEGIES:
+                raise ValueError(
+                    f"FPM decode strategy {cell.parallel_strategy!r} requires prefix caching for KV warm-up"
+                )
+            # Outside the KV warm-up strategies, only the GLM-5.3-Flash rule keeps prefix caching.
+            raise ValueError(
+                "GLM-5.3-Flash decode requires prefix caching in every strategy. The producer seeds real KV through it"
+            )
         if prefix_caching == "disabled" and policy_enables:
             raise ValueError(
                 f"FPM decode strategy {cell.parallel_strategy!r} requires prefix caching disabled for fake-KV"
@@ -1559,10 +1656,17 @@ def _cell_generator_overrides(
     return merged
 
 
-def _decode_prefix_caching_mode(cell: FPMCell) -> str:
-    """Return the rendering/checkpoint policy for one decode strategy."""
+def _decode_prefix_caching_mode(plan: FPMCollectionPlan, cell: FPMCell) -> str:
+    """Return the rendering/checkpoint policy for one decode cell of a probe or collection plan.
 
-    return "enabled" if cell.parallel_strategy in KVWARM_STRATEGIES else "disabled"
+    A GLM-5.3-Flash plan keeps prefix caching in every strategy, because its producer seeds real KV through it. Other
+    models follow the strategy rule.
+    """
+
+    architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if architecture == GLM_ARCHITECTURE or cell.parallel_strategy in KVWARM_STRATEGIES:
+        return "enabled"
+    return "disabled"
 
 
 def _configured_sampling_metadata(
@@ -1571,19 +1675,28 @@ def _configured_sampling_metadata(
     *,
     smoke: bool,
 ) -> dict[str, int | str | None]:
-    canonical = _frozen_points(plan)
-    if canonical is not None:
-        if smoke:
-            raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
-        return {
-            "benchmark_points_sha256": plan.options.benchmark_points_sha256,
-            "requested_point_count": len(json.loads(canonical)[cell.workload_kind]),
+    points = _cell_points(plan, cell, smoke=smoke)
+    if points is not None:
+        metadata: dict[str, int | str | None] = {
+            "benchmark_points_sha256": points[1],
+            "requested_point_count": len(json.loads(points[0])[cell.workload_kind]),
         }
+        # A generated list names its generator, and its smoke names the subset that it measured.
+        if getattr(plan.options, "benchmark_points_origin", None) == GLM_POINTS_ORIGIN:
+            if smoke:
+                metadata["smoke_manifest"] = GLM_SMOKE_MANIFEST
+            else:
+                metadata["benchmark_points_origin"] = GLM_POINTS_ORIGIN
+        # Every GLM-5.3-Flash collection cell measures a frozen list, so its decode cells record their prefix-caching
+        # policy here. The cells of other lists keep the metadata that they have always had.
+        if cell.workload_kind == "decode" and _glm_collection(plan):
+            metadata["decode_prefix_caching"] = _decode_prefix_caching_mode(plan, cell)
+        return metadata
     if cell.workload_kind != "prefill":
-        # Derive checkpoint evidence from the same strategy predicate used to
+        # Derive checkpoint evidence from the same predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
         # arguments that conflict with this resolved protocol.
-        return {"decode_prefix_caching": _decode_prefix_caching_mode(cell)}
+        return {"decode_prefix_caching": _decode_prefix_caching_mode(plan, cell)}
     if smoke:
         payload: dict[str, int | str | None] = {"prefill_max_new_token_samples": 2}
         if plan.options.prefill_sampling.cudagraph_policy == "runtime":
@@ -1614,6 +1727,10 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         FPM_FINALIZATION_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
+        # Preflight checks the GLM-5.3-Flash scheduler activation only under its flag, and the scheduler import
+        # through the producer's sitecustomize.py requires the prefix-seed flag.
+        "DYN_FPM_GLM53FLASH_REAL_KV",
+        "DYN_FPM_GLM53FLASH_PREFIX_SEED",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",
         "AISIMULATE_RUNTIME_CONTEXT",
@@ -1855,6 +1972,8 @@ def _recover_completed_attempt(
     cell: FPMCell,
     root: Path,
     entry: dict[str, Any],
+    *,
+    smoke: bool = False,
 ) -> dict[str, Any] | None:
     """Recover a non-passed checkpoint cell whose salvaged artifacts are complete.
 
@@ -1874,7 +1993,7 @@ def _recover_completed_attempt(
     cell_dir = root / "cells" / cell.cell_id
     try:
         attempt_id = _required_attempt_id(entry, cell.cell_id)
-        _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id)
+        _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id, smoke=smoke)
         _runtime_collection_summary(
             cell,
             cell_dir / "raw",
@@ -2033,7 +2152,12 @@ def _run_collection_impl(
     publish_partial: bool = False,
     publish_database: bool = True,
 ) -> list[dict[str, object]]:
-    if _frozen_points(plan) is not None and smoke:
+    # A user list has no smoke subset. A generated list has one, under the same plan hash.
+    if (
+        smoke
+        and _frozen_points(plan) is not None
+        and getattr(plan.options, "benchmark_points_origin", None) != GLM_POINTS_ORIGIN
+    ):
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     run_started_at = _utc_now()
     root = Path(artifact_root).expanduser().resolve() / plan.sha256[:16]
@@ -2092,6 +2216,7 @@ def _run_collection_impl(
 
     runtime_exec = Path(__file__).resolve().parent / "runtime" / "fpm_exec.sh"
     runtime_preflight = Path(__file__).resolve().parent / "runtime" / "preflight.py"
+    adapter = _ADAPTER_DIRS.get(getattr(getattr(plan, "capability", None), "architecture", None))
     target_cells = plan.cells[: (cell_limit or (1 if smoke else len(plan.cells)))]
 
     formal_database_terminal = False
@@ -2135,7 +2260,7 @@ def _run_collection_impl(
             entry = checkpoint["cells"].get(cell.cell_id)
             if not isinstance(entry, dict):
                 continue
-            recovered = _recover_completed_attempt(plan, cell, root, entry)
+            recovered = _recover_completed_attempt(plan, cell, root, entry, smoke=smoke)
             if recovered is None:
                 continue
             archived = archive_observations(cell, recovered)
@@ -2166,7 +2291,11 @@ def _run_collection_impl(
         # receipts. Unpublished cells still need them before publication.
         if not formal_database_terminal and _frozen_points(plan) is not None:
             _validate_points_receipts(
-                plan, cell, root / "cells" / cell.cell_id / "raw", _required_attempt_id(entry, cell.cell_id)
+                plan,
+                cell,
+                root / "cells" / cell.cell_id / "raw",
+                _required_attempt_id(entry, cell.cell_id),
+                smoke=smoke,
             )
         # This refresh only polishes checkpoint metadata for cells whose
         # results were already validated and published; raw artifacts that
@@ -2342,13 +2471,12 @@ def _run_collection_impl(
                         )
                     ],
                     *instrumentation_files,
-                    *_stage_points_file(plan, cell_dir),
+                    *_stage_points_file(plan, cell_dir, cell=cell, smoke=smoke),
+                    # Only V4.1 reads the shared input text. A GLM-5.3-Flash probe runs without the producer.
+                    *([runtime_preflight.parent / "fpm_text.txt"] if adapter == "dsv41" else []),
                     *(
-                        [
-                            runtime_preflight.parent / "fpm_text.txt",
-                            *sorted(p for p in (runtime_preflight.parent / "dsv41").iterdir() if p.is_file()),
-                        ]
-                        if cell.execution_identity[0]
+                        sorted(p for p in (runtime_preflight.parent / adapter).iterdir() if p.is_file())
+                        if adapter == "dsv41" or _glm_collection(plan)
                         else []
                     ),
                 ],
@@ -2369,16 +2497,16 @@ def _run_collection_impl(
                 attempt_id=attempt_id,
                 **profile_version,
             )
-            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
+            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before", smoke=smoke)
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
             resource.execute(pods)
-            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="after")
+            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="after", smoke=smoke)
             phase_marks["execute_wall_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
             resource.collect(pods)
             phase_marks["collect_s"] = round(time.monotonic() - mark, 3)
-            _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id)
+            _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id, smoke=smoke)
             runtime_collection = _runtime_collection_summary(
                 cell,
                 cell_dir / "raw",

@@ -13,6 +13,7 @@
 # Modified: GLM-5.3-Flash default-serving hybrid state (prefix caching on, Mamba "align" mode),
 # seeded token inputs, align-4 prefill chunk-start checks, repeated measurements and compact
 # deferred evidence. Upstream license: LICENSE.
+# Runtime base: ai-dynamo 1.6.0.dev20261010 (scheduler file ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552).
 """GLM-5.3-Flash native FPM producer on the default serving configuration.
 
 Timing is the unchanged Dynamo ``InstrumentedScheduler`` FPM ``wall_time``:
@@ -60,6 +61,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import statistics
 import time
 import uuid
@@ -73,12 +75,12 @@ from vllm.tokenizers import get_tokenizer
 from vllm.v1.request import Request, RequestStatus
 
 DYNAMO_SHA = "54960177085413259859c88bd34ed0734d4c2ea9"
+# The scheduler file that runs, which is not derived code: the ai-dynamo 1.6.0.dev20261010 build carries it.
+DYNAMO_RUNTIME_SHA = "395f02405c1dd1835ab73a39f7a5984ae5fd4552"
+DYNAMO_RUNTIME_DISTRIBUTION = "ai-dynamo 1.6.0.dev20261010"
 REAL_SEED_SOURCE = "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea instrumented_scheduler._bench_realseed_*"
 QUEUED_PORT_SOURCE = "ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552 instrumented_scheduler._compute_queued"
 VLLM_SHA = "db9527a46873454610df6dbedf79a36d6bf1a7f6"
-FP8_SHA = "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"
-NVFP4_SHA = "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"
-MODEL_SHAS = {FP8_SHA, NVFP4_SHA}
 # Pure-TP sizes accepted for both checkpoints. Whether a size fits a system is
 # decided by the native runtime (weight load and KV allocation fail observably),
 # not by this producer.
@@ -93,6 +95,8 @@ MEASUREMENT_REPEATS = 10
 MAX_REJECTED_REPETITIONS = 10
 MAX_BATCH = 32
 MAX_CONTEXT = 131072
+# The context headroom that the producer has always required, in positions beyond the deepest measured context.
+CONTEXT_HEADROOM = 7
 MAX_NEW = 8192
 STAGE_TIMEOUT_SECONDS = 1800.0
 PREFILL_REAL_SEED_REASON = "prefill_real_seed"
@@ -111,6 +115,69 @@ def pure_tensor_parallel(parallel, speculative_config) -> bool:
         and not parallel.enable_expert_parallel
         and speculative_config is None
     )
+
+
+def glm_checkpoint_dir(model: str, revision: str) -> Path:
+    """Folder of the loaded checkpoint. It holds the ``config.json`` and ``tokenizer.json`` that this run reads.
+
+    A folder launch is that folder. A launch by Hub ID keeps the ID in the vLLM model configuration, so the files
+    come from the local Hugging Face cache at the loaded revision. The lookup downloads nothing.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("DYN_FPM_TOKENIZER_REVISION must be the 40-hex revision of the loaded checkpoint")
+    if Path(model).is_dir():
+        return Path(model)
+    from huggingface_hub import try_to_load_from_cache
+
+    cached = try_to_load_from_cache(model, "config.json", revision=revision)
+    if not isinstance(cached, str):
+        # None is a file that the cache does not know. A file that is known to be absent comes back as a sentinel.
+        raise ValueError(
+            "GLM-5.3-Flash checkpoint files are absent from the local Hugging Face cache for the loaded revision"
+        )
+    return Path(cached).parent
+
+
+def glm_pinned_model(raw_config: dict, revision: str) -> tuple[str, str]:
+    """The pinned checkpoint of the loaded configuration, as ``(model, pinned revision)``.
+
+    The pins name the checkpoints that the profiles were collected on. Two rules apply to ``revision``, the revision
+    that was loaded. A revision that is a pin names its model, so the loaded configuration must equal the configuration
+    of that model. A revision label that contradicts the loaded files would select another model without notice.
+    Any other revision of the same files has the same configuration, so it is accepted when its configuration equals
+    the configuration of a pinned model.
+    """
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    models_by_pin = {pinned_revision: model for model, pinned_revision in MODEL_REVISIONS.items()}
+    if revision in models_by_pin:
+        model = models_by_pin[revision]
+        if get_model_config_from_model_path(model)["raw_config"] != raw_config:
+            raise ValueError(
+                f"GLM-5.3-Flash checkpoint at pinned revision {revision} does not match the configuration of {model}"
+            )
+        return model, revision
+    for model, pinned_revision in MODEL_REVISIONS.items():
+        if get_model_config_from_model_path(model)["raw_config"] == raw_config:
+            return model, pinned_revision
+    raise ValueError("loaded GLM-5.3-Flash checkpoint matches no pinned model configuration")
+
+
+def glm_context_policy(max_model_len: int, measured: int) -> dict:
+    """Context limits of one run. The runtime context is the configured ``max_model_len``.
+
+    The runtime context must be at least the measured context plus ``CONTEXT_HEADROOM`` positions, the headroom that
+    the producer has always required. A larger runtime context also meets this rule, so a run can configure the
+    context that a deployment serves and measure a lower limit.
+    """
+    if max_model_len < measured + CONTEXT_HEADROOM:
+        raise ValueError("GLM vLLM runtime context must be at least the measured context plus seven internal positions")
+    return {
+        "measured_context_limit": measured,
+        "runtime_context_length": max_model_len,
+        "native_admission_headroom": CONTEXT_HEADROOM,
+    }
 
 
 def token_slice(pool: list[int], length: int, offset: int) -> list[int]:
@@ -217,13 +284,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         measured = int(os.environ.get("DYN_FPM_GLM53FLASH_MEASURED_CONTEXT", MAX_CONTEXT))
         if not 1 <= measured <= MAX_CONTEXT:
             raise ValueError("GLM measured context limit must be between 1 and 131072")
-        self._glm_context_policy = {
-            "measured_context_limit": measured,
-            "runtime_context_length": measured + 7,
-            "native_admission_headroom": 7,
-        }
-        if config.model_config.max_model_len != self._glm_context_policy["runtime_context_length"]:
-            raise ValueError("GLM vLLM runtime context must equal measured context plus seven internal positions")
+        self._glm_context_policy = glm_context_policy(config.model_config.max_model_len, measured)
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("GLM-5.3-Flash prefix-seed producer requires native benchmark mode")
@@ -251,9 +312,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             raise ValueError("GLM FPM campaign freezes synchronous scheduling (--no-async-scheduling)")
         parallel = config.parallel_config
         self._glm_tp_size = parallel.tensor_parallel_size
-        revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION")
-        if revision not in MODEL_SHAS:
-            raise ValueError("tokenizer revision must equal the pinned GLM-5.3-Flash checkpoint revision")
+        revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION", "")
         if not pure_tensor_parallel(parallel, config.speculative_config):
             raise ValueError("GLM-5.3-Flash requires pure TP1/2/4/8, DP/PP/CP 1, no EP/ubatching/speculation")
         if self.connector is not None or self.ec_connector is not None:
@@ -265,10 +324,19 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         if not self._bench_config.collect_imbalanced:
             raise ValueError("frozen executed geometries require DYN_FPM_BENCH_COLLECT_IMBALANCED=1")
         from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
-        from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS, Glm53FlashConfig
+        from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
         from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
-        raw_config = get_model_config_from_model_path(config.model_config.model)["raw_config"]
+        # vLLM loads the weights of the revision in its model configuration, and this producer reads the configuration
+        # and the tokenizer of DYN_FPM_TOKENIZER_REVISION. A launch by Hub ID without --revision loads the default
+        # branch.
+        loaded = config.model_config.revision
+        if loaded is not None and loaded != revision:
+            raise ValueError(
+                f"GLM-5.3-Flash launch revision {loaded!r} differs from DYN_FPM_TOKENIZER_REVISION {revision!r}"
+            )
+        checkpoint_dir = glm_checkpoint_dir(config.model_config.model, revision)
+        raw_config = get_model_config_from_model_path(str(checkpoint_dir))["raw_config"]
         Glm53FlashConfig.from_text_config(raw_config["text_config"])
         if (
             config.model_config.architecture != "Glm5NextForConditionalGeneration"
@@ -282,14 +350,12 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 strict=True,
             )
         )
-        expected_model = next(model for model, pin in MODEL_REVISIONS.items() if pin == revision)
-        if raw_config != get_model_config_from_model_path(expected_model)["raw_config"]:
-            raise ValueError("loaded model metadata differs from the pinned GLM checkpoint")
+        pinned_model, pinned_revision = glm_pinned_model(raw_config, revision)
         if config.scheduler_config.max_num_batched_tokens % CHUNK_ALIGN:
             raise ValueError("the native token budget must be a multiple of the IndexPool width (4)")
         from collector import glm53flash_attention_tokens as seeded
 
-        tokenizer_json = Path(config.model_config.tokenizer) / "tokenizer.json"
+        tokenizer_json = checkpoint_dir / "tokenizer.json"
         tokenizer_sha = hashlib.sha256(tokenizer_json.read_bytes()).hexdigest()
         if tokenizer_sha != seeded.TOKENIZER_JSON_SHA256:
             raise ValueError(f"tokenizer.json {tokenizer_sha} is not the pinned GLM-5.3-Flash tokenizer")
@@ -314,6 +380,9 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             "vocab_high_exclusive": high,
             "tokenizer_json_sha256": tokenizer_sha,
             "tokenizer_revision": revision,
+            "pinned_model": pinned_model,
+            "pinned_revision": pinned_revision,
+            "checkpoint_dir": str(checkpoint_dir),
             "token_ids_sha256": hashlib.sha256(
                 json.dumps(self._glm_tokens, separators=(",", ":")).encode()
             ).hexdigest(),
@@ -344,6 +413,11 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
 
     def _kvwarm_warm_eligible(self):
         return True
+
+    def _kvwarm_prepare(self, mode):
+        # ai-dynamo/dynamo@395f0240 _bench_build_grid calls this at line 2718 to plan native warm-up stages and to
+        # reorder the decode grid. This producer seeds every point through its own stages, so nothing is planned.
+        return None
 
     def _bench_cache_fake_prefixes(self, *args, **kwargs):
         raise RuntimeError("synthetic prefix KV is forbidden for GLM-5.3-Flash")
@@ -415,6 +489,9 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         if built:
             return
         unit = self._glm_serving["hash_block_size"]
+        # vLLM v0.31.0 splits prefill chunks only in Mamba align mode (scheduler.py:354-356, :695, :1127), on the block
+        # of the cache configuration (:440).
+        block = self.cache_config.block_size if self.need_mamba_block_aligned_split else None
         for point in self._bench_grid:
             if point.point_type == "prefill":
                 prefixes, queries = self._glm_prefill_rows(point)
@@ -428,15 +505,68 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                         f"benchmark_id={point.benchmark_id}: prefix/new-token lengths must be multiples of "
                         f"{CHUNK_ALIGN} (kpool_align4); the frozen manifest must carry the executed geometry"
                     )
+                for prefix, query in zip(prefixes, queries, strict=True):
+                    stop = None if block is None else self._glm_align_stop(prefix, prefix + query, block)
+                    if stop is not None:
+                        # A repetition accepts one native FPM, so a split point would be rejected until the run fails.
+                        raise ValueError(
+                            f"benchmark_id={point.benchmark_id}: vLLM's Mamba align mode stops the prefill of {query} "
+                            f"new tokens after a prefix of {prefix} at {stop}, a boundary of its {block}-token blocks, "
+                            "so the point runs in more than one step and the producer measures one"
+                        )
             else:
                 contexts = self._bench_decode_context_lengths(point.total_kv_read_tokens, point.batch_size)
                 if min(contexts) < 3:
                     raise ValueError("GLM real decode requires per-request context >= 3; no clamping")
+                # The native decode check bounds a context by the runtime context, which can exceed the measured
+                # context. The artifact states the measured context as kvwarm.max_context, and the prefill check bounds
+                # prefix plus new tokens by it too.
+                limit = self._glm_context_policy["measured_context_limit"]
+                if max(contexts) > limit:
+                    raise ValueError(
+                        f"GLM-5.3-Flash decode context {max(contexts)} exceeds the measured context limit {limit}"
+                    )
+                # The native decode check bounds the batch by the running-request limit, which can exceed MAX_BATCH.
+                # The artifact states MAX_BATCH as kvwarm.max_batch, and the prefill check bounds the batch by it too.
+                if point.batch_size > MAX_BATCH:
+                    raise ValueError(
+                        f"GLM-5.3-Flash decode batch {point.batch_size} exceeds the producer limit {MAX_BATCH}"
+                    )
+                # A repetition prefills each prompt beyond its cached seed, and it is accepted only if its first decode
+                # step holds every request. vLLM v0.31.0 schedules at most max_num_batched_tokens tokens in one step
+                # (scheduler.py:585, :1073, :1313-1314). The suffixes of two or more requests above that budget spread
+                # over several steps, so every repetition is rejected: the cached prefix cannot grow beyond the seed.
+                # One request may prefill its suffix over several steps (scheduler.py:468-480): no other request can
+                # decode before it, and _bench_should_record_scheduled records no step with a prefill request.
+                budget = self.scheduler_config.max_num_batched_tokens
+                prompts = [self._glm_decode_prompt(context) for context in contexts]
+                total = sum(prompt - self._glm_decode_seed(prompt, unit) for prompt in prompts)
+                if point.batch_size > 1 and total > budget:
+                    context = contexts[0] if len(set(contexts)) == 1 else contexts
+                    raise ValueError(
+                        f"GLM-5.3-Flash decode point of {point.batch_size} requests at context {context} needs "
+                        f"{total} suffix tokens in one step, above the token budget {budget}"
+                    )
+
+    @staticmethod
+    def _glm_align_stop(start, end, block):
+        """Where vLLM v0.31.0 in Mamba align mode stops a prefill chunk from ``start`` to the prompt end ``end``.
+
+        The chunk stops at the last block boundary of the prompt (scheduler.py:444) and, after a start inside a block,
+        at the next boundary (:482, :508-513), whichever lies first strictly inside it (:526). None means one step.
+        """
+        stops = (end - end % block, (start // block + 1) * block if start % block else 0)
+        return min((stop for stop in stops if start < stop < end), default=None)
 
     @staticmethod
     def _glm_decode_prompt(context):
         """The prompt precedes one sampled token and the measured second decode step."""
         return context - 1
+
+    @staticmethod
+    def _glm_decode_seed(prompt, unit):
+        """Largest hit-aligned prefix strictly shorter than the prompt."""
+        return (prompt - 1) // unit * unit
 
     def _glm_decode_step(self, context):
         """1-based pure decode step whose per-request KV read equals ``context``."""
@@ -606,8 +736,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 "prompt": prompt_lengths,
                 "measured_decode_step": self._glm_decode_step(contexts[0]),
             }
-            # Largest hit-aligned prefix strictly shorter than the prompt.
-            seed_lengths = [(length - 1) // unit * unit for length in prompt_lengths]
+            seed_lengths = [self._glm_decode_seed(length, unit) for length in prompt_lengths]
             reason = DECODE_REAL_KV_REASON
         if reason is not None and reason not in point.sample_reasons:
             point.sample_reasons.append(reason)
@@ -823,6 +952,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
 
         output["producer"] = {
             "instrumentation_revision": DYNAMO_SHA,
+            "runtime_scheduler_revision": DYNAMO_RUNTIME_SHA,
+            "runtime_distribution": DYNAMO_RUNTIME_DISTRIBUTION,
             "real_seed_port_source": REAL_SEED_SOURCE,
             "queued_metrics_port_source": QUEUED_PORT_SOURCE,
             "vllm_package_version": __import__("vllm").__version__,

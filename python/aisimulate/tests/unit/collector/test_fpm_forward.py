@@ -3509,8 +3509,12 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
     if marker == "kvwarm_real_kv":
         assert aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]["kv_seed_regime"] == "real_kv"
     else:
-        with pytest.raises(ValueError, match="requires real_kv"):
+        regime = {"kvwarm_fake_fallback": "fake_fallback", None: "legacy"}[marker]
+        with pytest.raises(ValueError) as error:
             aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+        assert str(error.value) == (
+            f"execution-identity cells require real KV measurements for cached prefill and decode, got {regime}"
+        )
 
 
 @pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])
@@ -3522,7 +3526,7 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
     identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
     cell = SimpleNamespace(execution_identity=identity)
     payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
-    with pytest.raises(ValueError, match="verified eager"):
+    with pytest.raises(ValueError, match="unaudited execution mode"):
         _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
 
 
@@ -3550,19 +3554,98 @@ def test_v41_auto_eager_rejects_capture_requests(graph_args):
         options.resolve_model_execution("DeepseekV41ForCausalLM")
 
 
-@pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
-def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
-    from collector.fpm_forward import planner
-
-    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
-    with pytest.raises(ValueError, match="eager"):
+def test_explicit_eager_collection_admission():
+    with pytest.raises(ValueError) as error:
         build_collection_plan(
             backend="vllm",
             model_path="nvidia/GLM-5.2-NVFP4",
             system="b200_sxm",
             selected_ops={"dsa_context_module", "dsa_generation_module"},
-            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=eager)),
+            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=True)),
         )
+    assert str(error.value) == "explicit eager FPM collection is currently qualified only for DeepSeek V4.1"
+
+
+def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
+    from collector.fpm_forward.config import _freeze_benchmark_points
+
+    from .test_fpm_runtime_memory import _glm_plan
+
+    architecture = "Glm5NextForConditionalGeneration"
+    path = _mixed_attention_config(tmp_path, architecture, True)
+    # These plans bring their own GLM point list. Without an accepted profile the planner cannot generate one.
+    points = tmp_path / "points.json"
+    points.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0}],
+                "decode": [{"batch_size": 1, "total_kv_read_tokens": 4096}],
+            }
+        )
+    )
+
+    def build(**overrides):
+        return build_collection_plan(
+            backend="vllm",
+            model_path=str(path),
+            system="b200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+            options=FPMCollectionOptions.from_args(_args(**{"fpm_benchmark_points_file": str(points), **overrides})),
+            model_architecture=architecture,
+            has_model_cases=False,
+            model_config_path=str(path),
+            collector_config={"aic_database_version": "0.27.0"},
+        )
+
+    # The accepted profile names the model revision that vLLM and the producer load.
+    points_json, points_sha256 = _freeze_benchmark_points(str(points))
+    plan = _glm_plan(tmp_path, benchmark_points_json=points_json, benchmark_points_sha256=points_sha256)
+
+    assert plan.options.enforce_eager is False
+    assert "enforce_eager" not in plan.to_dict()["options"]
+    # A user list keeps its explicit meaning.
+    assert plan.to_dict()["point_generation"]["source"] == "frozen_explicit_manifest"
+    digest = plan.cells[0].execution_identity[0]
+    assert len(digest) == 64
+    assert set(digest) <= set("0123456789abcdef")
+    # GLM seeds its own tokens, so its cells do not depend on the DeepSeek V4.1 text corpus.
+    assert {cell.input_text_sha256 for cell in plan.cells} == {""}
+    with pytest.raises(ValueError) as error:
+        build(fpm_enforce_eager=True)
+    assert str(error.value) == "explicit eager FPM collection is currently qualified only for DeepSeek V4.1"
+    with pytest.raises(ValueError) as error:
+        build(fpm_benchmark_points_file=None)
+    assert str(error.value) == "GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens"
+    # Without an accepted profile or probe launch, the plan has no revision to load.
+    with pytest.raises(ValueError) as error:
+        build()
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got None"
+    )
+
+
+def test_deepseek_v41_plan_keeps_its_eager_rule():
+    def build(**overrides):
+        return build_collection_plan(
+            backend="vllm",
+            model_path="deepseek-ai/DeepSeek-V4.1-Flash",
+            system="b200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+            options=FPMCollectionOptions.from_args(_args(**overrides)),
+            model_architecture="DeepseekV41ForCausalLM",
+            has_model_cases=False,
+            collector_config={"aic_database_version": "0.27.0"},
+        )
+
+    corpus = Path(__file__).parents[3] / "collector/fpm_forward/runtime/fpm_text.txt"
+    plan = build(fpm_enforce_eager=True)
+
+    assert plan.options.enforce_eager is True
+    assert plan.to_dict()["options"]["enforce_eager"] is True
+    assert {cell.input_text_sha256 for cell in plan.cells} == {hashlib.sha256(corpus.read_bytes()).hexdigest()}
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        build()
 
 
 @pytest.mark.parametrize("corruption", ["missing", "tampered", "fake", "seed", "path", "coverage"])
