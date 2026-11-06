@@ -92,6 +92,7 @@
 /crates/core/src/engine/                                 @ai-dynamo/aisimulate-mocker-codeowners
 
 # === infra  (@ai-dynamo/aisimulate-infra-codeowners) ===
+/.cargo/                                                 @ai-dynamo/aisimulate-infra-codeowners
 /.github/                                                @ai-dynamo/aisimulate-infra-codeowners
 /scripts/                                                @ai-dynamo/aisimulate-infra-codeowners
 /deny.toml                                               @ai-dynamo/aisimulate-infra-codeowners
