@@ -14,7 +14,7 @@ pub fn request(directory: &std::path::Path) -> Value {
             "per_chunk_usage":false,"timeout_seconds":30.0,"connection_reuse":"pooled","ssl_verify":true,
             "connection_limit":64,"keepalive_timeout":15.0,"download_video_content":false,
             "polling_interval_seconds":1.0,"extra":{},"headers":{},"http2":false,
-            "wait_for_model_timeout":0.0,"wait_for_model_interval":1.0,"wait_for_model_mode":"models","proxy_from_env":false
+            "wait_for_model_timeout":0.0,"wait_for_model_interval":5.0,"wait_for_model_mode":"inference","proxy_from_env":false
         })).expect("complete endpoint policy")),
         transport: Some(aiperf_config::model::transport::Transport::Http),
         runtime: Some(Default::default()),

@@ -64,8 +64,8 @@ fn direct_library_executes_native_scheduled_synthetic_and_conversation_sources()
         let mut frame = request(directory.path());
         frame["run"]["cfg"]["datasets"] = json!([dataset]);
         frame["run"]["cfg"]["finite_replay"] = Value::Null;
-        frame["run"]["cfg"].as_object_mut().unwrap().remove("trajectory_start_min_ratio");
-        frame["run"]["cfg"].as_object_mut().unwrap().remove("trajectory_start_max_ratio");
+        frame["run"]["cfg"]["trajectory_start_min_ratio"] = json!(0.0);
+        frame["run"]["cfg"]["trajectory_start_max_ratio"] = json!(0.0);
         frame["run"]["cfg"]["phases"] = json!([{
             "type":"concurrency", "name":"profiling", "exclude_from_results":false,
             "seamless":false, "concurrency":1, "requests":2, "grace_period":1.0
