@@ -24,6 +24,8 @@ use std::{
     rc::Rc,
 };
 
+// This target reuses only the complete base frame, not the branch convenience fixture.
+#[allow(dead_code)]
 #[path = "support/run_fixture.rs"]
 mod run_fixture;
 
