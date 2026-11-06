@@ -1432,7 +1432,10 @@ def _supported_fpm_validation_config() -> dict[str, object]:
 
 @pytest.mark.integration
 def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
-    """Issue #1522: the exact deployed MoE key must estimate successfully."""
+    """Issue #1522: the exact deployed MoE key must estimate successfully.
+
+    HYBRID: vLLM ships no Mamba2 table, and SILICON readiness now reports that (AISIM-2194).
+    """
     pytest.importorskip("aisimulate_core")
     from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -1444,6 +1447,7 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
             "system_name": "h100_sxm",
             "backend": "vllm",
             "backend_version": "0.24.0",
+            "database_mode": "HYBRID",
             "tp_size": 4,
             "pp_size": 1,
             "attention_dp_size": 1,
@@ -1497,6 +1501,71 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
 
     assert model.diagnostics()["readiness"] == "ready"
     assert estimate_ms is not None and estimate_ms > 0.0
+    provenance = model.diagnostics()["provenance"]
+    assert provenance["config"]["database_mode"] == "HYBRID"
+    assert provenance["selection_failures"] == []
+    ops = model.static_phase_diagnostics(prefill=True, batch_size=1, context_length=4224)
+    sources = {op["name"]: op["source"] for op in ops}
+    # The MoE operations read measured rows; the Mamba2 kernels have no vLLM table and keep the analytic estimate.
+    assert sources["context_moe"] == "silicon"
+    assert {sources["context_mamba_conv1d"], sources["context_mamba_ssm"]} == {"sol"}
+
+
+@pytest.mark.integration
+def test_nemotron_super_fp8_auto_degrades_to_hybrid_on_the_missing_mamba2_table() -> None:
+    """AISIM-2194: the SILICON op_level candidate misses the Mamba2 table; auto rebuilds it in HYBRID."""
+    pytest.importorskip("aisimulate_core")
+    from dataclasses import replace
+
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+    config = ForwardPassPerfModelConfig(
+        model="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version="0.24.0",
+        worker_type="aggregated",
+        tp=4,
+        moe_tp_size=1,
+        moe_ep_size=4,
+        kv_block_size=16,
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        provenance = model.diagnostics()["provenance"]
+        assert provenance["requested_estimation_mode"] == "auto"
+        assert provenance["selected_estimation_mode"] == "op_level"
+        assert provenance["requested_database_mode"] == "SILICON"
+        assert provenance["selected_database_mode"] == "HYBRID"
+        assert provenance["config"]["database_mode"] == "HYBRID"
+        assert provenance["config"]["estimation_mode"] == "op_level"
+        assert provenance["config"]["fallback_policy"] == "deny"
+        (failure,) = provenance["selection_failures"]
+        assert failure.startswith("OpLevel: ")
+        assert "mamba2_perf.parquet" in failure and "data missing for kernel" in failure
+        assert model.diagnostics()["last_warning"] == failure
+        resolved = provenance["config"]
+    finally:
+        model.close()
+
+    # Saved-configuration round trip: the pinned HYBRID op_level request rebuilds without a retry.
+    restored = RustForwardPassPerfModel.best_available(json.loads(json.dumps(resolved)))
+    try:
+        again = restored.diagnostics()["provenance"]
+        assert again["config"] == resolved
+        assert again["requested_database_mode"] == "HYBRID"
+        assert again["selected_database_mode"] == "HYBRID"
+        assert again["selection_failures"] == []
+    finally:
+        restored.close()
+
+    # An explicit op_level SILICON request fails with the typed miss.
+    with pytest.raises(
+        PerfDataNotAvailableError,
+        match=r"Mamba2 SILICON data missing for kernel \S+ \(context\) in linear_attention/\S+/mamba2_perf\.parquet",
+    ):
+        RustForwardPassPerfModel.best_available(replace(config, estimation_mode="op_level"))
 
 
 @pytest.mark.integration
