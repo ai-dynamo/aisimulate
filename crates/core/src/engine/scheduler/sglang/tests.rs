@@ -4020,6 +4020,46 @@ mod forward_pass_metrics {
     }
 
     #[test]
+    fn test_prefill_pass_completing_a_new_request_keeps_the_running_batch() {
+        let mut core = SglangCore::new(fpm_args());
+        let request = |id: u128, first_token: u32, max_output_tokens: usize| DirectRequest {
+            cache_salt: None,
+            tokens: (first_token..first_token + 4).collect(),
+            max_output_tokens,
+            output_token_ids: None,
+            uuid: Some(Uuid::from_u128(id)),
+            arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
+        };
+        let (r1, r2, r3) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        core.receive(request(1, 0, 3));
+        let pass1 = core.execute_pass(&mut collector, 0.0);
+
+        // r2 finishes on the token its prefill forward samples; r3 keeps running.
+        core.receive(request(2, 100, 1));
+        core.receive(request(3, 200, 3));
+        let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+        assert_eq!(
+            pass2
+                .output_signals
+                .iter()
+                .map(|s| (s.uuid, s.completed))
+                .collect::<Vec<_>>(),
+            vec![(r2, true), (r3, false)],
+            "only the freshly prefilled requests emit a token"
+        );
+        assert_eq!(
+            core.running.iter().map(|r| r.uuid).collect::<Vec<_>>(),
+            vec![r1, r3],
+            "r1 stays ahead of r3 and the completed r2 leaves the batch"
+        );
+        assert_eq!(core.running[0].output_len(), 1, "r1 did not decode");
+    }
+
+    #[test]
     fn test_mocker_metrics_reports_prefix_cache_reuse() {
         let mut core = SglangCore::new(fpm_args());
 
