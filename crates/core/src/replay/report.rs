@@ -1781,7 +1781,8 @@ impl TraceCollector {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn on_route_immediate(
+    /// Record an actual immediate placement selected by the execution composition.
+    pub fn on_route_immediate(
         &mut self,
         uuid: Uuid,
         pool: ReplayRequestPool,
@@ -1879,7 +1880,8 @@ impl TraceCollector {
         route.placement_replica_id = placement_replica_id;
     }
 
-    pub(crate) fn on_pool_admission_with_tier_attribution(
+    /// Record an observed scheduler admission in its actual execution pool.
+    pub fn on_pool_admission_with_tier_attribution(
         &mut self,
         uuid: Uuid,
         pool: ReplayRequestPool,

@@ -8,7 +8,7 @@
 
 use aisimulate_core::{
     engine::{PassCompletionEffects, PassStartEffects},
-    replay::{ReplayReport, ReplayTerminalStatus, TraceCollector},
+    replay::{ReplayReport, ReplayRequestPool, ReplayTerminalStatus, TraceCollector},
 };
 use uuid::Uuid;
 
@@ -54,6 +54,12 @@ impl BackendReporting {
         self.advance_to(at_ms);
         self.collector
             .on_arrival(request_id, at_ms, input_tokens, output_tokens);
+        // This composition directly submits to one aggregated Engine: there is
+        // no router queue, replica choice, or cross-rank placement operation.
+        self.collector.on_route_immediate(
+            request_id, ReplayRequestPool::Agg, 0, 0, 0, 0, None, None,
+        );
+        self.collector.on_decode_assigned(request_id, 0);
     }
 
     /// Record scheduler admissions, never infer them from selected request IDs.
@@ -64,6 +70,10 @@ impl BackendReporting {
                 admission.request_id,
                 at_ms,
                 admission.reused_input_tokens,
+            );
+            self.collector.on_pool_admission_with_tier_attribution(
+                admission.request_id, ReplayRequestPool::Agg, at_ms,
+                admission.reused_input_tokens, None,
             );
         }
     }
