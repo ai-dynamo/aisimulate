@@ -77,6 +77,13 @@ Direct replay descriptors using a generic canonical timing identity must also
 provide explicit `aic_nextn_accept_rates` on the worker rank. They do not inherit
 the legacy `nextn` acceptance defaults. The rank may omit `aic_nextn`; native
 replay derives it from the canonical scheme. An explicit rank depth must match.
+The shared `EngineLaunchConfig` adapter follows the same rule: canonical
+`nextn` remains zero for registered schemes, while scheduler `aic_nextn` uses
+the resolved draft depth. Saved-timing compatibility checks use these launch
+rules too, including explicit acceptance and capacity provenance. Rust adapters
+can resolve this depth with `ForwardPassSpeculationConfig::replay_depth()`;
+registered schemes require an initialized Python interpreter or the
+`embed-python` feature. Disabled speculation and ngram resolve in Rust.
 The legacy `aic_nextn_accepted` shorthand still requires an explicit rank depth
 to convert the expected count to acceptance rates.
 

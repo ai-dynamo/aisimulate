@@ -527,7 +527,7 @@ impl AicTimingConfig {
                     speculation.kind
                 ),
             }
-            return Ok(crate::py::speculation_replay_depth(speculation)?);
+            return Ok(speculation.replay_depth()?);
         }
         Ok(self.nextn)
     }
@@ -4802,7 +4802,9 @@ fn engine_launch_from_replay_role_json(
     startup_time: Option<f64>,
 ) -> PyResult<String> {
     let convert = || -> anyhow::Result<String> {
-        let role: crate::replay::ReplayRoleConfig = serde_json::from_str(payload)?;
+        let value: serde_json::Value = serde_json::from_str(payload)?;
+        let depth_is_omitted = value.pointer("/rank/aic_nextn").is_none();
+        let role: crate::replay::ReplayRoleConfig = serde_json::from_value(value)?;
         let mut launch = crate::engine::EngineLaunchConfig {
             engine: role.rank,
             dp_size: role.dp_size,
@@ -4826,6 +4828,9 @@ fn engine_launch_from_replay_role_json(
                 provider: "ais".into(),
                 config: serde_json::to_value(canonical)?,
             };
+        }
+        if depth_is_omitted {
+            launch.derive_speculative_depth()?;
         }
         Ok(serde_json::to_string(&launch.normalized()?)?)
     };
