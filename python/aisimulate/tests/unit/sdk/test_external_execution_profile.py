@@ -114,7 +114,7 @@ def profile(tmp_path, monkeypatch):
     return config, payload, publish, root, path
 
 
-def _dsv4_context_table(path):
+def _dsv4_context_table(path, latency):
     """One synthetic row in the module table layout the engine reads (perf_database/dsv4.rs)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
@@ -129,7 +129,7 @@ def _dsv4_context_table(path):
                 "batch_size": [1],
                 "isl": [1024],
                 "step": [0],
-                "latency": [1.0],
+                "latency": [latency],
             }
         ),
         path,
@@ -138,9 +138,13 @@ def _dsv4_context_table(path):
 
 def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted_and_priced(profile, monkeypatch):
     config, payload, publish, root, _ = profile
-    # Construction checks that each module's phase table holds a row.
-    for kind in ("csa", "hca"):
-        _dsv4_context_table(root / f"data/h200_sxm/sparse_attention/vllm/1.0/dsv4_{kind}_context_module_perf.parquet")
+    # Construction checks that each module's phase table holds a row. The two
+    # tables hold different latencies, so the sum below shows that each module
+    # read its own kind's table.
+    for kind, latency in (("csa", 1.0), ("hca", 2.0)):
+        _dsv4_context_table(
+            root / f"data/h200_sxm/sparse_attention/vllm/1.0/dsv4_{kind}_context_module_perf.parquet", latency
+        )
     payload["retained_files"] = [
         {
             "path": str(p.relative_to(root)),
@@ -174,12 +178,12 @@ def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted_and_priced
     publish()
     model = RustForwardPassPerfModel.best_available(config)
     try:
-        # Both modules price the phase: one 1 ms row each at the exact cell,
-        # reported under the shared attention name.
-        assert model.predict_prefill_latency(1, 1024, 0) == 2.0
+        # Both modules price the phase: the 1 ms CSA row plus the 2 ms HCA row
+        # at the exact cell, reported under the shared attention name.
+        assert model.predict_prefill_latency(1, 1024, 0) == 3.0
         [attention] = model.static_phase_diagnostics(batch_size=1, context_length=1024, prefix=0, prefill=True)
         assert attention["name"] == "context_attention"
-        assert (attention["latency_ms"], attention["source"]) == (2.0, "silicon")
+        assert (attention["latency_ms"], attention["source"]) == (3.0, "silicon")
     finally:
         model.close()
 
