@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::VecDeque;
 use std::ops::{Deref, RangeFull};
@@ -19,6 +22,7 @@ use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 pub(super) struct SglangRequest {
     pub(super) uuid: Uuid,
     pub(super) is_decode_handoff: bool,
+    pub(super) retracted: bool,
     pub(super) sequence_tokens: Vec<u32>,
     pub(super) prompt_len: usize,
     pub(super) max_output_tokens: usize,
@@ -45,14 +49,17 @@ impl SglangRequest {
             .checked_add(output_capacity)
             .expect("SGLang request completion length overflow")
             / block_size;
-        let mut kv_lease = RadixRequestLease::default();
+        let mut kv_lease = RadixRequestLease::new(req.cache_salt);
+        let uuid = req.uuid.unwrap_or_else(Uuid::new_v4);
+        kv_lease.request_id = uuid;
         kv_lease.session_id = req.session_id;
         kv_lease.reserve_page_hashes(completion_pages);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);
 
         Self {
-            uuid: req.uuid.unwrap_or_else(Uuid::new_v4),
+            uuid,
             is_decode_handoff: false,
+            retracted: false,
             sequence_tokens,
             prompt_len,
             max_output_tokens,
@@ -137,15 +144,6 @@ impl SglangRequest {
         self.sequence_tokens.push(token);
         self.kv_lease
             .ensure_page_hashes(&self.sequence_tokens, block_size);
-        self.materialized_tokens += 1;
-    }
-
-    /// Append the token that completes the request. Its KV is never computed (SGLang finishes
-    /// the request in `check_finished` right after the forward that sampled it), so it owns no
-    /// slot and `materialized_tokens` is unchanged.
-    pub(super) fn append_final_output_token(&mut self, token: u32) {
-        debug_assert_eq!(self.remaining_output_tokens(), 1);
-        self.sequence_tokens.push(token);
     }
 
     /// Drop the last `count` output tokens: a forward sampled them, but the
@@ -238,6 +236,7 @@ impl SglangRequest {
         debug_assert!(!self.kv_lease.is_active());
         self.materialized_tokens = 0;
         self.allocated_tokens = 0;
+        self.retracted = true;
     }
 }
 
@@ -274,6 +273,11 @@ impl WaitingQueue {
         let request = self.requests.pop_front()?;
         self.stats.remove(request.queued_length());
         Some(request)
+    }
+
+    pub(super) fn insert(&mut self, index: usize, request: SglangRequest) {
+        self.stats.add(request.queued_length());
+        self.requests.insert(index, request);
     }
 
     pub(super) fn remove(&mut self, index: usize) -> Option<SglangRequest> {

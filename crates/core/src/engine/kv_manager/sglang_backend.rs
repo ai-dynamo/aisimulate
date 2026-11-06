@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+
+// Protected-prefix admission capacity follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
@@ -10,12 +13,20 @@
 use crate::engine::belady::BeladyOracle;
 use crate::engine::cache::radix_cache::{KvPageId, NodeId, PrefixMatchHint, RadixCache};
 use crate::engine::common::hashing::{
-    LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
+    LocalBlockHash, SequenceHash, block_hashes_with_salt, compute_next_seq_hash,
 };
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
 use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
 use fixedbitset::FixedBitSet;
+use std::sync::Arc;
+use uuid::Uuid;
+
+mod hicache;
+use crate::engine::cache::radix_cache::HostPrefixMatch;
+use crate::engine::host_offload::HostOffloadObserver;
+use crate::engine::{HostCacheMetrics, SglangHiCacheConfig};
+use hicache::{HiCache, HostLoad};
 
 /// Move-only ownership of a request's SGLang KV state.
 ///
@@ -28,6 +39,8 @@ pub(crate) struct RadixRequestLease {
     pages: Vec<KvPageId>,
     materialized_tokens: usize,
     cached_tokens: usize,
+    /// Coverage already observed as an insertion by this request, including its initial cache hit.
+    host_inserted_tokens: usize,
     /// Radix-cache prefix matched when the request was admitted from the waiting queue. Unlike
     /// `cached_tokens`, this never grows with the request's own chunks or outputs.
     admission_reused_tokens: usize,
@@ -37,9 +50,19 @@ pub(crate) struct RadixRequestLease {
     admission_match_hint: Option<PrefixMatchHint>,
     last_node: Option<NodeId>,
     pub(crate) session_id: Option<String>,
+    pub(crate) request_id: Uuid,
+
+    cache_salt: Option<String>,
 }
 
 impl RadixRequestLease {
+    pub(crate) fn new(cache_salt: Option<String>) -> Self {
+        Self {
+            cache_salt: cache_salt.filter(|salt| !salt.is_empty()),
+            ..Self::default()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn pages(&self) -> &[KvPageId] {
         &self.pages
@@ -83,10 +106,14 @@ impl RadixRequestLease {
             return;
         }
         let first_new_token = self.page_hashes.len() * page_size;
-        self.page_hashes.extend(compute_block_hash_for_seq(
-            &token_ids[first_new_token..complete_pages * page_size],
-            page_size,
-        ));
+        self.page_hashes.extend(
+            block_hashes_with_salt(
+                &token_ids[first_new_token..complete_pages * page_size],
+                page_size,
+                self.cache_salt.as_deref(),
+            )
+            .map(LocalBlockHash),
+        );
     }
 
     /// Forget the hashes of pages past `complete_pages` after the sequence shrank.
@@ -118,11 +145,15 @@ impl RadixRequestLease {
             pages,
             materialized_tokens,
             cached_tokens,
+            host_inserted_tokens: 0,
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
             admission_match_hint: None,
             last_node: Some(last_node),
             session_id: None,
+            request_id: Uuid::nil(),
+
+            cache_salt: None,
         }
     }
 }
@@ -155,6 +186,7 @@ pub struct SglangKvManager {
     page_hash_present: FixedBitSet,
     /// Committed cache events, coalesced until the scheduler reaches a publish boundary.
     queued_events: Vec<KvEvent>,
+    hicache: Option<HiCache>,
 }
 
 pub struct DecodeTokenReservation {
@@ -248,6 +280,7 @@ impl SglangKvManager {
             page_to_block_hash: vec![0; event_pages],
             page_hash_present: FixedBitSet::with_capacity(event_pages),
             queued_events: Vec::new(),
+            hicache: None,
         }
     }
 
@@ -273,6 +306,177 @@ impl SglangKvManager {
         &self.cache
     }
 
+    pub(crate) fn enable_hicache(&mut self, config: SglangHiCacheConfig, block_bytes: usize) {
+        assert!(self.enable_prefix_caching);
+        self.cache.enable_hicache();
+        if config.write_policy == crate::engine::SglangHiCacheWritePolicy::WriteBack {
+            self.cache.enable_host_duplicate_tracking();
+        }
+        self.hicache = Some(HiCache::new(
+            config,
+            block_bytes,
+            !self.kv_event_publishers.is_empty(),
+        ));
+    }
+
+    pub(crate) fn host_cache_metrics(&self) -> Option<HostCacheMetrics> {
+        self.hicache.as_ref().map(HiCache::metrics)
+    }
+
+    pub(crate) fn hicache_enabled(&self) -> bool {
+        self.hicache.is_some()
+    }
+
+    pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        if let Some(host) = &mut self.hicache {
+            host.set_observer(observer);
+        }
+    }
+
+    pub(crate) fn begin_host_pass(&mut self, now_ms: f64) -> bool {
+        let progressed = self
+            .hicache
+            .as_mut()
+            .is_some_and(|host| host.begin_pass(&mut self.cache, now_ms));
+        self.collect_host_events();
+        progressed
+    }
+
+    pub(crate) fn advance_host(&mut self, now_ms: f64) -> bool {
+        let progressed = self
+            .hicache
+            .as_mut()
+            .is_some_and(|host| host.advance(&mut self.cache, now_ms));
+        self.collect_host_events();
+        progressed
+    }
+
+    pub(crate) fn complete_host_boundary(&mut self, now_ms: f64) -> bool {
+        let Some(host) = &mut self.hicache else {
+            return false;
+        };
+        let progressed = host.complete_boundary(&mut self.cache, now_ms);
+        self.collect_host_events();
+        self.flush_events();
+        progressed
+    }
+
+    pub(crate) fn host_deadline_ms(&self) -> Option<f64> {
+        self.hicache.as_ref().and_then(HiCache::next_deadline_ms)
+    }
+
+    pub(crate) fn has_host_work(&self) -> bool {
+        self.hicache.as_ref().is_some_and(HiCache::has_pending_work)
+    }
+
+    pub(crate) fn has_prepared_host_stores(&self) -> bool {
+        self.hicache
+            .as_ref()
+            .is_some_and(HiCache::has_prepared_stores)
+    }
+
+    pub(crate) fn host_clock_ms(&self) -> f64 {
+        self.hicache.as_ref().map_or(0.0, HiCache::clock_ms)
+    }
+
+    pub(crate) fn host_load_end_ms(&self) -> f64 {
+        self.hicache.as_ref().map_or(0.0, HiCache::pass_load_end_ms)
+    }
+
+    fn collect_host_events(&mut self) {
+        let Some(host) = &mut self.hicache else {
+            return;
+        };
+        for data in host.take_events() {
+            self.enqueue_event(KvEvent {
+                event_id: 0,
+                data,
+                dp_rank: self.dp_rank,
+                tier: KvEventTier::HostPinned,
+            });
+        }
+    }
+
+    fn backup_prefix(
+        &mut self,
+        anchor: NodeId,
+        inserted_tokens: usize,
+        owner: Uuid,
+        session: Option<&str>,
+        cache_salt: Option<&str>,
+    ) {
+        if let Some(host) = &mut self.hicache {
+            host.on_insert(
+                &mut self.cache,
+                anchor,
+                inserted_tokens,
+                owner,
+                session,
+                cache_salt,
+            );
+        }
+        self.collect_host_events();
+    }
+
+    pub(crate) fn needs_host_insert(&self, lease: &RadixRequestLease, tokens: usize) -> bool {
+        self.hicache.is_some()
+            && tokens / self.cache.page_size() * self.cache.page_size() > lease.host_inserted_tokens
+    }
+
+    pub(crate) fn admission_host_match(
+        &self,
+        lease: &mut RadixRequestLease,
+        pages: usize,
+    ) -> HostPrefixMatch {
+        if self.hicache.is_some() {
+            self.cache.host_prefix_match(&lease.page_hashes[..pages])
+        } else {
+            HostPrefixMatch {
+                device_tokens: self.admission_prefix_match(lease, pages),
+                host_tokens: 0,
+            }
+        }
+    }
+
+    /// `Some(0)` requires recomputing the selected shape without a host hit;
+    /// `None` means physical capacity cannot support the approved load and extension.
+    pub(crate) fn load_host_prefix(
+        &mut self,
+        lease: &RadixRequestLease,
+        token_ids: &[u32],
+        prefix_tokens: usize,
+        required_free_tokens: usize,
+    ) -> Option<usize> {
+        let page_size = self.cache.page_size();
+        let host = self.hicache.as_mut()?;
+        let result = host.load(
+            &mut self.cache,
+            &lease.page_hashes[..prefix_tokens / page_size],
+            lease.request_id,
+            required_free_tokens,
+        );
+        self.collect_host_events();
+        self.publish_removed_pages(&result.evicted_pages);
+        let loaded = match result.outcome {
+            HostLoad::Loaded(tokens) => tokens,
+            HostLoad::Recompute => return Some(0),
+            HostLoad::CapacityBlocked => return None,
+        };
+        let keys = &lease.page_hashes[..prefix_tokens / self.cache.page_size()];
+        let (_, anchor) = self.cache.match_prefix_hashes_and_lock(keys);
+        let pages = self.collect_path_pages(anchor);
+        self.publish_stored_hashes(
+            keys,
+            &pages,
+            prefix_tokens - loaded,
+            token_ids,
+            lease.session_id.as_deref(),
+            lease.cache_salt.as_deref(),
+        );
+        self.cache.dec_lock_ref(anchor);
+        Some(loaded)
+    }
+
     /// Read-only match of a waiting request's first `pages` page hashes
     /// (`Req.init_next_round_input`), resumed from the lease's previous match.
     pub(crate) fn admission_prefix_match(
@@ -286,6 +490,20 @@ impl SglangKvManager {
             .prefix_match_hashes_len_hinted(page_keys, &mut lease.admission_match_hint);
         debug_assert_eq!(matched, self.cache.prefix_match_hashes_len(page_keys));
         matched
+    }
+
+    /// Capacity while the candidate's matched prefix is protected from eviction.
+    /// The caller selects a shape before acquiring its persistent request lease.
+    pub(crate) fn protected_admission_capacity(
+        &mut self,
+        lease: &RadixRequestLease,
+        prefix_tokens: usize,
+    ) -> usize {
+        let pages = prefix_tokens / self.cache.page_size();
+        let (_, last_node) = self.match_prefix_hashes_and_lock(&lease.page_hashes[..pages]);
+        let capacity = self.cache.available_tokens() + self.cache.evictable_size;
+        self.cache.dec_lock_ref(last_node);
+        capacity
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
@@ -353,6 +571,9 @@ impl SglangKvManager {
         let matchable_hashes =
             &materialized_hashes[..(max_prefix_tokens.min(token_ids.len()) / page_size)];
         let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(matchable_hashes);
+        if let Some(host) = &mut self.hicache {
+            host.depend_on_prefix(&self.cache, last_node);
+        }
         let required_pages = token_ids.len().div_ceil(page_size) - prefix_len / page_size;
         let required_tokens = required_pages * page_size;
 
@@ -477,9 +698,45 @@ impl SglangKvManager {
             lease.cached_tokens,
             token_ids,
             lease.session_id.as_deref(),
+            lease.cache_salt.as_deref(),
         );
         lease.last_node = Some(new_last_node);
         lease.cached_tokens = complete_len;
+    }
+
+    /// Start a backup only after the forward that produced these pages is observed.
+    pub(crate) fn backup_cached_prefix(&mut self, lease: &mut RadixRequestLease, tokens: usize) {
+        if self.hicache.is_none() || !lease.is_active() {
+            return;
+        }
+        let pages = tokens.min(lease.cached_tokens) / self.cache.page_size();
+        let complete_tokens = pages * self.cache.page_size();
+        if complete_tokens <= lease.host_inserted_tokens {
+            return;
+        }
+        let inserted_tokens = lease.host_inserted_tokens;
+        lease.host_inserted_tokens = complete_tokens;
+        if complete_tokens == lease.cached_tokens {
+            self.backup_prefix(
+                lease.last_node(),
+                inserted_tokens,
+                lease.request_id,
+                lease.session_id.as_deref(),
+                lease.cache_salt.as_deref(),
+            );
+            return;
+        }
+        let (_, anchor) = self
+            .cache
+            .match_prefix_hashes_and_lock(&lease.page_hashes[..pages]);
+        self.backup_prefix(
+            anchor,
+            inserted_tokens,
+            lease.request_id,
+            lease.session_id.as_deref(),
+            lease.cache_salt.as_deref(),
+        );
+        self.cache.dec_lock_ref(anchor);
     }
 
     pub(crate) fn extend_decode(
@@ -533,6 +790,9 @@ impl SglangKvManager {
             lease.cached_tokens,
             token_ids,
             lease.session_id.as_deref(),
+            lease.request_id,
+            lease.host_inserted_tokens,
+            lease.cache_salt.as_deref(),
         );
     }
 
@@ -553,7 +813,8 @@ impl SglangKvManager {
     ///
     /// Inserts the full token sequence so future requests can reuse it,
     /// publishes the pages the tree retained, frees the request's duplicates
-    /// of pages the tree already held, then unlocks the path.
+    /// of pages the tree already held, starts the HiCache backup, then
+    /// unlocks the path.
     fn cache_finished_hashes(
         &mut self,
         page_hashes: &[LocalBlockHash],
@@ -562,6 +823,10 @@ impl SglangKvManager {
         first_new_token: usize,
         token_ids: &[u32],
         session_id: Option<&str>,
+        owner: Uuid,
+        inserted_tokens: usize,
+
+        cache_salt: Option<&str>,
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
         let new_last_node =
@@ -569,8 +834,22 @@ impl SglangKvManager {
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
         let duplicate_pages =
             self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
+        self.publish_stored_hashes(
+            page_hashes,
+            pages,
+            first_new_token,
+            token_ids,
+            session_id,
+            cache_salt,
+        );
         self.free_pages(&duplicate_pages);
+        self.backup_prefix(
+            new_last_node,
+            inserted_tokens,
+            owner,
+            session_id,
+            cache_salt,
+        );
         self.cache.dec_lock_ref(last_node);
     }
 
@@ -590,6 +869,7 @@ impl SglangKvManager {
         first_new_token: usize,
         token_ids: &[u32],
         session_id: Option<&str>,
+        cache_salt: Option<&str>,
     ) -> NodeId {
         let block_size = self.cache.page_size();
         let complete_len = page_hashes.len() * block_size;
@@ -615,7 +895,14 @@ impl SglangKvManager {
         }
         let duplicate_pages =
             self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
+        self.publish_stored_hashes(
+            page_hashes,
+            pages,
+            first_new_token,
+            token_ids,
+            session_id,
+            cache_salt,
+        );
         self.free_pages(&duplicate_pages);
         if new_last_node != last_node {
             self.cache.dec_lock_ref(last_node);
@@ -742,6 +1029,7 @@ impl SglangKvManager {
         lease.pages.clear();
         lease.materialized_tokens = 0;
         lease.cached_tokens = 0;
+        lease.host_inserted_tokens = 0;
         capacity_improved
     }
 
@@ -872,7 +1160,11 @@ impl SglangKvManager {
 
     /// Evict tokens from the cache, publish BlockRemoved events, and log a trace.
     pub fn evict(&mut self, num_tokens: usize) {
-        let (evicted, evicted_pages) = self.cache.evict(num_tokens);
+        let (evicted, evicted_pages) = match &mut self.hicache {
+            Some(host) => host.evict(&mut self.cache, num_tokens, Uuid::nil()),
+            None => self.cache.evict(num_tokens),
+        };
+        self.collect_host_events();
         if !evicted_pages.is_empty() {
             self.publish_removed_pages(&evicted_pages);
         }
@@ -910,6 +1202,7 @@ impl SglangKvManager {
         first_new_token: usize,
         token_ids: &[u32],
         session_id: Option<&str>,
+        cache_salt: Option<&str>,
     ) -> usize {
         if self.kv_event_publishers.is_empty() {
             return 0;
@@ -978,6 +1271,7 @@ impl SglangKvManager {
                 start_position: None,
                 blocks,
                 session_id: session_id.map(str::to_owned),
+                cache_salt: cache_salt.map(str::to_owned),
             }),
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
@@ -1036,6 +1330,7 @@ fn merge_into_tail(tail: &mut KvEvent, event: KvEvent) -> Option<KvEvent> {
         }
         (KvEventData::Stored(tail_stored), KvEventData::Stored(stored))
             if tail_stored.session_id == stored.session_id
+                && tail_stored.cache_salt == stored.cache_salt
                 && tail_stored.blocks.last().map(|block| block.block_hash)
                     == stored.parent_hash =>
         {
@@ -1090,6 +1385,89 @@ mod tests {
     }
 
     #[test]
+    fn cache_salt_survives_retraction_and_eviction_removes_the_published_hashes() {
+        let sink = Arc::new(MockSink::new());
+        let mut manager = SglangKvManager::new(4, 2, KvEventPublishers::new(Some(sink.clone())), 0);
+        let tokens = [1, 2, 3, 4];
+        let mut first = RadixRequestLease::new(Some("alpha".into()));
+        assert_eq!(
+            manager.allocate_for_request_lease(&tokens, &mut first),
+            Some(0)
+        );
+        manager.extend_cached_prefix(&tokens[..2], &mut first);
+        manager.retract_in_place(&mut first);
+        assert_eq!(
+            manager.allocate_for_request_lease(&tokens, &mut first),
+            Some(2)
+        );
+        manager.finish(&tokens, first);
+        manager.flush_events();
+        let first_events = sink.clone_events();
+        let [
+            KvEvent {
+                data: KvEventData::Stored(first_store),
+                ..
+            },
+        ] = first_events.as_slice()
+        else {
+            panic!("expected one coalesced store: {first_events:?}");
+        };
+        assert_eq!(first_store.cache_salt.as_deref(), Some("alpha"));
+        assert_eq!(first_store.blocks.len(), 2);
+
+        let mut same = RadixRequestLease::new(Some("alpha".into()));
+        same.ensure_page_hashes(&tokens, 2);
+        let reservation = manager
+            .reserve_destination_lease(same.page_hashes(), tokens.len())
+            .unwrap();
+        assert_eq!(reservation.prefix_len, tokens.len());
+        assert_eq!(reservation.transferable_prompt_tokens(), 0);
+        manager.cancel_destination(reservation);
+
+        let mut second = RadixRequestLease::new(Some("beta".into()));
+        second.ensure_page_hashes(&tokens, 2);
+        let reservation = manager
+            .reserve_destination_lease(second.page_hashes(), tokens.len())
+            .unwrap();
+        assert_eq!(reservation.prefix_len, 0);
+        assert_eq!(reservation.transferable_prompt_tokens(), tokens.len());
+        manager.activate_destination_lease(reservation, &tokens, &mut second);
+        manager.finish(&tokens, second);
+        manager.flush_events();
+        let events = sink.clone_events();
+        let [
+            _,
+            KvEvent {
+                data: KvEventData::Removed { block_hashes },
+                ..
+            },
+            KvEvent {
+                data: KvEventData::Stored(second_store),
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected eviction before the other namespace store: {events:?}");
+        };
+        let mut expected = first_store
+            .blocks
+            .iter()
+            .map(|block| block.block_hash)
+            .collect::<Vec<_>>();
+        let mut removed = block_hashes.clone();
+        expected.sort_unstable();
+        removed.sort_unstable();
+        assert_eq!(removed, expected);
+        assert_eq!(second_store.cache_salt.as_deref(), Some("beta"));
+        assert!(
+            second_store
+                .blocks
+                .iter()
+                .all(|block| !expected.contains(&block.block_hash))
+        );
+    }
+
+    #[test]
     fn dense_page_metadata_is_allocated_only_for_kv_events() {
         let disabled = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
         assert_eq!(disabled.page_metadata_len(), 0);
@@ -1097,6 +1475,260 @@ mod tests {
         let sink = Arc::new(MockSink::new());
         let enabled = SglangKvManager::new(64, 4, KvEventPublishers::new(Some(sink)), 0);
         assert_eq!(enabled.page_metadata_len(), 16);
+    }
+
+    fn hicache_manager(host_pages: usize, d2h: f64, h2d: f64) -> (SglangKvManager, Arc<MockSink>) {
+        hicache_policy_manager(
+            host_pages,
+            d2h,
+            h2d,
+            crate::engine::SglangHiCacheWritePolicy::WriteThrough,
+        )
+    }
+
+    fn hicache_policy_manager(
+        host_pages: usize,
+        d2h: f64,
+        h2d: f64,
+        policy: crate::engine::SglangHiCacheWritePolicy,
+    ) -> (SglangKvManager, Arc<MockSink>) {
+        let sink = Arc::new(MockSink::new());
+        let mut manager =
+            SglangKvManager::new(64, 4, KvEventPublishers::new(Some(sink.clone())), 0);
+        manager.enable_hicache(
+            SglangHiCacheConfig {
+                d2h_bandwidth_gbps: d2h,
+                h2d_bandwidth_gbps: h2d,
+                write_policy: policy,
+                ..SglangHiCacheConfig::new(host_pages)
+            },
+            1_000_000,
+        );
+        (manager, sink)
+    }
+
+    #[test]
+    fn hicache_selective_counts_each_requests_observed_insert_once() {
+        let (mut manager, _) = hicache_policy_manager(
+            16,
+            0.0,
+            0.0,
+            crate::engine::SglangHiCacheWritePolicy::WriteThroughSelective,
+        );
+        let tokens = (0..16).collect::<Vec<_>>();
+        let mut first = manager.allocate_for_request(&tokens).unwrap().lease;
+        manager.extend_cached_prefix(&tokens[..8], &mut first);
+        manager.backup_cached_prefix(&mut first, 8);
+        manager.backup_cached_prefix(&mut first, 8);
+        manager.extend_cached_prefix(&tokens, &mut first);
+        manager.backup_cached_prefix(&mut first, 16);
+        manager.finish(&tokens, first);
+        manager.complete_host_boundary(0.0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 0);
+        let mut second = manager.allocate_for_request(&tokens[..12]).unwrap().lease;
+        manager.backup_cached_prefix(&mut second, 12);
+        manager.complete_host_boundary(0.0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 3);
+        manager.abort(second);
+    }
+
+    #[test]
+    fn hicache_write_back_copies_only_the_evicted_leaf_and_waits_for_ack() {
+        let (mut manager, sink) = hicache_policy_manager(
+            8,
+            1.0,
+            1.0,
+            crate::engine::SglangHiCacheWritePolicy::WriteBack,
+        );
+        let tokens = (0..16).collect::<Vec<_>>();
+        let first = manager.allocate_for_request(&tokens[..8]).unwrap();
+        manager.finish(&tokens[..8], first.lease);
+        let second = manager.allocate_for_request(&tokens).unwrap();
+        manager.finish(&tokens, second.lease);
+        manager.complete_host_boundary(0.0);
+        assert!(!manager.has_host_work());
+        manager.evict(1);
+        assert_eq!(manager.host_clock_ms(), 2.0);
+        assert_eq!(manager.cache.prefix_match_len(&tokens), 8);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 2);
+        manager.flush_events();
+        let events = sink.clone_events();
+        let host_store = events
+            .iter()
+            .position(|event| {
+                event.tier == KvEventTier::HostPinned
+                    && matches!(event.data, KvEventData::Stored(_))
+            })
+            .unwrap();
+        let gpu_remove = events
+            .iter()
+            .position(|event| {
+                event.tier == KvEventTier::Device
+                    && matches!(event.data, KvEventData::Removed { .. })
+            })
+            .unwrap();
+        assert!(host_store < gpu_remove);
+        manager.evict(1);
+        assert_eq!(manager.host_clock_ms(), 4.0);
+        assert_eq!(manager.cache.prefix_match_len(&tokens), 0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 4);
+    }
+
+    #[test]
+    fn hicache_write_back_reclaims_a_gpu_locked_duplicate_before_a_host_only_leaf() {
+        let (mut manager, _) = hicache_policy_manager(
+            8,
+            0.0,
+            0.0,
+            crate::engine::SglangHiCacheWritePolicy::WriteBack,
+        );
+        let a = (0..16).collect::<Vec<_>>();
+        let b = (100..116).collect::<Vec<_>>();
+        let c = (200..216).collect::<Vec<_>>();
+        for tokens in [&a, &b] {
+            let lease = manager.allocate_for_request(tokens).unwrap().lease;
+            manager.finish(tokens, lease);
+            manager.evict(16);
+        }
+        let mut held = lease_with_hashes(&a, 4);
+        assert_eq!(manager.load_host_prefix(&held, &a, 16, 16), Some(16));
+        manager.complete_host_boundary(0.0);
+        manager.allocate_for_request_lease(&a, &mut held).unwrap();
+        let a_anchor = held.last_node();
+        let lease = manager.allocate_for_request(&c).unwrap().lease;
+        manager.finish(&c, lease);
+        manager.evict(16);
+        assert_eq!(manager.cache.host_backup(a_anchor), None);
+        assert_eq!(manager.cache.prefix_match_len(&a), 16);
+        assert_eq!(
+            manager
+                .cache
+                .host_prefix_match(&manager.cache.page_hashes(&b))
+                .host_tokens,
+            16
+        );
+        assert_eq!(
+            manager
+                .cache
+                .host_prefix_match(&manager.cache.page_hashes(&c))
+                .host_tokens,
+            16
+        );
+        manager.abort(held);
+    }
+
+    #[test]
+    fn hicache_finished_requests_keep_backups_pinned_until_one_step_ack() {
+        let (mut manager, sink) = hicache_manager(16, 1.0, 1.0);
+        manager.begin_host_pass(0.0);
+        for tokens in [(0..16).collect::<Vec<_>>(), (100..108).collect()] {
+            let mut allocated = manager.allocate_for_request(&tokens).unwrap();
+            manager.extend_cached_prefix(&tokens, &mut allocated.lease);
+            manager.finish(&tokens, allocated.lease);
+        }
+        assert_eq!(manager.cache.protected_size, 24);
+        manager.complete_host_boundary(10.0);
+        assert_eq!(manager.host_deadline_ms(), Some(16.0));
+        manager.evict(64);
+        assert_eq!(manager.cache.available_tokens(), 40);
+        manager.advance_host(15.0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 0);
+        manager.advance_host(16.0);
+        manager.flush_events();
+        assert_eq!(manager.cache.protected_size, 0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 6);
+        let host_stored = sink
+            .clone_events()
+            .into_iter()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .flat_map(|event| match event.data {
+                KvEventData::Stored(stored) => stored.blocks,
+                _ => Vec::new(),
+            })
+            .count();
+        assert_eq!(host_stored, 6);
+        assert!(!manager.has_host_work());
+    }
+
+    #[test]
+    fn hicache_load_survives_cancellation_and_split_with_matching_event_hashes() {
+        let (mut manager, sink) = hicache_manager(16, 0.0, 1.0);
+        let tokens = (0..20).collect::<Vec<_>>();
+        let cached = manager.allocate_for_request(&tokens[..16]).unwrap();
+        manager.finish(&tokens[..16], cached.lease);
+        manager.complete_host_boundary(0.0);
+        manager.evict(16);
+        let mut lease = lease_with_hashes(&tokens, 4);
+        assert_eq!(
+            manager.admission_host_match(&mut lease, 4),
+            HostPrefixMatch {
+                device_tokens: 0,
+                host_tokens: 16
+            }
+        );
+        manager.begin_host_pass(1.0);
+        assert_eq!(manager.load_host_prefix(&lease, &tokens, 16, 24), Some(16));
+        assert_eq!(manager.host_load_end_ms(), 5.0);
+        assert_eq!(
+            manager.allocate_for_request_lease_capped(&tokens, &mut lease, 16),
+            Some(16)
+        );
+        let mut second = lease_with_hashes(&tokens[..8], 4);
+        assert_eq!(
+            manager.allocate_for_request_lease(&tokens[..8], &mut second),
+            Some(8)
+        );
+        manager.abort(lease);
+        manager.abort(second);
+        manager.evict(64);
+        assert_eq!(manager.cache.protected_size, 16);
+        manager.advance_host(5.0);
+        manager.evict(64);
+        manager.flush_events();
+        assert_eq!(manager.cache.available_tokens(), 64);
+        assert_eq!(manager.cache.protected_size, 0);
+        let events = sink.clone_events();
+        let hashes = |tier| {
+            events
+                .iter()
+                .filter(|event| event.tier == tier)
+                .flat_map(|event| match &event.data {
+                    KvEventData::Stored(stored) => stored
+                        .blocks
+                        .iter()
+                        .map(|block| block.block_hash)
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let host = hashes(KvEventTier::HostPinned);
+        assert_eq!(host.len(), 4);
+        assert_eq!(hashes(KvEventTier::Device), [host.clone(), host].concat());
+        assert!(!manager.has_host_work());
+    }
+
+    #[test]
+    fn hicache_host_reclaim_is_non_atomic_when_a_new_edge_cannot_fit() {
+        let (mut manager, _) = hicache_manager(2, 0.0, 0.0);
+        let old = (0..8).collect::<Vec<_>>();
+        let cached = manager.allocate_for_request(&old).unwrap();
+        manager.finish(&old, cached.lease);
+        manager.complete_host_boundary(0.0);
+        manager.evict(8);
+        let new = (100..112).collect::<Vec<_>>();
+        let allocated = manager.allocate_for_request(&new).unwrap();
+        manager.finish(&new, allocated.lease);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 0);
+        assert_eq!(
+            manager
+                .cache
+                .host_prefix_match(&manager.cache.page_hashes(&old))
+                .host_tokens,
+            0
+        );
+        assert_eq!(manager.cache.prefix_match_len(&new), 12);
+        assert!(!manager.has_host_work());
     }
 
     #[test]
@@ -1506,7 +2138,7 @@ mod tests {
         let tokens = [1, 2, 3, 4];
         let hashes = compute_block_hash_for_seq(&tokens, 4);
         let pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
-        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3], None);
+        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3], None, None);
     }
 
     #[rstest::rstest]
@@ -1644,17 +2276,17 @@ mod tests {
         let first = mgr.allocate_for_request(&tokens).unwrap();
         let hashes = compute_block_hash_for_seq(&tokens, 2);
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None, None),
             1
         );
         mgr.flush_events();
-        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[], None), 0);
+        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[], None, None), 0);
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None, None),
             0
         );
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens, None),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens, None, None),
             0
         );
         mgr.publish_removed_pages(&[]);
@@ -1701,17 +2333,32 @@ mod tests {
                 &pages[..1],
                 0,
                 &tokens,
-                None
+                None,
+                None,
             ),
             1
         );
         mgr.flush_events();
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
+            mgr.publish_stored_hashes(
+                lease.page_hashes_through(8, 4),
+                &pages,
+                0,
+                &tokens,
+                None,
+                None
+            ),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
+            mgr.publish_stored_hashes(
+                lease.page_hashes_through(8, 4),
+                &pages,
+                0,
+                &tokens,
+                None,
+                None
+            ),
             0
         );
 
@@ -2002,6 +2649,7 @@ mod tests {
                 2,
                 &tokens,
                 None,
+                None,
             )
         }));
 
@@ -2027,6 +2675,7 @@ mod tests {
                 last_node,
                 0,
                 &tokens,
+                None,
                 None,
             )
         }));

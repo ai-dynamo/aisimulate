@@ -93,6 +93,8 @@ def _engine_args(*, role="aggregated", backend="vllm", timing=None):
         "aic_attention_dp_size": 1,
         "block_size": 4,
         "num_gpu_blocks": 16,
+        # These toy pools cannot hold SGLang's default 512-token decode reserve.
+        **({"sglang": {"num_reserved_decode_tokens": 0}} if backend == "sglang" else {}),
         "timing_model": timing or {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0},
     }
 

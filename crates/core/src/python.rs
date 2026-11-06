@@ -3,6 +3,7 @@
 
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -4831,6 +4832,35 @@ fn engine_launch_from_replay_role_json(
     convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
+/// Report each counted Weka request's `(input, output)` lengths to `on_request`.
+///
+/// An exception from `on_request` stops the scan before more input is read
+/// and propagates unchanged.
+#[pyfunction]
+fn scan_weka_requests(
+    py: Python<'_>,
+    path: PathBuf,
+    block_size: u64,
+    on_request: Py<PyAny>,
+) -> PyResult<()> {
+    let mut raised = None;
+    let scanned = py.allow_threads(|| {
+        crate::replay::loadgen::scan_weka_requests(&path, block_size, &mut |input, output| {
+            Python::with_gil(|py| match on_request.call1(py, (input, output)) {
+                Ok(_) => ControlFlow::Continue(()),
+                Err(error) => {
+                    raised = Some(error);
+                    ControlFlow::Break(())
+                }
+            })
+        })
+    });
+    if let Some(error) = raised {
+        return Err(error);
+    }
+    scanned.map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -4841,6 +4871,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_timing_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
+    module.add_function(wrap_pyfunction!(scan_weka_requests, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
 }
@@ -5483,11 +5514,15 @@ mod tests {
         .unwrap();
         for backend in ["vllm", "sglang"] {
             for disagg in [false, true] {
-                let rank = serde_json::json!({
+                let mut rank = serde_json::json!({
                     "backend": backend, "block_size": 4, "num_gpu_blocks": 64,
                     "aic_nextn": 3, "aic_nextn_accept_rates": "1,0.78,0",
                     "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
                 });
+                if backend == "sglang" {
+                    // Keep this toy pool below the production decode reservation.
+                    rank["sglang"] = serde_json::json!({"num_reserved_decode_tokens": 0});
+                }
                 let (topology, engine) = if disagg {
                     (
                         serde_json::json!({"kind": "disaggregated", "prefill": {"initial_workers": 1}, "decode": {"initial_workers": 1}}),
@@ -5664,10 +5699,14 @@ mod tests {
             // Exercise all three importers through the actual native P/D
             // entrypoint. Standard Dynamo remains a non-agentic workload.
             for backend in ["vllm", "sglang"] {
-                let rank = serde_json::json!({
+                let mut rank = serde_json::json!({
                     "backend": backend, "block_size": 4, "num_gpu_blocks": 16,
                     "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
                 });
+                if backend == "sglang" {
+                    // Keep this toy pool below the production decode reservation.
+                    rank["sglang"] = serde_json::json!({"num_reserved_decode_tokens": 0});
+                }
                 let mut payload = serde_json::json!({
                     "spec": {
                         "version": 1,
@@ -6548,6 +6587,7 @@ mod tests {
                 SchedulerCommand::new(
                     0,
                     Command::Submit(Request {
+                        cache_salt: None,
                         request_id: uuid::Uuid::from_u128(1),
                         tokens: vec![1; 12],
                         max_output_tokens: 1,
@@ -7090,6 +7130,7 @@ mod tests {
                         SchedulerCommand::new(
                             0,
                             Command::Submit(Request {
+                                cache_salt: None,
                                 request_id: uuid::Uuid::from_u128(id),
                                 tokens: (0..length).map(|token| token as u32).collect(),
                                 max_output_tokens: 2,
@@ -10082,6 +10123,7 @@ mod tests {
             record_per_request: true,
             sla: Default::default(),
             requests: vec![ReplayRequest {
+                cache_salt: None,
                 id: "authored-id".into(),
                 arrival_time_ms: 0.0,
                 input_tokens: 4,

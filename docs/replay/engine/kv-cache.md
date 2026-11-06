@@ -44,6 +44,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 |---|---|---|---|
 | `block_size` | vLLM `64`, SGLang `1`, TensorRT-LLM `32` | Searchable; fixed by default | Tokens per block. vLLM and TensorRT-LLM require at least 2. |
 | `prefix_caching` | `true` | fixed | Keep completed prompt blocks for reuse by later requests. |
+| `decode_radix_cache` | `false` | fixed | SGLang `decode` only. Enables the decode worker's radix cache (`--disaggregation-decode-enable-radix-cache`); requires `prefix_caching: true` and no speculative decoding. See [SGLang decode radix cache](#sglang-decode-radix-cache). |
 | `bytes_per_token` | `auto` | fixed | KV bytes per token on one TP shard. `auto` derives it from the model, KV precision and this role's parallelism. |
 | `capacity.type` | `default` | fixed | `default` sizes G1 from GPU memory; `fixed` uses `blocks` or `bytes`. |
 | `capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`, SGLang `0.88` | Searchable; fixed by default | In `(0, 1]`. `default` capacity only. Same meaning as vLLM `gpu_memory_utilization`, SGLang `mem_fraction_static`, TensorRT-LLM `free_gpu_memory_fraction`. |
@@ -51,6 +52,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `capacity.blocks` | Unset | fixed | G1 blocks per attention-DP rank. `fixed` capacity only. |
 | `capacity.bytes` | Unset | predict only | G1 bytes per attention-DP rank, instead of `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, unless `state_cache: {}` infers them. |
 | `host_offload` | Unset (off) | fixed | G2 block; see [host offload](#host-offload-g2). |
+| `hicache` | Unset (off) | Rejected | SGLang host KV cache for aggregated prediction; see [SGLang HiCache](#sglang-hicache). |
 | `g3_offload` | Unset (off) | Rejected | G3 block; see [G3 offload](#g3-offload). |
 | `kvcr` | Unset (off) | Rejected | KVCR block; see [KVCR peer fetch](#kvcr-peer-fetch). |
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
@@ -101,6 +103,29 @@ requests by descending output length and then ascending prompt length, retracts
 from the end, and evicts unused cache toward a 20-token reserve per survivor.
 These contracts follow [SGLang v0.5.20](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e).
 
+### SGLang decode radix cache
+
+An SGLang decode server runs a chunk cache unless it is launched with
+`--disaggregation-decode-enable-radix-cache`, which is off by default, so an
+SGLang `decode` worker caches nothing unless `decode_radix_cache: true` is set.
+Without it, transferred prompts and decoded output stay private to their
+request, the worker publishes no KV events, and every transfer moves the whole
+prompt. With it, the worker reuses cached prefixes and publishes a transferred
+prompt at running admission, as described above. Like SGLang, the simulator
+rejects the decode radix cache with speculative decoding. An SGLang decode
+worker always serves its waiting queue first-come first-served. This follows
+[SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d)
+(`arg_groups/pd_disaggregation_hook.py`, `disaggregation/decode.py`).
+
+For raw Sweeper `SearchSpace` inputs, `decode_radix_cache: true` requires
+`decode_enable_prefix_caching: true` and no speculation when the domain includes
+SGLang disaggregated candidates. Validation rejects invalid combinations before
+enumeration; deployment lowering also checks direct sample inputs. Analytical
+AFD and AFD+P/D do not model this cache and reject the setting. A sweep may include other backends,
+whose samples omit the SGLang-only radix flag. The recommendation path carries
+both controls from the worker's `kv_cache` configuration. A search with no
+SGLang backend rejects `decode_radix_cache: true`.
+
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
 
@@ -118,8 +143,87 @@ request itself computed, which raises `reused_input_tokens` but not
 `first_admission_reused_input_tokens`; the summary's
 `first_admission_prefix_cache_reused_ratio` aggregates the latter.
 
+### SGLang request cache salt
+
+Native `Request`, authored Rust `ReplaySpec.requests`, and configured inline
+Python requests accept this per-request field:
+
+| Field | Default | Rules |
+| --- | --- | --- |
+| `cache_salt` | Absent | Optional string. Empty is equivalent to absent. Nonempty salts require the native SGLang backend. |
+
+Requests reuse a prefix only within the same salt namespace, even when their
+token IDs match. The namespace also applies to LPM scores, waiting-queue
+deduplication, P/D destination matching, and Belady input-demand forecasts.
+Session IDs remain attribution and do not separate cache contents.
+Built-in trace formats keep their existing unsalted schema; custom deferred
+replay requests carry salt in their `DirectRequest` metadata.
+
+Stored KV events carry `cache_salt`; removals reference the same salted hashes.
+AISim retains its XXH3 block/sequence representation, with unchanged identities
+for unsalted requests. It models the namespace behavior of
+[SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d),
+without reproducing SGLang's SHA256 event encoding. Placement adapters hashing
+a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
+
+This is a simulator contract pinned to SGLang v0.5.22. AISimulate does not check
+the installed serving runtime's support for `cache_salt` or the decode radix
+flag; verify both capabilities when deploying an older SGLang version.
+
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>
+
+## SGLang HiCache
+
+Set `engine.workers.aggregated.kv_cache.hicache` to model SGLang v0.5.22
+caching on a private host pool for each attention-DP rank.
+Prefix caching must be enabled. This is supported for aggregated prediction
+and native offline replay; disaggregated roles, recommendation, Belady eviction,
+external storage, and peer KVCR fetch are not supported by this option.
+
+| Field under `hicache` | Default | Meaning |
+|---|---|---|
+| `num_host_blocks` | Required | Positive host capacity per attention-DP rank. |
+| `write_policy` | `write_through` | `write_through`, `write_through_selective`, or `write_back`; see below. |
+| `d2h_bandwidth_gbps` | `32` | Device-to-host bandwidth in decimal GB/s; zero is unlimited. |
+| `h2d_bandwidth_gbps` | `32` | Host-to-device bandwidth in decimal GB/s; zero is unlimited. |
+| `latency_to_first_byte_ms` | `0` | Non-negative latency per transfer operation. |
+
+Host pages use the GPU page geometry: `block_size * bytes_per_token` bytes.
+The compiler resolves `bytes_per_token: auto` from the model and rank layout.
+Native engine configurations place these fields under `sglang.hicache` and
+require `kv_cache_bytes_per_token`.
+
+With `write_through`, completed chunk and request inserts back up their canonical
+radix pages, including materialized output pages. `write_through_selective` waits
+for a node's second insertion observation; each request counts newly covered
+prefixes once, including reused pages. These policies back up ancestors first.
+Each step submits one merged D2H operation;
+its acknowledgement publishes host residency and releases the independent GPU
+page locks. GPU eviction preserves backed-up radix nodes. Host eviction removes
+only unlocked, host-only leaves in last-access order and may reclaim old entries
+even when the new node ultimately cannot fit.
+
+`write_back` instead backs up the selected GPU eviction leaf and waits for its
+D2H acknowledgement before releasing the device pages. This wait delays batch
+selection and forward execution. Host pressure first reclaims redundant copies
+that remain on the GPU, sparing evictable GPU leaves on the first pass, then
+reclaims host-only leaves. In-flight transfers and host source locks protect
+their copies. If a backup cannot fit, eviction drops the selected device leaf
+and its eligible host-only descendants together.
+
+Admission selects the prefill shape before queuing H2D and budgets both the host
+prefix and new GPU work. Load-back restores the entire promised host prefix or
+recomputes admission without it; host hits below ten tokens are recomputed.
+Ordinary forward duration includes the maximum of compute and dependent H2D,
+without a per-layer pipeline model. With `host_loop`, this duration belongs to
+the launched forward; its results are observed by a later loop iteration.
+Admission reports device and host reuse separately. Host transfers continue to
+drain and emit cache events after the last request completes or is cancelled.
+
+These semantics follow public SGLang v0.5.22 at
+[`baa9befa`](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d).
+The separate `host_offload` option below models vLLM connectors.
 
 ## Host offload (G2)
 
