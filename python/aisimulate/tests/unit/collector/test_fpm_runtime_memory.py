@@ -261,6 +261,15 @@ def test_layer_strided_allocation_charges_one_backing_pool(layout):
     assert observer.scheduler_memory(scheduler, config)["reserved_blocks"] == 2
 
 
+@pytest.mark.parametrize("layout", ["layer_outer", "block_outer"])
+def test_layer_strided_records_carry_only_layer_strided_keys(layout):
+    worker, _scheduler, _config = _initialized_layer_strided(layout=layout)
+    records = observer.worker_memory(worker)["tensor_allocations"]
+    assert records
+    for record in records:
+        assert set(record) == {"size", "layers", "layer_stride", "block_stride", "offset"}
+
+
 def _break_layer_strided(worker, change):
     """Make one unsupported change to the first cache group or the first tensor record."""
     config = worker.model_runner.kv_cache_config
