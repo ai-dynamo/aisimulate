@@ -17,6 +17,19 @@ source = Path(os.environ["AIPERF_SOURCE_ROOT"]).resolve(strict=True)
 manifest = package / "Cargo.toml"
 text = manifest.read_text()
 text = re.sub(r'path = "(?:\.\./)+aiperf-rs/\.worktrees/prove-simple-execution/(crates/[^\"]+)"', lambda match: 'path = "' + os.path.relpath(source / match[1], package) + '"', text)
+dynamo_source = os.environ.get("DYNAMO_SOURCE_ROOT")
+if dynamo_source:
+    dynamo_source = Path(dynamo_source).resolve(strict=True)
+    text = text.replace(
+        "../../../../../dynamo/.worktrees/aisim-kv-composition-proof/lib/mocker",
+        str(dynamo_source / "lib/mocker"),
+    )
+    dynamo_manifest = dynamo_source / "Cargo.toml"
+    dynamo_text = dynamo_manifest.read_text().replace(
+        "/home/anthony/nvidia/projects/ai-dynamo-org/aisimulate/.worktrees/aiperf-owned-runner-proof/crates/core",
+        str(package.parents[1] / "core"),
+    )
+    dynamo_manifest.write_text(dynamo_text)
 manifest.write_text(text)
 # A committed independent lock is evidence: never refresh it implicitly.
 if not (package / "Cargo.lock").is_file():
