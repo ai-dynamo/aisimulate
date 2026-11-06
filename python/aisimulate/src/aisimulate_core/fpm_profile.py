@@ -30,10 +30,29 @@ class _ProfileModel(BaseModel):
 class FpmCacheGroup(_ProfileModel):
     """Rank-local physical cache pages for one attention, convolution or state group.
 
-    Page bytes include all group layers and runtime padding. The retention
-    window does not replace the logical context used for FPM timing queries.
-    A state group instead holds ``blocks_per_request`` blocks of
-    ``page_size_bytes`` for every running request and has no window.
+    In an attention or convolution group, page bytes include all group layers
+    and runtime padding. The retention window does not replace the logical
+    context used for FPM timing queries.
+
+    A state group has no window and holds ``blocks_per_request`` blocks of
+    ``page_size_bytes`` for every running request. Its ``page_size_bytes`` is
+    one pool block: every byte that one block ID reserves in the shared pool.
+    That can be more than the bytes of the group's own layers. Its
+    ``block_size_tokens`` is the block size of vLLM's state spec, as the
+    runtime probe records it: the Mamba block (the scheduler block in
+    ``align`` mode, ``max_model_len`` in mode ``none``) or the ring block.
+    Sizing and replay do not read it yet.
+
+    ``blocks_per_request`` counts the pool blocks that a running request holds
+    between block boundaries. For a Mamba spec, that is ``1 + k``, where ``k``
+    is the spec's ``num_speculative_blocks``. Grouped execution forbids
+    speculative decoding, so ``k`` is 0 there. A ring spec, such as
+    ``KpoolTailSpec`` or ``CircularBufferSpec`` in vLLM 0.31.0, holds 1 block
+    for the whole life of the request in every mode. When a request crosses a
+    block boundary in ``align`` mode, a Mamba group also holds the previous
+    block for one or two steps. vLLM's startup sizing in that mode counts
+    ``2 + k + c`` blocks for a Mamba group, where ``c`` is the spec's
+    ``num_prefill_checkpoint_blocks``. It counts 1 block for a ring group.
     """
 
     name: _Nonempty

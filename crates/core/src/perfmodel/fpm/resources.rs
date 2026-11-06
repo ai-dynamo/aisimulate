@@ -22,16 +22,26 @@ pub enum FpmCacheKind {
     Attention,
     Convolution,
     /// Cache whose size does not depend on the request length, such as the
-    /// recurrent state of linear-attention or Mamba layers. vLLM holds a fixed
-    /// number of pool blocks for each running request.
+    /// recurrent state of linear-attention or Mamba layers. Between block
+    /// boundaries, vLLM holds a fixed number of pool blocks for each running
+    /// request.
     State,
 }
 
-/// One cache group on one TP rank. `page_size_bytes` includes every layer in
-/// this group and any runtime padding; it is not a per-layer or logical-token
-/// rate. Window lengths describe retained history, independently of FPM timing
-/// query context lengths. A `state` group instead holds `blocks_per_request`
-/// blocks of `page_size_bytes` for every running request and has no window.
+/// One cache group on one TP rank. In an attention or convolution group,
+/// `page_size_bytes` includes every layer in this group and any runtime
+/// padding. It is not a per-layer or logical-token rate. Window lengths
+/// describe retained history, independently of FPM timing query context
+/// lengths.
+///
+/// A `state` group has no window and holds `blocks_per_request` blocks of
+/// `page_size_bytes` for every running request. Its `page_size_bytes` is one
+/// pool block: every byte that one block ID reserves in the shared pool. That
+/// can be more than the bytes of the group's own layers. Its
+/// `block_size_tokens` is the block size of vLLM's state spec, as the runtime
+/// probe records it: the Mamba block (the scheduler block in `align` mode,
+/// `max_model_len` in mode `none`) or the ring block. Sizing and replay do not
+/// read it yet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmCacheGroup {
@@ -41,8 +51,17 @@ pub struct FpmCacheGroup {
     pub block_size_tokens: u32,
     pub page_size_bytes: u64,
     pub sliding_window: Option<u32>,
-    /// Pool blocks held per running request. Required for `state` groups and
-    /// invalid for every other kind.
+    /// Pool blocks that a running request holds between block boundaries. For
+    /// a Mamba spec, that is `1 + k`, where `k` is the spec's
+    /// `num_speculative_blocks`. Grouped execution forbids speculative
+    /// decoding, so `k` is 0 there. A ring spec, such as `KpoolTailSpec` or
+    /// `CircularBufferSpec` in vLLM 0.31.0, holds 1 block for the whole life of
+    /// the request in every mode. When a request crosses a block boundary in
+    /// `align` mode, a Mamba group also holds the previous block for one or two
+    /// steps. vLLM's startup sizing in that mode counts `2 + k + c` blocks for a
+    /// Mamba group, where `c` is the spec's `num_prefill_checkpoint_blocks`. It
+    /// counts 1 block for a ring group. Required for `state` groups and invalid
+    /// for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocks_per_request: Option<u32>,
 }
@@ -1376,8 +1395,8 @@ mod tests {
     fn glm_shaped_groups_charge_five_pool_blocks_of_state() {
         // GLM-5.3-Flash at TP 4, fp8, k = 0: one MLA indexer group and five
         // fixed per-request state groups (four KDA groups and the kpool tail).
-        // Every group uses 2,176-token pool blocks of 13,045,120 bytes, and
-        // each state group holds one block per request.
+        // Every group uses 13,045,120-byte pool blocks, and each state group
+        // holds one block per request. The tail records its 4-token ring block.
         let pool_group = |name: &str, kind, num_layers, blocks_per_request| FpmCacheGroup {
             name: name.into(),
             kind,
@@ -1389,7 +1408,10 @@ mod tests {
         };
         let attention = pool_group("mla_indexer", FpmCacheKind::Attention, 22, None);
         let states = [
-            pool_group("kpool_tail", FpmCacheKind::State, 11, Some(1)),
+            FpmCacheGroup {
+                block_size_tokens: 4,
+                ..pool_group("kpool_tail", FpmCacheKind::State, 11, Some(1))
+            },
             pool_group("kda_0", FpmCacheKind::State, 9, Some(1)),
             pool_group("kda_1", FpmCacheKind::State, 9, Some(1)),
             pool_group("kda_2", FpmCacheKind::State, 8, Some(1)),
