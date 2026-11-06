@@ -561,7 +561,7 @@ metadata = json.loads(parquet.with_suffix(".metadata.json").read_text())
 with parquet.open("rb") as stream:
     digest = hashlib.file_digest(stream, "sha256").hexdigest()
 assert metadata["schema_name"] == "aic_fpm_forward_perf"
-assert metadata["schema_version"] == 7
+assert metadata["schema_version"] in (7, 8)  # 8 with --fpm-measure-power
 assert metadata["parquet_sha256"] == digest
 table = pq.read_table(parquet)
 assert table.num_rows == metadata["row_count"] and table.num_rows > 0

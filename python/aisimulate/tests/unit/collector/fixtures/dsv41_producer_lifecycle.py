@@ -498,6 +498,9 @@ class RealKVTests(unittest.TestCase):
             obj._real_witnesses = {1: {"completed_seed_tokens": 1022, "same_request": True, "allocated_fake_tokens": 0}}
             obj._bench_write_results()
             payload = json.loads(path.read_text())
+            # The adapter keeps the pinned native schema-2 envelope (AISIM-1973 P2).
+            self.assertEqual(payload["schema_version"], 2)
+            self.assertNotIn("power", json.dumps(payload["results"]))
             self.assertIsNone(payload["producer"]["vllm_revision"])
             self.assertIsNone(payload["producer"]["dynamo_revision"])
             self.assertEqual(payload["producer"]["instrumentation_revision"], impl.DYNAMO_SHA)

@@ -519,6 +519,9 @@ def _sample_evidence(plan: FPMCollectionPlan, selected: dict[str, Any], director
         "runtime_run_id": collection.runtime_run_id,
         "runtime_grid_digest": collection.runtime_grid_digest,
         "measurement": extract_measurement_evidence(root / "raw", collection, evidence_version=evidence_version),
+        # Repeats compare latency only. A plan with measure_power runs each
+        # attempt's own power window, but power is never compared or combined
+        # across attempts.
         "points": {
             key: {
                 "wall_time_seconds": max(value for _, value in item.rank_wall_times),

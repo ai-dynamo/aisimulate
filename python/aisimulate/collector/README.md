@@ -199,9 +199,13 @@ registered model cases do not change this. With one of these options, the
 collector gives the layout the `native_runtime` capability. Precision then comes
 from the checkpoint, and the runtime measures every cell.
 
-Generator and Collector share the Dynamo-native benchmark result schema
-version through the rendered `fpm_env.sh`; the staged `fpm_exec.sh` validates
-that contract in-pod without a Collector-side text patch. Formal
+Generator and Collector share the accepted Dynamo-native benchmark result
+schema versions (2, and 3 with a power window) through the rendered
+`fpm_env.sh`; the staged `fpm_exec.sh` validates that contract in-pod without
+a Collector-side text patch. `--fpm-measure-power` (default on; never run by
+`--smoke`) requests the per-point power window and publishes `power_w`; see the
+[onboarding guide](../../../docs/perf-model/fpm-self-service/implementation.md#how-the-collection-grid-is-determined)
+for its requirements and publication rules. Formal
 `fpm_forward_perf.parquet` output uses metadata schema v6 and records
 `collector_attempt_id`, `runtime_run_id`, `runtime_grid_digest`, and
 `kv_seed_regime` on every row. The seed regime is `real_kv`, `fake_fallback`,

@@ -1509,8 +1509,19 @@ V7_COLLECTION_FIELDS = {
 }
 
 
-@pytest.mark.parametrize("fpm_schema_version", [7, 8])
-@pytest.mark.parametrize("extensions", [V7_COLLECTION_FIELDS, {"warmup_repeats": 0}])
+V8_POWER_POLICY = "dynamo_native_single_sample_power_window_v1"
+V8_SINGLE_SAMPLE_POLICY = "dynamo_native_single_sample_v1"
+
+
+@pytest.mark.parametrize(
+    ("fpm_schema_version", "extensions"),
+    [
+        (7, V7_COLLECTION_FIELDS),
+        (7, {"warmup_repeats": 0}),
+        (8, {**V7_COLLECTION_FIELDS, "measurement_policy": V8_POWER_POLICY}),
+        (8, {"warmup_repeats": 0}),
+    ],
+)
 def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions, fpm_schema_version):
     dataset = _build_dataset(
         tmp_path,
@@ -1521,6 +1532,96 @@ def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions, fp
     )
     case = dataset.measurement_case(CONFIGURATION_PATH)
     assert len(case.fpm_artifacts) == 1
+
+
+def _replace_fpm_rows(root: Path, rows: list[dict]) -> HfDataset:
+    """Republish the built FPM pair with ``rows`` merged into its single row."""
+    fpm_path = root / CONFIGURATION_PATH / "fpm/fpm.parquet"
+    template = pq.read_table(fpm_path).to_pylist()[0]
+    table = pa.Table.from_pylist([{**template, **row} for row in rows])
+    if "power_w" in table.column_names:
+        table = table.set_column(
+            table.schema.get_field_index("power_w"),
+            pa.field("power_w", pa.float64()),
+            table["power_w"].cast(pa.float64()),
+        )
+    pq.write_table(table, fpm_path)
+    metadata_path = root / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.update(row_count=table.num_rows, parquet_sha256=_sha256(fpm_path))
+    _write_json(metadata_path, metadata)
+    manifest_path = root / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fpm"][0].update(row_count=table.num_rows, sha256=_sha256(fpm_path))
+    _write_json(manifest_path, manifest)
+    return HfDataset.from_local(root, revision=REVISION)
+
+
+@pytest.mark.parametrize("selector_policy", [V8_POWER_POLICY, None])
+def test_merged_v8_pair_mixes_row_policies_under_the_sidecar_policy(tmp_path, selector_policy):
+    # A powered run merged into a latency-only pair: old rows keep their own
+    # policy and a null power_w. The optional selector policy, when present,
+    # names the sidecar policy rather than every row's.
+    _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=8,
+        selector_extensions={} if selector_policy is None else {"measurement_policy": selector_policy},
+    )
+    dataset = _replace_fpm_rows(
+        tmp_path,
+        [
+            {"measurement_policy": V8_SINGLE_SAMPLE_POLICY, "power_w": None},
+            {"measurement_policy": V8_POWER_POLICY, "power_w": 310.0},
+            {"measurement_policy": V8_POWER_POLICY, "power_w": None},
+        ],
+    )
+
+    assert len(dataset.measurement_case(CONFIGURATION_PATH).fpm_artifacts) == 1
+
+
+def test_v8_selector_policy_must_name_the_power_policy(tmp_path):
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=8,
+        selector_extensions={"measurement_policy": V8_SINGLE_SAMPLE_POLICY},
+    )
+
+    with pytest.raises(DataError, match="schema 8 requires"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        ({"measurement_policy": "kvwarm_median_of_3", "power_w": None}, "unsupported v8 row policies"),
+        ({"measurement_policy": V8_SINGLE_SAMPLE_POLICY, "power_w": 310.0}, "power_w on rows without"),
+        ({"measurement_policy": None, "power_w": 310.0}, "power_w on rows without"),
+    ],
+)
+def test_v8_rows_follow_the_row_policy_rule(tmp_path, row, message):
+    _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    dataset = _replace_fpm_rows(tmp_path, [{"measurement_policy": V8_POWER_POLICY, "power_w": 300.0}, row])
+
+    with pytest.raises(DataError, match=message):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+def test_v7_selector_policy_still_binds_every_row(tmp_path):
+    _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=7,
+        selector_extensions={"measurement_policy": V8_SINGLE_SAMPLE_POLICY},
+    )
+    dataset = _replace_fpm_rows(tmp_path, [{}, {"measurement_policy": "kvwarm_median_of_3"}])
+
+    with pytest.raises(DataError, match="different configuration.*measurement_policy"):
+        dataset.measurement_case(CONFIGURATION_PATH)
 
 
 @pytest.mark.parametrize("field", V7_COLLECTION_FIELDS)

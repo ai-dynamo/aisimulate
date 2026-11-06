@@ -345,6 +345,53 @@ def test_preflight_rejects_runtime_without_kvwarm_capability(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize(
+    ("required", "capable", "accepted"),
+    [(True, True, True), (True, False, False), (False, False, True)],
+)
+def test_preflight_requires_power_window_support_when_the_plan_measures_power(
+    tmp_path, monkeypatch, required, capable, accepted
+):
+    """Every pod of a power-measuring plan, smoke included, rejects an image
+    whose self-benchmark predates --benchmark-power-window-s."""
+
+    import sys
+    from types import ModuleType
+
+    from collector.fpm_forward.runtime import preflight
+
+    module = ModuleType("dynamo.vllm.instrumented_scheduler")
+    module.BenchmarkPoint = type(
+        "BenchmarkPoint", (), {"__dataclass_fields__": {name: object() for name in preflight.GRAPH_AWARE_FIELDS}}
+    )
+    module.InstrumentedScheduler = type(
+        "InstrumentedScheduler", (), {name: lambda self: None for name in preflight.GRAPH_AWARE_METHODS}
+    )
+    # Dynamo adds BenchmarkConfig.power_window_s together with the flag.
+    fields = {"mode": object(), **({"power_window_s": object()} if capable else {})}
+    module.BenchmarkConfig = type("BenchmarkConfig", (), {"__dataclass_fields__": fields})
+    monkeypatch.setitem(sys.modules, "dynamo.vllm.instrumented_scheduler", module)
+    for name in ("FPM_BENCHMARK_MODE", "DYN_BENCH_PREFILL_REAL_SEED", "DYN_FPM_DSV41_REAL_KV"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_REAL_KV", raising=False)
+    if required:
+        monkeypatch.setenv("FPM_POWER_WINDOW_REQUIRED", "1")
+    else:
+        monkeypatch.delenv("FPM_POWER_WINDOW_REQUIRED", raising=False)
+    audit_path = tmp_path / "runtime-preflight.json"
+    monkeypatch.setattr(preflight, "_AUDIT_PATH", audit_path)
+
+    if accepted:
+        preflight.main()
+    else:
+        with pytest.raises(RuntimeError, match="power_window_s"):
+            preflight.main()
+    audit = json.loads(audit_path.read_text())
+    assert audit["power_window_required"] is required
+    assert audit["status"] == ("passed" if accepted else "failed")
+    assert ("BenchmarkConfig.power_window_s" in audit["missing_fields"]) is not accepted
+
+
+@pytest.mark.parametrize(
     ("phase", "setting", "native_capability", "adapter", "accepted"),
     [
         ("prefill", "on", False, False, False),

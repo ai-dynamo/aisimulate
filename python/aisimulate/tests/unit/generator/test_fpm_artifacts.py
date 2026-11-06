@@ -32,7 +32,7 @@ from aisimulate.fpm_contract import (
     FPM_ENV_EXPORTED_VARS,
     FPM_ENV_FILENAME,
     FPM_MANIFEST_FILENAME,
-    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS,
     FPM_RUN_ID_ENV,
     FPM_RUN_SCRIPT_FILENAME,
 )
@@ -291,7 +291,9 @@ def test_fpm_env_script_exports_exactly_the_contract_variables():
     assert _export_value(env_script, "FPM_BENCHMARK_MODE") == "agg"
     assert _export_value(env_script, "FPM_BENCHMARK_OUTPUT_PATH") == "/results/benchmark.json"
     assert _export_value(env_script, "FPM_WAIT_TIMEOUT_SECONDS") == "7800"
-    assert _export_value(env_script, "FPM_RESULT_SCHEMA_VERSION") == str(FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION)
+    # Every accepted envelope version, comma-separated for fpm_exec.sh's checker.
+    assert sorted(FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS) == [2, 3]
+    assert _export_value(env_script, "FPM_RESULT_SCHEMA_VERSION") == "2,3"
 
 
 def test_fpm_forwards_barrier_timeout_override_through_fpm_env_only():

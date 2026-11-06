@@ -241,6 +241,20 @@ def test_legacy_collection_policy_round_trip_retains_identity_and_launch_argumen
         assert command[command.index("--fpm-max-prefill-cudagraph-size") + 1] == str(limit)
 
 
+@pytest.mark.parametrize("measure_power", [None, True, False])
+def test_collection_power_window_opt_out_reaches_the_collector_command(tmp_path, measure_power):
+    request = _request(collection={} if measure_power is None else {"measure_power": measure_power})
+    serialized = request.model_dump(mode="json", exclude_none=True)
+    # The default keeps existing request identities; only the opt-out is saved.
+    assert ("measure_power" in serialized["collection"]) is (measure_power is False)
+    plan = create_plan(request, tmp_path / "plan")
+    saved = SupportRequest.from_yaml(tmp_path / "plan/request.yaml")
+    assert request_id(saved) == request_id(request)
+    assert saved.collection.measure_power is (measure_power is not False)
+    command = plan["fpm"]["plan_command"]
+    assert ("--no-fpm-measure-power" in command) is (measure_power is False)
+
+
 def test_onboarding_plan_and_preview_do_not_import_estimator_runtime(tmp_path):
     request = tmp_path / "request.json"
     request.write_text(_request().model_dump_json())
