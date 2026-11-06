@@ -434,14 +434,20 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "Selected profile deployment; memory remains pending runtime initialization. "
                 "Collection is permitted; prediction, recommendation and replay require finalized memory."
             )
+            # check_plan compares a saved plan byte for byte, so every version except the newly observed
+            # 0.32.0 and 0.33.0 keeps the text that its saved plans carry.
+            supported_layouts = (
+                f"supported layouts on vLLM {', '.join(MEMORY_OBSERVATION_VERSIONS[:-1])} and "
+                f"{MEMORY_OBSERVATION_VERSIONS[-1]}"
+                if request.identity.framework_version in ("0.32.0", "0.33.0")
+                else "supported vLLM 0.27.0 layouts"
+            )
             plan["prerequisites"][0].update(
                 status="runtime_memory_pending",
                 detail=(
                     "Identity, precision, topology and cache geometry are declared. Runtime memory is collected "
-                    "during worker initialization for supported layouts on vLLM "
-                    f"{', '.join(MEMORY_OBSERVATION_VERSIONS[:-1])} and {MEMORY_OBSERVATION_VERSIONS[-1]}; other "
-                    "versions can collect timings but leave memory unresolved. No activation or non-KV byte "
-                    "declaration is required. "
+                    f"during worker initialization for {supported_layouts}; other versions can collect "
+                    "timings but leave memory unresolved. No activation or non-KV byte declaration is required. "
                     "Run onboard finalize after successful collection, then review the resolved profile."
                 ),
             )
