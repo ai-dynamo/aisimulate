@@ -92,6 +92,13 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   every request, and the producer rejects every repetition. One request can
   prefill its suffix over several steps. No other request decodes before it,
   and the producer records no step with a prefill request.
+- With prefix caching, vLLM runs GLM-5.3-Flash in Mamba `align` mode. It stops
+  a prefill chunk at the last block boundary of the prompt. After a prefix that
+  ends inside a block, it also stops the chunk at the next block boundary. A
+  prefill point whose chunk holds such a stop runs in more than one step, and
+  the producer accepts one step per repetition. So the producer refuses the
+  point before it seeds anything. After a prefix of whole blocks, new tokens of
+  at most one block or of a whole number of blocks run in one step.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3
@@ -177,7 +184,10 @@ prefix and decode context. These are the axes:
 
 - Prefill new tokens per request: the powers of two from 4 to the token budget,
   every whole hash block up to the budget, and the budget itself. The list caps
-  the budget at 8,192.
+  the budget at 8,192. Above one hash block, the list keeps whole numbers of
+  hash blocks only. vLLM's `align` mode runs any other such length in more than
+  one step, as the producer rules above say. At default serving the hash block
+  is the Mamba block.
 - Prefill requests per batch: the powers of two up to the smallest of 32,
   `max_batch_size` and the number of requests whose new tokens fit the budget,
   and that smallest value itself.
@@ -203,7 +213,7 @@ prefix hit can hold more than one block in a recurrent-state group, for example
 the cached block of its prefix and the block of its running state. So a point
 near the capacity limit can still fail when it runs. At TP4 with 2,176-token
 hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
-list has 496 prefill points and 81 decode points. By the estimate, that list
+list has 472 prefill points and 81 decode points. By the estimate, that list
 needs an accepted cache of at least 2,113 pool blocks (the profile's
 `kv_cache_bytes` divided by its largest `page_size_bytes`).
 

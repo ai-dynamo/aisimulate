@@ -489,6 +489,9 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         if built:
             return
         unit = self._glm_serving["hash_block_size"]
+        # vLLM v0.31.0 splits prefill chunks only in Mamba align mode (scheduler.py:354-356, :695, :1127), on the block
+        # of the cache configuration (:440).
+        block = self.cache_config.block_size if self.need_mamba_block_aligned_split else None
         for point in self._bench_grid:
             if point.point_type == "prefill":
                 prefixes, queries = self._glm_prefill_rows(point)
@@ -502,6 +505,15 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                         f"benchmark_id={point.benchmark_id}: prefix/new-token lengths must be multiples of "
                         f"{CHUNK_ALIGN} (kpool_align4); the frozen manifest must carry the executed geometry"
                     )
+                for prefix, query in zip(prefixes, queries, strict=True):
+                    stop = None if block is None else self._glm_align_stop(prefix, prefix + query, block)
+                    if stop is not None:
+                        # A repetition accepts one native FPM, so a split point would be rejected until the run fails.
+                        raise ValueError(
+                            f"benchmark_id={point.benchmark_id}: vLLM's Mamba align mode stops the prefill of {query} "
+                            f"new tokens after a prefix of {prefix} at {stop}, a boundary of its {block}-token blocks, "
+                            "so the point runs in more than one step and the producer measures one"
+                        )
             else:
                 contexts = self._bench_decode_context_lengths(point.total_kv_read_tokens, point.batch_size)
                 if min(contexts) < 3:
@@ -535,6 +547,16 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                         f"GLM-5.3-Flash decode point of {point.batch_size} requests at context {context} needs "
                         f"{total} suffix tokens in one step, above the token budget {budget}"
                     )
+
+    @staticmethod
+    def _glm_align_stop(start, end, block):
+        """Where vLLM v0.31.0 in Mamba align mode stops a prefill chunk from ``start`` to the prompt end ``end``.
+
+        The chunk stops at the last block boundary of the prompt (scheduler.py:444) and, after a start inside a block,
+        at the next boundary (:482, :508-513), whichever lies first strictly inside it (:526). None means one step.
+        """
+        stops = (end - end % block, (start // block + 1) * block if start % block else 0)
+        return min((stop for stop in stops if start < stop < end), default=None)
 
     @staticmethod
     def _glm_decode_prompt(context):

@@ -50,14 +50,15 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
     prefill, decode = payload["prefill"], payload["decode"]
 
     assert payload["schema_version"] == 3
-    assert (len(prefill), len(decode)) == (496, 81)
+    assert (len(prefill), len(decode)) == (472, 81)
     # The count is logged when the cache holds every candidate, too.
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 0/496 prefill and 0/81 decode cases (cache capacity, usable_blocks=13814)",
+            "GLM-5.3-Flash points: dropped 0/472 prefill and 0/81 decode cases (cache capacity, usable_blocks=13814)",
         )
     ]
+    # The new tokens above one hash block are whole hash blocks, so 4,096 and 8,192 are not on the axis.
     assert sorted({point["total_prefill_tokens"] // point["batch_size"] for point in prefill}) == [
         4,
         8,
@@ -70,16 +71,16 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
         1024,
         2048,
         2176,
-        4096,
         4352,
         6528,
-        8192,
     ]
     assert sorted({point["total_kv_read_tokens"] // point["batch_size"] for point in decode}) == [
         2**exponent for exponent in range(2, 18)
     ]
     assert prefill[0] == {"batch_size": 1, "total_prefill_tokens": 4, "total_kv_read_tokens": 0}
-    assert prefill[-1] == {"batch_size": 1, "total_prefill_tokens": 8192, "total_kv_read_tokens": 121856}
+    assert prefill[-1] == {"batch_size": 1, "total_prefill_tokens": 6528, "total_kv_read_tokens": 124032}
+    # The formal cell of an aggregated TP4 request stages these bytes.
+    assert digest == "130d476feeb3f2d83ff698a24e802a1d07803088b35291335a018c3e37f1e7dc"
     assert decode[0] == {"batch_size": 1, "total_kv_read_tokens": 4}
     assert decode[-1] == {"batch_size": 16, "total_kv_read_tokens": 2097152}
     # Prefill points ascend by per-request new tokens, batch size and prefix; decode points by context and batch size.
@@ -103,6 +104,21 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
     path = tmp_path / "points.json"
     path.write_text(json.dumps(payload))
     assert _freeze_benchmark_points(str(path)) == (canonical, digest)
+
+
+def test_tp4_prefill_points_run_in_one_align_mode_step():
+    payload, _, _ = glm_point_manifest(**_TP4)
+    # With prefix caching, vLLM v0.31.0 runs GLM-5.3-Flash in Mamba align mode, on 2,176-token blocks at TP 4. It stops
+    # a prefill chunk at the last block boundary of its prompt (scheduler.py:444, :526). A point whose chunk holds that
+    # boundary runs in two steps, and the producer accepts one step per repetition.
+    split = []
+    for point in payload["prefill"]:
+        batch = point["batch_size"]
+        start = point["total_kv_read_tokens"] // batch
+        end = start + point["total_prefill_tokens"] // batch
+        if start < end - end % 2176 < end:
+            split.append(point)
+    assert split == []
 
 
 def test_point_list_is_deterministic():
@@ -425,12 +441,12 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
     assert len(decode) == 63
     assert {"batch_size": 1, "total_kv_read_tokens": 131072} in decode
     assert {"batch_size": 2, "total_kv_read_tokens": 262144} not in decode
-    # The candidates are the 496 prefill and 81 decode points of the TP4 list. The rule keeps 314 and 63 of them.
-    assert len(payload["prefill"]) == 314
+    # The candidates are the 472 prefill and 81 decode points of the TP4 list. The rule keeps 291 and 63 of them.
+    assert len(payload["prefill"]) == 291
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 182/496 prefill and 18/81 decode cases (cache capacity, usable_blocks=99)",
+            "GLM-5.3-Flash points: dropped 181/472 prefill and 18/81 decode cases (cache capacity, usable_blocks=99)",
         )
     ]
 
@@ -445,7 +461,7 @@ def test_capacity_without_a_feasible_point_is_refused(caplog):
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 496/496 prefill and 81/81 decode cases (cache capacity, usable_blocks=5)",
+            "GLM-5.3-Flash points: dropped 472/472 prefill and 81/81 decode cases (cache capacity, usable_blocks=5)",
         )
     ]
 

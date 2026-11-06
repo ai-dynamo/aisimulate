@@ -1622,7 +1622,7 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
     assert plan.options.benchmark_points_origin == "glm53flash_grid_v1"
     assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
     assert saved["point_generation"]["source"] == "generated_glm53flash_grid"
-    assert saved["point_generation"]["planned_point_count"] == 577
+    assert saved["point_generation"]["planned_point_count"] == 553
     assert saved["point_generation"]["manifest_sha256"] == digest
     assert saved["options"]["benchmark_points"]["origin"] == "glm53flash_grid_v1"
     # The plan hash covers the list and its origin, so a saved plan validates and a second build reproduces it.
@@ -2043,10 +2043,10 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
         }
         full = staged(f"formal-{cell.workload_kind}", cell, False)
         assert full.decode() == plan.options.benchmark_points_json
-        assert len(json.loads(full)["prefill"]) == 496
+        assert len(json.loads(full)["prefill"]) == 472
         assert runner._configured_sampling_metadata(plan, cell, smoke=False) == {
             "benchmark_points_sha256": plan.options.benchmark_points_sha256,
-            "requested_point_count": {"prefill": 496, "decode": 81}[cell.workload_kind],
+            "requested_point_count": {"prefill": 472, "decode": 81}[cell.workload_kind],
             "benchmark_points_origin": "glm53flash_grid_v1",
             **policy,
         }

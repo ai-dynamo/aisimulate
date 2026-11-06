@@ -67,10 +67,12 @@ def glm_point_manifest(
 
     Every point meets the producer's rules. Prefixes are whole hash blocks. New-token and prefix lengths are multiples
     of 4. Prefix plus new tokens stay within the measured context. The new tokens of a batch fit the token budget, so
-    each request's suffix runs in one step. Before a decode batch decodes, each request prefills its prompt beyond its
-    cached seed. These suffixes of a batch of two or more requests fit the token budget too, so every request decodes
-    in the same step. The producer divides a total evenly, so every request of a point gets the same prefix, the same
-    new tokens and the same decode context.
+    each request's suffix runs in one step. The new tokens of a request are at most one hash block or a whole number of
+    hash blocks, so vLLM's Mamba align mode does not split them either. At default serving the hash block of
+    GLM-5.3-Flash is its Mamba block (vLLM interface.py:995-996, kv_cache_utils.py:792-798). Before a decode batch
+    decodes, each request prefills its prompt beyond its cached seed. These suffixes of a batch of two or more requests
+    fit the token budget too, so every request decodes in the same step. The producer divides a total evenly, so every
+    request of a point gets the same prefix, the same new tokens and the same decode context.
     """
     if token_budget % CHUNK_ALIGN:
         raise ValueError("GLM-5.3-Flash collection requires a token budget that is a multiple of 4")
@@ -99,6 +101,9 @@ def glm_point_manifest(
 
     new_tokens = {budget, *range(unit, budget + 1, unit)}
     new_tokens.update(value for value in _powers_of_two_up_to(budget) if value >= CHUNK_ALIGN)
+    # vLLM v0.31.0 in Mamba align mode stops a prefill chunk at the last block boundary of the prompt (scheduler.py:444,
+    # :526). After a whole-block prefix, other new-token lengths run in two steps, and the producer measures one.
+    new_tokens = {new for new in new_tokens if new <= unit or new % unit == 0}
     prefill = []
     prefill_candidates = 0
     for new in sorted(new_tokens):

@@ -246,7 +246,8 @@ class BudgetEngine(Engine):
     """Schedules like vLLM v0.31.0 with a token budget per step, on hash blocks of ``unit`` tokens.
 
     Running requests go first, then waiting requests in order (scheduler.py:630, :1073). A prefill chunk that ends
-    before the prompt end is cut to a block boundary when the block fits the budget. A chunk that the cut empties waits:
+    before the prompt end is cut to a block boundary when the block fits the budget. Mamba align mode also stops a chunk
+    at the last block boundary of the prompt (scheduler.py:444, :526). A chunk that the cut empties waits:
     a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:473-480, :724-742,
     :1134-1135). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2089-2091, :3719-3722),
     so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill request
@@ -261,6 +262,9 @@ class BudgetEngine(Engine):
         end = request.computed + tokens
         if end < len(request.prompt) and self.unit <= self.budget:
             end = end // self.unit * self.unit
+        last = len(request.prompt) - len(request.prompt) % self.unit
+        if request.computed < last < end:
+            end = last
         return max(end - request.computed, 0)
 
     def step(self):
@@ -339,6 +343,9 @@ def make_scheduler(module, tmp_path, points):
     s._glm_serving = {"hash_block_size": 4}
     # vLLM's scheduler configuration with the token budget of the onboarding request, not an unlimited one.
     s.scheduler_config = types.SimpleNamespace(max_num_batched_tokens=8192)
+    # With prefix caching, vLLM runs GLM-5.3-Flash in Mamba align mode. The block is the hash block of this fake.
+    s.need_mamba_block_aligned_split = True
+    s.cache_config = types.SimpleNamespace(block_size=4)
     s._glm_stage_deadline = 0.0
     s.wall = lambda output: 0.001 * (1 + output.metrics.num_prefill_requests) + 1e-6 * s.clock
     return s
@@ -666,6 +673,48 @@ def test_two_requests_whose_suffixes_exceed_the_budget_are_never_in_lockstep(mon
     assert not s.saved
     first_steps = [record["fpms"][0]["scheduled_requests"] for record in s._glm_rejected]
     assert [(step["num_decode_requests"], step["sum_decode_kv_tokens"]) for step in first_steps] == [(2, 499)] * 11
+
+
+def align_prefill(module, tmp_path, new):
+    """A prefill point of one request with ``new`` tokens after one block of prefix, on the 2,176-token blocks of
+    GLM-5.3-Flash at TP 4, scheduled like vLLM in Mamba align mode with an 8,192-token budget."""
+    points = [Point("prefill", 1, 1, new, 2176, rows=[[new, 2176]])]
+    s = make_scheduler(module, tmp_path, points)
+    s._glm_serving = {"hash_block_size": 2176}
+    s.cache_config.block_size = 2176
+    s._bench_explicit_points = points
+    return s, BudgetEngine(s, budget=8192, unit=2176)
+
+
+def test_explicit_prefill_points_that_vllm_splits_are_refused_at_grid_build(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    # vLLM stops the chunk of 4,096 new tokens after one block at 4,352, the last block boundary of its prompt. Every
+    # repetition then records two prefill steps, and the producer rejects it.
+    s, engine = align_prefill(module, tmp_path, 4096)
+    with pytest.raises(RuntimeError, match="too many rejected repetitions"):
+        run(s, engine, "prefill")
+    assert not s.saved
+    assert [(record["rejection_reason"], record["prefill_chunks"]) for record in s._glm_rejected] == [
+        ("recorded 2 native FPMs, expected 1", [[[2176, 2176]], [[4352, 1920]]])
+    ] * 11
+    # The grid build refuses the point at engine start, before it seeds anything.
+    (tmp_path / "refused").mkdir()
+    s, _ = align_prefill(module, tmp_path / "refused", 4096)
+    with pytest.raises(ValueError) as refused:
+        s._bench_build_grid()
+    assert str(refused.value) == (
+        "benchmark_id=1: vLLM's Mamba align mode stops the prefill of 4096 new tokens after a prefix of 2176 at 4352, "
+        "a boundary of its 2176-token blocks, so the point runs in more than one step and the producer measures one"
+    )
+    # Two whole blocks after a whole-block prefix end at the last block boundary, so they run in one step.
+    (tmp_path / "blocks").mkdir()
+    s, engine = align_prefill(module, tmp_path / "blocks", 4352)
+    s._bench_build_grid()
+    run(s, engine, "prefill")
+    assert [point.benchmark_id for point, _ in s.saved] == [1]
+    record = json.loads((tmp_path / "blocks" / "benchmark.repetitions.jsonl").read_text())
+    assert not record["rejected_repetitions"]
+    assert all(repetition["prefill_chunks"] == [[[2176, 4352]]] for repetition in record["repetitions"])
 
 
 def hub_stand_in(monkeypatch, cached):
