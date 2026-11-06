@@ -1817,7 +1817,11 @@ mod generated_replay_tests {
     fn entries<'a>(log: &'a [String], prefix: &str, id: Uuid) -> Vec<&'a String> {
         let id = id.to_string();
         log.iter()
-            .filter(|e| e.starts_with(prefix) && (prefix == "cancel" || e.contains(&id)))
+            .filter(|e| {
+                e.starts_with(prefix)
+                    // `cancel@t` and `submit1@t` entries carry no request id.
+                    && (matches!(prefix, "cancel" | "submit1") || e.contains(&id))
+            })
             .collect()
     }
 
@@ -1842,7 +1846,9 @@ mod generated_replay_tests {
             // The terminal released the successor at the same instant, and
             // it ran to completion.
             let second = ChainParticipant::id(1);
-            assert_eq!(at(entries(&log, "submit1", second)[0]), 4.0, "{label}");
+            let submits = entries(&log, "submit1", second);
+            assert!(!submits.is_empty(), "successor never submitted: {label}");
+            assert_eq!(at(submits[0]), 4.0, "{label}");
             let done = entries(&log, "terminal", second);
             assert_eq!(done.len(), 1, "{label}");
             assert!(done[0].contains("Completed"), "{label}");
