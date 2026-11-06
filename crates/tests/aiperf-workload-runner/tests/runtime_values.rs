@@ -40,7 +40,24 @@ fn capture_finite_branch_runtime_values() {
     // library and executable defaults remain exactly as before.
     let override_config = std::env::var_os("AISIM_RUNTIME_VALUES_ENGINE_CONFIG")
         .map(|path| serde_json::from_slice::<EngineConfig>(&std::fs::read(path).unwrap()).unwrap());
-    let (report, model_manifest) = match override_config {
+    let disaggregated = std::env::var("AISIM_RUNTIME_VALUES_TOPOLOGY").as_deref() == Ok("disaggregated");
+    let (report, model_manifest) = if disaggregated {
+        let config = override_config.unwrap_or_else(|| EngineConfig {
+            timing_model: TimingModelConfig::Fixed { prefill_ms: 1.0, decode_ms: 1.0 },
+            max_num_seqs: 64, enable_prefix_caching: false,
+            enable_chunked_prefill: false, async_scheduling: Some(false), ..Default::default()
+        });
+        let deployment = aisimulate_core::replay::loadgen::SteppableDisagg::new(
+            aisimulate_core::replay::ReplayEngineConfig { rank: config.clone(), ..Default::default() },
+            &aisimulate_core::replay::ReplayEngineFactory::new(), 1, 1,
+        ).unwrap();
+        let report = aisim_aiperf_workload_runner::execute_with_deployment(
+            &request.run, aiperf_clock_runtime::cancellation::RunCancellation::new(),
+            observer.clone(), Box::new(deployment), 64,
+            identity_seed.expect("disaggregated differential requires explicit identities"),
+        ).unwrap();
+        (report, json!({"engine_config":config,"topology":"disaggregated","prefill_workers":1,"decode_workers":1}))
+    } else { match override_config {
         Some(config) => {
             let capacity = std::env::var("AISIM_RUNTIME_VALUES_ADMISSION_CAPACITY")
                 .ok()
@@ -91,7 +108,7 @@ fn capture_finite_branch_runtime_values() {
             }.unwrap();
             (report, json!({"engine_config":config,"admission_capacity":64,"selection":"unchanged_library_default"}))
         }
-    };
+    }};
     let manifest = json!({
         "format":"aisim-runtime-values-manifest-v1",
         "aisim_source":env!("AISIM_SOURCE_REVISION"),
