@@ -336,7 +336,23 @@ fn disaggregated_participant_cancels_request_owned_by_encoder() {
 fn receipt_cancellation(disagg: bool) {
     let (engine_control, _) = run(disagg, Scenario::Plain, None);
     let engine_end_ms = record(&engine_control).terminal_time_ms;
-    let (receipt_control, _) = run(disagg, Scenario::Receipt, None);
+    let (receipt_control, receipt_facts) = run(disagg, Scenario::Receipt, None);
+    let receipt_tokens = receipt_facts
+        .iter()
+        .filter_map(|fact| match fact {
+            Fact::Token(at) => Some(*at),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        receipt_tokens,
+        vec![engine_end_ms + 50.0],
+        "client token callback must wait for detokenization"
+    );
+    assert_eq!(
+        record(&receipt_control).first_token_ms,
+        Some(receipt_tokens[0])
+    );
     assert_eq!(
         record(&receipt_control).terminal_time_ms,
         engine_end_ms + 50.0
@@ -347,6 +363,12 @@ fn receipt_cancellation(disagg: bool) {
     let (report, facts) = run(disagg, Scenario::Receipt, Some(cancel_at_ms));
     assert!(record(&report).first_admit_ms.unwrap() < cancel_at_ms);
     assert_canceled_once(&report, &facts, cancel_at_ms);
+    assert!(
+        facts.iter().all(|fact| !matches!(fact, Fact::Token(_))),
+        "unreceived tokens must not escape before cancellation: {facts:?}"
+    );
+    assert_eq!(record(&report).first_token_ms, None);
+    assert_eq!(record(&report).output_length, 0);
 }
 
 #[test]

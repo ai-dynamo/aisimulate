@@ -69,6 +69,14 @@ fn host(
     run: &aiperf_config::model::BenchmarkRun,
     topology: ReplayTopology,
 ) -> (ReplayReport, Value) {
+    host_with_detokenization(run, topology, None)
+}
+
+fn host_with_detokenization(
+    run: &aiperf_config::model::BenchmarkRun,
+    topology: ReplayTopology,
+    detokenization_ms: Option<f64>,
+) -> (ReplayReport, Value) {
     let (participant, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         run,
         aiperf_clock_runtime::cancellation::RunCancellation::new(),
@@ -78,8 +86,11 @@ fn host(
         )),
     )
     .expect("shared native lowering hosts the production plans");
-    let report = Replayer::new(spec(topology), ReplayEngineFactory::new())
-        .unwrap()
+    let mut replay = Replayer::new(spec(topology), ReplayEngineFactory::new()).unwrap();
+    if let Some(latency) = detokenization_ms {
+        replay = replay.with_detokenization(1, latency, 0.0).unwrap();
+    }
+    let report = replay
         .with_runtime_input(ReplayRuntimeInput::External(Box::new(participant)))
         .with_capture_options(ReplayCaptureOptions {
             capture_per_request: true,
@@ -191,6 +202,22 @@ fn native_replayer_hosts_production_agentx_parent_child_disaggregated() {
     let run = native_run(&run_fixture::branch_request(directory.path()));
     let (report, hosted) = host(&run, disaggregated());
     assert_agentx_branch(&report, &hosted);
+}
+
+#[test]
+fn native_agentx_token_observations_wait_for_client_detokenization_in_both_topologies() {
+    for topology in [ReplayTopology::aggregated(1), disaggregated()] {
+        let directory = tempfile::tempdir().unwrap();
+        let run = native_run(&run_fixture::branch_request(directory.path()));
+        let (report, hosted) = host_with_detokenization(&run, topology, Some(5.0));
+        assert_agentx_branch(&report, &hosted);
+        for row in hosted["requests"].as_array().unwrap() {
+            assert!(
+                row["first_content_ns"].as_i64().unwrap() - row["start_ns"].as_i64().unwrap()
+                    >= 5_000_000
+            );
+        }
+    }
 }
 
 /// Exact JSON comparison, including IEEE-754 bits rather than approximate or

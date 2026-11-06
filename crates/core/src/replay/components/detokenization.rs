@@ -97,6 +97,8 @@ pub(crate) struct DetokenizationStage {
     /// servers that have taken a job are tracked.
     server_free_at_ms: FxHashMap<(usize, usize), f64>,
     terminals: BinaryHeap<Reverse<PendingTerminal>>,
+    /// External participant token facts awaiting their actual client receipt.
+    tokens: Vec<(f64, u64, Uuid, u32)>,
     next_entry: u64,
 }
 
@@ -106,6 +108,7 @@ impl DetokenizationStage {
             detokenization,
             server_free_at_ms: FxHashMap::default(),
             terminals: BinaryHeap::new(),
+            tokens: Vec::new(),
             next_entry: 0,
         }
     }
@@ -188,9 +191,32 @@ impl DetokenizationStage {
         self.next_entry += 1;
     }
 
+    /// Hold a token fact until the modeled client receives it.
+    pub(crate) fn defer_token(&mut self, at_ms: f64, uuid: Uuid, token: u32) {
+        self.tokens.push((at_ms, self.next_entry, uuid, token));
+        self.next_entry += 1;
+    }
+
+    pub(crate) fn release_tokens_due(&mut self, now_ms: f64) -> Vec<(f64, Uuid, u32)> {
+        let (mut due, waiting): (Vec<_>, Vec<_>) = self
+            .tokens
+            .drain(..)
+            .partition(|(at, _, _, _)| *at <= now_ms);
+        self.tokens = waiting;
+        due.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        due.into_iter()
+            .map(|(at, _, uuid, token)| (at, uuid, token))
+            .collect()
+    }
+
+    pub(crate) fn cancel_tokens(&mut self, request_id: Uuid) {
+        self.tokens.retain(|(_, _, uuid, _)| *uuid != request_id);
+    }
+
     /// Cancel a response not yet received by its client. This only removes the
     /// pending client terminal; committed detokenizer service time is unchanged.
     pub(crate) fn cancel_terminal(&mut self, request_id: Uuid) -> bool {
+        self.cancel_tokens(request_id);
         let before = self.terminals.len();
         self.terminals
             .retain(|Reverse(pending)| pending.request_id != request_id);
@@ -199,11 +225,16 @@ impl DetokenizationStage {
 
     /// Finished requests the client has not received yet.
     pub(crate) fn len(&self) -> usize {
-        self.terminals.len()
+        self.terminals.len() + self.tokens.len()
     }
 
     pub(crate) fn next_release_ms(&self) -> Option<f64> {
-        self.terminals.peek().map(|Reverse(pending)| pending.at_ms)
+        self.terminals
+            .peek()
+            .map(|Reverse(pending)| pending.at_ms)
+            .into_iter()
+            .chain(self.tokens.iter().map(|(at, _, _, _)| *at))
+            .min_by(f64::total_cmp)
     }
 
     /// Remove every finished request the client has received by `now_ms`, in

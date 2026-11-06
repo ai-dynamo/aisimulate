@@ -1957,6 +1957,16 @@ impl TraceCollector {
         }
     }
 
+    /// Remove future receipt timestamps when an external client cancels before
+    /// receiving them. Physical pass work remains accounted separately.
+    pub(crate) fn discard_unreceived_tokens(&mut self, uuid: Uuid, now_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid)
+            && let TokenTimeline::Recording(times) = &mut stats.token_timeline
+        {
+            times.retain(|at| *at <= now_ms);
+        }
+    }
+
     /// Record a token the engine emitted at `emitted_ms` and the client
     /// received at `received_ms` after detokenization.
     pub(crate) fn on_detokenized_token(&mut self, uuid: Uuid, emitted_ms: f64, received_ms: f64) {

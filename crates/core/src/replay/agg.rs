@@ -658,8 +658,14 @@ where
                 .on_prompt_cache_read_tokens(signal.uuid, tokens, self.now_ms)?;
         }
         if let Some(token_id) = signal.token_id {
-            self.admission
-                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
+            if self.admission.is_external()
+                && let Some(stage) = &mut self.detokenization
+            {
+                stage.defer_token(received_ms, signal.uuid, token_id);
+            } else {
+                self.admission
+                    .defer_output_token(signal.uuid, token_id, self.now_ms)?;
+            }
             if self.detokenization.is_some() {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
@@ -806,8 +812,12 @@ where
         let Some(detokenization) = &mut self.detokenization else {
             return Ok(false);
         };
+        let tokens = detokenization.release_tokens_due(self.now_ms);
         let released = detokenization.release_due(self.now_ms);
-        let changed = !released.is_empty();
+        let changed = !released.is_empty() || !tokens.is_empty();
+        for (at_ms, uuid, token) in tokens {
+            self.admission.defer_output_token(uuid, token, at_ms)?;
+        }
         for (at_ms, uuid, status) in released {
             self.collector.on_terminal(uuid, at_ms, status);
             self.admission.defer_terminal(uuid, self.now_ms, status)?;
@@ -3594,6 +3604,12 @@ where
         &mut self,
         uuid: Uuid,
     ) -> anyhow::Result<Option<ReplayTerminalStatus>> {
+        if self.admission.is_external() {
+            if let Some(stage) = &mut self.detokenization {
+                stage.cancel_tokens(uuid);
+            }
+            self.collector.discard_unreceived_tokens(uuid, self.now_ms);
+        }
         if self.encoder.as_ref().is_some_and(|encoder| {
             encoder.contains(|arrival| arrival.request.metadata().uuid == Some(uuid))
         }) {
