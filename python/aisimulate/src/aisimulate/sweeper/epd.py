@@ -150,7 +150,8 @@ def resolve_encoder_pools(
             )
         for row in rows:
             coverage = float(row.get("power_coverage", 0.0))
-            power = float(row.get("power_w", 0.0))
+            # A withheld (None) watt value is unavailable, never a numeric 0.
+            power = float(row.get("power_w") or 0.0)
             if not math.isfinite(coverage) or not 0 <= coverage <= 1 or not math.isfinite(power) or power < 0:
                 raise ValueError("invalid encoder power evidence")
             # A native row is gated at its own replica count; analytical rows cross every count.

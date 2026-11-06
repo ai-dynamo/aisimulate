@@ -288,3 +288,23 @@ class TestSchemaMaterializedRows:
             show_power=False,
         )
         assert "6 (=1x4+1x2)" in out.replace("\x1b[4m", "").replace("\x1b[0m", "")
+
+
+@pytest.mark.parametrize(
+    "prefill_power, decode_power",
+    [(None, 700.0), (500.0, None), (None, None), (float("nan"), 700.0)],
+)
+def test_rate_match_passes_withheld_worker_power_through(prefill_power, decode_power):
+    """A withheld (None/NaN) worker watt value makes the disagg row None, never a diluted number."""
+    p = _make_prefill_dict(power_w=prefill_power)
+    d = _make_decode_dict(power_w=decode_power)
+    assert _rate_match_dict(p, 2, d, 4)["power_w"] is None
+    assert _build_disagg_summary_dict(p, 2, d, 4)["power_w"] is None
+
+
+def test_rate_match_numeric_power_is_time_weighted():
+    p, d = _make_prefill_dict(), _make_decode_dict()
+    # 80 ms prefill at 500 W, then 499 decode steps of 25 ms at 700 W.
+    expected = (500.0 * 80.0 + 700.0 * 25.0 * 499) / (80.0 + 25.0 * 499)
+    assert _rate_match_dict(p, 2, d, 4)["power_w"] == pytest.approx(expected)
+    assert _build_disagg_summary_dict(p, 2, d, 4)["power_w"] == pytest.approx(expected)

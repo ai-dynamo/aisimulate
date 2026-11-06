@@ -1267,6 +1267,14 @@ def test_overlay_encoder_stage_degradation_knob_and_coverage_blend():
         assert zeroed["power_w"] == 0.0
     covered = sweep._overlay_encoder_stage(bare, dict(enc, power_coverage=1.0), 1, prefill_power=100.0)
     assert covered["power_w"] > 0.0
+    # A withheld (None) prefill or decode watt value stays withheld, with or
+    # without a coverage channel, instead of being zero-filled or diluted.
+    for source in (row, bare):
+        for powers in ({"prefill_power": None}, {"decode_power": None}):
+            withheld = sweep._overlay_encoder_stage(
+                dict(source, power_w=None), dict(enc, power_coverage=1.0), 1, **{"prefill_power": 100.0, **powers}
+            )
+            assert withheld["power_w"] is None
 
 
 def test_sweep_agg_epd_top_k_defers_to_encoder_pairing(monkeypatch):

@@ -43,6 +43,18 @@ logger = logging.getLogger(__name__)
 QWEN_SMART_RESIZE_MAX_RATIO = 200
 
 
+def _has_draft_scheme(model: BaseModel) -> bool:
+    """Whether ``model`` carries a draft speculation scheme (not MTP or Null)."""
+    from aisimulate_core.sdk.speculation import NullScheme, SpecSchemeBase
+    from aisimulate_core.sdk.speculation.mtp import MTPScheme
+
+    scheme = getattr(model, "spec_scheme", None)
+    # Exact-type Null check: a scheme SUBCLASSING NullScheme that overrides
+    # the draft hooks is a draft scheme (the test-fake idiom); MTP stays on
+    # the legacy nextn accounting baked into the model families.
+    return isinstance(scheme, SpecSchemeBase) and not isinstance(scheme, MTPScheme) and type(scheme) is not NullScheme
+
+
 def _qwen_smart_resize(height: int, width: int, enc_cfg: common.VisionEncoderConfig) -> tuple[int, int]:
     """Resized height and width of the Qwen VL image processors' ``smart_resize``.
 
@@ -1155,6 +1167,17 @@ class BaseBackend:
         )
         return encoder_latency + sum(context_latency_dict.values()) + sum(generation_latency_dict.values())
 
+    @staticmethod
+    def _withholds_fpm_power(model: BaseModel, summary: InferenceSummary) -> bool:
+        """Whether a static FPM run must publish no watts (AISIM-1973 V1).
+
+        Numeric FPM power covers text-only models without a draft scheme whose
+        run meets the 0.9 energy-coverage rule. Op-level runs keep raw watts.
+        """
+        if getattr(model, "forward_model", "op_level") != "fpm":
+            return False
+        return _has_draft_scheme(model) or bool(model.encoder_ops) or not summary.has_sufficient_power_data()
+
     def run_static(
         self,
         model: BaseModel,
@@ -1295,6 +1318,17 @@ class BaseBackend:
         generation_latency_ms = sum(generation_latency_dict.values())  # milliseconds
         generation_energy_wms = sum(generation_energy_wms_dict.values())  # watt-milliseconds
 
+        summary.set_encoder_latency_dict(encoder_latency_dict)
+        summary.set_context_latency_dict(context_latency_dict)
+        summary.set_generation_latency_dict(generation_latency_dict)
+        summary.set_encoder_energy_wms_dict(encoder_energy_wms_dict)
+        summary.set_context_energy_wms_dict(context_energy_wms_dict)  # UPDATED: explicit units
+        summary.set_generation_energy_wms_dict(generation_energy_wms_dict)  # UPDATED: explicit units
+        summary.set_encoder_source_dict(encoder_source_dict)
+        summary.set_context_source_dict(context_source_dict)
+        summary.set_generation_source_dict(generation_source_dict)
+        summary.set_moe_comm_fallbacks(moe_comm_fallbacks)
+
         # Calculate average power (SIMPLIFIED - just divide! Single operation.)
         encoder_power_avg = encoder_energy_wms / encoder_latency_ms if encoder_latency_ms > 0 else 0.0
         context_power_avg = context_energy_wms / context_latency_ms if context_latency_ms > 0 else 0.0
@@ -1304,6 +1338,10 @@ class BaseBackend:
         total_latency_ms = encoder_latency_ms + context_latency_ms + generation_latency_ms
         total_energy_wms = encoder_energy_wms + context_energy_wms + generation_energy_wms
         e2e_power_avg = total_energy_wms / total_latency_ms if total_latency_ms > 0 else 0.0
+        if self._withholds_fpm_power(model, summary):
+            # Publish no FPM watts (None, never 0.0); the energy dicts and the
+            # true coverage stay on the summary for diagnostics.
+            context_power_avg = generation_power_avg = e2e_power_avg = None
 
         # For backward compatibility, keep old variable names
         encoder_latency = encoder_latency_ms
@@ -1391,16 +1429,6 @@ class BaseBackend:
 
         summary.set_deferred_row(data, common.ColumnsStatic)
 
-        summary.set_encoder_latency_dict(encoder_latency_dict)
-        summary.set_context_latency_dict(context_latency_dict)
-        summary.set_generation_latency_dict(generation_latency_dict)
-        summary.set_encoder_energy_wms_dict(encoder_energy_wms_dict)
-        summary.set_context_energy_wms_dict(context_energy_wms_dict)  # UPDATED: explicit units
-        summary.set_generation_energy_wms_dict(generation_energy_wms_dict)  # UPDATED: explicit units
-        summary.set_encoder_source_dict(encoder_source_dict)
-        summary.set_context_source_dict(context_source_dict)
-        summary.set_generation_source_dict(generation_source_dict)
-        summary.set_moe_comm_fallbacks(moe_comm_fallbacks)
         summary.set_encoder_power_avg(encoder_power_avg)
         summary.set_context_power_avg(context_power_avg)
         summary.set_generation_power_avg(generation_power_avg)
@@ -2189,7 +2217,10 @@ class BaseBackend:
             "backend": database.backend,
             "version": database.version,
             "system": database.system,
-            "power_w": agg_power_avg_w,
+            # Aggregate FPM power is out of V1 (AISIM-1973 D10, AISIM-2001):
+            # publish no watts whatever the coverage. Operation energy and
+            # the true coverage stay on the summary for diagnostics.
+            "power_w": None if getattr(model, "forward_model", "op_level") == "fpm" else agg_power_avg_w,
         }
         summary = InferenceSummary(RuntimeConfig(isl=isl, osl=osl))
         summary.set_memory_and_check_oom(

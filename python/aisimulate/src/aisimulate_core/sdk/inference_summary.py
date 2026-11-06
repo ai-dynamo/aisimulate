@@ -313,15 +313,15 @@ class InferenceSummary:
         """Set encoder phase average power (watts)."""
         self._encoder_power_avg = power_avg
 
-    def set_context_power_avg(self, power_avg: float) -> None:
+    def set_context_power_avg(self, power_avg: float | None) -> None:
         """Set context phase average power (watts)."""
         self._context_power_avg = power_avg
 
-    def set_generation_power_avg(self, power_avg: float) -> None:
+    def set_generation_power_avg(self, power_avg: float | None) -> None:
         """Set generation phase average power (watts)."""
         self._generation_power_avg = power_avg
 
-    def set_e2e_power_avg(self, power_avg: float) -> None:
+    def set_e2e_power_avg(self, power_avg: float | None) -> None:
         """Set end-to-end average power (watts)."""
         self._e2e_power_avg = power_avg
 
@@ -329,16 +329,16 @@ class InferenceSummary:
         """Get encoder phase average power (watts)."""
         return self._encoder_power_avg
 
-    def get_context_power_avg(self) -> float:
-        """Get context phase average power (watts)."""
+    def get_context_power_avg(self) -> float | None:
+        """Get context phase average power (watts), or None when withheld."""
         return self._context_power_avg
 
-    def get_generation_power_avg(self) -> float:
-        """Get generation phase average power (watts)."""
+    def get_generation_power_avg(self) -> float | None:
+        """Get generation phase average power (watts), or None when withheld."""
         return self._generation_power_avg
 
-    def get_e2e_power_avg(self) -> float:
-        """Get end-to-end average power (watts)."""
+    def get_e2e_power_avg(self) -> float | None:
+        """Get end-to-end average power (watts), or None when withheld."""
         return self._e2e_power_avg
 
     def get_power_data_coverage(self) -> float:
