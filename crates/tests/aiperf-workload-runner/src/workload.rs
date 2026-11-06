@@ -237,6 +237,7 @@ pub fn execute(
         engine.is_drained(),
         "simulator retained request/pass ownership after run"
     );
+    let backend_report = engine.take_backend_report(clock.now_ns() as f64 / 1_000_000.0);
     let model_trace:Vec<serde_json::Value> = engine.trace().into_iter().map(|event| match event {
         crate::model::ModelEvent::CapacityWait {request_id,at_ns} => serde_json::json!({"event":"capacity_wait","request_id":request_id.to_string(),"at_ns":at_ns}),
         crate::model::ModelEvent::Submitted {request_id,at_ns} => serde_json::json!({"event":"submitted","request_id":request_id.to_string(),"at_ns":at_ns}),
@@ -276,6 +277,9 @@ pub fn execute(
         "format": "aisim-aiperf-library-proof-v1",
         "capture_format": "aisim-runtime-values-raw-v1",
         "native_phase_report": report,
+        "backend_report": backend_report,
+        "backend_per_request": backend_report.per_request,
+        "backend_report_source": "actual Engine submissions, admissions, outputs and provisioned-clock intervals folded by AISim TraceCollector",
         "requests": records.as_slice(),
         "requests_coverage": "all dispatcher-issued requests, including cancelled None and dropped futures; absent observations remain null",
         "model_trace": model_trace,

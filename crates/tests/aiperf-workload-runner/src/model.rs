@@ -140,6 +140,7 @@ pub struct ModelExecution {
     capacity: Semaphore,
     events: RefCell<Vec<ModelEvent>>,
     reports_ready: Notify,
+    reporting: RefCell<crate::reporting::BackendReporting>,
 }
 
 impl ModelExecution {
@@ -199,6 +200,9 @@ impl ModelExecution {
     }
 
     fn with_capacity(clock: Rc<SimClock>, engine: Engine, capacity: usize) -> Rc<Self> {
+        // This binding builds a single logical worker without TP or PCP;
+        // each actual attention-DP rank therefore occupies one modeled GPU.
+        let gpu_count = engine.rank_identities().len();
         Rc::new(Self {
             clock,
             state: RefCell::new(State {
@@ -215,12 +219,18 @@ impl ModelExecution {
             capacity: Semaphore::new(capacity),
             events: RefCell::new(Vec::new()),
             reports_ready: Notify::new(),
+            reporting: RefCell::new(crate::reporting::BackendReporting::new(1, gpu_count)),
         })
     }
 
     /// Snapshot actual model and callback boundary ordering.
     pub fn trace(&self) -> Vec<ModelEvent> {
         self.events.borrow().clone()
+    }
+
+    /// Drain backend measurements independently of the application's phase report.
+    pub(crate) fn take_backend_report(&self, end_ms: f64) -> aisimulate_core::replay::ReplayReport {
+        self.reporting.borrow_mut().take_report(end_ms)
     }
 
     /// True only when engine, committed pass, and application ownership drained.
@@ -267,7 +277,7 @@ impl ModelExecution {
             // Fixed models have no internal-work deadline and cancellation is
             // valid even with a committed pass. Latch unexpected failures for
             // the source pump rather than panic from a future's Drop.
-            if let Err(error) = state.engine.apply_command_effects(
+            match state.engine.apply_command_effects(
                 SchedulerCommand::new(
                     0,
                     Command::CancelRequest {
@@ -277,9 +287,21 @@ impl ModelExecution {
                 ),
                 self.now() as f64 / 1_000_000.0,
             ) {
-                state.failure = Some(format!(
-                    "model cancellation failed for request {id}: {error}"
-                ));
+                Ok(effects) => {
+                    for rank in effects.by_rank {
+                        for retired in rank.effects.retired_requests {
+                            self.reporting.borrow_mut().on_cancel(
+                                retired,
+                                self.now() as f64 / 1_000_000.0,
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    state.failure = Some(format!(
+                        "model cancellation failed for request {id}: {error}"
+                    ));
+                }
             }
             self.events.borrow_mut().push(ModelEvent::Cancelled {
                 request_id: id,
@@ -472,18 +494,19 @@ impl Execution for ModelExecution {
                     "experimental modeled output population exceeds 1048576 tokens".into(),
                 ));
             }
-            let mut population = script.output_token_ids.as_ref().map_or_else(
-                || vec![0; population_len],
-                |ids| ids.iter().take(cap).copied().collect(),
-            );
+            // An absent population delegates token generation to the engine's
+            // request-UUID/ordinal stream, exactly as native offline execution.
+            let population = script.output_token_ids.as_ref().map(|ids| {
+                ids.iter().take(cap).copied().collect::<Vec<_>>()
+            });
+            let is_native_reply = script.output_token_ids.is_none() && script.response_text.is_none();
             let capped = script
                 .output_token_ids
                 .as_ref()
                 .is_some_and(|ids| ids.len() > cap);
-            population.truncate(cap);
             if script
                 .fail_after_tokens
-                .is_some_and(|cut| cut > population.len())
+                .is_some_and(|cut| cut > population_len)
             {
                 return Err(ExecutionError::Failed(
                     "script failure cut exceeds capped output population".into(),
@@ -491,9 +514,11 @@ impl Execution for ModelExecution {
             }
             // Validate token vocabulary before any operation exists. A partial
             // UTF-8 prefix is valid model output and is decoded lossily later.
-            if script.response_text.is_none() {
+            if script.response_text.is_none()
+                && let Some(population) = &population
+            {
                 aiperf_tokenizers::TiktokenTokenizer::builtin()
-                    .decode_lossy(&population)
+                    .decode_lossy(population)
                     .map_err(|error| ExecutionError::Failed(error.to_string()))?;
             }
             if script.pre_send_delay_ns > 0 {
@@ -526,8 +551,8 @@ impl Execution for ModelExecution {
                             Command::Submit(ModelRequest {
                                 request_id: uuid,
                                 tokens: request.input_token_ids,
-                                max_output_tokens: population.len(),
-                                output_token_ids: Some(population),
+                                max_output_tokens: population_len,
+                                output_token_ids: population,
                                 session_id: Some(request.turn.x_correlation_id.clone()),
                                 images: request
                                     .images
@@ -553,6 +578,12 @@ impl Execution for ModelExecution {
                     .map_err(|error| ExecutionError::Failed(error.to_string()))?;
                 // CommandEffects contains ownership/lifecycle deltas, not output;
                 // actual outputs arrive exclusively from complete_pass.
+                self.reporting.borrow_mut().on_submit(
+                    uuid,
+                    start_ns as f64 / 1_000_000.0,
+                    input_tokens,
+                    population_len,
+                );
                 state.requests.insert(id, mailbox.clone());
             }
             let _guard = RequestGuard {
@@ -636,14 +667,25 @@ impl Execution for ModelExecution {
             };
             let response_text = match script.response_text {
                 Some(text) => text,
+                None if is_native_reply => {
+                    if terminal == ReplayTerminalStatus::Completed {
+                        aiperf_request_execution::model_input::synthetic_reply(uuid, tokens.len())
+                    } else {
+                        String::new()
+                    }
+                }
                 None => aiperf_tokenizers::TiktokenTokenizer::builtin()
                     .decode_lossy(&tokens)
                     .map_err(|error| ExecutionError::Failed(error.to_string()))?,
             };
             let mut metadata = script.model_response;
-            metadata.output_token_ids = Some(tokens.clone());
-            if metadata.content.is_none() {
-                metadata.content = Some(response_text.clone());
+            // Native offline replies intentionally carry no endpoint metadata;
+            // emitted engine IDs remain available separately on Outcome.
+            if !is_native_reply {
+                metadata.output_token_ids = Some(tokens.clone());
+                if metadata.content.is_none() {
+                    metadata.content = Some(response_text.clone());
+                }
             }
             if capped
                 && terminal == ReplayTerminalStatus::Completed
@@ -743,6 +785,9 @@ impl SimEventSource for ModelExecution {
                 at_ns: now_ns,
             });
             for rank in completed.effects.by_rank {
+                self.reporting
+                    .borrow_mut()
+                    .on_pass_completed(end_ms, &rank.effects);
                 for output in rank.effects.outputs {
                     let id = output.request_id.as_u128();
                     if let Some(mailbox) = state.requests.get(&id) {
@@ -761,6 +806,11 @@ impl SimEventSource for ModelExecution {
             let end_ns_f = (started.end_ms * 1_000_000.0).ceil();
             if !end_ns_f.is_finite() || end_ns_f < now_ns as f64 || end_ns_f >= i64::MAX as f64 {
                 return Err(source_error("invalid modeled pass deadline"));
+            }
+            for rank in &started.by_rank {
+                self.reporting
+                    .borrow_mut()
+                    .on_pass_started(started.started_at_ms, &rank.effects);
             }
             let request_ids = started
                 .by_rank

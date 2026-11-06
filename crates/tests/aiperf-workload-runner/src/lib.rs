@@ -11,6 +11,7 @@ mod dispatch;
 /// Actual simulator-owned Engine binding, exposed for cross-owner semantic proofs.
 pub mod model;
 mod rendezvous;
+mod reporting;
 mod workload;
 
 /// Execute an accepted native run directly inside the simulator process.

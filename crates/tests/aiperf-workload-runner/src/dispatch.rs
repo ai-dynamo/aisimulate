@@ -5,9 +5,8 @@
 
 use aiperf_dispatch::turn::TurnToSend;
 use aiperf_engine_kernel::scheduled::TurnDispatcher;
-use aiperf_exchange_model::{
-    TextTokenizer, dispatch::RequestObserver, measure::TurnDispatchOutcome,
-};
+use aiperf_exchange_model::{dispatch::RequestObserver, measure::TurnDispatchOutcome};
+use aiperf_request_execution::model_input::OpenAiRequestEncoder;
 use aiperf_request_execution::execution::{Execution, Observation, Request};
 use async_trait::async_trait;
 use std::{cell::RefCell, rc::Rc};
@@ -91,33 +90,27 @@ impl Dispatcher {
             .ok_or_else(|| anyhow::anyhow!("prepared request body absent"))?
             .to_wire()?;
         let body: serde_json::Value = serde_json::from_slice(&wire)?;
-        let tokenizer = aiperf_tokenizers::TiktokenTokenizer::builtin();
-        let mut ids = Vec::new();
-        let messages = body["messages"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("proof supports chat messages only"))?;
-        for message in messages {
-            match &message["content"] {
-                serde_json::Value::String(text) => ids.extend(tokenizer.encode(text)?),
-                serde_json::Value::Array(parts) => {
-                    for part in parts {
-                        anyhow::ensure!(
-                            part["type"] == "text",
-                            "proof supports text only; no implicit image geometry"
-                        );
-                        ids.extend(
-                            tokenizer.encode(
-                                part["text"]
-                                    .as_str()
-                                    .ok_or_else(|| anyhow::anyhow!("text part lacks text"))?,
-                            )?,
-                        );
-                    }
+        let ids = OpenAiRequestEncoder::default().encode_turn(
+            &turn,
+            turn.effective_model.as_deref().unwrap_or_default(),
+            |hash_ids, block_size, input_length| {
+                let hash_ids = hash_ids
+                    .iter()
+                    .copied()
+                    .map(|hash_id| {
+                        u32::try_from(hash_id).map_err(|_| {
+                            anyhow::anyhow!("trace hash_id {hash_id} cannot be represented as u32")
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                aisimulate_core::replay::loadgen::TurnTrace {
+                    input_length,
+                    hash_ids,
+                    ..Default::default()
                 }
-                serde_json::Value::Null => {}
-                _ => anyhow::bail!("unsupported message content"),
-            }
-        }
+                .synthesize_tokens(block_size)
+            },
+        )?;
         {
             let mut records = self.records.borrow_mut();
             let row = &mut records[index];

@@ -1399,7 +1399,7 @@ impl TraceCollector {
     /// Call once per native pass completion, independently of sampled FPM
     /// telemetry. Repeated admissions and preemption make reuse-derived work
     /// estimates incorrect; only the committed pass describes executed work.
-    pub(crate) fn on_completed_prefill_work(&mut self, tokens: u64) {
+    pub fn on_completed_prefill_work(&mut self, tokens: u64) {
         self.committed_prefill_tokens += tokens;
     }
 
@@ -1430,7 +1430,7 @@ impl TraceCollector {
     /// *provisioned* worker count (active + starting-up + draining), so the
     /// startup ramp and drain tail are included. Agg replay passes `prefill = 0`
     /// and reports through `decode`.
-    pub(crate) fn add_worker_seconds(&mut self, prefill: f64, decode: f64) {
+    pub fn add_worker_seconds(&mut self, prefill: f64, decode: f64) {
         self.prefill_worker_seconds += prefill;
         self.decode_worker_seconds += decode;
     }
@@ -2005,7 +2005,10 @@ impl TraceCollector {
     /// Drain measurements while retaining the configuration that applies to
     /// each reporting epoch of a reusable runtime. The absolute report boundary
     /// includes idle time in this epoch and starts the next one.
-    pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
+    /// The caller must provide a finite, monotonic boundary after settling all
+    /// request facts for this epoch. Externally driven engines use the same
+    /// fold as the replay runtimes rather than projecting a second summary.
+    pub fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
         debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
         let mut next = Self {
             report_start_ms: report_end_ms,
