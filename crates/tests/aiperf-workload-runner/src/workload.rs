@@ -264,21 +264,13 @@ pub(crate) fn lower_scheduled(
             raw_input.get("dataset").context("raw dataset missing")?,
         )?;
         let seed = run.random_seed.unwrap_or(0);
-        let (corpus, hash_namespace) = match dataset
-            .pointer("/prompts/corpus")
-            .and_then(|value| value.as_str())
-        {
-            None | Some("coding") => (
-                aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?,
-                aiperf_rng::namespace::DATASET_CODING_CONTENT_CORPUS,
-            ),
-            Some("sonnet") => (
-                aiperf_dataset_synthesis::corpus::tokenize_sonnet_corpus(tokenizer.as_ref())?,
-                aiperf_rng::namespace::DATASET_PROMPT_CORPUS,
-            ),
-            _ => anyhow::bail!("proof requires explicit prompts.corpus coding or sonnet"),
-        };
-        let hash_seed = aiperf_rng::PythonRandomGenerator::derive_child_seed(seed, hash_namespace);
+        let (corpus, hash_seed) = aiperf_engine_input::legacy_weka::legacy_weka_corpus(
+            dataset
+                .pointer("/prompts/corpus")
+                .and_then(|value| value.as_str()),
+            tokenizer.as_ref(),
+            seed,
+        )?;
         let prepared = prepare_legacy_agentic(
             run,
             &phases,
