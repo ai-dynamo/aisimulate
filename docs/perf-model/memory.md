@@ -131,8 +131,10 @@ in tokens, that the runtime resolved). All three are optional, and an absent
 field is left out of the serialized record. `align` requires
 `enable_prefix_caching` to be `true`. vLLM's `all` mode is not modeled and is
 rejected. Rust exports the mode type as `FpmMambaCacheMode`. These fields are
-evidence of the probe's settings. Selection, sizing and replay do not read them
-yet. The simulated deployment decides prefix caching. The vLLM 0.31.0 runtime
+evidence of the probe's settings. Selection and sizing do not read them.
+Grouped prefix caching needs a probe that ran with prefix caching, and replay
+then hashes prompts in blocks of `hash_block_size_tokens`. For a
+linear profile, the simulated deployment decides prefix caching. The vLLM 0.31.0 runtime
 probe fills these fields from the prefill phase of an aggregated or prefill
 role. A decode role takes them from its decode phase.
 
@@ -157,10 +159,11 @@ linear-attention layers. It has no `sliding_window`, and no other kind accepts
 - `block_size_tokens` is the block size of vLLM's state spec, as the runtime
   probe records it. For a Mamba spec, that is the Mamba block: the scheduler
   block in `align` mode and `max_model_len` in mode `none`. For a ring spec,
-  such as an indexer tail, it is the ring block. Sizing and replay do not read
-  this field yet. Planned grouped prefix caching will read it as the Mamba
-  block of `align` mode. So it stays part of the group shape that onboarding
-  compares with the runtime probe.
+  such as an indexer tail, it is the ring block. Sizing and replay with
+  prefix caching off do not read this field. Grouped prefix caching reads it
+  as the Mamba block of `align` mode. Every group's block also enters the
+  scheduler block, the least common multiple of the group blocks. It is part
+  of the group shape that onboarding compares with the runtime probe.
 - `blocks_per_request` is the positive number of pool blocks that a running
   request holds between block boundaries. For a Mamba spec, that is `1 + k`,
   where `k` is the spec's `num_speculative_blocks`. Grouped execution forbids
@@ -178,8 +181,9 @@ linear-attention layers. It has no `sliding_window`, and no other kind accepts
 
 Each group can also hold four optional fields from the runtime probe import.
 A profile imported before these fields existed has none of them, and an absent
-field is left out of the serialized group. Sizing and replay do not read them
-yet.
+field is left out of the serialized group. Sizing does not read them. Grouped
+prefix caching reads `prefix_cacheable` and the two checkpoint fields. Replay
+does not read `transfer_bytes_per_block` yet.
 
 - `prefix_cacheable` tells whether vLLM's manager for the group takes part in
   prefix caching. A ring spec does not. A vLLM 0.31.0 import writes it for
@@ -254,10 +258,13 @@ legacy Rust scalar `KvCacheEstimate` transport reject grouped profiles; use the
 groups and shared byte budget instead. Existing complete linear declarations
 keep their budget calculation and serialized shape.
 
-Grouped native execution supports cold aggregated vLLM, PP1/CP1, HBM-only cache,
-non-speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3
-offload, disaggregation and fixed scalar cache capacity are rejected. Allocation
-is atomic across all groups against one shared rank-local byte budget. A window
+Grouped native execution supports cold or prefix-cached aggregated vLLM,
+PP1/CP1, HBM-only cache and non-speculative decoding. Prefix caching needs
+runtime probe evidence from vLLM 0.31.0 or 0.32.0 and equal `page_size_bytes`
+across groups. [Replay KV cache](../replay/engine/kv-cache.md#other-cache-modes)
+lists the conditions. Host/G3 offload, disaggregation and fixed scalar cache
+capacity are rejected. With prefix caching off, allocation is atomic across all
+groups against one shared rank-local byte budget. A window
 of `W` keeps the blocks covering the last `W - 1` computed tokens and all tokens
 scheduled for the next forward. Expired completed pages are evicted before
 subsequent forwards; temporary prefill pages remain charged through completion.
@@ -267,11 +274,55 @@ request finishes, is cancelled or is preempted. A resumed request reserves them
 again once. This physical retention never truncates logical request progress or
 the context coordinates sent to FPM timing queries.
 
+With prefix caching on, replay keeps the blocks of all groups in one block pool:
+
+- Every group has the same `page_size_bytes`, so one block of any group takes
+  one pool block. The pool holds `kv_cache_capacity_bytes / page_size_bytes`
+  blocks, rounded down.
+- A native rank with `kv_cache_groups` and `enable_prefix_caching` also needs
+  `prefix_match_unit` (the probe's hash block), `vllm_version` (`0.31.0` or
+  `0.32.0`) and `max_model_len`. Prediction and recommendation set all three.
+  Every `state` group needs a `blocks_per_request` of 1.
+- The pool must hold the blocks of one request of `max_model_len` tokens, as
+  vLLM's startup check counts them. That is
+  `ceil(max_model_len / block_size_tokens)` blocks for full attention and
+  vLLM's admission cap for a sliding window. It is 2 blocks for a
+  prefix-cacheable `state` group, 3 with a checkpoint block, and 1 block for a
+  ring.
+- Replay admits a waiting request only with room for the blocks of its whole
+  prompt, as vLLM does by default. Cached blocks that no request holds count as
+  room. A hit on such a block still costs one block of that room. The blocks of
+  the request's first chunk must also fit, without the admission cap of a
+  sliding window. A waiting request that fails either test stays in the queue
+  and preempts no running request, as in vLLM. A hit inside a block can need
+  more blocks than the pool holds. The request then waits until running
+  requests evict its hit blocks, as in vLLM. With no running request, vLLM
+  waits forever, and replay stops with a livelock error.
+- Full-attention groups keep their blocks while the request is running. A
+  sliding-window group releases the blocks below its window before each
+  allocation. A prefix-cacheable `state` group holds one running block. After
+  a block boundary, it also holds the previous block for one scheduler step. A
+  ring holds one block. [Replay KV cache](../replay/engine/kv-cache.md#other-cache-modes)
+  describes the blocks of a hit and of a checkpoint.
+- A request releases its blocks tail first. A released block without a cache
+  key is free at once. A released block with a key stays in one
+  least-recently-used queue for all groups. When no free block is left, a new
+  block of any group evicts the oldest block in that queue.
+- [Replay KV cache](../replay/engine/kv-cache.md#other-cache-modes) lists
+  where replay block counts, hits and admission differ from vLLM.
+
 The Rust Replay observer's `ReplaySchedulerMetricsSnapshot` reports optional
 `kv_cache_used_bytes` and `kv_cache_capacity_bytes` for grouped caches; its
 `active_cache_usage` and `physical_cache_usage` use byte occupancy. `active_blocks`
 counts resident group pages, while `total_blocks` is zero because heterogeneous
 pages have no scalar block capacity. Use the byte fields for capacity comparisons.
+With prefix caching on, the snapshot also reports `kv_cache_cached_bytes`, the
+bytes of cached blocks that no request holds, and `inactive_blocks` counts these
+blocks. `kv_cache_used_bytes`, `active_blocks` and `active_cache_usage` then
+count only the blocks that requests hold. `physical_cache_usage` also counts the
+cached blocks, and `kv_cache_capacity_bytes` counts whole pool blocks.
+[Replay KV cache](../replay/engine/kv-cache.md#other-cache-modes) lists why the
+cached blocks can differ from vLLM.
 These fields are currently exposed through the Rust observer API, not the Python
 JSON replay runtime. Linear snapshots retain their existing block metrics.
 
