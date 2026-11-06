@@ -23,7 +23,23 @@ pub fn execute(
     cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
     observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run, cancellation, observer, None)
+    workload::execute(run, cancellation, observer, None, None)
+}
+
+/// Execute the shared native workload against a caller-prepared AISim factory.
+///
+/// This function never substitutes fixed timing. GPU predictor callers must
+/// construct and validate calibrated timing through the canonical AISim API,
+/// then pass the corresponding native factory. Admission capacity must match
+/// that factory's scheduler capacity. Artifact publication remains caller-owned.
+pub fn execute_with_engine_factory(
+    run: &aiperf_config::model::BenchmarkRun,
+    cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
+    observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
+    factory: &aisimulate_core::engine::EngineFactory,
+    admission_capacity: usize,
+) -> anyhow::Result<serde_json::Value> {
+    workload::execute(run,cancellation,observer,None,Some((factory,admission_capacity)))
 }
 
 /// Opt-in executable-boundary instrumentation, separate from ordinary execution.
@@ -38,5 +54,5 @@ pub fn execute_with_control_rendezvous(
     events: aiperf_engine_kernel::event_writer::EventWriterHandle,
     sequencer: std::sync::Arc<aiperf_engine_kernel::event_writer::Sequencer>,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run, cancellation, observer, Some((events, sequencer)))
+    workload::execute(run, cancellation, observer, Some((events, sequencer)), None)
 }

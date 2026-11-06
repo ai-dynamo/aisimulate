@@ -5,6 +5,7 @@
 
 pub(crate) mod belady;
 mod cache;
+mod canonical_timing;
 mod common;
 mod config;
 pub(crate) mod g3_offload;
@@ -54,6 +55,7 @@ pub use protocol::{
     StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
+pub use canonical_timing::CanonicalTimingModel;
 pub use scheduler::SchedulerRank;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;

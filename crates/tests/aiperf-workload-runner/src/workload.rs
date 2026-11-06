@@ -33,6 +33,7 @@ pub fn execute(
         aiperf_engine_kernel::event_writer::EventWriterHandle,
         Arc<aiperf_engine_kernel::event_writer::Sequencer>,
     )>,
+    model_factory: Option<(&aisimulate_core::engine::EngineFactory,usize)>,
 ) -> Result<serde_json::Value> {
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
@@ -150,7 +151,10 @@ pub fn execute(
         run_sampler: aiperf_multiturn::RunScopedSampler::new(),
     };
     let clock = Rc::new(SimClock::new());
-    let engine = ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?;
+    let engine = match model_factory {
+        Some((factory,capacity)) => ModelExecution::from_factory(clock.clone(),factory,capacity)?,
+        None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
+    };
     let dispatcher = Rc::new(Dispatcher {
         execution: engine.clone(),
         records: RefCell::new(Vec::new()),

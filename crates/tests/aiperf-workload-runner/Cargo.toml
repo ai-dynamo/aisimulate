@@ -11,6 +11,9 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[features]
+real-gpu-proof = ["aisimulate-core/embed-python"]
+
 [lib]
 name = "aisim_aiperf_workload_runner"
 path = "src/lib.rs"
@@ -56,6 +59,11 @@ aiperf-tokenizers = { path = "../../../../../../../aiperf-rs/.worktrees/prove-si
 [[test]]
 name = "agentx_semantics"
 path = "tests/agentx_semantics.rs"
+
+[[test]]
+name = "real_gpu"
+path = "tests/real_gpu.rs"
+required-features = ["real-gpu-proof"]
 
 [dev-dependencies]
 aiperf-engine-kernel = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/kernel", features = ["test-support"] }
