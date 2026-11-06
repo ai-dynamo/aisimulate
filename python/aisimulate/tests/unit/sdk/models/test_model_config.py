@@ -909,9 +909,12 @@ class TestKVCacheElementsPerToken:
         assert model.model_family == expected_family
         assert model.get_kvcache_elements_per_token() == expected_elems
 
-    @pytest.mark.parametrize("tp,expected_elements", [(1, 4096), (2, 2048), (4, 2048)])
+    @pytest.mark.parametrize(
+        "tp,expected_elements,expected_state",
+        [(1, 4096, 170_229_760), (2, 2048, 85_114_880), (4, 2048, 42_557_440)],
+    )
     @pytest.mark.parametrize("kv_dtype", [common.KVCacheQuantMode.fp8, common.KVCacheQuantMode.bfloat16])
-    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, kv_dtype):
+    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, expected_state, kv_dtype):
         model = self._build_model(
             "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
             tp,
@@ -923,8 +926,13 @@ class TestKVCacheElementsPerToken:
         # TP >= 2 retains one KV head per rank, including replicated heads at TP4.
         assert model.get_kvcache_elements_per_token() == expected_elements
         bytes_per_token = expected_elements * kv_dtype.value.memory
-        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token
-        assert model.get_kvcache_max_tokens(64 * bytes_per_token) == 64
+        # The constant per-request Mamba state sits on top of the token-linear KV.
+        # 40 Mamba layers x (fp32 SSM 128/tp heads x 64 x 128 x 4 B
+        # + bf16 convolution window (128/tp x 64 + 2 x max(8/tp, 1) x 128) x (4 - 1) x 2 B).
+        state = expected_state
+        assert model._mamba_state_bytes_per_request() == state
+        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token + state
+        assert model.get_kvcache_max_tokens(64 * bytes_per_token + state) == 64
 
     @pytest.mark.parametrize(
         "hf_id",
