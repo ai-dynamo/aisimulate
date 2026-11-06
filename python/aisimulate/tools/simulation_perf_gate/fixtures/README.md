@@ -5,7 +5,10 @@
 revision `8fecd2fc56694469f758f0afbbb6335ad3043740`, original file `traces.jsonl`.
 The upstream dataset authors are SemiAnalysis. The pinned dataset card declares
 Apache-2.0; it contains no separate copyright or NOTICE statement.
-`DATASET_CARD.md` preserves that card and `LICENSE` contains Apache-2.0.
+[`DATASET_CARD.md`](DATASET_CARD.md) is an abridged copy with the distribution-plot
+section omitted and a link to the complete pinned upstream card. Its statistics
+describe the full upstream dataset; this fixture's counts are recorded below.
+`LICENSE` contains Apache-2.0.
 
 Modified by NVIDIA for this benchmark: selected four complete plays and normalized
 JSON whitespace. The original play `002001296e8a8c38ad9d7cc436d691afc602`
