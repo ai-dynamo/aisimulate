@@ -197,6 +197,12 @@ class TestScope:
         raw["quantization_config"] = {"quant_method": "mixed_precision", "kv_cache_quant_method": "fp8"}
         assert len(H.modelopt_mixed_precision_targets(raw)) == 87
 
+    def test_modelopt_mixed_quant_method_is_in_scope(self):
+        # ModelOpt mixed-precision exports can also declare quant_method "modelopt_mixed".
+        targets = H.modelopt_mixed_precision_targets(_raw(quant_method="modelopt_mixed"))
+        assert targets == H.modelopt_mixed_precision_targets(_raw())
+        assert len(targets) == 87
+
     def test_base_lane_requant_is_out_of_scope(self):
         raw = _raw(quant_method="fp8")
         raw["quantization_config"]["weight_block_size"] = [128, 128]
@@ -424,6 +430,23 @@ def test_explicit_gemm_mode_reaches_listed_modules_only(glm53_export, phase):
     assert gemms[f"{phase}_dense_gate_up_gemm"] == gemms[f"{phase}_dense_down_gemm"] == "nvfp4"
 
 
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("phase", ["context", "generation"])
+def test_modelopt_mixed_quant_method_prices_the_modelopt_lanes(tmp_path, backend, phase):
+    lanes = {}
+    for quant_method in ("modelopt", "modelopt_mixed"):
+        path = _write_export(tmp_path / quant_method, _GLM_BASE, _glm53_layers(), quant_method=quant_method)
+        native = _native(_build(path, backend), phase)
+        attention = native[f"{phase}_attention"][1]
+        lanes[quant_method] = (
+            attention["gemm_quant_mode"],
+            attention["attn_projection_quant_modes"],
+            _gemm_modes(native),
+        )
+    assert lanes["modelopt_mixed"] == lanes["modelopt"]
+    assert lanes["modelopt"][1] == dict.fromkeys(H.ATTENTION_PROJECTION_GROUPS, "bfloat16")
+
+
 def test_listed_shared_experts_keep_the_coarse_mode(tmp_path):
     shared = _shared_experts_listed()
     path = _write_export(tmp_path / "export", _GLM_BASE, _glm53_layers(extra=shared))
@@ -470,7 +493,7 @@ class TestDeepSeekFamily:
     DSV3_LAYERS = 61
     MLA_PROJECTIONS = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj")
 
-    def _export(self, tmp_path, attention=MLA_PROJECTIONS, dense_algo="NVFP4"):
+    def _export(self, tmp_path, attention=MLA_PROJECTIONS, dense_algo="NVFP4", quant_method="modelopt"):
         layers = {
             f"model.layers.{layer}.mlp.{projection}": {"quant_algo": dense_algo}
             for layer in range(DENSE_LAYERS)
@@ -483,10 +506,13 @@ class TestDeepSeekFamily:
             }
         )
         layers.update(_listed(attention, range(self.DSV3_LAYERS)))
-        return _write_export(tmp_path / "export", _DSV3_BASE, layers, exclude=("model.layers.61*",))
+        return _write_export(
+            tmp_path / "export", _DSV3_BASE, layers, exclude=("model.layers.61*",), quant_method=quant_method
+        )
 
-    def test_unlisted_o_proj_and_shared_experts_run_bf16(self, tmp_path):
-        path = self._export(tmp_path)
+    @pytest.mark.parametrize("quant_method", ["modelopt", "modelopt_mixed"])
+    def test_unlisted_o_proj_and_shared_experts_run_bf16(self, tmp_path, quant_method):
+        path = self._export(tmp_path, quant_method=quant_method)
         raw = get_model_config_from_model_path(path)["raw_config"]
         assert H.attention_projection_exclusions(raw) == frozenset({"o", "indexer"})
         model = _build(path, "sglang", tp_size=8, moe_ep_size=8)
@@ -557,6 +583,8 @@ def test_packaged_targets_only_checkpoints_are_reviewed():
         _PACKAGED: "DEEPSEEKV32",
         "nvidia/MiniMax-M3-NVFP4": "MINIMAXM3",
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": "NEMOTRONH",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": "NEMOTRONH",
+        "nvidia/Qwen3.5-397B-A17B-NVFP4-V2": "QWEN35",
         "nvidia/Qwen3.6-27B-NVFP4": "QWEN35",
         "nvidia/Qwen3.6-35B-A3B-NVFP4": "QWEN35",
     }
