@@ -341,7 +341,7 @@ pub(crate) fn lower_scheduled(
     let registry = aiperf_endpoints::EndpointRegistry::builtin()?;
     let mut profile = default_endpoint_profile(run, &registry)?;
     if *input_projection == crate::participant_adapter::NativeInputProjection::TraceHashes {
-        profile.endpoint_id = aiperf_registry::RegistryId::new("aisimulate")?;
+        profile.endpoint_id = "aisimulate".parse()?;
     }
     let endpoint_id = profile.endpoint_id;
     let endpoint = registry.prepare(&endpoint_id, profile.config)?;
