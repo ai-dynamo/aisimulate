@@ -40,4 +40,19 @@ names = sorted(packages[key]["name"] for key in seen)
 forbidden = {"aiperf-runtime", "aiperf-cli", "aiperf-simulate", "aiperf-app", "aiperf"}
 assert not forbidden.intersection(names), "forbidden application dependency: " + repr(forbidden.intersection(names))
 assert Path(metadata["workspace_root"]).resolve() == package, "proof must own its Cargo workspace"
-print(json.dumps({"workspace_root":str(package),"normal_closure":names,"forbidden_absent":sorted(forbidden)}, indent=2))
+# Root tests may consume owning libraries, never the application or simulate.
+# Dependency dev-dependencies are not part of this package's test graph.
+test_seen = set()
+pending = [root]
+while pending:
+    key = pending.pop()
+    if key in test_seen:
+        continue
+    test_seen.add(key)
+    for dependency in nodes[key]["deps"]:
+        kinds = {kind["kind"] for kind in dependency["dep_kinds"]}
+        if kinds.intersection({None, "build"}) or (key == root and "dev" in kinds):
+            pending.append(dependency["pkg"])
+test_names = sorted(packages[key]["name"] for key in test_seen)
+assert not forbidden.intersection(test_names), "forbidden test application dependency: " + repr(forbidden.intersection(test_names))
+print(json.dumps({"workspace_root":str(package),"normal_closure":names,"test_closure":test_names,"forbidden_absent":sorted(forbidden)}, indent=2))

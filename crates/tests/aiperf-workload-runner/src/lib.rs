@@ -8,8 +8,8 @@
 //! AIPerf-owned; this package supplies the actual AISim Engine binding.
 
 mod dispatch;
-#[allow(dead_code)]
-mod model;
+/// Actual simulator-owned Engine binding, exposed for cross-owner semantic proofs.
+pub mod model;
 mod rendezvous;
 mod workload;
 

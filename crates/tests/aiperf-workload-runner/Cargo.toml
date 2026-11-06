@@ -53,5 +53,26 @@ aiperf-request-execution = { path = "../../../../../../../aiperf-rs/.worktrees/p
 aiperf-rng = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/rng" }
 aiperf-tokenizers = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/tokenizers" }
 
+[[test]]
+name = "agentx_semantics"
+path = "tests/agentx_semantics.rs"
+
 [dev-dependencies]
+tokio = { version = "1", features = ["full"] }
 tempfile = "3"
+bytes = "1"
+futures = "0.3"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+aiperf-dataset-loaders = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/loaders" }
+aiperf-engine-capture = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/capture" }
+aiperf-engine-request = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/request" }
+aiperf-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/graph" }
+aiperf-graph-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/model" }
+aiperf-metrics = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/metrics" }
+aiperf-metrics-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/model" }
+aiperf-records = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/records" }
+aiperf-report-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/export/report-model" }
+aiperf-segment-store = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/segment-store" }
+aiperf-test-support = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/testing/test-support", features = ["archive", "clock", "tracing"] }
+aiperf-transports = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/transport/transports" }
