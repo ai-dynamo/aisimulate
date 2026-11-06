@@ -1426,18 +1426,11 @@ impl AgenticGraphBuilder {
     }
 
     pub fn finish(self) -> Result<AgenticTrace> {
-        if self.inner.is_empty() {
-            bail!("agentic Mooncake rows did not contain any requests");
-        }
         self.inner.finish()
     }
 
-    /// Applies every check `finish` applies without compiling the graph, so
-    /// callers that only validate skip hash renumbering, the digest and lineage.
+    /// Runs `finish`'s checks without compiling the graph.
     pub(crate) fn validate(mut self) -> Result<()> {
-        if self.inner.is_empty() {
-            bail!("agentic Mooncake rows did not contain any requests");
-        }
         self.inner.validate().map(drop)
     }
 }
@@ -1637,10 +1630,13 @@ impl AgenticTraceBuilder {
         })
     }
 
-    /// Sorts nodes into graph order and checks the graph contract: dependency
-    /// targets, acyclicity, roots and source play ordinals. Returns the plays
-    /// in replay order.
+    /// Sorts nodes into graph order and checks the graph contract: at least one
+    /// request, dependency targets, acyclicity, roots and source play ordinals.
+    /// Returns the plays in replay order.
     fn validate(&mut self) -> Result<Vec<AgenticPlay>> {
+        if self.is_empty() {
+            bail!("agentic Mooncake rows did not contain any requests");
+        }
         self.nodes
             .sort_by(|left, right| left.request_id.cmp(&right.request_id));
         let index_by_id: HashMap<&str, usize> = self
@@ -1833,9 +1829,6 @@ impl AgenticTrace {
         let mut builder = AgenticTraceBuilder::new(header)?;
         for (line_idx, row) in rows.into_iter().enumerate() {
             builder.push(line_idx + 1, row)?;
-        }
-        if builder.is_empty() {
-            bail!("agentic Mooncake rows did not contain any requests");
         }
         builder.finish()
     }

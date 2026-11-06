@@ -748,6 +748,11 @@ fn agentic_v2_rejects_ambiguous_source_play_order() {
         );
     }
 
+    let error = validate_agentic_rows(&[]).unwrap_err();
+    assert!(
+        error.to_string().contains("did not contain any requests"),
+        "{error:#}"
+    );
     let ordered = [row("r1", "p1", Some(0)), row("r2", "p2", Some(1))];
     validate_agentic_rows(&ordered).unwrap();
     AgenticTrace::from_agentic_mooncake(write_agentic_trace(&ordered).path()).unwrap();
