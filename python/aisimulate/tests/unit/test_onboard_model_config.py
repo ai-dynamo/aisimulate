@@ -8,6 +8,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ import yaml
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support.fpm import fpm_cli_args
-from aisimulate.support.plan import check_plan, request_id
+from aisimulate.support.plan import MEMORY_OBSERVATION_VERSIONS, check_plan, request_id
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -1106,6 +1107,19 @@ _SAVED_PENDING_MEMORY_DETAIL = (
     "unresolved. No activation or non-KV byte declaration is required. Run onboard finalize after successful "
     "collection, then review the resolved profile."
 )
+# The pending-memory prerequisites saved for the versions that gained memory observation. They must never change.
+_OBSERVED_PENDING_MEMORY_DETAILS = {
+    "0.32.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.32.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+    "0.33.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.33.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+}
 
 
 def _pending_support_plan(tmp_path, version):
@@ -1122,13 +1136,7 @@ def _pending_support_plan(tmp_path, version):
 @pytest.mark.parametrize(
     ("version", "policy", "detail"),
     [
-        (
-            "0.32.0",
-            _SYNCHRONOUS_POLICY,
-            _SAVED_PENDING_MEMORY_DETAIL.replace(
-                "supported vLLM 0.27.0 layouts", "supported layouts on vLLM 0.27.0, 0.32.0 and 0.33.0"
-            ),
-        ),
+        ("0.32.0", _SYNCHRONOUS_POLICY, _OBSERVED_PENDING_MEMORY_DETAILS["0.32.0"]),
         ("0.31.0", _NATIVE_TIMING_POLICY, _SAVED_PENDING_MEMORY_DETAIL),
     ],
     ids=["0.32.0", "0.31.0"],
@@ -1154,6 +1162,24 @@ def test_pending_plan_saved_before_vllm_032_support_still_passes_check_plan(tmp_
     saved["prerequisites"][0]["detail"] = _SAVED_PENDING_MEMORY_DETAIL
     path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
     check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", sorted(_OBSERVED_PENDING_MEMORY_DETAILS))
+def test_pending_plan_saved_with_its_observed_version_text_passes_check_plan(tmp_path, version):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    saved["fpm"]["scheduling_policy"] = _SYNCHRONOUS_POLICY
+    saved["prerequisites"][0]["detail"] = _OBSERVED_PENDING_MEMORY_DETAILS[version]
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", [version for version in MEMORY_OBSERVATION_VERSIONS if version != "0.27.0"])
+def test_observed_version_prerequisite_names_only_its_own_version(tmp_path, version):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    # Naming only its own version keeps the saved text the same when another version is added.
+    assert re.findall(r"\d+\.\d+\.\d+", saved["prerequisites"][0]["detail"]) == [version]
 
 
 def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
