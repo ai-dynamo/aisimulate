@@ -1006,6 +1006,31 @@ mod admission_v0522 {
     }
 
     #[test]
+    fn fifo_runs_a_continuation_queued_behind_a_fresh_request_first() {
+        let config = SglangConfig::from_args(&test_args(64, 4, 8));
+        let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
+        let mut waiting = WaitingQueue::from([SglangRequest::new(
+            direct_request((0..24).collect(), 1),
+            4,
+            0,
+        )]);
+        let mut first =
+            get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
+        let continuation = first.can_run.pop().unwrap();
+        let id = continuation.uuid;
+        waiting.push_back(SglangRequest::new(
+            direct_request((100..108).collect(), 1),
+            4,
+            0,
+        ));
+        waiting.push_back(continuation);
+        let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
+        assert_eq!(next.can_run[0].uuid, id);
+        assert!(next.admissions.is_empty());
+        assert!(!waiting.has_continuation());
+    }
+
+    #[test]
     fn ratio_stays_put_while_blocked_and_resets_only_after_queues_drain() {
         let mut core = SglangCore::new(test_args(16, 4, 16));
         let held = core.kv_manager.allocate_for_request(&vec![99; 56]).unwrap();

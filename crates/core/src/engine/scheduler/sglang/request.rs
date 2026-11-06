@@ -246,6 +246,9 @@ impl SglangRequest {
 pub(super) struct WaitingQueue {
     requests: VecDeque<SglangRequest>,
     pub(super) stats: QueueStats,
+    /// Queued chunk continuations (`materialized_tokens > 0`), so admission
+    /// looks for one only when it exists.
+    continuations: usize,
 }
 
 impl SglangRequest {
@@ -259,30 +262,40 @@ impl SglangRequest {
 }
 
 impl WaitingQueue {
-    pub(super) fn push_back(&mut self, request: SglangRequest) {
+    fn enter(&mut self, request: &SglangRequest) {
         self.stats.add(request.queued_length());
+        self.continuations += usize::from(request.materialized_tokens > 0);
+    }
+
+    fn leave(&mut self, request: &SglangRequest) {
+        self.stats.remove(request.queued_length());
+        self.continuations -= usize::from(request.materialized_tokens > 0);
+    }
+
+    pub(super) fn push_back(&mut self, request: SglangRequest) {
+        self.enter(&request);
         self.requests.push_back(request);
     }
 
     pub(super) fn push_front(&mut self, request: SglangRequest) {
-        self.stats.add(request.queued_length());
+        self.enter(&request);
         self.requests.push_front(request);
     }
 
     pub(super) fn pop_front(&mut self) -> Option<SglangRequest> {
         let request = self.requests.pop_front()?;
-        self.stats.remove(request.queued_length());
+        self.leave(&request);
         Some(request)
     }
 
     pub(super) fn insert(&mut self, index: usize, request: SglangRequest) {
-        self.stats.add(request.queued_length());
+        self.enter(&request);
         self.requests.insert(index, request);
     }
 
     pub(super) fn remove(&mut self, index: usize) -> Option<SglangRequest> {
         let request = self.requests.remove(index)?;
-        self.stats.remove(request.queued_length());
+        self.leave(&request);
         Some(request)
     }
 
@@ -291,7 +304,12 @@ impl WaitingQueue {
         range: RangeFull,
     ) -> std::collections::vec_deque::Drain<'_, SglangRequest> {
         self.stats = QueueStats::default();
+        self.continuations = 0;
         self.requests.drain(range)
+    }
+
+    pub(super) fn has_continuation(&self) -> bool {
+        self.continuations > 0
     }
 }
 
