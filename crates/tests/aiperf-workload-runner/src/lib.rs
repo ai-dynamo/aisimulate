@@ -9,6 +9,7 @@
 
 mod dispatch;
 mod graph;
+pub mod hosted_report;
 /// Actual simulator-owned Engine binding, exposed for cross-owner semantic proofs.
 pub mod model;
 pub mod participant_adapter;

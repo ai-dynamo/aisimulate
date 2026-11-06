@@ -56,6 +56,9 @@ aiperf-metrics = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simpl
 aiperf-metrics-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/model" }
 aiperf-records = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/records" }
 aiperf-segment-store = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/segment-store" }
+aiperf-export = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/export/export", default-features = false }
+aiperf-report-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/export/report-model" }
+aiperf-report-io = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/export/report-io" }
 
 [[test]]
 name = "agentx_semantics"

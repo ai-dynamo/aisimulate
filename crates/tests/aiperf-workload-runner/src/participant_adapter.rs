@@ -356,6 +356,9 @@ struct Shared {
     execution: Rc<ParticipantExecution>,
     clock: Rc<SimClock>,
     captured_records: Rc<RefCell<Vec<HostedPhaseRecords>>>,
+    coverage_plan: aiperf_engine_kernel::profile_metric_coverage::ProfileMetricCoveragePlan,
+    metrics_config: aiperf_metrics_model::MetricsConfig,
+    prepared_roots: usize,
     result: RefCell<Option<Result<PhasedScheduledRunReport>>>,
 }
 
@@ -366,6 +369,12 @@ struct Shared {
 pub struct HostedTypedReport {
     /// AIPerf's phase report, including per-phase native metric summaries.
     pub phased: PhasedScheduledRunReport,
+    /// Shared coverage projection of the exact lowered phase program.
+    pub coverage_plan: aiperf_engine_kernel::profile_metric_coverage::ProfileMetricCoveragePlan,
+    /// Resolved metric policy for typed record reductions.
+    pub metrics_config: aiperf_metrics_model::MetricsConfig,
+    /// Complete root trees retained by source preparation.
+    pub prepared_roots: usize,
     /// Exact typed records grouped by phase, in resolved phase order.
     pub records: Vec<HostedPhaseRecords>,
     /// Logical run end at finalization.
@@ -427,6 +436,9 @@ impl HostedRunHandle {
         let submitted_requests = self.shared.execution.state.borrow().total;
         Ok(HostedTypedReport {
             phased,
+            coverage_plan: self.shared.coverage_plan.clone(),
+            metrics_config: self.shared.metrics_config.clone(),
+            prepared_roots: self.shared.prepared_roots,
             records,
             virtual_end_ns,
             dispatch: HostedDispatchEvidence {
@@ -636,6 +648,17 @@ pub fn native_hosted(
         execution,
         clock: clock.clone(),
         captured_records,
+        coverage_plan:
+            aiperf_engine_kernel::profile_metric_coverage::ProfileMetricCoveragePlan::new(
+                &prep.phases,
+                &prep.origins,
+            ),
+        metrics_config: plans
+            .first()
+            .context("native hosted phase program is empty")?
+            .metrics_config
+            .clone(),
+        prepared_roots: prep.prepared.agentic_trees.len(),
         result: RefCell::new(None),
     });
     let runtime = tokio::runtime::Builder::new_current_thread()
