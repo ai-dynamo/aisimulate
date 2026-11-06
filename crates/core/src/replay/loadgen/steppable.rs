@@ -493,8 +493,19 @@ where
             "disaggregated worker counts must be positive"
         );
         let config = crate::replay::OfflineDisaggReplayConfig {
-            prefill_factory: factory.role_factory(&engine, WorkerStage::Prefill, false)?,
-            decode_factory: factory.role_factory(&engine, WorkerStage::Decode, false)?,
+            // `OfflineDisaggReplayConfig::{prefill,decode}_factory` ignore their
+            // flag, so the observation adapter's KV-event requirement must be
+            // applied here, exactly as `Replayer` does.
+            prefill_factory: factory.role_factory(
+                &engine,
+                WorkerStage::Prefill,
+                Observation::capture_engine_kv_events(WorkerStage::Prefill),
+            )?,
+            decode_factory: factory.role_factory(
+                &engine,
+                WorkerStage::Decode,
+                Observation::capture_engine_kv_events(WorkerStage::Decode),
+            )?,
             prefill_startup_time_ms: None,
             decode_startup_time_ms: None,
             num_prefill_workers,
@@ -1233,5 +1244,150 @@ mod tests {
         let factory = ReplayEngineFactory::new();
         assert!(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 0, 1).is_err());
         assert!(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 0).is_err());
+    }
+
+    fn fixed_timing_config(prefill_ms: f64, decode_ms: f64) -> ReplayEngineConfig {
+        let mut config = ReplayEngineConfig::default();
+        config.rank.timing_model = crate::engine::TimingModelConfig::Fixed {
+            prefill_ms,
+            decode_ms,
+        };
+        config
+    }
+
+    /// A parent's nonterminal token releases a successor. With a zero-length
+    /// prefill and no handoff latency the successor reaches the decode pool at
+    /// the token's own instant, so it can only join the decode worker's next
+    /// pass if that pass was not committed before the caller submitted it.
+    #[test]
+    fn a_successor_submitted_after_a_nonterminal_token_joins_the_next_decode_pass() {
+        const DECODE_MS: f64 = 5.0;
+        let mut engine = SteppableDisagg::new(
+            fixed_timing_config(0.0, DECODE_MS),
+            &ReplayEngineFactory::new(),
+            1,
+            1,
+        )
+        .unwrap();
+        engine.set_capture_per_request(true);
+        let parent = engine.submit(request(70, 64, 6)).unwrap();
+
+        let token_ms = loop {
+            let outcome = engine.step().unwrap();
+            assert!(
+                outcome
+                    .events
+                    .iter()
+                    .all(|event| event.terminal_status.is_none()),
+                "the parent terminated before emitting a nonterminal token: {:?}",
+                outcome.events
+            );
+            if outcome
+                .events
+                .iter()
+                .any(|event| event.uuid == parent && event.emitted_token)
+            {
+                break outcome.end_ms;
+            }
+            assert!(!engine.is_idle(), "the parent never emitted a token");
+        };
+        // The parent is still live: this is a branch, not a terminal release.
+        assert_eq!(engine.in_flight(), 1);
+        assert!(engine.actual_output_length(parent).unwrap() < 6);
+        assert_eq!(engine.now_ms(), token_ms);
+
+        let mut successor = request(71, 64, 2);
+        successor.tokens = (1_000..1_064).collect();
+        let child = engine.submit(successor).unwrap();
+        let held = engine.step_until(token_ms).unwrap();
+        assert_eq!(held.end_ms, token_ms);
+        assert!(held.events.is_empty(), "{:?}", held.events);
+        assert_eq!(engine.request_admission(child).unwrap().0, token_ms);
+
+        // Both requests decode in the one pass committed at the token instant.
+        let next = engine.step_until(f64::INFINITY).unwrap();
+        assert!(
+            (next.end_ms - (token_ms + DECODE_MS)).abs() < 1e-9,
+            "expected one decode pass after {token_ms}, ended at {}",
+            next.end_ms
+        );
+        for uuid in [parent, child] {
+            assert!(
+                next.events
+                    .iter()
+                    .any(|event| event.uuid == uuid && event.emitted_token),
+                "{uuid} missed the shared pass: {:?}",
+                next.events
+            );
+        }
+
+        drain(&mut engine);
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        let record = report
+            .per_request
+            .iter()
+            .find(|record| record.uuid == child.to_string())
+            .expect("successor record");
+        assert_eq!(record.first_admit_ms, Some(token_ms));
+        assert!((record.first_token_ms.unwrap() - (token_ms + DECODE_MS)).abs() < 1e-9);
+        assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+    }
+
+    /// Cancel while the KV payload is on the wire, using a real transfer
+    /// bandwidth: the transfer's link share is released, no output or second
+    /// terminal follows, and virtual time is not driven to the dead deadline.
+    #[test]
+    fn canceling_during_a_bandwidth_limited_transfer_retires_it() {
+        let mut config = fixed_timing_config(1.0, 5.0);
+        // 64 prompt tokens x 1 MB at 1 GB/s: the handoff alone takes >= 64 ms.
+        config.rank.kv_transfer_bandwidth = Some(1.0);
+        config.rank.kv_transfer_bytes_per_token = Some(1_000_000);
+        let mut engine =
+            SteppableDisagg::new(config, &ReplayEngineFactory::new(), 1, 1).unwrap();
+        let uuid = engine.submit(request(72, 64, 4)).unwrap();
+
+        // Prefill (1 ms) is done; the transfer is in flight.
+        while engine.now_ms() < 10.0 {
+            let outcome = engine.step_until(10.0).unwrap();
+            assert!(outcome.events.is_empty(), "{:?}", outcome.events);
+        }
+        assert_eq!(engine.in_flight(), 1);
+        assert!(
+            engine.next_event_ms().unwrap() >= 64.0,
+            "the handoff must be bandwidth-limited, next event {:?}",
+            engine.next_event_ms()
+        );
+
+        let event = engine.cancel(uuid).unwrap().expect("cancel wins the race");
+        assert_eq!(event.terminal_status, Some(ReplayTerminalStatus::Canceled));
+        assert_eq!(engine.in_flight(), 0);
+        assert!(engine.cancel(uuid).unwrap().is_none());
+
+        let events = drain(&mut engine);
+        assert!(
+            events.iter().all(|event| event.uuid != uuid),
+            "a canceled transfer must produce no further events: {events:?}"
+        );
+        assert!(
+            engine.now_ms() < 30.0,
+            "the canceled transfer's deadline must not drive time, now {}",
+            engine.now_ms()
+        );
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 0);
+        assert_eq!(report.request_counts.total_output_tokens, 0);
+
+        // The released link serves the next request normally.
+        let successor = engine.submit(request(73, 64, 2)).unwrap();
+        let events = drain(&mut engine);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.uuid == successor && event.emitted_token)
+                .count(),
+            2
+        );
+        let report = engine.take_report(engine.now_ms()).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
     }
 }
