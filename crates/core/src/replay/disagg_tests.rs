@@ -2376,6 +2376,9 @@ fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
                 args.kv_cache_bytes_per_token = Some(1_000_000);
                 args.state_cache = Some(crate::engine::StateCacheConfig {
                     bytes_per_request: 8_000_000,
+                    num_speculative_states: None,
+                    prefill_checkpoint: false,
+                    junction_checkpoints: false,
                 });
             }
         }

@@ -283,8 +283,9 @@ fn validate_public_agentic_engine(
         );
         for role in &roles {
             ensure!(
-                role.rank.aic_nextn.is_none(),
-                "agentic host offload requires speculative decoding disabled"
+                role.rank.aic_nextn.is_none()
+                    || (role.rank.state_cache.is_some() && role.rank.disable_eagle_block_drop),
+                "agentic host offload requires speculative decoding disabled, except MTP with state_cache and disable_eagle_block_drop"
             );
             ensure!(
                 role.rank.backend == Backend::Vllm,
@@ -2891,6 +2892,55 @@ fn materialize_aic_capacity(
             resources.runtime_memory.is_none() || !capacity_is_explicit,
             "runtime FPM memory cannot use fixed num_gpu_blocks; use the recorded cache allocation"
         );
+    }
+    if resources.as_ref().is_some_and(|resources| {
+        resources.cache_layout == crate::perfmodel::fpm::FpmCacheLayout::MambaAlign
+    }) {
+        ensure!(
+            role.rank.enable_prefix_caching,
+            "Mamba FPM cache requires the recorded prefix caching policy"
+        );
+        ensure!(
+            role.rank.native_host_offload.is_none() && role.rank.g3_offload.is_none(),
+            "Mamba FPM cache supports HBM replay only"
+        );
+        let budget = estimate_aic_grouped_budget(config, role)?;
+        let cache = budget
+            .replay_cache
+            .context("missing canonical Mamba replay geometry")?;
+        let block_size = cache["block_size"].as_u64().context("Mamba block size")? as usize;
+        let unit = cache["prefix_match_unit"]
+            .as_u64()
+            .context("Mamba prefix unit")? as usize;
+        let token_bytes = cache["kv_cache_bytes_per_token"]
+            .as_u64()
+            .context("Mamba token bytes")? as usize;
+        let state = serde_json::from_value(cache["state_cache"].clone())?;
+        ensure!(
+            role.rank.block_size == block_size,
+            "engine block_size conflicts with measured Mamba geometry"
+        );
+        ensure!(
+            role.rank
+                .prefix_match_unit
+                .is_none_or(|value| value == unit)
+                && role
+                    .rank
+                    .kv_cache_bytes_per_token
+                    .is_none_or(|value| value == token_bytes)
+                && role.rank.state_cache.is_none_or(|value| value == state)
+                && role.rank.kv_cache_groups.is_empty()
+                && role.rank.kv_cache_capacity_bytes.is_none(),
+            "engine cache geometry conflicts with measured Mamba profile"
+        );
+        role.rank.num_gpu_blocks = cache["num_gpu_blocks"]
+            .as_u64()
+            .context("Mamba pool blocks")? as usize;
+        role.rank.prefix_match_unit = Some(unit);
+        role.rank.kv_cache_bytes_per_token = Some(token_bytes);
+        role.rank.state_cache = Some(state);
+        role.rank.validate()?;
+        return Ok(());
     }
     if resources.as_ref().is_some_and(|resources| {
         resources.cache_layout == crate::perfmodel::fpm::FpmCacheLayout::Grouped

@@ -254,13 +254,17 @@ or an OP draft tail would count it again. The paths above are user-supplied
 artifacts, including the table's required metadata sidecar; this example does
 not assert packaged measured-SD coverage for that identity.
 
-Resources must use a linear cache with observed `runtime_memory`. The recorded
-usable KV pool already reflects draft and graph allocations; capacity sizing
-does not subtract them again. Pending or analytically declared memory alone is
+Replay resources require observed `runtime_memory` with a linear or supported
+Mamba align cache. The recorded usable KV pool already reflects draft and graph
+allocations. Capacity sizing does not subtract them again. Pending or analytically declared memory alone is
 insufficient. Grouped caches, generic `speculation` configurations, recorded
 DCP and non-pure-TP topologies remain unsupported on this route. Use `nextn`
 with the exact recorded `execution_profile`; generic speculation cost graphs
 must not be composed with measurements that already include the draft work.
+
+Standalone timing queries also accept `cache_layout: unmodeled` with observed
+`runtime_memory`. This descriptor preserves a native allocation whose behavior
+AIS cannot simulate. Cache sizing and replay reject these profiles.
 
 Supported queries are single-rank `ForwardPassMetrics` (pure prefill, pure
 decode and mixed), prefill static/detailed queries, and replay's prefill and

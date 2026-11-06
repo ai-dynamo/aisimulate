@@ -17,7 +17,9 @@ use super::vllm_backend::{
     DestinationReservation as VllmDestinationReservation,
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
-pub(crate) use super::vllm_backend::{NativeAllocation, SourceReleaseOrder, SourceReuseDependency};
+pub(crate) use super::vllm_backend::{
+    NativeAllocation, SourceReleaseOrder, SourceReuseDependency, StateHandoff,
+};
 use super::{AllocationRequirement, DestinationReservationMode, G1Acquire, GroupedKvPool};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
@@ -135,6 +137,11 @@ impl G1Manager {
         self.inner.state_cache_blocks()
     }
 
+    /// Blocks a request's state reserves, speculative scratch copies included.
+    pub(crate) fn state_reserved_blocks_per_request(&self) -> usize {
+        self.inner.state_reserved_blocks()
+    }
+
     pub(crate) fn begin_step(&mut self) {
         self.inner.begin_step();
     }
@@ -209,6 +216,15 @@ impl G1Manager {
     pub(crate) fn with_prefix_match_unit(mut self, unit: Option<usize>) -> Self {
         self.inner.configure_prefix_match_unit(unit);
         self
+    }
+
+    pub(crate) fn prefix_junction(
+        &self,
+        sequence: &RequestSequence,
+        lease: &BlockRequestLease,
+        cached_tokens: usize,
+    ) -> Option<usize> {
+        self.inner.prefix_junction(sequence, lease, cached_tokens)
     }
 
     pub(crate) fn allocate_native(
@@ -291,14 +307,43 @@ impl G1Manager {
         lease: &BlockRequestLease,
         g1_prefix_blocks: usize,
         transferred_suffix: &[crate::engine::common::hashing::SequenceHash],
+        restores_state: bool,
     ) -> G1Acquire<DestinationReservation> {
         into_g1_acquire(self.inner.reserve_external_prefix_lease(
             owner,
             lease,
             g1_prefix_blocks,
             transferred_suffix,
+            restores_state,
         ))
         .map(|inner| DestinationReservation { inner })
+    }
+
+    /// Queue newly published states for a host tier.
+    pub(crate) fn record_state_handoffs(&mut self) {
+        self.inner.record_state_handoffs();
+    }
+
+    pub(crate) fn take_state_handoffs(&mut self) -> Vec<StateHandoff> {
+        self.inner.take_state_handoffs()
+    }
+
+    pub(crate) fn take_state_handoffs_of(&mut self, owner: Uuid) -> Vec<StateHandoff> {
+        self.inner.take_state_handoffs_of(owner)
+    }
+
+    pub(crate) fn state_handoff_is_live(&self, handoff: &StateHandoff) -> bool {
+        self.inner.state_handoff_is_live(handoff)
+    }
+
+    pub(crate) fn attach_state_handoff_dependency(
+        &mut self,
+        handoff: &StateHandoff,
+        slots: &[usize],
+        dependency: SourceReuseDependency,
+    ) {
+        self.inner
+            .attach_state_handoff_dependency(handoff, slots, dependency);
     }
 
     pub(crate) fn native_destination_pending_dependencies(

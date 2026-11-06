@@ -69,7 +69,7 @@ pools and HBM-only KV cache, including
 assumptions; ngram requires vLLM. vLLM also supports local or shared
 [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
 or local G2 on several static aggregated workers, with attention DP1 on every role and
-speculative decoding disabled. For example:
+speculative decoding disabled, except MTP on a [hybrid G2](../engine/kv-cache.md#hybrid-g2) with `engine.speculation.disable_eagle_block_drop`. For example:
 
 ```yaml
 traffic:
@@ -92,8 +92,8 @@ it remains resident on every worker.
 
 Weka, Agentic Mooncake, and agentic Dynamo trace inputs use this same offline
 path. Reading a Dynamo trace does not require the Dynamo integration. Agentic
-TensorRT-LLM, G3 offload, speculative decoding with G2 offload, and online P/D
-are rejected;
+TensorRT-LLM, G3 offload, speculative decoding with G2 offload other than that
+MTP case, and online P/D are rejected;
 the built-in runner does not silently change the requested configuration.
 Dynamo-owned routing and online integration require separate downstream
 qualification.

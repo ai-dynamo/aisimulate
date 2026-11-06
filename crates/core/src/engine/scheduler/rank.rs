@@ -517,6 +517,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_nextn: config.aic_nextn,
         aic_nextn_accept_rates: config.aic_nextn_accept_rates.clone(),
         aic_mtp_seed: config.aic_mtp_seed,
+        disable_eagle_block_drop: config.disable_eagle_block_drop,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         kv_cache_groups: config.kv_cache_groups.clone(),

@@ -474,6 +474,10 @@ class SupportRequest(StrictModel):
             raise ValueError("search.context_length must cover the input and output tokens")
         if self.fpm_profile is not None:
             deployment = self.profile_deployment()
+            # Onboarding sizes caches and plans recommendation searches; these
+            # layouts support a concrete prediction or timing queries only.
+            if deployment.resources.cache_layout in ("mamba_align", "unmodeled"):
+                raise ValueError(f"onboarding does not support {deployment.resources.cache_layout} FPM caches")
             if self.worker_type is not None and deployment.worker_type != self.worker_type:
                 raise ValueError(
                     "an explicit worker_type requires a matching role-tagged FPM deployment; "
