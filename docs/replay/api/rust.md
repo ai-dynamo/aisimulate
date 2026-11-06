@@ -67,6 +67,31 @@ check their exact signatures in [engine construction](../../../crates/core/src/r
 The [composition ABI](../../adapters/native-composition.md) describes policy
 lifecycle and time units.
 
+## Canonical physical deployment preparation
+
+With `embed-python`, `PreparedReplay::from_prediction_config(&str)` accepts JSON
+in the existing public `CorePredictionConfig` schema. It uses the same Python
+compiler and Runner materializer, then the same `AicTimingModel` role resolution
+as normal engine replay. It returns the resolved `spec`, `factory`, and existing
+Runner `memory_diagnostics`. Capacity provenance remains distinct from the
+compiler's KV transfer payload estimate; no extra memory margin is applied.
+
+This prepares physical engines, not traffic: materialized requests, source-side
+in-flight limits and virtual stop times are cleared. Frontend stages and encoder
+overlays are rejected by this high-level preparation entrypoint. Attach the
+owning workload through `Replayer::with_runtime_input`; preparation does not
+create another workload driver. Existing native `ReplaySpec` consumers can use
+`ReplayEngineFactory::resolve(&mut spec)` directly.
+
+For a composition adapter, `ReplayEngineConfig::role(stage)` binds the physical
+worker role. Its `launch_config(startup_time)` uses the Runner's existing launch
+normalization: memory allocation controls move to dedicated launch fields while
+the canonical FPM identity remains intact. `factory.timing_model(stage)` clones
+the exact resolved `Arc<dyn TimingModel>` for a process-local placement callback;
+it does not construct another estimator. Pass the prepared factory to the
+Replayer unchanged. Virtual time, physical cleanup and cancellation remain owned
+by the existing native replay engine.
+
 ## Serializable spec
 
 `CURRENT_REPLAY_SPEC_VERSION` is `1`. The

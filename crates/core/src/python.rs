@@ -3230,6 +3230,137 @@ fn resolve_role_timing(
     Ok(Some(Arc::new(timing)))
 }
 
+/// The shared physical-role materializer for the Python Runner and in-process
+/// replay compositions. No workload generation or event-loop policy lives here.
+fn resolve_engine_roles(
+    engine: &mut ReplayEngineConfig,
+    serialized_engine: &serde_json::Value,
+    topology: &ReplayTopology,
+    capture_performance_diagnostics: bool,
+    coverage_sources: &mut Vec<(ForwardPassWorkerType, Arc<ForwardPassPerfModel>)>,
+) -> Result<ReplayEngineFactory> {
+    let mut resolve = |stage, name| -> Result<_> {
+        let mut role = engine.role(stage);
+        let explicit = role
+            .num_gpu_blocks_is_explicit
+            .unwrap_or_else(|| role_capacity_is_explicit(serialized_engine, name));
+        let worker_type = match stage {
+            crate::replay::WorkerStage::Aggregated => ForwardPassWorkerType::Aggregated,
+            crate::replay::WorkerStage::Prefill => ForwardPassWorkerType::Prefill,
+            crate::replay::WorkerStage::Decode => ForwardPassWorkerType::Decode,
+        };
+        let timing = resolve_role_timing(
+            &mut role,
+            explicit,
+            worker_type,
+            capture_performance_diagnostics,
+            coverage_sources,
+        )?;
+        Ok((role, timing))
+    };
+    match topology {
+        ReplayTopology::Aggregated { .. } => {
+            let (role, timing) = resolve(crate::replay::WorkerStage::Aggregated, None)?;
+            engine.dp_size = role.dp_size;
+            engine.tensor_parallel_size = role.tensor_parallel_size;
+            engine.prefill_context_parallel_size = role.prefill_context_parallel_size;
+            engine.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
+            engine.rank = role.rank;
+            Ok(timing.map_or_else(
+                ReplayEngineFactory::new,
+                ReplayEngineFactory::with_timing_model,
+            ))
+        }
+        ReplayTopology::Disaggregated { .. } => {
+            let (prefill, prefill_timing) =
+                resolve(crate::replay::WorkerStage::Prefill, Some("prefill"))?;
+            let (decode, decode_timing) =
+                resolve(crate::replay::WorkerStage::Decode, Some("decode"))?;
+            engine.prefill = Some(prefill);
+            engine.decode = Some(decode);
+            Ok(ReplayEngineFactory::with_optional_role_timing_models(
+                prefill_timing,
+                decode_timing,
+            ))
+        }
+    }
+}
+
+pub(crate) fn prepare_prediction_replay(config: &str) -> Result<crate::replay::PreparedReplay> {
+    register_embedded_runtime()?;
+    let (payload, memory_diagnostics) = Python::with_gil(|py| -> Result<_> {
+        let config = py
+            .import("aisimulate.config.cli")?
+            .getattr("CorePredictionConfig")?
+            .call_method1("model_validate_json", (config,))?;
+        let engine = config.getattr("engine")?;
+        ensure!(
+            engine.getattr("tokenization")?.is_none()
+                && engine.getattr("detokenization")?.is_none()
+                && engine.getattr("workers")?.getattr("encoder")?.is_none(),
+            "physical deployment preparation does not include frontend stages or encoder overlays"
+        );
+        let compiled = py
+            .import("aisimulate.compiler")?
+            .getattr("prediction_to_replay_spec")?
+            .call1((config,))?;
+        let runner = py.import("aisimulate.runner")?;
+        let defaults = runner.getattr("EngineReplayRunnerFactory")?.call0()?;
+        let memory = PyDict::new(py);
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("trace_block_size", defaults.getattr("trace_block_size")?)?;
+        kwargs.set_item("record_per_request", true)?;
+        kwargs.set_item("memory_diagnostics", &memory)?;
+        let payload = py
+            .import("aisimulate.runner")?
+            .getattr("_materialize_engine_execution_spec")?
+            .call((compiled,), Some(&kwargs))?;
+        let json = py.import("json")?;
+        Ok((
+            json.call_method1("dumps", (payload,))?
+                .extract::<String>()?,
+            json.call_method1("dumps", (memory,))?.extract::<String>()?,
+        ))
+    })?;
+    let payload: ExecutionPayload = serde_json::from_str(&payload)?;
+    let mut spec = match payload {
+        ExecutionPayload::Configured { spec, .. } | ExecutionPayload::Legacy(spec) => spec,
+    };
+    // Only the physical deployment crosses this seam. The injected workload
+    // owns admission, stops and request generation, not the prediction's traffic.
+    spec.requests.clear();
+    spec.max_in_flight = None;
+    spec.max_sim_time_ms = None;
+    let factory = resolve_replay_engines(&mut spec)?;
+    Ok(crate::replay::PreparedReplay {
+        spec,
+        factory,
+        memory_diagnostics: serde_json::from_str(&memory_diagnostics)?,
+    })
+}
+
+pub(crate) fn resolve_replay_engines(spec: &mut ReplaySpec) -> Result<ReplayEngineFactory> {
+    register_embedded_runtime()?;
+    let serialized = spec.engine.clone();
+    infer_aic_timing_topology(&mut spec.engine)?;
+    let mut engine = ReplayEngineConfig::parse(&spec.engine)?;
+    let mut coverage_sources = Vec::new();
+    let mut factory = resolve_engine_roles(
+        &mut engine,
+        &serialized,
+        &spec.topology,
+        false,
+        &mut coverage_sources,
+    )?;
+    if let Some(encoder) = &spec.encoder
+        && let Some(timing) = resolve_encoder_timing(encoder, false, &mut coverage_sources)?
+    {
+        factory = factory.with_encoder_timing(timing);
+    }
+    spec.engine = serde_json::to_value(engine)?;
+    Ok(factory)
+}
+
 fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
     let mut paths = traffic
         .trace_paths
@@ -4396,17 +4527,12 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let replay_result = (|| -> Result<_> {
         match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
-            let mut role = aggregated_role(&engine_config);
-            let capacity_is_explicit = role
-                .num_gpu_blocks_is_explicit
-                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, None));
-            let timing = resolve_role_timing(
-                &mut role,
-                capacity_is_explicit,
-                ForwardPassWorkerType::Aggregated,
-                capture_performance_diagnostics,
-                &mut coverage_sources,
+            let mut factory = resolve_engine_roles(
+                &mut engine_config, &serialized_engine, &spec.topology,
+                capture_performance_diagnostics, &mut coverage_sources,
             )?;
+            let role = aggregated_role(&engine_config);
+            let timing = factory.timing_model(crate::replay::WorkerStage::Aggregated);
             if let Some(timing) = timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
             }
@@ -4444,10 +4570,6 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            let mut factory = timing.map_or_else(
-                ReplayEngineFactory::new,
-                ReplayEngineFactory::with_timing_model,
-            );
             if let Some(timing) = &encoder_timing {
                 factory = factory.with_encoder_timing(Arc::clone(timing));
             }
@@ -4455,11 +4577,11 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
-            let mut prefill = engine_config
+            let prefill = engine_config
                 .prefill
                 .clone()
                 .unwrap_or_else(|| aggregated_role(&engine_config));
-            let mut decode = engine_config
+            let decode = engine_config
                 .decode
                 .clone()
                 .unwrap_or_else(|| aggregated_role(&engine_config));
@@ -4499,26 +4621,14 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             } else {
                 None
             };
-            let prefill_capacity_is_explicit = prefill
-                .num_gpu_blocks_is_explicit
-                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("prefill")));
-            let decode_capacity_is_explicit = decode
-                .num_gpu_blocks_is_explicit
-                .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("decode")));
-            let prefill_timing = resolve_role_timing(
-                &mut prefill,
-                prefill_capacity_is_explicit,
-                ForwardPassWorkerType::Prefill,
-                capture_performance_diagnostics,
-                &mut coverage_sources,
+            let mut factory = resolve_engine_roles(
+                &mut engine_config, &serialized_engine, &spec.topology,
+                capture_performance_diagnostics, &mut coverage_sources,
             )?;
-            let decode_timing = resolve_role_timing(
-                &mut decode,
-                decode_capacity_is_explicit,
-                ForwardPassWorkerType::Decode,
-                capture_performance_diagnostics,
-                &mut coverage_sources,
-            )?;
+            let prefill = engine_config.role(crate::replay::WorkerStage::Prefill);
+            let decode = engine_config.role(crate::replay::WorkerStage::Decode);
+            let prefill_timing = factory.timing_model(crate::replay::WorkerStage::Prefill);
+            let decode_timing = factory.timing_model(crate::replay::WorkerStage::Decode);
             if let Some(timing) = prefill_timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
             }
@@ -4566,8 +4676,6 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            let mut factory =
-                ReplayEngineFactory::with_optional_role_timing_models(prefill_timing, decode_timing);
             if let Some(timing) = &encoder_timing {
                 factory = factory.with_encoder_timing(Arc::clone(timing));
             }
@@ -4802,33 +4910,43 @@ fn engine_launch_from_replay_role_json(
 ) -> PyResult<String> {
     let convert = || -> anyhow::Result<String> {
         let role: crate::replay::ReplayRoleConfig = serde_json::from_str(payload)?;
-        let mut launch = crate::engine::EngineLaunchConfig {
-            engine: role.rank,
-            dp_size: role.dp_size,
-            tensor_parallel_size: role.tensor_parallel_size as usize,
-            num_gpu_blocks_is_explicit: role.num_gpu_blocks_is_explicit.unwrap_or(false),
+        Ok(serde_json::to_string(&engine_launch_from_replay_role(
+            role,
             startup_time,
-            ..Default::default()
-        };
-        if let crate::engine::TimingModelConfig::External { provider, config } =
-            &launch.engine.timing_model
-            && matches!(provider.as_str(), "aic" | "ais")
-        {
-            let timing: AicTimingConfig = serde_json::from_value(config.clone())?;
-            let worker_type = serde_json::from_value(serde_json::to_value(launch.worker_type)?)?;
-            let canonical = timing.estimator_request(worker_type)?;
-            launch.gpu_memory_utilization = timing.gpu_memory_utilization;
-            launch.mem_fraction_static = timing.mem_fraction_static;
-            launch.free_gpu_memory_fraction = timing.free_gpu_memory_fraction;
-            launch.cuda_graph_reserved_bytes = Some(timing.cuda_graph_reserved_bytes);
-            launch.engine.timing_model = crate::engine::TimingModelConfig::External {
-                provider: "ais".into(),
-                config: serde_json::to_value(canonical)?,
-            };
-        }
-        Ok(serde_json::to_string(&launch.normalized()?)?)
+        )?)?)
     };
     convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
+}
+
+pub(crate) fn engine_launch_from_replay_role(
+    role: ReplayRoleConfig,
+    startup_time: Option<f64>,
+) -> Result<crate::engine::EngineLaunchConfig> {
+    let mut launch = crate::engine::EngineLaunchConfig {
+        engine: role.rank,
+        dp_size: role.dp_size,
+        tensor_parallel_size: role.tensor_parallel_size as usize,
+        num_gpu_blocks_is_explicit: role.num_gpu_blocks_is_explicit.unwrap_or(false),
+        startup_time,
+        ..Default::default()
+    };
+    if let crate::engine::TimingModelConfig::External { provider, config } =
+        &launch.engine.timing_model
+        && matches!(provider.as_str(), "aic" | "ais")
+    {
+        let timing: AicTimingConfig = serde_json::from_value(config.clone())?;
+        let worker_type = serde_json::from_value(serde_json::to_value(launch.worker_type)?)?;
+        let canonical = timing.estimator_request(worker_type)?;
+        launch.gpu_memory_utilization = timing.gpu_memory_utilization;
+        launch.mem_fraction_static = timing.mem_fraction_static;
+        launch.free_gpu_memory_fraction = timing.free_gpu_memory_fraction;
+        launch.cuda_graph_reserved_bytes = Some(timing.cuda_graph_reserved_bytes);
+        launch.engine.timing_model = crate::engine::TimingModelConfig::External {
+            provider: "ais".into(),
+            config: serde_json::to_value(canonical)?,
+        };
+    }
+    launch.normalized()
 }
 
 /// Install this binary's real native classes for embedded canonical model
@@ -4871,6 +4989,46 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn prepared_physical_factory_binds_roles_without_changing_authored_capacity() {
+        let mut spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "topology": {"kind": "disaggregated", "prefill": {"initial_workers": 2},
+                "decode": {"initial_workers": 3}, "handoff_latency_ms": 0.0},
+            "engine": {"tensor_parallel_size": 2, "num_gpu_blocks_is_explicit": false,
+                "rank": {"num_gpu_blocks": 37, "block_size": 8,
+                    "kv_transfer_bytes_per_token": 44928, "kv_transfer_bandwidth": 50.0,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 2.0}}},
+            "requests": [],
+        }))
+        .unwrap();
+        let original_topology = spec.topology.clone();
+        let factory = ReplayEngineFactory::resolve(&mut spec).unwrap();
+        let engine: ReplayEngineConfig = serde_json::from_value(spec.engine).unwrap();
+        assert_eq!(spec.topology, original_topology);
+        for (stage, expected) in [
+            (
+                crate::replay::WorkerStage::Prefill,
+                crate::engine::WorkerType::Prefill,
+            ),
+            (
+                crate::replay::WorkerStage::Decode,
+                crate::engine::WorkerType::Decode,
+            ),
+        ] {
+            let role = engine.role(stage);
+            assert_eq!(role.rank.worker_type, expected);
+            assert_eq!(role.rank.num_gpu_blocks, 37);
+            assert_eq!(role.num_gpu_blocks_is_explicit, Some(false));
+            let launch = role.launch_config(None).unwrap();
+            assert_eq!(launch.worker_type, expected);
+            assert_eq!(launch.tensor_parallel_size, 2);
+            assert_eq!(launch.kv_transfer_bytes_per_token, Some(44928));
+            assert_eq!(launch.kv_transfer_bandwidth, Some(50.0));
+            factory.role_factory(&engine, stage, true).unwrap();
+        }
+    }
 
     #[test]
     fn replay_coverage_errors_preserve_the_original_chain() {

@@ -100,6 +100,19 @@ pub struct ReplayRoleConfig {
     pub rank: EngineConfig,
 }
 
+impl ReplayRoleConfig {
+    /// Convert a resolved replay role through the same launch normalization used
+    /// by the Python Runner's downstream adapters. Allocation controls retain
+    /// their dedicated launch fields rather than leaking into the FPM identity.
+    #[cfg(feature = "python")]
+    pub fn launch_config(
+        &self,
+        startup_time: Option<f64>,
+    ) -> anyhow::Result<crate::engine::EngineLaunchConfig> {
+        crate::python::engine_launch_from_replay_role(self.clone(), startup_time)
+    }
+}
+
 impl Default for ReplayRoleConfig {
     fn default() -> Self {
         Self {
@@ -122,7 +135,8 @@ impl ReplayEngineConfig {
         })
     }
 
-    pub(crate) fn role(&self, stage: WorkerStage) -> ReplayRoleConfig {
+    /// Return the role descriptor with its physical worker role bound.
+    pub fn role(&self, stage: WorkerStage) -> ReplayRoleConfig {
         let mut role = match stage {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
@@ -376,6 +390,26 @@ impl ReplayRoleFactory {
     }
 }
 
+/// A physical deployment prepared from AISimulate's existing public prediction
+/// configuration. Workload traffic is not instantiated: attach a native workload
+/// input to the returned spec and factory at the Replayer boundary.
+#[cfg(feature = "python")]
+pub struct PreparedReplay {
+    pub spec: ReplaySpec,
+    pub factory: ReplayEngineFactory,
+    /// Existing Runner memory diagnostics, distinct from transfer payload sizing.
+    pub memory_diagnostics: Value,
+}
+
+#[cfg(feature = "python")]
+impl PreparedReplay {
+    /// Consume JSON using the public CorePredictionConfig schema, compiler and
+    /// Runner materializer, then resolve each physical timing model once.
+    pub fn from_prediction_config(config: &str) -> anyhow::Result<Self> {
+        crate::python::prepare_prediction_replay(config)
+    }
+}
+
 /// Resolves built-in or Runner-provided timing once, then creates role factories.
 #[derive(Clone, Default)]
 pub struct ReplayEngineFactory {
@@ -394,6 +428,25 @@ impl ReplayEngineFactory {
             decode_timing: None,
             encoder_timing: None,
         }
+    }
+
+    /// Materialize physical roles with the Runner's canonical configuration and
+    /// timing resolver. The returned factory retains those exact model instances;
+    /// callers may attach any native runtime input without rebuilding the models.
+    #[cfg(feature = "python")]
+    pub fn resolve(spec: &mut ReplaySpec) -> anyhow::Result<Self> {
+        crate::python::resolve_replay_engines(spec)
+    }
+
+    /// The process-local model selected for a role, for composition adapters that
+    /// must price placement through the same model as the native engine.
+    pub fn timing_model(&self, stage: WorkerStage) -> Option<Arc<dyn TimingModel>> {
+        match stage {
+            WorkerStage::Aggregated => self.timing.as_ref(),
+            WorkerStage::Prefill => self.prefill_timing.as_ref().or(self.timing.as_ref()),
+            WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
+        }
+        .cloned()
     }
 
     pub fn with_timing_model(timing: Arc<dyn TimingModel>) -> Self {

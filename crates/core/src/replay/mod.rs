@@ -118,15 +118,17 @@ pub use canonical::{
 };
 pub use capture::{CANONICAL_SELECTOR_SEED, ReplayCaptureOptions, ReplayDeterminism};
 pub use components::TrafficStats;
-pub use components::{ParticipantStep, WorkloadParticipant};
 #[doc(hidden)]
 pub use components::{NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation};
+pub use components::{ParticipantStep, WorkloadParticipant};
 pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
     KvFetchAction, KvHints, Placement, PlacementCacheSample, PlacementDecision, PlacementEffects,
     PlacementPolicy, RequestIdentity, WorkerTopology,
 };
+#[cfg(feature = "python")]
+pub use engine::PreparedReplay;
 #[doc(hidden)]
 pub use engine::ReplayRoleFactory;
 #[doc(hidden)]
