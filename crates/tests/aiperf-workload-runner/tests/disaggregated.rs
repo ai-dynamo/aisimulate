@@ -110,7 +110,8 @@ fn real_kv_disaggregated_reports_match_native_pull_driver_bytes() {
     let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
         "version":1,"topology":{"kind":"disaggregated",
             "prefill":{"initial_workers":2},"decode":{"initial_workers":2},"handoff_latency_ms":0.0},
-        "engine": config,"requests": (0..4).map(|index| serde_json::json!({
+        "engine": config,"adapters":{"placement":{"provider":"dynamo_kv_router"}},
+        "requests": (0..4).map(|index| serde_json::json!({
             "id":format!("request-{index}"),"arrival_time_ms":index as f64 * 10.0,
             "input_tokens":64,"input_token_ids":(0..64).collect::<Vec<u32>>(),"output_tokens":2,
         })).collect::<Vec<_>>()
