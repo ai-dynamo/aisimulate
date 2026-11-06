@@ -1645,6 +1645,27 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
         assert "benchmark_points" not in other.to_dict()["options"]
 
 
+def test_glm_collection_plan_records_the_points_that_each_rule_drops(tmp_path):
+    plan = _glm_plan(tmp_path)
+    saved = plan.to_dict()
+    # The counts of the generator's log line. Onboarding sets no log handler, so the plan keeps them.
+    dropped = {
+        "prefill": {"candidates": 496, "mamba_align_split": 24, "cache_capacity": 0},
+        "decode": {"candidates": 97, "token_budget": 16, "cache_capacity": 0},
+    }
+
+    assert saved["point_generation"]["dropped_points"] == dropped
+    assert saved["options"]["benchmark_points"]["dropped"] == dropped
+    # Each phase keeps its candidates minus the points that its rules drop.
+    assert saved["point_generation"]["planned_point_count"] == sum(
+        counts["candidates"] - sum(value for name, value in counts.items() if name != "candidates")
+        for counts in dropped.values()
+    )
+    # The plan hash covers the counts, so a saved plan validates. A plan without a generated list records none.
+    runtime_memory.validate_saved_plan(saved)
+    assert "dropped_points" not in _pending_plan().to_dict()["point_generation"]
+
+
 @pytest.mark.parametrize(
     "changes",
     [{"max_num_seqs": None}, {"max_num_seqs": None, "max_prefill_batch_size": None, "max_decode_batch_size": 256}],
@@ -1734,8 +1755,10 @@ def test_bounded_sample_of_a_saved_glm_plan_is_an_explicit_list(tmp_path):
     # sample measures the generated list itself.
     source, listed, bounded, full = samples(_glm_plan(tmp_path))
     assert source.options.benchmark_points_origin == "glm53flash_grid_v1"
-    assert bounded.options == replace(listed, benchmark_points_origin=None)
+    # Nor does it keep the drop counts of the generated list.
+    assert bounded.options == replace(listed, benchmark_points_origin=None, benchmark_points_dropped_json=None)
     assert bounded.to_dict()["point_generation"]["source"] == "frozen_explicit_manifest"
+    assert "dropped_points" not in bounded.to_dict()["point_generation"]
     assert full.options == source.options
     # A sample of a plan without an origin changes only its list, as before.
     _source, listed, bounded, _full = samples(_pending_plan())

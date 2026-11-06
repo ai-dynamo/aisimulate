@@ -51,11 +51,16 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
 
     assert payload["schema_version"] == 3
     assert (len(prefill), len(decode)) == (472, 81)
-    # The count is logged when the cache holds every candidate, too.
+    # One line counts the points that each rule drops, against the candidates that the rule sees. The align rule drops
+    # 4,096 and 8,192 new tokens at 8 prefix rungs, for one and two requests and for one request. The token budget drops
+    # 16 decode batches and adds its own limit of 7 requests at context 16,384 to the candidates. The cache holds every
+    # point, and its count is logged too.
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 0/472 prefill and 0/81 decode cases (cache capacity, usable_blocks=13814)",
+            "GLM-5.3-Flash points: dropped 24/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
+            "decode cases (token budget, token_budget=8192), 0/472 prefill and 0/81 decode cases (cache capacity, "
+            "usable_blocks=13814)",
         )
     ]
     # The new tokens above one hash block are whole hash blocks, so 4,096 and 8,192 are not on the axis.
@@ -202,20 +207,33 @@ def test_decode_batches_follow_the_producer_suffix_rule(monkeypatch, hash_block_
         "kv_cache_bytes": 10**8 * 13_045_120,
     }
     payload, _, _ = glm_point_manifest(**{**_TP4, **limits})
-    budget = min(token_budget, module.MAX_NEW)
 
     contexts = {measured_context, *(2**exponent for exponent in range(2, 18) if 2**exponent <= measured_context)}
     expected = {}
     for context in sorted(contexts):
         suffix = _producer_suffix(producer, context, hash_block_size)
-        limit = min(module.MAX_BATCH, _TP4["decode_batch_limit"], max(1, budget // suffix))
+        limit = min(module.MAX_BATCH, _TP4["decode_batch_limit"], max(1, token_budget // suffix))
         expected[context] = sorted({*(2**exponent for exponent in range(6) if 2**exponent <= limit), limit})
     assert _decode_batches(payload) == expected
     # A point of two or more requests prefills all its suffixes in one step.
     for point in payload["decode"]:
         context = point["total_kv_read_tokens"] // point["batch_size"]
         suffix = _producer_suffix(producer, context, hash_block_size)
-        assert point["batch_size"] == 1 or point["batch_size"] * suffix <= budget
+        assert point["batch_size"] == 1 or point["batch_size"] * suffix <= token_budget
+
+
+def test_decode_batches_use_the_raw_token_budget(monkeypatch):
+    producer = load_producer(monkeypatch).Glm53FlashPrefixSeedScheduler
+    # The producer checks the decode suffixes against vLLM's whole token budget, not the prefill cap of 8,192. The
+    # suffixes of 1,919 tokens at context 4,096 fit 8,192 tokens four times and 16,384 tokens eight times.
+    payload, _, _ = glm_point_manifest(**{**_TP4, "token_budget": 16384})
+
+    assert _decode_batches(payload)[4096] == [1, 2, 4, 8]
+    for point in payload["decode"]:
+        context = point["total_kv_read_tokens"] // point["batch_size"]
+        assert point["batch_size"] == 1 or point["batch_size"] * _producer_suffix(producer, context, 2176) <= 16384
+    # Prefill keeps the cap, because the producer measures at most 8,192 new tokens in a point.
+    assert max(point["total_prefill_tokens"] for point in payload["prefill"]) == 8192
 
 
 def test_smoke_subset_is_four_points_of_the_list(tmp_path):
@@ -446,7 +464,9 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 181/472 prefill and 18/81 decode cases (cache capacity, usable_blocks=99)",
+            "GLM-5.3-Flash points: dropped 24/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
+            "decode cases (token budget, token_budget=8192), 181/472 prefill and 18/81 decode cases (cache capacity, "
+            "usable_blocks=99)",
         )
     ]
 
@@ -461,7 +481,9 @@ def test_capacity_without_a_feasible_point_is_refused(caplog):
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 472/472 prefill and 81/81 decode cases (cache capacity, usable_blocks=5)",
+            "GLM-5.3-Flash points: dropped 24/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
+            "decode cases (token budget, token_budget=8192), 472/472 prefill and 81/81 decode cases (cache capacity, "
+            "usable_blocks=5)",
         )
     ]
 

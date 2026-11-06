@@ -654,6 +654,9 @@ class FPMCollectionPlan:
             },
             "sha256": self.sha256,
         }
+        # Guided onboarding sets no log handler, so the plan keeps the drop counts of a generated list.
+        if self.options.benchmark_points_dropped_json is not None:
+            payload["point_generation"]["dropped_points"] = json.loads(self.options.benchmark_points_dropped_json)
         if self._fpm_profile_json is not None:
             payload["fpm_profile"] = json.loads(self._fpm_profile_json)
         runtime_observation = json.loads(self._runtime_observation_json) if self._runtime_observation_json else None
@@ -884,12 +887,13 @@ def build_collection_plan(
         # the accepted profile, and freeze it into the options, so the plan hash covers it.
         if profile is None:
             raise ValueError("GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens")
-        points_json, points_sha256 = glm_plan_manifest(options, deployments)
+        points_json, points_sha256, dropped_json = glm_plan_manifest(options, deployments)
         options = replace(
             options,
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
             benchmark_points_origin=GLM_POINTS_ORIGIN,
+            benchmark_points_dropped_json=dropped_json,
         )
     if capability.architecture == GLM_ARCHITECTURE:
         # The runner passes this revision to vLLM and to the producer. It takes the revision of the accepted probe

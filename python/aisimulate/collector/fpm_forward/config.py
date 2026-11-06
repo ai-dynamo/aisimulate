@@ -395,6 +395,8 @@ class FPMCollectionOptions:
     benchmark_points_sha256: str | None = None
     # Names the generator of a list that the planner froze. None for a user point file, which keeps its meaning.
     benchmark_points_origin: str | None = None
+    # The points that each rule of that generator dropped, as JSON. None for a user point file.
+    benchmark_points_dropped_json: str | None = None
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
@@ -755,6 +757,8 @@ class FPMCollectionOptions:
             }
             if self.benchmark_points_origin is not None:
                 result["benchmark_points"]["origin"] = self.benchmark_points_origin
+            if self.benchmark_points_dropped_json is not None:
+                result["benchmark_points"]["dropped"] = json.loads(self.benchmark_points_dropped_json)
         return result
 
 

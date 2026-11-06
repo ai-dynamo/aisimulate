@@ -198,24 +198,35 @@ prefix and decode context. These are the axes:
   and the measured context itself.
 - Decode requests per batch: the powers of two up to the smallest of 32,
   `max_batch_size` and the number of requests whose suffixes fit the budget,
-  and that smallest value itself. The suffix of a request is the part of its
-  prompt beyond its seed, `(c - 1) - (c - 2) // hash_block * hash_block`
+  and that smallest value itself. Here the budget is the whole token budget.
+  The 8,192 cap applies to prefill only. The suffix of a request is the part
+  of its prompt beyond its seed, `(c - 1) - (c - 2) // hash_block * hash_block`
   tokens. If the suffixes of a batch fit the budget together, vLLM prefills
   them in one step, and the first decode step holds every request. The axis
   always holds a batch of one request. If its suffix exceeds the budget, vLLM
   prefills it over several steps, and no other request decodes before it.
 
-The planner drops a point that does not fit its estimate of the accepted cache
-capacity, and it logs the number of dropped points of each phase. It refuses a
-plan with no prefill point or no decode point. The estimate counts the attention
-blocks of each request and one block in each state group. A request with a
-prefix hit can hold more than one block in a recurrent-state group, for example
-the cached block of its prefix and the block of its running state. So a point
-near the capacity limit can still fail when it runs. At TP4 with 2,176-token
-hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
-list has 472 prefill points and 81 decode points. By the estimate, that list
-needs an accepted cache of at least 2,113 pool blocks (the profile's
-`kv_cache_bytes` divided by its largest `page_size_bytes`).
+The planner also drops a point that does not fit its estimate of the accepted
+cache capacity. It counts the points that each rule drops: the align rule for
+prefill, the token budget for decode, and the cache capacity for both. Each
+rule counts against the candidates that it sees. The decode candidates at a
+context are the batches without the token budget and the largest batch whose
+suffixes fit the budget. The planner logs the counts in one line. Guided
+onboarding sets no log handler, so the collection plan also records them in
+`point_generation.dropped_points`. The planner refuses a plan with no prefill
+point or no decode point. The estimate counts the attention blocks of each
+request and one block in each state group. A request with a prefix hit can
+hold more than one block in a recurrent-state group, for example the cached
+block of its prefix and the block of its running state. So a point near the
+capacity limit can still fail when it runs. At TP4 with 2,176-token hash
+blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the list
+has 472 prefill points and 81 decode points. The align rule drops 24 of 496
+prefill candidates, and the token budget drops 16 of 97 decode candidates.
+The largest decode batch is 32 at contexts up to 256 and at 32,768 and 65,536.
+It is 16 at 512 and 131,072, 8 at 1,024, 4 at 2,048 to 8,192, and 7 at 16,384.
+By the estimate, that list needs an accepted cache of at least 2,113 pool
+blocks (the profile's `kv_cache_bytes` divided by its largest
+`page_size_bytes`).
 
 The smoke measures two points of this list for each phase that the plan
 collects. An aggregated request collects both phases, so its smoke measures

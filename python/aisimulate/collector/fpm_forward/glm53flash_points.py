@@ -52,7 +52,7 @@ def glm_measured_context(options: FPMCollectionOptions) -> int:
     return min(MAX_CONTEXT, options.vllm_max_model_len - 7)
 
 
-def glm_point_manifest(
+def glm_points(
     *,
     hash_block_size: int,
     token_budget: int,
@@ -62,8 +62,8 @@ def glm_point_manifest(
     kv_cache_bytes: int,
     page_size_bytes: int,
     state_groups: int,
-) -> tuple[dict[str, Any], str, str]:
-    """Return the point list, its canonical JSON and the SHA-256 of that JSON.
+) -> tuple[dict[str, Any], dict[str, dict[str, int]]]:
+    """Return the point list and, for each phase, its candidates and the number of them that each rule dropped.
 
     Every point meets the producer's rules. Prefixes are whole hash blocks. New-token and prefix lengths are multiples
     of 4. Prefix plus new tokens stay within the measured context. The new tokens of a batch fit the token budget, so
@@ -78,7 +78,9 @@ def glm_point_manifest(
         raise ValueError("GLM-5.3-Flash collection requires a token budget that is a multiple of 4")
     if hash_block_size % CHUNK_ALIGN:
         raise ValueError("GLM-5.3-Flash collection requires a hash block size that is a multiple of 4")
-    budget = min(token_budget, MAX_NEW)
+    # The producer measures at most MAX_NEW new tokens in a prefill point. It checks decode suffixes against the whole
+    # token budget.
+    prefill_budget = min(token_budget, MAX_NEW)
     measured = min(measured_context, MAX_CONTEXT)
     unit = hash_block_size
     usable = kv_cache_bytes // page_size_bytes - 1
@@ -99,61 +101,97 @@ def glm_point_manifest(
         prompt = context - 1
         return prompt - (prompt - 1) // unit * unit
 
-    new_tokens = {budget, *range(unit, budget + 1, unit)}
-    new_tokens.update(value for value in _powers_of_two_up_to(budget) if value >= CHUNK_ALIGN)
-    # vLLM v0.31.0 in Mamba align mode stops a prefill chunk at the last block boundary of the prompt (scheduler.py:444,
-    # :526). After a whole-block prefix, other new-token lengths run in two steps, and the producer measures one.
-    new_tokens = {new for new in new_tokens if new <= unit or new % unit == 0}
+    new_tokens = {prefill_budget, *range(unit, prefill_budget + 1, unit)}
+    new_tokens.update(value for value in _powers_of_two_up_to(prefill_budget) if value >= CHUNK_ALIGN)
     prefill = []
-    prefill_candidates = 0
+    prefill_candidates = split = 0
     for new in sorted(new_tokens):
         blocks = (measured - new) // unit
         rungs = sorted(rung for rung in {0, 1, blocks, *_powers_of_two_up_to(blocks)} if 0 <= rung <= blocks)
-        for batch in batch_sizes(min(MAX_BATCH, prefill_batch_limit, budget // new)):
+        for batch in batch_sizes(min(MAX_BATCH, prefill_batch_limit, prefill_budget // new)):
             prefill_candidates += len(rungs)
-            prefill.extend(
-                {"batch_size": batch, "total_prefill_tokens": batch * new, "total_kv_read_tokens": batch * rung * unit}
-                for rung in rungs
-                if fits(batch, rung * unit + new)
-            )
+            if new > unit and new % unit:
+                # vLLM v0.31.0 in Mamba align mode stops a prefill chunk at the last block boundary of the prompt
+                # (scheduler.py:444, :526). After a whole-block prefix, such a length runs in two steps, and the
+                # producer measures one.
+                split += len(rungs)
+            else:
+                prefill.extend(
+                    {
+                        "batch_size": batch,
+                        "total_prefill_tokens": batch * new,
+                        "total_kv_read_tokens": batch * rung * unit,
+                    }
+                    for rung in rungs
+                    if fits(batch, rung * unit + new)
+                )
     contexts = {measured, *(value for value in _powers_of_two_up_to(measured) if value >= MIN_CONTEXT)}
     # The producer accepts a decode repetition only if its first decode step holds every request. vLLM prefills the
     # suffixes of two or more requests in one step only if they fit the token budget together, so the budget bounds the
     # batch at each context. One request may prefill its suffix over several steps: no other request can decode before
     # it, and the producer records no step with a prefill request.
-    decode_batches = {
-        context: batch_sizes(min(MAX_BATCH, decode_batch_limit, max(1, budget // decode_suffix(context))))
-        for context in sorted(contexts)
+    decode_limit = min(MAX_BATCH, decode_batch_limit)
+    decode = []
+    decode_candidates = over_budget = 0
+    for context in sorted(contexts):
+        limit = min(decode_limit, max(1, token_budget // decode_suffix(context)))
+        # The candidates are the batches without the budget and the largest batch that the budget holds.
+        candidates = sorted({*batch_sizes(decode_limit), limit})
+        decode_candidates += len(candidates)
+        over_budget += sum(batch > limit for batch in candidates)
+        decode.extend(
+            {"batch_size": batch, "total_kv_read_tokens": batch * context}
+            for batch in candidates
+            if batch <= limit and fits(batch, context)
+        )
+    dropped = {
+        "prefill": {
+            "candidates": prefill_candidates,
+            "mamba_align_split": split,
+            "cache_capacity": prefill_candidates - split - len(prefill),
+        },
+        "decode": {
+            "candidates": decode_candidates,
+            "token_budget": over_budget,
+            "cache_capacity": decode_candidates - over_budget - len(decode),
+        },
     }
-    decode = [
-        {"batch_size": batch, "total_kv_read_tokens": batch * context}
-        for context, batches in decode_batches.items()
-        for batch in batches
-        if fits(batch, context)
-    ]
-    # The capacity rule removes points before any is queued, so a removal is never silent: one line counts the dropped
-    # points of each phase, also when there are none.
-    decode_candidates = sum(len(batches) for batches in decode_batches.values())
+    # The rules remove points before any is queued, so a removal is never silent: one line counts the points that each
+    # rule drops against the candidates that it sees, also when it drops none.
     logger.info(
-        "GLM-5.3-Flash points: dropped %d/%d prefill and %d/%d decode cases (cache capacity, usable_blocks=%d)",
-        prefill_candidates - len(prefill),
+        "GLM-5.3-Flash points: dropped %d/%d prefill cases (Mamba align split, hash_block_size=%d), %d/%d decode cases "
+        "(token budget, token_budget=%d), %d/%d prefill and %d/%d decode cases (cache capacity, usable_blocks=%d)",
+        split,
         prefill_candidates,
-        decode_candidates - len(decode),
+        unit,
+        over_budget,
         decode_candidates,
+        token_budget,
+        dropped["prefill"]["cache_capacity"],
+        prefill_candidates - split,
+        dropped["decode"]["cache_capacity"],
+        decode_candidates - over_budget,
         usable,
     )
     # A phase without a point leaves its cells nothing to measure, so the plan is refused before any GPU work.
     if not prefill or not decode:
         raise ValueError("GLM-5.3-Flash collection has no feasible point for the accepted cache capacity")
-    return _manifest({"schema_version": 3, "prefill": prefill, "decode": decode})
+    return {"schema_version": 3, "prefill": prefill, "decode": decode}, dropped
 
 
-def glm_plan_manifest(options: FPMCollectionOptions, deployments: Sequence[FpmDeploymentProfile]) -> tuple[str, str]:
+def glm_point_manifest(**limits: int) -> tuple[dict[str, Any], str, str]:
+    """Return the point list of ``glm_points`` for these limits, its canonical JSON and the SHA-256 of that JSON."""
+    return _manifest(glm_points(**limits)[0])
+
+
+def glm_plan_manifest(
+    options: FPMCollectionOptions, deployments: Sequence[FpmDeploymentProfile]
+) -> tuple[str, str, str]:
     """Return the canonical JSON and the SHA-256 of the point list for a plan's options and profile deployments.
 
-    The planner resolves ``options.max_prefill_isl`` first. The cells of a plan share one list, so the deployments must
-    share one hash block, and the capacity rule takes the smallest capacity, the largest page and the most state groups
-    among them.
+    The third value is the canonical JSON of the dropped counts of ``glm_points``. The planner resolves
+    ``options.max_prefill_isl`` first. The cells of a plan share one list, so the deployments must share one hash block,
+    and the capacity rule takes the smallest capacity, the largest page and the most state groups among them.
     """
     memories = [deployment.resources.runtime_memory for deployment in deployments]
     hash_blocks = {None if memory is None else memory.hash_block_size_tokens for memory in memories}
@@ -163,7 +201,7 @@ def glm_plan_manifest(options: FPMCollectionOptions, deployments: Sequence[FpmDe
     decode_batch_limit = options.max_decode_batch_size or options.max_num_seqs
     if prefill_batch_limit is None or decode_batch_limit is None:
         raise ValueError("GLM-5.3-Flash collection requires --fpm-max-num-seqs or the per-phase batch limits")
-    _, canonical, digest = glm_point_manifest(
+    payload, dropped = glm_points(
         hash_block_size=hash_blocks.pop(),
         token_budget=options.max_prefill_isl,
         prefill_batch_limit=prefill_batch_limit,
@@ -177,7 +215,8 @@ def glm_plan_manifest(options: FPMCollectionOptions, deployments: Sequence[FpmDe
             sum(group.kind == "state" for group in deployment.resources.cache_groups) for deployment in deployments
         ),
     )
-    return canonical, digest
+    _, canonical, digest = _manifest(payload)
+    return canonical, digest, json.dumps(dropped, sort_keys=True, separators=(",", ":"))
 
 
 def glm_smoke_subset(
