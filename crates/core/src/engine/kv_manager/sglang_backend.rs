@@ -568,7 +568,7 @@ impl SglangKvManager {
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
         let duplicate_pages =
-            self.canonicalize_finished_pages(pages, new_last_node, first_new_token, complete_len);
+            self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
         self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
         self.free_pages(&duplicate_pages);
         self.cache.dec_lock_ref(last_node);
@@ -614,7 +614,7 @@ impl SglangKvManager {
             self.cache.inc_lock_ref(new_last_node);
         }
         let duplicate_pages =
-            self.canonicalize_unfinished_pages(pages, new_last_node, first_new_token, complete_len);
+            self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
         self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
         self.free_pages(&duplicate_pages);
         if new_last_node != last_node {
@@ -796,9 +796,9 @@ impl SglangKvManager {
         pages
     }
 
-    /// Point a finished request's newly cached positions at the tree's pages and
-    /// return the request's pages the tree did not retain.
-    fn canonicalize_finished_pages(
+    /// Point a request's newly cached positions at the pages the radix tree kept
+    /// and return the request's pages the tree did not retain.
+    fn canonicalize_pages(
         &self,
         pages: &mut [KvPageId],
         last_node: NodeId,
@@ -806,77 +806,6 @@ impl SglangKvManager {
         complete_len: usize,
     ) -> Vec<KvPageId> {
         let block_size = self.cache.page_size();
-        if complete_len == 0 {
-            return Vec::new();
-        }
-
-        let mut unretained_pages = Vec::new();
-        let mut current = last_node;
-        let first_new_page = first_new_token / block_size;
-        let mut path_end = complete_len / block_size;
-
-        while path_end > first_new_page {
-            debug_assert_ne!(current, self.cache.root());
-            if current == self.cache.root() {
-                tracing::error!(
-                    path_end,
-                    first_new_token,
-                    complete_len,
-                    "SGLang radix path ended before finished-request reconciliation"
-                );
-                break;
-            }
-
-            let node = self.cache.node(current);
-            let node_len = node.value.len();
-            debug_assert!(node_len <= path_end);
-            if node_len > path_end {
-                tracing::error!(
-                    node_len,
-                    path_end,
-                    complete_len,
-                    "SGLang radix node exceeds finished materialized prefix"
-                );
-                break;
-            }
-            let path_start = path_end - node_len;
-            let reconcile_start = path_start.max(first_new_page);
-
-            for (page_idx, incoming_page) in pages
-                .iter_mut()
-                .enumerate()
-                .take(path_end)
-                .skip(reconcile_start)
-            {
-                let canonical_page = node.value[page_idx - path_start];
-                if *incoming_page != canonical_page {
-                    unretained_pages.push(*incoming_page);
-                    *incoming_page = canonical_page;
-                }
-            }
-
-            path_end = path_start;
-            current = node.parent.unwrap_or(self.cache.root());
-        }
-
-        unretained_pages
-    }
-
-    /// Point an active request's newly cached positions at the tree's pages and
-    /// return the request's pages the tree did not retain.
-    fn canonicalize_unfinished_pages(
-        &self,
-        pages: &mut [KvPageId],
-        last_node: NodeId,
-        first_new_token: usize,
-        complete_len: usize,
-    ) -> Vec<KvPageId> {
-        let block_size = self.cache.page_size();
-        debug_assert_eq!(complete_len % block_size, 0);
-        debug_assert_eq!(first_new_token % block_size, 0);
-        debug_assert!(complete_len / block_size <= pages.len());
-        debug_assert!(first_new_token <= complete_len);
-
         assert!(
             first_new_token.is_multiple_of(block_size)
                 && complete_len.is_multiple_of(block_size)
@@ -1022,16 +951,10 @@ impl SglangKvManager {
         for (page_idx, tokens_hash) in (first_unpublished_page..).zip(local_hashes.iter().copied())
         {
             let page_slot = pages[page_idx].index();
-            let published_hash = self.page_hash(page_slot);
             debug_assert!(
-                published_hash.is_none(),
+                self.page_hash(page_slot).is_none(),
                 "SGLang radix insertion left a published page after an unpublished one"
             );
-            if let Some(published_hash) = published_hash {
-                block_parent_hash = Some(published_hash);
-                continue;
-            }
-
             let block_hash = match block_parent_hash {
                 Some(parent_hash) => compute_next_seq_hash(parent_hash, tokens_hash),
                 None => tokens_hash.0,
@@ -2058,7 +1981,7 @@ mod tests {
         let mut pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
         let root = mgr.cache().root();
 
-        mgr.canonicalize_unfinished_pages(&mut pages, root, 0, 4);
+        mgr.canonicalize_pages(&mut pages, root, 0, 4);
     }
 
     #[test]
