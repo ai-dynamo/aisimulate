@@ -30,6 +30,23 @@ use crate::operators::{
 };
 use crate::perf_database::PerfDatabase;
 
+/// The single [`RuntimeContext`] field an op's result depends on
+/// ([`Op::memo_field`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MemoField {
+    NumTokens,
+    BatchSize,
+}
+
+impl MemoField {
+    pub(crate) fn of(self, ctx: &RuntimeContext) -> u32 {
+        match self {
+            Self::NumTokens => ctx.num_tokens,
+            Self::BatchSize => ctx.batch_size,
+        }
+    }
+}
+
 /// Runtime context passed to every op's `query`.
 ///
 /// Mirrors Python's `**kwargs` payload to `op.query(database, ...)`. Each
@@ -561,6 +578,47 @@ impl Op {
         match self {
             Op::TokenScale(o) => o.op.is_logits_gemm(),
             _ => matches!(self, Op::Gemm(_)) && self.name().contains("logits_gemm"),
+        }
+    }
+
+    /// The one runtime field [`Self::query`] reads for this op, when it reads
+    /// only one: its result is then a pure function of that field, so equal
+    /// values price identically whatever the rest of the context holds. A
+    /// composite qualifies when every member reads the same field: an overlap
+    /// or fallback queries its members at its own context, and a token scale
+    /// queries its op at a context scaled from that field alone. `None` for ops
+    /// that read several fields (attention, the whole-model forward) or none of
+    /// the rank walks' fields.
+    pub(crate) fn memo_field(&self) -> Option<MemoField> {
+        fn common<'o>(ops: impl IntoIterator<Item = &'o Op>) -> Option<MemoField> {
+            let mut field = None;
+            for op in ops {
+                let member = op.memo_field()?;
+                if *field.get_or_insert(member) != member {
+                    return None;
+                }
+            }
+            field
+        }
+        match self {
+            Op::Dsv41Mhc(_)
+            | Op::Dsv41Engram(_)
+            | Op::Dsv41Linear(_)
+            | Op::Glm53Router(_)
+            | Op::Gemm(_)
+            | Op::Embedding(_)
+            | Op::Elementwise(_)
+            | Op::Moe(_)
+            | Op::MoeDispatch(_)
+            | Op::CustomAllReduce(_)
+            | Op::Nccl(_)
+            | Op::P2P(_)
+            | Op::Mhc(_) => Some(MemoField::NumTokens),
+            Op::MlaBmm(_) => Some(MemoField::BatchSize),
+            Op::TokenScale(op) => op.op.memo_field(),
+            Op::Overlap(op) => common(op.group_a.iter().chain(&op.group_b)),
+            Op::Fallback(op) => common(std::iter::once(op.primary.as_ref()).chain(&op.fallback)),
+            _ => None,
         }
     }
 

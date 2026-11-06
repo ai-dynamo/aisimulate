@@ -26,14 +26,14 @@ use crate::common::enums::EncoderParallel;
 use crate::common::enums::{DatabaseMode, TransferPolicy};
 use crate::common::error::AicError;
 use crate::fpm::FpmExecutionBinding;
+use crate::memo::Memo;
 use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
-use crate::operators::util_empirical::ProvenanceTier;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
-    ContextOpFilter, OpListPlan, QueryMemo, context_op_runtime, generation_op_runtime,
+    ContextOpFilter, OpListPlan, OpMemo, QueryMemo, context_op_runtime, generation_op_runtime,
     get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
     run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
     run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
@@ -431,9 +431,6 @@ pub(crate) struct RankPricing {
     pub(crate) operations: Option<RankOperationValues>,
     /// [`RankDetail::Diagnostics`] of an operation graph.
     pub(crate) diagnostics: Option<Vec<super::diagnostics::StaticOperationDiagnostics>>,
-    /// The least-confident empirical tier the rank's lookups fired, noted
-    /// again whenever the memo answers in their place.
-    provenance: ProvenanceTier,
     /// What a caller derives from this pricing ([`Self::derived`]).
     derived: OnceLock<Box<dyn std::any::Any + Send + Sync>>,
 }
@@ -504,6 +501,11 @@ impl RankKey {
 /// Distinct rank workloads a memo keeps. A rank's pricing is a pure
 /// function of its key, so a hit returns exactly what the dispatch would.
 const RANK_MEMO_CAPACITY: usize = 4096;
+
+/// Single-coordinate op results an [`OpMemo`] keeps: one entry per op
+/// and token count (or batch size) its rank walks reached. A vLLM DP32 replay
+/// with 8192-token chunks reached about 56,000.
+const OP_MEMO_CAPACITY: usize = 131_072;
 
 /// Name lists of walks without name slots (DSv4.1 stages) that
 /// [`Engine::shared_names`] keeps shared.
@@ -814,7 +816,10 @@ pub struct Engine {
     mix_plan: MixStepPlan,
     /// Ranks priced without diagnostics or lookup coverage, by workload;
     /// allocated on first use. See [`Self::rank_pricing`].
-    rank_memo: OnceLock<quick_cache::sync::Cache<RankKey, Arc<RankPricing>>>,
+    rank_memo: OnceLock<Memo<RankKey, Arc<RankPricing>>>,
+    /// Single-coordinate op results shared by the rank memo's misses;
+    /// allocated on first use. See [`Self::operation_rank_latency_ms`].
+    op_memo: OnceLock<OpMemo>,
     /// Name lists of walks without name slots, shared across ranks.
     shared_names: Mutex<Vec<Arc<[String]>>>,
 }
@@ -961,6 +966,7 @@ impl Engine {
             spec_sha256,
             mix_plan: MixStepPlan::new(&spec.context_ops, &spec.generation_ops),
             rank_memo: OnceLock::new(),
+            op_memo: OnceLock::new(),
             shared_names: Mutex::default(),
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
@@ -1596,6 +1602,7 @@ impl Engine {
         run_context_ops_planned(
             &self.context_ops,
             Some(&self.context_plan),
+            None,
             &self.db,
             runtime.batch_size,
             effective_isl,
@@ -1670,6 +1677,7 @@ impl Engine {
             let step = run_generation_ops_step_planned(
                 &self.generation_ops,
                 Some(plan),
+                None,
                 &self.db,
                 bs,
                 runtime.beam_width,
@@ -2800,6 +2808,7 @@ impl Engine {
             run_context_ops_planned(
                 &self.context_ops,
                 Some(&self.context_plan),
+                None,
                 &self.db,
                 runtime.batch_size,
                 runtime.isl - runtime.prefix,
@@ -3385,28 +3394,14 @@ impl Engine {
             return self.price_rank(metrics, detail, coverage).map(Arc::new);
         }
         let detail = detail.unwrap_or(RankDetail::Values);
-        let memo = self
-            .rank_memo
-            .get_or_init(|| quick_cache::sync::Cache::new(RANK_MEMO_CAPACITY));
-        let key = RankKey::of(metrics, detail);
-        if let Some(rank) = memo.get(&key) {
-            if rank.provenance != ProvenanceTier::Silicon {
-                self.db.note_provenance(rank.provenance);
-            }
-            return Ok(rank);
-        }
-        // Observe exactly the tiers this dispatch fires, then restore the
-        // caller's: the accumulator keeps the maximum of both either way.
-        let outer = self.db.take_provenance();
-        let priced = self.price_rank(metrics, Some(detail), None);
-        self.db.note_provenance(outer);
-        let rank = Arc::new(priced?);
-        memo.insert(key, Arc::clone(&rank));
-        Ok(rank)
+        self.rank_memo
+            .get_or_init(|| Memo::clock(RANK_MEMO_CAPACITY))
+            .get_or_price(&*self.db, RankKey::of(metrics, detail), || {
+                self.price_rank(metrics, Some(detail), None).map(Arc::new)
+            })
     }
 
-    /// One rank's dispatch with its operations in `detail`, and the tiers
-    /// its lookups fired since the accumulator was last taken.
+    /// One rank's dispatch with its operations in `detail`.
     fn price_rank(
         &self,
         metrics: &ForwardPassMetrics,
@@ -3427,7 +3422,6 @@ impl Engine {
             latency_ms,
             operations: values,
             diagnostics,
-            provenance: self.db.worst_provenance(),
             derived: OnceLock::new(),
         })
     }
@@ -3640,6 +3634,9 @@ impl Engine {
         has_decode: bool,
         operations: &mut OperationObserver,
     ) -> Result<f64, AicError> {
+        let cache = self
+            .op_memo
+            .get_or_init(|| OpMemo::new(OP_MEMO_CAPACITY, &self.context_ops, &self.generation_ops));
         if self.has_dsv41_stages() {
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
@@ -3703,6 +3700,7 @@ impl Engine {
             return get_mix_step_ops(
                 &self.context_ops,
                 &self.generation_ops,
+                Some(cache),
                 &self.db,
                 ctx_tokens,
                 gen_tokens,
@@ -3746,6 +3744,7 @@ impl Engine {
                     run_context_ops_planned(
                         &self.context_ops,
                         None,
+                        Some(cache),
                         &self.db,
                         n_prefill,
                         new_tokens_per_req,
@@ -3778,6 +3777,7 @@ impl Engine {
             total += run_generation_ops_step_planned(
                 &self.generation_ops,
                 None,
+                Some(cache),
                 &self.db,
                 n_decode,
                 1,
@@ -3885,6 +3885,7 @@ pub(crate) mod tests {
 
     use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
     use crate::operators::op::Op;
+    use crate::operators::util_empirical::ProvenanceTier;
     use crate::operators::{
         ContextAttentionOp, ElementwiseOp, GemmOp, GenerationAttentionOp, MoeAllToAllOp,
     };
@@ -5458,7 +5459,6 @@ pub(crate) mod tests {
             latency_ms: 2.0,
             operations: None,
             diagnostics: None,
-            provenance: ProvenanceTier::Silicon,
             derived: OnceLock::new(),
         };
         let builds = std::cell::Cell::new(0);
@@ -5501,14 +5501,178 @@ pub(crate) mod tests {
             );
         }
         for rank in &ranks {
-            let stored = engine
+            let (_, stored) = engine
                 .rank_memo
                 .get()
                 .unwrap()
-                .get(&RankKey::of(rank, RankDetail::Values))
+                .peek(&RankKey::of(rank, RankDetail::Values))
                 .unwrap();
-            assert!(stored.provenance <= fired);
+            assert!(stored <= fired);
         }
+    }
+
+    #[test]
+    fn single_field_ops_price_by_their_field_alone() {
+        use crate::operators::op::MemoField;
+        use crate::operators::{FallbackOp, OverlapOp};
+        let engine = build_engine(None);
+        let silicon: &PerfDatabase = engine.database();
+        let sol = silicon.sol_full_view();
+        let base = RuntimeContext {
+            batch_size: 2,
+            beam_width: 1,
+            s: 300,
+            prefix: 100,
+            num_tokens: 512,
+            seq_imbalance_correction_scale: 1.0,
+            gen_seq_imbalance_correction_scale: 1.0,
+            num_image_tokens: 0,
+        };
+        // Every field but the one an op reads differs.
+        let other = |field: MemoField| match field {
+            MemoField::NumTokens => RuntimeContext {
+                batch_size: 7,
+                beam_width: 2,
+                s: 9000,
+                prefix: 0,
+                num_tokens: 512,
+                seq_imbalance_correction_scale: 1.25,
+                gen_seq_imbalance_correction_scale: 1.5,
+                num_image_tokens: 3,
+            },
+            MemoField::BatchSize => RuntimeContext {
+                batch_size: 2,
+                beam_width: 2,
+                s: 9000,
+                prefix: 0,
+                num_tokens: 4096,
+                seq_imbalance_correction_scale: 1.25,
+                gen_seq_imbalance_correction_scale: 1.5,
+                num_image_tokens: 3,
+            },
+        };
+        // One sample of every op variant. Its overlap and fallback hold MLA
+        // attention, so they read several fields.
+        let samples = crate::perfmodel::engine::spec::tests::all_op_variants();
+        let sample = |pick: fn(&Op) -> bool| samples.iter().find(|op| pick(op)).unwrap().clone();
+        for op in samples
+            .iter()
+            .filter(|op| matches!(op, Op::Overlap(_) | Op::Fallback(_)))
+        {
+            assert_eq!(op.memo_field(), None, "{}", op.name());
+        }
+        // Composites of token-count ops read the token count; one that also
+        // holds a batch-size op reads two fields.
+        let moe = vec![
+            sample(|op| matches!(op, Op::Gemm(_))),
+            sample(|op| matches!(op, Op::Moe(_))),
+            sample(|op| matches!(op, Op::MoeDispatch(_))),
+            sample(|op| matches!(op, Op::Nccl(_))),
+        ];
+        let overlap = Op::Overlap(OverlapOp::new(
+            "overlap",
+            moe[..1].to_vec(),
+            moe[1..].to_vec(),
+        ));
+        let fallback = Op::Fallback(FallbackOp::new(
+            "fallback",
+            moe[0].clone(),
+            moe[1..].to_vec(),
+        ));
+        let mixed = Op::Overlap(OverlapOp::new(
+            "mixed",
+            moe.clone(),
+            vec![sample(|op| matches!(op, Op::MlaBmm(_)))],
+        ));
+        assert_eq!(mixed.memo_field(), None);
+        for op in samples.iter().chain([&overlap, &fallback]) {
+            let Some(field) = op.memo_field() else {
+                continue;
+            };
+            assert_eq!(field.of(&other(field)), field.of(&base));
+            // Results, errors included, match in each mode, and at least one
+            // mode prices the op.
+            let mut priced = false;
+            for db in [silicon, &sol] {
+                let at_base = op.query(db, &base);
+                let at_other = op.query(db, &other(field));
+                assert_eq!(
+                    format!("{at_base:?}"),
+                    format!("{at_other:?}"),
+                    "{}",
+                    op.name()
+                );
+                priced |= at_base.is_ok();
+            }
+            assert!(priced, "{} prices in neither mode", op.name());
+        }
+    }
+
+    #[test]
+    fn op_cache_answers_kv_independent_ops_with_the_dispatch_result() {
+        // Each pair keeps a rank's token counts and changes only its KV: the
+        // second walk reuses the first's GEMM and elementwise results and
+        // re-prices only attention, yet matches a cold engine's dispatch.
+        let engine = build_engine(None);
+        let mut cold = build_engine(None);
+        let cache_len = |engine: &Engine| engine.op_memo.get().map_or(0, OpMemo::len);
+        let pairs = [
+            (rank_fpm(2, 1024, 256, 0, 0), rank_fpm(2, 1024, 4096, 0, 0)),
+            (
+                rank_fpm(0, 0, 0, 4, 4 * 513),
+                rank_fpm(0, 0, 0, 4, 4 * 2049),
+            ),
+            (
+                rank_fpm(1, 256, 0, 4, 4 * 513),
+                rank_fpm(1, 256, 1024, 4, 4 * 1025),
+            ),
+        ];
+        for (first, second) in &pairs {
+            let mut entries = None;
+            for metrics in [first, second] {
+                let warm = engine
+                    .price_rank(metrics, Some(RankDetail::Values), None)
+                    .unwrap();
+                cold.op_memo = OnceLock::new();
+                let fresh = cold
+                    .price_rank(metrics, Some(RankDetail::Values), None)
+                    .unwrap();
+                assert_eq!(warm.latency_ms.to_bits(), fresh.latency_ms.to_bits());
+                assert_eq!(warm.operations, fresh.operations);
+                let len = cache_len(&engine);
+                assert!(len > 0);
+                // The KV-only change adds no entry.
+                assert_eq!(*entries.get_or_insert(len), len);
+            }
+        }
+    }
+
+    #[test]
+    fn op_cache_hits_note_the_tier_their_miss_fired() {
+        use crate::session::OpList;
+        let engine = build_engine(None);
+        let db = engine.database();
+        let cache = OpMemo::new(16, &engine.context_ops, &engine.generation_ops);
+        // The fixture's leading rmsnorm reads only the token count.
+        let op = &engine.context_ops[0];
+        assert!(op.memo_field().is_some());
+        let ctx = context_op_runtime(op, 1, 512, 0, 1.0, None);
+        let result = op.query(db, &ctx).unwrap();
+        db.reset_provenance();
+        // A miss keeps the caller's tier and stores only the one it fired.
+        db.note_provenance(ProvenanceTier::XQuant);
+        let miss = cache.query(db, OpList::Context, 0, &ctx, || {
+            db.note_provenance(ProvenanceTier::XShape);
+            Ok(result.clone())
+        });
+        assert_eq!(miss.unwrap(), result);
+        assert_eq!(db.worst_provenance(), ProvenanceTier::XQuant);
+        // A hit notes that stored tier although its query, which debug builds
+        // re-run, fires none.
+        db.reset_provenance();
+        let hit = cache.query(db, OpList::Context, 0, &ctx, || Ok(result.clone()));
+        assert_eq!(hit.unwrap(), result);
+        assert_eq!(db.worst_provenance(), ProvenanceTier::XShape);
     }
 
     #[test]
@@ -8288,6 +8452,7 @@ pub(crate) mod tests {
             let got = crate::session::get_mix_step_ops(
                 &ctx_ops,
                 &gen_ops,
+                None,
                 &db,
                 requests * new_tokens + remainder,
                 generation,

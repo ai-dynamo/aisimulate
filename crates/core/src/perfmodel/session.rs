@@ -14,9 +14,84 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::common::error::AicError;
+use crate::memo::Memo;
 use crate::operators::base::PerformanceResult;
+use crate::operators::op::MemoField;
 use crate::operators::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
+
+/// The engine op list an [`OpMemo`] entry belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpList {
+    Context = 0,
+    Generation = 1,
+}
+
+/// Results of ops whose result depends on one runtime field
+/// ([`Op::memo_field`]), kept across walks of one engine's op lists. Such a
+/// result is a pure function of the op and that field, so a walk at a new KV
+/// shape re-prices only the ops that read it. Debug builds re-price every hit.
+pub(crate) struct OpMemo {
+    /// Each op's field by list and index, computed once from the lists.
+    fields: [Box<[Option<MemoField>]>; 2],
+    /// Keyed by list, index and field value ([`Self::key`]).
+    results: Memo<u64, PerformanceResult>,
+}
+
+impl OpMemo {
+    /// A memo for walks of `context_ops` and `generation_ops`; it starts
+    /// over once it holds `capacity` results.
+    pub(crate) fn new(capacity: usize, context_ops: &[Op], generation_ops: &[Op]) -> Self {
+        let fields = |ops: &[Op]| ops.iter().map(Op::memo_field).collect();
+        Self {
+            fields: [fields(context_ops), fields(generation_ops)],
+            results: Memo::flat(capacity).verifying_hits(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.results.len()
+    }
+
+    /// The entry key of the op at `index` of `list` with its field at `value`.
+    fn key(list: OpList, index: usize, value: u32) -> u64 {
+        debug_assert!(index < 1 << 31, "op index {index}");
+        (list as u64) << 63 | (index as u64) << 32 | u64::from(value)
+    }
+
+    /// The result at `ctx` of the op at `index` of `list`: `query`'s, or the
+    /// one an earlier walk stored for the same value of the field it reads.
+    pub(crate) fn query(
+        &self,
+        db: &PerfDatabase,
+        list: OpList,
+        index: usize,
+        ctx: &RuntimeContext,
+        query: impl FnOnce() -> Result<PerformanceResult, AicError>,
+    ) -> Result<PerformanceResult, AicError> {
+        let Some(field) = self.fields[list as usize].get(index).copied().flatten() else {
+            return query();
+        };
+        self.results
+            .get_or_price(db, Self::key(list, index, field.of(ctx)), query)
+    }
+}
+
+/// [`OpMemo::query`] through `cache` when there is one.
+fn shared_query(
+    cache: Option<&OpMemo>,
+    db: &PerfDatabase,
+    list: OpList,
+    index: usize,
+    op: &Op,
+    ctx: &RuntimeContext,
+) -> Result<PerformanceResult, AicError> {
+    match cache {
+        Some(cache) => cache.query(db, list, index, ctx, || op.query(db, ctx)),
+        None => op.query(db, ctx),
+    }
+}
 
 /// Build-time facts about one immutable op list. Passes use them to skip
 /// repeated work; every op still reports its own name and value.
@@ -233,6 +308,7 @@ pub(crate) fn run_context_ops_with<'a>(
     run_context_ops_planned(
         ops,
         None,
+        None,
         db,
         batch_size,
         effective_isl,
@@ -243,12 +319,14 @@ pub(crate) fn run_context_ops_with<'a>(
     )
 }
 
-/// [`run_context_ops_with`] over an op list with its [`OpListPlan`]. The sink
-/// also receives each op's index in `ops`.
+/// [`run_context_ops_with`] over an op list with its [`OpListPlan`], reusing
+/// `cache`'s results when given one. The sink also receives each op's index
+/// in `ops`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_context_ops_planned<'a>(
     ops: &'a [Op],
     plan: Option<&OpListPlan>,
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     batch_size: u32,
     effective_isl: u32,
@@ -267,15 +345,15 @@ pub(crate) fn run_context_ops_planned<'a>(
             _ => {}
         }
         let result = memo.query(index, || {
-            query_context_op(
+            let ctx = context_op_runtime(
                 op,
-                db,
                 batch_size,
                 effective_isl,
                 prefix,
                 seq_imbalance_correction_scale,
                 None,
-            )
+            );
+            shared_query(cache, db, OpList::Context, index, op, &ctx)
         })?;
         total += result.latency_ms;
         on_op(index, op, result);
@@ -411,6 +489,7 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
     run_generation_ops_step_planned(
         ops,
         None,
+        None,
         db,
         batch_size,
         beam_width,
@@ -422,11 +501,13 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
 }
 
 /// [`run_generation_ops_step_beamed_with`] over an op list with its
-/// [`OpListPlan`]. The sink also receives each op's index in `ops`.
+/// [`OpListPlan`], reusing `cache`'s results when given one. The sink also
+/// receives each op's index in `ops`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_generation_ops_step_planned<'a>(
     ops: &'a [Op],
     plan: Option<&OpListPlan>,
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     batch_size: u32,
     beam_width: u32,
@@ -436,22 +517,21 @@ pub(crate) fn run_generation_ops_step_planned<'a>(
     mut on_op: impl FnMut(usize, &'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
     let mut memo = QueryMemo::new(plan, ops);
+    let ctx = generation_op_runtime(
+        batch_size,
+        beam_width,
+        kv_seq_tokens,
+        gen_seq_imbalance_correction_scale,
+        0,
+        None,
+    );
     let mut total = 0.0_f64;
     for (index, op) in ops.iter().enumerate() {
         if only_generation_attention && !op.is_generation_attention() {
             continue;
         }
         let result = memo.query(index, || {
-            query_generation_op(
-                op,
-                db,
-                batch_size,
-                beam_width,
-                kv_seq_tokens,
-                gen_seq_imbalance_correction_scale,
-                0,
-                None,
-            )
+            shared_query(cache, db, OpList::Generation, index, op, &ctx)
         })?;
         total += result.latency_ms;
         on_op(index, op, result);
@@ -531,11 +611,13 @@ pub(crate) fn generation_op_runtime(
 /// `on_op` observes each queried op: whether it runs in a context pass
 /// (passes 1 and 2) or the decode pass, its index in its op list, the op,
 /// its runtime context, its RAW result and the divisor the total applies to
-/// it (pass 2's `scale_factor`, otherwise 1).
+/// it (pass 2's `scale_factor`, otherwise 1). `cache`, when given, answers
+/// single-coordinate ops ([`OpMemo`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mix_step_ops<'a>(
     context_ops: &'a [Op],
     generation_ops: &'a [Op],
+    cache: Option<&OpMemo>,
     db: &PerfDatabase,
     ctx_tokens: u32,
     gen_tokens: u32,
@@ -585,7 +667,7 @@ pub(crate) fn get_mix_step_ops<'a>(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        let result = op.query(db, &ctx)?;
+        let result = shared_query(cache, db, OpList::Context, index, op, &ctx)?;
         total += result.latency_ms;
         on_op(true, index, op, &ctx, result, 1.0);
     }
@@ -621,7 +703,7 @@ pub(crate) fn get_mix_step_ops<'a>(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        let result = op.query(db, &ctx)?;
+        let result = shared_query(cache, db, OpList::Context, index, op, &ctx)?;
         total += result.latency_ms / scale_factor;
         on_op(true, index, op, &ctx, result, scale_factor);
     }
@@ -648,7 +730,7 @@ pub(crate) fn get_mix_step_ops<'a>(
                 gen_seq_imbalance_correction_scale: 1.0,
                 num_image_tokens: 0,
             };
-            let result = op.query(db, &ctx)?;
+            let result = shared_query(cache, db, OpList::Generation, index, op, &ctx)?;
             total += result.latency_ms;
             on_op(false, index, op, &ctx, result, 1.0);
         }

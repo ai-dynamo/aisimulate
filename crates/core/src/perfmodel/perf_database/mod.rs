@@ -340,6 +340,8 @@ pub struct PerfDatabase {
     /// notes made through a derived view land on the run's accumulator. The
     /// engine FFI resets it per `run_static`/step call and reads the worst
     /// tier back for the Python bridge / support-matrix HYBRID labelling.
+    /// Memo entries attribute tiers on the noting thread instead
+    /// ([`crate::memo`]), so they never read or clear this cell.
     provenance: Arc<AtomicU8>,
 }
 
@@ -813,20 +815,11 @@ impl PerfDatabase {
     /// successful `util_empirical::estimate` with the tier the site knows
     /// (own-data "empirical", attention head_size ref grid "xshape", the MoE
     /// ladder's `reference_provenance`, communication rank-overflow "xshape",
-    /// MSA cross-op "xop", ...).
+    /// MSA cross-op "xop", ...). The tier also counts toward the memo miss
+    /// open on this thread ([`crate::memo`]).
     pub fn note_provenance(&self, tier: ProvenanceTier) {
         self.provenance.fetch_max(tier as u8, Ordering::Relaxed);
-    }
-
-    /// Clear the accumulator back to `Silicon`, returning the tier it held.
-    /// Noting that tier again afterwards leaves the accumulator as if it had
-    /// never been cleared, so a caller can observe the tiers one computation
-    /// fires.
-    pub(crate) fn take_provenance(&self) -> ProvenanceTier {
-        ProvenanceTier::from_rank(
-            self.provenance
-                .swap(ProvenanceTier::Silicon as u8, Ordering::Relaxed),
-        )
+        crate::memo::note_on_thread(tier);
     }
 
     /// Clear the accumulator back to `Silicon` (start of a run).
