@@ -59,6 +59,35 @@ fn run(frame: &str) -> Value {
 }
 
 #[test]
+fn direct_hash_warmup_primer_keeps_numeric_cap_and_profile_resume() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut frame = run_fixture::request(directory.path());
+    frame["run"]["cfg"]["finite_replay"] = json!(false);
+    frame["run"]["cfg"]["trajectory_start_min_ratio"] = json!(0.5);
+    frame["run"]["cfg"]["trajectory_start_max_ratio"] = json!(0.5);
+    frame["run"]["cfg"]["phases"][0]["sessions"] = json!(1);
+    let hosted = run(&serde_json::to_string(&frame).unwrap());
+    let rows = hosted["requests"].as_array().unwrap();
+    let warmup = rows
+        .iter()
+        .find(|row| row["request"]["credit_phase"] == "warmup")
+        .expect("warmup primer");
+    let profile = rows
+        .iter()
+        .find(|row| row["request"]["credit_phase"] == "profiling")
+        .expect("profile resume");
+    assert_eq!(warmup["request"]["max_output_tokens"], 1);
+    assert_eq!(profile["request"]["max_output_tokens"], 2);
+    assert_eq!(warmup["request"]["input_length"], 16);
+    assert_eq!(profile["request"]["input_length"], 24);
+    assert_eq!(
+        warmup["request"]["root_correlation_id"],
+        profile["request"]["root_correlation_id"]
+    );
+    assert!(warmup["end_ns"].as_i64().unwrap() <= profile["issue_ns"].as_i64().unwrap());
+}
+
+#[test]
 fn direct_hashes_keep_authored_lengths_branches_and_sticky_marker_without_text() {
     let directory = tempfile::tempdir().unwrap();
     let mut frame = aiperf_protocol::runner_v2::decode_run_request_v2(
