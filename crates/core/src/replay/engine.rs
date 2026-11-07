@@ -211,6 +211,15 @@ impl ReplayEngineConfig {
                         "state_cache must be set on both prefill and decode roles".to_string(),
                     ));
                 }
+                // A grouped rank counts the handoff in full-attention blocks of
+                // its groups and a linear rank in tokens, so both roles need
+                // the same groups. Two linear roles have none.
+                if prefill.kv_cache_groups != decode.kv_cache_groups {
+                    return Err(ReplayError::InvalidSpec(
+                        "kv_cache_groups must be identical on the prefill and decode roles"
+                            .to_string(),
+                    ));
+                }
             }
         }
         Ok(())
