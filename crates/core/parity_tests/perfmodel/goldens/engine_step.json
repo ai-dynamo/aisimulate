@@ -972,140 +972,140 @@
     "nemotron-h-56b-b200-sglang-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 65.71942334491776,
-          "agg_tpot": 22.27777062539585,
-          "agg_ttft": 43.441652719521905
+          "agg_request": 59.776085163099566,
+          "agg_tpot": 20.26307971630494,
+          "agg_ttft": 39.51300544679463
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 47.775,
-          "disagg_tpot": 5.146,
-          "disagg_ttft": 42.629
+          "disagg_request": 43.785,
+          "disagg_tpot": 5.137,
+          "disagg_ttft": 38.648
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 22.251088461071294
+          "mixed_step": 20.238361188344022
         }
       },
       "static": {
         "values": {
-          "static_ctx": 21.53,
-          "static_gen": 4.381,
-          "static_total": 25.911
+          "static_ctx": 19.519,
+          "static_gen": 4.379,
+          "static_total": 23.897999999999996
         }
       }
     },
     "nemotron-h-56b-b200-sglang-shape-batch8": {
       "agg": {
         "values": {
-          "agg_request": 72.4027545325365,
-          "agg_tpot": 22.27777062539585,
-          "agg_ttft": 50.12498390714066
+          "agg_request": 65.85500907799106,
+          "agg_tpot": 20.26307971630494,
+          "agg_ttft": 45.59192936168611
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 47.546,
-          "disagg_tpot": 4.917,
-          "disagg_ttft": 42.629
+          "disagg_request": 43.548,
+          "disagg_tpot": 4.9,
+          "disagg_ttft": 38.648
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 22.464821180392025
+          "mixed_step": 20.4383484531193
         }
       },
       "static": {
         "values": {
-          "static_ctx": 149.546,
-          "static_gen": 4.553,
-          "static_total": 154.099
+          "static_ctx": 133.46,
+          "static_gen": 4.537,
+          "static_total": 137.997
         }
       }
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 112.50412694450117,
-          "agg_tpot": 38.13699218457666,
-          "agg_ttft": 74.3671347599245
+          "agg_request": 68.00762594478792,
+          "agg_tpot": 23.053432523656923,
+          "agg_ttft": 44.954193421131
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 79.193,
-          "disagg_tpot": 5.145,
-          "disagg_ttft": 74.048
+          "disagg_request": 49.125,
+          "disagg_tpot": 4.892,
+          "disagg_ttft": 44.233
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 38.10622866397383
+          "mixed_step": 23.035236602440822
         }
       },
       "static": {
         "values": {
-          "static_ctx": 37.398,
-          "static_gen": 4.806,
-          "static_total": 42.204
+          "static_ctx": 22.34,
+          "static_gen": 4.606,
+          "static_total": 26.945999999999998
         }
       }
     },
     "nemotron-h-56b-b200-vllm-empirical": {
       "agg": {
         "values": {
-          "agg_request": 153.1150292932594,
-          "agg_tpot": 22.07766084388677,
-          "agg_ttft": 131.03736844937262
+          "agg_request": 148.8379838387139,
+          "agg_tpot": 20.064933571159493,
+          "agg_ttft": 128.77305026755442
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 47.458,
-          "disagg_tpot": 5.018,
-          "disagg_ttft": 42.44
+          "disagg_request": 43.468,
+          "disagg_tpot": 5.009,
+          "disagg_ttft": 38.459
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 22.077660843886765
+          "mixed_step": 20.064933571159493
         }
       },
       "static": {
         "values": {
-          "static_ctx": 21.434,
-          "static_gen": 4.609,
-          "static_total": 26.043
+          "static_ctx": 19.423,
+          "static_gen": 4.607,
+          "static_total": 24.029999999999998
         }
       }
     },
     "nemotron-h-56b-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 152.6606371641783,
-          "agg_tpot": 21.863829253730955,
-          "agg_ttft": 130.79680791044734
+          "agg_request": 148.38359170963284,
+          "agg_tpot": 19.851101981003684,
+          "agg_ttft": 128.53248972862914
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 45.871,
-          "disagg_tpot": 5.042,
-          "disagg_ttft": 40.829
+          "disagg_request": 41.881,
+          "disagg_tpot": 5.033,
+          "disagg_ttft": 36.848
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 21.863829253730955
+          "mixed_step": 19.85110198100368
         }
       },
       "static": {
         "values": {
-          "static_ctx": 20.621,
-          "static_gen": 4.647,
-          "static_total": 25.268
+          "static_ctx": 18.61,
+          "static_gen": 4.645,
+          "static_total": 23.255
         }
       }
     },
@@ -2447,83 +2447,83 @@
     },
     "nemotron-h-56b-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-shape-batch8::agg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-shape-batch8::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-shape-batch8::mixed": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-sglang-shape-batch8::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-empirical::agg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-empirical::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-empirical::mixed": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-empirical::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-h-56b-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "fbc5969c7c67d535c5c3471eb686afc82058e08d"
     },
     "nemotron-nas-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
