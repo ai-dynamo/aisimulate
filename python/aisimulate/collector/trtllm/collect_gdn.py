@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-__compat__ = "trtllm==1.3.0rc29"
+__compat__ = "trtllm==1.4.0rc2"
 
 """
 GDN (Gated DeltaNet) Collector for AIConfigurator — TensorRT-LLM backend.
@@ -11,7 +11,7 @@ This collector benchmarks the same GDN operations as the vLLM and SGLang collect
 using TRT-LLM's bundled causal_conv1d and vendored FLA kernels for GDN scan/update.
 
 Context (prefill) phase:
-    - causal_conv1d_fn: Causal 1D convolution over key channels
+    - causal_conv1d_fn: Causal 1D convolution over the mixed q/k/v channels
     - chunk_gated_delta_rule: GDN chunked scan (Q, K, V, g, beta) via vendored FLA
 
 Generation (decode) phase:
@@ -22,7 +22,7 @@ The in_proj and out_proj GEMMs are standard linear layers modeled by the
 existing GEMM infrastructure. This collector focuses on the unique GDN ops.
 
 GDN Layer Flow:
-    in_proj (GEMM) → Conv1D (keys) → GDN Scan/Update → out_proj (GEMM)
+    in_proj (GEMM) → Conv1D (q,k,v) → GDN Scan/Update → out_proj (GEMM)
     ^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^
     Use GEMM model          Benchmarked here            Use GEMM model
 
@@ -115,8 +115,11 @@ def run_gdn_context_benchmark(
 
     dtype = torch.bfloat16
 
-    # key channels only go through conv; q/v bypass conv
-    conv_channels = num_k_heads * head_k_dim
+    # q, k and v all go through the conv: serving convolves mixed_qkv over
+    # conv_dim = 2 * key_dim + value_dim (gdn_mixer.py:290, the causal_conv1d_fn call at
+    # :880). Until 1.4.0rc2 this convolved the key channels only, a quarter of the
+    # Qwen3-Next width.
+    conv_channels = 2 * num_k_heads * head_k_dim + num_v_heads * head_v_dim
 
     if aic_debug:
         print(
@@ -124,7 +127,7 @@ def run_gdn_context_benchmark(
             f"num_v_heads={num_v_heads}, head_v_dim={head_v_dim}, d_conv={d_conv}"
         )
 
-    # Conv weights (key channels)
+    # Conv weights (mixed qkv channels)
     conv_weight = torch.randn(conv_channels, d_conv, dtype=dtype, device=device)
     conv_bias = torch.randn(conv_channels, dtype=dtype, device=device)
 
@@ -178,8 +181,10 @@ def run_gdn_context_benchmark(
                     # accepts only that layout ("q must be [1, T, H_q, D_k]")
                     q, k, v, g, beta = (t.reshape(1, batch_size * seq_len, *t.shape[2:]) for t in (q, k, v, g, beta))
                     cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
-                    # serving passes the per-request recurrent state and asks for the
-                    # final state back (gdn_mixer.py:847-855); FlashInfer requires it
+                    # Deviation: serving updates the pooled per-request state in place
+                    # (gdn_mixer.py:1028-1050, inplace_indexed_state_update=True,
+                    # output_final_state=False); this times a dense initial state and
+                    # asks for the final state back, the same state size per call.
                     gdn_init_state = torch.zeros(
                         batch_size, num_v_heads, head_k_dim, head_v_dim, dtype=torch.bfloat16, device=device
                     )
@@ -386,13 +391,13 @@ def _bench_serving_decode_entry(
 ) -> None:
     """Measure the entry serving actually calls for pure decode.
 
-    gdn_mixer.forward_decode (_torch/modules/mamba/gdn_mixer.py:670)
-    calls fused_sigmoid_gating_delta_rule_update with the raw gating inputs
+    gdn_mixer.forward_decode (_torch/modules/mamba/gdn_mixer.py:511, through
+    _recurrent_update at :728) calls fused_sigmoid_gating_delta_rule_update with the raw gating inputs
     (A_log, dt_bias, a, b), the SSM state pool + slot indices and
     cu_seqlens; that function dispatches to FlashInfer's bf16-state GDN decode
-    kernel when _can_use_flashinfer_gdn_decode holds (SM90/SM100, K==V==128,
+    kernel when _can_use_flashinfer_gdn_decode holds (SM90/100/103, K==V==128,
     bf16 state, one token per sequence) and to the FLA Triton kernel otherwise
-    (fla/fused_sigmoid_gating_recurrent.py:205-238,452-458). kernel_source
+    (fla/fused_sigmoid_gating_recurrent.py:205-238,474-496). kernel_source
     records which branch ran. Builds without this entry (pre-rc23) skip it —
     their serving truth is the fused_recurrent row above.
     """
@@ -482,7 +487,8 @@ def run_gdn_generation_benchmark(
 
     dtype = torch.bfloat16
 
-    conv_channels = num_k_heads * head_k_dim
+    # decode updates the conv state of the whole mixed_qkv too (gdn_mixer.py:695)
+    conv_channels = 2 * num_k_heads * head_k_dim + num_v_heads * head_v_dim
 
     if aic_debug:
         print(
@@ -784,7 +790,7 @@ def run_gdn_torch(
         # removed fused_recurrent_gated_delta_rule from fla/fused_recurrent.py
         # (only the *_update variants remain; serving never called the removed
         # one — gdn_mixer.forward_decode uses fused_sigmoid_gating_delta_rule_update
-        # at rc23:670 and rc29:706 alike). When the kernel does not exist the row
+        # at gdn_mixer.py:728). When the kernel does not exist the row
         # cannot exist: the serving-dispatch row below is still produced, and the
         # omission is printed once per case, never silent.
         try:
@@ -794,9 +800,9 @@ def run_gdn_torch(
 
         # Serving dispatch, never the vendored kernel directly: the GDN mixer
         # resolves chunk_gated_delta_rule to FlashInfer's cute-DSL chunk kernel on
-        # SM90/SM100 (TLLM_USE_FLASHINFER_GDN_PREFILL=1 default) and to the FLA
-        # Triton kernel elsewhere (_torch/modules/mamba/gdn_mixer.py:57-70
-        # arch gate _utils.is_flashinfer_gdn_supported_arch). Older
+        # SM90/100/103/120/121 (TLLM_USE_FLASHINFER_GDN_PREFILL=1 default) and to
+        # the FLA Triton kernel elsewhere (_torch/modules/mamba/gdn_mixer.py:60-75,
+        # arch gate _utils.is_flashinfer_gdn_prefill_supported_arch). Older
         # builds have no resolver and only the Triton kernel — import that.
         chunk_label = "chunk_gated_delta_rule"
         try:
@@ -809,10 +815,10 @@ def run_gdn_torch(
                 chunk_label = "chunk_gated_delta_rule_flashinfer"
         except ImportError:
             from tensorrt_llm._torch.modules.fla.chunk import chunk_gated_delta_rule
-        # Pure-decode serving entry (gdn_mixer.py:670): fused sigmoid gating +
+        # Pure-decode serving entry (gdn_mixer.py:728): fused sigmoid gating +
         # recurrent update, itself dispatching to FlashInfer's bf16-state GDN
         # decode kernel when _can_use_flashinfer_gdn_decode holds
-        # (fla/fused_sigmoid_gating_recurrent.py:205-238,452-458).
+        # (fla/fused_sigmoid_gating_recurrent.py:205-238,474-496).
         try:
             from tensorrt_llm._torch.modules.fla.fused_sigmoid_gating_recurrent import (
                 _can_use_flashinfer_gdn_decode,

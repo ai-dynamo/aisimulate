@@ -26,6 +26,16 @@ frameworks:
       images:
         default: "lmsysorg/sglang:v0.5.21@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
         cu130: "lmsysorg/sglang:v0.5.21-cu130@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
+    # Op-by-op move to 0.5.23 (2026-11): a family moves here once its gates align
+    # and its source check is done; the default follows the last one. Both tags
+    # resolve to one multi-arch index digest.
+    families:
+      linear_attention: &sglang_0523_runtime
+        version: "0.5.23"
+        images:
+          default: "lmsysorg/sglang:v0.5.23@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f"
+          cu130: "lmsysorg/sglang:v0.5.23-cu130@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f"
+      kda: *sglang_0523_runtime
     # Model-scoped collector runtime pins: when the resolved run model_path
     # exactly equals one of these keys, the pin overrides BOTH the family
     # pins above and the framework default for every op in the run — the
@@ -83,6 +93,13 @@ frameworks:
       version: "1.3.0rc29"
       images:
         default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:124da3f10b73afbf4242f5c68fb04b48736c61fbe662e715202371fd7f046f43"
+    # Op-by-op move to 1.4.0rc2 (2026-11): a family moves here once its gates
+    # align and its source check is done; the default follows the last one.
+    families:
+      linear_attention:
+        version: "1.4.0rc2"
+        images:
+          default: "nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc2@sha256:93a3eaf1fa574813d608a7147735134bcfbd06d18d1aa98e8ee0d5da09e51e3a"
   vllm:
     source_repo: "https://github.com/vllm-project/vllm.git"
     default:
@@ -103,9 +120,16 @@ frameworks:
         images:
           default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
       moe: *vllm_0310_runtime
-      kda: *vllm_0310_runtime
       mhc: *vllm_0310_runtime
       attention: *vllm_0310_runtime
+      # Op-by-op move to vLLM 0.32.0 (2026-11): a family moves here once its
+      # gates align and its source check is done; the default follows the last one.
+      kda: &vllm_0320_runtime
+        version: "0.32.0"
+        source_commit: "5df63a7203cdb9328d824a27b682e77c7b9928be"
+        images:
+          default: "vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34"
+      linear_attention: *vllm_0320_runtime
     # kda family pin RETIRED: the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path.

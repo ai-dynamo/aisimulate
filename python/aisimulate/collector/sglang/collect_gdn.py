@@ -76,7 +76,7 @@ Output:
 # 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 import gc
 import os
@@ -186,7 +186,7 @@ def run_gdn_context_benchmark(
                 # Stock SGLang 0.5.14 _causal_conv1d_fwd_kernel computes its
                 # token-major I/O offsets in int32 ("(sequence_start_index +
                 # token_offset + idx_token) * stride_o_token",
-                # causal_conv1d_triton.py:373-379 at image source 49e384ce), so
+                # causal_conv1d_triton.py:398-405 at image source 49e384ce), so
                 # a cell whose packed-conv offset total_tokens * conv_channels
                 # reaches 2**31 elements wraps negative and corrupts device
                 # memory. RTX 6000 Pro memcheck pinned the invalid
@@ -205,7 +205,7 @@ def run_gdn_context_benchmark(
                     raise ValueError(
                         "SGLang causal_conv1d Triton kernel int32 token-offset overflow: "
                         f"total_tokens={total_tokens} * conv_channels={conv_channels} >= 2**31 "
-                        "(causal_conv1d_triton.py:373-379)"
+                        "(causal_conv1d_triton.py:398-405)"
                     )
                 num_warmups = 3
                 num_runs = 10
@@ -311,7 +311,7 @@ def run_gdn_context_benchmark(
                         )
 
                 else:
-                    # FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:465-581):
+                    # FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:481-597):
                     # l2norm/layout prepare, exp(g) and beta as fp32, the state rows gathered
                     # (fp32 pool on SM90) and written back with index_copy_, int64 cu_seqlens,
                     # use_qk_l2norm_in_kernel=False because the prepare already normalized.
@@ -420,7 +420,7 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
             f"  SM{sm_version}, mamba_ssm_dtype={mamba_ssm_dtype!r}: "
             "FlashInfer GDN decode not selected; sglang 0.5.14 requires "
             "capability major exactly 10 and bfloat16 state "
-            "(server_args.py:4884-4915)."
+            "(arg_groups/attention_hook.py:281-345)."
         )
         return None, None
     try:
@@ -430,7 +430,7 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
             f"SM{sm_version}: FlashInfer bf16 GDN decode lane required but unavailable "
             f"(flashinfer.gdn_decode import failed: {type(e).__name__}: {e}); SM100 "
             "sglang serving mandates this kernel for GDN decode when mamba_ssm_dtype "
-            "== 'bfloat16' (server_args.py:4884-4915 @0.5.14) -- this is a "
+            "== 'bfloat16' (arg_groups/attention_hook.py:281-345 @0.5.14) -- this is a "
             "collection environment gap, not a skip."
         )
         print(f"  {message}")
@@ -444,14 +444,14 @@ def _sglang_gdn_lanes_0521():
     0.5.21 moved the GDN backend to srt/layers/attention/linear/gdn_backend.py and
     changed what serving runs inside the GDN role (H20 serving golden,
     results/pathdiff/sm90/sglang-0.5.21/gdn_{ctx,gen}_Qwen3.5-0.8B.json):
-      * prefill: attention_registry.py:425-430 asks flashinfer_gdn_prefill_default
-        (gdn_backend.py:188-234) and, when it answers "flashinfer", the extend path
-        runs FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:465-581):
+      * prefill: attention_registry.py:452-458 asks flashinfer_gdn_prefill_default
+        (gdn_backend.py:191-236) and, when it answers "flashinfer", the extend path
+        runs FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:481-597):
         gdn_prefill_qkv_prepare_fwd + flashinfer.gdn_prefill.chunk_gated_delta_rule
         instead of the vendored FLA chunk_gated_delta_rule;
       * decode: Qwen3.5 hands the backend the projected (qkvz, ba) pair
-        (models/qwen3_5.py:160-162, 940-953; SGLANG_ENABLE_GDN_DECODE_FUSED_PROJ_CONV
-        defaults True, environ.py:1800) and forward_decode runs
+        (models/qwen3_5.py:184-186, 940-953; SGLANG_ENABLE_GDN_DECODE_FUSED_PROJ_CONV
+        defaults True, environ.py:2131) and forward_decode runs
         fused_qkvzba_causal_conv1d_update_contiguous (gdn_backend.py:668-760) in place
         of the split + causal_conv1d_update.
     """
@@ -484,7 +484,7 @@ def _sglang_gdn_lanes_0521():
 def _resolve_flashinfer_gdn_prefill(head_k_dim: int, head_v_dim: int, mamba_ssm_dtype: str):
     """Mirror sglang>=0.5.21's own prefill-backend default for the case.
 
-    gdn_backend.py:188-234 flashinfer_gdn_prefill_default: FlashInfer only when
+    gdn_backend.py:191-236 flashinfer_gdn_prefill_default: FlashInfer only when
     no explicit --linear-attn-prefill-backend, linear_attn_backend == triton,
     no deterministic / page-major mode, SM major 9 or 10 (SM100 additionally
     CUDA >= 13 and a bf16 state pool; SM90 an fp32 state pool), key/value head
@@ -534,10 +534,10 @@ def _resolve_flashinfer_gdn_prefill(head_k_dim: int, head_v_dim: int, mamba_ssm_
 
 def _resolve_fused_gdn_decode_conv():
     """sglang>=0.5.21 decode conv lane: the fused qkvz/ba unpack + indexed Conv1D
-    update (gdn_backend.py:668-760), on by default (environ.py:1800). Returns
+    update (gdn_backend.py:668-760), on by default (environ.py:2131). Returns
     ``(fused_fn, eligibility_fn)`` or ``None`` for the split + causal_conv1d_update
     lane. When the fused kernel's own eligibility check refuses a shape, serving
-    logs and falls back to the unfused pair (gdn_backend.py:790-815), which the
+    logs and falls back to the unfused pair (gdn_backend.py:829-851), which the
     caller mirrors and kernel_source records."""
     lanes = _sglang_gdn_lanes_0521()
     if lanes is None or not lanes["fused_conv_enabled"]:
@@ -627,7 +627,7 @@ def run_gdn_generation_benchmark(
             a = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             a_log = torch.zeros(num_v_heads, dtype=torch.float32, device=device)
-            # qwen3_5.py:237-239 creates dt_bias with no explicit dtype
+            # qwen3_5.py:473-475 creates dt_bias with no explicit dtype
             # (model dtype); the kernel upcasts it on load
             # (fused_sigmoid_gating_recurrent.py:154-160).
             dt_bias = torch.ones(num_v_heads, dtype=dtype, device=device)
@@ -657,10 +657,10 @@ def run_gdn_generation_benchmark(
             conv_kernel_source = "causal_conv1d_update"
             fused_conv_args = None
             if fused_decode_conv is not None:
-                # Serving input at 0.5.21: the projection outputs as laid out by Qwen3.5
-                # (qwen3_5.py:940-953) — [Q|K|V|Z] of width qkv_dim + v_dim and [B|A] of
+                # Serving input: the projection outputs as laid out by Qwen3.5
+                # (qwen3_5.py:1012-1027) — [Q|K|V|Z] of width qkv_dim + v_dim and [B|A] of
                 # width 2*num_v_heads, both model dtype; the kernel unpacks and runs the
-                # indexed Conv1D update in one launch (gdn_backend.py:749-761).
+                # indexed Conv1D update in one launch (gdn_backend.py:788-800).
                 projected_qkvz = torch.randn(batch_size, conv_channels + value_dim, dtype=dtype, device=device)
                 projected_ba = torch.randn(batch_size, 2 * num_v_heads, dtype=dtype, device=device)
                 fused_conv_fn, fused_conv_eligible = fused_decode_conv
@@ -671,11 +671,13 @@ def run_gdn_generation_benchmark(
                     num_v_heads=num_v_heads,
                     activation="silu",
                 )
-                eligible, reason = fused_conv_eligible(*fused_conv_args, **fused_conv_kwargs)
+                # the eligibility check takes the tensors and the activation only
+                # (gdn_backend.py:721-729); the kernel call takes the full set
+                eligible, reason = fused_conv_eligible(*fused_conv_args[:5], activation="silu")
                 if eligible:
                     conv_kernel_source = "fused_qkvzba_causal_conv1d_update_contiguous"
                 else:
-                    # gdn_backend.py:790-815: serving logs the reason and runs the unfused
+                    # gdn_backend.py:829-851: serving logs the reason and runs the unfused
                     # split + causal_conv1d_update for this shape.
                     print(f"  fused GDN decode conv ineligible ({reason}); serving falls back to causal_conv1d_update")
                     fused_conv_args = None
@@ -768,7 +770,7 @@ def run_gdn_generation_benchmark(
                 # GDNAttnBackend.forward_decode does (gdn_backend.py:348-357)
                 # before calling the kernel_dispatcher. The state
                 # pool is bf16 here, independent of the FLA lane's case dtype,
-                # because server_args.py:4884-4915 hard-requires bf16 state on
+                # because arg_groups/attention_hook.py:281-345 hard-requires bf16 state on
                 # this capability-major-10 backend.
                 flashinfer_query, flashinfer_key, flashinfer_value = torch.split(
                     mixed_qkv, [qk_dim, qk_dim, value_dim], dim=-1

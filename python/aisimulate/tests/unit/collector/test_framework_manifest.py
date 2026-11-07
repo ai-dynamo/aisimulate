@@ -313,10 +313,10 @@ WIDEEP_OPS = {entry.op for entry in WIDEEP_SGLANG_REGISTRY}
 @pytest.mark.parametrize(
     ("installed_version", "requested_ops", "workload", "version"),
     [
-        # Since the 0.5.21 default kda and msa resolve on the
-        # stock runtime again (the kimi-k3 / v0.5.16 family pins are retired).
+        # msa resolves on the stock default; kda moved to 0.5.23 with the
+        # op-by-op upgrade (a family pin, still the stock workload).
         ("0.5.21+cu130", {"gemm"}, "default", "0.5.21"),
-        ("0.5.21", {"kda"}, "default", "0.5.21"),
+        ("0.5.23", {"kda"}, "default", "0.5.23"),
         ("0.5.21", {"msa_context_module"}, "default", "0.5.21"),
         ("0.5.10", {"moe_ep"}, "wideep", "0.5.10"),
     ],
@@ -361,7 +361,7 @@ def test_runtime_selection_rejects_mismatched_or_mixed_pins(installed_version, r
     ("installed_version", "requested_ops", "workload", "version"),
     [
         ("0.5.21+cu130", {"gemm"}, "default", "0.5.21"),
-        ("0.5.21", {"kda"}, "default", "0.5.21"),
+        ("0.5.23", {"kda"}, "default", "0.5.23"),
         ("0.5.10", {"moe_ep"}, "wideep", "0.5.10"),
     ],
 )
