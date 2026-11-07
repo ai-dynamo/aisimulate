@@ -1581,3 +1581,26 @@ def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict
         assert "request_latency.p99" in rejected[0][1]
     restored = type(result).model_validate_json(result.model_dump_json())
     assert [candidate.score for candidate in restored.selected_candidates] == expected
+
+
+def test_strict_constraint_failure_wins_over_missing_objective_samples(monkeypatch):
+    from aisimulate.sweeper.result import ReasonCategory
+
+    _stub(monkeypatch, _branch(_pc()))
+    base = _config()
+    # The fake report has no latency samples: the objective and the constraint both lack them.
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload=base.workload,
+        sweep=base.sweep,
+        goal={
+            "target": "request_latency.p99",
+            "strict_sla": True,
+            "aiperf": {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}]},
+        },
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(_FakeRunner()), sampler_factory=_FakeSampler, show_progress=False
+    ).run(config, top_n=None)
+    assert result.candidates
+    assert {candidate.reason_category for candidate in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
