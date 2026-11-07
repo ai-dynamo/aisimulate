@@ -23,8 +23,8 @@ wheels = [
 ]
 
 [[package]]
-name = "aisimulate"
-version = "0.13.0"
+name = "aisim"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },

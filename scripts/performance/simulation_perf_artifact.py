@@ -8,7 +8,11 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.release.package_identity import wheels as artifact_wheels
 
 
 def sha256(path: Path) -> str:
@@ -24,7 +28,7 @@ def record(directory: Path, side: str, revision: str, source: Path) -> None:
     actual = command("git", "-C", str(source), "rev-parse", "HEAD")
     if actual != revision:
         raise ValueError(f"build source is {actual}, expected {revision}")
-    wheels = list(directory.glob("aisimulate-*.whl"))
+    wheels = artifact_wheels(directory)
     if len(wheels) != 1:
         raise ValueError("expected exactly one AISimulate wheel")
     manifest = {
@@ -52,7 +56,7 @@ def verify(directory: Path, side: str, revision: str) -> dict:
     manifest = json.loads((directory / "provenance.json").read_text())
     if manifest["side"] != side or manifest["source_sha"] != revision:
         raise ValueError(f"{side}: artifact revision or role mismatch")
-    wheels = list(directory.glob("aisimulate-*.whl"))
+    wheels = artifact_wheels(directory)
     runtime = list(directory.glob("ai_dynamo_runtime-*.whl"))
     adapter = list(directory.glob("ai_dynamo-*.whl"))
     if len(wheels) != 1 or len(runtime) != 1 or len(adapter) != 1:

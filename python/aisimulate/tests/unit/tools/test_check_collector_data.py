@@ -4,9 +4,9 @@
 """Unit tests for tools/perf_database/check_collector_data.py.
 
 Builds synthetic family-layout trees (`<system>/<family>/<backend>/<version>/`)
-under `tmp_path` and exercises each of the seven fail-closed rules (R1-R7,
-design §6/§6.5/§8) both green (a fully compliant tree) and red (one named
-offender per rule). Uses the REAL op catalog (`collector/op_backend_catalog.yaml`)
+under `tmp_path` and exercises each of the seven fail-closed rules (R1-R7)
+both green (a fully compliant tree) and red (one named offender per rule).
+Uses the REAL op catalog (`collector/op_backend_catalog.yaml`)
 for family-placement checks -- same convention as
 `tests/unit/tools/test_backend_facts.py` -- so table/family names below
 (`gemm_perf`/`gemm`, `context_attention_perf`/`attention`,

@@ -116,11 +116,11 @@ def create_common_attn_metadata(
     # Calculate max query length
     max_query_len = max(batch_spec.query_lens)
 
-    # Serving population site: vllm/v1/worker/gpu/attn_utils.py:456-475@v0.30.0
+    # Serving population site: vllm/v1/worker/gpu/attn_utils.py:456-475
     # passes seq_lens + seq_lens_cpu_upper_bound (no private *_cpu fields — the
     # 0.29 `_seq_lens_cpu` / `_num_computed_tokens_cpu` were removed in 0.30;
     # computed-token counts derive from seq_lens and query_start_loc inside the
-    # dataclass). Version bump 2026-09-27 (opharness upgrade_op vllm 0.30.0).
+    # dataclass).
     del num_computed_tokens_cpu
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
@@ -186,7 +186,7 @@ def create_vllm_config(
 
     ``hf_overrides`` is forwarded verbatim to ``ModelConfig`` — the same
     mechanism as vLLM's ``--hf-overrides`` serving flag, applied to the HF
-    config before architecture resolution (config/model.py:496-541 @0.24.0).
+    config before architecture resolution (config/model.py:496-541).
     """
 
     model_config = ModelConfig(
@@ -350,11 +350,11 @@ def create_and_prepopulate_kv_cache_mla(
     """
     batch_size = len(kv_c_contexts)
     # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
-    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460@v0.30.0)
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460)
     seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
     # 0.30: property removed; seq_lens - query_lens on device
-    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
+    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens)
     context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
@@ -466,11 +466,11 @@ def create_kv_cache_and_block_mappings(
     """
     batch_size = common_attn_metadata.num_reqs
     # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
-    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460@v0.30.0)
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460)
     seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
     # 0.30: property removed; seq_lens - query_lens on device
-    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
+    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens)
     context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
@@ -550,7 +550,7 @@ def enable_engine_fused_ops() -> None:
     Why not ``torch.compile`` + CUDA graph instead? Outside a serving worker
     every norm path — including ``forward_native`` — routes through the IR
     torch custom op (``_ENABLE_TORCH_WRAP = True`` module default,
-    vllm/ir/op.py:50 @0.22.0), which is opaque to dynamo/inductor: compiling
+    vllm/ir/op.py:50), which is opaque to dynamo/inductor: compiling
     through it fuses nothing (B200/vLLM 0.22 glue microbench, CUDA-graph
     replay with kernel listing: native-eager 74.1 us, compile-through-wrap
     64.6 us with the aten mean/pow/rsqrt chain intact; vllm_c-eager 21.0 us).
@@ -560,7 +560,7 @@ def enable_engine_fused_ops() -> None:
     lowerings into neighboring GEMMs (serving-trace kernel
     ``triton_red_fused_..._fused_qkv_a_proj_rms_norm``); wrap-off is the
     documented way to let dynamo trace the impl inline
-    (config/compilation.py:492-498 @0.22.0). Replicating that here —
+    (config/compilation.py:492-498). Replicating that here —
     ``vllm.ir.set_default_torch_wrap(False)`` + ``torch.compile`` — does
     fuse fully (glue 8.0 us, module 87.7 us/layer) but OVERSHOOTS the
     engine, whose fused glue is not free (norm+quant fused kernels, paged
@@ -569,7 +569,7 @@ def enable_engine_fused_ops() -> None:
     native chain +37%. vllm_c-eager is therefore the closer surrogate and
     needs no per-shape compile during sweeps. Installs it as the
     process-lifetime default: ``IrOp.set_priority`` is a scoped context
-    manager, ``set_default`` is the permanent API (vllm/ir/op.py @0.24.0).
+    manager, ``set_default`` is the permanent API (vllm/ir/op.py).
 
     Raises on vLLM builds without the IR-op registry or the ``vllm_c``
     provider — a silent fallback to the native chain would benchmark a kernel
@@ -666,8 +666,8 @@ def framework_kv_block_size(backend_cls, *, cache_backend_cls=None, user_block_s
     ``backend_cls`` when the measured layer is that first layer — and the kernel
     page is ``select_common_block_size(cache_block_size, [backend])``
     (v1/worker/utils.py: the manager size when every backend accepts it, else the
-    largest explicit size that divides it). The former per-SM table (removed) was the owner's
-    2026-09-30 interim; the B200 re-run on 2026-10-03 showed it is not
+    largest explicit size that divides it). The former per-SM table (removed) was an
+    interim; the B200 re-run showed it is not
     equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
     cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
     dtype, head shape) decision, so it must come from the backend the case

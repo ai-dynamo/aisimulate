@@ -2089,11 +2089,13 @@ class TestFPMPowerPublication:
         ttft = powered.get_summary_df()["ttft"].iloc[0]
         expected = (ttft * 300.0 + 6.0 * 450.0) / (ttft + 6.0)
         assert powered.get_summary_df()["power_w"].iloc[0] == pytest.approx(expected, abs=1e-3)
+        assert powered.get_e2e_power_avg() == powered.get_summary_df()["power_w"].iloc[0]
         assert powered.get_context_power_avg() == pytest.approx(300.0)
         assert powered.get_generation_power_avg() == pytest.approx(450.0)
         # Unpowered decode rows withhold the decode worker only.
         withheld = _run_disagg(fpm_power_root(model, _unpowered_decode), plain)
         assert withheld.get_summary_df()["power_w"].iloc[0] is None
+        assert withheld.get_e2e_power_avg() is None
         assert withheld.get_context_power_avg() == pytest.approx(300.0)
         assert withheld.get_generation_power_avg() is None
         assert withheld.get_summary_df()["ttft"].iloc[0] == powered.get_summary_df()["ttft"].iloc[0]
@@ -2123,6 +2125,7 @@ class TestFPMPowerPublication:
             with pytest.warns(FutureWarning, match="Hybrid FPM/OP"):
                 summary = _run_disagg(database, draft_config)
             assert summary.get_summary_df()["power_w"].iloc[0] is None
+            assert summary.get_e2e_power_avg() is None
             assert summary.get_context_power_avg() is None
             assert summary.get_generation_power_avg() is None
         # Coverage passes 0.9, so the draft-scheme rule alone withholds the
@@ -2163,6 +2166,7 @@ class TestFPMPowerPublication:
         summary = run(_full_power)
         result = summary.get_result_dict()
         assert result["power_w"] is None
+        assert summary.get_e2e_power_avg() is None
         # Pure decode steps carry powered FPM energy, so coverage passes 0.9.
         assert summary.get_power_data_coverage() > 0.9
         assert sum(group.energy_wms for group in summary.get_aggregate_energy_breakdown().values()) > 0

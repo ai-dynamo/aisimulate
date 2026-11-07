@@ -74,11 +74,11 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_swiglu_limit: 10.0
       # SGLang 0.5.20 auto -> flashinfer_trtllm for quant_method fp8 on SM10x
-      # (arg_groups/overrides.py:806,827,866-879 @v0.5.20: the override sits
+      # (arg_groups/overrides.py:806,827,866-879: the override sits
       # under get_platform().is_sm100). On SM90 the runner stays auto and
       # Fp8MoEMethod.create_moe_runner resolves it to TRITON without a
       # deepep/mooncake/nixl a2a backend (layers/quantization/fp8.py:1188-1210,
-      # 2501-2512 @v0.5.20). Observed SGLang 0.5.20 SM90 serving dispatch
+      # 2501-2512). Observed SGLang 0.5.20 SM90 serving dispatch
       # (H200, TP4, auto MoE runner, amd64 image b27fce60): triton fused MoE
       # fp8_w8a8 block [128, 128] with the default kernel config (no tuned
       # H200 json). The block-FP8 default config is independent of E and M
@@ -93,13 +93,7 @@ model_case_values:
       # recorded in moe_perf.triton_config.jsonl (sglang/collect_moe.py).
       sglang_moe_backends:
         fp8_block: {90: triton, 100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
-        vllm:
-          allowed_modes: [fp8_block]
-        trtllm:
-          allowed_modes: []
+      quantization_modes: [fp8_block]
     - model_path: nvidia/GLM-5.3-Flash-NVFP4
       hidden_size: 4096
       inter_size: 2048
@@ -115,17 +109,11 @@ model_case_values:
       sglang_moe_swiglu_limit: 10.0
       # Serving launches --quantization modelopt_fp4 --moe-runner-backend
       # auto, which resolves to flashinfer_trtllm on SM10x
-      # (arg_groups/overrides.py:866-879 @v0.5.20; GLM NVFP4 serving
+      # (arg_groups/overrides.py:866-879; GLM NVFP4 serving
       # resolved args record moe_runner_backend 'flashinfer_trtllm').
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: []
+      quantization_modes: [nvfp4]
 
   # KDA. GLM-5.3-Flash KDA structural tuple per attention-TP
   # shard (text_config.linear_attn_config: 64 heads x head_dim 128,
@@ -186,8 +174,7 @@ model_case_values:
       hc_mult: 4
 
 # The GLM NoPE sparse-MLA + IndexPool attention module is a
-# standalone Slurm collector (collector/glm53flash_attention_launch.py,
-# declared in collector.provenance.STANDALONE_COLLECTOR_MODULES) driven by
+# standalone Slurm collector (collector/glm53flash_attention_launch.py) driven by
 # cases/base_ops/glm53flash_attention.yaml, so it has no section here.
 
 # moe is activated per framework: GLM-5.3-Flash has no TRT-LLM serving lane.

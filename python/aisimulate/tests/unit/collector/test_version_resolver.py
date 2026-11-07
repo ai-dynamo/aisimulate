@@ -158,7 +158,7 @@ class TestExactVersionSet:
     excluded base releases carved out via ``!=`` clauses (all ANDed, so
     every clause must hold).
 
-    CORRECTED (code review, 2026-08-18): this is NOT an exact {0.5.14,
+    CORRECTED (code review): this is NOT an exact {0.5.14,
     0.5.17} gate, and the class name/tests below previously implied
     otherwise. ``!=X`` excludes only the literal point version ``X`` --
     ``packaging.version.Version`` pre/post-release variants of an excluded

@@ -713,8 +713,11 @@ class RustForwardPassPerfModel:
         (``pure_decode``, ``contains_locally_mixed``, ``cross_rank_aggregated``,
         ``pure_prefill`` for aggregated workers) with ``ready``,
         ``not_ready_reason`` (``insufficient_data``, ``no_usable_fit`` or
-        ``untrained_forest_store``) and ``retained_observations``. Native
-        estimators are always ready. Eligible mixed interpolation routes also
+        ``untrained_forest_store``) and ``retained_observations``.
+        ``no_usable_fit`` includes a valid zero-slope constrained optimum; it
+        does not necessarily mean a failed numerical solve. A spline component
+        can be ready while its required companion linear fit is unavailable.
+        Native estimators are always ready. Eligible mixed interpolation routes also
         count as ready when their learned forest store is absent. Readiness
         describes an available estimator route, not coverage for every query;
         interpolation may still return no estimate outside its support.
@@ -858,6 +861,17 @@ class RustForwardPassPerfModel:
         a reason; whole-model estimators reject operation decomposition.
         """
         return json.loads(self._inner.static_phase_diagnostics(batch_size, context_length, prefix, prefill))
+
+    def fpm_seed_target_normalization(self) -> dict[str, Any]:
+        """Return native effective targets for fake-KV rows in the loaded profile.
+
+        The preparation-only report contains source row indices, raw and effective
+        milliseconds, replacement status, and policy/counts. Genuine rows remain
+        unchanged and are omitted. This exposes the loader's existing correction,
+        not interpolation predictions or new measured telemetry. It honors the
+        native raw-profile escape hatch and rejects non-native/non-FPM models.
+        """
+        return json.loads(self._inner.fpm_seed_target_normalization())
 
     def diagnostics(self) -> dict[str, Any]:
         """API: ``model.diagnostics() -> dict[str, Any]``.

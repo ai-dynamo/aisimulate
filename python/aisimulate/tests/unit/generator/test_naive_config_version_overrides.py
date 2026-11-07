@@ -3,9 +3,13 @@
 
 """Regression tests for naive generator version override routing."""
 
-import pytest
+import re
+from unittest.mock import Mock
 
-from aisimulate.generator import api
+import pytest
+import yaml
+
+from aisimulate.generator import api, naive
 
 pytestmark = pytest.mark.unit
 
@@ -101,3 +105,43 @@ def test_generate_naive_config_uses_perf_database_without_overrides(monkeypatch)
 
     assert result["backend_version"] == "0.19.0"
     assert calls["render"]["backend_version"] == "0.19.0"
+
+
+def test_generate_naive_config_renders_valid_dgd_without_database_version(monkeypatch):
+    latest_version = Mock(return_value=None)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_latest_database_version", latest_version)
+    monkeypatch.setattr(
+        naive,
+        "_get_system_config",
+        Mock(return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3}),
+    )
+    monkeypatch.setattr(naive, "_estimate_model_weight_bytes", Mock(return_value=30 * 1024**3))
+    monkeypatch.setattr(
+        naive,
+        "get_model_config_from_model_path",
+        Mock(return_value={"architecture": "Qwen3ForCausalLM", "num_experts": 0}),
+    )
+
+    result = api.generate_naive_config(
+        model_path="Qwen/Qwen3-32B",
+        total_gpus=8,
+        system="h200_sxm",
+        backend="vllm",
+    )
+
+    latest_version.assert_called_once_with(system="h200_sxm", backend="vllm")
+    assert result["backend_version"] is None
+    [dgd] = [
+        doc
+        for doc in yaml.safe_load_all(result["artifacts"]["k8s_deploy.yaml"])
+        if doc["kind"] == "DynamoGraphDeployment"
+    ]
+    name = dgd["metadata"]["name"]
+    for label in name.split("."):
+        assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", label), name
+    assert len(name) <= 253
+    assert "None" not in name
+    services = dgd["spec"]["services"]
+    assert services["Frontend"]["replicas"] == 1
+    args = services["VllmWorker"]["extraPodSpec"]["mainContainer"]["args"]
+    assert args[args.index("--model") + 1] == "Qwen/Qwen3-32B"

@@ -67,7 +67,7 @@ def test_canonical_core_exports_the_unified_native_types() -> None:
         "weights_ops_json",
     ):
         assert getattr(core, name) is getattr(runtime, name)
-    assert core.__version__ == importlib.metadata.version("aisimulate")
+    assert core.__version__ == importlib.metadata.version("aisim")
 
 
 def test_public_sdk_facade_and_explicit_modules_share_identity() -> None:
@@ -82,10 +82,11 @@ def test_public_sdk_facade_and_explicit_modules_share_identity() -> None:
 
 def test_aisimulate_owns_core_without_split_dependencies() -> None:
     aisimulate_core = importlib.import_module("aisimulate_core")
-    requirements = importlib.metadata.requires("aisimulate") or []
+    requirements = importlib.metadata.requires("aisim") or []
     dependency_names = {Requirement(requirement).name for requirement in requirements}
 
-    assert importlib.metadata.version("aisimulate") == aisimulate_core.__version__
+    assert importlib.metadata.version("aisim") == aisimulate_core.__version__
+    assert "aisim-core" not in dependency_names
     assert "aisimulate-core" not in dependency_names
     assert "aiconfigurator-core" not in dependency_names
     assert "dynamo" not in dependency_names

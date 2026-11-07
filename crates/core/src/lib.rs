@@ -67,6 +67,7 @@ pub use perfmodel::{
     ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
     StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
 };
+pub use perfmodel::{FpmSeedTargetNormalization, FpmSeedTargetRow};
 
 #[cfg(feature = "python")]
 pub use perfmodel::{
