@@ -675,7 +675,8 @@ def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estim
     worker = auto_dsv4_payload["engine"]["workers"]["aggregated"]
     worker.update(timing={"type": "default"}, parallelism={"tensor": 8, "moe_expert": 8})
     worker["kv_cache"]["state_cache"] = {"retention_interval": 32768}
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
+    config = CorePredictionConfig.model_validate(auto_dsv4_payload)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(config.model_dump_json()))
     assert spec.backend_deployment.agg_engine_args["state_cache"] == {
         "bytes_per_request": 30067200,
         "sliding_window": {"lookahead_tokens": 64, "retention_interval": 32768},
