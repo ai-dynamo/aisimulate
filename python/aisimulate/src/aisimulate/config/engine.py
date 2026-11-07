@@ -37,6 +37,7 @@ from .common import (
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
+NonNegativeU64 = Annotated[int, Field(strict=True, ge=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -252,8 +253,8 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
 class SlidingWindowStateConfig(StrictModel):
     """Prefix-cache retention of a sliding-window state (DeepSeek V4)."""
 
-    retention_interval: NonNegativeInt | None = None
-    lookahead_tokens: NonNegativeInt
+    retention_interval: NonNegativeU64 | None = None
+    lookahead_tokens: NonNegativeU64
 
 
 class StateCacheConfig(StrictModel):
@@ -284,7 +285,7 @@ class StateCachePredictionConfig(StrictModel):
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
     # vLLM's VLLM_PREFIX_CACHE_RETENTION_INTERVAL; DeepSeek V4 only.
-    retention_interval: NonNegativeInt | None = None
+    retention_interval: NonNegativeU64 | None = None
     # Resolved from inferred DeepSeek V4 geometry, never authored.
     _sliding_window_lookahead: int | None = PrivateAttr(default=None)
 
@@ -319,7 +320,14 @@ class KvCachePredictionConfig(StrictModel):
     @classmethod
     def _accept_resolved_state_config(cls, value: Any) -> Any:
         if isinstance(value, StateCacheConfig):
-            return value.model_dump(exclude_none=True)
+            # The resolved window round-trips through the sizing fields.
+            window = value.sliding_window
+            config = StateCachePredictionConfig(
+                bytes_per_request=value.bytes_per_request,
+                retention_interval=window.retention_interval if window else None,
+            )
+            config._sliding_window_lookahead = window.lookahead_tokens if window else None
+            return config
         return value
 
     @model_validator(mode="after")

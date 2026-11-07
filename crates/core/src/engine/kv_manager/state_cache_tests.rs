@@ -1281,10 +1281,21 @@ fn sliding_window_retains_vllm_v0_32_boundaries() {
 #[test]
 fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block() {
     // DeepSeek V4 + MTP, scaled down: block 4, MTP lookahead 1, and a
-    // three-block state published as one grouped copy. Every retention keeps
-    // the prompt's replay boundary 4; only dense and interval 12 keep 12.
-    for (retention, after_decode) in [(None, 12), (Some(12), 12), (Some(0), 4)] {
+    // three-block state, one grouped copy unless a Belady pool keeps blocks.
+    // Every retention keeps the prompt's replay boundary 4; only dense and
+    // interval 12 keep 12.
+    for (retention, after_decode, belady) in [
+        (None, 12, false),
+        (Some(12), 12, false),
+        (Some(0), 4, false),
+        (None, 12, true),
+    ] {
         let mut manager = manager(64, 4, 1, true);
+        if belady {
+            manager
+                .pool
+                .set_belady_oracle(crate::engine::belady::BeladyOracle::new(Vec::new()).unwrap());
+        }
         manager.enable_state_cache(3, true);
         manager.state_cache.as_mut().unwrap().sliding_window = Some(SlidingWindowStateConfig {
             retention_interval: retention,
@@ -1345,7 +1356,7 @@ fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block()
             };
             manager.begin_step();
             allocated(manager.allocate_lease(next, &mut lease, cached, 0));
-            assert_eq!(manager.pool.key_blocks(source), 3);
+            assert_eq!(manager.pool.key_blocks(source), if belady { 1 } else { 3 });
             assert!(
                 manager
                     .pool

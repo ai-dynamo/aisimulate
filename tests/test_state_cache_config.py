@@ -606,6 +606,15 @@ def test_auto_pd_state_resolves_each_role_and_transfer_bytes(auto_k3_payload, fo
         assert deployment.performance_model_metadata[role]["state_cache"]["source"] == "inferred"
 
 
+def test_resolved_state_config_keeps_its_sliding_window():
+    window = {"retention_interval": 32768, "lookahead_tokens": 64}
+    resolved = StateCacheConfig(bytes_per_request=10, sliding_window=window)
+    state = KvCachePredictionConfig(**{**KV, "state_cache": resolved}).state_cache
+    assert (state.bytes_per_request, state.resolved_sliding_window()) == (10, window)
+    with pytest.raises(ValidationError):
+        StateCacheConfig(bytes_per_request=10, sliding_window={"lookahead_tokens": 1 << 64})
+
+
 @pytest.fixture
 def auto_dsv4_payload():
     return _auto_payload(FLASH, {"blocks": 64})
