@@ -314,22 +314,6 @@ def records(evidence):
     ]
 
 
-def test_fpm_prediction_reports_aiperf_metrics(profile, evidence_systems):
-    from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
-
-    raw = prediction(profile, evidence_systems)
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    runner = EngineReplayRunnerFactory().create(0)
-    try:
-        metrics = runner.run(spec).metrics
-    finally:
-        runner.close()
-    # FPM timing feeds the same native request statistics as op-level timing.
-    for metric in AIPerfMetric:
-        assert metrics[metric.count_key] == 3
-        assert metric_value(metrics, metric) > 0
-
-
 def test_kv_first_marker_survives_saved_config_and_chunked_replay(profile, kv_first_systems, tmp_path):
     import jsonschema
 

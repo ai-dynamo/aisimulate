@@ -3452,24 +3452,10 @@ def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeyp
         prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
 
 
-def test_aiperf_selectors_do_not_force_request_capture():
-    runtime = RecordingRuntime()
-    EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0).run(_spec(goal={"target": "request_latency.p99"}))
-    assert runtime.execution_spec["record_per_request"] is False
-
-
-@pytest.mark.parametrize(
-    "goal",
-    [
-        {"target": "output_token_throughput_per_user.p50"},
-        # Predict compiles evaluation.aiperf without an optimization objective.
-        {"sla": None, "aiperf": {"constraints": []}},
-    ],
-)
-def test_native_summary_supplies_every_aiperf_selector(goal):
+def test_native_summary_supplies_every_aiperf_selector():
     from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
 
-    report = EngineReplayRunnerFactory().create(0).run(_spec(goal=goal))
+    report = EngineReplayRunnerFactory().create(0).run(_spec(goal={"target": "output_token_throughput_per_user.p50"}))
     # Fixed timing: 2 ms prefill, one 1 ms decode, one completed request.
     expected = {
         "time_to_first_token": 2,

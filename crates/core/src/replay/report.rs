@@ -3063,12 +3063,15 @@ mod tests {
             "/../../tests/fixtures/aiperf_0.13.0_request_metrics.json"
         )))
         .unwrap();
-        for case in fixture["cases"].as_array().unwrap() {
+        let cases = fixture["cases"].as_array().unwrap();
+        // Eager and deferred timeline finalization fold the same request samples.
+        for (case, deferred) in cases.iter().flat_map(|case| [(case, false), (case, true)]) {
             // Replay models a one-token first chunk, AIPerf's default divisor.
             if case["per_chunk_usage"].as_bool().unwrap() {
                 continue;
             }
             let mut collector = TraceCollector::default();
+            collector.set_defer_token_timeline_finalization(deferred);
             for (index, row) in case["rows"].as_array().unwrap().iter().enumerate() {
                 let uuid = Uuid::from_u128(index as u128 + 1);
                 let output = row[2].as_u64().unwrap() as usize;
@@ -3126,39 +3129,6 @@ mod tests {
                     );
                 }
             }
-        }
-    }
-
-    #[test]
-    fn itl_and_user_tps_take_one_sample_per_request() {
-        for deferred in [false, true] {
-            let mut collector = TraceCollector::default();
-            collector.set_defer_token_timeline_finalization(deferred);
-            // Request 1: one 10 ms gap. Request 2: 100 gaps of 2 ms.
-            // Request 3: two tokens at the same time, zero ITL and no user TPS.
-            for (id, tokens) in [
-                (1, vec![10.0, 20.0]),
-                (2, (0..=100).map(|i| 10.0 + 2.0 * i as f64).collect()),
-                (3, vec![10.0, 10.0]),
-            ] {
-                let uuid = Uuid::from_u128(id);
-                collector.on_arrival(uuid, 0.0, 8, tokens.len());
-                collector.on_prefill_admit(uuid, 0.0, 0, None);
-                for at in &tokens {
-                    collector.on_token(uuid, *at);
-                }
-                collector.on_terminal(
-                    uuid,
-                    *tokens.last().unwrap(),
-                    ReplayTerminalStatus::Completed,
-                );
-            }
-            let latency = collector.finish().latency;
-            assert_eq!(latency.num_tpot_samples, 3);
-            assert_eq!(latency.itl.distribution.mean_ms, 4.0);
-            assert_eq!(latency.itl.max_ms, 10.0);
-            // Request-weighted (100 + 500) / 2, not the per-gap mean (100 + 100 * 500) / 101.
-            assert_eq!(latency.output_token_throughput_per_user.mean_ms, 300.0);
         }
     }
 

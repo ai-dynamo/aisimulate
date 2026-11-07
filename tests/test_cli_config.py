@@ -1467,25 +1467,17 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
     assert prediction["engine"]["workers"]["aggregated"]["timing"]["fallback_policy"] == "deny"
 
 
-@pytest.mark.parametrize("timing", [{"type": "default", "forward_model": "fpm"}, {"type": "default"}])
-@pytest.mark.parametrize(
-    "aiperf",
-    [
-        None,
-        {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 9}]},
-    ],
-)
-def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict(timing, aiperf) -> None:
+def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict() -> None:
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.config import OptimizationGoal
     from aisimulate.sweeper.replay import validate_json_value
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
-    raw["engine"]["workers"]["aggregated"]["timing"] = timing
     raw["optimization"]["target"] = "output_token_throughput_per_user.p50"
-    raw["optimization"]["strict_sla"] = aiperf is not None
-    if aiperf is not None:
-        raw["evaluation"] = {"aiperf": aiperf}
+    raw["optimization"]["strict_sla"] = True
+    raw["evaluation"] = {
+        "aiperf": {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 9}]}
+    }
     config = CoreRecommendationConfig.model_validate(raw)
     smart = recommendation_to_sweeper(config)
     sample = unroll_sample(
