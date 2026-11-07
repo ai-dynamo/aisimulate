@@ -80,7 +80,13 @@ note = "Engine-specific admission and token budgets; SGLang --enable-mixed-chunk
 name = "Prefix caching (G1 reuse)"
 doc = "replay/engine/kv-cache.md#gpu-cache-g1"
 cells = ["supported", "supported", "supported"]
-note = "Backend block and admission rules apply."
+note = "Backend block and admission rules apply. SGLang P/D decode reuse is opt-in through decode_radix_cache and requires prefix caching without speculation."
+
+[[sections.rows]]
+name = "Request cache-salt isolation"
+doc = "replay/engine/kv-cache.md#sglang-request-cache-salt"
+cells = ["not_supported", "supported", "not_supported"]
+note = "Native SGLang requests and inline replay preserve salt in prefix identity and KV events. Different salts cannot reuse each other's KV; memory pools remain shared. Built-in trace formats are unsalted."
 
 [[sections.rows]]
 name = "Sub-block prefix reuse"
@@ -158,8 +164,8 @@ cells = ["supported", "supported", "supported", "na", "na", "na"]
 name = "G2 local"
 detail = "Host memory per DP rank"
 doc = "replay/engine/kv-cache.md#g2-scope"
-cells = ["limited", "not_supported", "not_supported", "na", "na", "na"]
-note = "Requires prefix caching; generic speculation schemes are rejected."
+cells = ["limited", "limited:HiCache", "not_supported", "na", "na", "na"]
+note = "Requires prefix caching. vLLM rejects generic speculation; it follows vLLM 0.24's OffloadingConnector or, on an aggregated worker, vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR). SGLang HiCache supports aggregated prediction with per-rank local host pools and all three write policies; no P/D, recommendation, external storage or peer KVCR."
 
 [[sections.rows]]
 name = "G2 shared"
@@ -256,7 +262,7 @@ name = "G2 host offload"
 doc = "replay/engine/kv-cache.md#agentic-g2"
 # crates/core/src/python.rs agentic host-offload checks.
 cells = ["limited", "not_supported", "not_supported"]
-note = "One aggregated worker or 1P1D, attention DP 1 on every role, static pools, no speculation."
+note = "One aggregated worker, several aggregated workers each with local G2, or 1P1D; attention DP 1 on every role, static pools, no speculation."
 
 [[sections.rows]]
 name = "G3 offload, KVCR"
@@ -291,3 +297,45 @@ name = "Dynamo deployment generation"
 doc = "sweeper/deployment-generation.md"
 cells = ["supported", "supported", "supported"]
 note = "Renders the selected candidate for a pinned serving image."
+
+# Stable benchmark identifiers; observed-event IDs describe evidence, not support claims.
+[benchmark_features]
+schema_version = 1
+ids = [
+    "agentx.weka",
+    "agentx.seeded_snapshots",
+    "agentx.live_warmup",
+    "agentx.continuous_profile",
+    "agentx.sequential_recycling",
+    "agentx.cache_bust",
+    "agentx.shuffle",
+    "scheduling.continuous_batching",
+    "scheduling.chunked_prefill",
+    "scheduling.async",
+    "cache.g1_prefix",
+    "cache.hybrid_state",
+    "cache.g2",
+    "cache.g3",
+    "cache.kvcr",
+    "topology.aggregated",
+    "topology.tensor_parallel",
+    "topology.expert_parallel",
+    "topology.attention_dp",
+    "topology.pipeline_parallel",
+    "topology.context_parallel",
+    "topology.multi_node",
+    "topology.pd",
+    "speculation",
+    "routing.planner",
+    "precision.quantized_weights",
+    "precision.quantized_kv",
+    "workload.multimodal",
+    "events.subagent_spawn",
+    "events.join",
+    "events.tool_wait",
+    "events.cache_reuse",
+    "events.eviction",
+    "events.preemption",
+    "events.recompute",
+    "events.state_restore",
+]

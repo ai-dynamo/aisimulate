@@ -12,13 +12,10 @@ from collector import provenance
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-HASH_CLOSURES_PATH = REPO_ROOT / "collector" / "hash_closures.yaml"
 
 
 # --------------------------------------------------------------------------
-# Fixture "repo" builder: a minimal file tree shaped like the real repo, so
-# collector_hash's SHARED_CORE + closure-extra resolution runs against real
-# on-disk files without depending on the actual (large) collector package.
+# collector_hash: deterministic, content-sensitive, rebase-stable
 # --------------------------------------------------------------------------
 
 
@@ -27,183 +24,56 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _build_fake_repo(root: Path, *, module_body: str = "op A", extra_body: str = "sweep A") -> None:
-    for shared_file in provenance.SHARED_CORE:
-        _write(root / shared_file, f"# {shared_file}\n")
-    _write(root / "collector" / "sglang" / "collect_gemm.py", f"# {module_body}\n")
-    _write(root / "collector" / "cases" / "base_ops" / "gemm.yaml", f"# {extra_body}\n")
-    _write(root / "collector" / "cases" / "models" / "LlamaForCausalLM_cases.yaml", "# model cases\n")
+# One file of every kind collector_hash covers, and one of every kind it leaves out.
+HASHED_FILES = (
+    "collector/helper.py",
+    "collector/cases/base_ops/gemm.yaml",
+    "collector/sglang/dsv4_megamoe/run_torchrun.sh",
+    "collector/wideep/vllm/patches/deepep.patch",
+    "src/aisimulate_core/sdk/models/deepseek_v41.py",
+    "src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json",
+)
+UNHASHED_FILES = (
+    "collector/trtllm/moe_tuned_cache_path/sm100_cache.json",
+    "collector/README.md",
+    "collector/__pycache__/helper.cpython-312.pyc",
+    "src/aisimulate_core/systems/data/b200_sxm/gemm/sglang/0.5.21/gemm_perf.parquet",
+)
 
 
-FAKE_CLOSURES = {
-    "collector.sglang.collect_gemm": [
-        "collector/cases/base_ops/gemm.yaml",
-        "__model_cases__",
-    ],
-}
-
-
-# --------------------------------------------------------------------------
-# load_closures: fail-closed coverage
-# --------------------------------------------------------------------------
-
-
-def test_load_closures_fails_closed_on_missing_registry_module(tmp_path):
-    # Only ever true if at least one real provenance module exists, which it does.
-    real_module = sorted(provenance.enumerate_provenance_modules())[0]
-    incomplete = tmp_path / "hash_closures.yaml"
-    # Deliberately omit every real registry module.
-    incomplete.write_text("some.other.module: []\n", encoding="utf-8")
-
-    with pytest.raises(KeyError, match=real_module.split(".")[-1]):
-        provenance.load_closures(incomplete)
-
-
-def test_load_closures_rejects_non_mapping_top_level(tmp_path):
-    bad = tmp_path / "hash_closures.yaml"
-    bad.write_text("- foo\n- bar\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must be a mapping"):
-        provenance.load_closures(bad)
-
-
-def test_load_closures_rejects_non_list_extras(tmp_path):
-    bad = tmp_path / "hash_closures.yaml"
-    bad.write_text("collector.sglang.collect_gemm: not-a-list\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="must be a list of strings"):
-        provenance.load_closures(bad)
-
-
-def test_hash_closures_yaml_covers_every_registry_module():
-    # The fail-closed CI gate: every registered or explicitly standalone
-    # provenance producer has a hash_closures.yaml entry.
-    closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    missing = provenance.enumerate_provenance_modules() - closures.keys()
-    assert missing == set()
-
-
-def test_provenance_modules_include_active_vllm_xpu_registry():
-    modules = provenance.enumerate_provenance_modules()
-    assert {
-        "collector.vllm.collect_attn_xpu",
-        "collector.vllm.collect_gemm_xpu",
-        "collector.vllm.collect_moe_xpu",
-    } <= modules
-
-
-def test_hash_closures_yaml_has_no_stale_entries():
-    closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    stale = closures.keys() - provenance.enumerate_provenance_modules()
-    assert stale == set()
-
-
-# --------------------------------------------------------------------------
-# collector_hash: fail-closed, deterministic, content-sensitive, rebase-stable
-# --------------------------------------------------------------------------
-
-
-def test_collector_hash_fails_closed_for_unknown_module(tmp_path):
-    _build_fake_repo(tmp_path)
-    with pytest.raises(KeyError, match="no hash_closures"):
-        provenance.collector_hash("collector.sglang.not_registered", tmp_path, FAKE_CLOSURES)
+def _build_fake_repo(root: Path) -> None:
+    for relative in HASHED_FILES + UNHASHED_FILES:
+        _write(root / relative, f"# {relative}\n")
 
 
 def test_collector_hash_deterministic(tmp_path):
     _build_fake_repo(tmp_path)
-    h1 = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    h2 = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    assert h1 == h2
+    h1 = provenance.collector_hash(tmp_path)
+    assert h1 == provenance.collector_hash(tmp_path)
     assert h1.startswith("sha256:")
 
 
-def test_collector_hash_changes_when_module_file_changes(tmp_path):
-    _build_fake_repo(tmp_path, module_body="op A")
-    before = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    _build_fake_repo(tmp_path, module_body="op A changed")
-    after = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    assert before != after
-
-
-def test_collector_hash_changes_when_closure_extra_changes(tmp_path):
-    _build_fake_repo(tmp_path, extra_body="sweep A")
-    before = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    _build_fake_repo(tmp_path, extra_body="sweep A changed")
-    after = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    assert before != after
-
-
-def test_collector_hash_changes_when_shared_core_file_changes(tmp_path):
+@pytest.mark.parametrize("relative", HASHED_FILES)
+def test_collector_hash_changes_when_a_hashed_file_changes(tmp_path, relative):
     _build_fake_repo(tmp_path)
-    before = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    _write(tmp_path / "collector" / "helper.py", "# helper.py changed\n")
-    after = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    assert before != after
+    before = provenance.collector_hash(tmp_path)
+    _write(tmp_path / relative, "# changed\n")
+    assert provenance.collector_hash(tmp_path) != before
 
 
-@pytest.mark.parametrize("backend", ["sglang"])
-@pytest.mark.parametrize("binding_file", ["registry_types.py", "collect.py", "sglang/registry.py"])
-def test_dsa_collector_hash_covers_worker_binding(tmp_path, backend, binding_file):
-    module = f"collector.{backend}.collect_mla_module"
-    closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
-    for relative in paths - {provenance.MODEL_CASES_GROUP}:
-        _write(tmp_path / relative, (REPO_ROOT / relative).read_text(encoding="utf-8"))
-    before = provenance.collector_hash(module, tmp_path, closures)
-    binding_path = tmp_path / "collector" / binding_file
-    _write(binding_path, binding_path.read_text(encoding="utf-8") + "\n# binding changed\n")
-    assert provenance.collector_hash(module, tmp_path, closures) != before
-
-
-@pytest.mark.parametrize(
-    "module_name",
-    [
-        "collect_attn",
-        "collect_computescale",
-        "collect_dsv4_attn",
-        "collect_gemm",
-        "collect_mhc_module",
-        "collect_mla_module",
-        "collect_moe",
-        "collect_msa_module",
-    ],
-)
-def test_vllm_collector_hash_covers_native_setup(tmp_path, module_name):
-    module = f"collector.vllm.{module_name}"
-    closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
-    for relative in paths - {provenance.MODEL_CASES_GROUP}:
-        _write(tmp_path / relative, (REPO_ROOT / relative).read_text(encoding="utf-8"))
-    before = provenance.collector_hash(module, tmp_path, closures)
-    utils_path = tmp_path / "collector/vllm/utils.py"
-    _write(utils_path, utils_path.read_text(encoding="utf-8") + "\n# rendezvous changed\n")
-    assert provenance.collector_hash(module, tmp_path, closures) != before
-
-
-def test_collector_hash_changes_when_model_cases_group_changes(tmp_path):
+@pytest.mark.parametrize("relative", UNHASHED_FILES)
+def test_collector_hash_ignores_caches_docs_and_data(tmp_path, relative):
     _build_fake_repo(tmp_path)
-    before = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    _write(tmp_path / "collector" / "cases" / "models" / "LlamaForCausalLM_cases.yaml", "# changed\n")
-    after = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-    assert before != after
+    before = provenance.collector_hash(tmp_path)
+    _write(tmp_path / relative, "# changed\n")
+    assert provenance.collector_hash(tmp_path) == before
 
 
-def test_collector_hash_missing_closure_file_raises(tmp_path):
+def test_collector_hash_changes_when_a_file_is_added(tmp_path):
     _build_fake_repo(tmp_path)
-    (tmp_path / "collector" / "cases" / "base_ops" / "gemm.yaml").unlink()
-    with pytest.raises(FileNotFoundError):
-        provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
-
-
-@pytest.mark.parametrize(
-    "module",
-    [
-        "collector.vllm.collect_attn_xpu",
-        "collector.vllm.collect_gemm_xpu",
-        "collector.vllm.collect_moe_xpu",
-    ],
-)
-def test_real_xpu_registry_modules_are_hashable(module):
-    closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    assert provenance.collector_hash(module, REPO_ROOT, closures).startswith("sha256:")
+    before = provenance.collector_hash(tmp_path)
+    _write(tmp_path / "collector" / "vllm" / "utils.py", "# new\n")
+    assert provenance.collector_hash(tmp_path) != before
 
 
 def test_collector_hash_stable_across_repo_relocation(tmp_path_factory):
@@ -213,10 +83,11 @@ def test_collector_hash_stable_across_repo_relocation(tmp_path_factory):
     root_b = tmp_path_factory.mktemp("repo_b_somewhere_else")
     _build_fake_repo(root_a)
     _build_fake_repo(root_b)
+    assert provenance.collector_hash(root_a) == provenance.collector_hash(root_b)
 
-    hash_a = provenance.collector_hash("collector.sglang.collect_gemm", root_a, FAKE_CLOSURES)
-    hash_b = provenance.collector_hash("collector.sglang.collect_gemm", root_b, FAKE_CLOSURES)
-    assert hash_a == hash_b
+
+def test_real_repo_is_hashable():
+    assert provenance.collector_hash(REPO_ROOT).startswith("sha256:")
 
 
 # --------------------------------------------------------------------------
@@ -254,7 +125,7 @@ def test_case_plan_hash_empty_set_is_stable():
     ("unresolved_failed_count", "had_module_failure", "expected"),
     [
         (0, False, provenance.STATUS_COMPLETE),
-        # Owner decision 2026-08-08 (PR #1486): recorded per-case failures
+        # Owner decision: recorded per-case failures
         # are DATA (failure_handling.md) and no longer demote a table —
         # only a module-level collection failure does.
         (1, False, provenance.STATUS_COMPLETE),

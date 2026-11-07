@@ -241,7 +241,7 @@ marked it N/A.
 | Python compatibility | Cross-package contracts and dependency checks on Python 3.11 and 3.13; application shards use Python 3.12 |
 | Engine Golden Regression | Engine-step and compiled-engine parity suites, plus frozen native numerical checks |
 | Platform Wheels | Build, repair, install, and exercise Linux x86-64/ARM64 and macOS ARM64 wheels |
-| Collector Data | Collector V3 invariants, backend-facts registry, and changed-operation manifest; cross-backend sanity scan is informational |
+| Collector Data | Data-tree invariants (`check_collector_data.py` R1-R7) and the backend-facts registry; the cross-backend sanity scan is informational |
 | Prediction Regression | Collect old/new static, scheduling, and silicon-reference snapshots; fail when a previously working case stops working |
 | Release Artifact Contract | Build the wheel and crate; verify installed versions, allowed distributions, compatibility imports, dependencies, and CLI entry points on both architectures |
 
@@ -402,7 +402,7 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Useful retained evidence includes `application-test-inventory-<arch>`,
 `native-prediction-numerics`, `installed-cli-*`,
-`prediction-regression-gate-report`, `changed-ops`, and the
+`prediction-regression-gate-report`, and the
 `fpe-support-matrix-web` artifact containing `fpe-qualification.json`.
 
 
@@ -582,3 +582,35 @@ a `review_pic` **User ID** variable inserted as a mention in the channel
 message, and must be republished after template changes. Missing or invalid
 rotation configuration stops delivery. See the
 [setup and configuration guide](../../DEVELOPMENT.md#slack-review-digest-and-weekly-pic).
+
+### AgentX accuracy extension
+
+The daily E2E branch matrix also evaluates the reviewed AgentX catalog. Each branch
+uses its exact wheel and the same single resolved HF revision as InfX. Two bounded
+CPU shards run one replay at a time; no new GPU measurements are collected.
+Native request/sample/lifecycle telemetry is required. The reviewed catalog config
+pins prediction database versions separately from measured framework versions;
+there is no automatic substitution with the current database slot. Each result
+records selected op-data checksums from its wheel. Older wheels retain explicit
+unsupported or failed outcomes rather than inheriting main's predictions.
+
+Private outputs use the existing encrypted-artifact helper and seven-day retention.
+The separate `e2e-agentx-web-<branch-key>` artifact contains qualified numerical
+summaries, lazy detail payloads, and provenance; preview artifacts use
+`e2e-agentx-preview-<branch-key>` and cannot enter production Pages. Qualification
+requires the complete catalog cohort and matching evaluated wheel, driver, and HF
+revisions. The Pages publisher independently validates the trusted producer and
+public field allowlist, including comparison series, scores and opaque request
+pairs. Curve scores are reconciled against their published numerical series.
+Historical AgentX payloads retain their original driver digest closure. Numerical
+accuracy remains advisory.
+
+AgentX contract tests share the E2E forward-pass-engine, replay, infra, and
+maintainer ownership in `.github/codeowners/areas.yaml`.
+
+The private dataset worker imports silicon into `data/e2e/agentx/` and opens an HF
+candidate. A reviewed catalog update is required to enroll later measurements.
+Deploy the dashboard/CI changes after promoting the initial dataset candidate;
+until that catalog exists, AgentX input fetching fails explicitly while the
+independent InfX jobs retain their existing behavior. See the
+[AgentX dashboard contract](../../pages/e2e-accuracy/README.md#agentx-beta).

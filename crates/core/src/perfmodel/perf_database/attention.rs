@@ -39,7 +39,8 @@
 //! SOL/EMPIRICAL fallbacks, and extra fused-op accounting (qk_norm, rope,
 //! kv writes).
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -79,8 +80,42 @@ pub struct AttentionTable {
 /// nested grid as a `Node`. The lane axis is outermost, mirroring Python's
 /// `data[kernel_source][...]` nesting.
 struct ContextGrids {
-    by_lane: BTreeMap<String, BTreeMap<ContextKey, PreparedGrid>>,
+    by_lane: BTreeMap<String, BTreeMap<ContextKey, ContextSlice<PreparedGrid>>>,
     lanes_in_load_order: Vec<String>,
+}
+
+/// Work included in a retained measurement, not inferred from the requesting
+/// backend. False preserves legacy extras for unknown measurement contracts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContextTimingBoundary {
+    pub(crate) includes_rope: bool,
+    pub(crate) includes_kv_write: bool,
+}
+
+impl ContextTimingBoundary {
+    fn from_row(framework: Option<&str>, version: Option<&str>, lane: &str) -> Self {
+        // These collection revisions time the full TRT-LLM forward with
+        // internal RoPE and CacheType.SELF. Older 1.0.0 rows used SELFKONLY;
+        // their contract, and other lanes/versions, remain unknown here.
+        let inclusive = framework == Some("TRTLLM")
+            && matches!(version, Some("1.3.0rc20" | "1.3.0rc29"))
+            && lane == "torch_flow";
+        Self {
+            includes_rope: inclusive,
+            includes_kv_write: inclusive,
+        }
+    }
+}
+
+pub(crate) struct ContextSlice<G> {
+    grid: G,
+    pub(crate) boundary: ContextTimingBoundary,
+}
+
+impl ContextSlice<PreparedGrid> {
+    pub(crate) fn points(&self) -> Vec<(Vec<f64>, f64)> {
+        perf_interp::node_points(self.grid.node())
+    }
 }
 
 struct GenerationGrids {
@@ -177,12 +212,12 @@ fn fallback_lanes<'a, K, V>(
 /// see their doc comments for why this exists (AIC-1715/1716 follow-up —
 /// donor-lane density ranking needs the QUERY table, not the lane-blind
 /// enumeration view).
-fn lane_density<K>(slices: &BTreeMap<K, PreparedGrid>) -> (u32, u32) {
+fn lane_density<K, V>(slices: &BTreeMap<K, V>, grid: fn(&V) -> &PreparedGrid) -> (u32, u32) {
     let slice_count = slices.len() as u32;
     let mut row_count = 0;
     let mut prefix = Vec::new();
-    for grid in slices.values() {
-        perf_interp::visit_leaves(grid.node(), &mut prefix, &mut |_, _| row_count += 1);
+    for slice in slices.values() {
+        perf_interp::visit_leaves(grid(slice).node(), &mut prefix, &mut |_, _| row_count += 1);
     }
     (slice_count, row_count)
 }
@@ -197,8 +232,8 @@ fn row_lane(ks_col: Option<usize>, row: &PerfRow) -> Result<String, AicError> {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ContextKey {
-    fmha_quant: String,
-    kv_quant: String,
+    fmha_quant: Cow<'static, str>,
+    kv_quant: Cow<'static, str>,
     n_kv_lookup: u32,
     head_size: u32,
     window_size: u32,
@@ -278,28 +313,46 @@ impl AttentionTable {
         kv_quant: KvCacheQuantMode,
         fmha_quant: FmhaQuantMode,
     ) -> Result<LeafValue, AicError> {
+        self.query_context_with_boundary(
+            lane_order,
+            b,
+            full_seq_tokens,
+            n,
+            n_kv,
+            head_size,
+            window_size,
+            kv_quant,
+            fmha_quant,
+        )
+        .map(|(value, _)| value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn query_context_with_boundary(
+        &self,
+        lane_order: &[String],
+        b: u32,
+        full_seq_tokens: u32,
+        n: u32,
+        n_kv: u32,
+        head_size: u32,
+        window_size: u32,
+        kv_quant: KvCacheQuantMode,
+        fmha_quant: FmhaQuantMode,
+    ) -> Result<(LeafValue, ContextTimingBoundary), AicError> {
         // Resolve flops BEFORE any perf-data lookup: a missing dtype entry
         // must classify as MissingSystemFlops on both engines, in every mode
         // (mirrors Python's query-entry resolution and GemmTable::query).
         let attn_flops = quant_tc_flops(&self.system_spec, fmha_quant.mapping())?;
-        let grids = self.load_context()?;
-        let key = ContextKey {
-            fmha_quant: fmha_quant.name().to_string(),
-            kv_quant: kv_quant.name().to_string(),
-            n_kv_lookup: normalize_kv(n, n_kv),
+        let n_kv_lookup = normalize_kv(n, n_kv);
+        let slice = self.context_slice(
+            lane_order,
+            fmha_quant,
+            kv_quant,
+            n_kv_lookup,
             head_size,
             window_size,
-        };
-        let node = lane_slice(&grids.by_lane, &grids.lanes_in_load_order, lane_order, &key)
-            .ok_or_else(|| {
-                missing_key(
-                    &self.data_root,
-                    lane_order,
-                    &grids.by_lane,
-                    &grids.lanes_in_load_order,
-                    &key,
-                )
-            })?;
+        )?;
         // Python `perf_interp.context_attention_config`: Grid resolver,
         // sqrt-space blend on the seq axis only (~seq^2 curvature; heads and
         // batch are ~linear). Past the staircase frontier (large seq x large
@@ -308,7 +361,6 @@ impl AttentionTable {
         // full attention, so it is evaluated at prefix=0 with the slice's own
         // kv-head/window/head-size setup; c = [n, full_s, b].
         let spec = &self.system_spec;
-        let n_kv_lookup = key.n_kv_lookup;
         let sol = move |c: &[f64]| {
             context_attention_sol_ms(
                 spec,
@@ -323,7 +375,10 @@ impl AttentionTable {
             )
         };
         let cfg = OpInterpConfig::grid_sqrt_axis(&["num_heads", "seq_len", "batch"], 1, &sol);
-        node.query_value(&cfg, &[n as f64, full_seq_tokens as f64, b as f64])
+        slice
+            .grid
+            .query_value(&cfg, &[n as f64, full_seq_tokens as f64, b as f64])
+            .map(|value| (value, slice.boundary))
     }
 
     /// Raw interpolated generation attention value (latency ms + energy,
@@ -464,26 +519,25 @@ impl AttentionTable {
         head_size: u32,
         window_size: u32,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
-        let grids = self.load_context()?;
-        let key = ContextKey {
-            fmha_quant: fmha_quant.name().to_string(),
-            kv_quant: kv_quant.name().to_string(),
-            n_kv_lookup,
-            head_size,
-            window_size,
-        };
-        let node = lane_slice(&grids.by_lane, &grids.lanes_in_load_order, lane_order, &key)
-            .ok_or_else(|| {
-                missing_key(
-                    &self.data_root,
-                    lane_order,
-                    &grids.by_lane,
-                    &grids.lanes_in_load_order,
-                    &key,
-                )
-            })?;
-        let points = perf_interp::node_points(node.node());
+        let points = self
+            .context_slice(
+                lane_order,
+                fmha_quant,
+                kv_quant,
+                n_kv_lookup,
+                head_size,
+                window_size,
+            )?
+            .points();
         if points.is_empty() {
+            let grids = self.load_context()?;
+            let key = ContextKey {
+                fmha_quant: fmha_quant.name().into(),
+                kv_quant: kv_quant.name().into(),
+                n_kv_lookup,
+                head_size,
+                window_size,
+            };
             return Err(missing_key(
                 &self.data_root,
                 lane_order,
@@ -493,6 +547,37 @@ impl AttentionTable {
             ));
         }
         Ok(points)
+    }
+
+    /// Borrow the actual selected basis and its retained measurement contract.
+    /// Query keys borrow the static dtype names; boundary lookup allocates no
+    /// metadata and never reopens source files after the table is prepared.
+    pub(crate) fn context_slice(
+        &self,
+        lane_order: &[String],
+        fmha_quant: FmhaQuantMode,
+        kv_quant: KvCacheQuantMode,
+        n_kv_lookup: u32,
+        head_size: u32,
+        window_size: u32,
+    ) -> Result<&ContextSlice<PreparedGrid>, AicError> {
+        let grids = self.load_context()?;
+        let key = ContextKey {
+            fmha_quant: fmha_quant.name().into(),
+            kv_quant: kv_quant.name().into(),
+            n_kv_lookup,
+            head_size,
+            window_size,
+        };
+        lane_slice(&grids.by_lane, &grids.lanes_in_load_order, lane_order, &key).ok_or_else(|| {
+            missing_key(
+                &self.data_root,
+                lane_order,
+                &grids.by_lane,
+                &grids.lanes_in_load_order,
+                &key,
+            )
+        })
     }
 
     /// Whether ONE lane carries the full context slice. Mirrors the second
@@ -509,8 +594,8 @@ impl AttentionTable {
     ) -> Result<bool, AicError> {
         let grids = self.load_context()?;
         let key = ContextKey {
-            fmha_quant: fmha_quant.name().to_string(),
-            kv_quant: kv_quant.name().to_string(),
+            fmha_quant: fmha_quant.name().into(),
+            kv_quant: kv_quant.name().into(),
             n_kv_lookup,
             head_size,
             window_size,
@@ -590,7 +675,7 @@ impl AttentionTable {
                     .by_lane
                     .iter()
                     .map(|(lane, slices)| {
-                        let (slice_count, row_count) = lane_density(slices);
+                        let (slice_count, row_count) = lane_density(slices, |slice| &slice.grid);
                         (lane.clone(), slice_count, row_count)
                     })
                     .collect()
@@ -708,7 +793,7 @@ impl AttentionTable {
                     .by_lane
                     .iter()
                     .map(|(lane, slices)| {
-                        let (slice_count, row_count) = lane_density(slices);
+                        let (slice_count, row_count) = lane_density(slices, |grid| grid);
                         (lane.clone(), slice_count, row_count)
                     })
                     .collect()
@@ -753,7 +838,15 @@ impl AttentionTable {
                             lane,
                             slices
                                 .into_iter()
-                                .map(|(k, g)| (k, PreparedGrid::new(grid3_to_node(&g))))
+                                .map(|(k, slice)| {
+                                    (
+                                        k,
+                                        ContextSlice {
+                                            grid: PreparedGrid::new(grid3_to_node(&slice.grid)),
+                                            boundary: slice.boundary,
+                                        },
+                                    )
+                                })
                                 .collect(),
                         )
                     })
@@ -835,12 +928,13 @@ fn load_context_parquet(
     sources: &[PerfSource],
 ) -> Result<
     (
-        BTreeMap<String, BTreeMap<ContextKey, Grid3<LeafValue>>>,
+        BTreeMap<String, BTreeMap<ContextKey, ContextSlice<Grid3<LeafValue>>>>,
         Vec<String>,
     ),
     AicError,
 > {
-    let mut by_lane: BTreeMap<String, BTreeMap<ContextKey, Grid3<LeafValue>>> = BTreeMap::new();
+    let mut by_lane: BTreeMap<String, BTreeMap<ContextKey, ContextSlice<Grid3<LeafValue>>>> =
+        BTreeMap::new();
     let mut lanes_in_load_order = Vec::new();
     let mut any_source = false;
     for source in sources {
@@ -861,6 +955,8 @@ fn load_context_parquet(
         let power_col = reader.col_optional("power");
         let window_size_col = reader.col_optional("window_size");
         let ks_col = reader.col_optional("kernel_source");
+        let framework_col = reader.col_optional("framework");
+        let version_col = reader.col_optional("version");
         for row in reader.rows()? {
             let row = row?;
             if !kernel_source_ok(source.kernel_sources(), ks_col, &row)? {
@@ -869,8 +965,8 @@ fn load_context_parquet(
             let num_heads = row.u32(num_heads_col)?;
             let num_kv = row.u32(num_kv_col)?;
             let key = ContextKey {
-                fmha_quant: row.str_owned(attn_dtype_col)?,
-                kv_quant: row.str_owned(kv_cache_dtype_col)?,
+                fmha_quant: row.str_owned(attn_dtype_col)?.into(),
+                kv_quant: row.str_owned(kv_cache_dtype_col)?.into(),
                 n_kv_lookup: normalize_kv(num_heads, num_kv),
                 head_size: row.u32(head_dim_col)?,
                 window_size: row.u32_optional(window_size_col)?.unwrap_or(0),
@@ -881,19 +977,39 @@ fn load_context_parquet(
             if !lanes_in_load_order.contains(&lane) {
                 lanes_in_load_order.push(lane.clone());
             }
-            // First-wins parity with Python `load_context_attention_data`,
-            // extended across shared-layer sources (earlier source wins).
-            by_lane
+            let boundary = ContextTimingBoundary::from_row(
+                row.str_optional(framework_col)?,
+                row.str_optional(version_col)?,
+                &lane,
+            );
+            let slice = by_lane
                 .entry(lane)
                 .or_default()
                 .entry(key)
-                .or_default()
+                .or_insert_with(|| ContextSlice {
+                    grid: BTreeMap::new(),
+                    boundary,
+                });
+            // An ignored duplicate cannot change the winning measurement's
+            // contract. Distinct retained points must share one boundary:
+            // interpolating inclusive and unknown timings is undefined.
+            let entry = slice
+                .grid
                 .entry(num_heads)
                 .or_default()
                 .entry(row.u32(isl_col)?)
                 .or_default()
-                .entry(row.u32(batch_size_col)?)
-                .or_insert(LeafValue::with_power(latency, power));
+                .entry(row.u32(batch_size_col)?);
+            if let Entry::Vacant(entry) = entry {
+                if slice.boundary != boundary {
+                    return Err(AicError::InvalidPerfData(format!(
+                        "mixed context-attention measurement boundaries in lane {:?} at {}",
+                        row_lane(ks_col, &row)?,
+                        path.display()
+                    )));
+                }
+                entry.insert(LeafValue::with_power(latency, power));
+            }
         }
     }
     if !any_source || by_lane.is_empty() {
@@ -1366,7 +1482,7 @@ fn load_encoder_parquet(
 fn missing_key(
     data_root: &Path,
     lane_order: &[String],
-    by_lane: &BTreeMap<String, BTreeMap<ContextKey, PreparedGrid>>,
+    by_lane: &BTreeMap<String, BTreeMap<ContextKey, ContextSlice<PreparedGrid>>>,
     lanes_in_load_order: &[String],
     key: &ContextKey,
 ) -> AicError {
@@ -1399,7 +1515,10 @@ fn missing_encoder_key(data_root: &Path, key: &EncoderKey) -> AicError {
 }
 
 fn clone_err(err: &AicError) -> AicError {
-    AicError::PerfDatabase(err.to_string())
+    match err {
+        AicError::InvalidPerfData(message) => AicError::InvalidPerfData(message.clone()),
+        _ => AicError::PerfDatabase(err.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -1407,6 +1526,77 @@ mod tests {
     use super::*;
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
+
+    fn write_boundary_rows(path: &Path, versions: Vec<&'static str>, seqs: Vec<i64>) {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let n = versions.len();
+        write_parquet(
+            path,
+            &[
+                Col::Str("framework", vec!["TRTLLM"; n]),
+                Col::Str("version", versions),
+                Col::Str("kernel_source", vec!["torch_flow"; n]),
+                Col::Str("attn_dtype", vec!["bfloat16"; n]),
+                Col::Str("kv_cache_dtype", vec!["bfloat16"; n]),
+                Col::I64("batch_size", vec![1; n]),
+                Col::I64("isl", seqs),
+                Col::I64("num_heads", vec![32; n]),
+                Col::I64("num_key_value_heads", vec![4; n]),
+                Col::I64("head_dim", vec![128; n]),
+                Col::F64("latency", vec![2.0; n]),
+            ],
+        );
+    }
+
+    #[test]
+    fn context_boundary_uses_only_retained_rows_and_rejects_mixed_winners() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("context_attention_perf.parquet");
+        let sources = [PerfSource(path.clone(), None)];
+        for (versions, inclusive) in [
+            (vec!["1.3.0rc20", "1.0.0"], true),
+            (vec!["1.0.0", "1.3.0rc29"], false),
+        ] {
+            write_boundary_rows(&path, versions, vec![256, 256]);
+            let (rows, _) = load_context_parquet(&sources).unwrap();
+            let slice = rows["torch_flow"].values().next().unwrap();
+            assert_eq!(slice.boundary.includes_rope, inclusive);
+            assert_eq!(slice.boundary.includes_kv_write, inclusive);
+            assert_eq!(slice.grid[&32][&256][&1].latency, 2.0);
+        }
+        write_boundary_rows(&path, vec!["1.3.0rc20", "1.0.0"], vec![256, 512]);
+        let error = match load_context_parquet(&sources) {
+            Err(error) => error,
+            Ok(_) => panic!("distinct winning rows with different boundaries must fail"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("mixed context-attention measurement boundaries")
+        );
+        assert!(!error.is_missing_perf_data());
+        let table = AttentionTable::new(tmp.path().to_path_buf(), b200_sxm_spec());
+        for _ in 0..2 {
+            let cached_error = table.load_context().err().unwrap();
+            assert!(matches!(cached_error, AicError::InvalidPerfData(_)));
+        }
+    }
+
+    #[test]
+    fn context_boundary_keeps_unverified_contracts_legacy() {
+        for (framework, version, lane) in [
+            (Some("TRTLLM"), Some("1.0.0"), "torch_flow"),
+            (Some("TRTLLM"), Some("future"), "torch_flow"),
+            (Some("vllm"), Some("1.3.0rc20"), "torch_flow"),
+            (Some("TRTLLM"), Some("1.3.0rc20"), "torch_flow_flashinfer"),
+            (None, None, "torch_flow"),
+        ] {
+            assert_eq!(
+                ContextTimingBoundary::from_row(framework, version, lane),
+                ContextTimingBoundary::default()
+            );
+        }
+    }
 
     fn b200_vllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
@@ -1698,8 +1888,8 @@ mod tests {
         );
         assert_eq!(context.lanes_in_load_order, lanes(&["z_lane", "a_lane"]));
         let context_key = ContextKey {
-            fmha_quant: "bfloat16".to_string(),
-            kv_quant: "bfloat16".to_string(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "bfloat16".into(),
             n_kv_lookup: 0,
             head_size: 128,
             window_size: 0,
@@ -1757,8 +1947,8 @@ mod tests {
     /// returns the stored value verbatim.
     fn in_memory_two_lane_context_table() -> AttentionTable {
         let key = |head_size: u32| ContextKey {
-            fmha_quant: "bfloat16".to_string(),
-            kv_quant: "bfloat16".to_string(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "bfloat16".into(),
             n_kv_lookup: 0,
             head_size,
             window_size: 0,
@@ -1766,9 +1956,13 @@ mod tests {
         let leaf = |latency: f64| {
             let mut node = Node::branch();
             node.insert(&[8, 1024, 1], latency);
-            PreparedGrid::new(node)
+            ContextSlice {
+                grid: PreparedGrid::new(node),
+                boundary: ContextTimingBoundary::default(),
+            }
         };
-        let mut by_lane: BTreeMap<String, BTreeMap<ContextKey, PreparedGrid>> = BTreeMap::new();
+        let mut by_lane: BTreeMap<String, BTreeMap<ContextKey, ContextSlice<PreparedGrid>>> =
+            BTreeMap::new();
         by_lane
             .entry("head".to_string())
             .or_default()

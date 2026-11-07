@@ -51,23 +51,11 @@ model_case_values:
       sglang_moe_backends:
         w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        trtllm:
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        vllm:
-          # Native-FP4 serving path: DeepseekV4FP8Config -> Mxfp4MoEMethod ->
-          # trtllm-gen MXFP4xMXFP8 on the SM100 family (see the base moe_vllm
-          # w4a8_mxfp4_mxfp8 entry for the dispatch citations). The label is
-          # SM-gated there (min_sm 100 / max_sm_exclusive 110), so SM90 —
-          # where vLLM 0.24.0 serves this artifact as Marlin W4A16 — never
-          # collects under it; Hopper stays an observed gap in the failure
-          # log rather than a mislabeled row.
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
+      # Native-FP4 checkpoint: MXFP4 routed experts, served with MXFP8
+      # activations (trtllm-gen) on the SM100 family. The label's floor is
+      # SM100 (collector/skips.py); below it serving runs the experts as W4A16,
+      # a different label this row does not plan.
+      quantization_modes: [w4a8_mxfp4_mxfp8]
     - model_path: sgl-project/DeepSeek-V4-Flash-FP8
       hidden_size: 4096
       inter_size: 2048
@@ -80,22 +68,13 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes:
-            - fp8_block
-        trtllm:
-          allowed_modes:
-            - fp8_block
-        vllm:
-          # The artifact config omits expert_dtype and vLLM defaults it to
-          # FP4, but vLLM 0.24's DeepSeek-V4 quant config has a native
-          # fp8-expert branch — serving works with the documented override
-          # `--hf-overrides '{"expert_dtype": "fp8"}'` (models/deepseek_v4/
-          # quant_config.py @0.24.0). The benchmark constructs Fp8Config from
-          # the label with synthetic weights, matching that serving path.
-          allowed_modes:
-            - fp8_block
+      # vLLM: the artifact config omits expert_dtype and vLLM defaults it to
+      # FP4, but vLLM 0.24's DeepSeek-V4 quant config has a native
+      # fp8-expert branch — serving works with the documented override
+      # `--hf-overrides '{"expert_dtype": "fp8"}'` (models/deepseek_v4/
+      # quant_config.py). The benchmark constructs Fp8Config from
+      # the label with synthetic weights, matching that serving path.
+      quantization_modes: [fp8_block]
     - model_path: deepseek-ai/DeepSeek-V4-Pro
       hidden_size: 7168
       inter_size: 3072
@@ -110,25 +89,16 @@ model_case_values:
       sglang_moe_backends:
         w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
       wideep: true
-      framework_quantization:
-        sglang:
-          # Owner decision (2026-07-05): do not collect the native-FP4 Pro
-          # artifact as w4a16_mxfp4. The shared SM90 w4a16 backend map is
-          # triton (GPT-OSS truth), under which SGLang 0.5.14 constructs plain
-          # Fp8MoEMethod for is_fp4_experts and every case fails closed;
-          # SM100/103 production scheduling uses the w4a8 TRTLLM-gen path
-          # kept below. To restore support, re-add w4a16_mxfp4 here and pin
-          # sglang_moe_backends w4a16_mxfp4 {90: flashinfer_mxfp4} (the native
-          # cutlass mixed-input path, FlashInfer #3084).
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        trtllm:
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        vllm:
-          # See the native Flash note above (same SM100-gated trtllm-gen path).
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
+      # Owner decision: do not collect the native-FP4 Pro
+      # artifact as w4a16_mxfp4. The shared SM90 w4a16 backend map is
+      # triton (GPT-OSS truth), under which SGLang 0.5.14 constructs plain
+      # Fp8MoEMethod for is_fp4_experts and every case fails closed;
+      # SM100/103 production scheduling uses the w4a8 TRTLLM-gen path
+      # kept below. To restore support, re-add w4a16_mxfp4 here and pin
+      # sglang_moe_backends w4a16_mxfp4 {90: flashinfer_mxfp4} (the native
+      # cutlass mixed-input path, FlashInfer #3084). Otherwise as the native
+      # Flash row above.
+      quantization_modes: [w4a8_mxfp4_mxfp8]
     - model_path: sgl-project/DeepSeek-V4-Pro-FP8
       hidden_size: 7168
       inter_size: 3072
@@ -141,18 +111,9 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes:
-            - fp8_block
-        trtllm:
-          allowed_modes:
-            - fp8_block
-        vllm:
-          # See the Flash converted-artifact note above (same expert_dtype
-          # omission; same `--hf-overrides` serving path).
-          allowed_modes:
-            - fp8_block
+      # See the Flash converted-artifact note above (same expert_dtype
+      # omission; same `--hf-overrides` serving path).
+      quantization_modes: [fp8_block]
     - model_path: nvidia/DeepSeek-V4-Flash-NVFP4
       hidden_size: 4096
       inter_size: 2048
@@ -165,32 +126,16 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        # Real ModelOpt export (nvidia/DeepSeek-V4-Flash-NVFP4, verified via its
-        # published config.json/hf_quant_config.json, AIC-1749): quant_algo
-        # MIXED_PRECISION, routed-expert layers at NVFP4 (moe_quant_algo
-        # NVFP4), attention/shared-experts/head/mtp excluded. This is a new,
-        # quant-distinct artifact row (case_authoring.md) — never merged into
-        # the deepseek-ai/DeepSeek-V4-Flash row above. nvfp4 is declared on
-        # every backend that really serves NVFP4 MoE (sglang and trtllm ship
-        # nvfp4 moe rows on Blackwell today; same shape as the
-        # nvidia/GLM-5.2-NVFP4 declaration) — the artifact's ONE true mode
-        # everywhere, so no case can carry a wrong identity and nothing is
-        # excluded. The AIC-1749 recipes consume the vllm rows first; the
-        # sglang/trtllm cases are ordinary coverage that runs or fails into
-        # the classified log (failure_handling.md).
-        sglang:
-          allowed_modes:
-            - nvfp4
-        trtllm:
-          allowed_modes:
-            - nvfp4
-        vllm:
-          # Generic CompressedTensorsConfig nvfp4-pack-quantized path
-          # (collector/vllm/collect_moe.py moe_type == "nvfp4"); architecture-
-          # agnostic, no DeepSeek-V4-specific dispatch needed.
-          allowed_modes:
-            - nvfp4
+      # Real ModelOpt export (nvidia/DeepSeek-V4-Flash-NVFP4, verified via its
+      # published config.json/hf_quant_config.json): quant_algo
+      # MIXED_PRECISION, routed-expert layers at NVFP4 (moe_quant_algo
+      # NVFP4), attention/shared-experts/head/mtp excluded. This is a new,
+      # quant-distinct artifact row (case_authoring.md) — never merged into
+      # the deepseek-ai/DeepSeek-V4-Flash row above. vLLM times the generic
+      # CompressedTensorsConfig nvfp4-pack-quantized path
+      # (collector/vllm/collect_moe.py moe_type == "nvfp4"); no
+      # DeepSeek-V4-specific dispatch is needed.
+      quantization_modes: [nvfp4]
     - model_path: nvidia/DeepSeek-V4-Pro-NVFP4
       hidden_size: 7168
       inter_size: 3072
@@ -203,20 +148,10 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        # See the Flash-NVFP4 note above (same real ModelOpt MIXED_PRECISION
-        # export shape, verified against nvidia/DeepSeek-V4-Pro-NVFP4's own
-        # published config.json/hf_quant_config.json; same one-true-mode
-        # declaration on every backend).
-        sglang:
-          allowed_modes:
-            - nvfp4
-        trtllm:
-          allowed_modes:
-            - nvfp4
-        vllm:
-          allowed_modes:
-            - nvfp4
+      # See the Flash-NVFP4 note above (same real ModelOpt MIXED_PRECISION
+      # export shape, verified against nvidia/DeepSeek-V4-Pro-NVFP4's own
+      # published config.json/hf_quant_config.json).
+      quantization_modes: [nvfp4]
   mhc:
     - model_paths:
         - deepseek-ai/DeepSeek-V4-Flash
@@ -229,31 +164,25 @@ model_case_values:
       hidden_size: 7168
       hc_mult: 4
   dsv4:
-    # Module tables key [native][local] since #1423/#1431, so full/raw plans
+    # Module tables key [native][local], so full/raw plans
     # collect Flash and Pro together (distinct native head counts cannot
     # collide). Artifacts stay uniform (sgl-project FP8 builds, matching every
     # shipped module table) because the persisted module key carries no
     # artifact dimension — one artifact per geometry per plan; Blackwell
     # platform-native collection uses targeted deepseek-ai/* runs. The first
     # entry is the canonical artifact (manual-CLI default model).
-    # Default calib collection stays on the canonical artifact via
-    # calib_model_paths (cost policy); targeted runs may collect any supported
-    # model's calibration — consumers key the DELTA per native geometry (#1460).
-    # nvidia/DeepSeek-V4-{Flash,Pro}-NVFP4 (AIC-1749) are deliberately NOT
-    # listed for module collection at all: the module collectors' gemm_type
-    # sweep is bfloat16/fp8_block only (case_generator.py
-    # _dsv4_module_precision_combos; collector/vllm/collect_dsv4_attn.py
-    # SUPPORTED_GEMM_TYPES), and the persisted module key carries no artifact
-    # dimension — so even a targeted run against these paths could only stamp
-    # rows with a label that misrepresents the artifact ("cases that carry
-    # the wrong identity are worse than no cases", case_authoring.md). They
-    # join supported_model_paths together with the collector gemm-label work
-    # tracked on AIC-1749.
+    # collector/skips.py keeps the top-k calibration on the Flash artifact.
+    # nvidia/DeepSeek-V4-{Flash,Pro}-NVFP4 are deliberately NOT
+    # listed for module collection at all: the module gemm_type sweep is
+    # bfloat16/fp8_block only (module_gemm_types below), and the persisted
+    # module key carries no artifact dimension — so even a targeted run
+    # against these paths could only stamp rows with a label that
+    # misrepresents the artifact ("cases that carry the wrong identity are
+    # worse than no cases", case_authoring.md). They join
+    # supported_model_paths together with the collector gemm-label work.
     default_model_paths:
       - sgl-project/DeepSeek-V4-Flash-FP8
       - sgl-project/DeepSeek-V4-Pro-FP8
-    calib_model_paths:
-      - sgl-project/DeepSeek-V4-Flash-FP8
     supported_model_paths:
       - deepseek-ai/DeepSeek-V4-Flash
       - deepseek-ai/DeepSeek-V4-Pro
@@ -262,6 +191,16 @@ model_case_values:
     attention_kinds:
       - csa
       - hca
+    # The module plans (collector/op_plans.py). Projection GEMMs: fp8_block is
+    # the checkpoints' own, bfloat16 the BF16-projection modules SGLang
+    # collects (collector/skips.py keeps each backend's set). Context points
+    # follow the shared long-context grid (mla_module_plan in
+    # cases/base_ops/mla_module.yaml); decode points are module_batch_sizes x
+    # module_sequence_lengths within the decode budget of
+    # cases/base_ops/dsv4_attention.yaml.
+    module_gemm_types:
+      - bfloat16
+      - fp8_block
     module_batch_sizes:
       - 1
       - 2
@@ -300,40 +239,14 @@ model_case_values:
       - 262144
       - 524288
       - 1048575
-    module_past_kv_lengths:
-      - 0
-      - 1
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-      - 1536
-      - 2048
-      - 3072
-      - 4096
-      - 6144
-      - 8192
-      - 10000
-      - 10240
-      - 12288
-      - 16384
-      - 32768
-      - 65536
-      - 131072
-      - 262144
-      - 524288
-      - 1000000
-      - 1048575
     module_tp_sizes:
       - 1
       - 2
       - 4
       - 8
+    # The paged MQA logits kernel (the CSA indexer's scoring GEMM): batch x
+    # isl within sparse_chunk_prefill_size and batch x (isl + past KV) within
+    # sparse_max_full_sequence_length.
     sparse_batch_sizes:
       - 1
       - 2
@@ -410,31 +323,28 @@ framework_specific_op_cases:
       cases: all
     dsv4_hca_generation_module:
       cases: all
-    # topK DELTA calibration: one case per model. The worker reads the
-    # already-collected dsv4_csa_*_module_perf.txt in the output dir and benches
-    # exactly those (prefix, isl, batch_size) shapes, so it must run AFTER the
-    # CSA module ops (guaranteed by registry order: topk_calib is registered
-    # after the csa module entries).
+    # topK DELTA calibration on the CSA module plan's points (v1 top-k on the
+    # context points, v2 on the decode points) of each planned checkpoint.
     dsv4_csa_topk_calib:
       cases: all
     # paged_mqa_logits IS consumed: it is the only sparse-kernel sidecar with a
     # live SDK query path (sdk/operations/dsv4.py: the CP chunk walk loads
     # PerfDataFilename.dsv4_paged_mqa_logits_module) and every shipped platform
-    # carries the table. The 2026-10-05 b200 shard run lost it because this
+    # carries the table. The b200 shard run lost it because this
     # file still called it experimental (job 469988017). The hca_attn /
-    # csa_attn sidecars were removed from the collector and SDK on 2026-10-15:
+    # csa_attn sidecars were removed from the collector and SDK:
     # their SDK readers had been retired (csa_attn never shipped data) and the
     # registry-only ops failed every sm100 shard plan generated from the
-    # registry since 2026-10-05.
+    # registry.
     dsv4_paged_mqa_logits_module:
       cases: all
     mhc_module:
       cases: all
   vllm:
     # These four full-module paths are consumed by the production DSV4 model.
-    # hca_attn / csa_attn were removed 2026-10-15 (see the sglang note above);
+    # hca_attn / csa_attn were removed (see the sglang note above);
     # paged_mqa_logits is consumed (see the sglang note above) and shipped for
-    # vllm 0.24/0.25. mHC is scheduled again (2026-10-11): the SDK queries
+    # vllm 0.24/0.25. mHC is scheduled again: the SDK queries
     # mhc pre/post rows on every backend, collector/vllm/collect_mhc_module.py
     # measures vLLM's own mhc_pre_tilelang / mhc_post_tilelang (qualified on
     # B200 0.25, shipped 0.22/0.24/0.25) and documents why pre(no-norm)+post
@@ -461,11 +371,11 @@ framework_specific_op_cases:
     # queries mhc pre/post rows on every backend
     # (aic-core .../sdk/models/deepseek_v4.py DeepSeekV4MHCModule), which is
     # exactly what collector/trtllm/collect_mhc_module.py produces — schedule
-    # it (issue #1480).
+    # it.
     mhc_module:
       cases: all
-    # The four DSV4 attention module tables the SDK queries on every backend
-    # (issue #1480 revised scope). collector/trtllm/collect_dsv4_attn.py
+    # The four DSV4 attention module tables the SDK queries on every backend.
+    # collector/trtllm/collect_dsv4_attn.py
     # requires trtllm>=1.3.0rc21 (__compat__); TRT-LLM rejects pre-Blackwell
     # GPUs inside the module forward, which surfaces as classified failures
     # on SM<100 systems rather than being pre-gated here.

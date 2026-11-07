@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """--resume finalization of a producer whose every attempted case failed.
 
-b200_sxm sglang 0.5.21 (GitLab job 469988017, 2026-10-05): moe/int4_wo had
+b200_sxm sglang 0.5.21 (GitLab job 469988017): moe/int4_wo had
 3,078 attempted / 0 passed (lane guard) and therefore no staging table;
 ``_pending_resume_perf_outputs`` raised "open checkpoint event has no regular
 staging table" and the run died in finalization although the failures were

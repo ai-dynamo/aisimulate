@@ -13,8 +13,7 @@ Everything below the op level is owned elsewhere:
 
 - case content comes from ``cases/base_ops/*.yaml`` sweep recipes crossed with
   ``model_case_values`` shapes (see ``case_generator``), deduplicated;
-- hardware floors are applied by ``collector.capabilities`` (generation-time
-  intersection, ``cases/capabilities.yaml``);
+- ``collector/skips.py`` leaves out what a backend does not run;
 - everything else that cannot run is a runtime observation: it fails fast, is
   classified in the failure log with a (model, dtype) group label, and
   systemic groups are surfaced in the collection summary as fix-me signals.
@@ -32,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from collector import skips
 
 COLLECTOR_ROOT = Path(__file__).resolve().parent
 CASE_ROOT = COLLECTOR_ROOT / "cases"
@@ -58,6 +59,7 @@ class CollectionCasePlan:
     base_cases_path: Path
     model_cases_paths: list[Path] = field(default_factory=list)
     requested_model_path: str | None = None
+    include_long_context: bool = False
 
     @property
     def ops(self) -> list[str]:
@@ -72,6 +74,7 @@ class CollectionCasePlan:
             "model_path": self.model_path,
             "model_architecture": self.model_architecture,
             "requested_model_path": self.requested_model_path,
+            "include_long_context": self.include_long_context,
             "gpu_type": self.gpu_type,
             "sm_version": self.sm_version,
             "ops": self.ops,
@@ -398,6 +401,7 @@ def build_collection_case_plan(
     base_cases_path: str | None = None,
     model_cases_path: str | None = None,
     full: bool = False,
+    include_long_context: bool = False,
 ) -> CollectionCasePlan:
     """Build a model-aware op plan for one backend."""
     base_path = Path(base_cases_path).expanduser().resolve() if base_cases_path else BASE_OP_CASES_DIR
@@ -431,6 +435,10 @@ def build_collection_case_plan(
             )
 
     resolved_sm_version = resolve_sm_version(gpu_type=gpu_type, sm_version=sm_version)
+    if model_data and not full:
+        # A model run plans no op that collector/skips.py skips for every selected model.
+        architectures = {_model_case_architecture(data) for data in model_data}
+        selected = {op for op in selected if not architectures <= skips.models(backend, op, resolved_sm_version)}
     return CollectionCasePlan(
         backend=backend,
         model_path=model_path,
@@ -441,4 +449,5 @@ def build_collection_case_plan(
         base_cases_path=base_path,
         model_cases_paths=model_paths,
         requested_model_path=requested_model_path,
+        include_long_context=include_long_context,
     )

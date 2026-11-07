@@ -241,7 +241,7 @@ jobs:
           "${RUNNER_TEMP}/callback-venv/bin/python" -m pip install --require-hashes \
             -r "${RUNNER_TEMP}/wheel/requirements.txt"
           "${RUNNER_TEMP}/callback-venv/bin/python" -m pip install --no-deps \
-            "${RUNNER_TEMP}"/wheel/aisimulate-*.whl
+            "$(python scripts/release/package_identity.py "${RUNNER_TEMP}/wheel")"
           "${RUNNER_TEMP}/callback-venv/bin/python" \
             scripts/performance/check_dynamo_callback.py source dynamo
           cp scripts/performance/simulation_dynamo_requirements.txt "${RUNNER_TEMP}/wheel/dynamo-requirements.txt"

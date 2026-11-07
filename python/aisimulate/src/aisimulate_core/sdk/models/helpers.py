@@ -967,7 +967,9 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     elif kv_cache_algo is not None:
         raise ValueError(f"Unsupported kv cache algorithm: {kv_cache_algo}")
 
-    # DSV4 sparse attention requires FP8 KV cache across all backends.
+    # DSV4 is served with an FP8 KV cache: the packed fp8_ds_mla pool on Hopper and
+    # the plain FP8 pool elsewhere (TRT-LLM's recommended configuration, SGLang's
+    # default). A BF16 pool boots on Blackwell too; model it with an explicit kv=bf16.
     if architecture in {"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"}:
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 
@@ -1300,6 +1302,67 @@ def resolve_sglang_mla_compute(
     logger.info("Resolved SGLang 0.5.14 SM90 MLA attention compute to bfloat16 (FA3 execution dtype)")
 
 
+# SMs on which TRT-LLM's attention op runs FP8 context MLA for an FP8 KV cache
+# (mFP8ContextMLA in thop/attentionOp.cpp). Generation MLA runs FP8 for an FP8
+# KV cache on every SM (mFP8GenerationMLA), and no generation table keys on fmha.
+_TRTLLM_FP8_CONTEXT_MLA_SMS = (90, 100, 103, 120)
+_TRTLLM_MLA_FAMILIES = ("DEEPSEEK", "KIMIK25", "KIMIK3")
+
+
+def trtllm_mla_runs_fp8(backend_name: str, sm_version: int | None, model_path: str, kv_mode) -> bool:
+    """Whether TRT-LLM runs this model's MLA context attention in FP8.
+
+    TRT-LLM has no separate precision for MLA attention: on SM90/100/103/120
+    an FP8 KV cache makes context MLA run FP8 FMHA, so BF16 compute on an FP8
+    KV cache is not a configuration it can run there.
+    """
+    return (
+        backend_name == "trtllm"
+        and sm_version in _TRTLLM_FP8_CONTEXT_MLA_SMS
+        and kv_mode == common.KVCacheQuantMode.fp8
+        and get_model_family(model_path) in _TRTLLM_MLA_FAMILIES
+    )
+
+
+def resolve_trtllm_mla_compute(
+    model_config: config.ModelConfig,
+    model_path: str,
+    backend_name: str,
+    system_spec: dict,
+) -> None:
+    """Resolve a bfloat16 MLA FMHA request on an FP8 KV cache to FP8 on TRT-LLM.
+
+    See ``trtllm_mla_runs_fp8``: TRT-LLM runs FP8 there whatever is requested,
+    so an explicit bfloat16 is resolved to the precision it runs. An unset FMHA
+    is left to the checkpoint inference, which already picks FP8 for an FP8 KV
+    cache. Whole-model FPM identities remain caller-owned, and so is a bfloat16
+    a data-driven fallback chose (the Task's, or ``resolve_context_fmha_by_data``
+    on the estimate path) because the reachable context table has no fp8 slice:
+    resolving it to fp8 again would look up rows that do not exist
+    (``_fmha_quant_mode_from_data``).
+    """
+    if model_config.forward_model == "fpm" or model_config.fmha_quant_mode != common.FMHAQuantMode.bfloat16:
+        return
+    if getattr(model_config, "_fmha_quant_mode_from_data", False):
+        return
+    if backend_name != "trtllm":
+        return
+    kv_mode = model_config.kvcache_quant_mode
+    if kv_mode is None:
+        info = _get_model_info(model_path)
+        kv_mode = _infer_quant_modes_from_raw_config(info.get("raw_config", {}), info.get("architecture")).get(
+            "kvcache_quant_mode"
+        )
+    sm_version = system_spec.get("gpu", {}).get("sm_version")
+    if not trtllm_mla_runs_fp8(backend_name, sm_version, model_path, kv_mode):
+        return
+    model_config.fmha_quant_mode = common.FMHAQuantMode.fp8
+    logger.warning(
+        "TRT-LLM runs MLA attention in FP8 on an FP8 KV cache (SM%s); using fmha_quant_mode fp8 instead of bfloat16",
+        sm_version,
+    )
+
+
 def resolve_context_fmha_by_data(
     model_config: config.ModelConfig,
     model_path: str,
@@ -1355,6 +1418,7 @@ def resolve_context_fmha_by_data(
         getattr(database, "version", None),
         getattr(database, "system_spec", {}),
     )
+    resolve_trtllm_mla_compute(model_config, model_path, backend_name, getattr(database, "system_spec", {}))
 
     from aisimulate_core.sdk.perf_database import context_fmha_supported_modes
 
@@ -1381,6 +1445,10 @@ def resolve_context_fmha_by_data(
     # when that inference would pick fp8 (bf16 checkpoints need no change).
     if inferred.get("fmha_quant_mode") == common.FMHAQuantMode.fp8 and common.FMHAQuantMode.bfloat16.name in supported:
         model_config.fmha_quant_mode = common.FMHAQuantMode.bfloat16
+        # The estimate paths resolve the MLA compute precision again before
+        # get_model (run_disagg, static_ctx, engine, kv_cache); mark the
+        # bfloat16 as data-driven so resolve_trtllm_mla_compute leaves it.
+        model_config._fmha_quant_mode_from_data = True
         logger.warning(
             "fmha_quant_mode=fp8 (inferred from the model checkpoint) has no %r perf data; "
             "falling back to bfloat16 FMHA data. Predictions are conservative if the deployed "
