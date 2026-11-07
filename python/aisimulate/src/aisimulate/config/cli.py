@@ -84,8 +84,12 @@ class CoreRecommendationConfig(StrictModel):
         if isinstance(source, TraceSource) and source.format == "mooncake-delta" and "disaggregated" in modes:
             raise ValueError(f"{source.format} requires aggregated engine mode")
         sla = self.evaluation.sla
-        if self.optimization.strict_sla and (sla is None or not sla.has_bound):
-            raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound")
+        if (
+            self.optimization.strict_sla
+            and (sla is None or not sla.has_bound)
+            and not self.optimization.constraints.metrics
+        ):
+            raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound or metric constraint")
         if self.optimization.target in {"goodput", "goodput_per_gpu", "min_gpus"} and (
             sla is None or not sla.has_bound
         ):

@@ -1542,3 +1542,106 @@ def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
     assert result.counts.resource_limited == result.counts.feasible == 1
     assert result.counts.cache_hits == 0
     assert len(result.selected_candidates) == 1
+
+
+@pytest.mark.parametrize("strict, expected", [(False, [768.0, 512.0, 256.0]), (True, [512.0, 256.0])])
+def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict, expected):
+    _stub(monkeypatch, _branch(_pc()))
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        seen["sampler"] = sampler
+        return sampler
+
+    class MetricRunner(_FakeRunner):
+        def run(self, spec):
+            report = super().run(spec)
+            seqs = report.metrics["output_throughput_tok_s"]
+            return ReplayReport(metrics={**report.metrics, "num_e2e_latency_samples": 2.0, "p99_e2e_latency_ms": seqs})
+
+    base = _config()
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload=base.workload,
+        sweep=base.sweep,
+        goal={
+            "target": "throughput",
+            "strict_sla": strict,
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
+        },
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(MetricRunner()), sampler_factory=sampler_factory, show_progress=False
+    ).run(config, top_n=None)
+    assert [candidate.score for candidate in result.selected_candidates] == expected
+    rejected = [item for item in seen["sampler"].scored if isinstance(item, tuple)]
+    assert len(rejected) == int(strict)
+    if strict:
+        assert "request_latency.p99" in rejected[0][1]
+    restored = type(result).model_validate_json(result.model_dump_json())
+    assert [candidate.score for candidate in restored.selected_candidates] == expected
+
+
+def test_strict_constraint_failure_wins_over_missing_objective_samples(monkeypatch):
+    from aisimulate.sweeper.result import ReasonCategory
+
+    _stub(monkeypatch, _branch(_pc()))
+    base = _config()
+    # The fake report has no latency samples: the objective and the constraint both lack them.
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload=base.workload,
+        sweep=base.sweep,
+        goal={
+            "target": "request_latency.p99",
+            "strict_sla": True,
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
+        },
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(_FakeRunner()), sampler_factory=_FakeSampler, show_progress=False
+    ).run(config, top_n=None)
+    assert result.candidates
+    assert {candidate.reason_category for candidate in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        {"target": "request_latency.p99"},
+        {"target": "pareto", "pareto_objectives": ["throughput", "request_latency.p99"]},
+    ],
+)
+@pytest.mark.parametrize(
+    "metrics, outcome, category",
+    [
+        ({}, "infeasible", "no_samples"),
+        ({"num_e2e_latency_samples": 2.0}, "failed", "invalid_metrics"),
+        ({"num_e2e_latency_samples": 2.0, "p99_e2e_latency_ms": -1.0}, "failed", "invalid_metrics"),
+    ],
+)
+def test_aiperf_objective_separates_missing_samples_from_invalid_values(monkeypatch, goal, metrics, outcome, category):
+    _stub(monkeypatch, _branch(_pc()))
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        seen["sampler"] = _FakeSampler(branch, study_id, objectives)
+        return seen["sampler"]
+
+    class MetricRunner(_FakeRunner):
+        def run(self, spec):
+            return ReplayReport(metrics={**super().run(spec).metrics, **metrics})
+
+    base = _config()
+    config = SmartSearchConfig(search_space=base.search_space, workload=base.workload, sweep=base.sweep, goal=goal)
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(MetricRunner()), sampler_factory=sampler_factory, show_progress=False
+    ).run(config, top_n=None)
+    assert {(c.status.value, c.reason_category.value) for c in result.candidates} == {(outcome, category)}
+    # Neither case is ranked: the optimizer only receives infeasible feedback.
+    assert all(isinstance(item, tuple) and item[0] == "infeasible" for item in seen["sampler"].scored)
+    if category == "invalid_metrics":
+        assert all(
+            c.reason.startswith("runner contract violation:") and "is invalid" in c.reason for c in result.candidates
+        )
