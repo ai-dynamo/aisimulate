@@ -355,10 +355,29 @@ fn grouped_prefill_rank_holds_its_source_and_reports_block_unit_timing() {
         .unwrap();
     assert_eq!(report.committed_prefill_tokens, 1000);
     assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.request_counts.total_output_tokens, 4);
+    // A handoff is complete when its request carries every lifecycle
+    // timestamp, as the replay parity runner counts it.
+    let handoffs_complete = report
+        .per_request
+        .iter()
+        .filter(|record| {
+            [
+                record.prefill_admit_ms,
+                record.source_held_ms,
+                record.destination_reserved_ms,
+                record.destination_activated_ms,
+                record.decode_admit_ms,
+                record.source_released_ms,
+            ]
+            .iter()
+            .all(Option::is_some)
+        })
+        .count();
+    assert_eq!(handoffs_complete, 1);
     let record = &report.per_request[0];
     assert_eq!(record.source_held_ms, Some(10.0));
     assert_eq!(record.decode_worker_idx, Some(0));
-    assert!(record.destination_reserved_ms.is_some());
     assert_eq!(
         record.terminal_status,
         aisimulate_core::replay::ReplayTerminalStatus::Completed
