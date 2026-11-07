@@ -483,11 +483,13 @@ topology_policy:
   # (flashinfer trtllm-gen refuses 64 < heads < 128; finding sm100_probe_failures_recheck_2026_10_04 (i));
   # at tp2 the per-rank head count is 48 and the serving path exists. The tp1 cell stays a
   # recorded framework gap; the representative identity for the collector comes from tp2.
-  # SM90 probes of Kimi-K3 run on the 141 GB H200 at tp1: an 80 GB H100 cannot hold the dummy
-  # (sglang 0.5.23 tp1 OOMs in the MXFP4 expert upcast, tp2 leaves no KV cache room; vLLM 0.32.0
-  # tp1 lost the GPU on two nodes).
+  # SM90 (sglang 0.5.23): the widened MXFP4 experts of the 2-layer dummy leave a tp1 H200 no KV
+  # cache room at the automatic mem-fraction-static; tp2 runs at the default and serves the same
+  # KDA kernels as tp1 at 0.9 (A/B 2026-11-07), so sglang probes Kimi-K3 at tp2 on every SM.
+  # Memory picks the host: the 141 GB H200 (an 80 GB H100 at tp2 has no KV room left). vLLM
+  # 0.32.0 probes it at tp1 on the H200 (tp1 lost the GPU on two H100 nodes).
   - repo: moonshotai/Kimi-K3
     backend: sglang
     tp: 2
-    sms: [100]
+    sms: [90, 100]
   note: topology is ALWAYS recorded in records.runtime (tp/ep/dp/a2a) even when kernels match.
