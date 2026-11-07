@@ -606,11 +606,12 @@ def test_auto_pd_state_resolves_each_role_and_transfer_bytes(auto_k3_payload, fo
         assert deployment.performance_model_metadata[role]["state_cache"]["source"] == "inferred"
 
 
-def test_resolved_state_config_keeps_its_sliding_window():
-    window = {"retention_interval": 32768, "lookahead_tokens": 64}
-    resolved = StateCacheConfig(bytes_per_request=10, sliding_window=window)
-    state = KvCachePredictionConfig(**{**KV, "state_cache": resolved}).state_cache
-    assert (state.bytes_per_request, state.resolved_sliding_window()) == (10, window)
+@pytest.mark.parametrize("window", [{"lookahead_tokens": 1}, {"retention_interval": 128, "lookahead_tokens": 1}])
+def test_resolved_state_config_keeps_its_sliding_window(window):
+    resolved = StateCacheConfig(bytes_per_request=1500, sliding_window=window)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(state_cache=resolved)))
+    args = spec.backend_deployment.agg_engine_args
+    assert args["state_cache"] == {"bytes_per_request": 1500, "sliding_window": window}
     with pytest.raises(ValidationError):
         StateCacheConfig(bytes_per_request=10, sliding_window={"lookahead_tokens": 1 << 64})
 

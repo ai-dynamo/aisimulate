@@ -34,6 +34,9 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
             indexer_cache_dtype=sizing.indexer_cache_dtype,
             num_speculative_tokens=engine.speculation.num_speculative_tokens if engine.speculation else engine.nextn,
         )
+    if sizing._sliding_window_lookahead is not None:
+        # A resolved DeepSeek V4 state keeps the window it was resolved with.
+        result.setdefault("sliding_window_lookahead_tokens", sizing._sliding_window_lookahead)
     if sizing.retention_interval is not None:
         if "sliding_window_lookahead_tokens" not in result:
             raise ValueError("state_cache.retention_interval requires inferred DeepSeek V4 geometry")

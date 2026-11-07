@@ -1260,7 +1260,8 @@ fn kda_alignment_does_not_rotate_state_when_prefix_caching_is_disabled() {
 fn sliding_window_retains_vllm_v0_32_boundaries() {
     // (retention, MTP, prompt, computed) -> boundaries; the docs example last.
     for (retention, mtp, prompt, after, expected) in [
-        (None, false, 1000, 1000, vec![256, 512, 768]),
+        // Without MTP the configured lookahead does not delay a boundary.
+        (None, false, 1100, 1024, vec![256, 512, 768, 1024]),
         (None, true, 1000, 800, vec![256, 512]),
         (Some(0), true, 1024, 1100, vec![512, 768]),
         (Some(32768), false, 40000, 40064, vec![32768, 39936]),
@@ -1355,7 +1356,7 @@ fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block()
                 slot: 0,
             };
             manager.begin_step();
-            allocated(manager.allocate_lease(next, &mut lease, cached, 0));
+            allocated(manager.allocate_lease(next, &mut lease, cached, cached / 4));
             assert_eq!(manager.pool.key_blocks(source), if belady { 1 } else { 3 });
             assert!(
                 manager
