@@ -1,0 +1,21 @@
+{
+  "source_repository": "https://github.com/xuhuan51/aisimulate-910c",
+  "source_commit": "8e583af366a33013748b06a8b09c665a396bf6e7",
+  "artifacts": {
+    "hardware-calibration.yaml": {
+      "source_path": "python/aisimulate/src/aisimulate_core/systems/ascend910c.yaml",
+      "bytes": 900,
+      "sha256": "ae1880b84b576371fa6b775ff6a5d25216ed0c50a32b11394b5e2b7d0db8b05f"
+    },
+    "ascend_vector_perf.parquet": {
+      "source_path": "python/aisimulate/src/aisimulate_core/systems/data/ascend910c/vector/sglang/0.5.21.dev223+g76f9213a4/ascend_vector_perf.parquet",
+      "bytes": 12575,
+      "sha256": "dfae27548cd06954c39c67f4502add1450f7e5597523076a75a506743a0493a9"
+    },
+    "collection_meta.yaml": {
+      "source_path": "python/aisimulate/src/aisimulate_core/systems/data/ascend910c/vector/sglang/0.5.21.dev223+g76f9213a4/collection_meta.yaml",
+      "bytes": 1681,
+      "sha256": "54212ffc589ed73606c2dc446ed799898508570c98e34c0bcbf9d86e4c64bd00"
+    }
+  }
+}
