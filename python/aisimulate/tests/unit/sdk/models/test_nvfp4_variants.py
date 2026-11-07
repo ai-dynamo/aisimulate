@@ -269,7 +269,7 @@ def test_qwen36_preserves_explicit_global_gemm_override(hf_id, ffn_name, gemm_mo
     model = get_model(hf_id, model_config, backend_name="trtllm")
     by_name = {op._name: op for op in model.context_ops + model.generation_ops}
 
-    for name in ("context_gdn_in_proj_gemm", "context_qkv_gemm", ffn_name):
+    for name in ("context_gdn_in_proj_gemm", "context_gdn_in_proj_ba_gemm", "context_qkv_gemm", ffn_name):
         assert by_name[name]._quant_mode == gemm_mode
 
 
@@ -385,11 +385,10 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
 
     # quantized_layers lists the GDN in_proj_qkv, in_proj_z and out_proj, the full-attention
     # q/k/v/o and the shared-expert gate/up/down projections as static per-tensor FP8. The
-    # export keeps in_proj_a and in_proj_b in BF16; pricing their GEMM (in_proj_ba) with the
-    # other GDN projections is an approximation that docs/perf-model/support-matrix.md states.
+    # export keeps in_proj_a and in_proj_b in BF16 (its ignore list names them), so their
+    # fused GEMM (in_proj_ba) is priced in BF16.
     for name in (
         "context_gdn_in_proj_gemm",
-        "context_gdn_in_proj_ba_gemm",
         "context_gdn_out_proj_gemm",
         "context_qkv_gemm",
         "context_proj_gemm",
@@ -398,7 +397,6 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
         "context_full_shared_gate_up_gemm",
         "context_full_shared_down_gemm",
         "generation_gdn_in_proj_gemm",
-        "generation_gdn_in_proj_ba_gemm",
         "generation_gdn_out_proj_gemm",
         "generation_qkv_gemm",
         "generation_proj_gemm",
@@ -411,9 +409,12 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
     # The routed experts are NVFP4.
     for name in ("context_gdn_moe", "context_full_moe", "generation_gdn_moe", "generation_full_moe"):
         assert by_name[name]._quant_mode == common.MoEQuantMode.nvfp4, name
-    # The router (mlp.gate), the scalar shared-expert gate and lm_head are not quantized. SGLang
-    # fuses the scalar gate into the merge kernel, so only vLLM and TRT-LLM emit its GEMM.
+    # The router (mlp.gate), the scalar shared-expert gate, lm_head and the GDN in_proj_ba GEMM
+    # are not quantized. SGLang fuses the scalar gate into the merge kernel, so only vLLM and
+    # TRT-LLM emit its GEMM.
     bf16_names = (
+        "context_gdn_in_proj_ba_gemm",
+        "generation_gdn_in_proj_ba_gemm",
         "context_gdn_router_gemm",
         "context_full_router_gemm",
         "context_logits_gemm",
@@ -494,7 +495,7 @@ def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkey
     # The GDN, full-attention and shared-expert projections take the fp8_static path: per-tensor FP8 GEMM rows
     # minus the compute-scale rows. The engine labels every fp8_static result "estimated" by construction
     # (GemmOp::query in crates/core/src/perfmodel/operators/gemm.rs).
-    projections = ("gdn_in_proj_gemm", "gdn_in_proj_ba_gemm", "gdn_out_proj_gemm", "qkv_gemm", "proj_gemm")
+    projections = ("gdn_in_proj_gemm", "gdn_out_proj_gemm", "qkv_gemm", "proj_gemm")
     shared_experts = (
         "gdn_shared_gate_up_gemm",
         "gdn_shared_down_gemm",
@@ -505,6 +506,9 @@ def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkey
         assert prefill[f"context_{name}"]["source"] == "estimated", name
     for name in projections:
         assert decode[f"generation_{name}"]["source"] == "estimated", name
+    # The BF16 in_proj_ba GEMM (n = 2 * 64 / 4 = 32, k = 4096) reads measured BF16 GEMM rows in both phases.
+    assert prefill["context_gdn_in_proj_ba_gemm"]["source"] == "silicon"
+    assert decode["generation_gdn_in_proj_ba_gemm"]["source"] == "silicon"
     # The routed experts read measured NVFP4 MoE rows, and the router and lm_head GEMMs read measured BF16 GEMM
     # rows; the graph test above pins their quant modes.
     for name in ("gdn_moe", "full_moe", "gdn_router_gemm", "full_router_gemm", "logits_gemm"):
@@ -530,6 +534,55 @@ def test_qwen35_nvfp4_v2_engine_scales_each_decode_op_by_the_mtp_factor(monkeypa
     assert {name for name, op in base.items() if op["latency_ms"] == 0} == {"generation_p2p"}
     for name, op in mtp.items():
         assert op["latency_ms"] == pytest.approx(base[name]["latency_ms"] * scale, rel=1e-9), name
+
+
+@pytest.mark.parametrize(
+    ("hf_id", "ignored"),
+    [
+        # The ignore list names in_proj_a, in_proj_b and in_proj_ba.
+        (QWEN35_NVFP4_V2, r"re:.*linear_attn\.in_proj_b$"),
+        # quantized_layers lists in_proj_qkv, in_proj_z and out_proj of every GDN layer but not in_proj_a or
+        # in_proj_b; a ModelOpt MIXED_PRECISION export leaves an unlisted module unquantized.
+        ("nvidia/Qwen3.6-27B-NVFP4", None),
+        ("nvidia/Qwen3.6-35B-A3B-NVFP4", None),
+        # The ignore list excludes every GDN block, so the lane was BF16 already.
+        ("nvidia/Qwen3.5-397B-A17B-NVFP4", "model.language_model.layers.0.linear_attn*"),
+        ("nvidia/Qwen3.5-122B-A10B-NVFP4", "model.language_model.layers.0.linear_attn*"),
+    ],
+)
+def test_qwen35_gdn_in_proj_ba_lane_follows_the_checkpoint_metadata(hf_id, ignored, monkeypatch):
+    with _offline_bundle(monkeypatch):
+        quantization = get_model_config_from_model_path(hf_id)["raw_config"]["quantization_config"]
+        model = get_model(hf_id, _model_config(), backend_name="trtllm")
+    if ignored is None:
+        targets = quantization["quantized_layers"]
+        assert any(target.endswith(".linear_attn.in_proj_qkv") for target in targets)
+        unlisted = (".linear_attn.in_proj_a", ".linear_attn.in_proj_b", ".linear_attn.in_proj_ba")
+        assert not any(target.endswith(unlisted) for target in targets)
+    else:
+        assert ignored in quantization["ignore"]
+    by_name = {op._name: op for op in _flatten_ops(model.context_ops + model.generation_ops)}
+    for name in ("context_gdn_in_proj_ba_gemm", "generation_gdn_in_proj_ba_gemm"):
+        assert by_name[name]._quant_mode == common.GEMMQuantMode.bfloat16, name
+
+
+@pytest.mark.parametrize(
+    "shards",
+    [
+        {"in_proj_b": "FP8"},
+        {"in_proj_a": "FP8", "in_proj_b": "NVFP4"},
+    ],
+    ids=["one_shard_listed", "two_precisions"],
+)
+def test_qwen35_gdn_ba_pair_with_mixed_shards_fails_loudly(shards):
+    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    layers = {"model.language_model.layers.0.linear_attn.in_proj_qkv": {"quant_algo": "FP8"}}
+    for shard, algo in shards.items():
+        layers[f"model.language_model.layers.0.linear_attn.{shard}"] = {"quant_algo": algo}
+    raw = {"quantization_config": {"quant_algo": "MIXED_PRECISION", "quantized_layers": layers}}
+    with pytest.raises(ValueError, match="in_proj_a"):
+        _qwen35_mixed_precision_gemm_modes(raw, common.GEMMQuantMode.fp8_static, allow_checkpoint_split=True)
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
