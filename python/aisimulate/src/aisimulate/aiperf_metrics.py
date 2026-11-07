@@ -72,14 +72,6 @@ class MetricConstraint(BaseModel):
         return metric.value
 
 
-class AIPerfEvaluation(BaseModel):
-    """Aggregate constraints that gate candidates only with strict filtering."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    constraints: list[MetricConstraint] = Field(default_factory=list)
-
-
 class NoSamplesError(ValueError):
     """The report has no qualifying samples for a metric."""
 

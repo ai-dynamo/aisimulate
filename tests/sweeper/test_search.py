@@ -1568,7 +1568,7 @@ def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict
         goal={
             "target": "throughput",
             "strict_sla": strict,
-            "aiperf": {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}]},
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
         },
     )
     result = Sweeper(
@@ -1596,7 +1596,7 @@ def test_strict_constraint_failure_wins_over_missing_objective_samples(monkeypat
         goal={
             "target": "request_latency.p99",
             "strict_sla": True,
-            "aiperf": {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}]},
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
         },
     )
     result = Sweeper(

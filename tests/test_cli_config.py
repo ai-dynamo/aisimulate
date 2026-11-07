@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -1465,42 +1464,6 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
     # Normalization materializes every schema default into the candidate; forward_model is no exception.
     assert prediction["engine"]["workers"]["aggregated"]["timing"]["estimation_mode"] == "op_level"
     assert prediction["engine"]["workers"]["aggregated"]["timing"]["fallback_policy"] == "deny"
-
-
-def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict() -> None:
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.sweeper.config import OptimizationGoal
-    from aisimulate.sweeper.replay import validate_json_value
-
-    raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
-    raw["optimization"]["target"] = "output_token_throughput_per_user.p50"
-    raw["optimization"]["strict_sla"] = True
-    raw["evaluation"] = {
-        "aiperf": {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 9}]}
-    }
-    config = CoreRecommendationConfig.model_validate(raw)
-    smart = recommendation_to_sweeper(config)
-    sample = unroll_sample(
-        search_space=smart.search_space,
-        selection={
-            "deployment_mode": "agg",
-            "backend": "vllm",
-            "agg_max_num_batched_tokens": 8192,
-            "agg_max_num_seqs": 256,
-        },
-        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
-    )
-    deployment = build_backend_deployment(sample, backend_version="test")
-    prediction = _candidate_prediction(
-        config, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
-    )
-    # Saved recommendations require plain JSON values, not enum members.
-    validate_json_value(prediction)
-    # The exported prediction keeps the constraints the search applied.
-    reloaded = CorePredictionConfig.model_validate(json.loads(json.dumps(prediction)))
-    goal = OptimizationGoal.model_validate(prediction_to_replay_spec(reloaded).goal)
-    assert smart.goal.uses_aiperf_metrics
-    assert goal.aiperf == smart.goal.aiperf == config.evaluation.aiperf
 
 
 def _pd_hardware_config(*, recommend=False, **overrides):

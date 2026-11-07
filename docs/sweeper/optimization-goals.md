@@ -134,27 +134,25 @@ report the same fields, so no extra configuration is required:
 | `output_token_throughput_per_user` | `…_output_token_throughput_per_user` | `num_tpot_samples` |
 
 `avg` reads `mean_*` and `p50` reads `median_*`. Optional aggregate constraints live in
-`evaluation.aiperf`. A recommendation copies `evaluation` into every exported
-prediction configuration.
+`optimization.constraints.metrics`.
 
 ```yaml
-evaluation:
-  aiperf:
-    constraints:
+optimization:
+  target: throughput_per_gpu
+  strict_sla: true
+  constraints:
+    metrics:
       - metric: output_token_throughput_per_user.p50
         operator: gte
         threshold: 50
       - metric: time_to_first_token.p99
         operator: lte
         threshold: 2000
-optimization:
-  target: throughput_per_gpu
-  strict_sla: true
 ```
 
 Set `target: request_latency.p99` to minimize request latency p99 instead.
-The SDK uses `OptimizationGoal.aiperf` with the same fields. `predict` reports the
-statistics but does not reject a configuration that violates a constraint.
+The SDK uses `OptimizationGoal.metric_constraints` for the same list. `predict` reports
+the statistics but has no constraints.
 Each entry requires `metric`, `operator` (`lte` or `gte`), and a finite,
 nonnegative `threshold`. Equality passes. A selector with no qualifying samples
 fails strict constraints and cannot qualify an objective, even though the

@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from aisimulate.aiperf_metrics import AIPerfMetric, NoSamplesError, metric_value
+from aisimulate.config.cli import CoreRecommendationConfig
+from aisimulate.recommend import _goal
 from aisimulate.sweeper.config import Candidate, OptimizationGoal
 from aisimulate.sweeper.score import aggregate_sla_violations, analyze_candidates, make_candidate
 
@@ -57,9 +59,7 @@ def test_scoring_is_independent_of_strict_rejection():
     report = native(100.0, 1.0, output_throughput_tok_s=1000)
     goal = OptimizationGoal(
         target="throughput",
-        aiperf={
-            "constraints": [{"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 101}]
-        },
+        metric_constraints=[{"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 101}],
     )
     candidate = make_candidate({"used_gpus": 1}, report, goal.target)
     assert analyze_candidates([candidate], goal) == [candidate]
@@ -75,3 +75,28 @@ def test_aiperf_metrics_work_as_pareto_axes():
     candidate = make_candidate({"used_gpus": 1}, report, goal.target, pareto_objectives=goal.resolved_pareto_objectives)
     assert candidate.objectives == {"throughput": 100, "request_latency.p99": 20}
     assert analyze_candidates([candidate], goal) == [candidate]
+
+
+def test_recommend_forwards_metric_constraints_to_the_search_goal():
+    raw = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "workers": {"aggregated": {}},
+        },
+        "optimization": {
+            "target": "request_latency.p99",
+            "strict_sla": True,
+            "constraints": {
+                "metrics": [{"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 50}]
+            },
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(raw)
+    goal = OptimizationGoal.model_validate(_goal(config))
+    assert goal.target is AIPerfMetric.LATENCY_P99
+    assert goal.metric_constraints == config.optimization.constraints.metrics
+    raw["optimization"]["constraints"] = {}
+    with pytest.raises(ValidationError, match="strict_sla requires"):
+        CoreRecommendationConfig.model_validate(raw)

@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
-from ..aiperf_metrics import AIPerfEvaluation, AIPerfMetric, MetricConstraint
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
@@ -122,8 +122,8 @@ class OptimizationGoal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: OptimizationTarget | AIPerfMetric = OptimizationTarget.THROUGHPUT
-    # AIPerf request metrics and their strict aggregate constraints.
-    aiperf: AIPerfEvaluation | None = None
+    # Aggregate AIPerf metric constraints, enforced only with strict_sla.
+    metric_constraints: list[MetricConstraint] = Field(default_factory=list)
     # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
     sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
@@ -138,11 +138,7 @@ class OptimizationGoal(BaseModel):
     @property
     def uses_aiperf_metrics(self) -> bool:
         targets = self.resolved_pareto_objectives if self.is_pareto else [self.target]
-        return self.aiperf is not None or any(isinstance(target, AIPerfMetric) for target in targets)
-
-    @property
-    def metric_constraints(self) -> list[MetricConstraint]:
-        return self.aiperf.constraints if self.aiperf is not None else []
+        return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
 
     @property
     def requires_aggregate_sla(self) -> bool:

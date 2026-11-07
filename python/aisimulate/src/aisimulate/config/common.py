@@ -13,7 +13,7 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..aiperf_metrics import AIPerfEvaluation, AIPerfMetric
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 
 
 class StrictModel(BaseModel):
@@ -139,7 +139,6 @@ class SlaConfig(StrictModel):
 
 class EvaluationConfig(StrictModel):
     sla: SlaConfig | None = None
-    aiperf: AIPerfEvaluation | None = None
 
 
 class ResourceConfig(StrictModel):
@@ -159,6 +158,7 @@ class ExecutionConfig(StrictModel):
 
 
 class CandidateConstraints(StrictModel):
+    metrics: list[MetricConstraint] = Field(default_factory=list)
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
     min_goodput_rps: PositiveFiniteFloat | None = None
