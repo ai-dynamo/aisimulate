@@ -771,6 +771,16 @@ def build_site(
     _build_feature_matrix(repo_root, output_dir, accuracy_refs)
     _build_accuracy_catalog(repo_root, output_dir, accuracy_refs, accuracy_artifacts)
     _build_fpm_catalog(repo_root, output_dir, accuracy_refs, fpm_artifacts)
+    # The publisher also imports this module to validate historical InfX snapshots.
+    from scripts.pages.agentx_pages import package as package_agentx
+
+    branches = json.loads((output_dir / "e2e-accuracy/branches.json").read_text())["branches"]
+    package_agentx(
+        repo_root,
+        output_dir / "e2e-accuracy/agentx",
+        [entry["branch"] for entry in branches],
+        accuracy_artifacts / "agentx" if accuracy_artifacts else None,
+    )
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 

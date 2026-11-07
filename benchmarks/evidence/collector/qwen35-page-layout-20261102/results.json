@@ -1,0 +1,872 @@
+[
+  {
+    "batch": 1,
+    "length": 4096,
+    "repeat": 0,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "4096",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.056314667065938316"
+      }
+    ],
+    "seconds": 7.32569507881999,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 246.89 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 4096,
+    "repeat": 0,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "4096",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.05595199763774872"
+      }
+    ],
+    "seconds": 0.04611452994868159,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 247.32 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 4096,
+    "repeat": 1,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "4096",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.05599466462930044"
+      }
+    ],
+    "seconds": 0.06166802905499935,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 248.26 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 4096,
+    "repeat": 1,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "4096",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.056314667065938316"
+      }
+    ],
+    "seconds": 0.04178728396072984,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 248.26 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 4096,
+    "repeat": 2,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "4096",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.056218668818473816"
+      }
+    ],
+    "seconds": 0.04649183992296457,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 248.58 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 4096,
+    "repeat": 2,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "4096",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.055871998270352684"
+      }
+    ],
+    "seconds": 0.03843780094757676,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 249.07 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 16384,
+    "repeat": 0,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "16384",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "1.5414080619812012"
+      }
+    ],
+    "seconds": 0.06763587798923254,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 273.33 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 16384,
+    "repeat": 0,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "16384",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "1.5352692604064941"
+      }
+    ],
+    "seconds": 0.08048550691455603,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 31, 291.23 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 16384,
+    "repeat": 1,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "16384",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "1.548847993214925"
+      }
+    ],
+    "seconds": 0.07312725717201829,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 319.67 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 16384,
+    "repeat": 1,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "16384",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "1.5453759829203289"
+      }
+    ],
+    "seconds": 0.06954578775912523,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1935 MHz, 35, 340.84 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 16384,
+    "repeat": 2,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "16384",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "1.5482452710469563"
+      }
+    ],
+    "seconds": 0.06162778986617923,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2025 MHz, 39, 360.71 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 16384,
+    "repeat": 2,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "16384",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "1.528506596883138"
+      }
+    ],
+    "seconds": 0.07235895097255707,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 36, 382.67 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 24576,
+    "repeat": 0,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "24576",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.9553439617156982"
+      }
+    ],
+    "seconds": 0.05946085695177317,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 394.79 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 24576,
+    "repeat": 0,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "24576",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.9565707047780355"
+      }
+    ],
+    "seconds": 0.05796435568481684,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 403.38 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 24576,
+    "repeat": 1,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "24576",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.9571200211842855"
+      }
+    ],
+    "seconds": 0.05549076106399298,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 32, 408.60 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 24576,
+    "repeat": 1,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "24576",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.9566187063852946"
+      }
+    ],
+    "seconds": 0.053753132931888103,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 391.67 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 24576,
+    "repeat": 2,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "24576",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.9566613038380941"
+      }
+    ],
+    "seconds": 0.05693055409938097,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 401.11 W, 1100.00 W\n"
+  },
+  {
+    "batch": 1,
+    "length": 24576,
+    "repeat": 2,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "1",
+        "isl": "24576",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "0.9461226463317871"
+      }
+    ],
+    "seconds": 0.061093681026250124,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2032 MHz, 33, 394.43 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 32768,
+    "repeat": 0,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "32768",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "6.167738596598308"
+      }
+    ],
+    "seconds": 0.13103416515514255,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1380 MHz, 44, 436.05 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 32768,
+    "repeat": 0,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "32768",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "6.043173472086589"
+      }
+    ],
+    "seconds": 0.11442656721919775,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1335 MHz, 44, 475.52 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 32768,
+    "repeat": 1,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "32768",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "6.047594706217448"
+      }
+    ],
+    "seconds": 0.12353472365066409,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2010 MHz, 37, 501.75 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 32768,
+    "repeat": 1,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "32768",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "5.999530792236328"
+      }
+    ],
+    "seconds": 0.11473476001992822,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1575 MHz, 45, 581.11 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 32768,
+    "repeat": 2,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "32768",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "6.139354705810547"
+      }
+    ],
+    "seconds": 0.10478913830593228,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1350 MHz, 46, 649.58 W, 1100.00 W\n"
+  },
+  {
+    "batch": 4,
+    "length": 32768,
+    "repeat": 2,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "4",
+        "isl": "32768",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "6.248303731282552"
+      }
+    ],
+    "seconds": 0.12047866405919194,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 2002 MHz, 42, 677.22 W, 1100.00 W\n"
+  },
+  {
+    "batch": 16,
+    "length": 40960,
+    "repeat": 0,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "16",
+        "isl": "40960",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "41.315338134765625"
+      }
+    ],
+    "seconds": 0.5460669388994575,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1245 MHz, 48, 872.87 W, 1100.00 W\n"
+  },
+  {
+    "batch": 16,
+    "length": 40960,
+    "repeat": 0,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "16",
+        "isl": "40960",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "41.26764170328776"
+      }
+    ],
+    "seconds": 0.5658665718510747,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1837 MHz, 41, 954.33 W, 1100.00 W\n"
+  },
+  {
+    "batch": 16,
+    "length": 40960,
+    "repeat": 1,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "16",
+        "isl": "40960",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "41.65967051188151"
+      }
+    ],
+    "seconds": 0.5256489566527307,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1185 MHz, 48, 1039.05 W, 1100.00 W\n"
+  },
+  {
+    "batch": 16,
+    "length": 40960,
+    "repeat": 1,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "16",
+        "isl": "40960",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "41.09219614664713"
+      }
+    ],
+    "seconds": 0.5409113909117877,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1230 MHz, 49, 1059.86 W, 1100.00 W\n"
+  },
+  {
+    "batch": 16,
+    "length": 40960,
+    "repeat": 2,
+    "mode": "native16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "16",
+        "isl": "40960",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "40.94308217366537"
+      }
+    ],
+    "seconds": 0.530551535077393,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1245 MHz, 50, 956.09 W, 1100.00 W\n"
+  },
+  {
+    "batch": 16,
+    "length": 40960,
+    "repeat": 2,
+    "mode": "manager528_kernel16",
+    "status": "passed",
+    "rows": [
+      {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B300 SXM6 AC",
+        "op_name": "context_attention",
+        "kernel_source": "vllm_flashinfer_trtllmprefill",
+        "batch_size": "16",
+        "isl": "40960",
+        "num_heads": "4",
+        "num_key_value_heads": "1",
+        "head_dim": "256",
+        "beam_width": "1",
+        "attn_dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "step": "0",
+        "window_size": "0",
+        "latency": "41.2772471110026"
+      }
+    ],
+    "seconds": 0.5476338258013129,
+    "gpu_state": "NVIDIA B300 SXM6 AC, GPU-6b384144-fbb9-6079-94c4-b22d048ddf02, 1837 MHz, 42, 967.94 W, 1100.00 W\n"
+  }
+]

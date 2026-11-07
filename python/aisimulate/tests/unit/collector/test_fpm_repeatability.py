@@ -21,6 +21,8 @@ from collector.fpm_forward.native_artifact import (
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.runtime_memory import validate_saved_plan
 
+from aisimulate.fpm_contract import FPM_POWER_MIN_WINDOW_S
+
 from .test_fpm_measurement_evidence import _add_measurement_protocol, _remove_execution_protocol
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _native_payload, _write_provenance
@@ -1082,7 +1084,7 @@ def test_repeat_plans_keep_the_source_power_window(campaign, tmp_path):
     assert repeat.options.measure_power is True
     # Each repeat attempt runs its own window; repeats compare latency only.
     args = runner._cell_generator_overrides(repeat, repeat.cells[0], {})["params"]["agg"]["extra_cli_args"]
-    assert args[args.index("--benchmark-power-window-s") + 1] == "1.0"
+    assert args[args.index("--benchmark-power-window-s") + 1] == str(FPM_POWER_MIN_WINDOW_S)
 
 
 def test_cli_preview_uses_saved_plan_without_model_or_gpu_arguments(campaign, tmp_path, monkeypatch, capsys):

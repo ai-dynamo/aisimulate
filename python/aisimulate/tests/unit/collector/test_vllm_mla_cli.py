@@ -5,6 +5,7 @@
 import argparse
 import ast
 import gc
+import os
 import sys
 import traceback
 from contextlib import contextmanager
@@ -12,7 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from collector.case_generator import get_mla_module_model_specs, get_mla_module_precision_specs
+from collector.case_generator import get_mla_module_model_specs
+from collector.op_plans import plan
 from collector.registry_types import PerfFile
 
 pytestmark = pytest.mark.unit
@@ -21,7 +23,8 @@ SOURCE = Path(__file__).resolve().parents[3] / "collector/vllm/collect_mla_modul
 
 @pytest.fixture
 def cli(monkeypatch):
-    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    # The CLI targets --model the way collect.py does, through the environment; restore it.
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     calls = []
     inference_active = False
 
@@ -41,26 +44,15 @@ def cli(monkeypatch):
         assert inference_active
         calls.append(kwargs)
 
-    sweep = SimpleNamespace(
-        inner_sweep_head_counts=[8],
-        context_batch_sizes=[1],
-        context_sequence_lengths=[128],
-        context_max_tokens=8192,
-        context_prefix_lengths=[0, 131072],
-        generation_batch_sizes=[1],
-        generation_sequence_lengths=[8193],
-        generation_max_tokens=2**25,
-    )
     namespace = {
         "argparse": argparse,
         "gc": gc,
+        "os": os,
         "traceback": traceback,
         "PerfFile": PerfFile,
         "get_mla_module_model_specs": get_mla_module_model_specs,
-        "get_mla_module_precision_specs": get_mla_module_precision_specs,
-        "get_mla_module_sweep_spec": lambda backend: sweep,
+        "plan": plan,
         "get_sm_version": lambda: 100,
-        "_device_total_memory_bytes": lambda: None,
         "run_mla_module": measure,
         "torch": SimpleNamespace(
             inference_mode=inference_mode,
@@ -68,18 +60,9 @@ def cli(monkeypatch):
         ),
     }
     # vLLM is absent in CPU CI. Execute the actual entrypoint and its actual
-    # helpers; only the native GPU call and sweep size are replaced. Model and
-    # precision selection still read the real case YAML.
-    names = {
-        "_supported_model_map",
-        "_get_precision_combos",
-        "_dsa_context_point_allowed",
-        "_dsa_context_budgets",
-        "get_context_test_cases",
-        "get_generation_test_cases",
-        "run_mla_module_worker",
-        "main",
-    }
+    # helpers; only the native GPU call is replaced. Model, precision and point
+    # selection read the real op plans and case YAML.
+    names = {"_supported_model_map", "_perf_file_for", "run_mla_module_worker", "main"}
     tree = ast.parse(SOURCE.read_text())
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(functions) == len(names)
@@ -111,25 +94,30 @@ def test_explicit_checkpoint_alias_is_preserved(cli):
     assert calls[0]["gemm_type"] == "nvfp4"
 
 
-def test_dsa_context_cli_passes_declared_cached_prefix_to_native_worker(cli):
+def test_dsa_context_cli_runs_the_plan_rows_of_the_targeted_checkpoint(cli):
     calls = cli(
         "--mode", "context", "--model", "zai-org/GLM-5.2", "--gemm-type", "fp8_block", "--kv-cache-dtype", "fp8"
     )
-    assert [(row["seq_len"], row["prefix_len"]) for row in calls] == [(128, 0), (128, 131072)]
-    assert all(row["batch_size"] == 1 and row["num_heads"] == 8 for row in calls)
-    assert all(row["gemm_type"] == "fp8_block" and row["perf_filename"] == PerfFile.DSA_CONTEXT_MODULE for row in calls)
+    assert calls
+    assert {(row["model_path"], row["gemm_type"], row["kv_cache_dtype"]) for row in calls} == {
+        ("zai-org/GLM-5.2", "fp8_block", "fp8")
+    }
+    assert all(row["perf_filename"] == PerfFile.DSA_CONTEXT_MODULE for row in calls)
+    # Each row lists its (isl, prefix) points; the cached prefix reaches GLM-5.2's context.
+    points = [tuple(point) for row in calls for point in row["seq_len"]]
+    assert all(row["prefix_len"] == 0 for row in calls)
+    assert (1, 1048575) in points and max(s + p for s, p in points) == 1048576
 
 
 @pytest.mark.parametrize(
-    "phase,model,expected_length",
-    [("context", "deepseek-ai/DeepSeek-V3", 128), ("generation", "zai-org/GLM-5.2", 8193)],
+    "phase,model",
+    [("context", "deepseek-ai/DeepSeek-V3"), ("generation", "zai-org/GLM-5.2")],
 )
-def test_six_field_cases_keep_zero_prefix_and_their_full_coordinate(cli, phase, model, expected_length):
+def test_rows_without_a_prefix_list_their_lengths(cli, phase, model):
     calls = cli("--mode", phase, "--model", model, "--gemm-type", "bfloat16", "--kv-cache-dtype", "bfloat16")
-    assert len(calls) == 1
-    assert calls[0]["seq_len"] == expected_length
-    assert calls[0]["prefix_len"] == 0
-    assert calls[0]["model_path"] == model
+    assert calls
+    assert all(isinstance(length, int) for row in calls for length in row["seq_len"])
+    assert all(row["prefix_len"] == 0 and row["model_path"] == model for row in calls)
 
 
 def test_msa_model_is_not_routed_into_an_mla_dsa_entrypoint(cli):

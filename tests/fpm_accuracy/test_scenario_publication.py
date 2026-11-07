@@ -15,6 +15,7 @@ import pytest
 import test_scenarios as scenario_fixtures
 from test_evaluation import Predictor
 from test_evaluation import case as source_case_fixture
+from test_publication import job, run
 
 import scripts.pages.prepare_fpm_accuracy_pages as publish
 from scripts.fpm_accuracy.contract import METHODS, artifact_key
@@ -26,8 +27,17 @@ from scripts.pages.build_pages_site import PagesBuildError, _build_fpm_catalog
 from scripts.pages.prepare_fpm_accuracy_pages import unpack
 
 public_scenarios = scenario_fixtures.public_scenarios
+normalized_public_scenarios = scenario_fixtures.normalized_public_scenarios
 recording = scenario_fixtures.recording
 scenario_case = scenario_fixtures.scenario_case
+
+
+def _scenario_version(document, version):
+    document = deepcopy(document)
+    document.update(schema_version=version, protocol_id=f"fpm-scenarios-v{version}")
+    if version == 13:
+        del document["protocol_metadata"]["offline_regression_seed_order"]
+    return document
 
 
 @pytest.fixture
@@ -146,6 +156,36 @@ def test_qualified_scenarios_and_legacy_campaigns_are_accepted(public_scenarios,
     assert unpack(_archive(_files(document, summary, version))) == summary
 
 
+def test_v13_archive_retains_the_original_protocol_contract(public_scenarios):
+    document, summary = public_scenarios
+    document = _scenario_version(document, 13)
+    # Canonical metadata from 9f4819e2, before the v14 seed-order addition.
+    metadata = json.dumps(document["protocol_metadata"], sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(metadata).hexdigest() == "736a75ee7b6d1e8c1ae4f10046f318e7500a121b99a0b749f17435b92b5bc9dd"
+    assert unpack(_archive(_files(document, summary))) == summary
+
+
+@pytest.mark.parametrize("version", [13, 14])
+@pytest.mark.parametrize("field", ["protocol_id", "protocol_metadata"])
+def test_protocol_versions_cannot_exchange_identity_or_metadata(public_scenarios, version, field):
+    document, summary = public_scenarios
+    changed = _scenario_version(document, version)
+    changed[field] = _scenario_version(document, 14 if version == 13 else 13)[field]
+    message = "unsupported scenario protocol" if field == "protocol_id" else "scenario protocol description mismatch"
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        unpack(_archive(_files(changed, summary)))
+
+
+def test_seed_normalization_remains_exclusive_to_v14(normalized_public_scenarios):
+    document, summary = normalized_public_scenarios
+    assert unpack(_archive(_files(document, summary))) == summary
+    with pytest.raises(ValueError, match="^unexpected or missing public fields$"):
+        unpack(_archive(_files(_scenario_version(document, 13), summary)))
+    document["rows"][0]["results"]["a"]["linear"]["seed_target_normalization"]["effective_targets_sha256"] = "bad"
+    with pytest.raises(ValueError, match="^invalid SHA$"):
+        unpack(_archive(_files(document, summary)))
+
+
 def test_scenario_validation_preserves_non_ready_source_rows(mixed_status_campaign):
     document, summary, _ = mixed_status_campaign
     assert summary["rows"][1]["results"] == {}
@@ -182,10 +222,11 @@ def test_scenario_checksum_is_verified_before_publication(public_scenarios):
         unpack(_archive(files))
 
 
-def test_old_local_protocol_cannot_be_published_as_strict_c(public_scenarios):
+@pytest.mark.parametrize("version", [12, 15, True])
+def test_unsupported_protocol_cannot_be_published_as_strict_c(public_scenarios, version):
     document, summary = deepcopy(public_scenarios)
-    document.update(schema_version=12, protocol_id="fpm-scenarios-v12")
-    with pytest.raises(ValueError):
+    document.update(schema_version=version, protocol_id=f"fpm-scenarios-v{version}")
+    with pytest.raises(ValueError, match="^unsupported scenario schema$"):
         unpack(_archive(_files(document, summary)))
 
 
@@ -224,7 +265,7 @@ def test_native_diagnostic_extensions_remain_publishable(public_scenarios):
 def test_recomputed_checksum_cannot_hide_invalid_split_grid(public_scenarios, change):
     original, summary = public_scenarios
     document = deepcopy(original)
-    assert document["schema_version"] == 13
+    assert document["schema_version"] == 14
     row = document["rows"][0]
     splits = row["split_results"]
     if change == "missing_ratio":
@@ -284,7 +325,7 @@ def test_pages_builder_copies_scenarios_without_changing_evidence(tmp_path, publ
     emitted = output / "fpm-accuracy" / "branches" / key / "scenarios.json"
     assert json.loads(emitted.read_text()) == public_scenarios[0]
     published = json.loads(emitted.read_text())
-    assert published["schema_version"] == 13
+    assert published["schema_version"] == 14
     assert set(published["rows"][0]["split_results"]) == {str(value) for value in range(10, 100, 10)}
     catalog = json.loads((output / "fpm-accuracy" / "branches.json").read_text())
     assert catalog["branches"][0]["status"] == "available"
@@ -366,6 +407,49 @@ def test_prepare_keeps_scenarios_with_the_selected_summary_snapshot(
         assert json.loads(scenario_path.read_text())["snapshot"] == snapshots[1]
 
 
+@pytest.mark.parametrize("versions", [(13,), (13, 14)])
+def test_prepare_preserves_v13_summary_details_and_history(tmp_path, public_scenarios, monkeypatch, versions):
+    key = artifact_key("main")
+    producers, records, payloads, listings = [], [], {}, {}
+    for index, version in enumerate(versions):
+        document, summary = deepcopy(public_scenarios)
+        summary["snapshot"].update(
+            run_id=str(123 + index),
+            commit_sha=str(index + 1) * 40,
+            completed_at=f"2026-09-17T{10 + index}:00:00+00:00",
+        )
+        document["snapshot"] = deepcopy(summary["snapshot"])
+        document = _scenario_version(document, version)
+        files = _files(document, summary)
+        producer = {**run(summary), "id": 123 + index}
+        producers.append(producer)
+        records.append((summary, files))
+        payloads[f"actions/runs/{producer['id']}"] = producer
+        payloads[f"actions/artifacts/{producer['id']}/zip"] = _archive(files)
+        listings[f"actions/runs/{producer['id']}/artifacts"] = [
+            {"id": producer["id"], "name": f"fpm-accuracy-web-{key}", "expired": False}
+        ]
+        listings[f"actions/runs/{producer['id']}/attempts/1/jobs"] = [job(producer)]
+    monkeypatch.setattr(publish, "completed_runs", lambda: reversed(producers))
+    monkeypatch.setattr(publish, "api", lambda endpoint, **kwargs: payloads[endpoint])
+    monkeypatch.setattr(publish, "api_items", lambda endpoint, kind: listings[endpoint])
+    monkeypatch.setattr(publish, "ancestor", lambda *args: True)
+    monkeypatch.setattr(publish.subprocess, "check_output", lambda *args, **kwargs: "")
+    output = tmp_path / "prepared"
+    publish.prepare(Path(__file__).resolve().parents[2], output)
+
+    latest_summary, latest_files = records[-1]
+    assert json.loads((output / f"{key}.json").read_text()) == latest_summary
+    assert (output / f"{key}-scenarios.json").read_bytes() == latest_files["scenarios.json"]
+    dashboard = output / "dashboard"
+    history = json.loads((dashboard / "history.json").read_text())["entries"]
+    assert len(history) == len(records)
+    for entry, (summary, files) in zip(history, records, strict=True):
+        assert entry["snapshot"] == summary["snapshot"]
+        assert json.loads((dashboard / entry["summary_path"]).read_text()) == summary
+        assert (dashboard / entry["details_path"]).read_bytes() == files["details.json"]
+
+
 @pytest.mark.parametrize("with_scenarios", [False, True])
 @pytest.mark.parametrize(
     "mode", ["hub", "local", "smoke", "hf_revision_mismatch", "evaluation_failure", "oversized", "mixed_statuses"]
@@ -408,9 +492,9 @@ def test_cli_qualifies_only_complete_pinned_snapshots(
         ),
     )
     monkeypatch.setattr(
-        cli.importlib.metadata,
-        "distribution",
-        lambda name: SimpleNamespace(
+        cli,
+        "installed_distribution",
+        lambda: SimpleNamespace(
             read_text=lambda filename: json.dumps({"archive_info": {"hashes": {"sha256": wheel_hash}}})
         ),
     )

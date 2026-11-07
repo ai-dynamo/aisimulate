@@ -2656,6 +2656,15 @@ impl PyForwardPassPerfModel {
             .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
     }
 
+    /// Preparation-only normalization of marked targets in the native FPM profile.
+    fn fpm_seed_target_normalization(&self, py: Python<'_>) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| self.inner.fpm_seed_target_normalization())
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result)
+            .map_err(|error| PyValueError::new_err(format!("FPM seed targets serialize: {error}")))
+    }
+
     fn predict_prefill_latency_total(
         &self,
         py: Python<'_>,

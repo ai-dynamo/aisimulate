@@ -16,18 +16,18 @@ that must own every GPU at once, so ``collect.py`` invokes
 finalizes the produced CSV as parquet.
 """
 
-import json
 import os
 import socket
 import sys
 import traceback
 from pathlib import Path
 
+from collector.helper import get_sm_version
+from collector.op_plans import plan_cases
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR_ROOT = os.path.dirname(os.path.dirname(THIS_DIR))  # collector/
-REPO_ROOT = os.path.dirname(COLLECTOR_ROOT)
 DEEPEP_DIR = os.path.join(THIS_DIR, "deepep")
-MODEL_CONFIGS_DIR = os.path.join(REPO_ROOT, "src", "aisimulate_core", "model_configs")
 
 try:
     from collector.registry_types import PerfFile
@@ -71,57 +71,8 @@ def _ensure_low_latency_qp_depth(max_tokens: int) -> None:
         os.environ["NVSHMEM_QP_DEPTH"] = str(min_qp_depth)
 
 
-def _iter_moe_configs():
-    """Yield (hidden_size, num_experts, topk) from every MoE model config.
-
-    Handles the field-name variants across DeepSeek / Qwen / Llama / MiniMax /
-    GPT-OSS, including VL models that nest the language config under
-    ``text_config``.
-    """
-    if not os.path.isdir(MODEL_CONFIGS_DIR):
-        return
-    for filename in sorted(os.listdir(MODEL_CONFIGS_DIR)):
-        if not filename.endswith("_config.json"):
-            continue
-        try:
-            with open(os.path.join(MODEL_CONFIGS_DIR, filename)) as f:
-                cfg = json.load(f)
-        except (OSError, ValueError):
-            continue
-        text_cfg = cfg.get("text_config") or {}
-        num_experts = (
-            cfg.get("n_routed_experts")
-            or cfg.get("num_experts")
-            or cfg.get("num_local_experts")
-            or text_cfg.get("n_routed_experts")
-            or text_cfg.get("num_experts")
-            or text_cfg.get("num_local_experts")
-        )
-        topk = (
-            cfg.get("num_experts_per_tok")
-            or cfg.get("moe_topk")
-            or cfg.get("num_experts_per_token")
-            or cfg.get("topk")
-            or text_cfg.get("num_experts_per_tok")
-        )
-        hidden = cfg.get("hidden_size") or text_cfg.get("hidden_size")
-        if num_experts and topk and hidden:
-            yield int(hidden), int(num_experts), int(topk)
-
-
 def get_deepep_ll_test_cases():
-    """Return unique structural ``(hidden_size, num_experts, topk)`` MoE combos.
-
-    Tokens are swept internally by the benchmark, so each case is one structural
-    shape. The public plan intentionally includes every discovered MoE shape.
-    Framework kernel limitations are observed as per-case failures at runtime,
-    rather than silently changing the plan.
-    """
-    combos = set(_iter_moe_configs())
-    return [
-        {"hidden_size": hidden, "num_experts": num_experts, "topk": topk}
-        for hidden, num_experts, topk in sorted(combos)
-    ]
+    return plan_cases("deepep_ll", "sglang", get_sm_version())
 
 
 def _verify_token_coverage(output_path, tokens, cases):

@@ -10,25 +10,23 @@ binds both to this producer's checkpoint:
   extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
 """
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 
 import torch
-from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from sgl_kernel import sgl_per_token_quant_fp8
 
 _OUTSIDE_LOOP_COUNT = 5
 
 
 def get_computescale_test_cases():
-    if get_sm_version() <= 86:
-        return []
-    return [[case.m, case.k] for case in get_compute_scale_case_specs()]
+    return plan_cases("compute_scale", "sglang", get_sm_version())
 
 
 def _static_quantize_e4m3_per_tensor(x: torch.Tensor, scale: torch.Tensor, out: torch.Tensor) -> torch.Tensor:

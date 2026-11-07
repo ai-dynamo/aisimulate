@@ -85,6 +85,9 @@ class ModelConfig:
     # Internal provenance carried through dataclasses.replace() during sweeps.
     # None preserves the legacy direct-caller rule (non-None mode is explicit).
     _gemm_quant_mode_is_explicit: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
+    # Set by the Task when its data-driven FMHA fallback chose this fmha_quant_mode because the
+    # reachable context table has no fp8 slice; the runtime resolvers then leave it alone.
+    _fmha_quant_mode_from_data: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
     moe_quant_mode: common.MoEQuantMode | None = None
     kvcache_quant_mode: common.KVCacheQuantMode | None = None
     fmha_quant_mode: common.FMHAQuantMode | None = None

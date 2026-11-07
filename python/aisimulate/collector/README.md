@@ -19,6 +19,43 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
+# Optional model-owned long-context coverage
+
+Normal collection retains the shared grid and model geometry coverage. Add
+`--include-long-context` to collect the additional correlated points declared
+on selected model rows; it defaults to off. A model selection or
+`--model-cases-full` is required. Existing long-context points in the normal
+shared module grid remain enabled.
+
+```bash
+python collect.py --backend sglang --model-path zai-org/GLM-5.2 --ops dsa_generation_module --include-long-context
+python collect.py --backend sglang --model-cases-full --sm 103 --plan-only --include-long-context
+```
+
+The optional points reuse the native geometry, actual projection precision and
+existing framework dispatch. Model context limits validate declarations; they
+do not automatically request every length or batch. Workers receive explicit
+points and retain grouped setup. No environment switch changes their rows.
+`--plan-only` reports the selected mode and hashes its actual case list. Use
+separate checkpoint/output roots for before/after cost experiments; changing a
+group's point list changes its existing task ID and can repeat its older points
+on resume, while preventing newly added points from being skipped.
+
+See [the declaration fields](cases/README.md#optional-long-context-points) and
+[coverage rationale](cases/README.md#choosing-coverage). Collection-cost
+estimates count setup changes, point preparation, warmup/capture and timed
+forwards; scheduler wait and GPU allocation overhead are excluded.
+
+Kimi-K3 adds no optional MLA long-context points yet: pinned vLLM 0.30.0
+[`MultiHeadLatentAttention`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/kimi_k3/nvidia/mla.py#L136)
+uses NoPE and fused cache operations that the existing generic DeepSeek module
+does not reproduce. A native adapter needs cache registration/binding, absorbed
+weight processing, forward/metadata and FP8 policy support, plus a consumer
+review of its output-gate timing boundary and silicon qualification. See the
+[deferred extension](cases/README.md#deferred-kimi-k3-mla-extension).
+Normal coverage and independent KDA width additions remain enabled; the missing
+native long-context route is an unmeasured gap, not zero collection cost.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
@@ -75,11 +112,17 @@ to parquet under
 
 # Model-centric cases and healing runs
 
+TRT-LLM MoE workers refuse a case before module allocation when its local
+resident expert weights alone exceed live device capacity. This lower bound
+accounts for gated/non-gated matrices and TP/EP sharding; passing it does not
+establish room for scales, inputs, outputs, graph buffers or native workspace.
+Those later allocation failures remain recorded failures rather than hidden
+shape exclusions. Plans remain independent of device memory.
+
 The model-centric case layer (introduced as "collector v2") is how collection
 coverage is declared, and it is unchanged under Collector V3 — V3 adds
 op-centric *management* on top (per-family runtime pins, provenance sidecars,
-declared reuse; see `docs/perf_database/collector-v3-op-centric-design.md`),
-it does not replace how cases are declared or healed. A healing run collects
+declared reuse), it does not replace how cases are declared or healed. A healing run collects
 cases for a specific model/GPU pair instead of running every op bucket and
 hoping the support matrix improves. Use `--model-cases-full` when you want
 the case YAML to define a full model-centric run. Omitting all model-case
@@ -118,14 +161,14 @@ Case files (see `cases/README.md` for the full authoring guide):
 ```text
 cases/base_ops/<op>.yaml               — shared sweep recipes (interpolation grid)
 cases/models/<architecture>_cases.yaml — op activation + model shape values
-cases/capabilities.yaml                — positive hardware floors (dtype/op -> min SM)
-cases/denylist.yaml                    — hang/node-killer cases only
 model_cases.py                         — resolves which ops a model plan collects
-capabilities.py                        — generation-time capability/denylist filter
+skips.py                               — the one list of cases a collection leaves out
 ```
 
-The plan is one equation: cases = dedup(base grid ∪ model shapes), then
-intersected with hardware capability floors and minus the hang denylist.
+The plan is one equation: cases = dedup(base grid ∪ model shapes), minus what
+`skips.py` skips. For an op with an op plan (`OP_PLANS` in `op_plans.py`),
+`--plan-only` with `--sm` or `--gpu` also prints case counts per dtype and what
+was left out under which entry; `--plan-table DIR` writes one CSV row per case.
 
 TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
 in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
@@ -242,8 +285,8 @@ and `collection_summary_<backend>.json` with a classification and a
 group failing is a fix-me signal (collector bug, unverified combo, framework
 gap), not something to tolerate or auto-skip. Missing points are tolerated
 downstream by interpolation and fallback. Escalation rules — when a failure
-deserves a denylist entry, a registry `unverified` marker, or a capability
-floor — live in `.claude/rules/collector/failure_handling.md`.
+deserves a `skips.py` entry or a registry `unverified` marker — live in
+`.claude/rules/collector/failure_handling.md`.
 
 `--gpu <type>` resolves the SM version from
 `src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an
@@ -308,9 +351,7 @@ resolve a single op's runtime, and
 `collector.framework_manifest.validate_resolution()` to check the whole
 manifest against every backend registry at once — it returns a list of error
 strings (empty = valid) and is the fail-closed CI gate asserting every
-registered op resolves to exactly one pinned runtime. See
-`docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
-design.
+registered op resolves to exactly one pinned runtime.
 
 ## File Naming Convention
 
@@ -471,7 +512,7 @@ raises (`allow_graph_fail=False`, the default) and the case fails classified.
   measurement-method degradation only when it is recorded in the output row.
   `tests/unit/collector/test_no_eager_graph_fallback_sites.py` pins this for
   every file under `collector/`. The last fallback sites (trtllm mamba2 and
-  moe, wideep moe_compute, network trtllm alltoall) were closed on 2026-10-12;
+  moe, wideep moe_compute, network trtllm alltoall) were closed;
   the sglang trtllm_mla prefill (B1) and the trtllm GDN lanes the day before.
 - A collector that sweeps several cells inside one task counts failed cells
   and raises a strict-completeness error at the end (GDN, mamba2), so the
@@ -717,3 +758,70 @@ failures may try smaller eligible token counts; if every attempt fails, the
 case raises before timing or publishing rows. CUDA accelerator errors propagate
 immediately. The successful collection path and historical profile values are
 unchanged by this failure guard.
+
+# Appendix: estimated extra collection time for long-context shapes
+
+These are **provisional planning estimates**, in additional collection GPU-hours
+above the pinned #676 baseline. They price the extra model-owned points enabled
+by `--include-long-context`; the existing baseline anchors remain enabled when
+the flag is off. They are not measured full-sweep totals or confidence bounds.
+The table reflects the frozen pilot inventory; the later MiniMax MXFP8 alias
+coverage correction adds projection-lane points that remain unpriced here.
+
+## Estimated long-context increment
+
+The estimates use each sampled SKU's own framework measurements and the frozen
+added-case inventory. Rounded planning centers across the three frameworks are:
+
+| GPU SKU | vLLM GPUh | SGLang GPUh | TRT-LLM GPUh | Long-context total GPUh |
+|---|---:|---:|---:|---:|
+| L40S | 2.0 | 2.6 | 3.4 | ~8 |
+| H100 SXM | 4.4 | 2.7 | 1.9 | ~9 |
+| H200 SXM | 3.9 | 10.2 | 1.7 | ~16 |
+| B200 SXM | 2.6 | 18.3 | 5.5 | ~26 |
+| B300 SXM | 2.2 | 18.7 | 1.3 | ~22 |
+| GB200 | 3.5 | 9.5 | 4.5 | ~18 |
+| GB300 | 5.6 | 13.9 | 10.6 | ~30 |
+| A100 SXM80 | Unmeasured | Unmeasured | Unmeasured | Unmeasured |
+
+The seven sampled SKUs total **approximately 130 GPU-hours** for the modeled
+long-context work. Rows include explicit analogous-operation provisions where
+native measurements are missing; 1,628 additional history cells still lack a
+same-framework analogue. The table does not establish that every planned shape
+fits memory or has a working native kernel.
+
+Preparation scales with cache/input payload and execution with attention work,
+including the sliding-window cap. Precision, geometry and dispatch extrapolations
+remain assumptions. B300 uses the intended GLM NVFP4 collection recipe and its
+own measurements; these timings do not establish canonical BF16 startup or
+capacity equivalence. Other SKUs do not borrow B300 rates.
+
+Inclusive point clocks contain input/history preparation, warmup, compilation,
+graph capture and forwards. Forward latency is not added again. Existing worker
+initialization is paid once when its group is extended; larger buffers and
+shape-dependent setup can still add cost. Scheduler wait, GPU allocation launch
+and idle reservation are excluded. Operator tests use one physical GPU even when
+their geometry represents a TP rank; actual collective ranks are counted for NCCL.
+
+## Broader expansion budget
+
+The independent MoE token, KDA width and NCCL payload changes add a separate
+**approximately 55 GPU-hours** of planning proxies across the seven sampled SKUs.
+They are outside the history flag and are not part of the 130-hour history total.
+Together, the modeled expansion subtotal is approximately **185 GPU-hours**.
+
+A provisional **eight-SKU working budget of 300 GPU-hours** adds selected reserves
+of 50 GPU-hours for unmeasured A100 work and 65 GPU-hours for remaining cases,
+setup changes and retries. A larger engineering allowance is **750 GPU-hours
+total**, not 750 additional hours. These reserves are budget choices, not measured
+rates, statistical intervals or guarantees of successful coverage. No RTX PRO
+estimate is included in this eight-SKU budget.
+
+The supporting planning calculations, unrounded per-framework values, case
+counts, native/proxy distinctions, source hashes and scratch calculations are
+retained as local campaign artifacts outside this PR, together with the six
+collection-cost audit scripts and their tests. These audit-only scripts are not
+shipped under `tools/perf_database/`. The separate strict audit
+keeps unqualified full totals unknown; these planning figures do not change its
+validation results. Deferred native Kimi coverage is not priced as zero or counted
+as equivalent-coverage savings.

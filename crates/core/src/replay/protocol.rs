@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Replay-owned values that cross workload, placement, reporting, and engine
 //! adapter boundaries.
@@ -114,6 +117,8 @@ pub struct AuthoredKvHints {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectRequest {
     pub tokens: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     pub max_output_tokens: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,

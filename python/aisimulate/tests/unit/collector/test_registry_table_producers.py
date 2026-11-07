@@ -5,9 +5,9 @@
 collect.py's fail-closed finalize binds each staged ``*_perf.txt`` to the
 registry entries that declare it. A collector that writes a second table
 its op did not declare cannot be finalized (first full vllm compute_scale
-run, 2026-09-27: ``scale_matrix_perf.txt has no selected producer``; the
+run: ``scale_matrix_perf.txt has no selected producer``; the
 PerfFile.SCALE_MATRIX enum alone never fixed that). Owner decision
-2026-09-28: the executor supports multi-table producers — ``OpEntry.
+the executor supports multi-table producers — ``OpEntry.
 extra_perf_filenames`` — instead of splitting the op.
 """
 

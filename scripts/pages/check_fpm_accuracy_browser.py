@@ -461,7 +461,7 @@ async def check():
                 # Navigation between the accuracy pages preserves the shared preference.
                 await page.goto(url.replace("fpm-accuracy/", "e2e-accuracy/"))
                 await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
-                await page.get_by_role("button", name="Switch to light theme").click()
+                await page.get_by_role("combobox", name="Color theme").select_option("light")
                 await page.goto(url + "?branch=main")
                 await expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 await expect(page.locator(".overview-model-row")).to_have_count(2)
