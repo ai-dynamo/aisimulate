@@ -602,6 +602,9 @@ mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            // Non-default values, so a round trip cannot pass on serde defaults.
+            state_dtype: "float16".into(),
+            token_width: 4,
         }
     }
 
@@ -1357,6 +1360,32 @@ mod tests {
             EngineSpec::from_bincode(&recorded.to_bincode().unwrap()).unwrap(),
             recorded
         );
+    }
+
+    #[test]
+    fn qualified_mamba_round_trips_and_schema_29_layout_is_rejected() {
+        let spec = EngineSpec::new(
+            sample_engine_config(),
+            vec![],
+            vec![OpSpec::Mamba2(mamba2())],
+        );
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // The op ends in state_dtype (8-byte length + "float16") and
+        // token_width (4); the absent vision section (1) follows it.
+        let tail = bytes.len() - 1 - (8 + 7 + 4);
+        assert_eq!(&bytes[tail..tail + 8], &7u64.to_le_bytes());
+        let mut stale = bytes.clone();
+        stale.drain(tail..bytes.len() - 1);
+        stale[..4].copy_from_slice(&29u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&stale),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 29,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+            })
+        ));
     }
 
     /// A buffer too short to even hold the 4-byte version prefix must fail at the
