@@ -60,8 +60,8 @@ def kv_block_size(monkeypatch):
 
 
 def test_dsa_sparse_mla_runs_at_the_indexer_cache_page(kv_block_size):
-    flashinfer_mla_sparse = _backend(32, 64)  # flashinfer_mla_sparse.py:85-86 @0.30.0
-    dsa_indexer = _backend(64)  # mla/indexer.py:203-204 @0.30.0 (CUDA)
+    flashinfer_mla_sparse = _backend(32, 64)  # flashinfer_mla_sparse.py:85-86
+    dsa_indexer = _backend(64)  # mla/indexer.py:203-204 (CUDA)
     # alone, the sparse MLA backend would pick its own preferred 32 ...
     assert kv_block_size(flashinfer_mla_sparse) == 32
     # ... but serving sizes the cache from the indexer, registered first, and keeps 64

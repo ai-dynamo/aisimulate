@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""tools/perf_database/collect_campaign.py — the invariants a hand-rolled launcher drifted on (sm120, 2026-09-30)."""
+"""tools/perf_database/collect_campaign.py — the invariants a hand-rolled launcher drifted on (sm120)."""
 
 import importlib.util
 import sys
@@ -60,6 +60,30 @@ def test_one_namespace_per_shard_and_readonly_checkout(tmp_path):
     assert '"device=3"' in argv and "/ck:/ais:ro" in argv and argv[argv.index("-w") + 1] == "/out"
     # the mount has no .git and the images no git: provenance gets the commit from the launcher
     assert f"AISIM_COLLECTOR_REF={ref}" in argv
+
+
+def test_targeted_model_and_long_context_reach_collector(tmp_path):
+    c = _load()
+    plan = c.load_plan(
+        _plan(
+            tmp_path,
+            [{"op": "dsa_generation_module", "model_path": "nvidia/GLM-5.2-NVFP4", "include_long_context": True}],
+        )
+    )
+    argv = c.collector_argv(plan, plan.shards[0])
+    assert argv[argv.index("--model-path") + 1] == "nvidia/GLM-5.2-NVFP4"
+    assert "--model-cases-full" not in argv
+    assert "--include-long-context" in argv
+    default_plan = c.load_plan(_plan(tmp_path, [{"op": "gemm"}]))
+    default_argv = c.collector_argv(default_plan, default_plan.shards[0])
+    assert "--model-cases-full" in default_argv
+    assert "--include-long-context" not in default_argv
+
+
+def test_long_context_requires_boolean(tmp_path):
+    c = _load()
+    with pytest.raises(ValueError, match="YAML boolean"):
+        c.load_plan(_plan(tmp_path, [{"op": "gemm", "include_long_context": "false"}]))
 
 
 def test_collector_ref_is_the_clean_checkout_commit(tmp_path):

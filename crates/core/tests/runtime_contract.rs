@@ -6,7 +6,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
+use aisimulate_core::engine::{
+    Backend, EngineConfig, SglangConfig, TimingModel, TimingModelConfig,
+};
 use aisimulate_core::replay::loadgen::ReplayRequestPayload;
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
@@ -26,6 +28,7 @@ fn request(
     output_tokens: usize,
 ) -> ReplayRequest {
     ReplayRequest {
+        cache_salt: None,
         id: id.to_string(),
         arrival_time_ms,
         input_tokens,
@@ -52,6 +55,10 @@ fn aggregated_spec(
         block_size: 4,
         max_num_seqs: 4,
         max_num_batched_tokens: 64,
+        sglang: SglangConfig {
+            num_reserved_decode_tokens: 0,
+            ..SglangConfig::default()
+        },
         timing_model: TimingModelConfig::Fixed {
             prefill_ms: 10.0,
             decode_ms: 2.0,

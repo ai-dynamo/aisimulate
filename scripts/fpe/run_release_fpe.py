@@ -20,6 +20,9 @@ import sys
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.release.package_identity import installed_distribution, wheels
+
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = ("aisimulate/", "aisimulate_core/")
 PROBES = Path("python/aisimulate/tools/support_matrix")
@@ -60,15 +63,15 @@ def identity(source: Path, source_sha: str, tooling_sha: str, branch: str) -> di
 
 
 def wheel_identity(directory: Path) -> tuple[Path, str]:
-    wheels = list(directory.glob("aisimulate-*.whl"))
-    if len(wheels) != 1:
+    matches = wheels(directory)
+    if len(matches) != 1:
         raise ValueError("expected exactly one release wheel")
-    return wheels[0], hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+    return matches[0], hashlib.sha256(matches[0].read_bytes()).hexdigest()
 
 
 def verify_installed_wheel(wheel: Path, *, distribution=None) -> None:
     """Verify package bytes and active import locations, including the native runtime."""
-    dist = distribution or importlib.metadata.distribution("aisimulate")
+    dist = distribution or installed_distribution()
     with zipfile.ZipFile(wheel) as archive:
         for name in archive.namelist():
             if (

@@ -155,6 +155,7 @@ def score_scenario(
     metrics = {workload: Metric() for workload in WORKLOADS}
     predictor = None
     interpolation = None
+    seed_target_normalization = None
     online_model = (
         {"recipe": HYBRID_ONLINE_RECIPE if method == "hybrid" else GBDT_ONLINE_RECIPE, "diagnostics": None}
         if method in ("gbdt", "hybrid") and scenario in ONLINE_SCENARIOS
@@ -207,7 +208,12 @@ def score_scenario(
                     training_count = artifact.row_count
                 else:
                     training_iterations = tuple(bootstrap(case, artifact))
+                    if method == "spline":
+                        from scripts.fpm_accuracy.models.scenario_predictors import order_offline_regression_seeds
+
+                        training_iterations = order_offline_regression_seeds(training_iterations)
                     training_count = len(training_iterations)
+                    seed_target_normalization = _seed_target_normalization_evidence(training_iterations)
                     if not training_iterations:
                         status, reason = (
                             "no_training_data",
@@ -322,6 +328,7 @@ def score_scenario(
         **({"interpolation": interpolation} if interpolation is not None else {}),
         **({"online_model": online_model} if online_model is not None else {}),
         **({"offline_model": offline_model} if offline_model is not None else {}),
+        **({"seed_target_normalization": seed_target_normalization} if seed_target_normalization is not None else {}),
         "artifact": _artifact_evidence(artifact),
         "training_count": training_count,
         "test_count": len(testing),
@@ -342,6 +349,12 @@ def score_scenario(
         },
         **({"online_schedule": schedule} if online else {}),
     }
+
+
+def _seed_target_normalization_evidence(iterations: Sequence) -> dict | None:
+    from scripts.fpm_accuracy.models.scenario_predictors import seed_target_normalization_evidence
+
+    return seed_target_normalization_evidence(iterations)
 
 
 def evaluate_scenario_case(

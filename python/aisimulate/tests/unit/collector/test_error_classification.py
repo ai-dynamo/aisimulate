@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """A collector-raised FIXME(kernel-limit) failure is reported as ``kernel_limit``,
-everything else as ``unexpected`` (pipeline summaries classified by hand until
-2026-10-08). Runs with PYTHONPATH=collector like test_registry_table_producers."""
+everything else as ``unexpected``. Runs with PYTHONPATH=collector like
+test_registry_table_producers."""
 
 import collect
 import pytest

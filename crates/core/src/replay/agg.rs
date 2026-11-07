@@ -27,9 +27,9 @@ use super::telemetry::{
 };
 use super::{
     components::{
-        AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects, EnginePassMode,
-        PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival,
-        TokenizationLatency, TokenizationStage, TrafficAccumulators,
+        AdmissionEvent, AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects,
+        EnginePassMode, PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation,
+        ReplayReadyArrival, TokenizationLatency, TokenizationStage, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -1053,6 +1053,27 @@ where
         })
     }
 
+    /// Tell the placement policy about a request's first admission. Later
+    /// admissions re-run a preempted request; its prefill already started.
+    fn notify_prefill_started(&mut self, admission: &AdmissionEvent) -> anyhow::Result<()> {
+        let Some(state) = self.requests.get_mut(&admission.uuid) else {
+            bail!(
+                "offline replay missing request state for {}",
+                admission.uuid
+            );
+        };
+        if state.prefill_started {
+            return Ok(());
+        }
+        state.prefill_started = true;
+        let placements = self.placement.prefill_started(
+            admission.uuid,
+            admission.reused_input_tokens,
+            self.now_ms,
+        )?;
+        self.dispatch_placements(placements)
+    }
+
     fn handle_engine_effects(
         &mut self,
         effects: EngineEffects<Observation::Batch>,
@@ -1061,7 +1082,7 @@ where
         // generalized-engine boundary as pass-start effects. Preserve the old
         // scheduler contract by making them visible to Replay's collector at
         // the same virtual timestamp before any completion is processed.
-        for admission in effects.admissions {
+        for admission in &effects.admissions {
             if let (Some(telemetry), Some(input)) = (
                 &mut self.telemetry,
                 self.collector.first_admission_input(admission.uuid),
@@ -1102,6 +1123,9 @@ where
             sink.record_pass_start_kv_events(pass_start.at_ms, &pass_start.kv_events)?;
         }
         self.apply_engine_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
+        for admission in &effects.admissions {
+            self.notify_prefill_started(admission)?;
+        }
         for payload in effects.immediate_completions {
             self.process_worker_completion_payload(payload)?;
         }

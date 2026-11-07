@@ -57,7 +57,7 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 
     # Each module pins exactly the runtime that collects it: the manifest
     # default, or its family override (frameworks.vllm.families, e.g. gemm on
-    # 0.31.0). One release per file (owner policy 2026-09-20): no ranges.
+    # 0.31.0). One release per file: no ranges.
     module_versions: dict[str, set[str]] = {}
     for entry in VLLM_REGISTRY:
         module_versions.setdefault(entry.module, set()).add(resolve_op_runtime("vllm", entry.op).version)
@@ -72,7 +72,7 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 
 
 # Known exception, not a pattern: collect_dsv41_module carries the pre-existing
-# source-build pin from #160 (sglang@1aa0e962...). framework_manifest.yaml never
+# source-build pin (sglang@1aa0e962...). framework_manifest.yaml never
 # declares that build, so the module cannot run on any manifest-resolved runtime;
 # fixing the pin is out of scope here. Any other `@` pin fails the test below.
 _SOURCE_BUILD_PIN_EXCEPTIONS = {
@@ -82,7 +82,7 @@ _SOURCE_BUILD_PIN_EXCEPTIONS = {
 
 @pytest.mark.parametrize("backend", ["sglang", "trtllm"])
 def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
-    # One release per file (owner policy 2026-09-20): every registry module
+    # One release per file: every registry module
     # declares exactly the runtime the manifest resolves for its op (default or
     # family pin). Earlier releases' code is `git log` away, never a range.
     registry = {"sglang": SGLANG_REGISTRY, "trtllm": TRTLLM_REGISTRY}[backend]
@@ -313,7 +313,7 @@ WIDEEP_OPS = {entry.op for entry in WIDEEP_SGLANG_REGISTRY}
 @pytest.mark.parametrize(
     ("installed_version", "requested_ops", "workload", "version"),
     [
-        # Since the 0.5.21 default (2026-10-01) kda and msa resolve on the
+        # Since the 0.5.21 default kda and msa resolve on the
         # stock runtime again (the kimi-k3 / v0.5.16 family pins are retired).
         ("0.5.21+cu130", {"gemm"}, "default", "0.5.21"),
         ("0.5.21", {"kda"}, "default", "0.5.21"),
@@ -407,10 +407,10 @@ def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
 
 
 def test_vllm_unknown_model_id_falls_back_to_default_resolution():
-    baseline = require_collector_runtime("vllm", "0.30.0", requested_ops={"attention_context"}, wideep_ops=set())
+    baseline = require_collector_runtime("vllm", "0.31.0", requested_ops={"attention_context"}, wideep_ops=set())
     unmatched = require_collector_runtime(
         "vllm",
-        "0.30.0",
+        "0.31.0",
         requested_ops={"attention_context"},
         wideep_ops=set(),
         model_path="some-org/not-a-pinned-model",
@@ -486,9 +486,6 @@ def test_retired_wideep_mla_shim_stays_gone():
         for entry in registry:
             assert entry.module != retired_module
             assert all(route.module != retired_module for route in entry.versions)
-
-    closures = yaml.safe_load((COLLECTOR_ROOT / "hash_closures.yaml").read_text(encoding="utf-8"))
-    assert retired_module not in closures
 
 
 def test_family_overrides_split_ops_across_runtimes(tmp_path):

@@ -1,0 +1,43 @@
+# Modified derivative of SGLang e087e662ba1ac4ef7747537e2a9141085efd4561, python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+# Source: https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+# Apache-2.0; upstream copyright and license: licenses/sglang-e087e662-LICENSE.
+# Modification: derive logical prefill fields from pre-forward batch metadata.
+--- a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
++++ b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+@@ -319,21 +319,25 @@
+         sum_prefill_kv_tokens = 0
+         prefill_lengths = WelfordAccumulator()
+ 
++        # Modified for AISimulate native FPM collection (2026-10-31): use
++        # pre-forward batch lengths, not page-rounded admission statistics or
++        # request prefix indices that result processing may already have updated.
+         if batch.forward_mode.is_mixed():
+             decode_req_ids = {id(req) for req in batch.decoding_reqs or []}
+-            prefill_reqs = [req for req in batch.reqs if id(req) not in decode_req_ids]
++            prefill_indices = [
++                i for i, req in enumerate(batch.reqs) if id(req) not in decode_req_ids
++            ]
+         elif batch.forward_mode.is_extend():
+-            prefill_reqs = batch.reqs
++            prefill_indices = range(len(batch.reqs))
+         else:
+-            prefill_reqs = []
+-
+-        if prefill_reqs:
+-            stats = batch.prefill_stats
+-            for req in prefill_reqs:
+-                prefill_lengths.add(len(req.origin_input_ids))
+-            num_prefill_requests = stats.num_new_seqs if stats else len(prefill_reqs)
+-            sum_prefill_tokens = stats.log_input_tokens if stats else 0
+-            sum_prefill_kv_tokens = sum(len(req.prefix_indices) for req in prefill_reqs)
++            prefill_indices = []
++
++        if prefill_indices:
++            for i in prefill_indices:
++                prefill_lengths.add(len(batch.reqs[i].origin_input_ids))
++            num_prefill_requests = len(prefill_indices)
++            sum_prefill_tokens = sum(batch.extend_lens[i] for i in prefill_indices)
++            sum_prefill_kv_tokens = sum(batch.prefix_lens[i] for i in prefill_indices)
+ 
+         decode_kv = WelfordAccumulator()
+         if batch.forward_mode.is_mixed():

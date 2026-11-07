@@ -3,7 +3,7 @@
 
 """Table→family identity map from the op-backend catalog (Collector V3 §2).
 
-The catalog file comes from the op-backend-facts registry (PR #1345, on main).
+The catalog file comes from the op-backend-facts registry.
 ``load_family_map`` returns ``None`` when the catalog is absent (e.g. a
 stripped or partial checkout); callers must then reject configurations that
 need family identity (fail-closed, spec §4).

@@ -176,7 +176,7 @@ def _scope(prediction: dict[str, Any], trace: Path) -> dict[str, Any]:
     worker = engine["workers"]["aggregated"]
     if worker["parallelism"].get("replicas", 1) != 1:
         raise ValueError("serving validation initially qualifies exactly one aggregated worker")
-    if worker["kv_cache"].get("host_offload") or worker["kv_cache"].get("g3_offload"):
+    if any(worker["kv_cache"].get(tier) is not None for tier in ("host_offload", "g3_offload", "hicache")):
         raise ValueError("serving validation initially qualifies HBM-only cache")
     timing = worker["timing"]
     if (

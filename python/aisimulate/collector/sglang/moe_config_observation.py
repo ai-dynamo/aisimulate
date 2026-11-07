@@ -3,7 +3,7 @@
 """Record which Triton fused-MoE kernel config a timed SGLang call used.
 
 SGLang's ``try_get_optimal_moe_config`` (moe_runner/triton_utils/
-fused_moe_triton_config.py @v0.5.20) first looks for a tuned JSON through
+fused_moe_triton_config.py) first looks for a tuned JSON through
 ``get_moe_configs`` and falls back to ``get_default_config`` when none exists
 for (E, N, device, dtype, block shape). The collector's direct path calls the
 same two functions. This module observes those calls while a case is timed,

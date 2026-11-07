@@ -119,7 +119,7 @@ def classify_tier(kernel_source: str) -> str:
 # reuse whitelist, and filling a deliberately-absent key from another
 # backend's rows silently reroutes the SDK onto the wrong kernel.
 #
-# The one known family (kda, review 2026-08-04): the sglang K3 fused-decode
+# The one known family (kda, review): the sglang K3 fused-decode
 # routing selects `kda_fused_decode` for a shard exactly when that shard has
 # NO Triton-pair generation key — "The SDK's per-key fused routing requires
 # the Triton key to be ABSENT for the covered shard" (b200_sxm kda sglang
@@ -141,8 +141,7 @@ def classify_tier(kernel_source: str) -> str:
 # {shared, shared_fallback} admission, so they never join a cross-backend
 # kernel_source filter.
 #
-# GRADUATION CRITERION (owner decision 2026-08-04): this denylist is a
-# one-off. If a SECOND absence-dependent kernel family appears, do not
+# GRADUATION CRITERION: this list is a one-off. If a SECOND absence-dependent kernel family appears, do not
 # extend the list — promote the SDK to a primary-only routing view instead
 # (per-key rerouting must consult only the active backend's own rows).
 ABSENCE_LOAD_BEARING = {

@@ -93,11 +93,10 @@ def test_gdn_collector_entry_rejects_non_fp32_before_runtime_imports(monkeypatch
 
 
 class TestResolveFlashinferGdnDecode:
-    """_resolve_flashinfer_gdn_decode (CodeRabbit collect_gdn.py:369, Major;
-    lane-predicate fix, jasonqinzhou PR #1533 review): serving auto-selects
+    """_resolve_flashinfer_gdn_decode: serving auto-selects
     the FlashInfer bf16-state GDN decode kernel only on capability major 10
     (is_sm100_supported() — sm 100/103 yes, sm 120 NO) AND when the model's
-    mamba_ssm_dtype is bfloat16 (server_args.py:4884-4915 @0.5.14). An
+    mamba_ssm_dtype is bfloat16 (server_args.py:4884-4915). An
     import failure must surface as a classified failure the caller raises
     ONLY for bf16-state cases; fp32-state (every bundled Qwen3.5/3.6 config)
     and non-major-10 SMs stay legitimate no-ops even when FlashInfer is

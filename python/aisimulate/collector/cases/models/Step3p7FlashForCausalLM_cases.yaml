@@ -37,10 +37,12 @@ framework_specific_op_cases:
 
 model_case_values:
   attention:
-    # Two correlated rows, not one cross-product: the pinned vLLM Step3p5 block
-    # substitutes 96 query heads on sliding_attention layers while global layers
-    # keep 64. Cross-producting 64 heads with [0, 512] would plan 64-head SWA
-    # cases that never run and omit the 96-head SWA cases that do.
+    # Two correlated rows, not one cross-product: the published config's
+    # attention_other_setting gives sliding_attention layers 96 query heads (8
+    # KV groups, head_dim 128) while global layers keep 64, and vLLM, SGLang
+    # and TRT-LLM all build the sliding layers from it. Cross-producting 64
+    # heads with [0, 512] would plan 64-head SWA cases that never run and omit
+    # the 96-head SWA cases that do.
     - id: step3p7_global_attention
       model_path: stepfun-ai/Step-3.7-Flash-FP8
       model_aliases:
