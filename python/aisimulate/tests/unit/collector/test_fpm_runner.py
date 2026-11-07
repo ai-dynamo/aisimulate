@@ -3424,3 +3424,97 @@ def test_generated_finalization_budget_reaches_staged_collector(
     else:
         assert completed.returncode == 0, completed.stderr
         assert completed.stdout.strip() == (inherited or "120" if budget is None else budget)
+
+
+def test_nested_llm_config_checkpoint_reaches_the_parsed_metadata_and_the_rendered_cell(tmp_path, monkeypatch):
+    """A checkpoint that wraps its decoder under llm_config must plan and render from that decoder.
+
+    Every expected value below is read off the config literal, not off the collector.
+    """
+    from collector.fpm_forward import planner as planner_module
+
+    monkeypatch.setattr(planner_module, "_git_revision", lambda: "test-revision")
+
+    def estimator_unavailable(*_args, **_kwargs):
+        raise RuntimeError("the checkpoint is accessible only inside the runtime Pod")
+
+    monkeypatch.setattr(
+        "collector.fpm_forward.memory_admission.KVCacheEstimator.from_request",
+        estimator_unavailable,
+    )
+    document = {
+        "architectures": ["PrivateOmniForConditionalGeneration"],
+        "model_type": "private_omni",
+        "vision_config": {"hidden_size": 1152, "num_hidden_layers": 27},
+        "llm_config": {
+            "architectures": ["PrivateMoeForCausalLM"],
+            "hidden_size": 3072,
+            "intermediate_size": 8192,
+            "moe_intermediate_size": 2048,
+            "n_routed_experts": 8,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 24,
+            "num_key_value_heads": 8,
+            "vocab_size": 200064,
+        },
+    }
+    config_dir = tmp_path / "private-model-config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(json.dumps(document))
+    args = argparse.Namespace(
+        fpm_max_gpus=1,
+        fpm_gpu_counts=[1],
+        fpm_parallel_presets=None,
+        fpm_parallel_axes=None,
+        fpm_moe_backend=None,
+        fpm_attention_backend=None,
+        fpm_enable_wideep=None,
+        fpm_enable_eplb=None,
+        fpm_weight_quantizations=None,
+        fpm_kv_cache_dtypes=None,
+        fpm_tp_sizes=None,
+        fpm_pp_sizes=None,
+        fpm_dp_sizes=None,
+        fpm_moe_tp_sizes=None,
+        fpm_moe_ep_sizes=None,
+        fpm_cp_sizes=None,
+        fpm_warmup_iterations=None,
+        fpm_max_prefill_isl=None,
+        fpm_max_prefill_batch_size=None,
+    )
+    plan = build_collection_plan(
+        backend="vllm",
+        model_path="private-org/pod-only-omni",
+        model_architecture="PrivateMoeForCausalLM",
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=False,
+        options=FPMCollectionOptions.from_args(args),
+        collector_config={"aic_database_version": "0.27.0"},
+        model_config_path=str(config_dir),
+    )
+    assert plan.capability.architecture == "PrivateMoeForCausalLM"
+    assert plan.capability.is_moe is True
+
+    parsed = plan.capability.model_config.parsed_payload()
+    assert parsed["architecture"] == "PrivateMoeForCausalLM"
+    assert parsed["layers"] == 32
+    assert parsed["hidden_size"] == 3072
+    assert parsed["inter_size"] == 8192
+    assert parsed["vocab"] == 200064
+    assert parsed["num_experts"] == 8
+    assert parsed["moe_inter_size"] == 2048
+    assert parsed["raw_config"]["num_attention_heads"] == 24
+    assert parsed["raw_config"]["num_key_value_heads"] == 8
+
+    cell = plan.cells[0]
+    cell_dir = tmp_path / "cell"
+    cell_dir.mkdir()
+    _render_cell(plan, cell, cell_dir, {})
+
+    request = json.loads((cell_dir / "generator-request.json").read_text())
+    # The cell carries no layer or width fields. It carries what the generator derives from them: the decoder's
+    # experts make the cell MoE, which the outer wrapper config alone would not.
+    assert request["ModelConfig"]["is_moe"] is True
+    assert request["ModelConfig"]["required_tp"] == 1
+    assert "--model private-org/pod-only-omni" in (cell_dir / "run.sh").read_text()
