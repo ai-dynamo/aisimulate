@@ -3274,6 +3274,11 @@ impl Engine {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
         })?;
         Self::reject_sd_round_ops(&ops)?;
+        Self::validate_mamba_ops(
+            &ops,
+            (!is_context).then(|| self.nextn.saturating_add(1)),
+            true,
+        )?;
         let mut out = PerOpFold::new(if is_context { "context" } else { "generation" });
         for op in &ops {
             let r = if is_context {
@@ -3382,6 +3387,11 @@ impl Engine {
             ))
         })?;
         Self::reject_sd_round_ops(&ops)?;
+        Self::validate_mamba_ops(
+            &ops,
+            (!is_context).then(|| self.nextn.saturating_add(1)),
+            true,
+        )?;
         let sol_db = self.db.sol_full_view();
         let mut out = PerOpSolFold::default();
         for op in &ops {
@@ -4391,6 +4401,38 @@ pub(crate) mod tests {
                 .mixed_step_latency(4096, 2, 4096, 4097, 4097, 1.0, 1.0)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ad_hoc_op_queries_validate_mamba_fields() {
+        let engine = build_engine(None);
+        let with = |state_dtype: &str, token_width: u32| match qualified_mamba(false, token_width) {
+            Op::Mamba2(mut m) => {
+                m.state_dtype = state_dtype.into();
+                serde_json::to_string(&vec![Op::Mamba2(m)]).unwrap()
+            }
+            _ => unreachable!(),
+        };
+        // A valid qualified op prices. The SOL entry point has no Mamba
+        // decomposition, but it rejects invalid fields first.
+        engine
+            .evaluate_ops_json(&with("float16", 1), false, 2, 16, 0, 1.0, None)
+            .unwrap();
+        for (ops, message) in [
+            (with("fp16", 1), "unsupported state_dtype"),
+            (with("float16", 0), "must be positive"),
+            (with("unrecorded", 4), "unrecorded"),
+            (with("float16", 4), "token_width 4"),
+        ] {
+            let err = engine
+                .evaluate_ops_json(&ops, false, 2, 16, 0, 1.0, None)
+                .unwrap_err();
+            assert!(err.to_string().contains(message), "{err}");
+            let err = engine
+                .evaluate_ops_sol_json(&ops, false, 2, 16, 0, 1.0, None)
+                .unwrap_err();
+            assert!(err.to_string().contains(message), "{err}");
+        }
     }
 
     #[test]
