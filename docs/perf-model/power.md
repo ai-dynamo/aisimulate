@@ -262,8 +262,8 @@ These tests write synthetic schema-6, 7 and 8 pairs. They check semantics,
 not accuracy:
 
 - [`test_fpm_power_reconciliation.py`](../../python/aisimulate/tests/unit/sdk/test_fpm_power_reconciliation.py)
-  checks that published static and disaggregated watts equal summed operation
-  energy over summed latency at full coverage; that schema-6, 7 and all-null
+  checks that published static watts equal summed operation energy over summed
+  latency at full coverage; that schema-6, 7 and all-null
   schema-8 tables give `None` with unchanged latency; that unpowered low-KV
   decode rows remove exactly their queries' latency from coverage; that Replay,
   `predict` and `recommend` publish no FPM power; that a draft-scheme static
