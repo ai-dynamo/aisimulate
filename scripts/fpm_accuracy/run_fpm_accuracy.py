@@ -25,6 +25,7 @@ from scripts.fpm_accuracy.evaluate import evaluate_case
 from scripts.fpm_accuracy.hf import HfDataset
 from scripts.fpm_accuracy.scenario_contract import validate_scenarios
 from scripts.fpm_accuracy.scenarios import evaluate_scenario_case, scenario_document
+from scripts.release.package_identity import installed_distribution
 
 
 def main():
@@ -59,7 +60,7 @@ def main():
     # Fail the campaign for a broken installation, rather than publishing all-error rows.
     if not hasattr(importlib.import_module("aisimulate_core.sdk"), "RustForwardPassPerfModel"):
         raise RuntimeError("AISim native forward-pass SDK is unavailable")
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = installed_distribution()
     direct = json.loads(distribution.read_text("direct_url.json") or "{}")
     installed_hash = direct.get("archive_info", {}).get("hashes", {}).get("sha256")
     wheel_hash = hashlib.sha256(args.wheel.read_bytes()).hexdigest()

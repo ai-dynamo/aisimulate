@@ -67,7 +67,10 @@
     button.addEventListener('click', () => {
       const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
       document.documentElement.dataset.theme = theme;
-      try { localStorage.setItem('sm-theme', theme); } catch (_) { /* Optional persistence. */ }
+      try {
+        localStorage.setItem('sm-theme', theme);
+        localStorage.setItem('aisim-theme-mode', theme);
+      } catch (_) { /* Optional persistence. */ }
       label();
     });
     label();

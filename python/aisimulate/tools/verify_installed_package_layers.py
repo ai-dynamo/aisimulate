@@ -49,26 +49,34 @@ def _forbid_distribution_files(name: str, fragments: tuple[str, ...]) -> None:
 
 
 def _verify_metadata() -> str:
-    wheel_version = _distribution_version("aisimulate")
+    wheel_version = _distribution_version("aisim")
     if wheel_version is None:
-        raise RuntimeError("aisimulate distribution is not installed")
+        raise RuntimeError("aisim distribution is not installed")
+    if _distribution_version("aisimulate") is not None:
+        raise RuntimeError(
+            "aisim and aisimulate are both installed and own overlapping files. "
+            "Use a clean environment, or uninstall aisimulate then force-reinstall aisim. "
+            "Update downstream dependencies (including Dynamo) that still require aisimulate before migrating."
+        )
     stale_distributions = [
-        name for name in ("aisimulate-core", "aiconfigurator-core") if _distribution_version(name) is not None
+        name
+        for name in ("aisim-core", "aisimulate-core", "aiconfigurator-core")
+        if _distribution_version(name) is not None
     ]
     if stale_distributions:
         raise RuntimeError(f"split Python distributions are unexpectedly installed: {stale_distributions}")
 
-    requirements = importlib.metadata.requires("aisimulate") or []
+    requirements = importlib.metadata.requires("aisim") or []
     requirement_names = {Requirement(requirement).name for requirement in requirements}
-    stale_requirements = requirement_names.intersection({"aisimulate-core", "aiconfigurator-core"})
+    stale_requirements = requirement_names.intersection({"aisim-core", "aisimulate-core", "aiconfigurator-core"})
     if stale_requirements:
-        raise RuntimeError(f"aisimulate still declares split Python dependencies: {sorted(stale_requirements)}")
+        raise RuntimeError(f"aisim still declares split Python dependencies: {sorted(stale_requirements)}")
     return wheel_version
 
 
 def _verify_payload() -> None:
     _require_distribution_files(
-        "aisimulate",
+        "aisim",
         (
             "aisimulate/__init__.py",
             "aisimulate_core/__init__.py",
@@ -83,6 +91,7 @@ def _verify_payload() -> None:
             "aisimulate_core/systems/h100_sxm.yaml",
             "collector/__init__.py",
             "collector/model_cases.py",
+            "collector/skips.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/fpm_forward/cli.py",
             "collector/fpm_forward/__init__.py",
@@ -90,7 +99,7 @@ def _verify_payload() -> None:
         ),
     )
     _forbid_distribution_files(
-        "aisimulate",
+        "aisim",
         (
             "gap_analysis",
             "auto-gap-analysis",
@@ -256,14 +265,15 @@ def _exercise_fpe_matrix() -> None:
 def _verify_fpm_workflow() -> str:
     """Verify the installed application owns a runnable FPM workflow."""
 
-    app_version = _distribution_version("aisimulate")
+    app_version = _distribution_version("aisim")
     if app_version is None:
-        raise RuntimeError("aisimulate distribution is not installed")
+        raise RuntimeError("aisim distribution is not installed")
     _require_distribution_files(
-        "aisimulate",
+        "aisim",
         (
             "collector/__init__.py",
             "collector/model_cases.py",
+            "collector/skips.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
             "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
@@ -277,7 +287,7 @@ def _verify_fpm_workflow() -> str:
     runtime = importlib.resources.files("collector.fpm_forward.runtime")
     planner = importlib.import_module("collector.fpm_forward.planner")
     runner = importlib.import_module("collector.fpm_forward.runner")
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
     distribution_files = {str(path): path for path in distribution.files or ()}
     distribution_root = Path(os.fspath(distribution.locate_file(""))).resolve()
 
@@ -344,7 +354,7 @@ def _verify_fpm_workflow() -> str:
                 completed.returncode != 0
                 or plan.get("schema_name") != "aic_fpm_collection_plan"
                 or not isinstance(revision, str)
-                or not revision.startswith(f"installed:aisimulate=={app_version}:record-sha256:")
+                or not revision.startswith(f"installed:aisim=={app_version}:record-sha256:")
                 or not plan.get("cells")
                 or str(workdir) in completed.stdout
             ):

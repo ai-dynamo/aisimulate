@@ -91,6 +91,17 @@ def mod(monkeypatch, tmp_path):
     return module
 
 
+@pytest.fixture
+def plan_configs(monkeypatch, tmp_path):
+    """The op plans reading the packaged checkpoint configs from ``tmp_path``."""
+    from collector import op_plans
+
+    monkeypatch.setattr(op_plans, "_AIC_MODEL_CONFIG_DIR", str(tmp_path))
+    op_plans._packaged_config.cache_clear()
+    yield op_plans
+    op_plans._packaged_config.cache_clear()
+
+
 def _write_hf_quant(tmp_path, quantization, model_id=MODEL_ID):
     """Write ``<model>_hf_quant_config.json`` around a ModelOpt ``quantization`` section."""
     payload = {"producer": {"name": "modelopt"}, "quantization": quantization}
@@ -215,8 +226,8 @@ class TestMixedPrecisionExport:
 
     @pytest.mark.parametrize("section", ["config.json", "hf_quant_config.json"])
     def test_lower_case_quant_algo_is_not_the_mixed_recipe(self, mod, tmp_path, section):
-        # SGLang compares quant_algo to "MIXED_PRECISION" exactly (configs/model_config.py:1145@v0.5.14,
-        # :1153@v0.5.15), so a lower-case value is not the mixed recipe to the framework either.
+        # SGLang compares quant_algo to "MIXED_PRECISION" exactly (configs/model_config.py:1145,
+        # 1153), so a lower-case value is not the mixed recipe to the framework either.
         if section == "config.json":
             _write_config(tmp_path, _mixed_config(GLM53_LANES, quant_algo="mixed_precision"))
         else:
@@ -240,10 +251,11 @@ class TestMixedPrecisionExport:
         )
         assert mod._model_native_gemm_quant(MODEL_ID) == "fp8_block"
 
-    def test_dsa_operator_gemm_type_stays_bfloat16(self, mod, tmp_path):
+    def test_dsa_projection_gemm_stays_bfloat16(self, plan_configs, tmp_path):
         # The export lists no attention module, so the timed DSA projections stay BF16.
         _write_mixed_export(tmp_path, GLM53_LANES)
-        assert mod._model_dsa_operator_gemm_type(MODEL_ID) == "bfloat16"
+        assert plan_configs._checkpoint_quant(MODEL_ID) == "nvfp4"
+        assert plan_configs._projection_gemm(MODEL_ID) == "bfloat16"
 
     def test_hopper_loader_rejects_the_export_before_sglang_is_imported(self, mod, tmp_path, monkeypatch):
         _write_mixed_export(tmp_path, GLM53_LANES)
@@ -256,16 +268,14 @@ class TestMixedPrecisionExport:
         ):
             mod.load_model_runner(MODEL_ID, 8, "bfloat16", "dsa")
 
-    def test_hopper_case_builder_emits_no_dsa_context_cases_for_the_export(self, mod, tmp_path, monkeypatch):
+    def test_hopper_plan_emits_no_sglang_dsa_context_cases_for_the_export(self, plan_configs, tmp_path, monkeypatch):
         # Writing the export to tmp_path pins the MIXED_PRECISION shape whatever the bundled copy holds:
-        # a top-level NVFP4 copy is dropped on Hopper with or without the mixed rule.
+        # a top-level NVFP4 copy is left out on Hopper with or without the mixed rule.
         _write_mixed_export(tmp_path, GLM53_LANES, GLM53_MODEL_ID)
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", GLM53_MODEL_ID)
-        # Without a spec for the id the builder returns [] for any export, so check that the id resolves.
-        specs = mod.get_mla_module_model_specs(attention_type="dsa")
-        assert [spec.model_path for spec in specs] == [GLM53_MODEL_ID]
-        with patch.object(mod, "get_sm_version", return_value=90):
-            assert mod._build_module_test_cases("dsa", "context") == []
+        # Without a spec for the id the plan is empty for any export, so check that the id resolves.
+        assert plan_configs.plan("dsa_context_module", "sglang", 100).cases
+        assert plan_configs.plan("dsa_context_module", "sglang", 90).cases == []
 
     def test_malformed_config_json_fails_loudly(self, mod, tmp_path):
         # A parse error of an existing file must not fall back to ``None``: ``None`` is the
@@ -312,7 +322,7 @@ class TestMixedPrecisionExport:
 
     def test_compression_config_takes_precedence_over_the_sidecar(self, mod, tmp_path):
         # SGLang resolves ``quantization_config``, then ``compression_config``, then the ModelOpt sidecar
-        # (configs/model_config.py:1029, 1046 and 1117@v0.5.14), so a checkpoint that declares
+        # (configs/model_config.py:1029, 1046 and 1117), so a checkpoint that declares
         # ``compression_config`` reaches the mixed recipe only through its own ``quantization_config``,
         # never through the sidecar.
         payload = {

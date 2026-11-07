@@ -1,21 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm==0.30.0"
+# Attention-family pin: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6 (0.31.0).
+__compat__ = "vllm==0.31.0"
 
 import os
 
 import torch
-from collector.case_generator import (
-    get_attention_context_shape_sweeps,
-    get_attention_generation_shape_sweeps,
-    get_attention_head_configs,
-)
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.vllm.utils import (
     BatchSpec,
     create_common_attn_metadata,
@@ -147,6 +143,10 @@ def run_attention_torch(
         block_size=block_size,
         num_gpu_blocks=8192,
         max_num_seqs=batch_size,
+        # One collector call represents the full prefill, including shapes
+        # above a serving scheduler's new-token budget. Size native builder
+        # buffers for that call (flashinfer.py:721-723 @v0.31.0).
+        max_num_batched_tokens=max(8192, batch_spec.compute_num_tokens()),
         use_fp8_kv_cache=use_fp8_kv_cache,
         sliding_window=window_size if window_size > 0 else None,
         head_dim=head_dim,
@@ -166,29 +166,13 @@ def run_attention_torch(
         use_sparse=False,
         use_mm_prefix=False,
     )
-    # Backend selection for head_dim > 256 mirrors the framework's own
-    # heterogeneous-head-dim policy. head_dim > 256 is reachable only from
-    # Gemma-4 (global layers, global_head_dim=512), whose model-level config
-    # hook (Gemma4Config.verify_and_update_config,
-    # model_executor/models/config.py:209-256) forces a UNIFORM backend across
-    # its mixed 256/512 heads to avoid the FA3/FA4 mixed penalty. That policy,
-    # plus the per-group validity of head-512, resolves as follows on SM90
-    # (live-engine kernel probe, 2026-09-22, gemma-4-26B-A4B + kv fp8/auto):
-    #   bf16-KV -> FLASH_ATTN (FA4 cute flash_fwd_sm90) — the bare selector
-    #             already returns this, so no override is needed.
-    #   fp8-KV  -> TRITON_ATTN (kernel_unified_attention). No FA/FlashInfer
-    #             path compiles fp8+head512 on SM90, so the uniform-backend
-    #             policy lands on Triton. The bare platform selector, lacking
-    #             the model-level heterogeneous-head context, instead picks
-    #             FlashInfer (whose SM90 fp8+head512 JIT cannot compile) — the
-    #             attention fp8 collection failures. Force the serving backend.
-    # This is not a per-model special case: it reproduces the framework's own
-    # config-hook branch keyed on head_dim, with the metadata-parity citation.
-    selected_backend = None
-    if head_dim > 256 and use_fp8_kv_cache:
-        selected_backend = AttentionBackendEnum.TRITON_ATTN
+    # v0.31.0 model_executor/models/config.py:217-222,242-255 uses per-layer
+    # FA3/FA4 selection for Gemma4 FP8 KV on SM90. The native FlashAttention
+    # selector admits head512 FP8 via FA4 (flash_attn.py:476-490), replacing
+    # the older forced-Triton workaround. Let native selection choose both
+    # prefill and generation backends for this layer's geometry.
     backend_path = current_platform.get_attn_backend_cls(
-        selected_backend,
+        None,
         attn_selector_config,
         num_heads=num_heads,
     )
@@ -196,7 +180,11 @@ def run_attention_torch(
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
 
-    # the page the framework would run THIS backend with (asked, not tabled)
+    # Native v0.31.0: CacheConfig.DEFAULT_BLOCK_SIZE=16 (config/cache.py:71),
+    # FlashInfer supports 16 (flashinfer.py:430-449), and get_preferred_block_size
+    # preserves it (backend.py:154-162). Thus the isolated Qwen n=4/kv=1/d=256
+    # case uses page 16 without an override. Full-model hybrid manager-page
+    # alignment is separate (platforms/interface.py:699-702).
     block_size = framework_kv_block_size(backend_cls)
     vllm_config.cache_config.block_size = block_size
 
@@ -359,14 +347,12 @@ def run_attention_torch(
     # Output buffer is always BF16 — the impl dequantises internally.
     output = torch.empty_like(query_vllm)
 
-    # FIXME(kernel-limit): on SM100/SM110 the FA4 CuTe kernel rejects
-    # (head_dim, head_dim_v)=(192, 192): _validate_head_dims allows 8..128,
-    # DeepSeek (192, 128), or hd256 (vllm_flash_attn/cute/interface.py:104
-    # @0.24.0), while vLLM's FlashAttentionBackend.supports_head_size claims
-    # any head_size <= 256 (flash_attn.py:173-179), so the selector still
-    # routes BF16-KV head-dim-192 shapes to FLASH_ATTN there and forward
-    # raises. Observed on B200; serving would fail identically. Re-verify on
-    # the next vLLM bump.
+    # FIXME(kernel-limit): v0.31.0 source recheck retains the FA4 SM100/SM110
+    # rejection of (192,192): flash-attention@9cd61de3, flash_attn/cute/
+    # interface.py:112-128. That dependency is pinned in vLLM's cmake/
+    # external_projects/vllm_flash_attn.cmake:42. The vLLM selector still
+    # accepts head192 (flash_attn.py:421-427); keep the native failure visible.
+    # Historical B200 failure is not a GPU qualification of this revision.
     def run():
         if not backend_cls.forward_includes_kv_cache_update:
             impl.do_kv_cache_update(
@@ -438,138 +424,12 @@ def run_attention_torch(
     )
 
 
-def get_context_attention_test_cases(if_unit_test=False):
-    test_cases = []
-
-    if if_unit_test:
-        shape_sweeps = [
-            {
-                "batch_sizes": [1],
-                "sequence_lengths": [64],
-                "query_head_counts": [4],
-                "kv_head_options": [0],
-                "head_dims": [128],
-                "window_sizes": [0, 128],
-                "max_tokens_self_attention": 65536,
-                "max_tokens_grouped_query_attention": 131072,
-                "max_kv_elements": 2147483647,
-            }
-        ]
-    else:
-        shape_sweeps = get_attention_context_shape_sweeps("vllm")
-
-    kv_cache_dtype_list = [False]
-    if get_sm_version() > 86:
-        kv_cache_dtype_list.append(True)
-
-    for shape_sweep in shape_sweeps:
-        batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
-        sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
-        max_tokens_self_attention = int(shape_sweep["max_tokens_self_attention"])
-        max_tokens_grouped_query_attention = int(shape_sweep["max_tokens_grouped_query_attention"])
-        max_kv_elements = int(shape_sweep["max_kv_elements"])
-
-        for head_config in get_attention_head_configs(shape_sweep, phase="context"):
-            n = head_config.num_heads
-            num_kv_heads = head_config.num_kv_heads
-            head_dim = head_config.head_dim
-            window_size = head_config.window_size
-            for s in sorted(sequence_lengths, reverse=True):
-                for b in sorted(batch_sizes, reverse=True):
-                    if num_kv_heads == n:
-                        if b * s > max_tokens_self_attention or b > 128:
-                            continue
-                    elif b * s > max_tokens_grouped_query_attention:
-                        continue
-                    if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
-                        continue
-                    for is_fp8_kv_cache in kv_cache_dtype_list:
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                num_kv_heads,
-                                head_dim,
-                                is_fp8_kv_cache,
-                                True,
-                                window_size,
-                            ]
-                        )
-
-    return test_cases
-
-
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, head_dim, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens * 128 // head_dim // s // num_heads
-        for b in batch_sizes:
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+def get_context_attention_test_cases():
+    return plan_cases("attention_context", "vllm", get_sm_version())
 
 
 def get_generation_attention_test_cases():
-    test_cases = []
-
-    kv_cache_dtype_list = [False]
-    if get_sm_version() > 86:
-        kv_cache_dtype_list.append(True)
-
-    for shape_sweep in get_attention_generation_shape_sweeps("vllm"):
-        batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
-        sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
-
-        for head_config in get_attention_head_configs(shape_sweep, phase="generation"):
-            n = head_config.num_heads
-            n_kv = head_config.num_kv_heads
-            head_dim = head_config.head_dim
-            window_size = head_config.window_size
-            # The generation schema has separate caps because MHA and GQA have
-            # different memory/throughput limits. The old loop used the MHA cap
-            # for every case even though it enumerated GQA shapes as well.
-            max_tokens_key = "max_mha_tokens_per_step" if n == n_kv else "max_xqa_tokens_per_step"
-            b_s_dict = _generation_target_sequence_lengths(
-                batch_sizes,
-                sequence_lengths,
-                n,
-                head_dim,
-                int(shape_sweep[max_tokens_key]),
-                shape_sweep,
-            )
-            for b, s_list_limited in b_s_dict.items():
-                target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
-                for s in target_s_list:
-                    for is_fp8_kv_cache in kv_cache_dtype_list:
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                n_kv,
-                                head_dim,
-                                is_fp8_kv_cache,
-                                False,
-                                window_size,
-                            ]
-                        )
-    return test_cases
+    return plan_cases("attention_generation", "vllm", get_sm_version())
 
 
 if __name__ == "__main__":

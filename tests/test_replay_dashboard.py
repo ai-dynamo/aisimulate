@@ -302,6 +302,17 @@ def test_writer_is_standalone_safe_and_atomic(tmp_path, capture):
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_writer_embeds_utf8_assets_under_non_utf8_locale(tmp_path, capture, monkeypatch):
+    original = Path.read_text
+
+    def locale_read(path, encoding=None, errors=None):
+        return original(path, encoding=encoding or "ascii", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", locale_read)
+    path = write_replay_dashboard(tmp_path, {}, capture)
+    assert "aisimulate.replay.dashboard.v1" in path.read_text(encoding="utf-8")
+
+
 def test_writer_streams_requests_in_chunks(tmp_path, capture, monkeypatch):
     row = capture["requests"][0]
     capture["requests"] = [
@@ -402,6 +413,8 @@ def test_native_source_fixture_all_phase_dashboard(backend, mode, warmup):
         "aic_attention_dp_size": 2,
         "block_size": 4,
         "num_gpu_blocks": 64,
+        # These toy pools cannot hold SGLang's default 512-token decode reserve.
+        **({"sglang": {"num_reserved_decode_tokens": 0}} if backend == "sglang" else {}),
         "enable_prefix_caching": True,
         "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
     }

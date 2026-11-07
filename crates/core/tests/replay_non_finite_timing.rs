@@ -81,6 +81,7 @@ fn public_replay_rejects_non_finite_timing_before_normalization() {
                             record_per_request: true,
                             sla: Default::default(),
                             requests: vec![ReplayRequest {
+                                cache_salt: None,
                                 id: "non-finite-timing".into(),
                                 arrival_time_ms: 0.0,
                                 input_tokens: 4,

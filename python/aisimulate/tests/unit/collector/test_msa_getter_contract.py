@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public MSA getter contracts for the TRT-LLM and vLLM collectors."""
+"""Public MSA getter and worker contracts for the TRT-LLM and vLLM collectors."""
 
 from __future__ import annotations
 
@@ -174,6 +174,8 @@ def _install_vllm_stubs(monkeypatch):
 
 
 def _load_backend(monkeypatch, backend: str):
+    import collector.op_plans  # noqa: F401  (the real plans, before collector.helper is stubbed)
+
     monkeypatch.setattr(sys, "path", list(sys.path))
     if backend == "trtllm":
         _install_trtllm_stubs(monkeypatch)
@@ -189,108 +191,89 @@ def _load_backend(monkeypatch, backend: str):
     return module
 
 
-def _invocation_identity(case: list[object]) -> tuple[object, ...]:
-    return tuple(case)
-
-
-def _consumer_key(case: list[object], phase: str) -> tuple[object, ...]:
-    seq_len, batch_size, num_heads, kv_dtype, compute_dtype, gemm_type, _model_path, *rest = case
-    if phase == "context":
-        prefix_len = rest[0]
-        return (ARCHITECTURE, compute_dtype, kv_dtype, gemm_type, num_heads, prefix_len, seq_len, batch_size)
-    return (ARCHITECTURE, kv_dtype, gemm_type, num_heads, batch_size, seq_len + 1)
-
-
 @pytest.mark.parametrize("backend", ["trtllm", "vllm"])
-def test_public_msa_getters_populate_both_phases_without_duplicate_identities(monkeypatch, backend):
-    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    module = _load_backend(monkeypatch, backend)
+def test_public_msa_getters_queue_the_op_plan(monkeypatch, backend):
+    from collector.op_plans import plan
 
-    for phase, getter in (
-        ("context", module.get_msa_context_module_test_cases),
-        ("generation", module.get_msa_generation_module_test_cases),
+    module = _load_backend(monkeypatch, backend)
+    for op, getter in (
+        ("msa_context_module", module.get_msa_context_module_test_cases),
+        ("msa_generation_module", module.get_msa_generation_module_test_cases),
     ):
-        cases = getter()
-        assert cases, f"{backend}/{phase} returned no cases"
-        assert all(case[6] == MODEL_PATH for case in cases)
-        assert len(cases) == len({_invocation_identity(case) for case in cases})
-        consumer_keys = [_consumer_key(case, phase) for case in cases]
-        assert len(consumer_keys) == len(set(consumer_keys))
-
-        expected_length = 8 if phase == "context" else 7
-        assert {len(case) for case in cases} == {expected_length}
+        rows = getter()
+        assert rows and rows == plan(op, backend, 100).rows
+        assert {row[6] for row in rows} == {MODEL_PATH}
 
 
-@pytest.mark.parametrize("backend", ["trtllm", "vllm"])
-def test_targeted_msa_getters_keep_prefixes_and_worker_tuple_compatibility(monkeypatch, backend):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL_PATH)
-    module = _load_backend(monkeypatch, backend)
-    context_cases = module.get_msa_context_module_test_cases()
-    generation_cases = module.get_msa_generation_module_test_cases()
+def test_trtllm_series_rows_fit_the_series_worker(monkeypatch):
+    module = _load_backend(monkeypatch, "trtllm")
+    captured = []
+    monkeypatch.setattr(module, "run_msa_module_series", lambda *args, **kwargs: captured.append((args, kwargs)))
 
-    assert {case[7] for case in context_cases} == {0, 128}
-    assert generation_cases
-    assert {case[6] for case in context_cases + generation_cases} == {MODEL_PATH}
+    row = module.get_msa_context_module_test_cases()[0]
+    module.run_msa_module_series_worker(*row, perf_filename="context.txt")
 
+    points, batch_size, num_heads, kv_dtype, compute, gemm, model_path = row
+    assert captured == [
+        (
+            (points, batch_size, num_heads, kv_dtype, compute, gemm, "context.txt"),
+            {"model_path": model_path, "device": "cuda:0"},
+        )
+    ]
+
+
+def test_vllm_cases_fit_the_point_worker(monkeypatch):
+    module = _load_backend(monkeypatch, "vllm")
     captured = []
     monkeypatch.setattr(module, "run_msa_module", lambda **kwargs: captured.append(kwargs) or 1.0)
-    module.run_msa_module_worker(*context_cases[0], perf_filename="context.txt")
-    module.run_msa_module_worker(*generation_cases[0], perf_filename="generation.txt")
 
-    assert captured[0]["prefix_len"] == context_cases[0][7]
+    context = next(case for case in module.get_msa_context_module_test_cases() if case.prefix_len)
+    generation = module.get_msa_generation_module_test_cases()[0]
+    module.run_msa_module_worker(*context, perf_filename="context.txt")
+    module.run_msa_module_worker(*generation, perf_filename="generation.txt")
+
+    assert captured[0]["prefix_len"] == context.prefix_len
     assert captured[0]["perf_filename"] == "context.txt"
     assert captured[1]["prefix_len"] == 0
-    assert captured[1]["perf_filename"] == "generation.txt"
+    assert captured[1]["seq_len"] == generation.seq_len
 
 
-@pytest.mark.parametrize(
-    "sm_version,expected_max_tokens",
-    [(90, 32768), (100, 131072)],
-)
-def test_trtllm_context_getter_caps_only_the_triton_reference_implementation(
-    monkeypatch, sm_version, expected_max_tokens
-):
-    """mla_module_trtllm.context.msa_triton_max_tokens binds where the collector
-    resolves implementation="triton" (off SM100/103); fmha_sm100 systems keep
-    the shared context budget. isl 32768 itself stays at b=1 on both."""
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL_PATH)
-    module = _load_backend(monkeypatch, "trtllm")
-    monkeypatch.setattr(module, "get_sm_version", lambda: sm_version)
-
-    cases = module.get_msa_context_module_test_cases()
-    shapes = {(case[0], case[1]) for case in cases}
-
-    assert max(s * b for s, b in shapes) == expected_max_tokens
-    assert (32768, 1) in shapes
-
-
-def test_vllm_public_generation_getter_applies_live_memory_filter(monkeypatch, capsys):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL_PATH)
+def test_vllm_refuses_a_decode_point_whose_kv_cache_cannot_fit_before_allocating(monkeypatch):
     module = _load_backend(monkeypatch, "vllm")
-    monkeypatch.setattr(module, "_device_total_memory_bytes", lambda: 1)
-
-    assert module.get_msa_generation_module_test_cases() == []
-    assert "msa_generation_module: dropped" in capsys.readouterr().out
-
-
-def test_vllm_standalone_full_sweep_keeps_declared_prefixes_and_quick_defaults_to_zero(monkeypatch):
-    module = _load_backend(monkeypatch, "vllm")
-    model_spec = SimpleNamespace(model_path=MODEL_PATH)
-    monkeypatch.setattr(module, "get_mla_module_model_specs", lambda **_kwargs: [model_spec])
     monkeypatch.setattr(
-        module,
-        "get_context_test_cases",
-        lambda: [
-            [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
-            [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 128],
-        ],
+        module.torch.cuda, "get_device_properties", lambda _device: SimpleNamespace(total_memory=2**30), raising=False
     )
+    monkeypatch.setattr(module, "setup_distributed", lambda _device: pytest.fail("allocated for a refused point"))
+
+    with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): does not fit: the KV cache needs"):
+        module.run_msa_module(
+            None,
+            seq_len=131072,
+            batch_size=64,
+            num_heads=64,
+            kv_cache_dtype="bfloat16",
+            compute_dtype="bfloat16",
+            gemm_type="bfloat16",
+            perf_filename="msa_generation_module_perf.txt",
+            model_path=MODEL_PATH,
+        )
+
+
+def test_vllm_standalone_cli_runs_the_plan_cases_and_quick_defaults_to_prefix_zero(monkeypatch):
+    from collector.op_plans import ModuleCase
+
+    module = _load_backend(monkeypatch, "vllm")
+    cases = [
+        ModuleCase(16, 1, 64, "bfloat16", "bfloat16", "bfloat16", MODEL_PATH, 0),
+        ModuleCase(16, 1, 64, "bfloat16", "bfloat16", "bfloat16", MODEL_PATH, 512),
+    ]
+    monkeypatch.setattr(module, "plan", lambda *_args: SimpleNamespace(rows=cases))
     calls = []
     monkeypatch.setattr(module, "run_msa_module", lambda **kwargs: calls.append(kwargs))
 
     monkeypatch.setattr(sys, "argv", ["collect_msa_module.py", "--mode", "context"])
     module.main()
-    assert [call["prefix_len"] for call in calls] == [0, 128]
+    assert [call["prefix_len"] for call in calls] == [0, 512]
 
     calls.clear()
     monkeypatch.setattr(sys, "argv", ["collect_msa_module.py", "--mode", "context", "--quick"])

@@ -1967,6 +1967,19 @@ impl Engine {
         decode.decode_kv_ceiling(&self.db)
     }
 
+    /// Canonical target normalization for the complete loaded FPM profile.
+    /// This preparation diagnostic never evaluates a timing query.
+    pub fn fpm_seed_target_normalization(
+        &self,
+    ) -> Result<crate::perf_database::fpm_forward::FpmSeedTargetNormalization, AicError> {
+        if self.fpm_ops().is_none() {
+            return Err(AicError::InvalidEngineConfig(
+                "seed target normalization requires a native FPM profile".into(),
+            ));
+        }
+        Ok(self.db.fpm_forward.seed_target_normalization()?.clone())
+    }
+
     /// One mixed (chunked-prefill + decode) step latency. LITERAL mirror of
     /// Python `_get_mix_step_latency` / `run_mixed`, which composes three
     /// filtered phase passes (`_run_context_phase` / `_run_generation_phase`

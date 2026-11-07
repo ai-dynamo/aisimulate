@@ -9,9 +9,9 @@ this file owns SGLang MLA backend choice, paged KV-cache setup, DP-attention
 mocking, runtime dispatch, and perf logging.
 """
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import contextlib
@@ -24,8 +24,8 @@ from importlib.metadata import version as _dist_version  # setuptools/pkg_resour
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
-from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
@@ -63,28 +63,24 @@ def _cuda_version_at_least(major: int, minor: int) -> bool:
 
 
 def _select_default_mla_backend() -> str:
-    """Match SGLang 0.5.14's default MLA backend for DeepSeek V3."""
+    """The MLA attention backend SGLang serving picks for DeepSeek V3 on this SM.
+
+    trtllm_mla on SM100/103 (the DeepSeek special case), fa3 on Hopper, triton
+    on SM89/120. SM80/86 have no mapping; collector/skips.py leaves them out
+    of the plan.
+    """
     sm_version = get_sm_version()
     if sm_version in {100, 103} and _cuda_version_at_least(12, 8):
-        # DeepSeek V3/R1/V3.1 special-case in SGLang server_args.py.
         return "trtllm_mla"
     if sm_version == 90 and _cuda_version_at_least(12, 3):
         return "fa3"
     if sm_version in {89, 90, 100, 103, 120}:
-        # server_args.py _get_default_attn_backend MLA branch (0.5.14,
-        # lines 4457-4472): is_hopper_with_cuda_12_3 only matches major 9
-        # (utils/common.py:265-269) and is_sm100_supported only matches
-        # major 10 (utils/common.py:282-286), so SM89 and SM120 fall through
-        # to the final ``return "triton"``. The DeepSeek V3/R1 trtllm_mla
-        # special-case (server_args.py:3641-3650) is likewise gated on
-        # is_sm100_supported and never fires on SM89/SM120.
         return "triton"
-    raise ValueError(f"No SGLang 0.5.14 MLA backend mapping for SM{sm_version}")
+    raise ValueError(f"No SGLang MLA backend mapping for SM{sm_version}")
 
 
 def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
-    # SGLang v0.5.14 (4289f36ef960fad8268a6b94935686e792a81432):
-    # trtllm_mla_backend.py:687-692 quantizes prefill Q/K/V to FP8 when
+    # trtllm_mla_backend quantizes prefill Q/K/V to FP8 when
     # self.data_type (the KV dtype) is FP8. Decode quantizes Q likewise.
     # BF16 input tensors therefore do not imply BF16 kernel compute.
     # Hopper's absorbed MLA has head_dim=576: flashattention_backend.py:
@@ -94,11 +90,11 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
         return "fp8"
     if backend in {"trtllm_mla", "fa3", "triton"}:
         return "bfloat16"
-    raise ValueError(f"No audited SGLang 0.5.14 MLA compute-precision mapping for backend {backend!r}")
+    raise ValueError(f"No SGLang MLA compute-precision mapping for backend {backend!r}")
 
 
 class MockModelConfig:
-    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 (triton_backend.py:255)
         return int(self.num_attention_heads)
 
     def __init__(
@@ -147,7 +143,7 @@ class MockModelConfig:
         self.scaling = scaling
         self.is_local_attention_model = False
 
-    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512 @0.5.21
+    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512
         return 1
 
 
@@ -224,7 +220,7 @@ class MockModelRunner:
         # sglang 0.5.21 TRTLLMMLABackend (the MLA backend sglang picks on SM100, _get_backends) reads
         # model_runner.max_running_requests (workspace sizing) and model_runner.is_draft_worker;
         # on Hopper fa3/flashinfer never asked, so the attributes were missing until the first
-        # Blackwell smoke (B200 2026-10-04: AttributeError 'MockModelRunner' has no attribute
+        # Blackwell smoke (B200 AttributeError 'MockModelRunner' has no attribute
         # 'max_running_requests'). 512 = the generator's --max-running-requests default.
         self.max_running_requests = 512
         self.is_draft_worker = False
@@ -290,8 +286,8 @@ def _extend_seq_lens_cpu(forward_batch):
     """CPU int32 mirror of the per-request extend lengths of a plain EXTEND batch, else None.
 
     The values are sglang's own ``forward_batch.extend_seq_lens_cpu`` — the list its
-    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850
-    @v0.5.21) — so nothing is reconstructed, only mirrored into a CPU tensor.
+    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850)
+    — so nothing is reconstructed, only mirrored into a CPU tensor.
     """
     if forward_batch.forward_mode != ForwardMode.EXTEND:
         return None
@@ -344,7 +340,7 @@ class _GraphCapturableTRTLLMMLABackend(TRTLLMMLABackend):
     ``_ragged_prefill_with_cpu_seq_lens``). The collector times the kernel under
     graph replay — eager timing of this lane floors at the Python launch loop
     (0.13 ms on B200, 0.29 ms on GB200 for every isl <= 1024 cell; data
-    validation 2026-10-11) — so the no-prefix prefill call gets the mirrors
+    validation) — so the no-prefix prefill call gets the mirrors
     here. This changes how the kernel is invoked, never which kernel runs: the
     chunked-prefix calls (their own ``cum_seq_lens_kv``) and every other
     backend path go through sglang unchanged.
@@ -370,7 +366,7 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
     # CUDA-graph replay for every lane: a capture failure raises (helper default
     # allow_graph_fail=False) and an eager result is refused below, so a kernel
     # that stops being capturable fails the case instead of shipping its launch
-    # floor (sglang mla_context on B200/GB200, data validation 2026-10-11).
+    # floor (sglang mla_context on B200/GB200, data validation).
     device = q.device
 
     def kernel_func():
@@ -397,89 +393,11 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
 
 
 def get_context_mla_test_cases():
-    # Covers the audited 0.5.14 platform set {89, 90, 100, 103, 120};
-    # _select_default_mla_backend fails closed below it. No silent [] here:
-    # zero cases must be explainable from logged drops or a loud raise.
-    backend = _select_default_mla_backend()
-    dtype_list = [torch.bfloat16] if backend == "triton" else [torch.bfloat16, torch.float8_e4m3fn]
-    return _build_mla_test_cases(
-        get_context_mla_case_specs(),
-        dtype_list=dtype_list,
-        tp_sizes=(1, 2, 4, 8, 16, 32, 64),
-        backend=backend,
-    )
+    return plan_cases("mla_context", "sglang", get_sm_version())
 
 
 def get_generation_mla_test_cases():
-    # Covers the audited 0.5.14 platform set {89, 90, 100, 103, 120};
-    # _select_default_mla_backend fails closed below it (see context getter).
-    backend = _select_default_mla_backend()
-    if backend == "triton":
-        # SGLang's Triton MLA path stores BF16 MLA KV cache.
-        dtype_list = [torch.bfloat16]
-    else:
-        dtype_list = [torch.bfloat16, torch.float8_e4m3fn]
-    return _build_mla_test_cases(
-        get_generation_mla_case_specs(),
-        dtype_list=dtype_list,
-        tp_sizes=(1, 2, 4, 8, 16, 32, 64),
-        backend=backend,
-    )
-
-
-def _build_mla_test_cases(case_specs, *, dtype_list, tp_sizes, backend=None):
-    """Adapt the shared YAML MLA catalog to SGLang's legacy run tuple.
-
-    The perf DB key does not contain a model name, so model aliases that resolve
-    to the same physical shape are emitted once.  SGLang's standalone MLA
-    harness currently supports the DeepSeek/Kimi geometry declared below; fail
-    loudly if a future catalog entry needs a different kernel layout instead of
-    silently collecting it under the wrong DB key.
-    """
-
-    cases_by_physical_key = {}
-    page_size = 64 if backend == "trtllm_mla" else 1
-    expected_geometry = (KV_LORA_RANK, QK_NOPE_HEAD_DIM, QK_ROPE_HEAD_DIM, 128)
-    for spec in case_specs:
-        geometry = (spec.kv_lora_rank, spec.qk_nope_head_dim, spec.qk_rope_head_dim, spec.v_head_dim)
-        if geometry != expected_geometry:
-            raise ValueError(f"Unsupported SGLang MLA geometry for {spec.model_name}: {geometry}")
-        for dtype in dtype_list:
-            for tp_size in tp_sizes:
-                if spec.num_heads % tp_size:
-                    continue
-
-                case = (
-                    spec.input_len,
-                    spec.batch_size,
-                    1,
-                    dtype,
-                    spec.num_heads,
-                    tp_size,
-                    tp_size,
-                    page_size,
-                    10,
-                    6,
-                    spec.is_context_phase,
-                )
-                # This is the exact loader key (phase/file and backend are fixed
-                # for one getter).  Total heads and TP are only two ways to
-                # produce the same local-head kernel shape and are not stored by
-                # load_{context,generation}_mla_data.
-                physical_key = (
-                    dtype,
-                    spec.num_heads // tp_size,
-                    spec.batch_size,
-                    spec.input_len,
-                )
-                # Selectors run after getter population and commonly cap TP.
-                # Keep the equivalent representation with the smallest TP so
-                # deduplication cannot hide a local-head point from a targeted
-                # TP<=N plan.
-                existing = cases_by_physical_key.get(physical_key)
-                if existing is None or tp_size < existing[6]:
-                    cases_by_physical_key[physical_key] = list(case)
-    return list(cases_by_physical_key.values())
+    return plan_cases("mla_generation", "sglang", get_sm_version())
 
 
 @get_parallel().override(

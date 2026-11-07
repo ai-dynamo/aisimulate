@@ -138,7 +138,7 @@ STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall
 # dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill the workers,
 # record their in-flight tasks as WorkerStallTimeout and restart the workers so
 # the queue keeps draining. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300
-# (2026-10-06) sat 76 min at 0/58482 with no error until the pipeline watchdog
+# sat 76 min at 0/58482 with no error until the pipeline watchdog
 # cancelled the whole job; a finite, diagnosable failure is worth more than an
 # open-ended wait.
 STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.get("AIC_STALL_TIMEOUT_SEC") or 1800)
@@ -146,7 +146,7 @@ STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.
 # between before the executor closes the op (abandons the worker slots; the
 # never-dispatched tasks are recorded as WorkerOrphanedTask, not as failed).
 # 1 = close on the first stall. b200 vllm dsa_context_module s256 (job
-# 481670367, 2026-10-11): the first stall at 13,002/21,960 — eight workers each
+# 481670367): the first stall at 13,002/21,960 — eight workers each
 # wedged on a poison shape — closed the op and wrote the 8,950 undispatched
 # tasks into the failed ledger, so the retry-failed resume re-ran all of them
 # behind the same poison shapes and stalled again; two full loops were burnt.
@@ -1133,7 +1133,15 @@ def _collector_model_path(model_path: str | None):
             os.environ["COLLECTOR_MODEL_PATH"] = previous
 
 
-def _get_test_cases_for_model(get_func, model_path: str | None):
+def _get_test_cases_for_model(get_func, model_path: str | None, *, include_long_context: bool = False):
+    # Direct-script startup adds the package root before main(), not at import time.
+    from collector.coverage import long_context_coverage
+
+    with long_context_coverage(include_long_context):
+        return _get_model_cases(get_func, model_path)
+
+
+def _get_model_cases(get_func, model_path: str | None):
     if not model_path:
         return get_func()
     with _collector_model_path(model_path):
@@ -1611,7 +1619,7 @@ def _classify_exception(error: BaseException) -> str:
     deterministic framework limit (message starts with FIXME(kernel-limit) —
     divisibility guards, missing kernels, unsupported head ranges). These are
     expected on every rerun and must be counted apart from ``unexpected``
-    failures (pipeline summaries matched message text by hand until 2026-10-08).
+    failures.
     """
     return "kernel_limit" if str(error).lstrip().startswith(KERNEL_LIMIT_PREFIX) else "unexpected"
 
@@ -1625,7 +1633,7 @@ def _failure_group(task) -> str | None:
     the task carries neither a model nor a dtype attribute (e.g. positional
     tuple cases).
     """
-    from collector.capabilities import case_dtypes
+    from collector.skips import case_dtypes
 
     model = getattr(task, "model_name", None) or getattr(task, "model_path", None) or ""
     dtypes = ",".join(case_dtypes(task))
@@ -1853,7 +1861,7 @@ def worker(
             # Message matching alone misses launcher wrappers that hide the CUDA
             # error text (FlashInfer's "Got CUDA error. See above for details."):
             # the worker then runs the next case on a dead context and books an
-            # unrelated failure for it (gb200 job 512476645, 2026-10-27: one
+            # unrelated failure for it (gb200 job 512476645: one
             # healthy case lost per Llama-4 autotune crash). Probe the context
             # after every failure and recycle the worker when it is gone.
             context_error = None if _is_cuda_fatal_exception(e, torch_mod) else cuda_context_error(device)
@@ -1885,6 +1893,13 @@ def worker(
                 get_device_module().empty_cache()
 
 
+def _run_case_id(task, func_name: str, module_name: str) -> str:
+    """The ID a run records for one queued row; an ``{id, params}`` row carries its own."""
+    if isinstance(task, dict) and "id" in task and "params" in task:
+        return task["id"]
+    return create_test_case_id(task, func_name, module_name)
+
+
 def parallel_run(tasks, func, num_processes, module_name="unknown", resume_options=None):
     """parallel runner with error collection
 
@@ -1896,13 +1911,8 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     func_name = getattr(func, "__name__", None) or getattr(func, "func", func).__name__
     raw_task_infos = []
     for i, task in enumerate(tasks):
-        if isinstance(task, dict) and "id" in task and "params" in task:
-            task_id = task["id"]
-            task_params = task["params"]
-        else:
-            task_id = create_test_case_id(task, func_name, module_name)
-            task_params = task
-        raw_task_infos.append({"id": task_id, "params": task_params, "index": i})
+        task_params = task["params"] if isinstance(task, dict) and "id" in task and "params" in task else task
+        raw_task_infos.append({"id": _run_case_id(task, func_name, module_name), "params": task_params, "index": i})
 
     checkpoint_dir = (
         resume_options.get("checkpoint_dir", ".collector_checkpoint") if resume_options else ".collector_checkpoint"
@@ -2035,7 +2045,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     # loop's exit condition MUST NOT depend on worker-side progress_value
     # ticks: a worker records done_tasks/failed_tasks and bumps
     # progress_value as separate manager RPCs, so a hard kill between them
-    # (hardware-observed on H20 2026-07-19: TRT-LLM C++ teardown SIGABRT
+    # (hardware-observed on H20 TRT-LLM C++ teardown SIGABRT
     # right after the task completed) loses the tick forever — the run then
     # sat at 99/100 with a complete checkpoint and every GPU idle. Every
     # task that reaches done_tasks or failed_tasks lands here exactly once
@@ -2352,10 +2362,10 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             # nothing able to make progress. The orphaned ids are recorded in
             # the error report (WorkerOrphanedTask) for the summary and the
             # harness, but NOT in the failed ledger: nothing ran them, so a
-            # plain --resume must queue them again. 2026-10-11, b200 vllm
-            # dsa_context_module: 8,950 orphans written as failed were re-run
-            # by --resume-retry-failed behind the poison shapes that had
-            # stalled the op, which stalled it again.
+            # plain --resume must queue them again. Written as failed, a b200
+            # vllm dsa_context_module run's 8,950 orphans were re-run by
+            # --resume-retry-failed behind the poison shapes that had stalled
+            # the op, which stalled it again.
             if all(p is None for p in processes) and len(accounted) < len(task_infos):
                 while not error_queue.empty():
                     error = error_queue.get()
@@ -2414,7 +2424,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             if p.is_alive():
                 # a worker wedged in a CUDA call ignores SIGTERM; without SIGKILL the
                 # interpreter's multiprocessing atexit join waits forever (pipeline
-                # watchdogs had to reap collect.py itself, 2026-10-05 campaign)
+                # watchdogs had to reap collect.py itself)
                 logger.warning(f"Process {p.pid} survived SIGTERM, killing")
                 p.kill()
                 p.join(timeout=10)
@@ -2538,10 +2548,14 @@ def collect_ops(
                 run_func = functools.partial(run_func, **dict(collection["run_kwargs"]))
 
             def get_func_with_limit(get_func=get_func, op=collection["type"]):
-                from collector.capabilities import filter_cases
+                from collector import skips
+                from collector.case_generator import without_models
 
-                cases = _get_test_cases_for_model(get_func, model_path)
-                cases, _dropped = filter_cases(cases, op=op, sm_version=sm_version)
+                with without_models(skips.models(backend, op, sm_version)):
+                    cases = _get_test_cases_for_model(
+                        get_func, model_path, include_long_context=bool(case_plan and case_plan.include_long_context)
+                    )
+                cases, _skipped = skips.filter_cases(cases, backend=backend, op=op, sm_version=sm_version)
                 if case_filters:
                     before_count = len(cases)
                     cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
@@ -2678,7 +2692,9 @@ def collect_sglang(
                 sm_version=sm_version,
                 case_filters=case_filters,
                 replay=replay,
-                get_test_cases_for_model=_get_test_cases_for_model,
+                get_test_cases_for_model=functools.partial(
+                    _get_test_cases_for_model, include_long_context=bool(case_plan and case_plan.include_long_context)
+                ),
                 resume_checkpoint_cls=ResumeCheckpoint,
                 logger=logger,
             )
@@ -2904,6 +2920,58 @@ def generate_collection_summary(all_errors, backend, version):
     logger.info(f"\nDetailed error report saved to: {summary_file}")
 
 
+def _op_plan_report(
+    backend: str, ops: list[str], sm_version: int, table_dir: str | None, *, include_long_context: bool = False
+) -> dict:
+    """Expand the requested ops that have an op plan and summarize each one.
+
+    ``plan_hash`` uses the case IDs a run records (:func:`_run_case_id`).
+    With ``table_dir``, each op's cases are also written there as CSV.
+    """
+    import csv
+    import sys
+
+    from collector.op_plans import OP_PLANS, plan, summarize
+
+    registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
+    # The WideEP ops (moe_ep, deepep_*) have op plans but live in the backend's
+    # wideep registry, which a run merges in the same way.
+    run_funcs = {entry.op: entry.run_func for entry in [*registry, *_wideep_registry_for_backend(backend)]}
+    report = {}
+    for op in ops:
+        if op not in OP_PLANS or op not in run_funcs:
+            continue
+        # The report owns stdout: what planning prints (the MLA module loader's model
+        # notes) goes to stderr.
+        with contextlib.redirect_stdout(sys.stderr):
+            op_plan = plan(op, backend, sm_version, include_long_context=include_long_context)
+            report[op] = summarize(
+                op,
+                op_plan,
+                case_id=lambda row, op=op: _run_case_id(row, run_funcs[op], f"{backend}.{op}"),
+            )
+        if table_dir:
+            path = Path(table_dir) / f"{backend}_sm{sm_version}_{op}.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", newline="") as handle:
+                writer = csv.writer(handle)
+                # The dispatch column, where the plan picks one, lets a checker
+                # match each case against what serving was observed to run.
+                header = OP_PLANS[op].case_type._fields
+                if op_plan.dispatches:
+                    writer.writerow((*header, "dispatch"))
+                    writer.writerows(
+                        (*case, runner)
+                        for case, runners in zip(op_plan.cases, op_plan.dispatches, strict=True)
+                        for runner in runners
+                    )
+                else:
+                    writer.writerow(header)
+                    writer.writerows(op_plan.cases)
+            report[op]["table"] = str(path)
+    return report
+
+
 def _all_op_names() -> list[str]:
     """Collect all unique op names across normal and WideEP registries."""
     from collector.sglang.registry import REGISTRY as SGLANG_REG
@@ -2942,7 +3010,7 @@ def _git_collector_ref(repo_root: Path) -> str:
 
     ``AISIM_COLLECTOR_REF`` (legacy ``AIC_COLLECTOR_REF``) wins when set: the
     framework images carry no git, so pipelines that check the collector out
-    by SHA pass it in (every b200 shard run of 2026-10-05 recorded 'unknown').
+    by SHA pass it in; without it every shard run records 'unknown'.
     """
     forced = (os.environ.get("AISIM_COLLECTOR_REF") or os.environ.get("AIC_COLLECTOR_REF") or "").strip()
     if forced:
@@ -3122,7 +3190,7 @@ def _registered_checkpoint_tables(identity: dict, *, backend: str) -> frozenset[
 
     One producer (module + run_func) owns one or more tables — the primary
     ``perf_filename`` plus any ``extra_perf_filenames`` its OpEntry declares
-    (owner decision 2026-09-28: compute_scale writes computescale_perf and
+    (owner decision compute_scale writes computescale_perf and
     scale_matrix_perf from one measurement, so the executor binds both to the
     same checkpoint instead of splitting the op).
     """
@@ -5912,7 +5980,7 @@ def _write_collector_provenance(
 
     module_failure_names = {e["module"] for e in run_errors if e.get("error_type") == "ModuleCollectionFailure"}
     checkpoint_root = _checkpoint_backend_root(checkpoint_dir, backend)
-    closures = provenance.load_closures(_REPO_ROOT / "collector" / "hash_closures.yaml")
+    collector_hash = provenance.collector_hash(_REPO_ROOT)
     collector_ref = _git_collector_ref(_REPO_ROOT)
 
     runtime_meta = _runtime_metadata(provenance_ctx)
@@ -6024,7 +6092,7 @@ def _write_collector_provenance(
             parquet_rows = pq.read_metadata(parquet_file).num_rows
         tables[table] = {
             "collector_ref": collector_ref,
-            "collector_hash": provenance.collector_hash(module, _REPO_ROOT, closures),
+            "collector_hash": collector_hash,
             "case_plan_hash": provenance.case_plan_hash(sorted(case_ids)),
             "collected_at": collected_at,
             "rows": parquet_rows,
@@ -6300,6 +6368,11 @@ def main():
         help="Optional path to a model cases YAML file. Defaults to collector/cases/models/<architecture>_cases.yaml.",
     )
     parser.add_argument(
+        "--include-long-context",
+        action="store_true",
+        help="Add declared model-specific long-context points to normal coverage (default: off).",
+    )
+    parser.add_argument(
         "--model-cases-full",
         action="store_true",
         help="Collector v2 full mode: aggregate base op cases plus every model cases YAML file.",
@@ -6308,14 +6381,14 @@ def main():
         "--gpu",
         type=str,
         default=None,
-        help="GPU type for resolving hardware capability floors, for example b200_sxm. "
+        help="GPU type whose SM collector/skips.py applies, for example b200_sxm. "
         "The SM version is read from src/aisimulate_core/systems/<gpu>.yaml unless --sm is provided.",
     )
     parser.add_argument(
         "--sm",
         type=int,
         default=None,
-        help="Explicit SM version for hardware capability floors, for example 100. "
+        help="Explicit SM version collector/skips.py applies, for example 100. "
         "Overrides --gpu SM resolution; defaults to the local device capability.",
     )
     parser.add_argument(
@@ -6349,7 +6422,16 @@ def main():
     parser.add_argument(
         "--plan-only",
         action="store_true",
-        help="Print the collector v2 case plan and exit without running collectors.",
+        help="Print the collector v2 case plan and exit without running collectors. With --sm or --gpu, "
+        "ops with an op plan (collector/op_plans.py) also report case counts per dtype and the regions left out.",
+    )
+    parser.add_argument(
+        "--plan-table",
+        type=str,
+        metavar="DIR",
+        default=None,
+        help="With --plan-only and --sm/--gpu: write each op plan's cases to "
+        "DIR/<backend>_sm<sm>_<op>.csv, one row per case.",
     )
     parser.add_argument(
         "--profile",
@@ -6379,15 +6461,23 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     fpm_requested = FPM_FORWARD_OP in (args.ops or ())
+    if fpm_requested and args.include_long_context:
+        parser.error("--include-long-context applies to operation collection, not fpm_forward")
     if fpm_requested and set(args.ops or ()) != {FPM_FORWARD_OP}:
         parser.error("fpm_forward must be collected alone; do not mix campaign and local op entries")
     if fpm_requested and not (args.model_path or args.model_architecture or args.model_cases):
         parser.error("fpm_forward requires --model-path, --model-architecture, or --model-cases")
+    if args.include_long_context and not (
+        args.model_path or args.model_architecture or args.model_cases or args.model_cases_full
+    ):
+        parser.error("--include-long-context requires a model selection or --model-cases-full")
     ops = args.ops
     case_plan = None
     logger_message = None
     if args.plan_only and not (args.model_path or args.model_architecture or args.model_cases or args.model_cases_full):
         parser.error("--plan-only requires --model-path, --model-architecture, --model-cases, or --model-cases-full")
+    if args.plan_table and not (args.plan_only and (args.sm or args.gpu)):
+        parser.error("--plan-table requires --plan-only and --sm or --gpu")
     if args.model_path or args.model_architecture or args.model_cases or args.model_cases_full:
         from collector.model_cases import build_collection_case_plan
 
@@ -6404,6 +6494,7 @@ def main():
             sm_version=args.sm,
             model_cases_path=args.model_cases,
             full=args.model_cases_full,
+            include_long_context=args.include_long_context,
         )
         if case_plan.model_path:
             os.environ["COLLECTOR_MODEL_PATH"] = case_plan.model_path
@@ -6419,7 +6510,7 @@ def main():
                 # Not a usage error: the op is registered but the model plan keeps it
                 # registry-only (or the caller's shard plan is stale). A dedicated exit
                 # code lets a scheduler mark the shard terminal instead of retrying an
-                # argparse 2 until max_attempts (2026-10-11, sm100 shard plans).
+                # argparse 2 until max_attempts.
                 print(
                     f"{parser.prog}: error: Requested ops are not present in the collector v2 case plan: "
                     + ", ".join(sorted(missing_ops)),
@@ -6443,6 +6534,14 @@ def main():
         if args.plan_only:
             log_dict = case_plan.to_log_dict()
             log_dict["ops"] = ops
+            if case_plan.sm_version is not None:
+                log_dict["plans"] = _op_plan_report(
+                    args.backend,
+                    ops,
+                    case_plan.sm_version,
+                    args.plan_table,
+                    include_long_context=args.include_long_context,
+                )
             print(json.dumps(log_dict, indent=2))
             return
     else:
@@ -6478,10 +6577,10 @@ def main():
     elif args.model_path:
         logger.info(f"Legacy model filter active: collecting only for '{args.model_path}'")
 
-    # Hardware capability floor target: explicit --sm / --gpu wins, otherwise
-    # detect from the local device (None on XPU -> filter is permissive).
-    from collector.capabilities import detect_sm_version
+    # The SM collector/skips.py applies to: explicit --sm / --gpu wins, otherwise
+    # detect from the local device (None on XPU: only entries without an sm apply).
     from collector.model_cases import resolve_sm_version
+    from collector.skips import detect_sm_version
 
     sm_version = (
         case_plan.sm_version
@@ -6490,7 +6589,7 @@ def main():
     )
     if sm_version is None:
         sm_version = detect_sm_version()
-    logger.info(f"Hardware capability floors target SM version: {sm_version}")
+    logger.info(f"Skips target SM version: {sm_version}")
 
     resume_options = {
         "resume": args.resume,
