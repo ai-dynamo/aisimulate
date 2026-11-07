@@ -35,6 +35,10 @@ from .types import ParallelTopology
 _CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
 # The spec classes that the shared class table maps to FPM cache kinds, and the uniform wrapper of their inner specs.
 _SPEC_TYPES = frozenset({*(_SPEC_MODULE + name for name in SPEC_KINDS), _UNIFORM_SPEC})
+# The vLLM 0.31.0 ring specs. vLLM's startup sizing counts one block per request for them
+# (kv_cache_interface.py:868-877, :1019-1022, :904-907), and their managers take no part in prefix caching
+# (:920-922, :1032-1034).
+_RING_SPECS = frozenset(_SPEC_MODULE + name for name in ("CircularBufferSpec", "KpoolTailSpec"))
 # vLLM 0.31.0 cache settings that follow the prefix-caching mode (models/config.py:640-675), the
 # user prefix-match unit, and the block size that the engine core resolves in its own process
 # (engine/core.py:341-350). Importers record the mode per phase instead of comparing them.
@@ -672,6 +676,18 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             if blocks != 1:
                 raise ValueError(f"runtime state cache group blocks_per_request contradicts its spec: {names}")
             normalized["blocks_per_request"] = blocks
+        if strided:
+            if not spec_classes:
+                raise ValueError(f"runtime cache group lacks the spec class that decides prefix caching: {names}")
+            # vLLM's ring managers take no part in prefix caching, and a uniform group takes part only when every inner
+            # spec does (kv_cache_interface.py:920-922, :1032-1034, :1248-1250). A SlidingWindowMLASpec group takes
+            # part unless it replays a bounded window (:949-951), which no record holds, so its marker stays out.
+            if _SPEC_MODULE + "SlidingWindowMLASpec" not in spec_classes:
+                normalized["prefix_cacheable"] = not any(value in _RING_SPECS for value in spec_classes)
+            if _MAMBA_SPEC in spec_classes:
+                # The refusal above keeps the count at 0. A vLLM 0.31.0 record has no checkpoint alignment
+                # (runtime/fpm_memory_observer.py:510-517).
+                normalized["prefill_checkpoint_blocks"] = group["state"]["num_prefill_checkpoint_blocks"]
         groups.append(normalized)
     return groups
 

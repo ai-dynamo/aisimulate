@@ -576,7 +576,7 @@ def _layer_views(
     group: dict[str, Any],
     precision: str,
     group_kernel: int,
-) -> list[tuple[dict[str, Any], int]]:
+) -> tuple[list[tuple[dict[str, Any], int]], int]:
     """Check the views of one vLLM 0.31.0 layer, of any rank with the block axis first.
 
     A layer views its pages as one tensor, or as one tensor per state that a Mamba layer
@@ -584,7 +584,7 @@ def _layer_views(
     starts and ends inside the layer's page of a block, the views of one layer do not
     overlap there, and together they hold at most that page, because pages share bytes only
     for the same block ID in different groups. A block-outer block also holds the pages of
-    the tensor's other layers.
+    the tensor's other layers. Also returns the bytes that the views hold in one block.
     """
     spec = group["layer_specs"][name]
     if not isinstance(entries, list) or not entries:
@@ -664,7 +664,7 @@ def _layer_views(
         or (spec.get("spec_type") == _MAMBA_SPEC and group_kernel != block)
     ):
         raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
-    return views
+    return views, dense
 
 
 def _layer_strided_views(
@@ -675,7 +675,7 @@ def _layer_strided_views(
     count: int,
     precision: str,
     kernels: list[int],
-) -> None:
+) -> dict[str, int]:
     """Check the vLLM 0.31.0 placement of every cache layer in one backing buffer.
 
     Block ``b`` of layer ``layers[l]`` starts at ``offset + l * layer_stride + b * block_stride``
@@ -685,6 +685,7 @@ def _layer_strided_views(
     The generic layouts start every group's tensors at byte 0 (kv_cache_utils.py:1775-1819), so
     overlapping tensors may differ in offset and layer count. The overlap check therefore compares pages:
     two pages may share bytes only when they hold one block ID for layers of different groups.
+    Returns the bytes that the views of each layer hold in one block.
     """
     if len(storages) != 1:
         raise ValueError("layer-strided cache allocations require one backing storage")
@@ -692,6 +693,7 @@ def _layer_strided_views(
     size = storage["size_bytes"]
     placements: list[tuple[list[str], int, int, int, int]] = []
     views: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    viewed_bytes: dict[str, int] = {}
     for allocation in allocations:
         if (
             not isinstance(allocation, dict)
@@ -722,7 +724,7 @@ def _layer_strided_views(
         for position, name in enumerate(names):
             region = offset + position * layer_stride
             group_id, group = layer_groups[name]
-            views[name] = _layer_views(
+            views[name], viewed_bytes[name] = _layer_views(
                 name, tensors[name], storage_id, region, block_stride, count, size, group, precision, kernels[group_id]
             )
     if views.keys() != layer_groups.keys():
@@ -751,6 +753,7 @@ def _layer_strided_views(
                 if layer_groups[name][0] == layer_groups[other][0]:
                     raise ValueError(f"cache pages of one block overlap for layers of one group: {name}, {other}")
         _validate_alias_ownership([item for name in dict.fromkeys([*names, *others]) for item in views[name]], count)
+    return viewed_bytes
 
 
 def _physical_views(
@@ -861,7 +864,12 @@ def _physical_views(
             "vllm.v1.worker.gpu.model_runner.GPUModelRunner",
         ):
             raise ValueError(f"model runner has no audited cache mapping: {runner.get('class')}")
-        _layer_strided_views(allocations, tensors, storages, layer_groups, count, precision, kernels)
+        viewed_bytes = _layer_strided_views(allocations, tensors, storages, layer_groups, count, precision, kernels)
+        # A transfer moves what the validated views of a layer hold, without padding. The recorded page of a layer can
+        # include padding: vLLM pads a KpoolTailSpec page to the indexer page and a Mamba page to the MLA page
+        # (v1/core/kv_cache_utils.py:1254-1263, :1273-1275).
+        for normalized, group in zip(groups, cache["groups"], strict=True):
+            normalized["transfer_bytes_per_block"] = sum(viewed_bytes[name] for name in group["layer_names"])
         return groups, accounting
     covered, used_storage = set(), set()
     intervals: dict[str, list[tuple[int, int]]] = {}
@@ -967,12 +975,6 @@ def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided:
     return value
 
 
-# The vLLM 0.31.0 spec classes whose groups take no part in prefix caching (kv_cache_interface.py:920-922,
-# :1032-1034). A SlidingWindowMLASpec group takes part unless it replays a bounded window (:949-951), which no record
-# holds.
-_NO_PREFIX_CACHING_SPECS = frozenset(_SPEC_MODULE + name for name in ("CircularBufferSpec", "KpoolTailSpec"))
-
-
 def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
     """The hash block sizes that vLLM 0.31.0 can derive for a scheduler from its cache groups and cache settings.
 
@@ -1001,7 +1003,7 @@ def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
     caching = [
         block
         for block, group in zip(blocks, groups, strict=True)
-        if group["spec_type"] not in {*_NO_PREFIX_CACHING_SPECS, unknown}
+        if group["spec_type"] not in {*runtime_memory._RING_SPECS, unknown}
     ]
     # Start from the GCD of the blocks of the groups that surely take part, which is 0 without such a group. Each
     # SlidingWindowMLASpec group may add its block to every GCD so far, so the set holds the GCD of every choice of
@@ -1053,7 +1055,7 @@ def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
         )
 
     unknown = _SPEC_MODULE + "SlidingWindowMLASpec"
-    caching = [group for group in groups if group["spec_type"] not in {*_NO_PREFIX_CACHING_SPECS, unknown}]
+    caching = [group for group in groups if group["spec_type"] not in {*runtime_memory._RING_SPECS, unknown}]
     sliding = [group["block_size_tokens"] for group in groups if group["spec_type"] == unknown and can_take_part(group)]
     unit = settings.get("prefix_match_unit") is not None
     if caching:
@@ -1166,11 +1168,6 @@ def _phase_prefix_caching(
     }
 
 
-# The vLLM 0.31.0 spec classes that vLLM's startup sizing counts as one block per request: the tail and the ring
-# (kv_cache_interface.py:868-877, :1019-1022, :904-907).
-_ONE_BLOCK_SPECS = frozenset(_SPEC_MODULE + name for name in ("KpoolTailSpec", "CircularBufferSpec"))
-
-
 def _validate_startup_concurrency(record: dict[str, Any]) -> None:
     """Check the kv_cache_max_concurrency of a vLLM 0.31.0 scheduler against its cache groups.
 
@@ -1193,7 +1190,7 @@ def _validate_startup_concurrency(record: dict[str, Any]) -> None:
             blocks += state["num_speculative_blocks"] + (
                 2 + state["num_prefill_checkpoint_blocks"] if cache["mamba_cache_mode"] == "align" else 1
             )
-        elif spec in _ONE_BLOCK_SPECS:
+        elif spec in runtime_memory._RING_SPECS:
             blocks += 1
         elif spec.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS:
             return

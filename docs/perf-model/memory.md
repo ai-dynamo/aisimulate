@@ -176,6 +176,31 @@ linear-attention layers. It has no `sliding_window`, and no other kind accepts
   and
   [`single_type_kv_cache_manager.py:1658-1675`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py#L1658-L1675).
 
+Each group can also hold four optional fields from the runtime probe import.
+A profile imported before these fields existed has none of them, and an absent
+field is left out of the serialized group. Sizing and replay do not read them
+yet.
+
+- `prefix_cacheable` tells whether vLLM's manager for the group takes part in
+  prefix caching. A ring spec does not. A vLLM 0.31.0 import writes it for
+  every group except a `SlidingWindowMLASpec` group. If such a group replays a
+  bounded window, it takes no part. The probe does not record that setting.
+- `transfer_bytes_per_block` is the payload that a P/D transfer moves for one
+  block of the group, without padding. It is positive and at most
+  `page_size_bytes`. A vLLM 0.31.0 import adds up the bytes that the cache
+  views of the group's layers hold in one block. The recorded page of a layer
+  can include padding. For example, vLLM 0.31.0 pads the page of a
+  GLM-5.3-Flash tail ring layer from 2,048 bytes to the 71,808-byte indexer
+  page.
+- `prefill_checkpoint_blocks` is the number of prefill checkpoint blocks of a
+  Mamba spec: 0 or 1. Only a `state` group can have it. A vLLM 0.31.0 import
+  writes it for every Mamba group, and its value is always 0.
+- `prefill_checkpoint_alignment` is the token alignment of that checkpoint. It
+  must be positive, and it needs `prefill_checkpoint_blocks` of 1. A vLLM
+  0.31.0 record has no alignment, so import does not write it. In vLLM 0.32.0,
+  a KDA layer that prefills with FlashKDA has one checkpoint block with an
+  alignment of 16 tokens.
+
 Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
 same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes
 `ForwardPassPerfModelConfig::estimate_cache_budget(&request)` and

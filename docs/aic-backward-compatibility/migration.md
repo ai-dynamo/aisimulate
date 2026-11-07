@@ -617,7 +617,18 @@ explains the retained workload routing and feature mathematics.
 - `FpmCacheGroup` literals must supply `blocks_per_request: None` for attention
   and convolution groups. Exhaustive matches on `FpmCacheKind` must handle
   `State`. Serialized groups that omit the field still deserialize, and `None`
-  is not serialized.
+  is not serialized. Literals must also supply `prefix_cacheable`,
+  `transfer_bytes_per_block`, `prefill_checkpoint_blocks` and
+  `prefill_checkpoint_alignment`. Use `None` unless a runtime probe import
+  recorded the value. Serialized groups that omit these fields still
+  deserialize, and `None` is not serialized.
+- A vLLM 0.31.0 runtime probe import now writes `prefix_cacheable`,
+  `transfer_bytes_per_block` and, for a Mamba group,
+  `prefill_checkpoint_blocks`. So an onboarding session whose probe was
+  imported before these fields existed fails re-verification with `saved
+  observed resources differ from immutable runtime evidence`. To continue it,
+  run `aisimulate onboard import-observations` again on the same observations.
+  Then review and accept the new draft.
 - `FpmRuntimeMemoryConfig` literals must supply `enable_prefix_caching`,
   `mamba_cache_mode` and `hash_block_size_tokens` as `None`. Serialized records
   that omit these fields still deserialize, and `None` is not serialized.
