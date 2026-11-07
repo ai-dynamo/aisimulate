@@ -54,7 +54,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 - KV-cache estimation: `estimate_kv_cache`, `KvCacheEstimateRequest`,
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
-- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`,
+- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`, `FpmMambaCacheMode`,
   `FpmResourceConfig`, `FpmRuntimeMemoryConfig`, `FpmCacheBudgetRequest`, `FpmCacheBudget`, and
   `FpmCacheBudgetAdjusted`, through the canonical model/config budget method;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,

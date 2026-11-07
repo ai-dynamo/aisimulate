@@ -759,6 +759,19 @@ def grouped_profile(profile_dict):
     return profile_dict
 
 
+def _state_group(**changes):
+    return {
+        "name": "state",
+        "kind": "state",
+        "num_layers": 3,
+        "block_size_tokens": 16,
+        "page_size_bytes": 64,
+        "sliding_window": None,
+        "blocks_per_request": 2,
+        **changes,
+    }
+
+
 def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_profile, profile_memory):
     result = profile_memory(max_num_tokens=16, context_length=64, cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
     assert result["kvcache_quant_mode"] == "fp8"
@@ -775,6 +788,18 @@ def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_prof
     with pytest.raises(ValueError, match="context_length"):
         profile_memory(context_length=4097)
     json.dumps(result)
+
+
+def test_state_groups_reach_the_rust_budget(grouped_profile, profile_memory):
+    sizing = {"max_num_tokens": 16, "context_length": 64}
+    without_state = profile_memory(**sizing)
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(page_size_bytes=64, blocks_per_request=2))
+    result = profile_memory(**sizing)
+    # Rust returns the group with its block count and holds two 64B blocks per request: 2 * 64 = 128B.
+    assert result["cache_groups"] == groups
+    assert result["cache_groups"][-1]["blocks_per_request"] == 2
+    assert result["request_peak_cache_bytes"] == without_state["request_peak_cache_bytes"] + 128
 
 
 def test_grouped_profile_cannot_be_reduced_to_scalar_blocks(grouped_profile, profile_memory):
@@ -815,6 +840,30 @@ def test_grouped_profile_roundtrip_compiles_without_graph(grouped_profile, direc
 def test_linear_profile_serialization_omits_new_group_fields(profile_dict):
     resource = load_fpm_profile(profile_dict).model_dump(mode="json")["deployments"][0]["resources"]
     assert resource == profile_dict["deployments"][0]["resources"]
+
+
+def test_grouped_profile_serialization_omits_new_group_fields(grouped_profile):
+    resource = load_fpm_profile(grouped_profile).model_dump(mode="json")["deployments"][0]["resources"]
+    assert resource == grouped_profile["deployments"][0]["resources"]
+
+
+def test_state_group_serialization_follows_the_rust_shape(grouped_profile):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group())
+    profile = load_fpm_profile(grouped_profile)
+    saved = profile.model_dump(mode="json")["deployments"][0]["resources"]["cache_groups"]
+    assert saved == groups
+    # Plan IDs and spec digests hash the dump, and Rust serializes the count after the window.
+    assert list(saved[-1]) == [
+        "name",
+        "kind",
+        "num_layers",
+        "block_size_tokens",
+        "page_size_bytes",
+        "sliding_window",
+        "blocks_per_request",
+    ]
+    assert load_fpm_profile(profile).model_dump(mode="json") == profile.model_dump(mode="json")
 
 
 @pytest.fixture
@@ -1088,6 +1137,92 @@ def test_runtime_memory_schema_rejects_invalid_evidence(runtime_profile, change)
         _normalize(_request(runtime_profile))
 
 
+_ALIGN_NEEDS_PREFIX_CACHING = "mamba_cache_mode align requires enable_prefix_caching=true"
+_HASH_BLOCK_POSITIVE = "hash_block_size_tokens must be positive"
+_PREFIX_CACHING_EVIDENCE = {"enable_prefix_caching": True, "mamba_cache_mode": "align", "hash_block_size_tokens": 4}
+
+
+def _with_evidence(profile, **evidence):
+    changed = copy.deepcopy(profile)
+    changed["deployments"][0]["resources"]["runtime_memory"].update(evidence)
+    return changed
+
+
+def _saved_runtime_memory(profile):
+    return load_fpm_profile(profile).model_dump(mode="json")["deployments"][0]["resources"]["runtime_memory"]
+
+
+def test_runtime_memory_prefix_caching_evidence(runtime_profile, profile_memory):
+    plain = runtime_profile["deployments"][0]["resources"]["runtime_memory"]
+    # A record without the evidence dumps without the new keys, in a saved config too.
+    assert _saved_runtime_memory(runtime_profile) == plain
+    saved_config = _normalize(_request(runtime_profile))["fpm_profile"]
+    assert saved_config["deployments"][0]["resources"]["runtime_memory"] == plain
+    budget = profile_memory(context_length=1024)
+
+    # The probe's settings are valid and round trip, after the existing keys as in the Rust record.
+    profile = _with_evidence(runtime_profile, **_PREFIX_CACHING_EVIDENCE)
+    saved = _saved_runtime_memory(profile)
+    assert saved == {**plain, **_PREFIX_CACHING_EVIDENCE}
+    assert list(saved) == [*plain, *_PREFIX_CACHING_EVIDENCE]
+    reloaded = load_fpm_profile(load_fpm_profile(profile))
+    assert reloaded.model_dump(mode="json") == load_fpm_profile(profile).model_dump(mode="json")
+    # Rust accepts the record and nothing reads it: the budget is the one for the record without evidence.
+    assert profile_memory(context_length=1024, fpm_profile=profile) == budget
+    # A saved config keeps the evidence through native normalization, and normalizing it again changes nothing.
+    saved_config = _normalize(_request(profile))["fpm_profile"]
+    assert saved_config == load_fpm_profile(profile).model_dump(mode="json")
+    assert _normalize(_request(saved_config))["fpm_profile"] == saved_config
+    # An explicit null is an absent value and is not written back.
+    nulls = _with_evidence(runtime_profile, **dict.fromkeys(_PREFIX_CACHING_EVIDENCE))
+    assert _saved_runtime_memory(nulls) == plain
+    # The largest u32 is a valid hash block size.
+    largest = _with_evidence(runtime_profile, hash_block_size_tokens=2**32 - 1)
+    assert _saved_runtime_memory(largest)["hash_block_size_tokens"] == 2**32 - 1
+
+    # `none` and an absent mode need no prefix caching; `align` does.
+    for caching in (False, True):
+        load_fpm_profile(_with_evidence(runtime_profile, enable_prefix_caching=caching, mamba_cache_mode="none"))
+    load_fpm_profile(_with_evidence(runtime_profile, mamba_cache_mode="none"))
+    for caching in ({"enable_prefix_caching": False}, {"enable_prefix_caching": None}, {}):
+        with pytest.raises(ValidationError, match=_ALIGN_NEEDS_PREFIX_CACHING):
+            load_fpm_profile(_with_evidence(runtime_profile, mamba_cache_mode="align", **caching))
+    # A hash block size must be positive.
+    for size in (0, -1):
+        with pytest.raises(ValidationError, match=_HASH_BLOCK_POSITIVE):
+            load_fpm_profile(_with_evidence(runtime_profile, hash_block_size_tokens=size))
+    # With both rules broken, the mode rule reports first, as in Rust.
+    both = _with_evidence(runtime_profile, mamba_cache_mode="align", hash_block_size_tokens=0)
+    with pytest.raises(ValidationError, match=_ALIGN_NEEDS_PREFIX_CACHING) as error:
+        load_fpm_profile(both)
+    assert _HASH_BLOCK_POSITIVE not in str(error.value)
+    # vLLM's `all` mode is refused by the literal.
+    with pytest.raises(ValidationError, match="'none' or 'align'"):
+        load_fpm_profile(_with_evidence(runtime_profile, enable_prefix_caching=True, mamba_cache_mode="all"))
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"enable_prefix_caching": 1},
+        {"enable_prefix_caching": "true"},
+        {"mamba_cache_mode": "ALIGN"},
+        {"mamba_cache_mode": ""},
+        {"mamba_cache_mode": True},
+        {"hash_block_size_tokens": True},
+        {"hash_block_size_tokens": 4.0},
+        {"hash_block_size_tokens": "4"},
+        {"hash_block_size_tokens": 2**32},
+    ],
+)
+def test_runtime_memory_prefix_caching_evidence_rejects_wrong_types(runtime_profile, evidence):
+    load_fpm_profile(_with_evidence(runtime_profile, **_PREFIX_CACHING_EVIDENCE))  # The valid evidence loads.
+    with pytest.raises(ValidationError) as error:
+        load_fpm_profile(_with_evidence(runtime_profile, **{**_PREFIX_CACHING_EVIDENCE, **evidence}))
+    # Only the changed field fails, so the type and bound checks do not depend on the other fields.
+    assert [item["loc"][-1] for item in error.value.errors()] == list(evidence)
+
+
 def test_runtime_memory_byte_boundary_is_exact(runtime_profile, profile_memory):
     runtime_profile["deployments"][0]["resources"]["runtime_memory"].update(
         kv_cache_bytes=2**53, gpu_memory_utilization=1.0
@@ -1145,6 +1280,45 @@ def test_runtime_scalar_blocks_propagate_context_bound(runtime_profile):
 )
 def test_grouped_profile_rejects_ambiguous_or_invalid_page_contract(grouped_profile, change):
     change(grouped_profile["deployments"][0]["resources"])
+    with pytest.raises(ValidationError):
+        load_fpm_profile(grouped_profile)
+
+
+_BLOCKS_REQUIRED = "state cache groups require a positive blocks_per_request"
+_STATE_WINDOW = "state cache groups cannot have a sliding_window"
+_BLOCKS_ONLY_STATE = "blocks_per_request applies only to state cache groups"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"blocks_per_request": None}, _BLOCKS_REQUIRED),
+        ({"blocks_per_request": 0}, _BLOCKS_REQUIRED),
+        ({"blocks_per_request": -1}, _BLOCKS_REQUIRED),
+        ({"sliding_window": 32}, _STATE_WINDOW),
+        ({"kind": "attention"}, _BLOCKS_ONLY_STATE),
+        ({"kind": "convolution", "sliding_window": 32}, _BLOCKS_ONLY_STATE),
+        # The first error matches Rust: the older convolution rule, then blocks, then the window.
+        ({"kind": "convolution"}, "convolution cache groups require a sliding_window"),
+        ({"blocks_per_request": None, "sliding_window": 32}, _BLOCKS_REQUIRED),
+        ({"blocks_per_request": 0, "sliding_window": 32}, _BLOCKS_REQUIRED),
+    ],
+)
+def test_state_group_contract(grouped_profile, changes, message):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(blocks_per_request=1))
+    load_fpm_profile(grouped_profile)  # One block per request is a valid state group.
+    groups[-1].update(changes)
+    with pytest.raises(ValueError, match=message):
+        load_fpm_profile(grouped_profile)
+
+
+@pytest.mark.parametrize("blocks", [True, 1.0, "1", 2**32])
+def test_state_group_block_count_type_and_upper_bound(grouped_profile, blocks):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(blocks_per_request=2**32 - 1))
+    load_fpm_profile(grouped_profile)  # The largest u32 is valid.
+    groups[-1]["blocks_per_request"] = blocks
     with pytest.raises(ValidationError):
         load_fpm_profile(grouped_profile)
 
