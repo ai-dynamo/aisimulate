@@ -456,6 +456,33 @@ prefill checkpoints, no speculative decoding and no periodic retention.
 The identified upstream revision has no root NOTICE file. The repository's
 Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
 
+The repository-root files
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
+`crates/core/src/engine/kv_manager/state_cache_tests.rs` and
+`python/aisimulate/src/aisimulate_core/sdk/memory/deepseek_v4.py` model the
+sliding-window prefix-cache retention (`VLLM_PREFIX_CACHE_RETENTION_INTERVAL`,
+replay boundaries, the EAGLE/MTP block after a boundary and the DeepSeek V4 MTP
+group) of vLLM [`v0.32.0`](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be)
+(commit `5df63a7203cdb9328d824a27b682e77c7b9928be`). The modeled functions are
+unchanged at main commit `0d5306aaca3971b620443a3ea779550ffe4d5114`. Files at v0.32.0:
+
+- [`vllm/v1/core/kv_cache_coordinator.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py)
+  (`_validate_prefix_cache_retention_interval`, `replay_boundaries`,
+  `KVCacheCoordinator.cache_blocks`; lines 33-86 and 354-376)
+- [`vllm/v1/core/single_type_kv_cache_manager.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/single_type_kv_cache_manager.py)
+  (`SlidingWindowManager._contiguous_blocks_for_hit`,
+  `SlidingWindowManager.find_longest_cache_hit`,
+  `SlidingWindowManager.reachable_block_mask`; lines 933-1133)
+- [`vllm/v1/core/kv_cache_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_utils.py)
+  (`_annotate_eagle_groups`; lines 2029-2085)
+- [`vllm/models/deepseek_v4/attention.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/models/deepseek_v4/attention.py)
+  (MTP layer without a compressor; line 235)
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0
+(https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE).
+These are modified Rust and Python simulations of the behavior: a retained
+boundary is one whole-state copy, and no upstream source file is vendored.
+
 
 The inference-mode scope and MSA query-position metadata integration in
 `collector/vllm/collect_mla_module.py` and

@@ -374,9 +374,11 @@ def _resolve_state_cache(
     if cache.state_cache is None:
         return worker, None
     size = resolve_state_size(engine, worker)
+    state = cache.state_cache.model_copy(update={"bytes_per_request": size["bytes_per_request"]})
+    state._sliding_window_lookahead = size.get("sliding_window_lookahead_tokens")
     resolved = cache.model_copy(
         update={
-            "state_cache": cache.state_cache.model_copy(update={"bytes_per_request": size["bytes_per_request"]}),
+            "state_cache": state,
             "block_size": size["block_size"],
             "bytes_per_token": size["kv_bytes_per_token"],
         }
@@ -820,6 +822,8 @@ def _worker_engine_args(
         payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
         payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
+        if (window := cache.state_cache.resolved_sliding_window()) is not None:
+            payload["state_cache"]["sliding_window"] = window
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:

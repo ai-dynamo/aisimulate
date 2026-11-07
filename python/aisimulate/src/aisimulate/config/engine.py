@@ -37,6 +37,7 @@ from .common import (
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
+NonNegativeU64 = Annotated[int, Field(strict=True, ge=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -249,10 +250,18 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+class SlidingWindowStateConfig(StrictModel):
+    """Prefix-cache retention of a sliding-window state (DeepSeek V4)."""
+
+    retention_interval: NonNegativeU64 | None = None
+    lookahead_tokens: NonNegativeU64
+
+
 class StateCacheConfig(StrictModel):
     """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
+    sliding_window: SlidingWindowStateConfig | None = None
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -275,6 +284,18 @@ class StateCachePredictionConfig(StrictModel):
     bytes_per_request: PositiveU64 | None = None
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
+    # vLLM's VLLM_PREFIX_CACHE_RETENTION_INTERVAL; DeepSeek V4 only.
+    retention_interval: NonNegativeU64 | None = None
+    # Resolved from inferred DeepSeek V4 geometry, never authored.
+    _sliding_window_lookahead: int | None = PrivateAttr(default=None)
+
+    def resolved_sliding_window(self) -> dict[str, int] | None:
+        if self._sliding_window_lookahead is None:
+            return None
+        window = {"lookahead_tokens": self._sliding_window_lookahead}
+        if self.retention_interval is not None:
+            window["retention_interval"] = self.retention_interval
+        return window
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -299,7 +320,14 @@ class KvCachePredictionConfig(StrictModel):
     @classmethod
     def _accept_resolved_state_config(cls, value: Any) -> Any:
         if isinstance(value, StateCacheConfig):
-            return value.model_dump()
+            # The resolved window round-trips through the sizing fields.
+            window = value.sliding_window
+            config = StateCachePredictionConfig(
+                bytes_per_request=value.bytes_per_request,
+                retention_interval=window.retention_interval if window else None,
+            )
+            config._sliding_window_lookahead = window.lookahead_tokens if window else None
+            return config
         return value
 
     @model_validator(mode="after")

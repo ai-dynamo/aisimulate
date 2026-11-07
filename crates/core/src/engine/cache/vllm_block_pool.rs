@@ -10,7 +10,7 @@
 use crate::engine::belady::BeladyOracle;
 use crate::engine::common::hashing::SequenceHash;
 use rustc_hash::{FxHashMap, FxHashSet};
-use slotmap::{SlotMap, new_key_type};
+use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, VecDeque, hash_map::Entry};
 use std::hash::Hash;
@@ -118,11 +118,84 @@ struct HashCopies {
 }
 
 /// State-only identity metadata does not widen token copies or reservations.
+/// A state copy is many slots of one prefix, cached and evicted together, so
+/// the index costs one prefix lookup per slot and no per-slot hashing.
 #[derive(Default)]
 struct StateIndex {
-    slots_by_prefix: FxHashMap<SequenceHash, FxHashSet<usize>>,
-    by_key: FxHashMap<(SequenceHash, usize), HashCopies>,
-    by_copy: FxHashMap<BlockCopyId, (SequenceHash, usize)>,
+    by_prefix: FxHashMap<SequenceHash, StateSlots>,
+    by_copy: SecondaryMap<BlockCopyId, (SequenceHash, usize)>,
+}
+
+/// One prefix's visible slots; the prefix entry goes with its last slot.
+#[derive(Default)]
+struct StateSlots {
+    slots: Vec<Option<HashCopies>>,
+    visible: usize,
+}
+
+impl StateIndex {
+    fn get(&self, prefix: SequenceHash, slot: usize) -> Option<&HashCopies> {
+        self.by_prefix.get(&prefix)?.slots.get(slot)?.as_ref()
+    }
+
+    /// Returns (became visible, became redundant), as [`VllmBlockPool::index_copy`].
+    fn insert(&mut self, prefix: SequenceHash, slot: usize, id: BlockCopyId) -> (bool, bool) {
+        assert!(
+            self.by_copy.insert(id, (prefix, slot)).is_none(),
+            "private copy retains a state key"
+        );
+        let entry = self.by_prefix.entry(prefix).or_default();
+        if entry.slots.len() <= slot {
+            entry.slots.resize_with(slot + 1, || None);
+        }
+        match &mut entry.slots[slot] {
+            Some(copies) => {
+                let became_redundant = copies.duplicates.is_none();
+                copies.push(id);
+                (false, became_redundant)
+            }
+            vacant => {
+                *vacant = Some(HashCopies::new(id));
+                entry.visible += 1;
+                (true, false)
+            }
+        }
+    }
+
+    /// Returns whether the key lost its last visible copy.
+    fn remove(&mut self, prefix: SequenceHash, slot: usize, id: BlockCopyId) -> bool {
+        assert_eq!(
+            self.by_copy.remove(id),
+            Some((prefix, slot)),
+            "state identity changed"
+        );
+        let entry = self.by_prefix.get_mut(&prefix).expect("state prefix index");
+        let copies = entry.slots[slot]
+            .as_mut()
+            .expect("cached key is missing from its index");
+        match copies.remove(id) {
+            CopyRemoval::Remaining => false,
+            CopyRemoval::Missing => panic!("cached copy is missing from its key index"),
+            CopyRemoval::Last => {
+                entry.slots[slot] = None;
+                entry.visible -= 1;
+                if entry.visible == 0 {
+                    self.by_prefix.remove(&prefix);
+                }
+                true
+            }
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = ((SequenceHash, usize), &HashCopies)> {
+        self.by_prefix.iter().flat_map(|(&prefix, entry)| {
+            entry
+                .slots
+                .iter()
+                .enumerate()
+                .filter_map(move |(slot, copies)| Some(((prefix, slot), copies.as_ref()?)))
+        })
+    }
 }
 
 enum CopyRemoval {
@@ -356,8 +429,13 @@ pub(crate) struct VllmBlockPool {
     /// Intrusive ordinary LRU: head is evicted first, tail was released last.
     inactive_head: Option<BlockCopyId>,
     inactive_tail: Option<BlockCopyId>,
+    /// Inactive capacity in blocks; a grouped state copy counts its weight.
     inactive_len: usize,
     reserved: usize,
+    /// Blocks held by each grouped state copy (see [`Self::publish_state_group`]),
+    /// and those blocks beyond one per copy.
+    group_weights: SecondaryMap<BlockCopyId, usize>,
+    group_extra_blocks: usize,
     /// Anonymous currently unoccupied capacity. Only a pending source reader
     /// follows a token through release, eviction, reservation, and reuse.
     free: FreshCapacity,
@@ -381,6 +459,8 @@ impl VllmBlockPool {
             inactive_tail: None,
             inactive_len: 0,
             reserved: 0,
+            group_weights: SecondaryMap::new(),
+            group_extra_blocks: 0,
             free: FreshCapacity::Untracked(capacity),
             source_reuse: None,
             hold_sources: false,
@@ -432,6 +512,64 @@ impl VllmBlockPool {
             // A held source is referenced by its transfer, not evictable.
             is_active: *refs > 0 || *pins > 0 || self.holds_source(id),
         })
+    }
+
+    /// Blocks of capacity behind `key`'s visible copy: a grouped state copy's
+    /// weight, otherwise one.
+    pub(crate) fn key_blocks(&self, key: CacheKey) -> usize {
+        self.first_copy(key).map_or(1, |id| self.weight(id))
+    }
+
+    /// Whether state copies may be grouped into one weighted entry. The Belady
+    /// oracle ranks single blocks, so its pools keep one entry per block.
+    pub(crate) fn groups_state_copies(&self) -> bool {
+        self.belady.is_none()
+    }
+
+    fn weight(&self, id: BlockCopyId) -> usize {
+        self.group_weights.get(id).copied().unwrap_or(1)
+    }
+
+    /// Cache `weight` fresh blocks of `reservation` as one reclaimable state
+    /// copy keyed `CacheKey::State { prefix, slot: 0 }`. The copy is cached,
+    /// looked up, pinned and evicted as a whole, so it costs one index and LRU
+    /// entry instead of `weight`. Returns the copy, which is inactive.
+    pub(crate) fn publish_state_group(
+        &mut self,
+        prefix: SequenceHash,
+        weight: usize,
+        reservation: &mut BlockReservation,
+    ) -> BlockCopyId {
+        assert!(self.groups_state_copies() && weight > 0);
+        for _ in 0..weight {
+            let Some(source_reuse) = reservation.fresh.pop() else {
+                panic!("reservation has no fresh capacity")
+            };
+            assert!(
+                source_reuse
+                    .is_none_or(|dependency| !self.is_source_reuse_dependency_pending(dependency)),
+                "a grouped state copy cannot take capacity a transfer still reads"
+            );
+        }
+        self.reserved = self
+            .reserved
+            .checked_sub(weight)
+            .expect("pool reserved-capacity underflow");
+        let id = self.copies.insert(BlockCopy {
+            state: CopyState::Private,
+        });
+        self.group_weights.insert(id, weight);
+        self.group_extra_blocks += weight - 1;
+        self.cache_private_key(id, CacheKey::State { prefix, slot: 0 });
+        self.release(id);
+        id
+    }
+
+    /// Remove a grouped copy's weight; returns its blocks.
+    fn forget_weight(&mut self, id: BlockCopyId) -> usize {
+        let weight = self.group_weights.remove(id).unwrap_or(1);
+        self.group_extra_blocks -= weight - 1;
+        weight
     }
 
     /// Atomically pins `prefix` and reserves `fresh` additional copies.
@@ -548,11 +686,13 @@ impl VllmBlockPool {
         let free = self.free_capacity();
         let needed_evictions = fresh.saturating_sub(free);
         if needed_evictions > 0 {
-            let inactive_hits = hits
+            let inactive_hits: usize = hits
                 .iter()
                 .filter_map(|(_, id)| self.is_inactive(*id).then_some(*id))
                 .collect::<FxHashSet<_>>()
-                .len();
+                .into_iter()
+                .map(|id| self.weight(id))
+                .sum();
             let evictable_after_pins = self.inactive_len.saturating_sub(inactive_hits);
             if needed_evictions > evictable_after_pins {
                 return None;
@@ -606,7 +746,7 @@ impl VllmBlockPool {
                 reservation
                     .prefix
                     .iter()
-                    .all(|(_, id)| !index.by_copy.contains_key(id)),
+                    .all(|(_, id)| !index.by_copy.contains_key(*id)),
                 "token activation cannot consume state keys"
             );
         }
@@ -750,24 +890,10 @@ impl VllmBlockPool {
         }
         let (became_visible, became_redundant) = match hash {
             CacheKey::Token(hash) => Self::index_copy(&mut self.by_hash, hash, id),
-            CacheKey::State { prefix, slot } => {
-                let index = self.state_index.get_or_insert_with(Default::default);
-                assert!(
-                    index.by_copy.insert(id, (prefix, slot)).is_none(),
-                    "private copy retains a state key"
-                );
-                let result = Self::index_copy(&mut index.by_key, (prefix, slot), id);
-                if result.0 {
-                    assert!(
-                        index
-                            .slots_by_prefix
-                            .entry(prefix)
-                            .or_default()
-                            .insert(slot)
-                    );
-                }
-                result
-            }
+            CacheKey::State { prefix, slot } => self
+                .state_index
+                .get_or_insert_with(Default::default)
+                .insert(prefix, slot, id),
         };
         if became_redundant {
             self.refresh_belady_hash(hash.prefix_hash());
@@ -802,6 +928,10 @@ impl VllmBlockPool {
     /// Remove a state copy's cache identity before its exclusive owner writes.
     /// Ownership/capacity stay unchanged; other physical copies remain indexed.
     pub(crate) fn make_state_private(&mut self, id: BlockCopyId) {
+        assert!(
+            !self.group_weights.contains_key(id),
+            "a grouped state copy is never written"
+        );
         let hash = match self.copies.get(id).map(|copy| &copy.state) {
             Some(CopyState::Private) => return,
             Some(CopyState::Cached {
@@ -840,7 +970,9 @@ impl VllmBlockPool {
             .remove(id)
             .expect("checked inactive state disappeared before discard");
         let source_reuse = self.take_copy_source_reuse(id);
-        self.free.push(source_reuse);
+        for _ in 0..self.forget_weight(id) {
+            self.free.push(source_reuse);
+        }
         true
     }
 
@@ -902,7 +1034,7 @@ impl VllmBlockPool {
     }
 
     pub(crate) fn num_active(&self) -> usize {
-        self.copies.len() - self.inactive_len + self.reserved
+        self.copies.len() + self.group_extra_blocks - self.inactive_len + self.reserved
     }
 
     pub(crate) fn num_inactive(&self) -> usize {
@@ -916,7 +1048,7 @@ impl VllmBlockPool {
     fn free_capacity(&self) -> usize {
         debug_assert_eq!(
             self.capacity,
-            self.copies.len() + self.reserved + self.free.len(),
+            self.copies.len() + self.group_extra_blocks + self.reserved + self.free.len(),
             "block-pool capacity accounting drifted"
         );
         self.free.len()
@@ -1126,14 +1258,20 @@ impl VllmBlockPool {
     ) -> FreshCapacity {
         let from_free = fresh - needed_evictions;
         let mut capacity = self.free.take_tail(from_free);
-        for _ in 0..needed_evictions {
+        while capacity.len() < fresh {
             let evicted = self.evict_one();
             if let Some(hash) = evicted.removed_hash {
                 removed.push(hash);
             }
-            capacity.push(evicted.source_reuse);
+            for _ in 0..evicted.blocks {
+                capacity.push(evicted.source_reuse);
+            }
         }
-        assert_eq!(capacity.len(), fresh);
+        // A grouped copy may free more blocks than the reservation needs.
+        let surplus = capacity.len() - fresh;
+        if surplus > 0 {
+            self.free.extend(capacity.take_tail(surplus));
+        }
         capacity
     }
 
@@ -1141,7 +1279,7 @@ impl VllmBlockPool {
         self.state_index
             .as_ref()?
             .by_copy
-            .get(&id)
+            .get(id)
             .map(|&(prefix, slot)| CacheKey::State { prefix, slot })
     }
 
@@ -1152,9 +1290,7 @@ impl VllmBlockPool {
     fn first_copy(&self, hash: CacheKey) -> Option<BlockCopyId> {
         match hash {
             CacheKey::Token(hash) => self.by_hash.get(&hash),
-            CacheKey::State { prefix, slot } => {
-                self.state_index.as_ref()?.by_key.get(&(prefix, slot))
-            }
+            CacheKey::State { prefix, slot } => self.state_index.as_ref()?.get(prefix, slot),
         }
         .map(|copies| copies.primary)
     }
@@ -1170,26 +1306,11 @@ impl VllmBlockPool {
                 }
                 Self::remove_from_index(&mut self.by_hash, hash, id)
             }
-            CacheKey::State { prefix, slot } => {
-                let index = self.state_index.as_mut().expect("cached state index");
-                assert_eq!(
-                    index.by_copy.remove(&id),
-                    Some((prefix, slot)),
-                    "state identity changed"
-                );
-                let removed = Self::remove_from_index(&mut index.by_key, (prefix, slot), id);
-                if removed {
-                    let slots = index
-                        .slots_by_prefix
-                        .get_mut(&prefix)
-                        .expect("state prefix index");
-                    assert!(slots.remove(&slot));
-                    if slots.is_empty() {
-                        index.slots_by_prefix.remove(&prefix);
-                    }
-                }
-                removed
-            }
+            CacheKey::State { prefix, slot } => self
+                .state_index
+                .as_mut()
+                .expect("cached state index")
+                .remove(prefix, slot, id),
         };
         if !removed && self.belady.is_some() && !self.key_has_duplicates(hash) {
             self.refresh_belady_hash(hash.prefix_hash());
@@ -1203,7 +1324,7 @@ impl VllmBlockPool {
             CacheKey::State { prefix, slot } => self
                 .state_index
                 .as_ref()
-                .and_then(|index| index.by_key.get(&(prefix, slot))),
+                .and_then(|index| index.get(prefix, slot)),
         };
         copies.is_some_and(|copies| copies.duplicates.is_some())
     }
@@ -1326,7 +1447,7 @@ impl VllmBlockPool {
         self.inactive_tail = Some(id);
         self.inactive_len = self
             .inactive_len
-            .checked_add(1)
+            .checked_add(self.weight(id))
             .unwrap_or_else(|| panic!("inactive block count overflow"));
         self.insert_belady_candidate(id);
     }
@@ -1374,10 +1495,10 @@ impl VllmBlockPool {
             .into_iter()
             .chain(self.state_index.iter().flat_map(|index| {
                 index
-                    .slots_by_prefix
+                    .by_prefix
                     .get(&hash)
                     .into_iter()
-                    .flat_map(|slots| slots.iter().map(|&slot| &index.by_key[&(hash, slot)]))
+                    .flat_map(|entry| entry.slots.iter().flatten())
             }));
         for copies in groups {
             for id in copies.iter() {
@@ -1472,7 +1593,7 @@ impl VllmBlockPool {
 
         self.inactive_len = self
             .inactive_len
-            .checked_sub(1)
+            .checked_sub(self.weight(id))
             .unwrap_or_else(|| panic!("inactive block count underflow"));
     }
 
@@ -1521,7 +1642,7 @@ impl VllmBlockPool {
         }
 
         assert_eq!(
-            linked.len(),
+            linked.iter().map(|&id| self.weight(id)).sum::<usize>(),
             self.inactive_len,
             "inactive LRU length does not match its reachable copies"
         );
@@ -1572,8 +1693,8 @@ impl VllmBlockPool {
             .chain(
                 self.state_index
                     .iter()
-                    .flat_map(|index| index.by_key.iter())
-                    .map(|(&(prefix, slot), copies)| (CacheKey::State { prefix, slot }, copies)),
+                    .flat_map(|index| index.iter())
+                    .map(|((prefix, slot), copies)| (CacheKey::State { prefix, slot }, copies)),
             );
         for (expected_hash, copies) in entries {
             for id in copies.iter() {
@@ -1593,21 +1714,16 @@ impl VllmBlockPool {
         }
 
         if let Some(index) = &self.state_index {
-            let mut keys = FxHashSet::default();
-            for (&prefix, slots) in &index.slots_by_prefix {
-                assert!(!slots.is_empty(), "empty state prefix index");
-                for &slot in slots {
-                    assert!(index.by_key.contains_key(&(prefix, slot)));
-                    keys.insert((prefix, slot));
-                }
+            for entry in index.by_prefix.values() {
+                let visible = entry.slots.iter().flatten().count();
+                assert!(visible > 0, "empty state prefix index");
+                assert_eq!(visible, entry.visible, "state prefix visible-slot count");
             }
-            assert_eq!(keys.len(), index.by_key.len());
-            for (&id, &(prefix, slot)) in &index.by_copy {
+            for (id, &(prefix, slot)) in &index.by_copy {
                 assert!(indexed.contains(&id), "state identity is not indexed");
                 assert!(
                     index
-                        .by_key
-                        .get(&(prefix, slot))
+                        .get(prefix, slot)
                         .is_some_and(|copies| copies.iter().any(|copy| copy == id)),
                     "state identity points to the wrong key"
                 );
@@ -1674,6 +1790,7 @@ impl VllmBlockPool {
         EvictedCapacity {
             removed_hash,
             source_reuse,
+            blocks: self.forget_weight(id),
         }
     }
 }
@@ -1681,6 +1798,7 @@ impl VllmBlockPool {
 struct EvictedCapacity {
     removed_hash: Option<SequenceHash>,
     source_reuse: Option<SourceReuseDependency>,
+    blocks: usize,
 }
 
 fn unique_pending_dependencies(
@@ -1917,10 +2035,7 @@ mod tests {
         assert!(pool.key_hit(key).is_some());
         pool.make_state_private(second);
         pool.assert_lru_consistent();
-        assert_eq!(
-            pool.state_index.as_ref().unwrap().slots_by_prefix[&7].len(),
-            1
-        );
+        assert_eq!(pool.state_index.as_ref().unwrap().by_prefix[&7].visible, 1);
         pool.release(sibling);
         assert!(pool.discard_inactive_state(sibling));
         pool.assert_lru_consistent();
@@ -1929,7 +2044,7 @@ mod tests {
                 .state_index
                 .as_ref()
                 .unwrap()
-                .slots_by_prefix
+                .by_prefix
                 .contains_key(&7)
         );
         // Republishing recreates the prefix entry without losing unrelated prefixes.
@@ -2541,5 +2656,38 @@ mod tests {
         }
         pool.cancel(pressure.reservation);
         pool.assert_hash_index_consistent();
+    }
+
+    #[test]
+    fn grouped_state_copy_is_one_entry_of_its_weight() {
+        let key = CacheKey::State { prefix: 7, slot: 0 };
+        let mut pool = VllmBlockPool::new(5);
+        let mut outcome = reserve(&mut pool, &[], 3);
+        let id = pool.publish_state_group(7, 3, &mut outcome.reservation);
+        pool.cancel(outcome.reservation);
+        assert_eq!(
+            (pool.num_inactive(), pool.num_active(), pool.key_blocks(key)),
+            (3, 0, 3)
+        );
+        pool.assert_lru_consistent();
+        // A pinned hit leaves the evictable capacity whole.
+        let pinned = pool.reserve_keys([key].into_iter(), 3).unwrap();
+        assert_eq!(pool.num_active(), 5);
+        assert!(pool.reserve(&[], 1).is_none());
+        pool.cancel(pinned.reservation);
+        // Two blocks evict the whole copy; its third block returns to free.
+        let outcome = reserve(&mut pool, &[], 4);
+        assert!(pool.key_hit(key).is_none());
+        assert_eq!((pool.num_active(), pool.num_inactive()), (4, 0));
+        pool.cancel(outcome.reservation);
+        pool.assert_lru_consistent();
+        let mut outcome = reserve(&mut pool, &[], 3);
+        let id2 = pool.publish_state_group(7, 3, &mut outcome.reservation);
+        pool.cancel(outcome.reservation);
+        assert!(pool.discard_inactive_state(id2));
+        assert!(!pool.discard_inactive_state(id));
+        assert_eq!((pool.num_active(), pool.num_inactive()), (0, 0));
+        assert_eq!(pool.free_capacity(), 5);
+        pool.assert_lru_consistent();
     }
 }
