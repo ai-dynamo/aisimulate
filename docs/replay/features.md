@@ -20,7 +20,7 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 | Ngram prompt lookup | Offline vLLM | Aggregated or P/D, op-level or explicit timing; HBM-only agentic replay | Fixed draft/acceptance assumption; no lookup CPU cost, adapters or deployment generation |
 | Sessions | Native token replay | Synthetic or compatible trace sessions | Concurrency counts sessions through think time; see trace-format restrictions |
 | Prefix reuse | Native backend cache | G1 with prefix caching enabled | Actual reuse differs from Router overlap; complete block and backend admission rules apply |
-| Grouped FPM cache | vLLM | Cold aggregated, PP1/CP1 | HBM only, no speculation, prefix caching off, no scalar block capacity, no P/D |
+| Grouped FPM cache | vLLM | Cold or prefix-cached aggregated, PP1/CP1 | HBM only, no speculation, prefix caching only with vLLM 0.31.0 or 0.32.0 probe evidence and equal pages, no scalar block capacity, no P/D |
 | G2 host offload | vLLM | Aggregated and token-only P/D, any attention-DP size | Prefix caching, no native MTP/Belady/state-cache offload; local or layout-compatible shared pool |
 | Agentic G2 | vLLM | One aggregated worker or 1P1D, attention DP1 on every role | Static pools, no speculation/G3; each role may omit G2 or use local/shared scope |
 | G3 offload | vLLM | Aggregated, attention DP1; fixed or scaled pools | Requires G2; no speculation, AgentX, P/D, recommendation or hardware integration |
