@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
-// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts, of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue and of the v0.31.0
+// (db9527a46873454610df6dbedf79a36d6bf1a7f6) and v0.32.0
+// (5df63a7203cdb9328d824a27b682e77c7b9928be) grouped KV handoff rules;
+// immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -26,7 +29,8 @@ use crate::engine::common::utils::{
 use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::kv_manager::AllocationRequirement;
 use crate::engine::kv_manager::{
-    AdmissionLimits, G1Manager, GroupedKvPool, GroupedPrefixRules, VllmRuleVersion,
+    AdmissionLimits, G1Manager, GroupedKvPool, GroupedPrefixRules, GroupedTransferRules,
+    VllmRuleVersion,
 };
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
@@ -980,6 +984,12 @@ impl VllmCore {
                     capacity_bytes,
                 ));
             }
+            if args.worker_type != WorkerType::Aggregated {
+                kv_manager.set_grouped_transfer_rules(
+                    GroupedTransferRules::new(&args.kv_cache_groups)
+                        .expect("validated grouped transfer rules"),
+                );
+            }
         }
         let kv_manager = kv_manager.with_prefix_match_unit(args.prefix_match_unit);
         Ok(Self {
@@ -1104,9 +1114,24 @@ impl VllmCore {
             self.kv_manager.grouped().is_none()
                 || matches!(
                     &command,
+                    SchedulerCommand::Submit(_)
+                        | SchedulerCommand::CancelRequest { .. }
+                        | SchedulerCommand::SubmitHandoffPrefill { .. }
+                        | SchedulerCommand::ReleaseSource { .. }
+                        | SchedulerCommand::CancelSource { .. }
+                ),
+            "grouped KV caches do not support destination handoff commands"
+        );
+        // An aggregated grouped rank builds no transfer rules, so it can
+        // neither truncate nor price a source.
+        anyhow::ensure!(
+            self.kv_manager.grouped().is_none()
+                || self.kv_manager.grouped_transfer().is_some()
+                || matches!(
+                    &command,
                     SchedulerCommand::Submit(_) | SchedulerCommand::CancelRequest { .. }
                 ),
-            "grouped KV caches support only cold aggregated requests, not KV handoff commands"
+            "grouped KV caches support KV handoff commands only on prefill and decode ranks"
         );
         let mutation_now_ms = command_now_ms.filter(|_| allow_destination_admission);
         match command {
@@ -1147,6 +1172,13 @@ impl VllmCore {
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
                 self.source_holds.register(uuid, handoff_id)?;
+                if let Some(rules) = self.kv_manager.grouped_transfer() {
+                    // vLLM's prefill rank drops the last backoff tokens of the
+                    // prompt, which the decode rank recomputes (V31
+                    // `nixl/base_scheduler.py:409-436`, V32 `:405-435`).
+                    let tokens = rules.transfer_tokens(request.tokens.len());
+                    request.tokens.truncate(tokens);
+                }
                 let admissible_from_pass =
                     self.first_pass_admitting_arrival(!allow_destination_admission);
                 let submitted = self
@@ -1617,6 +1649,15 @@ impl VllmCore {
 
     fn complete_source(&mut self, uuid: Uuid) {
         let transfer_timing = self.state.requests.get(&uuid).map(|request| {
+            if let Some(rules) = self.kv_manager.grouped_transfer() {
+                // The submission truncated the prompt to the transferred
+                // tokens. The timing counts their full-attention blocks.
+                return rules.handoff_transfer_timing(
+                    request.sequence.num_input_tokens(),
+                    self.args.kv_transfer_bandwidth,
+                    self.args.kv_transfer_timing_mode,
+                );
+            }
             prefill_handoff_transfer_timing(
                 request.sequence.num_input_tokens(),
                 self.args.kv_transfer_bandwidth,
@@ -1627,10 +1668,22 @@ impl VllmCore {
                 self.args.kv_transfer_timing_mode,
             )
         });
-        let request = self
+        let mut request = self
             .state
             .take_completed(&uuid)
             .expect("completed request must remain scheduler-owned");
+        if self.args.worker_type == WorkerType::Prefill
+            && self.kv_manager.grouped_transfer().is_some()
+        {
+            // A grouped prefill rank frees the skipped blocks of a source
+            // before it holds it, as vLLM frees them before it hands the
+            // block table to the connector.
+            self.kv_manager.release_skipped_blocks(
+                uuid,
+                &mut request.sequence.lease,
+                request.num_computed_tokens,
+            );
+        }
         let payload = HeldVllmPrefill {
             request_id: uuid,
             request,

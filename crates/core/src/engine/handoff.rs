@@ -61,6 +61,11 @@ pub enum TransferTimingMode {
 /// Schedulers publish this value when source KV ownership becomes held.
 /// The Replayer combines it with the destination's missing-token observation
 /// and schedules the virtual transfer completion.
+///
+/// A grouped KV source counts in units of one full-attention block.
+/// `full_prompt_tokens` is then the number of such blocks of the transferred
+/// prompt. `kv_bytes_per_token` is the payload of one block, summed over the
+/// full-attention groups. `state_bytes` is every fixed byte of the request.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HandoffTransferTiming {
     /// Which prompt footprint contributes to transfer time.

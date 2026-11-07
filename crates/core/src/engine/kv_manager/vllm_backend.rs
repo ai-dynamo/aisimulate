@@ -20,6 +20,7 @@ use super::grouped::{GroupedKvPool, GroupedLease};
 use super::grouped_prefix::{
     AdmissionLimits, GroupedHit, GroupedPrefixCoordinator, GroupedPrefixRules,
 };
+use super::grouped_transfer::GroupedTransferRules;
 use super::state_cache_manager::{StateCacheManager, StateRequest};
 use crate::engine::belady::BeladyOracle;
 use crate::engine::cache::vllm_block_pool::{
@@ -407,6 +408,8 @@ pub(crate) struct VllmKvManager {
     grouped: Option<GroupedKvPool>,
     /// The prefix cache rules of a grouped cache in block mode.
     grouped_prefix: Option<GroupedPrefixCoordinator>,
+    /// The P/D transfer rules of a grouped cache on a prefill or decode rank.
+    grouped_transfer: Option<GroupedTransferRules>,
     state_cache: Option<StateCacheManager>,
     prefix_match_unit: Option<usize>,
     /// Scheduler steps begun, for the one-step block lifetimes of the
@@ -436,6 +439,15 @@ impl VllmKvManager {
         self.grouped_prefix = Some(GroupedPrefixCoordinator::new(rules, limits));
     }
 
+    /// Set the P/D transfer rules of the grouped cache.
+    pub(crate) fn set_grouped_transfer_rules(&mut self, rules: GroupedTransferRules) {
+        assert!(
+            self.grouped.is_some(),
+            "grouped transfer rules need a grouped cache"
+        );
+        self.grouped_transfer = Some(rules);
+    }
+
     pub(crate) fn grouped(&self) -> Option<&GroupedKvPool> {
         self.grouped.as_ref()
     }
@@ -444,6 +456,10 @@ impl VllmKvManager {
         self.grouped_prefix
             .as_ref()
             .map(GroupedPrefixCoordinator::rules)
+    }
+
+    pub(crate) fn grouped_transfer(&self) -> Option<&GroupedTransferRules> {
+        self.grouped_transfer.as_ref()
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
@@ -476,6 +492,7 @@ impl VllmKvManager {
             next_event_id: 0,
             grouped: None,
             grouped_prefix: None,
+            grouped_transfer: None,
             state_cache: None,
             prefix_match_unit: None,
             step: 0,
@@ -1490,6 +1507,52 @@ impl VllmKvManager {
         lease.allocated_tokens = 0;
         // A re-admission searches the hit again.
         lease.grouped_hit = None;
+    }
+
+    /// Free the grouped blocks of a completed source that a next query of
+    /// its `computed` tokens would skip, before the source is held for its
+    /// transfer. vLLM frees them on the processed-token basis before it hands
+    /// the block table to the connector (V32 `sched:3023-3031`, V31
+    /// `:2966-2974`). A window group keeps its blocks inside the window, a
+    /// Mamba-type state group the block of the last computed token, and full
+    /// attention and a ring keep every block. The release is the one of a
+    /// pass, with its publish and LRU rules.
+    pub(crate) fn release_skipped_blocks(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        computed: usize,
+    ) {
+        lease.debug_assert_owner(owner);
+        let Some(grouped) = &mut self.grouped else {
+            return;
+        };
+        match &self.grouped_prefix {
+            Some(coordinator) => {
+                if let Some(block_lease) = lease
+                    .grouped
+                    .as_mut()
+                    .and_then(|grouped| grouped.block_lease.as_mut())
+                {
+                    // A finished request runs no next pass, so the previous
+                    // state block that a pass keeps one more step goes too.
+                    let released = coordinator.allocate(
+                        grouped.block_pool_mut().expect("block mode"),
+                        block_lease,
+                        lease.prompt_tokens,
+                        computed,
+                        computed,
+                        self.step + 1,
+                    );
+                    debug_assert!(released, "a release takes no fresh block");
+                }
+            }
+            None if lease.grouped.is_some() => {
+                let released = grouped.allocate(&mut lease.grouped, computed, computed);
+                debug_assert!(released, "a release takes no fresh bytes");
+            }
+            None => {}
+        }
     }
 
     pub(crate) fn finish_lease(&mut self, owner: Uuid, mut lease: BlockRequestLease) {

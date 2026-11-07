@@ -13,6 +13,7 @@ use crate::engine::common::protocols::{KvEventPublishers, PrefillCost};
 use crate::engine::common::sequence::RequestSequence;
 
 use super::grouped_prefix::{AdmissionLimits, GroupedPrefixRules};
+use super::grouped_transfer::GroupedTransferRules;
 use super::vllm_backend::{
     BlockRequestLease, DecodeBlockReservation as VllmDecodeBlockReservation,
     DestinationReservation as VllmDestinationReservation,
@@ -90,6 +91,15 @@ impl G1Manager {
     /// The rule table of a grouped cache with prefix caching on.
     pub(crate) fn grouped_prefix_rules(&self) -> Option<&GroupedPrefixRules> {
         self.inner.grouped_prefix_rules()
+    }
+
+    pub(crate) fn set_grouped_transfer_rules(&mut self, rules: GroupedTransferRules) {
+        self.inner.set_grouped_transfer_rules(rules);
+    }
+
+    /// The transfer rules of a grouped cache on a prefill or decode rank.
+    pub(crate) fn grouped_transfer(&self) -> Option<&GroupedTransferRules> {
+        self.inner.grouped_transfer()
     }
 
     /// The whole-prompt blocks of `known_tokens` without a prefix hit.
@@ -270,6 +280,16 @@ impl G1Manager {
 
     pub(crate) fn preempt_native(&mut self, owner: Uuid, lease: &mut BlockRequestLease) {
         self.inner.preempt_lease(owner, lease);
+    }
+
+    /// Free the grouped blocks that a completed source no longer needs.
+    pub(crate) fn release_skipped_blocks(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        computed: usize,
+    ) {
+        self.inner.release_skipped_blocks(owner, lease, computed);
     }
 
     pub(crate) fn finish_native(&mut self, owner: Uuid, lease: BlockRequestLease) {

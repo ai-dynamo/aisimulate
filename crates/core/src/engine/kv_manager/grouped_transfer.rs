@@ -56,17 +56,12 @@
 //! Paths: `nixl/` is `vllm/distributed/kv_transfer/kv_connector/v1/nixl/`,
 //! `kvi` is `vllm/v1/kv_cache_interface.py` and `utils.py` is
 //! `vllm/distributed/kv_transfer/kv_connector/utils.py`.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the scheduler does not use grouped KV transfer rules yet"
-    )
-)]
 
 use anyhow::{bail, ensure};
 
-use crate::engine::{HandoffTransferTiming, TransferTimingMode};
+use crate::engine::HandoffTransferTiming;
+use crate::engine::common::protocols::KvTransferTimingMode;
+use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
 
 /// How vLLM clips the block list of one group for a transfer
@@ -180,6 +175,13 @@ impl GroupedTransferRules {
     /// The trailing prompt tokens that the prefill rank does not compute and
     /// the decode rank recomputes: 1 with a Mamba state, else 0 (V31
     /// `nixl/base_scheduler.py:385-398`, V32 `:379-394`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ReservedVllmDecode::activate reads it when a decode rank activates a grouped handoff"
+        )
+    )]
     pub(crate) fn backoff_tokens(&self) -> usize {
         self.backoff_tokens
     }
@@ -261,6 +263,7 @@ impl GroupedTransferRules {
     /// the decode rank holds every block, vLLM moves nothing
     /// (`nixl/pull_scheduler.py:59-65`), but this formula still counts the
     /// fixed bytes, as the handoff timing does.
+    #[cfg(test)]
     pub(crate) fn payload_bytes(&self, transfer_tokens: usize, local_full_blocks: usize) -> u64 {
         let missing = self
             .full_blocks(transfer_tokens)
@@ -275,20 +278,21 @@ impl GroupedTransferRules {
     /// missing full-attention blocks in the same unit, as vLLM pulls only the
     /// blocks that the decode rank lacks (`nixl/pull_scheduler.py:149-156`,
     /// the same in V31 and V32). So the delay is the `payload_bytes` over the
-    /// bandwidth in both timing modes.
+    /// bandwidth in both timing modes. The struct comes from the builder of
+    /// the linear path, which also maps the mode.
     pub(crate) fn handoff_transfer_timing(
         &self,
         transfer_tokens: usize,
         bandwidth_gb_s: Option<f64>,
-        mode: TransferTimingMode,
+        mode: KvTransferTimingMode,
     ) -> HandoffTransferTiming {
-        HandoffTransferTiming {
-            mode,
-            full_prompt_tokens: self.full_blocks(transfer_tokens),
-            kv_bytes_per_token: Some(self.bytes_per_full_block() as usize),
-            state_bytes: self.fixed_bytes(transfer_tokens) as usize,
+        prefill_handoff_transfer_timing(
+            self.full_blocks(transfer_tokens),
             bandwidth_gb_s,
-        }
+            Some(self.bytes_per_full_block() as usize),
+            self.fixed_bytes(transfer_tokens) as usize,
+            mode,
+        )
     }
 }
 
@@ -398,13 +402,13 @@ mod tests {
         assert_eq!(rules.payload_bytes(8_191, 3), 49_972_608);
         // T 999 has 1 block and 5 are held: the missing count floors at 0.
         assert_eq!(rules.payload_bytes(999, 5), 36_927_488);
-        let full = rules.handoff_transfer_timing(999, Some(1.0), TransferTimingMode::FullPrompt);
+        let full = rules.handoff_transfer_timing(999, Some(1.0), KvTransferTimingMode::FullPrompt);
         assert_eq!(full.full_prompt_tokens, 1);
         assert_eq!(full.kv_bytes_per_token, Some(13_045_120));
         assert_eq!(full.state_bytes, 36_927_488);
         assert!(close(full.delay_ms(0), 49.972608));
         let missing =
-            rules.handoff_transfer_timing(999, Some(1.0), TransferTimingMode::DestinationMissing);
+            rules.handoff_transfer_timing(999, Some(1.0), KvTransferTimingMode::DestinationMissing);
         // This pins the arithmetic of the timing struct only. When no block
         // is missing, vLLM moves nothing (`nixl/pull_scheduler.py:59-65`,
         // `:149-153`), while this timing still charges the fixed bytes: a
@@ -538,7 +542,7 @@ mod tests {
         assert_eq!(rules.fixed_bytes(5_000), 9_791_488);
         // 9,791,488 bytes at 1 GB/s.
         let timing =
-            rules.handoff_transfer_timing(5_000, Some(1.0), TransferTimingMode::FullPrompt);
+            rules.handoff_transfer_timing(5_000, Some(1.0), KvTransferTimingMode::FullPrompt);
         assert!(close(timing.delay_ms(0), 9.791488));
     }
 }

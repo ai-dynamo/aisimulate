@@ -498,6 +498,8 @@ group.
 From `sched/scheduler.py` and `kv_cache_interface.py`, `grouped_prefix.rs` also
 adapts the rule that only a rank with a Mamba layer in align mode splits its
 prefill.
+`crates/core/src/engine/scheduler/vllm/core.rs` and `vllm_backend.rs` adapt the
+release of the skipped blocks of a completed source.
 
 - https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py
 - https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py
