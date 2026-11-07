@@ -1455,6 +1455,16 @@ def test_decoder_inside_its_own_key_is_ambiguous(tmp_path, key):
     assert str(error.value) == f"ambiguous nested {key}; supply one text decoder config or a complete --fpm-profile"
 
 
+@pytest.mark.parametrize("key,inner", [("text_config", "llm_config"), ("llm_config", "text_config")])
+def test_decoder_that_holds_the_other_decoder_key_is_ambiguous(tmp_path, key, inner):
+    decoder = {name: value for name, value in _config(tmp_path).raw.items() if name != "architectures"}
+    with pytest.raises(ValueError) as error:
+        _config(tmp_path, **_WRAPPER, **{key: {**decoder, inner: decoder}})
+    assert str(error.value) == (
+        f"ambiguous nested {inner} in {key}; supply one text decoder config or a complete --fpm-profile"
+    )
+
+
 @pytest.mark.parametrize("value", [None, {}, [], "decoder"])
 def test_malformed_text_config_is_refused_and_malformed_llm_config_is_ignored(tmp_path, value):
     with pytest.raises(ValueError) as error:

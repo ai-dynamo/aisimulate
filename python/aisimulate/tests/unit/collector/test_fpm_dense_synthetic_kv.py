@@ -193,13 +193,13 @@ def test_failed_engine_capture_cannot_establish_dense_eligibility(tmp_path):
     assert _regimes(case) == {"fake_fallback"}
 
 
-@pytest.mark.parametrize("location", ["root", "text_config"])
+@pytest.mark.parametrize("location", ["root", "text_config", "llm_config"])
 @pytest.mark.parametrize("field", ["num_local_experts", "num_experts", "n_routed_experts", "moe_num_experts"])
 def test_expert_evidence_in_either_config_rejects_dense_skip(tmp_path, location, field):
     case = _dense_cell(tmp_path)
     capability = case[0].capability
     source = capability.model_config.payload
-    target = source if location == "root" else source.setdefault("text_config", {})
+    target = source if location == "root" else source.setdefault(location, {})
     target[field] = 1  # Dynamo treats even one declared expert as a non-dense model.
     capability.model_config = ResolvedModelConfig(source, source_kind="explicit", source_reference="test")
     assert _regimes(case) == {"fake_fallback"}

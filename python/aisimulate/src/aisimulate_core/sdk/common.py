@@ -11,6 +11,7 @@ from importlib import resources as pkg_resources
 
 from packaging.version import InvalidVersion, Version
 
+from aisimulate_core.decoder_config import LLM_CONFIG_WRAPPERS
 from aisimulate_core.quantization import CommQuantMode as CommQuantMode
 from aisimulate_core.quantization import FMHAQuantMode as FMHAQuantMode
 from aisimulate_core.quantization import GEMMQuantMode as GEMMQuantMode
@@ -923,7 +924,8 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
 # _parse_hf_config_json will flatten these before parsing.
 MULTIMODAL_TEXT_CONFIG_KEY = {
-    "NemotronH_Omni_Reasoning_V3": "llm_config",
+    # FPM config intake reads these wrappers without importing the SDK, so the set lives in decoder_config.
+    **dict.fromkeys(LLM_CONFIG_WRAPPERS, "llm_config"),
     "DeepseekV41ForCausalLM": "text_config",
     "Glm5NextForConditionalGeneration": "text_config",
     "KimiK25ForConditionalGeneration": "text_config",

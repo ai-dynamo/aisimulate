@@ -606,7 +606,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
     """Load local config/ModelOpt metadata with separate byte-level provenance."""
     # Imported here, not at module level: tests/unit/test_fpm_config_imports.py and the repository-root
     # tests/test_resource_supervision.py fail when aisimulate_core.decoder_config loads before a config is read.
-    from aisimulate_core.decoder_config import decoder_config_key
+    from aisimulate_core.decoder_config import decoder_config_key, nested_decoder_ambiguity
 
     path = Path(path).expanduser().absolute()
     payload = path.read_bytes()
@@ -631,10 +631,8 @@ def load_model_config(path: str | Path) -> ModelConfig:
                 f"{decoder_key} must be a nonempty object describing one text decoder; "
                 "supply its decoder config or a complete --fpm-profile"
             )
-        if decoder_key in decoder:
-            raise ValueError(
-                f"ambiguous nested {decoder_key}; supply one text decoder config or a complete --fpm-profile"
-            )
+        if (ambiguity := nested_decoder_ambiguity(decoder_key, decoder)) is not None:
+            raise ValueError(f"{ambiguity}; supply one text decoder config or a complete --fpm-profile")
         raw = dict(decoder)
         notes["decoder_config"] = f"config {decoder_key}; outer model and encoder geometry are excluded"
         inherited = []
