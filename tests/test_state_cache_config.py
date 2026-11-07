@@ -646,9 +646,16 @@ def test_auto_state_sizes_the_worker_kv_dtype(auto_dsv4_payload, forbid_estimato
     assert args["state_cache"] == {"bytes_per_request": 26058240, "sliding_window": {"lookahead_tokens": 64}}
 
 
-def test_auto_dsv4_rejects_prefix_match_unit(auto_dsv4_payload, forbid_estimators):
-    auto_dsv4_payload["engine"]["workers"]["aggregated"]["kv_cache"]["prefix_match_unit"] = 64
-    with pytest.raises(ValueError, match="leave prefix_match_unit unset"):
+@pytest.mark.parametrize(
+    "changes,error",
+    [
+        ({"prefix_match_unit": 64}, "leave prefix_match_unit unset"),
+        ({"state_cache": {"retention_interval": 384}}, "multiple of the resolved block_size"),
+    ],
+)
+def test_auto_dsv4_validates_sliding_window_inputs(auto_dsv4_payload, forbid_estimators, changes, error):
+    auto_dsv4_payload["engine"]["workers"]["aggregated"]["kv_cache"].update(changes)
+    with pytest.raises(ValueError, match=error):
         prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
 
 
