@@ -59,16 +59,23 @@ impl Mamba2Op {
         } else {
             batch_size
         };
-        // A measured decode row prices one token per request. A qualified op
-        // that verifies several tokens has no row, so it takes the analytic
-        // SOL like a table miss.
-        let multi_token_decode =
-            self.phase == "generation" && self.state_dtype != "unrecorded" && self.token_width > 1;
+        // A measured row prices one decode token per request, and the SSM rows
+        // hold a 16-bit state (the collectors use BF16). A qualified op that
+        // verifies several tokens or keeps an FP32 state has no row, so it
+        // takes the analytic SOL like a table miss. Convolution rows do not
+        // depend on the state dtype.
+        let is_conv = matches!(
+            self.kernel_source.as_str(),
+            "causal_conv1d_fn" | "causal_conv1d_update"
+        );
+        let no_measured_row = self.state_dtype != "unrecorded"
+            && ((self.phase == "generation" && self.token_width > 1)
+                || (!is_conv && self.state_dtype == "float32"));
         // SOL (and the retired SOL_FULL alias) never reads the table, as in
         // the GEMM, attention, MoE and mHC operators. Mamba2 has no util-space
         // empirical layer, so EMPIRICAL answers with the same analytic SOL
         // instead of reading measured rows.
-        if multi_token_decode
+        if no_measured_row
             || matches!(
                 db.database_mode,
                 DatabaseMode::Sol | DatabaseMode::SolFull | DatabaseMode::Empirical
