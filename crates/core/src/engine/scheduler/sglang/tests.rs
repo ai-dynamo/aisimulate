@@ -978,10 +978,14 @@ mod admission_v0522 {
         assert!(second.admissions.is_empty());
     }
 
-    #[test]
-    fn lpm_keeps_the_owned_continuation_ahead_of_a_longer_hit() {
+    /// LPM orders the continuation first itself; under FIFO it stays queued
+    /// behind a fresh request with a longer cache hit, and admission finds it.
+    #[rstest::rstest]
+    fn admission_runs_the_owned_continuation_first(#[values(false, true)] lpm: bool) {
         let mut args = test_args(64, 4, 8);
-        args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        if lpm {
+            args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        }
         let config = SglangConfig::from_args(&args);
         let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
         let hot = vec![99; 32];
@@ -999,10 +1003,11 @@ mod admission_v0522 {
         waiting.push_back(SglangRequest::new(direct_request(hot, 1), 4, 0));
         waiting.push_back(continuation);
         apply_schedule_policy(&mut waiting, &manager, &config);
-        assert_eq!(waiting.front().unwrap().uuid, id);
+        assert_eq!(waiting.front().unwrap().uuid == id, lpm);
         let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert_eq!(next.can_run[0].uuid, id);
         assert!(next.admissions.is_empty());
+        assert!(!waiting.has_continuation());
     }
 
     #[test]
