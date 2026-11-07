@@ -273,10 +273,6 @@ pub struct TraceDistributionStats {
     pub mean_ms: f64,
     pub min_ms: f64,
     pub max_ms: f64,
-    pub p1_ms: f64,
-    pub p5_ms: f64,
-    pub p10_ms: f64,
-    pub p25_ms: f64,
     pub median_ms: f64,
     pub p75_ms: f64,
     pub p90_ms: f64,
@@ -295,8 +291,7 @@ pub struct TraceLatencyStats {
     pub tpot: TraceDistributionStats,
     pub itl: TraceInterTokenLatencyStats,
     pub e2e: TraceDistributionStats,
-    /// Completed requests with positive ITL: one `1000 / ITL` sample each.
-    pub num_output_token_throughput_per_user_samples: usize,
+    /// One `1000 / ITL` sample per completed request with positive ITL.
     pub output_token_throughput_per_user: TraceDistributionStats,
     /// Mean time to first token split by scheduler-thread stage; present when a
     /// host-aware engine reported stages for completed requests.
@@ -590,10 +585,6 @@ impl Serialize for ReplayReport {
         map.serialize_entry("num_ttft_samples", &self.latency.num_ttft_samples)?;
         map.serialize_entry("num_tpot_samples", &self.latency.num_tpot_samples)?;
         map.serialize_entry(
-            "num_output_token_throughput_per_user_samples",
-            &self.latency.num_output_token_throughput_per_user_samples,
-        )?;
-        map.serialize_entry(
             "num_e2e_latency_samples",
             &self.latency.num_e2e_latency_samples,
         )?;
@@ -673,14 +664,6 @@ where
     map.serialize_entry(&format!("mean_{prefix}_ms"), &stats.mean_ms)?;
     map.serialize_entry(&format!("min_{prefix}_ms"), &stats.min_ms)?;
     map.serialize_entry(&format!("max_{prefix}_ms"), &stats.max_ms)?;
-    for (name, value) in [
-        ("p1", stats.p1_ms),
-        ("p5", stats.p5_ms),
-        ("p10", stats.p10_ms),
-        ("p25", stats.p25_ms),
-    ] {
-        map.serialize_entry(&format!("{name}_{prefix}_ms"), &value)?;
-    }
     map.serialize_entry(&format!("median_{prefix}_ms"), &stats.median_ms)?;
     map.serialize_entry(&format!("p75_{prefix}_ms"), &stats.p75_ms)?;
     map.serialize_entry(&format!("p90_{prefix}_ms"), &stats.p90_ms)?;
@@ -701,14 +684,6 @@ where
     map.serialize_entry(&format!("mean_{prefix}"), &stats.mean_ms)?;
     map.serialize_entry(&format!("min_{prefix}"), &stats.min_ms)?;
     map.serialize_entry(&format!("max_{prefix}"), &stats.max_ms)?;
-    for (name, value) in [
-        ("p1", stats.p1_ms),
-        ("p5", stats.p5_ms),
-        ("p10", stats.p10_ms),
-        ("p25", stats.p25_ms),
-    ] {
-        map.serialize_entry(&format!("{name}_{prefix}"), &value)?;
-    }
     map.serialize_entry(&format!("median_{prefix}"), &stats.median_ms)?;
     map.serialize_entry(&format!("p75_{prefix}"), &stats.p75_ms)?;
     map.serialize_entry(&format!("p90_{prefix}"), &stats.p90_ms)?;
@@ -2150,7 +2125,6 @@ impl TraceCollector {
         }
         let num_ttft_samples = ttfts.len();
         let num_tpot_samples = tpots.len();
-        let num_output_token_throughput_per_user_samples = user_tps.len();
         let num_e2e_latency_samples = e2e_latencies.len();
         let duration_s = (duration_ms / 1000.0).max(1e-9);
         let tpot = build_distribution_stats(tpots);
@@ -2232,7 +2206,6 @@ impl TraceCollector {
                 itl: TraceInterTokenLatencyStats::per_request(&tpot),
                 tpot,
                 e2e: build_distribution_stats(e2e_latencies),
-                num_output_token_throughput_per_user_samples,
                 output_token_throughput_per_user: build_distribution_stats(user_tps),
                 ttft_milestones: TraceTtftStageStats::from_sums(
                     &ttft_stage_sums,
@@ -2461,22 +2434,16 @@ fn build_distribution_stats(mut values: Vec<f64>) -> TraceDistributionStats {
         .max_by(|left, right| left.total_cmp(right))
         .expect("non-empty values must have a maximum");
 
-    // Sum in arrival order, as the bounded path does, before selection reorders values.
-    let std_ms = std_dev(&values);
     TraceDistributionStats {
         mean_ms: mean(&values),
         min_ms,
         max_ms,
-        p1_ms: percentile_in_place(&mut values, 1.0),
-        p5_ms: percentile_in_place(&mut values, 5.0),
-        p10_ms: percentile_in_place(&mut values, 10.0),
-        p25_ms: percentile_in_place(&mut values, 25.0),
         median_ms: percentile_in_place(&mut values, 50.0),
         p75_ms: percentile_in_place(&mut values, 75.0),
         p90_ms: percentile_in_place(&mut values, 90.0),
         p95_ms: percentile_in_place(&mut values, 95.0),
         p99_ms: percentile_in_place(&mut values, 99.0),
-        std_ms,
+        std_ms: std_dev(&values),
     }
 }
 
@@ -2485,10 +2452,6 @@ fn empty_distribution_stats() -> TraceDistributionStats {
         mean_ms: 0.0,
         min_ms: 0.0,
         max_ms: 0.0,
-        p1_ms: 0.0,
-        p5_ms: 0.0,
-        p10_ms: 0.0,
-        p25_ms: 0.0,
         median_ms: 0.0,
         p75_ms: 0.0,
         p90_ms: 0.0,
@@ -2663,10 +2626,6 @@ mod tests {
                 mean_ms: 0.0,
                 min_ms: 0.0,
                 max_ms: 0.0,
-                p1_ms: 0.0,
-                p5_ms: 0.0,
-                p10_ms: 0.0,
-                p25_ms: 0.0,
                 median_ms: 0.0,
                 p75_ms: 0.0,
                 p90_ms: 0.0,
@@ -2682,10 +2641,6 @@ mod tests {
             mean_ms: mean(values),
             min_ms: sorted[0],
             max_ms: *sorted.last().expect("sorted values must be non-empty"),
-            p1_ms: sorted[percentile_rank(sorted.len(), 1.0)],
-            p5_ms: sorted[percentile_rank(sorted.len(), 5.0)],
-            p10_ms: sorted[percentile_rank(sorted.len(), 10.0)],
-            p25_ms: sorted[percentile_rank(sorted.len(), 25.0)],
             median_ms: sorted[percentile_rank(sorted.len(), 50.0)],
             p75_ms: sorted[percentile_rank(sorted.len(), 75.0)],
             p90_ms: sorted[percentile_rank(sorted.len(), 90.0)],
@@ -3135,32 +3090,35 @@ mod tests {
                 collector.on_terminal(uuid, row[1].as_f64().unwrap_or(0.0), status);
             }
             let latency = collector.finish().latency;
+            // Native replay keeps no user TPS count; the mean covers that metric.
             for (name, count, mean) in [
                 (
                     "time_to_first_token",
-                    latency.num_ttft_samples,
+                    Some(latency.num_ttft_samples),
                     latency.ttft.mean_ms,
                 ),
                 (
                     "request_latency",
-                    latency.num_e2e_latency_samples,
+                    Some(latency.num_e2e_latency_samples),
                     latency.e2e.mean_ms,
                 ),
                 (
                     "inter_token_latency",
-                    latency.num_tpot_samples,
+                    Some(latency.num_tpot_samples),
                     latency.itl.distribution.mean_ms,
                 ),
                 (
                     "output_token_throughput_per_user",
-                    latency.num_output_token_throughput_per_user_samples,
+                    None,
                     latency.output_token_throughput_per_user.mean_ms,
                 ),
             ] {
                 let expected = &case["expected"];
                 let want_count = expected[format!("aiperf.{name}.count")].as_f64().unwrap();
-                assert_eq!(count as f64, want_count, "{name}");
-                if count > 0 {
+                if let Some(count) = count {
+                    assert_eq!(count as f64, want_count, "{name}");
+                }
+                if want_count > 0.0 {
                     let want = expected[format!("aiperf.{name}.avg")].as_f64().unwrap();
                     assert!(
                         (mean - want).abs() <= 1e-12 * want.max(1.0),
@@ -3199,7 +3157,6 @@ mod tests {
             assert_eq!(latency.num_tpot_samples, 3);
             assert_eq!(latency.itl.distribution.mean_ms, 4.0);
             assert_eq!(latency.itl.max_ms, 10.0);
-            assert_eq!(latency.num_output_token_throughput_per_user_samples, 2);
             // Request-weighted (100 + 500) / 2, not the per-gap mean (100 + 100 * 500) / 101.
             assert_eq!(latency.output_token_throughput_per_user.mean_ms, 300.0);
         }

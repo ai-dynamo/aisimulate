@@ -119,8 +119,7 @@ a missing/non-finite report metric or no qualifying latency samples rejects the 
 
 Use an AIPerf `metric.statistic` as a target or constraint. The supported metrics
 are `time_to_first_token`, `request_latency`, `inter_token_latency`, and
-`output_token_throughput_per_user`. Each accepts `avg`, `p1`, `p5`, `p10`, `p25`,
-`p50`, `p75`, `p90`, `p95`, and `p99`. Latency targets minimize milliseconds; user
+`output_token_throughput_per_user`. Each accepts `avg`, `p50`, `p75`, `p90`, `p95`, and `p99`. Latency targets minimize milliseconds; user
 throughput targets maximize tokens/s/user. The SDK also accepts these selectors in
 `pareto_objectives`.
 
@@ -129,10 +128,10 @@ report the same fields, so no extra configuration is required:
 
 | AIPerf metric | Native summary fields | Sample count |
 |---|---|---|
-| `time_to_first_token` | `{mean,p1,p5,p10,p25,median,p75,p90,p95,p99}_ttft_ms` | `num_ttft_samples` |
+| `time_to_first_token` | `{mean,median,p75,p90,p95,p99}_ttft_ms` | `num_ttft_samples` |
 | `request_latency` | `…_e2e_latency_ms` | `num_e2e_latency_samples` |
 | `inter_token_latency` | `…_itl_ms` | `num_tpot_samples` |
-| `output_token_throughput_per_user` | `…_output_token_throughput_per_user` | `num_output_token_throughput_per_user_samples` |
+| `output_token_throughput_per_user` | `…_output_token_throughput_per_user` | `num_tpot_samples` |
 
 `avg` reads `mean_*` and `p50` reads `median_*`. Optional aggregate constraints live in
 `evaluation.aiperf`. A recommendation copies `evaluation` into every exported
@@ -159,7 +158,8 @@ statistics but does not reject a configuration that violates a constraint.
 Each entry requires `metric`, `operator` (`lte` or `gte`), and a finite,
 nonnegative `threshold`. Equality passes. A selector with no qualifying samples
 fails strict constraints and cannot qualify an objective, even though the
-native summary reports zero for an empty distribution.
+native summary reports zero for an empty distribution. User TPS uses the ITL
+count, so if every ITL is zero it reads 0 tokens/s, where AIPerf reports no value.
 
 `strict_sla: true` enforces these constraints before optimizer feedback and
 ranking. With `strict_sla: false`, the metrics remain in candidate results, but

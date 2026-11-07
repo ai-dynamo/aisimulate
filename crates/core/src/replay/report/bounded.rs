@@ -59,24 +59,23 @@ impl Samples {
             squared += (value - mean).powi(2)
         })?;
 
-        // Simultaneous radix selection needs nine 256-bin histograms and eight
+        // Simultaneous radix selection needs five 256-bin histograms and eight
         // sequential file passes, independent of the number of samples.
-        let mut ranks =
-            [1., 5., 10., 25., 50., 75., 90., 95., 99.].map(|p| percentile_rank(self.count, p));
-        let mut prefixes = [0_u64; 9];
+        let mut ranks = [50., 75., 90., 95., 99.].map(|p| percentile_rank(self.count, p));
+        let mut prefixes = [0_u64; 5];
         let mut mask = 0_u64;
         for byte in (0..8).rev() {
             let shift = byte * 8;
-            let mut bins = [[0_usize; 256]; 9];
+            let mut bins = [[0_usize; 256]; 5];
             scan(&mut file, self.count, |value| {
                 let key = ordered_key(value);
-                for target in 0..9 {
+                for target in 0..5 {
                     if key & mask == prefixes[target] {
                         bins[target][((key >> shift) & 255) as usize] += 1;
                     }
                 }
             })?;
-            for target in 0..9 {
+            for target in 0..5 {
                 for bucket in 0..256 {
                     if ranks[target] < bins[target][bucket] {
                         prefixes[target] |= (bucket as u64) << shift;
@@ -87,25 +86,11 @@ impl Samples {
             }
             mask |= 255_u64 << shift;
         }
-        let [
-            p1_ms,
-            p5_ms,
-            p10_ms,
-            p25_ms,
-            median_ms,
-            p75_ms,
-            p90_ms,
-            p95_ms,
-            p99_ms,
-        ] = prefixes.map(from_ordered_key);
+        let [median_ms, p75_ms, p90_ms, p95_ms, p99_ms] = prefixes.map(from_ordered_key);
         Ok(TraceDistributionStats {
             mean_ms: mean,
             min_ms: min,
             max_ms: max,
-            p1_ms,
-            p5_ms,
-            p10_ms,
-            p25_ms,
             median_ms,
             p75_ms,
             p90_ms,
@@ -282,7 +267,6 @@ impl BoundedSummary {
         report.latency.num_e2e_latency_samples = self.e2e.count;
         report.latency.ttft = self.ttft.finish()?;
         report.latency.ttst = self.ttst.finish()?;
-        report.latency.num_output_token_throughput_per_user_samples = self.user_tps.count;
         report.latency.tpot = self.tpot.finish()?;
         report.latency.itl = TraceInterTokenLatencyStats::per_request(&report.latency.tpot);
         report.latency.output_token_throughput_per_user = self.user_tps.finish()?;
@@ -353,10 +337,6 @@ mod tests {
         assert!(samples.memory.capacity() <= MEMORY_SAMPLES);
         let actual = samples.finish().unwrap();
         for (left, right) in [
-            (actual.p1_ms, expected.p1_ms),
-            (actual.p5_ms, expected.p5_ms),
-            (actual.p10_ms, expected.p10_ms),
-            (actual.p25_ms, expected.p25_ms),
             (actual.median_ms, expected.median_ms),
             (actual.p75_ms, expected.p75_ms),
             (actual.p90_ms, expected.p90_ms),

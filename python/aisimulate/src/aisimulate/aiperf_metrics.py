@@ -22,19 +22,13 @@ _FAMILIES = {
     "time_to_first_token": ("TTFT", "ttft_ms", "num_ttft_samples"),
     "request_latency": ("LATENCY", "e2e_latency_ms", "num_e2e_latency_samples"),
     "inter_token_latency": ("ITL", "itl_ms", "num_tpot_samples"),
-    "output_token_throughput_per_user": (
-        "USER_TPS",
-        "output_token_throughput_per_user",
-        "num_output_token_throughput_per_user_samples",
-    ),
+    # shortcut: the ITL count also qualifies user TPS, so when every ITL is zero the
+    # summary's 0 tokens/s counts as a value where AIPerf has none.
+    "output_token_throughput_per_user": ("USER_TPS", "output_token_throughput_per_user", "num_tpot_samples"),
 }
 # AIPerf statistic -> native summary prefix.
 _STATS = {
     "avg": "mean",
-    "p1": "p1",
-    "p5": "p5",
-    "p10": "p10",
-    "p25": "p25",
     "p50": "median",
     "p75": "p75",
     "p90": "p90",

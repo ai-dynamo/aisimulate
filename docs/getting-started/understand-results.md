@@ -85,7 +85,7 @@ native pool, `encoder_ready_ms`.
 | Output token throughput per user | `1000 / TPOT` for each request with a positive TPOT; its mean is not generally `1000 / mean_tpot_ms`. |
 
 Each distribution reports `mean`, `min`, `max`, `std` and the nearest-rank
-percentiles `p1`, `p5`, `p10`, `p25`, `median`, `p75`, `p90`, `p95` and `p99`.
+percentiles `median`, `p75`, `p90`, `p95` and `p99`.
 These populations match [AIPerf request metrics](../sweeper/optimization-goals.md#aiperf-metric-selectors);
 AIPerf interpolates percentiles linearly instead.
 

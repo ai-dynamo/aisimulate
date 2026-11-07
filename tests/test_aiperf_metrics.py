@@ -24,13 +24,9 @@ def native(value=10.0, count=2.0, **overrides):
     "metric, key, count_key",
     [
         ("time_to_first_token.avg", "mean_ttft_ms", "num_ttft_samples"),
-        ("request_latency.p1", "p1_e2e_latency_ms", "num_e2e_latency_samples"),
+        ("request_latency.p99", "p99_e2e_latency_ms", "num_e2e_latency_samples"),
         ("inter_token_latency.p50", "median_itl_ms", "num_tpot_samples"),
-        (
-            "output_token_throughput_per_user.p25",
-            "p25_output_token_throughput_per_user",
-            "num_output_token_throughput_per_user_samples",
-        ),
+        ("output_token_throughput_per_user.p75", "p75_output_token_throughput_per_user", "num_tpot_samples"),
     ],
 )
 def test_selectors_read_native_summary_fields(metric, key, count_key):
@@ -41,9 +37,9 @@ def test_selectors_read_native_summary_fields(metric, key, count_key):
 
 def test_selector_set_covers_aiperf_statistics():
     stats = {metric.value.rsplit(".", 1)[1] for metric in AIPerfMetric}
-    assert stats == {"avg", "p1", "p5", "p10", "p25", "p50", "p75", "p90", "p95", "p99"}
-    assert len(AIPerfMetric) == 40
-    assert AIPerfMetric.TTFT_P5.value == "time_to_first_token.p5"
+    assert stats == {"avg", "p50", "p75", "p90", "p95", "p99"}
+    assert len(AIPerfMetric) == 24
+    assert AIPerfMetric.TTFT_P75.value == "time_to_first_token.p75"
 
 
 def test_no_samples_are_not_zero_latency():
