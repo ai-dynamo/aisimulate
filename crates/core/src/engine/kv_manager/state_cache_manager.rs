@@ -87,8 +87,32 @@ impl StateCacheManager {
     }
 
     pub(crate) fn has_snapshot(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
-        !self.published_this_step.contains(&prefix)
-            && self.keys(prefix).all(|key| pool.key_hit(key).is_some())
+        !self.published_this_step.contains(&prefix) && self.snapshot_cached(pool, prefix)
+    }
+
+    /// Whether every block of `prefix`'s snapshot is cached.
+    fn snapshot_cached(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
+        self.snapshot_keys(pool, prefix)
+            .all(|key| pool.key_hit(key).is_some())
+    }
+
+    /// Cache keys of `prefix`'s snapshot. A sliding-window copy is published
+    /// as one grouped entry where the pool supports it.
+    pub(crate) fn snapshot_keys(
+        &self,
+        pool: &VllmBlockPool,
+        prefix: SequenceHash,
+    ) -> impl ExactSizeIterator<Item = CacheKey> {
+        let slots = if self.groups_windows(pool) {
+            1
+        } else {
+            self.blocks_per_state
+        };
+        (0..slots).map(move |slot| CacheKey::State { prefix, slot })
+    }
+
+    fn groups_windows(&self, pool: &VllmBlockPool) -> bool {
+        self.sliding_window.is_some() && pool.groups_state_copies()
     }
 
     /// Sliding-window boundaries whose window the pass `(before, after]`
@@ -156,9 +180,7 @@ impl StateCacheManager {
         hash: SequenceHash,
         removed: &mut Vec<SequenceHash>,
     ) {
-        if self.published_this_step.contains(&hash)
-            || self.keys(hash).all(|key| pool.key_hit(key).is_some())
-        {
+        if self.published_this_step.contains(&hash) || self.snapshot_cached(pool, hash) {
             return;
         }
         let Some(mut outcome) = pool.reserve(&[], self.blocks_per_state) else {
@@ -168,12 +190,18 @@ impl StateCacheManager {
             state.snapshot.clear();
             state.snapshot_step = self.step;
         }
-        for key in self.keys(hash) {
-            let id = pool.allocate_private(&mut outcome.reservation);
-            pool.cache_private_key(id, key);
-            pool.release(id);
+        if self.groups_windows(pool) {
+            let id =
+                pool.publish_state_group(hash, self.blocks_per_state, &mut outcome.reservation);
             // Non-owning: a same-pass preemption discards it.
             state.snapshot.push(id);
+        } else {
+            for key in self.keys(hash) {
+                let id = pool.allocate_private(&mut outcome.reservation);
+                pool.cache_private_key(id, key);
+                pool.release(id);
+                state.snapshot.push(id);
+            }
         }
         pool.cancel(outcome.reservation);
         self.published_this_step.insert(hash);

@@ -1280,9 +1280,10 @@ fn sliding_window_retains_vllm_v0_32_boundaries() {
 
 #[test]
 fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block() {
-    // DeepSeek V4 + MTP, scaled down: block 4, MTP lookahead 1, dense.
+    // DeepSeek V4 + MTP, scaled down: block 4, MTP lookahead 1, dense, and
+    // a three-block state published as one grouped copy.
     let mut manager = manager(64, 4, 1, true);
-    manager.enable_state_cache(1, true);
+    manager.enable_state_cache(3, true);
     manager.state_cache.as_mut().unwrap().sliding_window = Some(SlidingWindowStateConfig {
         retention_interval: None,
         lookahead_tokens: 1,
@@ -1330,11 +1331,20 @@ fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block()
             false,
             Some((200..204).collect()),
         );
-        let lease = BlockRequestLease::new(next, identities);
+        let mut lease = BlockRequestLease::new(next, identities);
         assert_eq!(
             manager.get_lease_prefill_cost(&query, &lease).cached_tokens,
             cached
         );
+        // Restoring pins the whole copy and returns it to the LRU intact.
+        let source = CacheKey::State {
+            prefix: lease.state_hash(cached, 4).unwrap(),
+            slot: 0,
+        };
+        manager.begin_step();
+        allocated(manager.allocate_lease(next, &mut lease, cached, 0));
+        assert_eq!(manager.pool.key_blocks(source), 3);
+        assert!(manager.pool.key_hit(source).is_some_and(|hit| !hit.is_active));
         manager.finish_lease(next, lease);
     }
 }

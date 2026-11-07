@@ -602,10 +602,11 @@ impl VllmKvManager {
             lease
                 .state_hash(cached_tokens, self.block_size)
                 .map_or(0, |hash| {
-                    let states = manager
-                        .keys(hash)
+                    let states: usize = manager
+                        .snapshot_keys(&self.pool, hash)
                         .filter(|&key| self.pool.key_hit(key).is_some_and(|hit| !hit.is_active))
-                        .count();
+                        .map(|key| self.pool.key_blocks(key))
+                        .sum();
                     states
                         + usize::from(
                             !cached_tokens.is_multiple_of(self.block_size)
@@ -765,7 +766,7 @@ impl VllmKvManager {
             if partial_source {
                 keys.push(CacheKey::Token(prefix));
             }
-            keys.extend(manager.keys(prefix));
+            keys.extend(manager.snapshot_keys(&self.pool, prefix));
         }
         let write_blocks = self.state_write_blocks(lease, cumulative_tokens);
         let fresh = write_blocks + new_tokens - reused_tokens
