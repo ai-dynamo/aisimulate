@@ -4467,12 +4467,12 @@ pub(crate) mod tests {
         );
         let db = Arc::new(PerfDatabase::load(root.path(), "testsys", "test", "1.0").expect("load"));
         let ms = |bytes: f64| bytes / db.system_spec.gpu.mem_bw * 1000.0;
-        let decode_only = |nextn: Option<u32>, width: u32, requests: u32| {
-            let spec = EngineSpec::new(
-                fixture_engine_config(nextn),
-                vec![],
-                vec![qualified_mamba(false, width)],
-            );
+        let decode_only = |nextn: Option<u32>, width: u32, requests: u32, dtype: &str| {
+            let mut op = qualified_mamba(false, width);
+            if let Op::Mamba2(m) = &mut op {
+                m.state_dtype = dtype.into();
+            }
+            let spec = EngineSpec::new(fixture_engine_config(nextn), vec![], vec![op]);
             let engine = Engine::build(spec, Arc::clone(&db)).unwrap();
             let metrics = ForwardPassMetrics {
                 scheduled_requests: crate::ScheduledRequestMetrics {
@@ -4493,13 +4493,19 @@ pub(crate) mod tests {
             )
         };
         // Width one keeps the measured row.
-        let (total, op_ms, source) = decode_only(None, 1, 2);
+        let (total, op_ms, source) = decode_only(None, 1, 2, "float16");
         assert_eq!((total, op_ms, source.as_str()), (0.25, 0.25, "silicon"));
+        // The 16-bit row does not price an FP32 state: one 2 MiB read and
+        // one 2 MiB write per request.
+        let (total, _, source) = decode_only(None, 1, 2, "float32");
+        let bytes = 2.0 * (18_560.0 + 2.0 * 2_097_152.0);
+        assert!((total - ms(bytes)).abs() < 1e-12, "fp32: {total}");
+        assert_eq!(source, "sol");
         // Width four verifies four tokens per request: activations for
         // 4 tokens (18,560 B each) plus one state read and four 1 MiB writes.
         for requests in [2_u32, 3] {
             let bytes = f64::from(requests) * (4.0 * 18_560.0 + 5.0 * 1_048_576.0);
-            let (total, op_ms, source) = decode_only(Some(3), 4, requests);
+            let (total, op_ms, source) = decode_only(Some(3), 4, requests, "float16");
             assert!(
                 (total - ms(bytes)).abs() < 1e-12,
                 "{requests} requests: {total}"
