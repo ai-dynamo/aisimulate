@@ -3953,6 +3953,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(fpm_args());
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
+        let r3 = Uuid::from_u128(3);
         core.receive(DirectRequest {
             cache_salt: None,
             tokens: (0..4).collect(),
@@ -3988,18 +3989,26 @@ mod forward_pass_metrics {
             images: Vec::new(),
             kv_hint: None,
         });
+        // r3 finishes on the token its prefill forward samples.
+        core.receive(DirectRequest {
+            uuid: Some(r3),
+            ..direct_request((200..204).collect(), 1)
+        });
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
         assert_eq!(
             pass2
                 .output_signals
                 .iter()
-                .map(|s| s.uuid)
+                .map(|s| (s.uuid, s.completed))
                 .collect::<Vec<_>>(),
-            vec![r2],
-            "only the freshly prefilled request emits a token; r1 stalls"
+            vec![(r2, false), (r3, true)],
+            "only the freshly prefilled requests emit a token; r1 stalls"
         );
-        assert_eq!(core.running.len(), 2);
-        assert_eq!(core.running[0].uuid, r1, "FIFO order: r1 stays ahead of r2");
+        assert_eq!(
+            core.running.iter().map(|r| r.uuid).collect::<Vec<_>>(),
+            vec![r1, r2],
+            "FIFO order: r1 stays ahead of r2, and the finished r3 leaves the batch"
+        );
         assert_eq!(core.running[0].output_len(), 1, "r1 did not decode");
         assert_eq!(core.running[1].output_len(), 1);
         let fpm2 = pass2.fpm.as_ref().expect("FPM should be present");
