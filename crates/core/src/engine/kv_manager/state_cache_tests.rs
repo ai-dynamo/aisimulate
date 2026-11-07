@@ -1344,7 +1344,12 @@ fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block()
         manager.begin_step();
         allocated(manager.allocate_lease(next, &mut lease, cached, 0));
         assert_eq!(manager.pool.key_blocks(source), 3);
-        assert!(manager.pool.key_hit(source).is_some_and(|hit| !hit.is_active));
+        assert!(
+            manager
+                .pool
+                .key_hit(source)
+                .is_some_and(|hit| !hit.is_active)
+        );
         manager.finish_lease(next, lease);
     }
 }
