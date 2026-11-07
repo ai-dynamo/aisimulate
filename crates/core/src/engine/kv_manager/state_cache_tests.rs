@@ -1280,76 +1280,79 @@ fn sliding_window_retains_vllm_v0_32_boundaries() {
 
 #[test]
 fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block() {
-    // DeepSeek V4 + MTP, scaled down: block 4, MTP lookahead 1, dense, and
-    // a three-block state published as one grouped copy.
-    let mut manager = manager(64, 4, 1, true);
-    manager.enable_state_cache(3, true);
-    manager.state_cache.as_mut().unwrap().sliding_window = Some(SlidingWindowStateConfig {
-        retention_interval: None,
-        lookahead_tokens: 1,
-    });
-    let owner = Uuid::from_u128(1);
-    let (mut sequence, mut lease) = request(owner, 10, 4, true, 6);
-    for (before, after) in [(0, 8), (8, 10)] {
-        manager.begin_step();
-        allocated(manager.allocate_lease(owner, &mut lease, after, 0));
-        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, after);
-    }
-    // Decode to 16 as one MTP burst: no token is the burst's last.
-    manager.begin_step();
-    for before in 10..16 {
-        if sequence.generate_token().1 {
-            lease.append_partial();
+    // DeepSeek V4 + MTP, scaled down: block 4, MTP lookahead 1, and a
+    // three-block state published as one grouped copy. Every retention keeps
+    // the prompt's replay boundary 4; only dense and interval 12 keep 12.
+    for (retention, after_decode) in [(None, 12), (Some(12), 12), (Some(0), 4)] {
+        let mut manager = manager(64, 4, 1, true);
+        manager.enable_state_cache(3, true);
+        manager.state_cache.as_mut().unwrap().sliding_window = Some(SlidingWindowStateConfig {
+            retention_interval: retention,
+            lookahead_tokens: 1,
+        });
+        let owner = Uuid::from_u128(1);
+        let (mut sequence, mut lease) = request(owner, 10, 4, true, 6);
+        for (before, after) in [(0, 8), (8, 10)] {
+            manager.begin_step();
+            allocated(manager.allocate_lease(owner, &mut lease, after, 0));
+            manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, after);
         }
-        allocated(manager.allocate_lease(owner, &mut lease, before + 1, 0));
-        manager.finalize_computed_prefix(
-            owner,
-            &mut sequence,
-            &mut lease,
-            before,
-            before + 1,
-            false,
-        );
-    }
-    manager.finish_lease(owner, lease);
-    manager.begin_step();
-    // A next turn without the sampled tokens 10..16 matches two blocks and
-    // drops one for MTP; one with them reaches the window decode completed.
-    for (turn, tokens, cached) in [
-        (2, (0..10).chain(100..103).collect::<Vec<_>>(), 4),
-        (3, (0..16).chain(100..103).collect(), 12),
-    ] {
-        let next = Uuid::from_u128(turn);
-        let (query, identities) = RequestSequence::new(
-            next,
-            tokens,
-            4,
-            4,
-            4,
-            true,
-            true,
-            false,
-            Some((200..204).collect()),
-        );
-        let mut lease = BlockRequestLease::new(next, identities);
-        assert_eq!(
-            manager.get_lease_prefill_cost(&query, &lease).cached_tokens,
-            cached
-        );
-        // Restoring pins the whole copy and returns it to the LRU intact.
-        let source = CacheKey::State {
-            prefix: lease.state_hash(cached, 4).unwrap(),
-            slot: 0,
-        };
+        // Decode to 16 as one MTP burst: no token is the burst's last.
         manager.begin_step();
-        allocated(manager.allocate_lease(next, &mut lease, cached, 0));
-        assert_eq!(manager.pool.key_blocks(source), 3);
-        assert!(
-            manager
-                .pool
-                .key_hit(source)
-                .is_some_and(|hit| !hit.is_active)
-        );
-        manager.finish_lease(next, lease);
+        for before in 10..16 {
+            if sequence.generate_token().1 {
+                lease.append_partial();
+            }
+            allocated(manager.allocate_lease(owner, &mut lease, before + 1, 0));
+            manager.finalize_computed_prefix(
+                owner,
+                &mut sequence,
+                &mut lease,
+                before,
+                before + 1,
+                false,
+            );
+        }
+        manager.finish_lease(owner, lease);
+        manager.begin_step();
+        // A next turn without the sampled tokens 10..16 matches two blocks and
+        // drops one for MTP; one with them reaches the window decode completed.
+        for (turn, tokens, cached) in [
+            (2, (0..10).chain(100..103).collect::<Vec<_>>(), 4),
+            (3, (0..16).chain(100..103).collect(), after_decode),
+        ] {
+            let next = Uuid::from_u128(turn);
+            let (query, identities) = RequestSequence::new(
+                next,
+                tokens,
+                4,
+                4,
+                4,
+                true,
+                true,
+                false,
+                Some((200..204).collect()),
+            );
+            let mut lease = BlockRequestLease::new(next, identities);
+            assert_eq!(
+                manager.get_lease_prefill_cost(&query, &lease).cached_tokens,
+                cached
+            );
+            // Restoring pins the whole copy and returns it to the LRU intact.
+            let source = CacheKey::State {
+                prefix: lease.state_hash(cached, 4).unwrap(),
+                slot: 0,
+            };
+            manager.begin_step();
+            allocated(manager.allocate_lease(next, &mut lease, cached, 0));
+            assert_eq!(manager.pool.key_blocks(source), 3);
+            assert!(
+                manager
+                    .pool
+                    .key_hit(source)
+                    .is_some_and(|hit| !hit.is_active)
+            );
+            manager.finish_lease(next, lease);
+        }
     }
 }
