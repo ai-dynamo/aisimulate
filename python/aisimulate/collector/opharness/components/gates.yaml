@@ -372,7 +372,10 @@ gates:
 - gate: kda_ctx_Kimi-K3
   backend: sglang
   op: kda
-  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
+  # 48 local heads = the tp2 serving shard (sm100 probes K3 on sglang at tp2, targets.yaml): FlashInfer
+  # picks its prefill schedule from sequences x heads vs SM count (kda_chunked_bt16.py
+  # _route_for_workspace @flashinfer v0.7.2), so the trace must use the served head count.
+  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 48, head_k_dim: 128, num_v_heads: 48, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
       serving record can exist on this box'}
   repo: moonshotai/Kimi-K3

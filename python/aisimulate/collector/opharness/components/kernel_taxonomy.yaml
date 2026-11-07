@@ -103,6 +103,9 @@ rules:
      match: "^_fused_q_kernel$|deepseek_v32nvidiaopsfused_q_cutedslFusedQKernel|FilteredTopKUnifiedKernel|^_get_k_and_s_triton_kernel$|^deep_gemm::sched::smxx_paged_mqa_logits_metadata|^deep_gemm::smxx_clean_logits"}
   - {backend: fla_triton, role: linear_attention,
      match: "chunk_gla_fwd_kernel|chunk_kda_fwd_kernel|fused_recurrent_kda|kda_gate_chunk_cumsum|^_fused_post_conv_kernel$"}
+  # FlashInfer recurrent KDA prefill (CuTe DSL), SGLang's default K3 prefill on SM100/SM103
+  - {backend: flashinfer_cutedsl, role: linear_attention, sms: [sm100, sm103],
+     match: "^kernel_cutlass_kernel_(prep|chain_dv2)_TensorMap|^kernel_cutlass_packed_metadata_kernel"}
   - {backend: triton_fused_moe, role: moe_gemm,
      match: "^_reduce_grouped$"}
   - {backend: sgl_kernel, role: quant,
@@ -195,7 +198,7 @@ rules:
      match: "^kernel_cutlass_kernel_flashinferquantizationkernelsmxfp8_quantize"}
   - {backend: cutlass, role: gemm, sms: [sm89, sm120],
      match: "^vllm::cutlass_3x_gemm_fp8_blockwise"}
-  - {backend: fla_triton, role: linear_attention, sms: [sm89, sm120],
+  - {backend: fla_triton, role: linear_attention,
      match: "^fused_sigmoid_gating_delta_rule_update_kernel$"}
   - {backend: framework_native, role: activation, sms: [sm89, sm120],
      match: "^vllm::swigluoai_and_mul_kernel$"}

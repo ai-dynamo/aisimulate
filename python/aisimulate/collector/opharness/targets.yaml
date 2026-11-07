@@ -318,6 +318,17 @@ families:
               SILENTLY IGNORES unknown params.agg keys — so the expressible rescue is gpu-memory-utilization 0.6
               via extra_cli_args (A/B 2026-09-19; replaces the backend-level extra_cli_args,
               hence benchmark-mode is repeated). Real deployments of the default config hit the same OOM.'
+      moonshotai/Kimi-K3:
+        cli_extra_args:
+          vllm:
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--no-enable-flashinfer-autotune"]
+            fact: 'vllm 0.32.0/SM100: startup FlashInfer autotune of the dummy (empty cache, 21 token buckets,
+              kernel_warmup.py:342-380) outran the probe timeout twice (1500 s, then 3600 s, 2026-11-06).
+              Autotune picks tactics inside FlashInfer kernels (MoE, GEMM, attention); vLLM runs KDA on
+              FlashKDA / vLLM / FLA kernels, so the linear-attention gates are unaffected. A gate on a
+              FlashInfer-backed op of this checkpoint needs the autotuned run.'
       zai-org/GLM-5.3:
         dummy_overrides:
           family: glm
@@ -472,7 +483,9 @@ topology_policy:
   # (flashinfer trtllm-gen refuses 64 < heads < 128; finding sm100_probe_failures_recheck_2026_10_04 (i));
   # at tp2 the per-rank head count is 48 and the serving path exists. The tp1 cell stays a
   # recorded framework gap; the representative identity for the collector comes from tp2.
-  # `sms` scopes the entry: sm90 keeps tp1 (passes there). Owner runs this on the B200 box.
+  # SM90 probes of Kimi-K3 run on the 141 GB H200 at tp1: an 80 GB H100 cannot hold the dummy
+  # (sglang 0.5.23 tp1 OOMs in the MXFP4 expert upcast, tp2 leaves no KV cache room; vLLM 0.32.0
+  # tp1 lost the GPU on two nodes).
   - repo: moonshotai/Kimi-K3
     backend: sglang
     tp: 2

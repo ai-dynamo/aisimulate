@@ -26,7 +26,9 @@ import urllib.request
 from pathlib import Path
 
 _PROBES = Path(__file__).resolve().parents[1] / "opharness" / "components" / "probes"
-_TIMEOUT_S = 1500
+# vLLM 0.32 runs FlashInfer's MoE autotune at startup over 21 token buckets; with an empty
+# cache the Kimi-K3 dummy did not finish it within 1500 s on B200 (serving pays it once).
+_TIMEOUT_S = 3600
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 

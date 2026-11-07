@@ -92,6 +92,17 @@ def op_version(backend: str, op: str) -> str:
     return resolve_op_runtime(backend, op).version
 
 
+def release_image(backend: str, version: str) -> str:
+    """The manifest image of (backend, release). The pipeline runs a shard plan on the
+    framework's DEFAULT image unless AISIM_BACKEND_DOCKER_IMAGE names another, so a family
+    pinned apart from the default must name its image at trigger time."""
+    spec = yaml.safe_load((COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"][backend]
+    for runtime in [spec["default"], *(spec.get("families") or {}).values()]:
+        if str(runtime["version"]) == version:
+            return str(runtime["images"]["default"])
+    raise KeyError(f"framework_manifest.yaml pins no {backend} {version}")
+
+
 def gate_version(gate: dict) -> str:
     """The release a gate runs at; its ``also`` cases share it (tested)."""
     return op_version(gate["backend"], gate["op"])
@@ -162,11 +173,10 @@ def shard_plans(
 
 
 def serving_shards(campaign: Path, backend: str, version: str) -> list[dict]:
-    """The probe.serving shards probe_driver emitted for (backend, release) in a campaign."""
-    shards = []
-    for f in sorted(Path(campaign).glob(f"shards/tp*/{backend}-{version}.yaml")):
-        shards += yaml.safe_load(f.read_text())["shards"]
-    return shards
+    """The single-GPU probe.serving shards probe_driver emitted for (backend, release) in a
+    campaign: they share the trace job. A tp>1 run needs its own job with that many GPUs."""
+    f = Path(campaign) / "shards" / "tp1" / f"{backend}-{version}.yaml"
+    return yaml.safe_load(f.read_text())["shards"] if f.exists() else []
 
 
 def verdict_dir(sm: str, fw: str, version: str) -> Path:
@@ -177,14 +187,20 @@ def verdict_dir(sm: str, fw: str, version: str) -> Path:
     return probe_driver.ROOT / "results" / "pathdiff" / sm / f"{fw}-{version}"
 
 
-def _trace(results: list[Path], name: str, version: str) -> Path | None:
-    """The trace of shard ``name`` among the result dirs, from a run at ``version`` when one
-    says so (a trace from another release fails the runtime check and grades invalid)."""
-    found = [f for d in results for f in sorted(Path(d).rglob(f"{SHARD_OP}__{name}/probe_trace_case.json"))]
-    for f in found:
-        if (json.loads(f.read_text()).get("result") or {}).get("framework_version") in (version, None):
+def _trace(results: list[Path], name: str, backend: str, version: str) -> Path | None:
+    """The ``backend`` trace of shard ``name`` among the result dirs (shard names repeat across
+    backends), from a run at ``version`` when one says so (a trace from another release fails the
+    runtime check and grades invalid)."""
+    found = []
+    for d in results:
+        for f in sorted(Path(d).rglob(f"{SHARD_OP}__{name}/probe_trace_case.json")):
+            doc = json.loads(f.read_text())
+            if (doc.get("args") or {}).get("backend") == backend:
+                found.append((f, (doc.get("result") or {}).get("framework_version")))
+    for f, ran in found:
+        if ran in (version, None):
             return f
-    return found[0] if found else None
+    return found[0][0] if found else None
 
 
 def grade(
@@ -210,7 +226,7 @@ def grade(
             out.write_text(json.dumps(record, indent=1))
             verdicts[key] = "platform-floor"
             continue
-        files = [_trace(results, name, version) for name, _ in _cases(g)]
+        files = [_trace(results, name, backend, version) for name, _ in _cases(g)]
         if not all(files):
             verdicts[key] = "missing-trace"
             continue
@@ -251,12 +267,17 @@ def main() -> int:
     if args.cmd == "plan":
         args.out.mkdir(parents=True, exist_ok=True)
         plans = shard_plans(args.sm, args.fw, args.op, args.repo, args.family)
+        for f in sorted(args.serving.glob("shards/tp*/*.yaml")) if args.serving else []:
+            if f.parent.name != "tp1":
+                print(f"{f}: its own job, AISIM_GPU_NUM={f.parent.name.removeprefix('tp')}")
         for (backend, version), doc in sorted(plans.items()):
             if args.serving:
                 doc["shards"] = serving_shards(args.serving, backend, version) + doc["shards"]
             path = args.out / f"{backend}-{version}.yaml"
             path.write_text(yaml.safe_dump(doc, sort_keys=False, width=1000))
-            print(f"{len(doc['shards'])} shards -> {path}  (trigger with --frameworks {backend}:{version})")
+            image = release_image(backend, version)
+            print(f"{len(doc['shards'])} shards -> {path}")
+            print(f"  trigger: --frameworks {backend}:{version} --var AISIM_BACKEND_DOCKER_IMAGE={image}")
         return 0
     verdicts = grade(args.sm, args.results, args.fw, args.op, args.repo)
     for (backend, gate), verdict in sorted(verdicts.items()):
