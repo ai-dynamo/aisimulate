@@ -208,6 +208,23 @@ def test_slurm_cleanup_cancels_only_receipted_steps_and_verifies_exit(runner, mo
     assert len([args for args in commands if args[0] == "squeue"]) == 2
 
 
+def test_slurm_cleanup_tolerates_a_step_that_finished_before_scancel(runner, monkeypatch):
+    snapshots = iter([f"1234.3|{runner.step_name}\n", ""])
+    checks = []
+
+    def command(args, *, check=True, **kwargs):
+        if args[0] == "scancel":
+            checks.append(check)
+            if check:
+                raise subprocess.CalledProcessError(225, args, stderr="Invalid job id specified")
+            return SimpleNamespace(stdout="", stderr="scancel: error: Invalid job id specified", returncode=225)
+        return SimpleNamespace(stdout=next(snapshots), stderr="")
+
+    monkeypatch.setattr(runner, "_command", command)
+    runner.cleanup()
+    assert checks == [False]
+
+
 def test_slurm_cleanup_reports_leaked_steps(runner, monkeypatch):
     monkeypatch.setattr(
         runner, "_command", lambda *a, **k: SimpleNamespace(stdout=f"1234.2|{runner.step_name}", stderr="")
