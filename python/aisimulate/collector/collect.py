@@ -2999,6 +2999,11 @@ def _all_op_names() -> list[str]:
     from collector.fpm_forward import FPM_FORWARD_OP
 
     ops.append(FPM_FORWARD_OP)
+    # Validation probes (collector/probes/<name>.py) run through the same interface
+    # as probe.<name>, so the collection pipeline schedules them as ordinary shards.
+    from collector.probes import probe_op_names
+
+    ops.extend(probe_op_names())
     return ops
 
 
@@ -6398,7 +6403,8 @@ def main():
         default=None,
         metavar="SUBSTR",
         help="Run only cases whose string form contains SUBSTR (repeatable, OR semantics). "
-        "Ephemeral healing filter — never persisted to YAML.",
+        "Ephemeral healing filter — never persisted to YAML. For a probe op (--ops probe.<name>) "
+        "each value is a comma list of key=value probe arguments.",
     )
     parser.add_argument(
         "--cases-from",
@@ -6460,6 +6466,17 @@ def main():
         reject_fpm_arguments_without_fpm(args)
     except ValueError as error:
         parser.error(str(error))
+    from collector.probes import PROBE_PREFIX, run_probe
+
+    if any(op.startswith(PROBE_PREFIX) for op in args.ops or ()):
+        # A probe is not a collector op: no plan, no table, one JSON result in the working
+        # directory (the pipeline's shard dir). It runs alone; exit 0 marks the shard done.
+        if len(args.ops) != 1:
+            parser.error(f"a {PROBE_PREFIX}<name> op runs alone")
+        forced = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
+        if forced:  # a probe plans and runs on this GPU; a forced SM would label it as another
+            parser.error(f"AIS_SM/AIC_SM={forced} is a case-inventory override; unset it to run a probe")
+        sys.exit(run_probe(args.ops[0][len(PROBE_PREFIX) :], args.case_filters or [], Path.cwd(), backend=args.backend))
     fpm_requested = FPM_FORWARD_OP in (args.ops or ())
     if fpm_requested and args.include_long_context:
         parser.error("--include-long-context applies to operation collection, not fpm_forward")
@@ -6552,6 +6569,10 @@ def main():
     forced_sm = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
     if forced_sm:
         parser.error(f"AIS_SM/AIC_SM={forced_sm} is a case-inventory override; unset it to collect")
+    from collector.helper import TRACE_CHILD_DIR_ENV
+
+    if os.environ.get(TRACE_CHILD_DIR_ENV):  # it profiles measurement children, which changes their timings
+        parser.error(f"{TRACE_CHILD_DIR_ENV} is a probe.trace_case capture switch; unset it to collect")
 
     # Setup logging - debug flag is handled inside setup_logging
     global _LOGGER_CONFIGURED
