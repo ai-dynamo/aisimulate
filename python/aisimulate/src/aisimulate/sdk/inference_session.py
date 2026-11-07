@@ -403,6 +403,9 @@ class DisaggInferenceSession:
             disagg_summary.set_oom(True)
 
         disagg_summary.set_summary_df(disagg_summary_df)
+        # The e2e accessor mirrors the published row: None when withheld.
+        disagg_power_w = disagg_summary_df["power_w"].iloc[0]
+        disagg_summary.set_e2e_power_avg(None if pd.isna(disagg_power_w) else float(disagg_power_w))
 
         # Carry per-op latency breakdowns from prefill/decode static runs
         per_ops_data = {}

@@ -2314,6 +2314,7 @@ class BaseBackend:
         summary.set_encoder_power_avg(encoder_energy_wms / encoder_latency_ms if encoder_latency_ms > 0 else 0.0)
         summary.set_encoder_source_dict(encoder_source_dict)
         summary.set_result_dict(result_dict)
+        summary.set_e2e_power_avg(result_dict["power_w"])  # mirrors the row; None when withheld
 
         # Retain operation evidence using exactly the scheduling weights used
         # for total energy and active latency above. Mixed steps include both
