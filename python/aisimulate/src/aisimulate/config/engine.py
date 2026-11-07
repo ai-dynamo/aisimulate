@@ -1261,6 +1261,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         raise ValueError("engine.backend_version does not match any FPM profile deployment")
     if isinstance(engine.context_length, int) and engine.context_length > profile.context_length:
         raise ValueError("engine.context_length exceeds the FPM profile context_length")
+    selected = {}
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None:
@@ -1268,14 +1269,14 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         if worker.timing.type != "default":
             raise ValueError("engine.fpm_profile requires default timing for every worker")
         if isinstance(worker, WorkerPredictionConfig):
-            deployment = fpm_worker_deployment(engine, worker, role)
+            deployment = selected[role] = fpm_worker_deployment(engine, worker, role)
             deployment.resources.validate_envelope(
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,
             )
             if deployment.resources.cache_layout == "grouped":
-                if role != "aggregated" or engine.nextn or engine.speculation is not None:
-                    raise ValueError("grouped FPM cache supports only aggregated vLLM without speculative decoding")
+                if engine.nextn or engine.speculation is not None:
+                    raise ValueError("grouped FPM cache supports only vLLM without speculative decoding")
                 cache = worker.kv_cache
                 if cache.prefix_caching:
                     grouped_prefix_caching_requirements(
@@ -1293,6 +1294,17 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                     )
         # Recommendation topology domains and the GPU budget are resolved by
         # lowering to SearchSpace, which validates reachable grouped workers.
+    if (
+        "disaggregated" in modes
+        and {"prefill", "decode"} <= selected.keys()
+        and any(selected[role].resources.cache_layout == "grouped" for role in ("prefill", "decode"))
+    ):
+        grouped_pd_requirements(
+            selected["prefill"],
+            selected["decode"],
+            backend_version=backend_version,
+            kv_transfer=engine.kv_transfer,
+        )
 
 
 def fpm_worker_deployment(engine, worker, role: str):
@@ -1364,6 +1376,49 @@ def grouped_prefix_caching_requirements(
             "GLM-5.3-Flash prefix caching requires prefix_match_unit and max_batched_tokens that are multiples of 4"
         )
     return hash_block
+
+
+def grouped_pd_pairable(prefill_deployment, decode_deployment) -> bool:
+    """Whether a prefill and a decode FPM deployment can run as a P/D pair.
+
+    Two linear deployments always can. Replay moves each cache group into the same group of the decode rank, so a
+    pair with a grouped deployment needs two grouped deployments with equal tensor parallelism and identical groups.
+    """
+    prefill, decode = prefill_deployment.resources, decode_deployment.resources
+    if prefill.cache_layout != "grouped" and decode.cache_layout != "grouped":
+        return True
+    return (
+        prefill.cache_layout == decode.cache_layout
+        and prefill_deployment.tp == decode_deployment.tp
+        and prefill.cache_groups == decode.cache_groups
+    )
+
+
+def grouped_pd_requirements(prefill_deployment, decode_deployment, *, backend_version: str | None, kv_transfer) -> None:
+    """Check a prefill and a decode FPM deployment with a grouped cache for P/D replay.
+
+    The prediction and the sweeper share this rule. The sweeper enumerates only pairs that pass
+    ``grouped_pd_pairable``. ``kv_transfer`` is the prediction's transfer configuration, or None. The Rust gate checks
+    the markers, the version and the full-attention block of each rank again.
+    """
+    if not grouped_pd_pairable(prefill_deployment, decode_deployment):
+        raise ValueError(
+            "grouped FPM cache P/D requires prefill and decode deployments with equal tensor parallelism and "
+            "identical cache groups"
+        )
+    # The transfer rules read both markers. The pair's groups are identical, so the prefill groups stand for both.
+    if any(
+        group.prefix_cacheable is None or group.transfer_bytes_per_block is None
+        for group in prefill_deployment.resources.cache_groups
+    ):
+        raise ValueError(
+            "grouped FPM cache P/D requires every cache group to declare prefix_cacheable and "
+            "transfer_bytes_per_block; re-import the runtime probe"
+        )
+    if backend_version not in ("0.31.0", "0.32.0"):
+        raise ValueError("grouped FPM cache P/D is modeled for vLLM 0.31.0 and 0.32.0 only")
+    if kv_transfer is not None and kv_transfer.bytes_per_token != "auto":
+        raise ValueError("grouped FPM cache derives kv_transfer.bytes_per_token from its cache groups; set it to auto")
 
 
 def _validate_prediction_prefix_match_unit(engine: EnginePredictionConfig) -> None:
