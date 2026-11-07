@@ -1604,3 +1604,27 @@ def test_strict_constraint_failure_wins_over_missing_objective_samples(monkeypat
     ).run(config, top_n=None)
     assert result.candidates
     assert {candidate.reason_category for candidate in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
+
+
+@pytest.mark.parametrize(
+    "metrics, outcome, category",
+    [
+        ({}, "infeasible", "no_samples"),
+        ({"num_e2e_latency_samples": 2.0, "p99_e2e_latency_ms": -1.0}, "failed", "invalid_metrics"),
+    ],
+)
+def test_aiperf_objective_separates_missing_samples_from_invalid_values(monkeypatch, metrics, outcome, category):
+    _stub(monkeypatch, _branch(_pc()))
+
+    class MetricRunner(_FakeRunner):
+        def run(self, spec):
+            return ReplayReport(metrics={**super().run(spec).metrics, **metrics})
+
+    base = _config()
+    config = SmartSearchConfig(
+        search_space=base.search_space, workload=base.workload, sweep=base.sweep, goal={"target": "request_latency.p99"}
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(MetricRunner()), sampler_factory=_FakeSampler, show_progress=False
+    ).run(config, top_n=None)
+    assert {(c.status.value, c.reason_category.value) for c in result.candidates} == {(outcome, category)}

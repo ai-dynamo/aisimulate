@@ -80,20 +80,25 @@ class AIPerfEvaluation(BaseModel):
     constraints: list[MetricConstraint] = Field(default_factory=list)
 
 
+class NoSamplesError(ValueError):
+    """The report has no qualifying samples for a metric."""
+
+
+def _is_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def metric_value(report: Mapping[str, float], metric: AIPerfMetric) -> float:
-    """Missing samples never become a zero-latency or zero-throughput result."""
+    """Missing samples never become a zero-latency or zero-throughput result.
+
+    Raises NoSamplesError without qualifying samples, and ValueError for an
+    invalid value that has samples.
+    """
     count, value = report.get(metric.count_key), report.get(metric.report_key)
-    if (
-        isinstance(count, bool)
-        or not isinstance(count, (int, float))
-        or not math.isfinite(count)
-        or count <= 0
-        or isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value < 0
-    ):
-        raise ValueError(f"{metric.value} is missing, invalid, or has no qualifying samples")
+    if not _is_number(count) or count <= 0:
+        raise NoSamplesError(f"{metric.value} has no qualifying samples")
+    if not _is_number(value) or value < 0:
+        raise ValueError(f"{metric.value} is invalid: {value!r}")
     return float(value)
 
 

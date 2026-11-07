@@ -41,7 +41,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-from ..aiperf_metrics import AIPerfMetric, metric_value
+from ..aiperf_metrics import AIPerfMetric, NoSamplesError, metric_value
 from ..power import POWER_FIELDS, normalize_power_summary
 from ..resources import ResourceLimitError
 from .afd_perfmodel import AFDPerformanceModel, AICAFDPerformanceModel, attach_afd_measurements
@@ -1051,13 +1051,23 @@ def _score_prepared(
         if isinstance(target, AIPerfMetric):
             try:
                 metric_value(report, target)
-            except ValueError as exc:
+            except NoSamplesError as exc:
                 return _EvalResult(
                     candidate=None,
                     observe_metrics=None,
                     outcome="infeasible",
                     reason=str(exc),
                     reason_category=ReasonCategory.NO_SAMPLES,
+                    runner_metadata=replay_result.metadata,
+                    report_metrics=report,
+                )
+            except ValueError as exc:
+                return _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="failed",
+                    reason=f"runner contract violation: {exc}",
+                    reason_category=ReasonCategory.INVALID_METRICS,
                     runner_metadata=replay_result.metadata,
                     report_metrics=report,
                 )

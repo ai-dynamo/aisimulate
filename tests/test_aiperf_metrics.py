@@ -6,7 +6,7 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
+from aisimulate.aiperf_metrics import AIPerfMetric, NoSamplesError, metric_value
 from aisimulate.config.cli import CoreRecommendationConfig
 from aisimulate.recommend import _goal
 from aisimulate.sweeper.config import Candidate, OptimizationGoal
@@ -44,8 +44,15 @@ def test_selector_set_covers_aiperf_statistics():
 
 def test_no_samples_are_not_zero_latency():
     # Native reports zeros for an empty distribution; the sample count decides.
-    with pytest.raises(ValueError, match="no qualifying samples"):
+    with pytest.raises(NoSamplesError, match="no qualifying samples"):
         metric_value(native(0.0, 0.0), AIPerfMetric.TTFT_AVG)
+
+
+@pytest.mark.parametrize("value", [-1.0, float("nan"), None, True])
+def test_invalid_values_with_samples_are_not_missing_samples(value):
+    with pytest.raises(ValueError, match="is invalid") as error:
+        metric_value(native(value, 2.0), AIPerfMetric.TTFT_AVG)
+    assert not isinstance(error.value, NoSamplesError)
 
 
 @pytest.mark.parametrize("metric", list(AIPerfMetric))
