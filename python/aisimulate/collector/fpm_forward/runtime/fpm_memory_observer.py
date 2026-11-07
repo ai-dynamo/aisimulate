@@ -43,6 +43,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import socket
 import threading
 from enum import Enum
@@ -365,6 +366,42 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         raise RuntimeError(f"refusing duplicate runtime execution observation: {path}") from None
 
 
+def _cached_config_commit(model_config: Any) -> str | None:
+    """Return the Hub snapshot commit in the local path of the loaded config.json, else None.
+
+    File-system lookups only; nothing here may reach the network.
+    """
+    try:
+        source = getattr(model_config, "hf_config_path", None) or model_config.model
+        if os.path.isdir(source):
+            resolved = os.path.join(source, "config.json")
+            if not os.path.isfile(resolved):
+                return None
+        else:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Only a pinned commit is evidence: the current cache ref is not proof of the loaded commit
+            # (REVIEW.md lines 131-133). vLLM's ResolvedRevision.resolved holds it (huggingface_hub/_revision.py;
+            # vLLM v0.32.0 config/model.py lines 632-641, 672).
+            effective = getattr(model_config, "_hf_config_revision", None) or model_config.revision
+            pinned = getattr(effective, "resolved", None)
+            if not (isinstance(pinned, str) and re.fullmatch(r"[0-9a-f]{40}", pinned)):
+                pinned = effective
+            if not (isinstance(pinned, str) and re.fullmatch(r"[0-9a-f]{40}", pinned)):
+                return None
+            revision = str(pinned)
+            resolved = try_to_load_from_cache(source, "config.json", revision=revision)
+        if not isinstance(resolved, str):
+            return None
+        # Same rule as transformers' extract_commit_hash: first snapshots/<segment>/, lowercase commit.
+        match = re.search(r"snapshots/([^/]+)/", resolved.replace("\\", "/"))
+        if match and re.fullmatch(r"[0-9a-f]{40}", match.group(1)):
+            return match.group(1)
+    except Exception as error:
+        logging.getLogger(__name__).debug("loaded config commit lookup failed: %s", type(error).__name__)
+    return None
+
+
 def execution_config(config: Any) -> dict[str, Any]:
     """Read execution identity without requiring the memory-finalization APIs."""
     result = {
@@ -377,8 +414,15 @@ def execution_config(config: Any) -> dict[str, Any]:
         if getattr(config, section, None) is not None
     }
     hf_config = getattr(config.model_config, "hf_config", None)
-    if hf_config is not None and getattr(hf_config, "_commit_hash", None) is not None:
-        result["model_config"]["loaded_config_commit_hash"] = hf_config._commit_hash
+    if hf_config is not None and hasattr(hf_config, "_commit_hash"):
+        if hf_config._commit_hash is not None:
+            result["model_config"]["loaded_config_commit_hash"] = hf_config._commit_hash
+    elif hf_config is not None:
+        # transformers 5.19.0 (Dynamo 1.7.0-rc.1 image, configuration_utils.py line 366) discards
+        # `_commit_hash`; 5.17.0 and earlier keep it. Read the commit from the local cache path instead.
+        commit = _cached_config_commit(config.model_config)
+        if commit is not None:
+            result["model_config"]["loaded_config_commit_hash"] = commit
     quant = config.quant_config
     result["quantization_config"] = (
         {
