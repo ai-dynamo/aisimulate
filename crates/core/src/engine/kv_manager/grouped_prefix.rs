@@ -30,7 +30,7 @@
 
 use super::grouped::{GroupLease, GroupStateLease, GroupedBlockLease, GroupedBlockPool};
 use super::vllm_backend::BlockRequestLease;
-use crate::engine::cache::vllm_block_pool::CacheKey;
+use crate::engine::cache::vllm_block_pool::{BlockCopyId, CacheKey};
 use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
 use anyhow::{bail, ensure};
 use rustc_hash::FxHashSet;
@@ -701,6 +701,64 @@ impl GroupedPrefixCoordinator {
         hit
     }
 
+    /// The local prefix of a decode rank that loads a P/D handoff. The NIXL
+    /// connector supports divergent hits (V32 `nixl/connector.py:83-85`). For
+    /// a model with Mamba-type state layers the scheduler then takes the
+    /// full-attention hit alone as the local prefix and lets the connector
+    /// supply the lagging groups (V32 `sched:558-568`, `mgr:345-366`,
+    /// `has_mamba_layers` at `vllm/v1/kv_cache_interface.py:1564-1569`). For
+    /// any other model it takes the hit that every group agrees on. This
+    /// finder takes the full-attention hit for every grouped profile. The hit
+    /// is that of the first full-attention spec group, capped at
+    /// `num_tokens - 1` and floored to that group's block: the scheduler
+    /// presents a block-aligned local hit to the connector, and the sub-block
+    /// tail of a fine-grained hit is loaded again (V32 `sched:973-981`).
+    /// Every other group gets `GroupHitBlocks::None`, and the junction is 0.
+    /// Without a full-attention group the hit is empty.
+    ///
+    /// On a decode rank vLLM drops each group's hit blocks below its skipped
+    /// tokens before it touches them (V32 `single:292-313`). A Mamba group
+    /// skips all but the last computed token (`single:1954-1959`), so vLLM
+    /// never holds a lagging state hit block. Its admission count still adds
+    /// such a cached block when no request holds it (`single:1775-1778`). A
+    /// window group keeps its hit blocks inside the window, where this finder
+    /// takes new blocks. vLLM also falls back to the hit that every group
+    /// agrees on when a lagging hit is deeper than the full-attention hit
+    /// (V32 `mgr:360-364`). This finder leaves that out: a lagging group's
+    /// blocks arrive with the transfer.
+    pub(crate) fn find_full_attention_hit(
+        &self,
+        pool: &GroupedBlockPool,
+        lease: &BlockRequestLease,
+        num_tokens: usize,
+    ) -> GroupedHit {
+        let rules = &self.rules;
+        let mut hit = self.empty_hit();
+        let Some(spec) = rules
+            .specs
+            .iter()
+            .find(|spec| spec.kind == GroupRuleKind::FullAttention)
+        else {
+            return hit;
+        };
+        if num_tokens == 0 {
+            return hit;
+        }
+        let max = (num_tokens - 1) / rules.alignment * rules.alignment;
+        let (ends, tokens) = self.full_attention_hit(pool, lease, spec, max);
+        let tokens = tokens / spec.block * spec.block;
+        for &g in &spec.groups {
+            hit.per_group[g] = GroupHitBlocks::Attention(
+                ends.iter()
+                    .take(tokens / spec.block)
+                    .map(|&end| grouped_key(g, lease.prefix_hash_at(end)))
+                    .collect(),
+            );
+        }
+        hit.tokens = tokens;
+        hit
+    }
+
     /// Whether every group of `spec` holds a block keyed at `tokens`, as
     /// vLLM's `get_cached_block` asks for a spec group (`pool:198-224`).
     fn spec_resident(
@@ -832,7 +890,40 @@ impl GroupedPrefixCoordinator {
         hit: &GroupedHit,
         prompt_tokens: usize,
     ) -> usize {
-        self.blocks_to_allocate(pool, hit, prompt_tokens, prompt_tokens, true)
+        self.blocks_to_allocate(pool, hit, hit.tokens, prompt_tokens, prompt_tokens, true)
+    }
+
+    /// `admission_blocks` of a decode rank that loads a P/D handoff on top of
+    /// the local `hit`: the loaded tokens count as computed too, as the
+    /// `total_computed_tokens` of vLLM's whole-prompt check (`mgr:519-536`).
+    pub(crate) fn destination_admission_blocks(
+        &self,
+        pool: &GroupedBlockPool,
+        hit: &GroupedHit,
+        loaded_tokens: usize,
+        prompt_tokens: usize,
+    ) -> usize {
+        self.blocks_to_allocate(pool, hit, loaded_tokens, prompt_tokens, prompt_tokens, true)
+    }
+
+    /// The blocks that a decode rank takes for the tokens of a P/D handoff on
+    /// top of the local `hit`: vLLM's second test in `allocate_slots`, for an
+    /// async load with no new tokens (`mgr:558-576`, `sched:1064-1067`).
+    pub(crate) fn destination_load_blocks(
+        &self,
+        pool: &GroupedBlockPool,
+        hit: &GroupedHit,
+        loaded_tokens: usize,
+        prompt_tokens: usize,
+    ) -> usize {
+        self.blocks_to_allocate(
+            pool,
+            hit,
+            loaded_tokens,
+            loaded_tokens,
+            prompt_tokens,
+            false,
+        )
     }
 
     /// The blocks that the first allocation of a request takes for its tokens
@@ -846,16 +937,18 @@ impl GroupedPrefixCoordinator {
         prompt: usize,
         target: usize,
     ) -> usize {
-        self.blocks_to_allocate(pool, hit, target, prompt, false)
+        self.blocks_to_allocate(pool, hit, hit.tokens, target, prompt, false)
     }
 
     /// vLLM's `get_num_blocks_to_allocate` for the first `tokens` tokens of a
-    /// request without blocks. Only a chunk that reaches `prompt` takes a
-    /// checkpoint block (v0.32 `single:1643-1674`).
+    /// request without blocks. `computed` is its `total_computed_tokens`: the
+    /// hit, and on a decode rank the loaded tokens. Only a chunk that reaches
+    /// `prompt` takes a checkpoint block (v0.32 `single:1643-1674`).
     fn blocks_to_allocate(
         &self,
         pool: &GroupedBlockPool,
         hit: &GroupedHit,
+        computed: usize,
         tokens: usize,
         prompt: usize,
         admission_cap: bool,
@@ -884,7 +977,7 @@ impl GroupedPrefixCoordinator {
                                 self.limits.max_model_len,
                             ));
                         }
-                        skipped_blocks = hit.tokens.saturating_sub(window - 1) / block;
+                        skipped_blocks = computed.saturating_sub(window - 1) / block;
                     }
                     let new = required.saturating_sub(skipped_blocks.max(keys.len()));
                     let inactive = keys[skipped_blocks.min(keys.len())..]
@@ -909,15 +1002,15 @@ impl GroupedPrefixCoordinator {
                     // A valid checkpoint needs two new blocks or more, so one
                     // new block and the checkpoint block below reach the cap.
                     let copy = key.is_some() && !hit.tokens.is_multiple_of(block);
-                    let new = tokens
-                        .div_ceil(block)
-                        .saturating_sub(hit.tokens.div_ceil(block))
-                        .min(1)
+                    // The computed blocks are the group's own hit only. A
+                    // decode rank's state group has none.
+                    let hit_blocks = key.map_or(0, |_| hit.tokens.div_ceil(block));
+                    let new = tokens.div_ceil(block).saturating_sub(hit_blocks).min(1)
                         + usize::from(copy);
                     // v0.32 `single:1750-1758`, `:1770`.
                     let checkpoint = tokens >= prompt
                         && rules.checkpoint_valid(
-                            hit.tokens,
+                            computed,
                             tokens,
                             rules.checkpoint_position(tokens),
                         );
@@ -1005,6 +1098,78 @@ impl GroupedPrefixCoordinator {
         target: usize,
         step: u64,
     ) -> bool {
+        let (plan, fresh, releases) =
+            self.plan_allocation(lease, prompt, computed_before, target, step);
+        pool.release_all(releases);
+        let Some(mut reservation) = pool.reserve(&[], fresh) else {
+            return false;
+        };
+        for (item, group) in plan.into_iter().zip(lease.groups.iter_mut()) {
+            match (item, group) {
+                (Plan::Attention { new, copy }, GroupLease::Attention { copies, .. }) => {
+                    if copy {
+                        // The shared tail block gives way to a private copy
+                        // (`single:387-409`).
+                        let shared = copies.last_mut().expect("a partial hit has a tail block");
+                        let old = shared.replace(pool.take_private(&mut reservation));
+                        pool.release(old.expect("a partial hit has a tail block"));
+                    }
+                    copies.extend((0..new).map(|_| Some(pool.take_private(&mut reservation))));
+                }
+                (
+                    Plan::State {
+                        running,
+                        copy,
+                        cow_is_running,
+                        checkpoint,
+                    },
+                    GroupLease::State(state),
+                ) => {
+                    if cow_is_running {
+                        debug_assert!(state.running.is_none());
+                        state.running = Some(pool.take_private(&mut reservation));
+                    }
+                    if running {
+                        let new = pool.take_private(&mut reservation);
+                        if let Some(old) = state.running.replace(new) {
+                            debug_assert!(
+                                state.previous.is_none(),
+                                "one boundary crossing per step"
+                            );
+                            state.previous = Some((old, step));
+                        }
+                    }
+                    if copy {
+                        state.copy = Some(pool.take_private(&mut reservation));
+                    }
+                    if let Some(pos) = checkpoint {
+                        state.checkpoint = Some((pool.take_private(&mut reservation), pos));
+                    }
+                }
+                (Plan::Ring { take }, GroupLease::Ring { copy }) => {
+                    if take {
+                        *copy = Some(pool.take_private(&mut reservation));
+                    }
+                }
+                (item, group) => unreachable!("plan {item:?} with lease {group:?}"),
+            }
+        }
+        pool.cancel(reservation);
+        lease.allocated = true;
+        true
+    }
+
+    /// The plan of `allocate`: what each group takes, the fresh blocks in
+    /// all, and the blocks that vLLM frees before it allocates. The plan
+    /// changes the lease but not the pool.
+    fn plan_allocation(
+        &self,
+        lease: &mut GroupedBlockLease,
+        prompt: usize,
+        computed_before: usize,
+        target: usize,
+        step: u64,
+    ) -> (Vec<Plan>, usize, Vec<BlockCopyId>) {
         let rules = &self.rules;
         let first = !lease.allocated;
         let mut fresh = 0;
@@ -1022,15 +1187,18 @@ impl GroupedPrefixCoordinator {
                     },
                 ) => {
                     if let GroupRuleKind::SlidingWindow { window } = rule.kind {
-                        let skipped =
-                            (computed_before.saturating_sub(window - 1) / block).min(copies.len());
+                        let skipped = computed_before.saturating_sub(window - 1) / block;
                         // Tail first, as `_remove_blocks_in_range` frees the
                         // range (v0.31 `single:660-685`, v0.32 `:645-670`).
-                        for copy in copies[*first_live..skipped.max(*first_live)]
-                            .iter_mut()
-                            .rev()
-                        {
+                        let held = skipped.min(copies.len());
+                        for copy in copies[*first_live..held.max(*first_live)].iter_mut().rev() {
                             releases.extend(copy.take());
+                        }
+                        // A request that computed its tokens elsewhere, as a
+                        // P/D destination did, holds null blocks below the
+                        // window (v0.31 `single:314`, v0.32 `:311`).
+                        if copies.len() < skipped {
+                            copies.resize(skipped, None);
                         }
                         *first_live = (*first_live).max(skipped);
                     }
@@ -1109,63 +1277,21 @@ impl GroupedPrefixCoordinator {
             };
             plan.push(item);
         }
-        pool.release_all(releases);
-        let Some(mut reservation) = pool.reserve(&[], fresh) else {
-            return false;
-        };
-        for (item, group) in plan.into_iter().zip(lease.groups.iter_mut()) {
-            match (item, group) {
-                (Plan::Attention { new, copy }, GroupLease::Attention { copies, .. }) => {
-                    if copy {
-                        // The shared tail block gives way to a private copy
-                        // (`single:387-409`).
-                        let shared = copies.last_mut().expect("a partial hit has a tail block");
-                        let old = shared.replace(pool.take_private(&mut reservation));
-                        pool.release(old.expect("a partial hit has a tail block"));
-                    }
-                    copies.extend((0..new).map(|_| Some(pool.take_private(&mut reservation))));
-                }
-                (
-                    Plan::State {
-                        running,
-                        copy,
-                        cow_is_running,
-                        checkpoint,
-                    },
-                    GroupLease::State(state),
-                ) => {
-                    if cow_is_running {
-                        debug_assert!(state.running.is_none());
-                        state.running = Some(pool.take_private(&mut reservation));
-                    }
-                    if running {
-                        let new = pool.take_private(&mut reservation);
-                        if let Some(old) = state.running.replace(new) {
-                            debug_assert!(
-                                state.previous.is_none(),
-                                "one boundary crossing per step"
-                            );
-                            state.previous = Some((old, step));
-                        }
-                    }
-                    if copy {
-                        state.copy = Some(pool.take_private(&mut reservation));
-                    }
-                    if let Some(pos) = checkpoint {
-                        state.checkpoint = Some((pool.take_private(&mut reservation), pos));
-                    }
-                }
-                (Plan::Ring { take }, GroupLease::Ring { copy }) => {
-                    if take {
-                        *copy = Some(pool.take_private(&mut reservation));
-                    }
-                }
-                (item, group) => unreachable!("plan {item:?} with lease {group:?}"),
-            }
-        }
-        pool.cancel(reservation);
-        lease.allocated = true;
-        true
+        (plan, fresh, releases)
+    }
+
+    /// The fresh blocks that `allocate` takes for `computed_before..target`,
+    /// planned on a copy of the lease.
+    pub(crate) fn allocation_blocks(
+        &self,
+        lease: &GroupedBlockLease,
+        prompt: usize,
+        computed_before: usize,
+        target: usize,
+        step: u64,
+    ) -> usize {
+        self.plan_allocation(&mut lease.clone(), prompt, computed_before, target, step)
+            .1
     }
 
     /// Publish the blocks that `computed_after` completes and apply the
