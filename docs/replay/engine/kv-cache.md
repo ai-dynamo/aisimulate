@@ -284,7 +284,8 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
   time adds to TTFT.
 - G1 blocks that are still being copied to G2 are not overwritten.
 - A decode rank with G2 admits requests whose P/D handoff has arrived before
-  other waiting requests, as vLLM's FCFS scheduler does.
+  other waiting requests, as vLLM's FCFS scheduler does. A decode rank with
+  [grouped caches](#other-cache-modes) does the same without G2.
 
 <a id="g2-connector-profiles"></a>
 
@@ -597,9 +598,9 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 - **Grouped caches.** Some whole-forward (FPM) profiles describe several KV
   groups, such as sliding-window and full attention, sharing one byte budget.
   Replay then allocates each group separately. A `state` group holds a fixed
-  number of blocks for each running request. Grouped caches require aggregated
-  vLLM, no offload, no P/D and default capacity. They run cold with
-  `prefix_caching: false`. See [memory accounting](../../perf-model/memory.md).
+  number of blocks for each running request. Grouped caches require vLLM, no
+  offload and default capacity. They run cold with `prefix_caching: false`. See
+  [memory accounting](../../perf-model/memory.md).
 
   Grouped caches run with prefix caching on only under these conditions. The
   profile's runtime probe recorded `enable_prefix_caching: true` and
@@ -693,6 +694,68 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
     allocation that takes the copy. vLLM holds it for the rest of the step,
     so that the step's copy can read it. So the block count can be lower by
     one block per full-attention group for that step.
+
+  In `mode: disaggregated`, the prefill and decode deployments need equal
+  tensor parallelism and identical cache groups. `engine.backend_version` must
+  be `0.31.0` or `0.32.0`, and every group must declare `prefix_cacheable` and
+  `transfer_bytes_per_block`. A runtime probe import records both, except
+  `prefix_cacheable` for a `SlidingWindowMLASpec` group. A profile with such a
+  group cannot run P/D, even after a re-import. P/D moves whole blocks of
+  full-attention groups, the last blocks of window groups and one block of
+  each state group. The prefill of a model with recurrent state layers stops
+  one token short, and the decode worker recomputes that token. The prefill
+  of a one-token prompt computes that token, and the decode worker computes
+  it again. A `state` group with `prefix_cacheable: true` marks such layers.
+  [KV transfer](kv-transfer.md) gives the transferred bytes.
+
+  As in vLLM, a decode worker makes two tests to reserve a transferred
+  request. Its whole prompt must fit the free capacity. Its transferred blocks
+  must also leave free what the first steps of the other transferred requests
+  in flight still take. A request is in flight from its reservation until its
+  first step allocates. vLLM also keeps free what a local prefill in progress
+  still needs, such as the recompute of a preempted request, but replay does
+  not. For a sliding-window group, vLLM applies its admission cap to what a
+  first step takes, and replay counts every block of that step.
+
+  A decode worker prices a recompute after a preemption at 0 ms, with or
+  without prefix caching. So a request can preempt itself twice at one time,
+  at the same point of its sequence. Replay then compares the pool at both
+  times: the number of blocks in use, the number of cached blocks and the set
+  of cached keys. If all of them are the same, replay waits for the next
+  event. vLLM repeats that recompute until a transfer finishes.
+
+  Each worker can run prefix caching under the conditions above. A decode
+  worker with prefix caching takes its full-attention hit as the local prefix.
+  vLLM's NIXL connector does the same for a model with recurrent state layers.
+  For a profile without such layers vLLM takes the hit that every group agrees
+  on, and replay still takes the full-attention hit.
+  The hit stops before the last prompt token and ends on a full-attention block
+  boundary. If that hit covers all transferred tokens but not their state, vLLM
+  computes the prompt again from the hit that every group agrees on. Replay
+  computes one token. The decode worker keeps the cached blocks of that hit and
+  takes new blocks for the rest. The other groups get no hit, and their blocks
+  arrive with the transfer.
+
+  The known differences above also apply to prefill and decode workers with
+  prefix caching. A decode worker also differs from vLLM in these ways:
+
+  - Replay caches no output-token blocks, so in a multi-turn run a decode
+    worker's hit can be shorter than in vLLM. This also holds with a state
+    group, because the decode worker's hit reads only the full-attention
+    groups.
+  - vLLM also looks up each other group's own hit. If a state group's own
+    hit is shorter than the full-attention hit and no request holds its
+    cached block, vLLM's admission check counts that block. For
+    GLM-5.3-Flash, vLLM then drops the block without holding it. Replay gives
+    the group no hit and does not count the block. So replay's admission
+    check can need one block less for each such state group. vLLM keeps a
+    sliding-window group's cached hit blocks inside the window. Replay takes
+    new blocks there, so its block count there is equal or higher.
+  - When another group's hit is deeper than the full-attention hit, vLLM
+    falls back to the hit that every group agrees on. That needs a
+    full-attention block that was evicted while the other group's block
+    stayed cached. Replay keeps the full-attention hit, so it can transfer
+    fewer full-attention blocks than vLLM.
 
 - **Belady eviction.** The native ReplaySpec field
   `engine.kv_eviction_policy: belady` evicts the block whose next use in the

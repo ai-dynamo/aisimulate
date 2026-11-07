@@ -182,8 +182,9 @@ linear-attention layers. It has no `sliding_window`, and no other kind accepts
 Each group can also hold four optional fields from the runtime probe import.
 A profile imported before these fields existed has none of them, and an absent
 field is left out of the serialized group. Sizing does not read them. Grouped
-prefix caching reads `prefix_cacheable` and the two checkpoint fields. Replay
-does not read `transfer_bytes_per_block` yet.
+prefix caching reads `prefix_cacheable` and the two checkpoint fields. The
+grouped P/D transfer rules read `prefix_cacheable` and
+`transfer_bytes_per_block`.
 
 - `prefix_cacheable` tells whether vLLM's manager for the group takes part in
   prefix caching. A ring spec does not. A vLLM 0.31.0 import writes it for
@@ -258,12 +259,15 @@ legacy Rust scalar `KvCacheEstimate` transport reject grouped profiles; use the
 groups and shared byte budget instead. Existing complete linear declarations
 keep their budget calculation and serialized shape.
 
-Grouped native execution supports cold or prefix-cached aggregated vLLM,
-PP1/CP1, HBM-only cache and non-speculative decoding. Prefix caching needs
-runtime probe evidence from vLLM 0.31.0 or 0.32.0 and equal `page_size_bytes`
-across groups. [Replay KV cache](../replay/engine/kv-cache.md#other-cache-modes)
-lists the conditions. Host/G3 offload, disaggregation and fixed scalar cache
-capacity are rejected. With prefix caching off, allocation is atomic across all
+Grouped native execution supports aggregated and P/D vLLM, cold or
+prefix-cached, PP1/CP1, HBM-only cache and non-speculative decoding. Prefix
+caching needs runtime probe evidence from vLLM 0.31.0 or 0.32.0 and equal
+`page_size_bytes` across groups. P/D needs vLLM 0.31.0 or 0.32.0 and the
+probe's `prefix_cacheable` and `transfer_bytes_per_block` on every group. A P/D
+pair needs equal tensor parallelism and identical cache groups.
+[Replay KV cache](../replay/engine/kv-cache.md#other-cache-modes) lists the
+conditions. Host/G3 offload and fixed scalar cache capacity are rejected. With
+prefix caching off, allocation is atomic across all
 groups against one shared rank-local byte budget. A window
 of `W` keeps the blocks covering the last `W - 1` computed tokens and all tokens
 scheduled for the next forward. Expired completed pages are evicted before
