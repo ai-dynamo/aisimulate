@@ -50,8 +50,7 @@ from aisimulate.fpm_contract import (
 from .config import FPM_KV_WARMUP_DEFAULTS, with_kv_warmup_defaults
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
-from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
-from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
+from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS, MEMORY_SUPPORTED_VERSIONS
 from .types import KVWARM_STRATEGIES
 
 logger = logging.getLogger(__name__)
@@ -138,7 +137,7 @@ def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
     return (
         deployment is not None
         and deployment.resources.memory_source == "pending"
-        and getattr(plan, "runtime_backend_version", None) == MEMORY_OBSERVER_VERSION
+        and getattr(plan, "runtime_backend_version", None) in MEMORY_SUPPORTED_VERSIONS
     )
 
 
