@@ -394,10 +394,6 @@ from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 class TestCollectGdnImportSurface:
-    def test_imports_cleanly_against_0240_shaped_vllm(self, monkeypatch):
-        _install_fake_vllm(monkeypatch, VLLM_0240_GDN_SURFACE)
-        _import_fresh(monkeypatch, _COLLECT_GDN_DOTTED, _COLLECT_GDN_PATH)
-
     def test_imports_cleanly_against_0271_shaped_vllm(self, monkeypatch):
         _install_fake_vllm(monkeypatch, VLLM_0271_GDN_SURFACE)
         _import_fresh(monkeypatch, _COLLECT_GDN_DOTTED, _COLLECT_GDN_PATH)

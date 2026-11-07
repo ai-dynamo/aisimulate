@@ -123,8 +123,8 @@ def _gate_namespace():
     ("model_name", "version", "audited"),
     [
         ("moonshotai/Kimi-K3", "0.5.16", False),
-        ("moonshotai/Kimi-K3", "0.5.21", True),
-        ("moonshotai/Kimi-K3", "0.5.20", False),
+        ("moonshotai/Kimi-K3", "0.5.23", True),
+        ("moonshotai/Kimi-K3", "0.5.21", False),
         ("zai-org/GLM-5.3-Flash", "0.5.21", False),
         ("zai-org/GLM-5.3-Flash", "0.5.20", False),  # 0.5.20 lane retired 2026-10-30
         ("zai-org/GLM-5.3-Flash", "0.5.16", False),

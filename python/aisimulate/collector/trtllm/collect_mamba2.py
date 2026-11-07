@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-__compat__ = "trtllm==1.3.0rc29"
+__compat__ = "trtllm==1.4.0rc2"
 
 """
 Mamba2 SSM Collector for AIConfigurator.
@@ -209,8 +209,8 @@ def run_mamba2_context_benchmark(
     This benchmarks:
     1. causal_conv1d_fn - Conv1D for context phase
     2. mamba_chunk_scan_combined - SSM scan (the one entry point serving calls;
-       it routes to FlashInfer's SSD on SM100-family parts itself,
-       ssd_combined.py:469-497)
+       Triton SSD on every SM by default, FlashInfer's SSD only under
+       TRTLLM_USE_MAMBA_FI_SSD=1: ssd_combined.py:51-70, 469-497)
 
     Together these represent the core compute of a Mamba2 layer
     (excluding in_proj/out_proj GEMMs which use existing GEMM model).

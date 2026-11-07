@@ -37,7 +37,7 @@ The in_proj/out_proj/gate GEMMs are standard linear layers modeled by the
 existing GEMM infrastructure. Tensor constructions mirror the branch's own
 tests (tests/models/kimi_k3/test_kda.py).
 
-GLM-5.3-Flash (Glm5NextForConditionalGeneration, stock vLLM 0.31.0) rows
+GLM-5.3-Flash (Glm5NextForConditionalGeneration, stock vLLM 0.32.0) rows
 are routed by model path to the glm5next layer's own dispatch (see the GLM
 section; vllm/models/glm5next/common/kda.py): one merged q|k|v conv ("causal_conv1d_fn" / "causal_conv1d_update"),
 the prefill core ("flashkda_fwd" = state gather + FlashKDA + state scatter,
@@ -48,16 +48,16 @@ Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
 
-# The kda family runs on 0.31.0 (framework_manifest.yaml family pin)
+# The kda family runs on 0.32.0 (framework_manifest.yaml family pin)
 # for both architectures. For Kimi-K3, the DS-layout probe
 # (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
 # fused_kda_decode for the non-spec decode, and the packed conv-update +
 # recurrence pair is measured alongside as the spec-decode serving path.
-# GLM-5.3-Flash runs on stock 0.31.0 (no overlay). Each KDA architecture is
+# GLM-5.3-Flash runs on stock 0.32.0 (no overlay). Each KDA architecture is
 # additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
 # KdaRuntimeNotAuditedError otherwise.
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "vllm==0.31.0"
+__compat__ = "vllm==0.32.0"
 
 import gc
 import os
@@ -143,10 +143,10 @@ def _log(common, latency_ms, kernel_source, perf_filename, vllm_version, device,
 def _resolve_prefill_kernel(dtype: torch.dtype):
     """Mirror serving's resolve_kda_prefill_backend on this device: FlashKDA
     when supported AND importable, else the Triton chunk kernel
-    (vllm/models/kimi_k3/nvidia/kda.py:455-495 resolve_kda_prefill_backend;
+    (vllm/models/kimi_k3/nvidia/kda.py:463-502 resolve_kda_prefill_backend;
     backend "auto" never selects FlashInfer, so on SM90 the choice is FlashKDA
     or Triton). 0.30 added the recurrent-state dtype to the probe: serving
-    passes get_state_dtype()[1] (kda.py:665), which
+    passes get_state_dtype()[1] (kda.py:775-776), which
     MambaStateDtypeCalculator.kda_state_dtype resolves to float32 for the
     default mamba_ssm_cache_dtype "auto" — the dtype this collector's
     init_state uses below."""
@@ -271,12 +271,12 @@ def run_kda_context_benchmark(
                 # function, matching KimiK3KDAMetadataBuilder's
                 # split_decodes_and_prefills(..., decode_threshold=1).
                 # Pinned serving provenance at vLLM v0.27.0:
-                # - kda_metadata.py:261-279 derives num_spec_decodes and all
+                # - kda_metadata.py:392-447 derives num_spec_decodes and all
                 #   prefill/decode request and token counts.
-                # - kda_metadata.py:403-418 computes nums_dict, batch_ptr, and
+                # - kda_metadata.py:605-618 computes nums_dict, batch_ptr, and
                 #   token_chunk_offset_ptr from non_spec_query_start_loc_cpu
                 #   only when num_prefills > 0.
-                # - kda_metadata.py:466-485 constructs KimiK3KDAMetadata with
+                # - kda_metadata.py:705-736 constructs KimiK3KDAMetadata with
                 #   those fields and num_actual_tokens=m.num_actual_tokens.
                 nums_dict, batch_ptr, token_chunk_offset_ptr = compute_causal_conv1d_metadata(
                     torch.arange(0, nt + 1, seq_len, dtype=torch.int32),
@@ -344,10 +344,10 @@ def run_kda_context_benchmark(
                     import inspect
 
                     # vLLM 0.29.0 FlashKDA writes into caller-owned buffers taken
-                    # from the engine workspace (kda.py:536-547 sizes them:
+                    # from the engine workspace (kda.py:765-779 sizes them:
                     # out (1,T,H,D) model dtype, final_state (N,H,D,D) fp32,
                     # workspace uint8 of _flashkda_C.get_workspace_size(T,H,N);
-                    # the non-checkpoint prefill call is kda.py:939-953). The
+                    # the non-checkpoint prefill call is kda.py:1247-1260). The
                     # kimi-k3 preview build returned them instead — dispatch on
                     # the signature so both builds run the same kernel.
                     if "out" in inspect.signature(flashkda_prefill).parameters:
@@ -484,7 +484,7 @@ def run_kda_generation_benchmark(
 
     # 0.30 added the recurrent-state dtype to the decode probe as well: serving
     # resolves it from get_state_dtype()[1] (vllm/models/kimi_k3/nvidia/kda.py
-    # 665-680, resolve_kda_decode_backend -> is_fused_kda_decode_supported
+    # 687-696, resolve_kda_decode_backend -> is_fused_kda_decode_supported
     # :157-178), float32 for the default mamba_ssm_cache_dtype "auto" — the dtype
     # of this collector's recurrent state below.
     decode_paths = _decode_paths()
@@ -784,7 +784,7 @@ def run_kda_verify_benchmark(
 
 
 # ---------------------------------------------------------------------------
-# GLM-5.3-Flash (Glm5NextForConditionalGeneration) KDA — stock vLLM 0.31.0.
+# GLM-5.3-Flash (Glm5NextForConditionalGeneration) KDA — stock vLLM 0.32.0.
 #
 # vLLM serves GLM-5.3-Flash KDA through its own layer,
 # vllm/models/glm5next/common/kda.py::Glm5NextLinearAttention (a
@@ -793,58 +793,57 @@ def run_kda_verify_benchmark(
 # glm5next FLA fork of fused_recurrent_kda (in-kernel bounded gate) for
 # decode, and gather/scatter of the recurrent state around the prefill core.
 # On CUDA the layer takes chunk_kda_with_fused_gate / fused_recurrent_kda from
-# vllm/models/glm5next/nvidia/ops/third_party/kda (common/kda.py:42-51).
-# Serving routing: model_executor/models/registry.py:428-431 ->
-# glm5next/__init__.py -> common/model.py:88,303-308 (KDA layers).
-# Below, "kda.py" = vllm/models/glm5next/common/kda.py (db9527a4);
+# vllm/models/glm5next/nvidia/ops/third_party/kda (common/kda.py:52-61).
+# Serving routing: model_executor/models/registry.py:423-426 ->
+# glm5next/__init__.py -> common/model.py:95,370-375 (KDA layers).
+# Below, "kda.py" = vllm/models/glm5next/common/kda.py (v0.32.0, 5df63a72);
 # gdn_attn.py / mamba_utils.py are under vllm/v1/attention/backends/ and
-# vllm/model_executor/layers/mamba/ @v0.31.0.
-#   - kda.py:127-150  _resolve_kda_prefill_backend: FlashKDA on CUDA SM9x/10x/12x
+# vllm/model_executor/layers/mamba/ @v0.32.0.
+#   - kda.py:137-160  _resolve_kda_prefill_backend: FlashKDA on CUDA SM9x/10x/12x
 #                     (SM100 and SM103 both have major 10) for bf16 + head_dim
 #                     128 + bounded gate, else Triton chunk_kda_with_fused_gate
-#                     ("auto" is the serving default, kda.py:321-329). The
+#                     ("auto" is the serving default, kda.py:343-351). The
 #                     collector asks this same function.
-#   - kda.py:247-273,505-515  q/k/v conv weights are fp32 params merged once
+#   - kda.py:269-295,558-568  q/k/v conv weights are fp32 params merged once
 #                     into one [3P, d_conv] weight; bias is None (bias=False).
-#   - kda.py:493-497  conv state is (…, dim, width-1); SD layout is a
+#   - kda.py:546-550  conv state is (…, dim, width-1); SD layout is a
 #                     transposed view of the pool (is_conv_state_dim_first).
-#   - kda.py:569-582  prefill: ONE causal_conv1d_fn over q|k|v with the
+#   - kda.py:623-636  prefill: ONE causal_conv1d_fn over q|k|v with the
 #                     step GDNAttentionMetadata (metadata=...).
-#   - kda.py:644-692  prefill core: gather_initial_states -> FlashKDA fwd
-#                     (kda.py:355-398, .contiguous() copies of q/k/v/g, raw
+#   - kda.py:698-750  prefill core: gather_initial_states -> FlashKDA fwd
+#                     (kda.py:385-451, .contiguous() copies of q/k/v/g, raw
 #                     bf16 beta, non-spec output written into the layer
-#                     buffer kda.py:655) or chunk_kda_with_fused_gate ->
+#                     buffer kda.py:709) or chunk_kda_with_fused_gate ->
 #                     scatter_states.
-#   - kda.py:583-596,693-720  decode: ONE causal_conv1d_update over q|k|v, then
+#   - kda.py:637-650,751-778  decode: ONE causal_conv1d_update over q|k|v, then
 #                     glm5next fused_recurrent_kda(compute_gate=True,
 #                     sigmoid_beta=True, lower_bound) writing into the layer
 #                     output buffer.
-#   - gdn_attn.py:268-296  non-spec split: split_decodes_and_prefills(
+#   - gdn_attn.py:306-334  non-spec split: split_decodes_and_prefills(
 #                     decode_threshold=1, treat_short_extends_as_decodes=False)
 #                     with is_prefilling = "no prior state" (first chunk). A
 #                     one-token request WITH a cached prefix stays a decode;
 #                     every row here models a cached prefix.
-#   - gdn_attn.py:450-468  has_initial_state = num_computed_tokens > 0 and the
+#   - gdn_attn.py:505-521  has_initial_state = num_computed_tokens > 0 and the
 #                     causal-conv metadata from the CPU query_start_loc.
-#   - mamba_utils.py:133-149,303-326 via common/model.py:976-1002  conv
+#   - mamba_utils.py:133-149,304-327 via common/model.py:1089-1117  conv
 #                     state bf16 (model dtype), recurrent state fp32
 #                     (mamba_ssm_cache_dtype auto), shapes (3P/tp, d_conv-1) /
 #                     (H/tp, D, D).
 #
-# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
-# ced6857a). glm5next/nvidia/kda.py moved to glm5next/common/kda.py
-# byte-identical (sha256 37745b45..., so every kda.py line above is unchanged);
-# nvidia/ops/third_party/kda/{kernels,fused_recurrent}.py differ only in
-# docstrings; causal_conv1d.py (docstrings only), gather_initial_states.py,
-# scatter_states.py, compute_causal_conv1d_metadata and the
-# kda_state_dtype/kda_state_shape bodies are unchanged (kda_state_shape moved
-# :298-321 -> :303-326). gdn_attn.py changed: the non-spec split now uses
-# is_prefilling (:268-296, was :249-261 with plain decode_threshold=1) and
-# has_initial_state moved :399-417 -> :450-468 (identical). The FlashKDA
-# library moved b59532f1 -> 17a037d9 (cmake/external_projects/flashkda.cmake:16;
-# fp32 recurrent state between tiles, V-split chosen from the SM count); the
-# torch op schema (csrc/flashkda_registration.cpp) is byte-identical, so the
-# fwd/get_workspace_size calls below are unchanged.
+# 0.32.0 audit (source-only: v0.32.0 == 5df63a72 vs v0.31.0 db9527a4). Every
+# vLLM import and signature this module uses is unchanged, as are FlashKDA
+# (GIT_TAG 17a037d9), fused_kda_decode, the Kimi fused_recurrent kernels,
+# causal_conv1d and the three backend resolvers. Changed: the Triton chunk kernels
+# (Kimi and GLM) moved off tl.make_block_ptr, so SM89 prefill-core rows are
+# re-collected; the GLM fused_recurrent_kda grid is now (N*HV, NV, NK)
+# (third_party/kda/kernels.py:100), so its decode rows are re-collected and large
+# batch x head counts launch. FlashInfer's packed fused speculative KDA
+# (kimi_k3/nvidia/kda.py:219-283) needs flashinfer.packed_fused_kda_decode, which the
+# pinned FlashInfer 0.7.0.post1 lacks (first in 0.7.1), so serving's spec decode
+# is unchanged on the stock image. Deviation: with prefix caching
+# (mamba_cache_mode="align") GLM's FlashKDA prefill also exports checkpoint states
+# (kda.py:406-451); these rows time the non-checkpoint form.
 #
 # Row boundary: each row times the kernels between the projections and the
 # output norm. The fused
@@ -870,8 +869,8 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.31.0",
-    GLM5_NEXT_KDA_ARCHITECTURE: "vllm==0.31.0",
+    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.32.0",
+    GLM5_NEXT_KDA_ARCHITECTURE: "vllm==0.32.0",
 }
 
 
@@ -912,8 +911,8 @@ def _glm5_next_common(phase, batch_size, seq_len, d_model, d_conv, nh, hd, model
 
 def _glm5_next_state_pool(num_slots, nh, hd, d_conv, device):
     """Allocate the per-layer KDA pool exactly like serving: shapes/dtypes from
-    the framework's own calculators (mamba_utils.py:133-149,303-326) and the
-    conv-state orientation from is_conv_state_dim_first (kda.py:493-497).
+    the framework's own calculators (mamba_utils.py:133-149,304-327) and the
+    conv-state orientation from is_conv_state_dim_first (kda.py:546-550).
     Both states are filled with non-zero values: rows model requests whose
     prefix is already cached (has_initial_state=True)."""
     from vllm.model_executor.layers.mamba.mamba_utils import (
@@ -931,8 +930,8 @@ def _glm5_next_state_pool(num_slots, nh, hd, d_conv, device):
 
 
 def _glm5_next_layer_params(nh, hd, d_conv, device):
-    """fp32 merged conv weight [3P, d_conv] (kda.py:247-273,505-515), A_log
-    [1,1,H,1] and dt_bias [P] fp32 (kda.py:241-243,279-282)."""
+    """fp32 merged conv weight [3P, d_conv] (kda.py:269-295,558-568), A_log
+    [1,1,H,1] and dt_bias [P] fp32 (kda.py:263-265,301-304)."""
     proj = nh * hd
     conv_weight = torch.randn(3 * proj, d_conv, dtype=torch.float32, device=device).contiguous()
     a_log = torch.zeros(1, 1, nh, 1, dtype=torch.float32, device=device)
@@ -941,8 +940,8 @@ def _glm5_next_layer_params(nh, hd, d_conv, device):
 
 
 def _glm5_next_projected(num_tokens, nh, hd, device):
-    """in_proj_qkvbfg_a output [T, 3P + H + 2D] (kda.py:214-232) and its
-    serving splits (kda.py:407-423): qkv [T, 3P] and raw bf16 beta [1, T, H]
+    """in_proj_qkvbfg_a output [T, 3P + H + 2D] (kda.py:236-254) and its
+    serving splits (kda.py:460-476): qkv [T, 3P] and raw bf16 beta [1, T, H]
     are strided column views of the one GEMM output."""
     proj = nh * hd
     projected = torch.randn(num_tokens, 3 * proj + nh + 2 * hd, dtype=torch.bfloat16, device=device)
@@ -980,11 +979,11 @@ def run_glm5_next_kda_context(
     torch.cuda.set_device(device)
     dtype = torch.bfloat16
     proj = nh * hd
-    # Serving selection (kda.py:321-329 -> :127-150) with the default "auto".
+    # Serving selection (kda.py:343-351 -> :127-150) with the default "auto".
     prefill_backend = _resolve_kda_prefill_backend("auto", hd, dtype, GLM5_NEXT_KDA_LOWER_BOUND)
     prefill_source = {"flashkda": "flashkda_fwd", "triton": "chunk_kda_with_fused_gate"}[prefill_backend]
     if prefill_backend == "flashkda":
-        import vllm._flashkda_C  # noqa: F401  (kda.py:333-334 imports it at layer init)
+        import vllm._flashkda_C  # noqa: F401  (kda.py:356-357 imports it at layer init)
     conv_weight, a_log, dt_bias = _glm5_next_layer_params(nh, hd, d_conv, device)
     ok = err = 0
     failures: list[str] = []
@@ -1001,10 +1000,10 @@ def run_glm5_next_kda_context(
                 has_init = torch.ones(batch_size, dtype=torch.bool, device=device)
                 conv_state, recurrent_state = _glm5_next_state_pool(batch_size, nh, hd, d_conv, device)
                 qkv, beta = _glm5_next_projected(nt, nh, hd, device)
-                # f_b_proj output reshaped to [1, T, H, D] (kda.py:424-425).
+                # f_b_proj output reshaped to [1, T, H, D] (kda.py:477-478).
                 g1 = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 # Pure-prefill GDNAttentionMetadata as populated by
-                # gdn_attn.py:268-305 (no spec) and :450-468 (prefill fields).
+                # gdn_attn.py:306-343 (no spec) and :450-468 (prefill fields).
                 nums_dict, batch_ptr, token_chunk_offset_ptr = compute_causal_conv1d_metadata(cu_cpu, device=device)
                 conv_metadata = GDNAttentionMetadata(
                     num_prefills=batch_size,
@@ -1024,7 +1023,7 @@ def run_glm5_next_kda_context(
                 common = _glm5_next_common("context", batch_size, seq_len, d_model, d_conv, nh, hd, model_name)
 
                 def run_conv():
-                    # kda.py:571-581
+                    # kda.py:625-635
                     return causal_conv1d_fn(
                         qkv.transpose(0, 1),
                         conv_weight,
@@ -1055,7 +1054,7 @@ def run_glm5_next_kda_context(
                 core_out = torch.empty(1, nt, nh, hd, dtype=dtype, device=device)
 
                 if prefill_backend == "flashkda":
-                    # kda.py:336-353 workspace sizing; :372-398 the fwd call.
+                    # kda.py:359-383 workspace sizing; :372-398 the fwd call.
                     workspace = torch.empty(
                         torch.ops._flashkda_C.get_workspace_size(nt, nh, batch_size), dtype=torch.uint8, device=device
                     )
@@ -1153,11 +1152,11 @@ def run_glm5_next_kda_decode(
     device="cuda:0",
 ):
     """GLM-5.3-Flash non-spec decode: merged q|k|v causal_conv1d_update row and
-    the glm5next fused_recurrent_kda row (kda.py:583-596,693-720).
+    the glm5next fused_recurrent_kda row (kda.py:637-650,751-778).
 
     ``row_phase`` stays ``context`` for seq_len=1 cells of the shared context
     grid; with a cached prefix vLLM classifies them as decodes
-    (gdn_attn.py:268-291)."""
+    (gdn_attn.py:306-329)."""
     if row_phase not in {"context", "generation"}:
         raise ValueError(f"Unsupported GLM-5.3-Flash KDA decode row phase: {row_phase}")
 
@@ -1182,12 +1181,12 @@ def run_glm5_next_kda_decode(
             qkv, beta = _glm5_next_projected(nb, nh, hd, device)
             g1 = torch.randn(1, nb, nh, hd, dtype=dtype, device=device)
             # Layer output buffer [1, T, H, D] the decode kernel writes into
-            # (kda.py:431-435,607-611,700-701).
+            # (kda.py:484-488,661-665,758-759).
             core_out = torch.empty(1, nb, nh, hd, dtype=dtype, device=device)
             common = _glm5_next_common(row_phase, nb, 1, d_model, d_conv, nh, hd, model_name)
 
             def run_conv_update():
-                # kda.py:588-595
+                # kda.py:642-649
                 return causal_conv1d_update(
                     qkv,
                     conv_state,
@@ -1214,17 +1213,10 @@ def run_glm5_next_kda_decode(
             q, k, v = (x.reshape(1, -1, nh, hd) for x in conv_out.split(proj, dim=-1))
 
             def run_recurrent():
-                # kda.py:702-720
-                # FIXME(kernel-limit): unverified claim from a GB300 smoke run
-                # (TP1 shard, 64 local heads): batch 1024 fails with
-                # "Triton Error [CUDA]: invalid argument". fused_recurrent_kda
-                # launches grid (NK, NV, N * HV)
-                # (glm5next/nvidia/ops/third_party/kda/kernels.py:98),
-                # so N * HV = 65536 exceeds the CUDA grid z limit (65535);
-                # the packed-decode sibling splits its grid for this case
-                # (fused_recurrent.py:510-511) and this one does not. Serving
-                # would hit the same launch at >= 1024 decode requests on TP1.
-                # The case fails into the classified log; no guard here.
+                # kda.py:760-778
+                # grid (N*HV, NV, NK) since 0.32.0 (third_party/kda/kernels.py:100):
+                # batch x local heads beyond 65535 launch, so 0.31's batch-1024 failure
+                # on a 64-head TP1 shard no longer applies.
                 fused_recurrent_kda(
                     q=q,
                     k=k,
@@ -1279,7 +1271,7 @@ def run_glm5_next_kda_torch(
 ):
     """Phase router for GLM-5.3-Flash KDA rows (called from run_kda_torch)."""
     if num_k_heads != num_v_heads or head_k_dim != head_v_dim:
-        raise ValueError("GLM-5.3-Flash KDA has symmetric q/k/v heads (kda.py:196-203)")
+        raise ValueError("GLM-5.3-Flash KDA has symmetric q/k/v heads (kda.py:218-225)")
     shape = dict(d_model=d_model, d_conv=d_conv, nh=num_v_heads, hd=head_v_dim)
     if phase == "context":
         if not seq_len_list:
@@ -1297,7 +1289,7 @@ def run_glm5_next_kda_torch(
         run_glm5_next_kda_decode(batch_size_list=batch_size_list, **shape, **kwargs)
     elif phase == "verify":
         # GLM-5.3-Flash is modeled with nextn=0 (MTP off); its spec-decode
-        # path (kda.py:549-565,612-636) has not been audited for collection.
+        # path (kda.py:602-618,666-690) has not been audited for collection.
         raise NotImplementedError(
             "GLM-5.3-Flash KDA verify (MTP target-verify) is not collected: the GLM "
             "baseline runs without speculative decoding"
@@ -1364,8 +1356,8 @@ def run_kda_torch(
             raise ValueError(f"vLLM KDA context sequence lengths must be positive: {seq_len_list}")
 
         # vLLM 0.27.0 classifies one-token non-spec batches as pure decodes
-        # (kda_metadata.py:274-278) and invokes causal_conv1d_update plus
-        # fused_recurrent_kda_packed_decode (kda.py:733-760). Keep the shared
+        # (kda_metadata.py:419-447) and invokes causal_conv1d_update plus
+        # fused_recurrent_kda_packed_decode (kda.py:1321-1356). Keep the shared
         # context grid identity, but dispatch that cell through the serving
         # decode kernels instead of manufacturing prefill metadata.
         if 1 in seq_len_list:

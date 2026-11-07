@@ -10,76 +10,28 @@ recurrent kernel. Both phases use the production packed-QKV convolution width.
 Input/output projection GEMMs remain covered by the GEMM collector.
 """
 
-# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones).
-# Compatible unchanged: ChunkGatedDeltaRule.__init__ / _resolve_gdn_prefill_backend
-# (byte-identical body, incl. the flashinfer/cutedsl/triton selection logic;
-# the only diff is 0.24.0's extra nvidia-cutlass-dsl-libs-cu13 disk-hash gate
-# on the SM100+ flashinfer branch, an upstream-packaging workaround vLLM
-# itself removed by 0.27.1 -- qwen_gdn_linear_attn.py:91-211 vs
-# 85-133 -- this changes only which value `.gdn_prefill_backend` may
-# resolve to in a given environment, never this collector's code, and the
-# collector already reads that value dynamically for kernel_source);
-# .gdn_prefill_backend attribute; causal_conv1d_fn / causal_conv1d_update
-# (byte-identical signatures, path unmoved at mamba/ops/causal_conv1d.py;
-# 0.27.1 adds one new trailing optional `out=None` kwarg this collector does
-# not pass); compute_causal_conv1d_metadata (byte-identical body,
-# v1/attention/backends/utils.py:810-856 -> :838-884);
-# GDNAttentionMetadata (byte-identical dataclass, all 10 fields this
-# collector passes unchanged, v1/attention/backends/gdn_attn.py:42-79 both
-# versions); fused_recurrent_gated_delta_rule_packed_decode (byte-identical
-# signature and body, incl. the grid=(NV, B*HV) CUDA grid-y launch at the
-# same line, fused_recurrent.py:449 both versions);
-# VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE (unchanged, default True,
-# envs.py:115 -> :124); the Qwen3.5 mamba_ssm_dtype=float32
-# recurrent-state pin (unchanged, model_executor/models/config.py:608-625
-# -> :804-821). ONE incompatible import path found and fixed
-# below: vLLM 0.27.1 relocated the whole `vllm.model_executor.layers.fla`
-# package to the new top-level `vllm.third_party.flash_linear_attention`
-# package (qwen_gdn_linear_attn.py's own imports switched the same way at
-# 0.27.1); the only symbol this collector touches there,
-# fused_recurrent_gated_delta_rule_packed_decode, is byte-identical at the
-# new location. Fixed with a version-conditional import mirroring the sglang
-# collectors' established try/except pattern. The SM120 FIXME below (chunk.py
-# -> chunk_delta_h.py -> index.py IMA) has its citation paths updated for the
-# relocation (call chain re-verified present and unchanged at 0.27.1); the
-# underlying kernel-limit claim itself was NOT re-tested on hardware at
-# 0.27.1 (no GPU in this environment).
-# 0.25.0/0.25.1/0.26.0/0.27.0 stay excluded: never verified, and
-# version_resolver's __compat__ grammar (AND-of-comparators only, no OR) has
-# no way to express a true 2-point set either -- this bounded range with the
-# four untested point releases carved out via != is the closest expressible
-# approximation, NOT an exact {0.24.0, 0.27.1} gate: `_check_compat`'s `!=`
-# only excludes the literal point version, so e.g. 0.25.0.post1 or 0.26.0rc1
-# still satisfy this specifier (see
-# tests/unit/collector/test_version_resolver.py for the probed semantics).
-# This is an accepted, narrow gap: the framework_manifest digest-pinned gate
-# is the true version enforcement upstream and only ever supplies exactly
-# 0.24.0 or 0.27.1 in a sanctioned run, so the leak is unreachable there.
-# B200 0.25.0 runtime qualification against installed dd10e03f9 (job
-# 1968047). Existing framework construction/dispatch is unchanged. Invalid
-# model/quant shapes continue to raise and remain recorded failures; this is
-# API compatibility, not a claim that every Cartesian shape is supported.
-__compat__ = "vllm==0.30.0"
+# Audited against vLLM v0.32.0 (from v0.30.0): every import and all ten
+# GDNAttentionMetadata fields this collector passes are unchanged. Prefill backend
+# selection is unchanged on CUDA (SM90 FlashInfer; SM100/103/120 FlashInfer when
+# head_k_dim == 128 on CUDA 13; SM89 Triton/FLA; qwen_gdn_linear_attn.py:93-195),
+# but FlashInfer 0.7.0.post1 rewrote its GDN prefill kernels and the FLA Triton
+# chunk kernels moved off tl.make_block_ptr, so prefill-core rows are re-collected.
+# Earlier audits are git history.
+__compat__ = "vllm==0.32.0"
 
 import gc
 import os
 from types import SimpleNamespace
 
 import torch
-from vllm.config import VllmConfig, set_current_vllm_config
-
-try:
-    from vllm.third_party.flash_linear_attention.ops import (
-        fused_recurrent_gated_delta_rule_packed_decode,
-    )
-except ImportError:
-    from vllm.model_executor.layers.fla.ops import (
-        fused_recurrent_gated_delta_rule_packed_decode,
-    )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
+from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import ChunkGatedDeltaRule
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
+from vllm.third_party.flash_linear_attention.ops import (
+    fused_recurrent_gated_delta_rule_packed_decode,
+)
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 from vllm.v1.attention.backends.utils import compute_causal_conv1d_metadata
 from vllm.version import __version__ as vllm_version
@@ -168,8 +120,8 @@ def run_gdn_context_benchmark(
             # it takes the non-serving branch, which performs D2H/NumPy/list
             # setup inside every timed invocation. Keep the collector on the
             # pinned vLLM 0.24.0 serving path:
-            # vllm/v1/attention/backends/gdn_attn.py:394-401 and
-            # vllm/v1/attention/backends/utils.py:810-856 @ ee0da84ab.
+            # vllm/v1/attention/backends/gdn_attn.py:505-516 and
+            # vllm/v1/attention/backends/utils.py:1066-1113 @ ee0da84ab.
             nums_dict, batch_ptr, token_chunk_offset_ptr = compute_causal_conv1d_metadata(
                 query_start_loc_cpu,
                 device=device,
@@ -193,7 +145,7 @@ def run_gdn_context_benchmark(
             # Serving stores conv state in the SD layout and hands the
             # stride-aware conv kernels a transposed (dim, width-1) view
             # (vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
-            # 1311-1314); match its strides.
+            # 1393-1397); match its strides.
             conv_state = torch.zeros(
                 batch_size + 1,
                 d_conv - 1,
@@ -293,7 +245,7 @@ def run_gdn_context_benchmark(
                 )
             )
             # FP32 recurrent state matches serving: Qwen3.5 checkpoints pin
-            # mamba_ssm_dtype=float32 (vllm/model_executor/models/config.py:603-628).
+            # mamba_ssm_dtype=float32 (vllm/model_executor/models/config.py:853-878).
             # Qwen3.5-only contract; revisit if other GDN models join.
             gdn_state = torch.zeros(
                 batch_size,
@@ -307,10 +259,10 @@ def run_gdn_context_benchmark(
             # FIXME(kernel-limit): on SM120, every GDN context group raises a
             # deterministic illegal memory access inside vLLM's chunked
             # gated-delta-rule prefill kernel (chunk.py:61 ->
-            # chunk_delta_h.py:347 -> index.py:34 prepare_chunk_offsets
+            # chunk_delta_h.py:309 -> index.py:36-40 prepare_chunk_offsets
             # same relative call chain and byte-identical
             # prepare_chunk_offsets body at chunk.py:61 ->
-            # chunk_delta_h.py:349 -> index.py:34 -- relocated from
+            # chunk_delta_h.py:309 -> index.py:36-40 -- relocated from
             # vllm.model_executor.layers.fla.ops to
             # vllm.third_party.flash_linear_attention.ops at 0.27.1,
             # re-verified present at both versions) at its
@@ -322,7 +274,7 @@ def run_gdn_context_benchmark(
             # isolation on a clean GPU, rows through 1.05M tokens recorded
             # first); the two smallest-model groups (0.8B, 2B) instead hit
             # device-capacity OOM at their largest sub-points on 46 GB.
-            # Generation passes apart from the grid-y limit below. Serving
+            # Generation passes. Serving
             # fails identically. NOT re-tested on hardware at 0.27.1 (no GPU
             # in this environment) -- the cited kernel chain is confirmed
             # present and source-unchanged, so the claim is not dangling, but
@@ -331,7 +283,8 @@ def run_gdn_context_benchmark(
             # RE-VERIFIED on hardware at 0.30.0, SM89 (L40, clean GPU, container per op):
             # a 40-case --shuffle sample of the gdn op failed 21 tasks, 17 of them CUDA faults
             # (9 illegal memory access + 8 SIGABRT) in this same chunked prefill at the large-token
-            # sub-points, 3 the grid-y limit below, 1 capacity OOM — the family is unchanged from 0.24.0.
+            # sub-points, 3 a grid-y guard this collector wrongly raised (the packed decode splits
+            # its grid above B*HV=65535, fused_recurrent.py:453-456), 1 capacity OOM.
             def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
                 chunk_gdn(
                     q=_q,
@@ -471,31 +424,14 @@ def run_gdn_generation_benchmark(
         gc.collect()
         torch.cuda.empty_cache()
 
-        # vLLM's packed recurrent kernel launches grid-y as
-        # batch_size * num_v_heads (`grid = (NV, B * HV)`,
-        # fused_recurrent.py:449 at BOTH pinned versions -- under
-        # vllm/model_executor/layers/fla/ops/ and under
-        # vllm/third_party/flash_linear_attention/ops/);
-        # CUDA limits grid-y to 65,535. Keep the valid convolution measurement
-        # above, then surface the unsupported recurrent point to Collector V2
-        # instead of silently dropping it.
-        if batch_size * num_v_heads > 65_535:
-            raise RuntimeError(
-                "vLLM packed recurrent GDN exceeds CUDA grid-y limit "
-                "(fused_recurrent.py:449 launches grid-y = batch * num_v_heads; "
-                "fla/ops/ @0.24.0, third_party/flash_linear_attention/ops/ @0.27.1): "
-                f"batch_size={batch_size}, num_v_heads={num_v_heads}, "
-                f"grid_y={batch_size * num_v_heads} > 65535"
-            )
-
         # The production non-spec decode fast path feeds packed convolution
         # output directly to this recurrent kernel: GDN decode routes to
         # _forward_core_decode_non_spec, which calls
         # fused_recurrent_gated_delta_rule_packed_decode with
         # scale=head_k_dim**-0.5 and use_qk_l2norm_in_kernel=True
-        # (vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:1286,
+        # (vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:1374,
         # 1684), gated by VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
-        # which defaults to True (vllm/envs.py:115).
+        # which defaults to True (vllm/envs.py:132).
         a = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
         b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
         # FP32 recurrent state matches serving (see the context-phase note).
