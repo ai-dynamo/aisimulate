@@ -1510,6 +1510,39 @@ def test_finalized_linear_runtime_profile_keeps_the_measured_block_size(tmp_path
     check_plan(resolved, target)
 
 
+def test_finalized_grouped_profile_with_prefix_caching_evidence_plans_and_recommends_with_it(tmp_path, capsys):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+    from aisimulate.sweeper import SweepResult
+    from aisimulate.sweeper.result import CandidateStatus
+
+    # The vLLM 0.31.0 records of the hybrid probe ran with prefix caching in align mode, and the import marks
+    # every cache group. Finalization keeps that evidence.
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, layout="mamba_hybrid")
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    resources = SupportRequest.from_yaml(target / "request.yaml").profile_deployment().resources
+    assert (resources.cache_layout, resources.runtime_memory.enable_prefix_caching) == ("grouped", True)
+    assert all(group.prefix_cacheable is not None for group in resources.cache_groups)
+    for name in ("predict/pilot.yaml", "recommend/pilot.yaml"):
+        worker = yaml.safe_load((target / name).read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["prefix_caching"] is True
+    # The synthetic timings measure 16-token prefills and decodes that read 8 or 32 tokens, so the pilot runs its
+    # planned engine with a request that they cover.
+    pilot = yaml.safe_load((target / "recommend/pilot.yaml").read_text())
+    pilot["traffic"]["source"].update(input_tokens=16, output_tokens=4)
+    path = tmp_path / "recommend-pilot.yaml"
+    path.write_text(yaml.safe_dump(pilot))
+    output = tmp_path / "recommendation"
+    assert cli.main(["recommend", "--config", str(path), "--output-dir", str(output), "--format", "json"]) == 0
+    capsys.readouterr()
+    # The sweeper's candidate rank carries the hash block and the vLLM version, so the Rust gate admits it.
+    result = SweepResult.from_json((output / "recommendation.json").read_text())
+    assert result.candidates
+    assert all(candidate.status is CandidateStatus.FEASIBLE for candidate in result.candidates)
+
+
 @pytest.mark.parametrize(
     "corruption",
     ["missing-observed-resources", "probe-not-a-dict", "observed-resources-not-a-dict", "missing-cache-groups"],

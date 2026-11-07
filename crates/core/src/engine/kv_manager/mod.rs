@@ -46,7 +46,10 @@ mod vllm_firewall_tests;
 pub(crate) use g1_manager::{
     DestinationReservation, G1Manager, NativeAllocation, SourceReuseDependency,
 };
+#[cfg(test)]
+pub(crate) use grouped::GroupedBlockPool;
 pub(crate) use grouped::GroupedKvPool;
+pub(crate) use grouped_prefix::{AdmissionLimits, GroupedPrefixRules, VllmRuleVersion};
 pub(crate) use sglang_backend::SglangKvManager;
 pub(crate) use vllm_backend::BlockRequestLease;
 

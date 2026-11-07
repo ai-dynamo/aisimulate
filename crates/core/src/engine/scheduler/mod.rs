@@ -141,6 +141,9 @@ pub struct MockerMetrics {
     pub total_blocks: u64,
     pub kv_cache_used_bytes: Option<u64>,
     pub kv_cache_capacity_bytes: Option<u64>,
+    /// Bytes of cached grouped-cache blocks that no request holds. Only a
+    /// grouped cache with prefix caching reports it.
+    pub kv_cache_cached_bytes: Option<u64>,
     pub gpu_cache_usage_perc: f64,
     pub physical_gpu_cache_usage_perc: f64,
     pub running_requests: u64,
@@ -207,6 +210,7 @@ impl MockerMetrics {
             total_blocks,
             kv_cache_used_bytes: None,
             kv_cache_capacity_bytes: None,
+            kv_cache_cached_bytes: None,
             gpu_cache_usage_perc,
             physical_gpu_cache_usage_perc,
             running_requests,

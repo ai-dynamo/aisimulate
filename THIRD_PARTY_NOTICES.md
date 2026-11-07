@@ -270,8 +270,10 @@ The identified upstream revision has no root NOTICE file. The repository's
 Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
 
 
-The repository-root file `crates/core/src/engine/kv_manager/grouped_prefix.rs`
-adapts four things from vLLM v0.31.0, immutable commit
+The repository-root files `crates/core/src/engine/kv_manager/grouped_prefix.rs`
+and `crates/core/src/engine/kv_manager/grouped_prefix_tests.rs` (its test
+module, with cases ported from the upstream tests)
+adapt four things from vLLM v0.31.0, immutable commit
 `db9527a46873454610df6dbedf79a36d6bf1a7f6`, and from vLLM v0.32.0, immutable
 commit `5df63a7203cdb9328d824a27b682e77c7b9928be`: the hybrid cache-hit lookup,
 the single-type hit rules, the state retention and the align-mode prefill split.

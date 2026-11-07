@@ -77,6 +77,13 @@ def _prediction_config(request: SupportRequest, plan: Path, trace: Path) -> dict
     if engine["mode"] != "aggregated" or engine.get("speculation") is not None:
         raise ValueError("FPM replay validation requires aggregated serving with speculation disabled")
     worker = engine["workers"]["aggregated"]
+    deployment = request.profile_deployment()
+    if deployment is not None and deployment.resources.cache_layout == "grouped":
+        # validate-fpm tests FPM timing, so its replay stays cold even when the plan reuses prefixes. On a grouped
+        # rank only prefix caching reads prefix_match_unit, so the unit goes too.
+        cache = worker.setdefault("kv_cache", {})
+        cache["prefix_caching"] = False
+        cache.pop("prefix_match_unit", None)
     timing = worker["timing"]
     timing["estimation_mode"] = "fpm_interpolation"
     timing["fallback_policy"] = "deny"
