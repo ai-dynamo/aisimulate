@@ -139,8 +139,8 @@ def _dsv4_context_table(path, latency):
 def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted_and_priced(profile, monkeypatch):
     config, payload, publish, root, _ = profile
     # Construction checks that each module's phase table holds a row. The two
-    # tables hold different latencies, so the sum below shows that each module
-    # read its own kind's table.
+    # tables hold different latencies and the two modules carry different scale
+    # factors, so the sum below changes if either module reads the other's table.
     for kind, latency in (("csa", 1.0), ("hca", 2.0)):
         _dsv4_context_table(
             root / f"data/h200_sxm/sparse_attention/vllm/1.0/dsv4_{kind}_context_module_perf.parquet", latency
@@ -158,7 +158,7 @@ def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted_and_priced
         {
             "Dsv4Context": {
                 "name": "context_attention",
-                "scale_factor": 1.0,
+                "scale_factor": 1.0 if kind == "Csa" else 2.0,
                 "attn_kind": kind,
                 "num_heads": 16,
                 "native_heads": 128,
@@ -178,12 +178,13 @@ def test_dsv4_profile_with_same_named_csa_and_hca_modules_is_admitted_and_priced
     publish()
     model = RustForwardPassPerfModel.best_available(config)
     try:
-        # Both modules price the phase: the 1 ms CSA row plus the 2 ms HCA row
-        # at the exact cell, reported under the shared attention name.
-        assert model.predict_prefill_latency(1, 1024, 0) == 3.0
+        # Both modules price the phase: the 1 ms CSA row at scale 1 plus the 2 ms
+        # HCA row at scale 2 at the exact cell, reported under the shared attention
+        # name. Swapped tables would give 2 + 1 * 2 = 4 ms.
+        assert model.predict_prefill_latency(1, 1024, 0) == 5.0
         [attention] = model.static_phase_diagnostics(batch_size=1, context_length=1024, prefix=0, prefill=True)
         assert attention["name"] == "context_attention"
-        assert (attention["latency_ms"], attention["source"]) == (3.0, "silicon")
+        assert (attention["latency_ms"], attention["source"]) == (5.0, "silicon")
     finally:
         model.close()
 
