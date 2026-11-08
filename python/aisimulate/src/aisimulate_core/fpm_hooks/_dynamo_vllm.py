@@ -14,7 +14,7 @@ import importlib
 import logging
 from types import ModuleType
 
-from ._struct import extend_struct, has_request_fields, with_pairs
+from ._request_fields import extend_struct, has_request_fields, with_pairs
 
 logger = logging.getLogger("aisimulate.fpm_hooks")
 
