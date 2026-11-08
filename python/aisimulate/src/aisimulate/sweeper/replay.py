@@ -496,7 +496,6 @@ class RunnerCapabilities:
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
     supports_weka_client: bool = False
-    supports_weka_chat_template: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
@@ -504,6 +503,7 @@ class RunnerCapabilities:
     supports_mtp_host_offload: bool = False
 
     supports_agentic_primers_only: bool = False
+    supports_weka_chat_template: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
