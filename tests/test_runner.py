@@ -6,7 +6,7 @@
 import json
 import math
 import pickle
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 from pydantic import ValidationError
@@ -30,6 +30,7 @@ from aisimulate.sweeper import (
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
+    RunnerCapabilities,
     RuntimeHookSpec,
 )
 from aisimulate.sweeper.config import Workload
@@ -92,6 +93,8 @@ def _engine_args(*, role="aggregated", backend="vllm", timing=None):
         "aic_attention_dp_size": 1,
         "block_size": 4,
         "num_gpu_blocks": 16,
+        # These toy pools cannot hold SGLang's default 512-token decode reserve.
+        **({"sglang": {"num_reserved_decode_tokens": 0}} if backend == "sglang" else {}),
         "timing_model": timing or {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0},
     }
 
@@ -491,7 +494,7 @@ def test_agentic_g2_runner_capability_remains_explicit(nested_rank, scopes, work
 @pytest.mark.parametrize(
     "scopes,field,value",
     [
-        (("dp_rank_local",), "num_workers", 2),
+        (("cluster_shared",), "num_workers", 2),
         (("cluster_shared",), "num_workers", 0),
         (("dp_rank_local",), "num_workers", True),
         (("dp_rank_local", None), "num_prefill_workers", 2),
@@ -805,6 +808,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
                     "paths": ["weka-corpus"],
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
+                    "client": "agentx",
                 },
                 "load": {
                     "type": "trace_timestamps",
@@ -827,6 +831,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["arrival_speedup_ratio"] == 2.0
     assert workload["agentic_lanes"] == 3
     assert workload["weka_nested_timestamp_basis"] == "relative"
+    assert workload["weka_client"] == "agentx"
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -967,6 +972,14 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
                 "weka_nested_timestamp_basis": "guess",
             },
             "must be 'auto', 'absolute', or 'relative'",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "mooncake", "weka_client": "agentx"},
+            "weka_client requires Weka input",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "weka", "weka_client": "aiperf"},
+            "must be 'recorded' or 'agentx'",
         ),
     ],
 )
@@ -1441,20 +1454,192 @@ def test_runner_preserves_withheld_power_without_raw_report():
     assert report.metadata["power"]["publication_status"] == "withheld"
 
 
-def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+@pytest.mark.parametrize("capture_per_request", [False, True])
+@pytest.mark.parametrize("workload_driver", [False, True])
+def test_engine_runner_passes_telemetry_without_changing_profile_record_opt_in(
+    backend, topology, capture_per_request, workload_driver
+):
+    telemetry = {
+        "schema": "aisimulate.replay.telemetry.v1",
+        "clock": "absolute_virtual_ms",
+        "sample_interval_ms": 250.0,
+        "profile_start_ms": 10.0,
+        "requests": [{"phase": "warmup", "arrival_time_ms": 1.0, "tpot_ms": None}],
+        "samples": [],
+        "lifecycle": [],
+    }
+
+    class TelemetryRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            payload = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps({**payload, "telemetry": telemetry})
+
+    runtime = TelemetryRuntime()
+    roles = (
+        {"agg_engine_args": _engine_args(backend=backend), "num_workers": 1}
+        if topology == "agg"
+        else {
+            "prefill_engine_args": _engine_args(role="prefill", backend=backend),
+            "decode_engine_args": _engine_args(role="decode", backend=backend),
+            "num_prefill_workers": 1,
+            "num_decode_workers": 1,
+        }
+    )
+    spec = _spec(
+        deployment=BackendDeploymentSpec(deployment_mode=topology, backend=backend, backend_version="test", **roles),
+        workload={"isl": 8, "osl": 2, "request_count": 2, "source_type": "synthetic"} if workload_driver else None,
+    )
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            spec,
+            output_requirements=ReplayOutputRequirements(
+                capture_telemetry=True,
+                telemetry_sample_interval_ms=250.0,
+                capture_per_request=capture_per_request,
+            ),
+        )
+    )
+    assert runtime.execution_spec["capture_telemetry"] is True
+    assert runtime.execution_spec["telemetry_sample_interval_ms"] == 250.0
+    assert runtime.execution_spec["spec"]["record_per_request"] is capture_per_request
+    assert ("traffic" in runtime.execution_spec) is workload_driver
+    assert report.metadata["native_report"]["telemetry"] == telemetry
+
+
+def test_engine_runner_requires_requested_telemetry_in_native_response():
+    with pytest.raises(InvalidRunnerError, match="did not provide requested telemetry"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(), output_requirements=ReplayOutputRequirements(capture_telemetry=True)
+        )
+
+
+@pytest.mark.parametrize("unsupported", ["trtllm", "afd", "online"])
+def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation(unsupported):
     runtime = RecordingRuntime()
     runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=7)
+    spec = _spec()
+    if unsupported == "online":
+        spec = replace(spec, execution_mode="online")
+    else:
+        spec = replace(
+            spec,
+            backend_deployment=replace(
+                spec.backend_deployment,
+                **({"backend": unsupported} if unsupported == "trtllm" else {"deployment_mode": unsupported}),
+            ),
+        )
 
     with pytest.raises(
         InvalidRunnerError,
-        match="JSON runtime does not yet expose replay telemetry",
+        match="telemetry capture requires offline native vLLM/SGLang",
     ):
         runner.run(
-            _spec(),
+            spec,
             output_requirements=ReplayOutputRequirements(capture_telemetry=True),
         )
 
     assert runtime.execution_spec_json is None
+
+
+def test_engine_runner_telemetry_disabled_preserves_wire_format():
+    runtime = RecordingRuntime()
+    report = EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec())
+    assert "capture_telemetry" not in runtime.execution_spec
+    assert "telemetry_sample_interval_ms" not in runtime.execution_spec
+    assert "spec" not in runtime.execution_spec
+    assert runtime.execution_spec["record_per_request"] is False
+    assert "native_report" not in report.metadata
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+@pytest.mark.parametrize("capture_per_request", [False, True])
+def test_native_telemetry_matches_fixed_timing_replay(backend, topology, capture_per_request):
+    roles = (
+        {"agg_engine_args": _engine_args(backend=backend), "num_workers": 1}
+        if topology == "agg"
+        else {
+            "prefill_engine_args": _engine_args(role="prefill", backend=backend),
+            "decode_engine_args": _engine_args(role="decode", backend=backend),
+            "num_prefill_workers": 1,
+            "num_decode_workers": 1,
+        }
+    )
+    spec = _spec(
+        deployment=BackendDeploymentSpec(deployment_mode=topology, backend=backend, backend_version="test", **roles),
+        workload={"isl": 8, "osl": 3, "concurrency": 2, "num_request_ratio": 2},
+    )
+    requirements = ReplayOutputRequirements(include_raw_report=True, capture_per_request=capture_per_request)
+    plain = EngineReplayRunnerFactory(determinism="canonical_v1").create(0).run(spec, output_requirements=requirements)
+    captured = (
+        EngineReplayRunnerFactory(determinism="canonical_v1")
+        .create(0)
+        .run(spec, output_requirements=replace(requirements, capture_telemetry=True, telemetry_sample_interval_ms=0.75))
+    )
+    # Host execution speed is intentionally observational; virtual-time GPU
+    # integrals may differ by floating-point summation at additional sample ticks.
+    wall_metrics = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
+    assert {key: value for key, value in captured.metrics.items() if key not in wall_metrics} == pytest.approx(
+        {key: value for key, value in plain.metrics.items() if key not in wall_metrics}, rel=1e-12, abs=1e-12
+    )
+    raw = captured.metadata["native_report"]
+    assert raw.get("per_request", []) == plain.metadata["native_report"].get("per_request", [])
+    assert ("per_request" in raw) is capture_per_request
+    telemetry = raw["telemetry"]
+    assert telemetry["schema"] == "aisimulate.replay.telemetry.v1"
+    assert telemetry["sample_interval_ms"] == 0.75
+    assert telemetry["clock"] == "absolute_virtual_ms"
+    assert len(telemetry["requests"]) == 4
+    assert {row["phase"] for row in telemetry["requests"]} == {"profile"}
+    assert telemetry["samples"]
+    assert {row["phase"] for row in telemetry["samples"]} == {"profile"}
+    assert sum(row["traffic"]["delivered_output_tokens"] for row in telemetry["samples"]) == 12
+    assert "performance_diagnostics" not in raw
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+def test_native_telemetry_counts_detokenized_outputs_when_received(backend, topology):
+    roles = (
+        {"agg_engine_args": _engine_args(backend=backend), "num_workers": 1}
+        if topology == "agg"
+        else {
+            "prefill_engine_args": _engine_args(role="prefill", backend=backend),
+            "decode_engine_args": _engine_args(role="decode", backend=backend),
+            "num_prefill_workers": 1,
+            "num_decode_workers": 1,
+        }
+    )
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode=topology,
+            backend=backend,
+            backend_version="test",
+            detokenization={"workers": 2, "base_ms": 5.0, "per_output_ms": 1.0},
+            **roles,
+        ),
+        workload={"isl": 8, "osl": 1, "concurrency": 2, "num_request_ratio": 2},
+    )
+    requirements = ReplayOutputRequirements(include_raw_report=True, capture_per_request=True)
+    plain = EngineReplayRunnerFactory(determinism="canonical_v1").create(0).run(spec, output_requirements=requirements)
+    captured = (
+        EngineReplayRunnerFactory(determinism="canonical_v1")
+        .create(0)
+        .run(spec, output_requirements=replace(requirements, capture_telemetry=True, telemetry_sample_interval_ms=0.75))
+    )
+    assert captured.metadata["native_report"]["per_request"] == plain.metadata["native_report"]["per_request"]
+    telemetry = captured.metadata["native_report"]["telemetry"]
+    received = [record["first_token_ms"] for record in telemetry["requests"]]
+    assert len(received) == 4
+    delivered = 0
+    for sample in telemetry["samples"]:
+        delivered += sample["traffic"]["delivered_output_tokens"]
+        assert delivered == sum(at_ms <= sample["sampled_at_ms"] for at_ms in received)
+    assert delivered == 4
 
 
 @pytest.mark.parametrize(
@@ -2516,7 +2701,14 @@ def test_agentic_profile_capability_is_explicit() -> None:
         )
 
 
-def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native():
+@pytest.mark.parametrize(
+    "policy,capability,unsupported",
+    [
+        ("live_trajectory_v1", "supports_agentic_live_warmup", "live agentic warmup"),
+        ("primers_only", "supports_agentic_primers_only", "primers-only agentic warmup"),
+    ],
+)
+def test_agentic_warmup_policy_requires_its_own_runner_capability_and_reaches_native(policy, capability, unsupported):
     workload = {
         "source_type": "trace",
         "load_type": "trace_timestamps",
@@ -2526,15 +2718,50 @@ def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_nat
         "agentic_snapshot": {"seed": 42},
         "agentic_warmup": True,
         "agentic_profile": {},
-        "agentic_warmup_policy": "live_trajectory_v1",
+        "agentic_warmup_policy": policy,
     }
     capabilities = EngineReplayRunnerFactory().capabilities()
-    assert capabilities.supports_agentic_live_warmup
-    with pytest.raises(ValueError, match="does not support live agentic warmup"):
-        replace(capabilities, supports_agentic_live_warmup=False).require_compatible(_spec(workload=workload))
+    assert getattr(capabilities, capability)
+    # The other policy's capability alone does not admit this policy.
+    with pytest.raises(ValueError, match=f"does not support {unsupported}"):
+        replace(capabilities, **{capability: False}).require_compatible(_spec(workload=workload))
+    if policy == "primers_only":
+        with pytest.raises(ValueError, match="primers_only requires agentic_warmup"):
+            capabilities.require_compatible(_spec(workload={**workload, "agentic_warmup": False}))
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
-    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == "live_trajectory_v1"
+    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == policy
+
+
+def test_primers_only_capability_keeps_existing_positional_arguments():
+    # RunnerCapabilities is public: an adapter passing the earlier fields positionally keeps their meaning.
+    default = RunnerCapabilities()
+    earlier = [field.name for field in fields(RunnerCapabilities) if field.name != "supports_agentic_primers_only"]
+    positional = RunnerCapabilities(
+        *(True if name == "supports_weka_client" else getattr(default, name) for name in earlier)
+    )
+    assert positional == replace(default, supports_weka_client=True)
+
+
+def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "weka_client": "agentx",
+    }
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_weka_client
+    unsupported = replace(capabilities, supports_weka_client=False)
+    with pytest.raises(ValueError, match="does not support weka_client 'agentx'"):
+        unsupported.require_compatible(_spec(workload=workload))
+    # Every runner replays the recorded timing.
+    unsupported.require_compatible(_spec(workload={**workload, "weka_client": "recorded"}))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
+    assert runtime.execution_spec["traffic"]["weka_client"] == "agentx"
 
 
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])

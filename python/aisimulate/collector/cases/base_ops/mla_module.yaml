@@ -59,8 +59,53 @@ common_case_values:
       - 'generation: batch_size * sequence_length <= 262144'
       - 'generation: sequence_length >= 8192 requires batch_size <= 16'
     # top_level_head_counts keep ModelRunner-loading subprocess counts manageable.
+  # The sweep the module op plans (collector/op_plans.py) share across backends:
+  # the MLA, DSA and MSA context and generation modules. collector/skips.py
+  # leaves out what a backend or SM does not run. The SGLang section below
+  # serves the SGLang MLA module collector's direct runs.
+  mla_module_plan:
+    description: Shared MLA, DSA and MSA module sweep of the op plans.
+    context_batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256]
+    context_sequence_lengths: [1, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384, 32768]
+    generation_batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+    generation_sequence_lengths: [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+    # Per-rank heads of the canonical DeepSeek-V3 module: its TP shards (128 to
+    # 1) and Kimi-K3's (96, 48, 24, 12).
+    head_counts: [128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]
+    module_precision_combos:
+      - {compute_dtype: bfloat16, kv_cache_dtype: bfloat16, gemm_type: bfloat16, attention_types: [mla, dsa, msa]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: fp8, gemm_type: bfloat16, attention_types: [mla, dsa, msa]}
+      - {compute_dtype: fp8, kv_cache_dtype: fp8, gemm_type: bfloat16, phases: [context], attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: bfloat16, gemm_type: fp8_block, attention_types: [mla, dsa, msa]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: fp8, gemm_type: fp8_block, attention_types: [mla, dsa, msa]}
+      - {compute_dtype: fp8, kv_cache_dtype: fp8, gemm_type: fp8_block, phases: [context], attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: bfloat16, gemm_type: nvfp4, attention_types: [mla, dsa, msa]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: fp8, gemm_type: nvfp4, attention_types: [mla, dsa, msa]}
+      - {compute_dtype: fp8, kv_cache_dtype: fp8, gemm_type: nvfp4, phases: [context], attention_types: [mla]}
+    context:
+      max_tokens: 131072
+      # DSA and MSA context follow serving's chunked prefill. A forward takes at
+      # most chunk_prefill_size new tokens (batch x isl) and max_full_sequence_length
+      # KV tokens (batch x (isl + prefix)), and the long context enters through the
+      # prefix. A point also stays within the model's max_position_embeddings.
+      chunk_prefill_size: 16384
+      max_full_sequence_length: 1048576
+      # Prefix anchors at x2 spacing, to the 1M context of GLM-5.2 and MiniMax-M3.
+      # 2048 is the tokens a query attends to in DeepSeek-V3.2 and GLM-5.x
+      # (index_topk) and in MiniMax-M3 (16 top-k blocks of 128): the sparse
+      # attention cost turns nearly linear in the prefix above it.
+      prefix_lengths: [0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
+      # From this prefix on, only the sequence lengths serving's chunked prefill
+      # issues there: full chunks and a partial one.
+      long_prefix_min: 16384
+      long_prefix_sequence_lengths: [1, 512, 2048, 8192, 16384]
+    generation:
+      max_tokens: 33554432
+      # DSA and MSA decode beyond the generation grid, to the 1M context, at small batch.
+      long_kv_lengths: [262144, 524288, 1048575]
+      long_kv_batch_sizes: [1, 2, 4]
   mla_module_sglang:
-    description: SGLang full MLA/DSA module sweep. Quantized DSA checkpoints keep DSA projections in bf16 but may use fp8 KV cache.
+    description: SGLang MLA module sweep of the collector's direct runs.
     module_tp_sizes:
       - 1
       - 2
@@ -74,20 +119,17 @@ common_case_values:
         kv_cache_dtype: fp8
         gemm_type: bfloat16
         min_sm: 90
-      # fp8_block projections exist for MLA/DSA checkpoints only; the M3
-      # (msa) BF16 artifact has no quantized projections in SGLang serving
-      # (its quantized-M3 flow is MXFP8) — scope these away from msa at the
-      # declaration instead of filtering in the collector.
+      # fp8_block projections exist for MLA checkpoints only.
       - compute_dtype: bfloat16
         kv_cache_dtype: bfloat16
         gemm_type: fp8_block
         min_sm: 89
-        attention_types: [mla, dsa]
+        attention_types: [mla]
       - compute_dtype: bfloat16
         kv_cache_dtype: fp8
         gemm_type: fp8_block
         min_sm: 90
-        attention_types: [mla, dsa]
+        attention_types: [mla]
     context_sequence_lengths:
       - 1
       - 4
@@ -155,315 +197,6 @@ common_case_values:
         - 1000000
         - 1048575
     generation:
-      # max_tokens is the MLA/DSA collectors' decode memory contract
-      # (b*kv <= 256K; their guard tests pin it). The MSA decode sweep needs
-      # the large-batch x long-kv corner, so it carries its own budget below
-      # (2026-08-09 raise, spot-measured on hardware; documented in the
-      # b200_sxm msa collection_meta coverage note) — scoped to msa so the
-      # MLA/DSA plans keep their contract.
       max_tokens: 262144
-      msa_max_tokens: 33554432
       large_sequence_min: 8192
       large_sequence_max_batch_size: 1024
-  mla_module_trtllm:
-    description: Exact TRT-LLM full MLA/DSA module micro-benchmark sweep.
-    # Declared TRT-LLM module precision policy (review 4969690316 S4: the
-    # collectors consume these specs instead of re-implementing SM gates in
-    # Python). The mla/dsa combo mirrors the shared default this section
-    # previously inherited; MLA/DSA fp8-KV handling stays in
-    # collect_mla_module's hardware-validated in-code combos (pre-existing).
-    # MSA (MiniMax-M3, 1.3.0rc23): attention/KV are bf16-only end to end
-    # (sparse backend gathers K/V in the cache dtype, index-K side cache is
-    # bf16 — collect_msa_module docstring citations); the projection GEMM
-    # sweeps bf16 everywhere, fp8_block from SM89 (Ada/Hopper/Blackwell
-    # blockwise-FP8 path), nvfp4 from SM100.
-    module_precision_combos:
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: bfloat16
-        attention_types: [mla, dsa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: bfloat16
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: fp8_block
-        min_sm: 89
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: nvfp4
-        min_sm: 100
-        attention_types: [msa]
-    context_batch_sizes:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-    context_sequence_lengths:
-      - 1
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-      - 1536
-      - 2048
-      - 3072
-      - 4096
-      - 6144
-      - 8192
-      - 10240
-      - 12288
-      - 16384
-      - 32768
-    generation_batch_sizes:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-    generation_sequence_lengths:
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-      - 2048
-      - 4096
-      - 8192
-      - 16384
-      - 32768
-      - 65536
-      - 131072
-    head_counts:
-      - 128
-      - 64
-      - 32
-      - 16
-      - 8
-      - 4
-      - 2
-      - 1
-    context:
-      max_tokens: 131072
-      prefix_lengths:
-        - 0
-        - 128
-    generation:
-      max_tokens: 33554432
-  mla_module_vllm:
-    description: Exact vLLM full MLA/DSA module micro-benchmark sweep for the current vLLM collector.
-    context_batch_sizes:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-    context_sequence_lengths:
-      - 1
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-      - 1536
-      - 2048
-      - 3072
-      - 4096
-      - 6144
-      - 8192
-      - 10240
-      - 12288
-      - 16384
-      - 32768
-    generation_batch_sizes:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-    generation_sequence_lengths:
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-      - 2048
-      - 4096
-      - 8192
-      - 16384
-      - 32768
-      - 65536
-      - 131072
-    head_counts:
-      - 128
-      - 96
-      - 64
-      - 48
-      - 32
-      - 24
-      - 16
-      - 12
-      - 8
-      - 4
-      - 2
-      - 1
-    module_precision_combos:
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: bfloat16
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: bfloat16
-        min_sm: 90
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      # FP8 prefill query compute: opt-in via vLLM's
-      # attention_config.use_prefill_query_quantization plus an explicit
-      # supporting mla_prefill_backend; requires FP8 KV cache and the SM100
-      # family (mla_attention.py:1371-1396 @0.24.0). Defined only for the
-      # dense-MLA prefill path: the feature lives on MLACommonMetadataBuilder,
-      # and the sparse DSA builders (FlashMLASparse / FlashInferMLASparse
-      # @0.24.0) derive from the plain AttentionMetadataBuilder with no
-      # prefill-query quantization concept, so no serving configuration can
-      # realize these combos for DSA.
-      - compute_dtype: fp8
-        kv_cache_dtype: fp8
-        gemm_type: bfloat16
-        min_sm: 100
-        phases: [context]
-        attention_types: [mla]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: fp8_block
-        min_sm: 89
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      # Native tensor-scaled FP8 weights with dynamic activations; distinct
-      # from block-scaled FP8 and from the fp8_static GEMM contract.
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: fp8
-        min_sm: 89
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: fp8
-        min_sm: 90
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: fp8_block
-        min_sm: 90
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      - compute_dtype: fp8
-        kv_cache_dtype: fp8
-        gemm_type: fp8_block
-        min_sm: 100
-        phases: [context]
-        attention_types: [mla]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: nvfp4
-        min_sm: 100
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: nvfp4
-        min_sm: 100
-        phases: [context, generation]
-        attention_types: [mla, dsa]
-      # MSA (MiniMax-M3) precision policy — declared here so the collector
-      # consumes YAML instead of re-implementing SM gates (review 4969690316
-      # S4). vLLM's M3 sparse backend accepts an fp8 (e4m3) main KV cache on
-      # EVERY SM this op runs on (supported_kv_cache_dtypes, common/
-      # sparse_attention.py:56-62@v0.24.0; Triton in-kernel dequant off the
-      # SM100 family, MSA attend on it), so fp8-KV carries no SM floor —
-      # unlike the MLA/DSA combos above. GEMM tiers: fp8_block from SM89
-      # (blockwise-FP8 checkpoint path), nvfp4 from SM100 (ModelOpt NVFP4),
-      # both through the generic linear quant dispatch.
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: bfloat16
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: bfloat16
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: fp8_block
-        min_sm: 89
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: fp8_block
-        min_sm: 89
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: bfloat16
-        gemm_type: nvfp4
-        min_sm: 100
-        attention_types: [msa]
-      - compute_dtype: bfloat16
-        kv_cache_dtype: fp8
-        gemm_type: nvfp4
-        min_sm: 100
-        attention_types: [msa]
-      - compute_dtype: fp8
-        kv_cache_dtype: fp8
-        gemm_type: nvfp4
-        min_sm: 100
-        phases: [context]
-        attention_types: [mla]
-    context:
-      max_tokens: 131072
-      prefix_lengths:
-        - 0
-        - 128
-    generation:
-      max_tokens: 33554432
-      large_cache_tokens: 16777216

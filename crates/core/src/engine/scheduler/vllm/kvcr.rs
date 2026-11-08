@@ -244,7 +244,7 @@ mod tests {
     use super::*;
     use crate::engine::KvcrConfig;
     use crate::engine::host_offload::StoreOutcome;
-    use crate::engine::host_offload::{C, HostTierHandle, private};
+    use crate::engine::host_offload::{C, HostTierHandle, per_rank};
     use crate::engine::kvcr::{KvcrPullCounts, KvcrRegistry, KvcrStats};
 
     /// Worker 0 is the source and worker 1 the target, one rank each.
@@ -286,8 +286,8 @@ mod tests {
                 latency_to_first_byte_ms: latency_ms,
                 bandwidth_gbps: gbps,
             });
-            let source_g2 = HostTierHandle::new(private(8, 0.0, 0.0));
-            let target = HostTierHandle::new(private(target_blocks, 0.0, 0.0));
+            let source_g2 = HostTierHandle::new(per_rank(8, 0.0, 0.0));
+            let target = HostTierHandle::new(per_rank(target_blocks, 0.0, 0.0));
             make_resident(&source_g2, source_keys);
             make_resident(&target, target_keys);
             {
@@ -379,6 +379,7 @@ mod tests {
         let keys = f.keys(&[0, 1, 2, 3]);
         let meta = (0..4_u64)
             .map(|position| HostBlockMeta {
+                cache_salt: None,
                 parent: position.checked_sub(1),
                 tokens_hash: position,
                 position: position as usize,

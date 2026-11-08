@@ -2478,7 +2478,7 @@ def test_pure_tp_render_uses_shared_vllm_tp_without_expert_parallel(
         pytest.param(
             "decode", "dep", ParallelTopology(tp=1, pp=1, dp=4, moe_tp=1, moe_ep=4, cp=1), False, id="decode-dep"
         ),
-        # pure_tp joined the warm set (A2, 2026-08-20): expert-activation
+        # pure_tp joined the warm set (A2): expert-activation
         # dispersion is content-driven even with cross-GPU balance by
         # construction, so warm coverage applies (engine gc-warmtp+).
         pytest.param(

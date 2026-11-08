@@ -96,7 +96,66 @@ def apply_model_default_args(
             tokens.append(_stringify(value))
 
 
-def apply_moe_backend(context: dict[str, Any], hardware: dict[str, Any] | None, *, backend: str) -> None:
+def quant_family_of(quantization: dict[str, Any] | None) -> str | None:
+    """Collapse an artifact's quantization block (config.json ``quantization_config`` merged with the
+    modelopt ``hf_quant_config``, see utils._bundled_quantization) onto the collector's quant families:
+    nvfp4 / mxfp4 / fp8_block / fp8 / int4_wo. None when the artifact declares no quantization."""
+    if not quantization:
+        return None
+    algo = str(quantization.get("quant_algo") or "").upper()
+    method = str(quantization.get("quant_method") or "").lower()
+    if algo == "MIXED_PRECISION":
+        # modelopt per-layer table: the MoE experts' algo decides the MoE kernel family (nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+        # 92 `*.mlp.experts` layers NVFP4, 506 linear-attention / dense layers FP8); fall back to the most common algo
+        layers = quantization.get("quantized_layers") or {}
+        algos = [str((v or {}).get("quant_algo") or "").upper() for k, v in layers.items() if isinstance(v, dict)]
+        experts = [
+            str((v or {}).get("quant_algo") or "").upper()
+            for k, v in layers.items()
+            if isinstance(v, dict) and "experts" in str(k)
+        ]
+        pick = experts or algos
+        algo = max(set(pick), key=pick.count) if pick else ""
+        quantization = {**quantization, "quant_algo": algo}
+    if algo == "NVFP4" or method in ("modelopt_fp4", "nvfp4"):
+        return "nvfp4"
+    if algo == "MXFP4" or method == "mxfp4":
+        return "mxfp4"
+    if algo.startswith("FP8") or method in ("fp8", "modelopt_fp8", "modelopt"):
+        return "fp8_block" if quantization.get("weight_block_size") else "fp8"
+    if (
+        method in ("awq", "gptq", "compressed-tensors")
+        and int(quantization.get("bits") or quantization.get("weight_bits") or 0) == 4
+    ):
+        return "int4_wo"
+    return method or algo.lower() or None
+
+
+# TRT-LLM MoeConfig.backend literals a release no longer accepts, with the first release that rejects
+# them: WIDEEP is in the literal through 1.3.0rc24 and gone from 1.3.0rc25 (llmapi/llm_args.py MoeConfig).
+_TRTLLM_MOE_BACKEND_REJECTED_FROM = {"WIDEEP": "1.3.0rc25"}
+
+
+def _trtllm_rejects_moe_backend(choice: str, backend_version: str | None) -> bool:
+    from packaging.version import InvalidVersion, Version
+
+    rejected_from = _TRTLLM_MOE_BACKEND_REJECTED_FROM.get(str(choice).upper())
+    if rejected_from is None or not backend_version:
+        return False
+    try:
+        return Version(str(backend_version)) >= Version(rejected_from)
+    except InvalidVersion:
+        return False
+
+
+def apply_moe_backend(
+    context: dict[str, Any],
+    hardware: dict[str, Any] | None,
+    *,
+    backend: str,
+    quantization: dict[str, Any] | None = None,
+    backend_version: str | None = None,
+) -> None:
     """Apply the hardware-derived ``moe_backend`` selection (fill-if-absent, MoE-only).
 
     ``hardware`` is the resolved hardware-profile dict (``ResolvedFacts.hardware``).
@@ -112,21 +171,37 @@ def apply_moe_backend(context: dict[str, Any], hardware: dict[str, Any] | None, 
     Per-backend seam:
 
     * ``trtllm``: sets ``context["moe_config"]["backend"]`` (consumed by the typed
-      engine-config builder). Only when unset — the builder defaults to CUTLASS.
+      engine-config builder). Only when unset — the template default applies otherwise
+      (AUTO from 1.3.0rc29, CUTLASS before). A literal the target ``backend_version``
+      rejects (WIDEEP from 1.3.0rc25) is not filled.
     * ``sglang``: sets ``context["moe_backend"]`` (mapped to ``--moe-runner-backend``
       via ``backend_config_mapping.yaml``). Only when unset.
     * ``vllm``: no-op — vLLM's MoE backend comes from MODEL ``defaults:`` (handled
       by :func:`apply_model_default_args`), not this hardware fact.
     """
     choice = ((hardware or {}).get("moe_backend") or {}).get(backend)
+    if isinstance(choice, dict):
+        # keyed by the artifact's quantization family: on SM89 trtllm 1.3.0rc29 serves NVFP4 MoE only
+        # through MARLIN (weight-only), which in turn rejects bf16/fp8 MoE layers, so one hardware-wide
+        # value cannot be right (opharness findings sm89_trtllm_rc29_probe_2026_10_04). Unknown family
+        # -> the profile's "default" entry, else nothing (the builder/template default applies).
+        choice = choice.get(quant_family_of(quantization) or "", choice.get("default"))
     if not choice:
         return
     # GUARD: hardware moe_backend applies to MoE deployments only.
     if not context.get("is_moe"):
         return
     if backend == "trtllm":
+        if _trtllm_rejects_moe_backend(choice, backend_version):
+            return
         moe = context.setdefault("moe_config", {})
-        if isinstance(moe, dict) and not moe.get("backend"):
+        # a user/recipe `moe_backend` param (the generic spelling the sglang branch below honours) counts as
+        # "already set" here too: until 2026-10-04 the hardware fill ignored it and the trtllm template never
+        # read it, so `--generator-set params.agg.moe_backend=...` was silently dropped on trtllm
+        user_set = context.get("moe_backend") or any(
+            context.get(f"{role}_moe_backend") for role in ("prefill", "decode", "agg", "encode")
+        )
+        if isinstance(moe, dict) and not moe.get("backend") and not user_set:
             moe["backend"] = choice
     elif backend == "sglang":
         if not context.get("moe_backend"):

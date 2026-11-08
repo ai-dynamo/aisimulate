@@ -403,15 +403,18 @@ impl MixedComposition {
             };
             let table = &engine.database().fpm_forward;
             let _ = table.cells()?; // Load and validate now, not on the first query.
-            // Engine construction resolves the exact deployment and profile;
-            // table loading above pins the immutable measured source.
+            // Engine construction resolves the exact deployment and profile.
+            // Source files must remain unchanged throughout construction.
             let path = table.parquet_path();
             let file_digest = |path: &Path| -> Result<String, AicError> {
-                let bytes = std::fs::read(path).map_err(|source| AicError::Io {
-                    path: path.into(),
-                    source,
+                let mut reader = HashedFile::open(path)?;
+                std::io::copy(&mut reader, &mut std::io::sink()).map_err(|source| {
+                    AicError::Io {
+                        path: path.into(),
+                        source,
+                    }
                 })?;
-                Ok(format!("{:x}", Sha256::digest(&bytes)))
+                Ok(format!("{:x}", reader.digest.finalize()))
             };
             value.prior = serde_json::json!({"provenance":prior_model.provenance,"parquet_sha256":file_digest(path)?,"metadata_sha256":file_digest(&path.with_extension("metadata.json"))?});
             value.engine = Some(engine);

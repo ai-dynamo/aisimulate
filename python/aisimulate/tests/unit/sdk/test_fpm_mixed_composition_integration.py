@@ -182,7 +182,17 @@ def test_mixed_readiness_and_diagnostics_public_contract(mixed_seed, mode):
         ordinary.close()
 
 
-def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp_path, phase_roots):
+@pytest.mark.parametrize(
+    ("preset", "accepted"),
+    [
+        # The default aggregate features accept every group, including the
+        # 21st, which carries no request lists.
+        (None, 21),
+        # Explicit atomic10 still needs request lists and excludes it.
+        ("atomic10", 20),
+    ],
+)
+def test_original_a_manifest_matches_aggregated_training_eligibility(tmp_path, phase_roots, preset, accepted):
     config, make_root = phase_roots
     config["systems_paths"] = [make_root("default-features")]
     groups = [_iteration("decode", wall_ms=3.0, index=index) for index in range(21)]
@@ -192,6 +202,7 @@ def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp
     artifact = fpm_learned.train(
         groups,
         "aggregated",
+        features=fpm_learned.FEATURE_PRESETS[preset] if preset else None,
         max_iter=3,
         max_leaf_nodes=3,
         min_samples_leaf=2,
@@ -199,8 +210,8 @@ def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp
         online_checkpoint_dir=seed,
         identity=config,
     )
-    assert artifact["features"] == list(fpm_learned.FEATURE_PRESETS["atomic10"])
-    assert artifact["metadata"]["train_rows"] == {"pure_decode": 20}
+    assert artifact["features"] == list(fpm_learned.FEATURE_PRESETS[preset or "fpm5"])
+    assert artifact["metadata"]["train_rows"] == {"pure_decode": accepted}
     source_path = tmp_path / "original-groups.json"
     source_path.write_text(json.dumps(groups))
     source_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
@@ -219,10 +230,10 @@ def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp
         },
     )
     # Both the exporter and the native source binding must agree with the
-    # default trainer's 20 usable request-list groups, excluding the 21st.
+    # trainer's usable groups for the seed's feature list.
     model = _load((config, seed, source))
     try:
-        assert json.loads(manifest.read_text())["accepted_iterations"] == groups[:20]
+        assert json.loads(manifest.read_text())["accepted_iterations"] == groups[:accepted]
         assert model.estimate_forward_pass_time_ms(groups[0]) == pytest.approx(3.0)
     finally:
         model.close()

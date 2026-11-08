@@ -77,11 +77,14 @@ domains instead of the single values above; see
 | `engine.workers.<role>.timing`, `estimation_mode`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
 
 Engine prediction and recommendation accept `auto`, `op_level`,
-`fpm_interpolation`, and `fpm_regression` in their global and worker timing
-selection schemas. They reject `fpm_learned` during configuration validation.
-Native replay also rejects it before loading artifacts: phase timing cannot
-provide the complete iteration features required by the
-[learned estimate/tune API](../../perf-model/fpm_ml/configuration.md).
+`fpm_interpolation`, `fpm_regression`, and `fpm_learned` in their global and
+worker timing selection schemas. Replay prices every pass of a regression or
+learned role with one `ForwardPassMetrics` query over the worker's
+attention-DP ranks, adding the per-request lengths a learned artifact reads,
+and rejects such a role when its model lacks a workload store the role needs,
+hosts the vision encoder or uses speculative decoding; see
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
+These roles are latency-only, so their replay reports no power.
 
 Field tables on these pages use the following columns:
 

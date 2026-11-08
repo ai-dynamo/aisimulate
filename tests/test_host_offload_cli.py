@@ -459,9 +459,54 @@ def _kvcr_defaults() -> dict:
         ),
     ],
 )
-def test_kvcr_requires_private_host_offload_and_no_g3(cache, message) -> None:
+def test_kvcr_requires_per_rank_host_offload_and_no_g3(cache, message) -> None:
     with pytest.raises(ValueError, match=message):
         KvCachePredictionConfig.model_validate(cache)
+
+
+@pytest.mark.parametrize(
+    ("cache", "message"),
+    [
+        (
+            {"host_offload": {"num_host_blocks": 8, "scope": "cluster_shared", "connector": "simple_cpu_v0_32"}},
+            "connector other than offloading_v0_24 requires scope dp_rank_local",
+        ),
+        (
+            {
+                "host_offload": {"num_host_blocks": 8, "connector": "offloading_v0_32"},
+                "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8},
+            },
+            "g3_offload requires host_offload.connector=offloading_v0_24",
+        ),
+        (
+            {"host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"}, "kvcr": {}},
+            "kvcr requires host_offload.connector=offloading_v0_24",
+        ),
+    ],
+)
+def test_host_offload_connector_needs_a_private_pool_without_g3_or_kvcr(cache, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        KvCachePredictionConfig.model_validate(cache)
+
+
+def test_host_offload_connector_reaches_the_native_rank() -> None:
+    engine = _prediction_engine()
+    cache = engine["workers"]["aggregated"]["kv_cache"]
+    cache["bytes_per_token"] = 131_072
+    cache["host_offload"] = {"num_host_blocks": 4096, "connector": "offloading_v0_32"}
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    rank = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+    assert rank["native_host_offload"]["connector"] == "offloading_v0_32"
+
+
+def test_host_offload_connector_rejects_disaggregated_workers() -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine["kv_transfer"] = {"bytes_per_token": 131_072}
+    engine["workers"]["prefill"]["kv_cache"].update(
+        bytes_per_token=131_072, host_offload={**_host_offload(), "connector": "simple_cpu_v0_32"}
+    )
+    with pytest.raises(ValidationError, match="connector other than offloading_v0_24 is supported only"):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 def test_kvcr_defaults_and_overrides() -> None:
@@ -661,3 +706,66 @@ def test_kvcr_docs_example_validates(monkeypatch) -> None:
     deployment = prediction_to_replay_spec(prediction).backend_deployment
     # The documented values are the defaults in the knob table.
     assert deployment.agg_engine_args["kvcr"] == _kvcr_defaults()
+
+
+@pytest.mark.parametrize("host_loop", [False, True])
+@pytest.mark.parametrize("write_policy", ["write_through", "write_through_selective", "write_back"])
+def test_hicache_saved_config_reaches_native_rank_with_host_loop(tmp_path, host_loop, write_policy) -> None:
+    engine = _prediction_engine()
+    engine["backend"] = "sglang"
+    worker = engine["workers"]["aggregated"]
+    worker["host_loop"] = host_loop
+    host = {
+        "num_host_blocks": 32,
+        "write_policy": write_policy,
+        "d2h_bandwidth_gbps": 0.0,
+        "h2d_bandwidth_gbps": 7.0,
+        "latency_to_first_byte_ms": 2.0,
+    }
+    worker["kv_cache"].update(bytes_per_token=250_000, hicache=host)
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    saved = tmp_path / "hicache.yaml"
+    saved.write_text(yaml.safe_dump(config.model_dump(mode="json")), encoding="utf-8")
+    restored = CorePredictionConfig.from_yaml(saved)
+    runtime = _RecordingRuntime()
+    spec = prediction_to_replay_spec(restored)
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["sglang"]["hicache"] == host
+    assert rank["sglang"].get("host_loop", False) == host_loop
+    assert rank["kv_cache_bytes_per_token"] == 250_000
+    assert rank.get("native_host_offload") is None
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda e: e.update(backend="vllm"), "backend=sglang"),
+        (lambda e: e["workers"]["aggregated"]["kv_cache"].update(prefix_caching=False), "prefix_caching=true"),
+        (lambda e: e["workers"]["aggregated"]["kv_cache"]["hicache"].update(num_host_blocks=0), "greater than 0"),
+        (
+            lambda e: e["workers"]["aggregated"]["kv_cache"]["hicache"].update(h2d_bandwidth_gbps=-1),
+            "greater than or equal",
+        ),
+    ],
+)
+def test_hicache_rejects_unsupported_or_invalid_prediction(mutation, message) -> None:
+    engine = _prediction_engine()
+    engine["backend"] = "sglang"
+    engine["workers"]["aggregated"]["kv_cache"]["hicache"] = {"num_host_blocks": 32}
+    mutation(engine)
+    with pytest.raises(ValidationError, match=message):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_hicache_rejects_disaggregated_and_recommendation_paths() -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine["backend"] = "sglang"
+    engine["workers"]["prefill"]["kv_cache"]["hicache"] = {"num_host_blocks": 32}
+    with pytest.raises(ValidationError, match="mode=aggregated"):
+        CorePredictionConfig.model_validate({"engine": engine})
+    engine = _recommendation_engine()
+    engine["backend"] = "sglang"
+    engine["workers"]["aggregated"]["kv_cache"]["hicache"] = {"num_host_blocks": 32}
+    with pytest.raises(ValidationError, match="prediction only"):
+        CoreRecommendationConfig.model_validate({"engine": engine})

@@ -1958,12 +1958,14 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
         packaged = Path(aisimulate_core.__file__).parent / "systems" / f"{system}.yaml"
         (root / packaged.name).write_bytes(packaged.read_bytes())
         coordinates = []
-        if kind in {"genuine", "mixed", "coverage"}:
+        if kind in {"genuine", "mixed", "coverage", "seed_normalization"}:
             coordinates.extend([("prefill", 0, "real_kv", 2.0), ("decode", 1, "real_kv", 3.0)])
         if kind == "coverage":
             coordinates.append(("prefill", 16, "real_kv", 4.0))
         if kind in {"fake", "mixed"}:
             coordinates.append(("decode", 64, "fake_fallback", 99.0))
+        if kind == "seed_normalization":
+            coordinates.extend([("decode", 33, "real_kv", 7.0), ("decode", 65, "fake_fallback", 99.0)])
         rows = [
             {
                 **identity,
@@ -2057,6 +2059,47 @@ def test_native_profile_role_survives_compilation_and_saved_canonical_config(
             assert saved["fpm_profile"]["deployments"][0]["worker_type"] == worker_type
         finally:
             model.close()
+
+
+@pytest.mark.parametrize("raw", [False, True])
+def test_native_seed_target_normalization_reports_effective_labels_without_changing_source(
+    profile_dict, measured_profile_roots, monkeypatch, raw
+):
+    if raw:
+        monkeypatch.setenv("AIC_FPM_FAKE_FALLBACK_RAW", "1")
+    else:
+        monkeypatch.delenv("AIC_FPM_FAKE_FALLBACK_RAW", raising=False)
+    root = measured_profile_roots("seed-normalization", "seed_normalization")
+    source = Path(root) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    original = source.read_bytes()
+    request = _request(profile_dict, "direct", systems_paths=[root])
+    for config in (request, json.loads(json.dumps(_normalize(request)))):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            report = model.fpm_seed_target_normalization()
+            assert report["row_count"] == 4
+            assert report["replacement_enabled"] is not raw
+            assert report["replaced_count"] == int(not raw)
+            assert report["kept_count"] == int(raw)
+            assert report["rows"] == [
+                {
+                    "row_index": 3,
+                    "workload_kind": "decode",
+                    "batch_size": 1,
+                    "total_prefill_tokens": 0,
+                    "total_kv_read_tokens": 65,
+                    "raw_latency_ms": 99.0,
+                    # Hand oracle: real targets rise 3 -> 7 over 32 KV tokens;
+                    # the next equal interval reaches 11, while raw mode keeps 99.
+                    "effective_latency_ms": 99.0 if raw else 11.0,
+                    "replaced": not raw,
+                }
+            ]
+            assert model.predict_decode_latency_total(1, 1) == 3.0
+            assert model.predict_decode_latency_total(1, 33) == 7.0
+        finally:
+            model.close()
+    assert source.read_bytes() == original
 
 
 def test_direct_coverage_is_native_persists_errors_and_round_trips(profile_dict, measured_profile_roots):

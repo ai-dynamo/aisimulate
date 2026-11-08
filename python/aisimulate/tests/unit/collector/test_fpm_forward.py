@@ -729,7 +729,7 @@ def test_source_revision_prefers_content_addressed_installed_distribution_over_a
     second = _pinned_git_revision()
 
     assert first == second
-    assert first.startswith("installed:aisimulate==0.12.0:record-sha256:")
+    assert first.startswith("installed:aisim==0.12.0:record-sha256:")
     assert "/" not in first
     assert "ambient-host-head" not in first
 
@@ -755,11 +755,14 @@ def test_installed_source_revision_is_stable_across_record_order_quoting_and_ins
     noisy_rows = [
         ("../../../bin/aiconfigurator", "sha256=environment-specific", "123"),
         ("../../../bin/aisimulate", "sha256=environment-specific", "123"),
+        ("../../../bin/aisim", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aisim.exe", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aisim-script.py", "sha256=environment-specific", "123"),
         ("../../../Scripts/aiconfigurator.exe", "sha256=environment-specific", "123"),
         ("../../../Scripts/aiconfigurator-script.py", "sha256=environment-specific", "123"),
         ("../../../Scripts/aisimulate.exe", "sha256=environment-specific", "123"),
         ("../../../Scripts/aisimulate-script.py", "sha256=environment-specific", "123"),
-        ("aisimulate-0.12.0.dist-info/direct_url.json", "sha256=checkout-specific", "99"),
+        ("aisim-0.12.0.dist-info/direct_url.json", "sha256=checkout-specific", "99"),
         *reversed(base_rows),
     ]
     noisy_distribution, other_root = _installed_distribution(tmp_path / "other-install", rows=noisy_rows)
@@ -797,7 +800,7 @@ def test_installed_source_revision_rejects_untrusted_record_or_payload(
     ]
     version = "0.12.0"
     if case == "metadata_only":
-        rows = [("aisimulate-0.12.0.dist-info/METADATA", _record_sha256(b"metadata"), "8")]
+        rows = [("aisim-0.12.0.dist-info/METADATA", _record_sha256(b"metadata"), "8")]
     elif case == "missing_required":
         rows.pop()
     elif case == "malformed_row":

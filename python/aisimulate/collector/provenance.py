@@ -1,22 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collector provenance: authored hash closures + ``collection_meta.yaml`` writer.
+"""Collector provenance: the collector hash and the ``collection_meta.yaml`` writer.
 
 Collector V3 makes the collector finalize step the provenance authority
 (design: docs/perf_database/collector-v3-op-centric-design.md §5). This module
 provides the building blocks:
 
-- ``collector_hash``: a content hash over an AUTHORED closure of files (the
-  op's ``collect_*.py`` module, a fixed shared core, and per-module extras
-  declared in ``hash_closures.yaml``). Content-based, so it survives rebases.
+- ``collector_hash``: a content hash over the collector source (see
+  ``_HASHED_SOURCES``). Every table collected from the same source carries the
+  same hash. Content-based, so it survives rebases.
 - ``case_plan_hash``: a hash of the resolved/attested case-id set collected
   at run time (GPU needed to produce it — never recomputed in CI).
 - ``write_collection_meta``: renders the design-§5 YAML deterministically.
-
-``load_closures`` fails closed: every registered module and every explicitly
-declared standalone collector module MUST have a ``hash_closures.yaml`` entry,
-or loading raises ``KeyError``.
 """
 
 from __future__ import annotations
@@ -28,36 +24,15 @@ from typing import Any
 
 import yaml
 
-# Implicit in every collector_hash closure: files whose content affects every
-# op's collected data regardless of which module runs it.
-SHARED_CORE: tuple[str, ...] = (
-    "collector/helper.py",
-    "collector/case_generator.py",
-    "collector/model_cases.py",
-    "collector/capabilities.py",
-    "collector/version_resolver.py",
-)
-
-# Sentinel closure-extra token: expands to every collector/cases/models/*.yaml
-# file (the shared model-shapes group), sorted, at hash time.
-MODEL_CASES_GROUP = "__model_cases__"
-_MODEL_CASES_DIR = "collector/cases/models"
-
-# Standalone distributed collectors do not fit collect.py's single-host
-# OpEntry executor/checkpoint contract, but their published tables still need
-# authored collector_hash closures.
-STANDALONE_COLLECTOR_MODULES: frozenset[str] = frozenset(
-    {
-        "collector.sglang.collect_dsv4_megamoe",
-        "collector.sglang.dsv41_attention_runner",
-        "collector.sglang.dsv41_isolated_runner",
-        "collector.wideep.sglang.collect_moe_a2a",
-        "collector.wideep.vllm.collect_moe_a2a",
-        "collector.wideep.trtllm.collect_moe_a2a",
-        "collector.network.slurm.collect_trtllm_alltoall",
-        "collector.sglang.glm53flash_attention_runner",
-        "collector.vllm.glm53flash_attention_runner",
-    }
+# The source collector_hash covers: the collector package, plus the SDK code and
+# packaged model configs its runners import. JSON under collector/ is left out
+# because the TRT-LLM MoE autotuners write their caches there.
+_HASHED_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("collector", (".patch", ".py", ".sh", ".yaml", ".yml")),
+    # The extensionless wrappers the vLLM WideEP collector executes on the hosts.
+    ("collector/wideep/vllm/slurm/host_tools", ("",)),
+    ("src/aisimulate_core/sdk", (".py",)),
+    ("src/aisimulate_core/model_configs", (".json",)),
 )
 
 STATUS_COMPLETE = "complete"
@@ -101,104 +76,27 @@ _TABLE_REQUIRED_FIELD_ORDER = tuple(field for field in _TABLE_FIELD_ORDER if fie
 _COLLECTION_OPTIONAL_FIELD_ORDER = ("source_campaign_rows", "source_campaign_status", "runtime")
 
 
-def _registry_lists(registry_module) -> tuple[list, ...]:
-    registries = [registry_module.REGISTRY]
-    registry_xpu = getattr(registry_module, "REGISTRY_XPU", None)
-    if registry_xpu is not None:
-        registries.append(registry_xpu)
-    return tuple(registries)
-
-
-def enumerate_registry_modules() -> set[str]:
-    """Return every collector module referenced by an OpEntry in any of the five
-    registries enumerated by ``framework_manifest._REGISTRY_MODULES`` (sglang,
-    trtllm, vllm, wideep_sglang, wideep_trtllm), plus active sibling registries
-    such as vLLM's ``REGISTRY_XPU``.
-    """
-    import importlib
-
-    from collector.framework_manifest import _REGISTRY_MODULES
-
-    modules: set[str] = set()
-    for registry_module_path in _REGISTRY_MODULES.values():
-        registry_module = importlib.import_module(registry_module_path)
-        for registry in _registry_lists(registry_module):
-            for entry in registry:
-                if entry.module:
-                    modules.add(entry.module)
-                for route in entry.versions:
-                    modules.add(route.module)
-    return modules
-
-
-def enumerate_provenance_modules() -> set[str]:
-    """Return every registered or explicitly standalone provenance producer."""
-    return enumerate_registry_modules() | set(STANDALONE_COLLECTOR_MODULES)
-
-
-def load_closures(path: str | Path) -> dict[str, list[str]]:
-    """Load ``hash_closures.yaml`` and fail closed on incomplete coverage.
-
-    Every module returned by :func:`enumerate_provenance_modules` MUST appear
-    as a key; a module missing its closure entry is a KeyError, not a silent
-    empty closure (fail-closed — see collector/hash_closures.yaml header).
-    """
-    closures_path = Path(path)
-    with closures_path.open(encoding="utf-8") as closures_file:
-        data = yaml.safe_load(closures_file) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{closures_path}: hash closures file must be a mapping at the top level")
-
-    closures: dict[str, list[str]] = {}
-    for module, extras in data.items():
-        if not isinstance(module, str):
-            raise ValueError(f"{closures_path}: closure keys must be module dotted paths, got {module!r}")
-        extras = extras or []
-        if not isinstance(extras, list) or not all(isinstance(item, str) for item in extras):
-            raise ValueError(f"{closures_path}: {module} closure must be a list of strings")
-        closures[module] = list(extras)
-
-    missing = enumerate_provenance_modules() - closures.keys()
-    if missing:
-        raise KeyError(
-            f"{closures_path}: missing hash_closures.yaml entries for provenance module(s) "
-            f"{sorted(missing)} (fail-closed — every provenance producer must declare its "
-            "collector_hash closure)"
-        )
-    return closures
-
-
-def _expand_closure_files(repo_root: Path, extras: list[str]) -> set[str]:
-    files: set[str] = set()
-    for extra in extras:
-        if extra == MODEL_CASES_GROUP:
-            files.update(
-                str(model_cases_file.relative_to(repo_root))
-                for model_cases_file in sorted((repo_root / _MODEL_CASES_DIR).glob("*.yaml"))
-            )
-        else:
-            files.add(extra)
-    return files
-
-
-def collector_hash(module: str, repo_root: str | Path, closures: dict[str, list[str]]) -> str:
-    """Content hash over module file + SHARED_CORE + the module's closure extras.
-
-    Sha256 over sorted (relpath, file-bytes) pairs, "sha256:<hex>" formatted.
-    Content-based (never absolute paths or a commit SHA), so it is stable
-    across rebases and repo relocation.
-    """
-    if module not in closures:
-        raise KeyError(
-            f"{module}: no hash_closures.yaml entry (fail-closed — every collected module must "
-            "declare its hash closure in collector/hash_closures.yaml)"
-        )
+def hashed_files(repo_root: str | Path) -> list[str]:
+    """The sorted repo-relative paths ``_HASHED_SOURCES`` selects, skipping ``__pycache__``."""
     root = Path(repo_root)
-    module_file = module.replace(".", "/") + ".py"
-    relpaths = {module_file, *SHARED_CORE, *_expand_closure_files(root, closures[module])}
+    return sorted(
+        path.relative_to(root).as_posix()
+        for directory, suffixes in _HASHED_SOURCES
+        for path in (root / directory).rglob("*")
+        if path.suffix in suffixes and "__pycache__" not in path.parts and path.is_file()
+    )
 
+
+def collector_hash(repo_root: str | Path) -> str:
+    """Content hash over the collector source, the same for every table a source tree collects.
+
+    Sha256 over sorted (relpath, file-bytes) pairs of :func:`hashed_files`,
+    "sha256:<hex>" formatted. Content-based (never absolute paths or a commit
+    SHA), so it is stable across rebases and repo relocation.
+    """
+    root = Path(repo_root)
     digest = hashlib.sha256()
-    for relpath in sorted(relpaths):
+    for relpath in hashed_files(root):
         content = (root / relpath).read_bytes()
         digest.update(relpath.encode("utf-8"))
         digest.update(b"\0")
@@ -218,7 +116,7 @@ def derive_table_status(*, unresolved_failed_count: int, had_module_failure: boo
     """complete unless a ModuleCollectionFailure was recorded for one of the
     table's producing ops.
 
-    Owner decision (tianhaox, 2026-08-08, PR #1486): recorded per-case
+    Owner decision: recorded per-case
     failures do NOT demote a table. failure_handling.md's core doctrine is
     that a classified failure is DATA — deterministic framework limits (OOM
     at sweep extremes, kernel grid caps) land in the failure log by design,

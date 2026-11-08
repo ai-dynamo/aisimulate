@@ -13,10 +13,10 @@ use super::AllocationRequirement;
 use super::grouped::{GroupedKvPool, GroupedLease};
 use super::state_cache_manager::{StateCacheManager, StateRequest};
 use crate::engine::belady::BeladyOracle;
-pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, ReserveOutcome, VllmBlockPool,
 };
+pub(crate) use crate::engine::cache::vllm_block_pool::{SourceReleaseOrder, SourceReuseDependency};
 use crate::engine::common::hashing::{
     BlockHash, SequenceHash, block_hashes, compute_next_sequence_hash,
 };
@@ -395,8 +395,8 @@ impl VllmKvManager {
 
     /// Hold store sources until their transfer completes instead of fencing
     /// the next owner's write.
-    pub(crate) fn hold_store_sources(&mut self) {
-        self.pool.hold_pending_sources();
+    pub(crate) fn hold_store_sources(&mut self, order: SourceReleaseOrder) {
+        self.pool.hold_pending_sources(order);
     }
 
     pub(crate) fn new_with_event_sink(
@@ -1706,6 +1706,7 @@ impl VllmKvManager {
 
         let data = if is_store {
             KvEventData::Stored(StoredBlocks {
+                cache_salt: None,
                 parent_hash,
                 start_position: None,
                 blocks: full_blocks

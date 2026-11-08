@@ -9,8 +9,8 @@ provenance: local
 runtime:
   framework: sglang
   version: 0.5.14
-  # Private runtime image recorded by the JET campaign and healing jobs.
-  image: gitlab-master.nvidia.com/yimingl/aic-eval-tools/sglang:v0.5.14-cu130-amd64
+  # Private image location omitted; the original immutable digest is retained.
+  # No equivalent public image has been verified for this collection.
   image_digest: sha256:9611bd4c5624b0e9e17829506188a12f17205f2083de0dd44d6c521733553a50
 tables:
   gemm_perf:

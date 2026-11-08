@@ -41,13 +41,23 @@ def _source_sha() -> str:
 
 
 def _source_version() -> str:
-    try:
-        return importlib.metadata.version("aisimulate")
-    except importlib.metadata.PackageNotFoundError:
-        import tomllib
+    installed = {}
+    for name in ("aisim", "aisimulate"):
+        try:
+            installed[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    if len(installed) > 1:
+        raise RuntimeError(
+            "aisim and aisimulate are both installed; use an environment containing only the selected wheel"
+        )
+    if installed:
+        return next(iter(installed.values()))
+    # Source-only runs have a manifest; isolated historical-wheel harnesses do not.
+    import tomllib
 
-        with (_APPLICATION_ROOT / "pyproject.toml").open("rb") as handle:
-            return str(tomllib.load(handle)["project"]["version"])
+    with (_APPLICATION_ROOT / "pyproject.toml").open("rb") as handle:
+        return str(tomllib.load(handle)["project"]["version"])
 
 
 def _optional_set(values: list[str] | None) -> set[str] | None:
