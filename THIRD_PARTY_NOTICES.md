@@ -2043,3 +2043,16 @@ counts in performance keys while staging sentinel slots for native graph
 buckets. The evidence harness calls the installed native runner; it does not
 vendor its implementation. This source attribution does not assert separate
 OSRB approval.
+
+## Ascend 910C measurement proposal
+
+The three data/configuration artifacts in
+`benchmarks/evidence/ascend910c-data-proposal/manifest.json` are unmodified copies
+from https://github.com/xuhuan51/aisimulate-910c at commit
+`8e583af366a33013748b06a8b09c665a396bf6e7`. The manifest lists each original path.
+This fork retains the history of https://github.com/yaleyoou/aisimulate-910c.
+Copyright NVIDIA CORPORATION & AFFILIATES and the respective fork contributors;
+existing file notices are preserved. License: Apache-2.0, included in `LICENSE`.
+Original license: https://github.com/xuhuan51/aisimulate-910c/blob/8e583af366a33013748b06a8b09c665a396bf6e7/LICENSE .
+Contribution contact: Guangli Liu. Data and configuration copies are unmodified;
+the adjacent proposal, manifest and artifact validator are new.
