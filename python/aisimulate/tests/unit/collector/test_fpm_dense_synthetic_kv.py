@@ -102,6 +102,30 @@ def _regimes(case):
     return {row["kv_seed_regime"] for row in aggregate_cell(plan, cell, directory, expected_attempt_id="attempt")}
 
 
+def _gate_skipped(case):
+    """Rewrite points as Dynamo reports a gate-rejected configuration: no injection stamp."""
+    _plan, _cell, _directory, path = case
+    payload = json.loads(path.read_text())
+    for row, group in zip(payload["results"], payload["iteration_groups"], strict=True):
+        reasons = [reason for reason in row["point"].get("sample_reasons", []) if reason != "kvwarm_fake_fallback"]
+        row["point"]["sample_reasons"] = reasons
+        group["point"]["sample_reasons"] = list(reasons)
+        row["kv_seed_regime"] = "skip:dense_model_content_insensitive"
+    path.write_text(json.dumps(payload))
+    return case
+
+
+def test_gate_skipped_dense_points_keep_the_dense_regime(tmp_path):
+    case = _gate_skipped(_dense_cell(tmp_path))
+    assert _regimes(case) == {"skip:dense_model_content_insensitive"}
+
+
+def test_gate_skipped_points_without_dense_evidence_stay_fake_fallback(tmp_path):
+    case = _gate_skipped(_dense_cell(tmp_path))
+    case[0].capability.is_moe = True
+    assert _regimes(case) == {"fake_fallback"}
+
+
 @pytest.mark.parametrize(
     "groups",
     [[_FULL], [_FULL, _FULL], [{"type": "UniformTypeKVCacheSpecs", "specs": [_FULL, _FULL]}]],

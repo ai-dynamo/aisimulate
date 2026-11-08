@@ -809,3 +809,206 @@ def test_invented_observer_verdict_does_not_authorize_invalid_physical_evidence(
     result = validate_observations(path, launch)["tp2"]
     assert result["status"] == "incomplete"
     assert "overlap" in " ".join(result["diagnostics"])
+
+
+# vLLM 0.32.0 kv_cache_layout.py:KVCacheLayout permutations of logical [L, B, H, N, C].
+_LAYOUTS = {
+    "LBHNC": (0, 1, 2, 3, 4),
+    "LBNHC": (0, 1, 3, 2, 4),
+    "LHBNC": (0, 2, 1, 3, 4),
+    "BLHNC": (1, 0, 2, 3, 4),
+    "BLNHC": (1, 0, 3, 2, 4),
+    "BHLNC": (1, 2, 0, 3, 4),
+}
+_ONE_GROUP = (("layer0", "layer1"),)
+_TWO_GROUPS = (("layer0", "layer1"), ("layer2", "layer3"))
+
+
+def _layout_strides(order, shape):
+    """Byte strides in logical [L, B, H, N, C] order, as vLLM 0.32 compute_layout_strides."""
+    strides, current = [0] * 5, 1
+    for dimension in reversed(order):
+        strides[dimension] = current
+        current *= shape[dimension]
+    return strides
+
+
+def _layer_strided(record, *, layout="LBNHC", groups=_ONE_GROUP, kernel=16, heads=2, content=8):
+    """Rewrite a record into the vLLM 0.32 single-buffer plan; every group aliases from byte 0."""
+    cache = record["cache"]
+    count = cache["num_blocks"]
+    template = {key: value for key, value in cache["groups"][0].items() if key not in ("layer_names", "layer_classes")}
+    page = heads * 16 * content
+    cache["groups"] = [{**template, "layer_names": list(names), "spec_page_size_bytes": page} for names in groups]
+    if record["kind"] == "scheduler":
+        cache["group_pool_ids"] = ["pool"] * len(groups)
+        return
+    size = max(len(names) for names in groups) * count * page
+    cache.update(allocated_cache_bytes=size, available_cache_bytes=size + 256)
+    cache["storages"][0]["size_bytes"] = size
+    ratio = 16 // kernel
+    cache["tensor_allocations"], cache["layer_tensors"] = [], {}
+    for group, names in zip(cache["groups"], groups, strict=True):
+        group["layer_classes"] = dict.fromkeys(names, "vllm.model_executor.layers.attention.Attention")
+        strides = _layout_strides(_LAYOUTS[layout], (len(names), count * ratio, heads, kernel, content))
+        cache["tensor_allocations"].append(
+            {
+                "storage_id": "s0",
+                "size": size,
+                "layers": list(names),
+                "layer_stride": strides[0],
+                "block_stride": strides[1] * ratio,
+                "offset": 0,
+                "host_resident": False,
+            }
+        )
+        for index, name in enumerate(names):
+            # create_kv_cache_views views C bytes as bfloat16 elements of 2 bytes.
+            cache["layer_tensors"][name] = {
+                "storage_id": "s0",
+                "storage_offset_bytes": index * strides[0],
+                "shape": [count * ratio, heads, kernel, content // 2],
+                "stride_bytes": [strides[1], strides[2], strides[3], 2],
+                "element_size_bytes": 2,
+                "block_axis": 0,
+                "kernel_block_size_tokens": kernel,
+            }
+
+
+def _strided_fixture(root, version="0.32.0", **layout):
+    path, launch = observation_fixture(root, dense=True, version=version)
+    _mutate(path, lambda record: _layer_strided(record, **layout))
+    return path, launch
+
+
+@pytest.mark.parametrize("layout", sorted(_LAYOUTS))
+@pytest.mark.parametrize("groups", [_ONE_GROUP, _TWO_GROUPS], ids=["one-group", "aliased-groups"])
+def test_vllm_032_layer_strided_plan_imports_every_layout(tmp_path, layout, groups):
+    path, launch = _strided_fixture(tmp_path, layout=layout, groups=groups)
+    result = validate_observations(path, launch)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    resources = FpmResourceProfile.model_validate(result["resources"])
+    # Smallest pool: decode DP0 has 95 blocks, two permanently reserved; each
+    # pool block holds two layers of 256-byte pages.
+    assert resources.runtime_memory.kv_cache_bytes == 93 * 2 * 256
+    assert [group.num_layers for group in resources.cache_groups] == [2] * len(groups)
+    assert {group.page_size_bytes for group in resources.cache_groups} == {512}
+
+
+@pytest.mark.parametrize("layout", ["LBHNC", "LBNHC"])
+def test_vllm_032_kernel_block_subdivision_keeps_manager_block_stride(tmp_path, layout):
+    path, launch = _strided_fixture(tmp_path, layout=layout, kernel=8)
+    result = validate_observations(path, launch)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    assert result["resources"]["runtime_memory"]["kv_cache_bytes"] == 93 * 2 * 256
+
+
+def _legacy_field(cache):
+    cache["tensor_allocations"][0]["shared_by"] = cache["tensor_allocations"][0]["layers"]
+
+
+def _wrong_layer_offset(cache):
+    cache["layer_tensors"]["layer1"]["storage_offset_bytes"] += 256
+
+
+def _overlapping_layers(cache):
+    # LBNHC layer pages need count * 256 bytes; a 256-byte layer stride overlaps.
+    cache["tensor_allocations"][0]["layer_stride"] = 256
+    cache["layer_tensors"]["layer1"]["storage_offset_bytes"] = 256
+
+
+def _wrong_block_stride(cache):
+    cache["tensor_allocations"][0]["block_stride"] *= 2
+
+
+def _past_storage_end(cache):
+    cache["tensor_allocations"][0]["offset"] = 256
+    for name in ("layer0", "layer1"):
+        cache["layer_tensors"][name]["storage_offset_bytes"] += 256
+
+
+def _host_resident(cache):
+    cache["tensor_allocations"][0]["host_resident"] = True
+
+
+def _mixed_views(cache):
+    view = cache["layer_tensors"]["layer1"]
+    view["stride_bytes"] = [view["stride_bytes"][0], 32, 16, 2]
+
+
+def _mixed_groups(cache):
+    first, second = cache["tensor_allocations"]
+    first["layers"], second["layers"] = ["layer0", "layer2"], ["layer1", "layer3"]
+
+
+def _same_group_alias(cache):
+    allocation = cache["tensor_allocations"][0]
+    allocation["layers"] = ["layer0"]
+    cache["tensor_allocations"].append({**allocation, "layers": ["layer1"]})
+    cache["layer_tensors"]["layer1"]["storage_offset_bytes"] = 0
+
+
+@pytest.mark.parametrize(
+    "layout,groups,edit,diagnostic",
+    [
+        ("LBNHC", _ONE_GROUP, _legacy_field, "shared_by plan"),
+        ("LBNHC", _ONE_GROUP, _wrong_layer_offset, "offsets contradict"),
+        ("LBNHC", _ONE_GROUP, _overlapping_layers, "pages overlap"),
+        ("BLNHC", _ONE_GROUP, _wrong_block_stride, "block stride"),
+        ("LBNHC", _ONE_GROUP, _past_storage_end, "backing storage"),
+        ("LBNHC", _ONE_GROUP, _host_resident, "host-resident"),
+        ("LBNHC", _ONE_GROUP, _mixed_views, "different physical views"),
+        ("LBNHC", _TWO_GROUPS, _mixed_groups, "one cache group"),
+        ("LBNHC", _ONE_GROUP, _same_group_alias, "same bytes"),
+    ],
+)
+def test_vllm_032_layer_strided_plan_rejects_unproven_placement(tmp_path, layout, groups, edit, diagnostic):
+    path, launch = _strided_fixture(tmp_path, layout=layout, groups=groups)
+    _mutate(path, lambda record: edit(record["cache"]) if record["kind"] == "worker" else None)
+    result = validate_observations(path, launch)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["resources"] is None
+    assert diagnostic in " ".join(result["diagnostics"])
+
+
+def test_vllm_032_aliased_groups_must_agree_on_block_ownership(tmp_path):
+    path, launch = _strided_fixture(tmp_path, groups=_TWO_GROUPS)
+
+    def block_outer_second_group(record):
+        # Group 1 reuses the same bytes in BLNHC order, so one byte would
+        # belong to different pool blocks in the two aliased groups.
+        if record["kind"] != "worker":
+            return
+        cache = record["cache"]
+        strides = _layout_strides(_LAYOUTS["BLNHC"], (2, cache["num_blocks"], 2, 16, 8))
+        cache["tensor_allocations"][1].update(layer_stride=strides[0], block_stride=strides[1])
+        for index, name in enumerate(("layer2", "layer3")):
+            cache["layer_tensors"][name].update(
+                storage_offset_bytes=index * strides[0], stride_bytes=[strides[1], strides[2], strides[3], 2]
+            )
+
+    _mutate(path, block_outer_second_group)
+    result = validate_observations(path, launch)["tp2"]
+    assert result["status"] == "incomplete"
+    assert "pool block ownership" in " ".join(result["diagnostics"])
+
+
+def test_vllm_032_allocations_at_different_offsets_cannot_overlap(tmp_path):
+    path, launch = _strided_fixture(tmp_path, groups=(("layer0", "layer1"), ("layer2",)))
+
+    def shifted_second_group(record):
+        if record["kind"] == "worker":
+            record["cache"]["tensor_allocations"][1]["offset"] = 256
+            record["cache"]["layer_tensors"]["layer2"]["storage_offset_bytes"] = 256
+
+    _mutate(path, shifted_second_group)
+    result = validate_observations(path, launch)["tp2"]
+    assert result["status"] == "incomplete"
+    assert "different offsets overlap" in " ".join(result["diagnostics"])
+
+
+def test_layer_strided_plan_is_bound_to_its_audited_runtime_version(tmp_path):
+    path, launch = _strided_fixture(tmp_path, version="0.28.0")
+    result = validate_observations(path, launch)["tp2"]
+    assert result["status"] == "incomplete"
+    assert "layer-strided plan" in " ".join(result["diagnostics"])

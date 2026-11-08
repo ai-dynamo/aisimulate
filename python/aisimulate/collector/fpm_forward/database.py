@@ -264,7 +264,7 @@ def aggregate_cell(
         # An image-level DYN_BENCHMARK_POWER_WINDOW_S bypasses the plan's identity.
         raise ValueError(f"{cell.cell_id} wrote power-window artifacts under a plan without measure_power")
 
-    def _kv_seed_regime(point: dict[str, Any], phase: str) -> str:
+    def _kv_seed_regime(point: dict[str, Any], phase: str, native: str | None) -> str:
         if phase == "prefill" and (not cell.execution_identity[0] or int(point["total_kv_read_tokens"]) == 0):
             return "n/a"
         if kvwarm_meta is None:
@@ -282,6 +282,14 @@ def aggregate_cell(
                 return "skip:dense_model_content_insensitive"
             return "fake_fallback"
         if skip_reason:
+            # Dynamo counts each point of a gate-rejected configuration as
+            # points_gate_skipped, adds no fake-fallback stamp, and reports the
+            # point's own regime as skip:<reason>. That per-point report, not the
+            # configuration's skip reason alone, keeps a corroborated dense skip.
+            # https://github.com/ai-dynamo/dynamo/blob/001c9b7781/components/src/dynamo/vllm/instrumented_scheduler.py#L7694-L7704
+            # https://github.com/ai-dynamo/dynamo/blob/001c9b7781/components/src/dynamo/vllm/instrumented_scheduler.py#L6005-L6007
+            if dense_synthetic and native == "skip:dense_model_content_insensitive":
+                return "skip:dense_model_content_insensitive"
             return "fake_fallback"
         return "legacy"
 
@@ -295,7 +303,7 @@ def aggregate_cell(
         if (
             cell.execution_identity[0]
             and (phase == "decode" or total_kv > 0)
-            and _kv_seed_regime(point, phase) != "real_kv"
+            and _kv_seed_regime(point, phase, measurement.kv_seed_regime) != "real_kv"
         ):
             raise ValueError("DeepSeek-V4.1 cached prefill/decode publication requires real_kv measurements")
         if (
@@ -339,7 +347,7 @@ def aggregate_cell(
                 "total_prefill_tokens": total_prefill,
                 "total_kv_read_tokens": total_kv,
                 "partition_policy": "balanced_v1",
-                "kv_seed_regime": _kv_seed_regime(point, phase),
+                "kv_seed_regime": _kv_seed_regime(point, phase, measurement.kv_seed_regime),
                 "latency_ms": max(latency for _rank, latency in measurement.rank_wall_times) * 1000.0,
                 # Power travels with the selected latency sample; never combined across samples.
                 **({"power_w": measurement.power_w} if powered else {}),

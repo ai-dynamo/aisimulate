@@ -374,7 +374,10 @@ class SlurmCellRunner:
             return found
 
         for step_id in owned_steps():
-            self._command(["scancel", step_id])
+            # A step can finish between squeue listing it and scancel, which then
+            # exits nonzero ("Invalid job id specified"). The wait below, not
+            # scancel's status, decides whether an owned step leaked.
+            self._command(["scancel", step_id], check=False)
         deadline = time.monotonic() + 60
         while remaining := owned_steps():
             if time.monotonic() >= deadline:
