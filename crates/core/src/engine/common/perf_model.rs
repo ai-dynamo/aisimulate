@@ -44,6 +44,15 @@ impl std::fmt::Debug for PerfModel {
 }
 
 impl PerfModel {
+    /// Whether the model prices separate prefill and decode phases (see
+    /// [`crate::engine::TimingModel::prices_phases`]).
+    pub fn prices_phases(&self) -> bool {
+        match self {
+            PerfModel::Polynomial => true,
+            PerfModel::External { timing } => timing.prices_phases(),
+        }
+    }
+
     pub fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
         if let PerfModel::External { timing } = self {
             timing

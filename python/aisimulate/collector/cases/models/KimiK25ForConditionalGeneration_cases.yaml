@@ -58,13 +58,7 @@ model_case_values:
       sglang_moe_backends:
         fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
-        trtllm:
-          allowed_modes: [fp8_block]
-        vllm:
-          allowed_modes: [fp8_block]
+      quantization_modes: [fp8_block]
     - model_path: moonshotai/Kimi-K2.5
       hidden_size: 7168
       inter_size: 2048
@@ -80,13 +74,7 @@ model_case_values:
       sglang_moe_backends:
         int4_wo: {90: marlin}
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [int4_wo]
-        trtllm:
-          allowed_modes: [int4_wo]
-        vllm:
-          allowed_modes: [int4_wo]
+      quantization_modes: [int4_wo]
     - model_path: nvidia/Kimi-K2.5-NVFP4
       hidden_size: 7168
       inter_size: 2048
@@ -100,13 +88,7 @@ model_case_values:
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
     - model_path: nvidia/Kimi-K2.6-NVFP4
       hidden_size: 7168
       inter_size: 2048
@@ -120,13 +102,7 @@ model_case_values:
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
     - model_path: nvidia/Kimi-K2.7-Code-NVFP4
       hidden_size: 7168
       inter_size: 2048
@@ -140,13 +116,7 @@ model_case_values:
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
   mla:
     - model_path: moonshotai/Kimi-K2.5
       model_aliases:
@@ -212,8 +182,6 @@ framework_specific_op_cases:
     mla_bmm_gen_pre:
       cases: all
     mla_bmm_gen_post:
-      cases: all
-    moe_ep:
       cases: all
   sglang:
     mla_context:

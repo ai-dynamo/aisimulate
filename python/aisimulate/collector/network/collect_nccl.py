@@ -72,7 +72,7 @@ def runtime_nccl_version() -> str:
 def nccl_benchmark(
     dtype: str,
     nccl_op: str = "all_gather",
-    test_range: str = "10,10000000,1000",
+    test_range: str = "512,1073741825,2",
     num_gpus: int = 8,
     measure_power: bool = False,
 ):
@@ -193,8 +193,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--range",
         "-r",
-        default="512,536870913,2",  # 512B to 512MB
-        help="min_size,max_size,multiplicative_ratio",
+        default="512,1073741825,2",  # Through 1 GiB; upper endpoint is exclusive.
+        help="min_bytes,max_bytes_exclusive,multiplicative_ratio",
     )
     parser.add_argument("--num_gpus", "-n", default=8, type=int)
     parser.add_argument(

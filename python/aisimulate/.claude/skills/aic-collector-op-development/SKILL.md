@@ -12,14 +12,15 @@ whose persisted rows satisfy the existing AIC consumer contract.
 
 Before editing, read:
 
-1. `.claude/rules/collector/layer_permissions.md`,
-   `.claude/rules/collector/failure_handling.md`, and
-   `.claude/rules/collector/case_authoring.md` — the repository-owned policy.
-   It is authoritative over anything restated in this skill.
+1. `.claude/rules/collector/overview.md` (the five things, the failure
+   principle, the rules), then `layer_permissions.md`,
+   `failure_handling.md` and `case_authoring.md` in the same directory — the
+   repository-owned policy. It is authoritative over anything restated in
+   this skill.
 2. `collector/README.md`
 3. `collector/cases/README.md`
-4. `docs/perf_database/collector-v2-population-design.md`, especially
-   **Three identities**, **Population flow**, and **Safe deduplication rules**
+4. `docs/perf-model/collector/data-format.md`, especially **Identity layers**
+   and **Deviations**
 5. The relevant `collector/<backend>/registry.py`, collector module, and model/base
    case YAML
 6. Every Python and Rust loader/query that consumes the op's perf file
@@ -54,8 +55,9 @@ If the task proceeds to GPU collection, also use `$aic-auto-collect`.
   plan selection required by the resolved case plan. Generic resume, retry,
   checkpoint, logging, and output-finalization behavior require separate
   explicit scope.
-- Anchor collector behavior to the requested framework version. Prefer one
-  verified `__compat__`/version route over speculative multi-version branches.
+- Anchor collector behavior to the requested framework version: pin exactly
+  one release (`__compat__ = "<fw>==<version>"`, see the "Version contract"
+  section of `.claude/rules/collector/layer_permissions.md`).
 
 ## Step 1: Establish the consumer contract
 
@@ -151,17 +153,27 @@ population path. If a later design decision removes either side, delete the
 orphan. Do not retain speculative aliases, phase selectors, compatibility
 modes, or one-time audit scaffolding.
 
-## Step 5: Narrow coverage only through the declared homes
+## Step 5: Plan the op; skip only through collector/skips.py
 
-A queued case has two legal collector outcomes: execute it, or raise
-(`layer_permissions.md`). Coverage narrowing happens only in the auditable
-declaration homes — `capabilities.yaml` positive floors, registry
-`unverified`/`unverified_sms` markers, the hang denylist, declared model
-correlations, and the sanctioned memory-feasibility filter — each backed by:
+Every op is on an op plan (`case_authoring.md`, "Op plans"): its getters are
+the one-line `plan_cases` call, a backend whose run function needs more than
+the case declares `rows` or `batch_rows`, and the kernel or runner serving
+selects goes in `dispatch`. A queued case has two legal collector outcomes:
+execute it, or raise (`layer_permissions.md`).
 
-- Exact-version framework source showing the path is unsupported, or
-- A minimal runtime repro on the target framework/GPU, or
-- A proven invocation/key duplicate.
+- **Cases that cannot or should not run** get a `collector/skips.py` entry
+  with the reason and source as the comment above it
+  (`layer_permissions.md`, "Leaving cases out"). Never filter in a getter or
+  with a hard-coded SM check.
+- **Everything finer runs.** A shape boundary, a head count or one framework's
+  own limit fails and is recorded. Do not prune it and do not narrow a shared
+  grid for one framework. Count failures per consumer key and name the
+  unavailable keys.
+- **Capacity** is refused in the worker before allocation
+  (`layer_permissions.md`, "Capacity").
+- The other auditable homes stay: registry `unverified` / `unverified_sms`
+  markers, declared model correlations, and deduplication backed by a proven
+  invocation or key duplicate (Step 2).
 
 An op with no production consumer stays registry-only or explicitly
 experimental instead of joining default model plans. Keep shared generators
@@ -189,7 +201,7 @@ unsupported input.
   op's registry/public getter; testing only a shared case generator is not
   sufficient.
 - Count generator recipes, raw getter tasks, scheduled tasks (after
-  capability floors, registry maturity markers, and the denylist),
+  `collector/skips.py` and registry maturity markers),
   token-expanded benchmark invocations, and unique persisted keys separately.
 - For every deduplication, record stage-local before/after, unique invocation,
   and unique persisted-key counts using repository-owned inputs. Name the
@@ -199,8 +211,8 @@ unsupported input.
 - When a runtime or subprocess expands an inner sweep, compare its quantization
   and SM policy with the outer getter. Test both sides of every changed hardware
   gate and assert that unsupported precision labels are absent.
-- Apply model plan selection, capability floors, registry maturity markers,
-  and the denylist before reporting a count as the final scheduled queue; raw
+- Apply model plan selection, `collector/skips.py` and registry maturity
+  markers before reporting a count as the final scheduled queue; raw
   getter counts are not final plan counts.
 - Assert invocation IDs and persisted keys have no unexplained duplicates.
 - Assert required consumer query keys are covered.
@@ -251,7 +263,8 @@ Do not call the op complete until the handoff states:
 - Exact framework version, GPU/SM, backend, and `__compat__` route
 - Consumer lookup contract and fallback behavior
 - Case counts by backend/op: kept, added, removed, deduplicated, skipped
-- Evidence for every prune/skip
+- The `collector/skips.py` entry behind every filter and the reason behind
+  every guard; failure counts per consumer key, with unavailable keys named
 - Unit/lint/runtime-smoke results
 - A real consumer query or support-matrix sanity check
 - Remaining gaps, especially required EP/TP/quant/window buckets

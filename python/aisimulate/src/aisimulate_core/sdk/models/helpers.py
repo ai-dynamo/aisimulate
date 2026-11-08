@@ -86,34 +86,32 @@ _PROJECTION_GROUP_MARKERS = {
     "q": ("q_a_proj", "q_b_proj", "q_proj"),
     "kv": ("kv_a_proj", "kv_b_proj", "kv_proj", "k_proj", "v_proj"),
     "o": ("o_proj",),
-    "indexer": ("indexer",),
-}
-_PRECISE_PROJECTION_GROUP_MARKERS = {
-    **_PROJECTION_GROUP_MARKERS,
     "indexer": ("indexer.wq_b", "indexer.wk", "indexer.weights_proj"),
 }
 _PROJECTION_MODULE_PATHS = {
-    **_PRECISE_PROJECTION_GROUP_MARKERS,
+    **_PROJECTION_GROUP_MARKERS,
     "kv": (*_PROJECTION_GROUP_MARKERS["kv"], "kv_a_proj_with_mqa"),
-    "indexer": (*_PRECISE_PROJECTION_GROUP_MARKERS["indexer"], "indexer.wk_weights_proj"),
+    "indexer": (*_PROJECTION_GROUP_MARKERS["indexer"], "indexer.wk_weights_proj"),
 }
 
 
-def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: bool = False) -> frozenset:
+def attention_projection_exclusions(raw_config: dict) -> frozenset:
     """Which attention projection groups the checkpoint keeps unquantized.
 
     Returns a subset of :data:`ATTENTION_PROJECTION_GROUPS`. A pattern naming
     the whole block (``self_attn*`` / ``re:.*self_attn.*``) covers every
-    group; otherwise groups are matched per projection name.
+    group; otherwise groups are matched per projection module path.
 
-    vLLM DSA opts into precise module paths: norm and auxiliary exclusions
-    do not exclude projection GEMMs. Other consumers retain their existing
-    interpretation until their precision/data correction is qualified.
+    Norm and auxiliary exclusions do not exclude projection GEMMs. Native GLM
+    FP8 checkpoints list ``q_a_layernorm``, ``kv_a_layernorm``,
+    ``indexer.k_norm`` and ``indexers_proj`` while shipping their attention
+    projections in block FP8; vLLM, SGLang and TRT-LLM skip only the listed
+    module (or its descendants), so every backend runs those GEMMs quantized.
 
     A targets-only ModelOpt MIXED_PRECISION export (see
     :func:`modelopt_mixed_precision_targets`) additionally keeps every group
-    that no ``quantized_layers`` entry names unquantized, on both paths. As
-    on vLLM and SGLang, only a key naming a projection (or a fused module
+    that no ``quantized_layers`` entry names unquantized. As on vLLM and
+    SGLang, only a key naming a projection (or a fused module
     packing it) exactly, or a descendant of one, lists it; an ancestor key
     (``...self_attn``, ``...self_attn.indexer``) quantizes nothing. Keys the
     exclusion list covers and keys at layer index >= ``num_hidden_layers``
@@ -121,20 +119,19 @@ def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: b
     listed in any decoder layer counts as quantized (the DSA indexer exists
     only in full layers). Exclusion globs still apply and still win.
     """
-    excluded = _glob_attention_projection_exclusions(raw_config, precise_module_paths=precise_module_paths)
+    excluded = _glob_attention_projection_exclusions(raw_config)
     targets = modelopt_mixed_precision_targets(raw_config)
     if targets is not None:
         excluded |= frozenset(ATTENTION_PROJECTION_GROUPS) - _modelopt_listed_attention_groups(raw_config, targets)
     return excluded
 
 
-def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_paths: bool) -> frozenset:
+def _glob_attention_projection_exclusions(raw_config: dict) -> frozenset:
     """Attention projection groups named by the checkpoint's exclusion patterns."""
-    markers_by_group = _PRECISE_PROJECTION_GROUP_MARKERS if precise_module_paths else _PROJECTION_GROUP_MARKERS
     excluded: set = set()
     for pattern in quant_exclude_patterns(raw_config):
         p = str(pattern)
-        if precise_module_paths and p.startswith("re:"):
+        if p.startswith("re:"):
             # Compressed-tensors regexes match native module paths, including
             # anchors and escaped dots; projection-name substrings are not
             # sufficient (e.g. a norm-only regex must not exclude a GEMM).
@@ -150,13 +147,6 @@ def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_pa
                 ):
                     excluded.add(group)
             continue
-        if not precise_module_paths:
-            if "self_attn" in p and not any(m in p for markers in markers_by_group.values() for m in markers):
-                return frozenset(ATTENTION_PROJECTION_GROUPS)
-            for group, markers in markers_by_group.items():
-                if any(m in p for m in markers):
-                    excluded.add(group)
-            continue
         # A named child such as q_a_layernorm is not an exclusion of the
         # entire attention block. Native GLM FP8 configs exclude many such
         # norms while retaining FP8 attention projections.
@@ -167,7 +157,7 @@ def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_pa
         # the separate indexers_proj module. Neither excludes wq_b/wk GEMMs.
         if "indexer" in p and p.rsplit("indexer", 1)[1] in block_suffixes:
             excluded.add("indexer")
-        for group, markers in markers_by_group.items():
+        for group, markers in _PROJECTION_GROUP_MARKERS.items():
             if any(m in p for m in markers):
                 excluded.add(group)
     return frozenset(excluded)
@@ -977,7 +967,9 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     elif kv_cache_algo is not None:
         raise ValueError(f"Unsupported kv cache algorithm: {kv_cache_algo}")
 
-    # DSV4 sparse attention requires FP8 KV cache across all backends.
+    # DSV4 is served with an FP8 KV cache: the packed fp8_ds_mla pool on Hopper and
+    # the plain FP8 pool elsewhere (TRT-LLM's recommended configuration, SGLang's
+    # default). A BF16 pool boots on Blackwell too; model it with an explicit kv=bf16.
     if architecture in {"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"}:
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 
@@ -1310,6 +1302,67 @@ def resolve_sglang_mla_compute(
     logger.info("Resolved SGLang 0.5.14 SM90 MLA attention compute to bfloat16 (FA3 execution dtype)")
 
 
+# SMs on which TRT-LLM's attention op runs FP8 context MLA for an FP8 KV cache
+# (mFP8ContextMLA in thop/attentionOp.cpp). Generation MLA runs FP8 for an FP8
+# KV cache on every SM (mFP8GenerationMLA), and no generation table keys on fmha.
+_TRTLLM_FP8_CONTEXT_MLA_SMS = (90, 100, 103, 120)
+_TRTLLM_MLA_FAMILIES = ("DEEPSEEK", "KIMIK25", "KIMIK3")
+
+
+def trtllm_mla_runs_fp8(backend_name: str, sm_version: int | None, model_path: str, kv_mode) -> bool:
+    """Whether TRT-LLM runs this model's MLA context attention in FP8.
+
+    TRT-LLM has no separate precision for MLA attention: on SM90/100/103/120
+    an FP8 KV cache makes context MLA run FP8 FMHA, so BF16 compute on an FP8
+    KV cache is not a configuration it can run there.
+    """
+    return (
+        backend_name == "trtllm"
+        and sm_version in _TRTLLM_FP8_CONTEXT_MLA_SMS
+        and kv_mode == common.KVCacheQuantMode.fp8
+        and get_model_family(model_path) in _TRTLLM_MLA_FAMILIES
+    )
+
+
+def resolve_trtllm_mla_compute(
+    model_config: config.ModelConfig,
+    model_path: str,
+    backend_name: str,
+    system_spec: dict,
+) -> None:
+    """Resolve a bfloat16 MLA FMHA request on an FP8 KV cache to FP8 on TRT-LLM.
+
+    See ``trtllm_mla_runs_fp8``: TRT-LLM runs FP8 there whatever is requested,
+    so an explicit bfloat16 is resolved to the precision it runs. An unset FMHA
+    is left to the checkpoint inference, which already picks FP8 for an FP8 KV
+    cache. Whole-model FPM identities remain caller-owned, and so is a bfloat16
+    a data-driven fallback chose (the Task's, or ``resolve_context_fmha_by_data``
+    on the estimate path) because the reachable context table has no fp8 slice:
+    resolving it to fp8 again would look up rows that do not exist
+    (``_fmha_quant_mode_from_data``).
+    """
+    if model_config.forward_model == "fpm" or model_config.fmha_quant_mode != common.FMHAQuantMode.bfloat16:
+        return
+    if getattr(model_config, "_fmha_quant_mode_from_data", False):
+        return
+    if backend_name != "trtllm":
+        return
+    kv_mode = model_config.kvcache_quant_mode
+    if kv_mode is None:
+        info = _get_model_info(model_path)
+        kv_mode = _infer_quant_modes_from_raw_config(info.get("raw_config", {}), info.get("architecture")).get(
+            "kvcache_quant_mode"
+        )
+    sm_version = system_spec.get("gpu", {}).get("sm_version")
+    if not trtllm_mla_runs_fp8(backend_name, sm_version, model_path, kv_mode):
+        return
+    model_config.fmha_quant_mode = common.FMHAQuantMode.fp8
+    logger.warning(
+        "TRT-LLM runs MLA attention in FP8 on an FP8 KV cache (SM%s); using fmha_quant_mode fp8 instead of bfloat16",
+        sm_version,
+    )
+
+
 def resolve_context_fmha_by_data(
     model_config: config.ModelConfig,
     model_path: str,
@@ -1365,6 +1418,7 @@ def resolve_context_fmha_by_data(
         getattr(database, "version", None),
         getattr(database, "system_spec", {}),
     )
+    resolve_trtllm_mla_compute(model_config, model_path, backend_name, getattr(database, "system_spec", {}))
 
     from aisimulate_core.sdk.perf_database import context_fmha_supported_modes
 
@@ -1391,6 +1445,10 @@ def resolve_context_fmha_by_data(
     # when that inference would pick fp8 (bf16 checkpoints need no change).
     if inferred.get("fmha_quant_mode") == common.FMHAQuantMode.fp8 and common.FMHAQuantMode.bfloat16.name in supported:
         model_config.fmha_quant_mode = common.FMHAQuantMode.bfloat16
+        # The estimate paths resolve the MLA compute precision again before
+        # get_model (run_disagg, static_ctx, engine, kv_cache); mark the
+        # bfloat16 as data-driven so resolve_trtllm_mla_compute leaves it.
+        model_config._fmha_quant_mode_from_data = True
         logger.warning(
             "fmha_quant_mode=fp8 (inferred from the model checkpoint) has no %r perf data; "
             "falling back to bfloat16 FMHA data. Predictions are conservative if the deployed "

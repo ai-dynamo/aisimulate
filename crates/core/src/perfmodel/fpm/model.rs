@@ -18,12 +18,14 @@ use mixed_fallback::MixedComposition;
 #[path = "model_snapshot.rs"]
 mod persist;
 pub use persist::{ForwardPassStateSnapshotSummary, StateSnapshotOptions};
+pub(crate) use persist::{relocate_snapshot_inputs, verify_snapshot_identity};
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::perfmodel::engine::runtime::{RankDetail, RankPricing};
 use crate::perfmodel::engine::spec::EncoderImageShape;
 use crate::perfmodel::engine::{Engine, PerOpValue};
 use crate::{AicError, ForwardPassMetrics};
@@ -42,6 +44,18 @@ use super::options::{
 };
 use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
 use super::samples::{AxisRange, StoreStats, WithOptions};
+
+/// A native iteration estimate with each rank's pricing shared; see
+/// [`ForwardPassPerfModel::estimate_native_iteration`].
+#[derive(Debug)]
+pub(crate) struct NativeIterationEstimate {
+    /// The rank maximum under the iteration's correction.
+    pub(crate) latency_ms: f64,
+    /// The heaviest rank's workload correction.
+    pub(crate) correction_factor: f64,
+    /// Every rank's native pricing, in rank order, idle ranks included.
+    pub(crate) ranks: Vec<Arc<RankPricing>>,
+}
 
 /// Current readiness and tuning state for a `ForwardPassPerfModel`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -179,7 +193,10 @@ pub enum ForwardPassStoreNotReadyReason {
     /// A regression store retains fewer than `min_observations` samples.
     InsufficientData,
     /// A regression store has enough samples but no usable linear fit, for
-    /// example because its features do not vary.
+    /// example because its features do not vary or its constrained optimum
+    /// has zero slopes. The latter is a valid fit boundary, not necessarily a
+    /// numerical failure. Spline stores also require a usable companion linear
+    /// fit, even when their spline component is ready.
     NoUsableFit,
     /// The required learned forest store is missing and no mixed-composition
     /// route is eligible for this workload kind.
@@ -266,16 +283,21 @@ pub struct ForwardPassCorrectionLimits {
 #[serde(deny_unknown_fields)]
 pub struct ForwardPassDeploymentTopology {
     pub worker_type: ForwardPassWorkerType,
+    /// Sizes the identity records as `"unknown"` hold
+    /// [`super::config::UNKNOWN_SIZE`] and serialize as that literal.
+    #[serde(with = "super::config::identity_size")]
     pub tp: u32,
+    #[serde(with = "super::config::identity_size")]
     pub pp: u32,
+    #[serde(with = "super::config::identity_size")]
     pub attention_dp: u32,
     #[serde(default)]
     pub dcp: Option<u32>,
     #[serde(default)]
     pub cp_size: Option<u32>,
-    #[serde(default)]
+    #[serde(default, with = "super::config::identity_optional_size")]
     pub moe_tp_size: Option<u32>,
-    #[serde(default)]
+    #[serde(default, with = "super::config::identity_optional_size")]
     pub moe_ep_size: Option<u32>,
     pub nextn: u32,
     /// Speculation kind, when generic speculation is configured.
@@ -494,6 +516,15 @@ enum ForwardPassPerfMode {
 
 impl ForwardPassPerfModel {
     fn validate_speculative_reference(&self) -> Result<(), AicError> {
+        // Path 2: measured complete SD rounds price speculation themselves.
+        if matches!(&self.mode,
+            ForwardPassPerfMode::Native { engine, .. } if engine.is_measured_speculative_round())
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "a measured speculative-round profile already includes speculative decoding; omit draft_length".into(),
+            ));
+        }
+        // Path 1: only an ordinary STP FPM supplies the reference to scale.
         let already_speculative = self.provenance.as_ref().is_some_and(|provenance| {
             provenance.config.nextn != 0 || provenance.config.speculation.is_some()
         });
@@ -516,9 +547,13 @@ impl ForwardPassPerfModel {
     /// logical request count is widened, its total past KV is preserved, and
     /// the multiplier is applied once after STP estimation/correction and rank
     /// reduction. All FPM estimator kinds use the same rule; it does not build
-    /// a draft graph or assume accepted-token progress. Pure decode only.
+    /// a draft graph or assume accepted-token progress. Pure decode only: a rank
+    /// is prefill when it schedules fresh prefill tokens, so a fully
+    /// prefix-cached prefill record is decode-only and keeps its metadata.
     /// Missing baseline data/readiness remain errors/None. The empirical fit
-    /// was measured at d=1..4; larger depths are extrapolation.
+    /// was measured at d=1..4; larger depths are extrapolation. A measured
+    /// speculative-round profile already includes speculative decoding and
+    /// rejects `draft_length`; query it without one.
     pub fn estimate_speculative_forward_pass_time_ms(
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
@@ -1217,6 +1252,50 @@ impl ForwardPassPerfModel {
                 self.estimate_ordinary_time_ms(metrics_by_rank)?,
             ))
         }
+    }
+
+    /// [`Self::estimate_forward_pass_detailed`] of a native estimator with
+    /// each rank's native pricing shared instead of copied: the same
+    /// corrected iteration latency and correction, and an operation graph's
+    /// executed operations in `detail`, either their values under shared
+    /// names or the diagnostics the detailed estimate reports. `None` for
+    /// estimators without a native rank dispatch (regression, learned and
+    /// mixed composition), whose detailed estimate reports no ranks.
+    pub(crate) fn estimate_native_iteration(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        detail: RankDetail,
+    ) -> Result<Option<NativeIterationEstimate>, AicError> {
+        let ForwardPassPerfMode::Native {
+            engine,
+            corrections,
+            ..
+        } = &self.mode
+        else {
+            return Ok(None);
+        };
+        if self.mixed_composition.is_some() {
+            return Ok(None);
+        }
+        let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+            return Ok(Some(NativeIterationEstimate {
+                latency_ms: 0.0,
+                correction_factor: 1.0,
+                ranks: Vec::new(),
+            }));
+        };
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        let native = engine.forward_pass_ranks(metrics_by_rank, detail, coverage.as_deref_mut())?;
+        let factor = self.correction_factor(corrections, &feature);
+        Ok(Some(NativeIterationEstimate {
+            latency_ms: native.latency_ms * factor,
+            correction_factor: factor,
+            ranks: native.ranks,
+        }))
     }
 
     fn learned_estimate_details(latency_ms: Option<f64>) -> crate::ForwardPassEstimate {
@@ -2228,6 +2307,17 @@ impl ForwardPassPerfModel {
         self.require_native_engine()?.fpm_decode_kv_ceiling()
     }
 
+    /// Effective targets for marked fake-KV rows in the native model's complete
+    /// validated FPM profile. Source indices and raw labels remain available;
+    /// genuine rows are unchanged. This is preparation evidence, not a latency
+    /// query or measured telemetry. Non-native/non-FPM estimators reject it.
+    pub fn fpm_seed_target_normalization(
+        &self,
+    ) -> Result<crate::perf_database::fpm_forward::FpmSeedTargetNormalization, AicError> {
+        self.require_native_engine()?
+            .fpm_seed_target_normalization()
+    }
+
     /// Snapshot of actual native direct-FPM lookup resolutions, including
     /// failed lookups. `None` means collection was disabled. Counts do not
     /// include timings reused by an external cache, or calls on a separate
@@ -2391,6 +2481,53 @@ impl ForwardPassPerfModel {
         }
     }
 
+    /// Whether estimates read per-request detail of an iteration beyond each
+    /// rank's five scheduled counts and sums: `extend_lengths` and
+    /// `past_kv_lengths`, or the length variances. Native estimators never
+    /// do; a regression does through request feature axes, a learned model
+    /// through request, slot or variance features.
+    pub(crate) fn reads_request_detail(&self) -> bool {
+        const VARIANCE_FEATURES: [&str; 4] = [
+            "var_prefill_length",
+            "var_decode_kv_tokens",
+            "sum_decode_kv_squared",
+            "log1p_sum_decode_kv_squared",
+        ];
+        let reads_detail = |names: &[String]| {
+            names.iter().any(|name| {
+                name.starts_with("req_")
+                    || name.starts_with("slot")
+                    || VARIANCE_FEATURES.contains(&name.as_str())
+            })
+        };
+        match &self.mode {
+            ForwardPassPerfMode::Native { .. } => false,
+            ForwardPassPerfMode::Regression { .. } => {
+                use super::RegressionFeatureAxis::*;
+                let Some(provenance) = &self.provenance else {
+                    return false;
+                };
+                let regression = &provenance.config.estimator_config.fpm_regression;
+                regression
+                    .sampling
+                    .axes
+                    .iter()
+                    .chain(
+                        regression
+                            .fit
+                            .linear
+                            .iter()
+                            .flat_map(|linear| &linear.feature_axes),
+                    )
+                    .any(|axis| !matches!(axis, Attention | Moe | Count | LogCount | CountSquared))
+            }
+            ForwardPassPerfMode::Learned { learned, .. } => reads_detail(learned.feature_names()),
+            ForwardPassPerfMode::CausalSelector(model) => {
+                reads_detail(model.stable.feature_names())
+            }
+        }
+    }
+
     /// Exact immutable construction identity and selected systems root.
     pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
         self.provenance.as_ref()
@@ -2548,7 +2685,8 @@ fn prepare_learned_iteration(
         return Err(AicError::InvalidForwardPassMetrics(
             "learned artifact uses per-request features but the iteration carries no aligned, \
              consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
-             per-request FPM hooks (aisimulate_core.fpm_hooks) or train with --features v1"
+             per-request FPM hooks (aisimulate_core.fpm_hooks) or retrain with the default \
+             aggregate --features fpm5 (or v1)"
                 .to_string(),
         ));
     }
@@ -2659,6 +2797,10 @@ impl IterationFeatures {
         Some(feature)
     }
 
+    // TODO: Weigh prefill and decode work by their cost. This score adds
+    // prefill tokens and decode KV tokens one for one, although computing a
+    // prefill token costs far more than reading a KV token, so the rank whose
+    // correction an iteration takes may not be the one that sets its time.
     fn load_score(&self) -> f64 {
         self.x.iter().sum()
     }

@@ -50,7 +50,7 @@ def test_mhc_sweep_fails_closed_after_an_inner_error(monkeypatch):
     runner = SimpleNamespace(model=SimpleNamespace(model=SimpleNamespace(layers=[layer])))
     monkeypatch.setattr(module, "_load_one_layer_runner", lambda *_args, **_kwargs: runner)
     monkeypatch.setattr(module, "_hidden_size", lambda _layer: 4096)
-    monkeypatch.setattr(module, "get_version", lambda _package: "0.5.14")
+    monkeypatch.setattr(module, "get_version", lambda _package: "0.5.21")
     monkeypatch.setattr(module, "_make_residual", lambda _layer, num_tokens, _device: num_tokens)
     monkeypatch.setattr(module, "_make_kernel", lambda _layer, _op, residual: residual)
     monkeypatch.setattr(module, "_mhc_call_args", lambda _layer: (None, None))

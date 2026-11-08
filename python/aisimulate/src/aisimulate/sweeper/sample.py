@@ -66,6 +66,7 @@ _DECODE_PINNED = (
     "decode_block_size",
     "decode_gpu_memory_utilization",
     "decode_enable_prefix_caching",
+    "decode_radix_cache",
     "decode_kv_bytes_per_token",
     "decode_native_host_offload",
     "decode_num_gpu_blocks",

@@ -14,6 +14,28 @@ The collected performance data can be used for performance modeling, scheduling 
 
 ## Overview
 
+DSA decode collection uses the resolved serving graph buckets. With padding
+enabled, a real batch of 52 executes the captured 56-slot shape using
+SGLang's native decode-buffer registry and backend-provided sequence-length
+sentinels. Padded slots do not become extra full-history requests. Rows remain
+keyed by the 52 real requests. With padding disabled, only exact captured
+batches use graphs; other batches are timed eagerly. Native QKV projection and
+fresh `AttentionInputs` are included in every timed DSA forward; history
+initialization is measured separately as collection overhead.
+
+Current SGLang 0.5.21 DSA prefill collection disables prefill CUDA graphs and
+measures the eager path. Serving uses the newer native breakable-prefill graph,
+whose attention-only adapter is not yet ported; enabling that path currently
+raises `ValueError` rather than producing a graph measurement. This is an
+explicit serving-parity deviation, not graph qualification.
+
+The historical TC graph path's per-model Dynamo entry can raise
+`MeasurementBoundaryError` inside the per-layer timing boundary. That guard
+writes no performance row, but it is not the current eager-prefill path.
+
+This corrects future collection. Historical exact-shape batch-52 rows must
+not be relabeled as padded-serving measurements.
+
 - **collect_mla_module.py**: Collects performance data for MLA and DSA attention module operators
 - Large-EP expert compute is measured by
   `../wideep/sglang/collect_deepep_moe.py` into the `moe_ep` table; measured
@@ -23,14 +45,14 @@ The collected performance data can be used for performance modeling, scheduling 
 
 ## Requirements
 
-- Stock SGLang collectors: v0.5.14
+- Stock SGLang collectors: v0.5.21
 
 ```bash
-docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.14-cu130
+docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.21-cu130
 ```
 
 - WideEP MoE collector: the independent v0.5.10 image declared in
-  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.14.
+  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.21.
 - DeepSeek model config (or use dummy weights)
 
 ## Execution Modes
@@ -40,7 +62,7 @@ Stock diagnostics and the independent WideEP MoE collector use these modes:
 ### Mode 1: Direct Diagnostic Execution
 
 Run scripts directly with command-line arguments for single GPU diagnostics.
-The MLA command exercises the stock 0.5.14 module implementation; it is not a
+The MLA command exercises the stock 0.5.21 module implementation; it is not a
 registered or accepted WideEP MLA collector:
 
 ```bash
@@ -63,7 +85,7 @@ cd /path/to/collector/
 # Run all stock SGLang operators
 python collect.py --backend sglang
 
-# Run stock DSA module operators in the v0.5.14 container
+# Run stock DSA module operators in the v0.5.21 container
 python collect.py --backend sglang --ops dsa_context_module dsa_generation_module
 
 # Run the large-EP MoE compute operator separately in the v0.5.10 container
@@ -103,7 +125,7 @@ files as parquet, and each file is then published to the family selected by
 
 Modify `output_path` in each direct script to your desired staging location:
 ```python
-output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.14/"
+output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.21/"
 ```
 
 
@@ -163,3 +185,36 @@ communication. Use `collector/wideep/sglang/collect_deepep_moe.py` for
 Large-EP local expert compute; it publishes the dedicated `moe_ep` table.
 Stock `moe_perf` is a modeled fallback only when a matching `moe_ep` row is
 not available.
+
+## GLM agentic decode campaign
+
+`agentx_dsa_shards.yaml` selects the full-indexer and skip-indexer DSA module
+groups for `nvidia/GLM-5.2-NVFP4`, TP8, BF16 projections and FP8 KV on B300.
+The campaign explicitly passes `model_path` before deduplication and enables
+`include_long_context` in each shard. No model-filter environment variable is
+required. Shared sweep defaults belong in
+`cases/base_ops/mla_module.yaml`; this campaign file only selects the groups.
+
+The SGLang 0.5.21 collection used AISimulate commit
+[`0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04`](https://github.com/ai-dynamo/aisimulate/commit/0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04),
+with 250 shapes per group, through past-KV length 720,896. Reproduction must
+pin that collector revision, the runtime image digest recorded in the data
+sidecar, and the campaign's B300 capacity. Current defaults may generate a
+different plan. See collection jobs
+[full-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211485)
+and [skip-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211486).
+The packaged 0.5.21 table retains 5,812 earlier rows, 456 November 2 additions
+and 44 batch-52 rows freshly recollected from signed collector
+`c4b44d81f526b3c5299f7c15ccafe02d90b39229`.
+At 308 overlapping physical coordinates it keeps the newer measurements,
+which include native QKV projection and fresh inputs as serving does; 192
+coordinates are new. Original source revisions and plan hashes are preserved.
+The unmodified 6,620-row append, paired timing evidence, normalization checks
+and audit scripts are retained locally under
+`benchmarks/evidence/collector/pr665-b300-dsa-boundary/`, outside this PR.
+The sidecar's archive-path comment refers to that local evidence. The remaining
+4.3% full-indexer timing difference is unisolated.
+The archived historical batch-52 rows were exact-shape graphs. Their 44
+replacements use the collector's native serving-padding path and retain their
+actual source revision and exact requested-subset hashes. Merge depends on
+the coordinated collector fix.

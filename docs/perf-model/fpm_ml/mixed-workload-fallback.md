@@ -79,9 +79,9 @@ or mixed calibration stores.
 
 `fpm_learned.write_original_a_manifest(...)` exports the accepted A groups using
 the trainer's eligibility rules for the seed artifacts' ordered feature list.
-All referenced seeds must agree on that list. This preserves request-list
-requirements for the default aggregated `atomic10` features and aggregate-only
-eligibility for `fpm5`. It writes exclusively to a new file and returns
+All referenced seeds must agree on that list. This preserves aggregate-only
+eligibility for the default `fpm5` features and request-list requirements for an
+explicit per-request preset such as `atomic10`. It writes exclusively to a new file and returns
 the path and SHA-256 for `temporary_mixed_composition.original_a`. It must run
 before C data is mixed into the training population.
 

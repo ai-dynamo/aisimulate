@@ -58,10 +58,10 @@ def test_glm5_flash_mla_keeps_the_production_topk_width():
     assert "if k % 64" not in source
 
 
-def test_glm5_sparse_collector_is_pinned_to_sglang_0514_dsa_api():
+def test_glm5_sparse_collector_uses_the_dsa_fuse_topk_switch_not_the_nsa_spelling():
+    # the file pin itself is enforced by test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime
     source = SOURCE_PATH.read_text(encoding="utf-8")
 
-    assert '__compat__ = "sglang==0.5.14"' in source
     assert "SGLANG_DSA_FUSE_TOPK" in source
     assert "SGLANG_NSA_FUSE_TOPK" not in source
 
@@ -79,63 +79,64 @@ def test_glm5_mqa_matches_sglang_query_row_chunking_contract():
     assert "ke[start:end]" in source
 
 
-def test_glm5_sparse_case_plan_shards_real_context_and_decode_batches():
-    helpers = _load_pure_helpers("_glm5_sparse_kernel_cases")
-    helpers["_selected_glm5_models"] = lambda: ["nvidia/GLM-5-NVFP4"]
-    helpers["get_sm_version"] = lambda: 90
-    helpers["_dsa_context_derived_shapes"] = lambda _model: [(0, 128, 1), (64, 128, 2)]
-    helpers["_dsa_generation_derived_shapes"] = lambda _model: [(128, 1, 4), (256, 1, 2)]
+def test_glm5_sparse_rows_carry_the_dsa_module_points_of_their_batch(monkeypatch):
+    from collector.op_plans import _long_context_points, _max_position, get_mla_module_sweep_spec, plan
 
-    for kernel in ("mqa", "topk", "dsa_attn"):
-        assert helpers["_glm5_sparse_kernel_cases"](kernel) == [
-            ["nvidia/GLM-5-NVFP4", kernel, 1],
-            ["nvidia/GLM-5-NVFP4", kernel, 2],
-            ["nvidia/GLM-5-NVFP4", kernel, 4],
-        ]
-
-
-def test_glm5_sparse_smoke_samples_each_batch_across_its_full_shape_range():
-    source = SOURCE_PATH.read_text(encoding="utf-8")
-
-    assert 'if "--smoke" in sys.argv and len(shapes) > 8:' in source
-    assert "round(i * (len(shapes) - 1) / 7)" in source
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    sweep = get_mla_module_sweep_spec("plan")
+    max_position = _max_position("zai-org/GLM-5")
+    expected = {(b, s, p) for b, s, p in _long_context_points("context", sweep, max_position)}
+    expected |= {(b, 1, kv) for b, kv, _p in _long_context_points("generation", sweep, max_position)}
+    for kernel, op in (
+        ("mqa", "glm5_mqa_logits_module"),
+        ("topk", "glm5_topk_module"),
+        ("dsa_attn", "glm5_dsa_attn_module"),
+    ):
+        rows = plan(op, "sglang", 90).rows
+        assert len({row[2] for row in rows}) == len(rows)  # one task per batch
+        got = set()
+        for model, row_kernel, batch, points in rows:
+            assert (model, row_kernel) == ("zai-org/GLM-5", kernel)
+            assert points == sorted(points)  # shortest prefix first
+            got |= {(batch, seq_len, prefix) for prefix, seq_len in points}
+        assert got == expected
 
 
 def test_glm5_sparse_platform_gating_lives_outside_the_getter():
-    """The getter itself carries no SM predicate: pre-Hopper is dropped by the
-    op_min_sm capability floors and SM120 is parked by registry maturity
-    markers, so both stay auditable declaration-layer decisions."""
-    from collector.capabilities import _load_capabilities
+    """The getter itself carries no SM predicate: pre-Hopper is dropped by
+    collector/skips.py and SM120 is parked by registry maturity markers, so
+    both stay auditable declaration-layer decisions."""
     from collector.sglang.registry import REGISTRY
+    from collector.skips import filter_cases
 
     source = SOURCE_PATH.read_text(encoding="utf-8")
     assert "not in {90, 100, 103}" not in source
 
-    _, op_min_sm = _load_capabilities()
     glm5_ops = ("glm5_mqa_logits_module", "glm5_topk_module", "glm5_dsa_attn_module")
     for op in glm5_ops:
-        assert op_min_sm.get(op) == 90
+        assert filter_cases([[1]], "sglang", op, 89)[0] == []
+        assert filter_cases([[1]], "sglang", op, 90)[0] == [[1]]
     markers = {entry.op: entry.unverified_sms for entry in REGISTRY if entry.op in glm5_ops}
     assert markers == dict.fromkeys(glm5_ops, (120,))
 
 
 def test_dsv4_sparse_platform_gating_lives_outside_the_getter():
-    """Same contract for the DSV4 sparse sub-kernel family; the flash_mla-less
-    HCA/CSA collectors are parked whole-op unverified instead of silently
-    enumerating zero cases."""
-    from collector.capabilities import _load_capabilities
+    """Same contract for the DSV4 sparse sub-kernel family. The flash_mla-less
+    HCA/CSA FMLA sidecar ops were parked unverified until 2026-10-15 and are now
+    removed outright (retired SDK placeholders that failed every registry-generated
+    shard plan), so only the indexer scoring kernel and the topk calibration remain."""
     from collector.sglang.registry import REGISTRY
+    from collector.skips import filter_cases
 
     dsv4_source = (REPO_ROOT / "collector" / "sglang" / "deepseekv4_sparse_modules.py").read_text(encoding="utf-8")
     assert "_dsv4_sparse_kernel_supported" not in dsv4_source
     assert "_dsv4_topk_kernel_supported" not in dsv4_source
 
-    _, op_min_sm = _load_capabilities()
-    floors = ("dsv4_paged_mqa_logits_module", "dsv4_hca_attn_module", "dsv4_csa_attn_module", "dsv4_csa_topk_calib")
+    floors = ("dsv4_paged_mqa_logits_module", "dsv4_csa_topk_calib")
     for op in floors:
-        assert op_min_sm.get(op) == 90
+        assert filter_cases([[1]], "sglang", op, 89)[0] == []
+        assert filter_cases([[1]], "sglang", op, 90)[0] == [[1]]
     by_op = {entry.op: entry for entry in REGISTRY}
     assert by_op["dsv4_paged_mqa_logits_module"].unverified_sms == (120,)
     assert by_op["dsv4_csa_topk_calib"].unverified_sms == (120,)
-    assert by_op["dsv4_hca_attn_module"].unverified is True
-    assert by_op["dsv4_csa_attn_module"].unverified is True
+    assert not {"dsv4_hca_attn_module", "dsv4_csa_attn_module"} & set(by_op)

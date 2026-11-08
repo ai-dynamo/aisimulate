@@ -444,7 +444,9 @@ async def check():
         thread.start()
         try:
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch()
+                browser = await playwright.chromium.launch(
+                    executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+                )
                 page = await browser.new_page(viewport={"width": 1600, "height": 1050}, color_scheme="light")
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
@@ -459,7 +461,7 @@ async def check():
                 # Navigation between the accuracy pages preserves the shared preference.
                 await page.goto(url.replace("fpm-accuracy/", "e2e-accuracy/"))
                 await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
-                await page.get_by_role("button", name="Switch to light theme").click()
+                await page.get_by_role("combobox", name="Color theme").select_option("light")
                 await page.goto(url + "?branch=main")
                 await expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 await expect(page.locator(".overview-model-row")).to_have_count(2)
@@ -471,7 +473,7 @@ async def check():
                 )
                 await expect(page.locator("thead th")).to_have_count(6)
                 assert not await page.locator('a[href*="coverage.html"]').count()
-                await expect(page.locator(".fpm-tabs a")).to_have_count(5)
+                await expect(page.locator(".fpm-tabs a")).to_have_count(6)
                 assert "op-based" not in await page.locator("body").inner_text()
                 await expect(page.locator(".overview-config-row").first).to_contain_text("7 excluded or unavailable")
                 await expect(page.locator("#overview-body")).not_to_contain_text("predicted")

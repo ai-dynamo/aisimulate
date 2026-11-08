@@ -14,8 +14,8 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 0.9027949630514962,
-          "source": "mixed"
+          "latency_ms": 0.5859839916229248,
+          "source": "silicon"
         },
         "context_embedding": {
           "energy_wms": 0.0,
@@ -906,8 +906,8 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.1257301377103808,
-          "source": "mixed"
+          "latency_ms": 1.4788853377103806,
+          "source": "silicon"
         },
         "context_embedding": {
           "energy_wms": 0.0,
@@ -1162,7 +1162,7 @@
   "post_freeze_pins": {
     "gpt-oss-20b-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
     },
     "kimi-k25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
@@ -1190,7 +1190,7 @@
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "engine": "rust",

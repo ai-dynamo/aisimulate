@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Public replay facade over the mechanically moved topology runtimes.
 
@@ -10,7 +13,9 @@ use anyhow::Result as AnyResult;
 use uuid::Uuid;
 
 use crate::engine::KvEvictionPolicy;
-use crate::engine::belady::{BeladyOracle, input_sequence_hashes};
+use crate::engine::belady::BeladyOracle;
+#[cfg(test)]
+use crate::engine::belady::input_sequence_hashes;
 use crate::replay::OfflineDisaggReplayConfig;
 use crate::replay::agg::AggRuntimeImpl;
 use crate::replay::artifact::{
@@ -31,7 +36,9 @@ use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::loadgen::WorkloadDriver;
 use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
 use crate::replay::scaling::ReplayScalingPolicy;
-use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
+use crate::replay::telemetry::{
+    ReplayTelemetryCaptureSink, ReplayTelemetryObserver, ReplayTelemetrySnapshot,
+};
 use crate::replay::{
     ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
     ReplayResult, ReplaySpec, ReplayTopology, WorkerStage,
@@ -145,6 +152,17 @@ where
     ) -> AnyResult<Vec<crate::replay::core::Placement>> {
         self.0
             .request_terminal(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn prefill_started(
+        &mut self,
+        request_id: Uuid,
+        reused_input_tokens: usize,
+        now_ms: f64,
+    ) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0
+            .prefill_started(request_id, reused_input_tokens, now_ms)
             .map_err(placement_boundary)
     }
 
@@ -307,6 +325,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     runtime_input: Option<ReplayRuntimeInput>,
     capture: ReplayCaptureOptions,
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
+    telemetry_capture_interval_ms: Option<f64>,
     tokenization: Option<TokenizationLatency>,
     detokenization: Option<DetokenizationLatency>,
 }
@@ -357,6 +376,7 @@ impl<C: ReplayComposition> Replayer<C> {
             runtime_input: None,
             capture: ReplayCaptureOptions::default(),
             telemetry: None,
+            telemetry_capture_interval_ms: None,
             tokenization: None,
             detokenization: None,
         })
@@ -389,6 +409,18 @@ impl<C: ReplayComposition> Replayer<C> {
             )));
         }
         self.telemetry = Some((sample_interval_ms, observer));
+        Ok(self)
+    }
+
+    /// Capture requests, scheduler samples and lifecycle across every replay phase.
+    /// Existing summary and per-request output keep their profile-only contracts.
+    pub fn with_telemetry_capture(mut self, sample_interval_ms: f64) -> ReplayResult<Self> {
+        if !sample_interval_ms.is_finite() || sample_interval_ms <= 0.0 {
+            return Err(ReplayError::InvalidSpec(
+                "telemetry sample interval must be finite and positive".into(),
+            ));
+        }
+        self.telemetry_capture_interval_ms = Some(sample_interval_ms);
         Ok(self)
     }
 
@@ -507,6 +539,16 @@ impl<C: ReplayComposition> Replayer<C> {
             None
         };
         let telemetry = self.telemetry.take();
+        if telemetry.is_some() && self.telemetry_capture_interval_ms.is_some() {
+            return Err(ReplayError::InvalidSpec(
+                "telemetry capture and an external telemetry observer cannot be combined".into(),
+            ));
+        }
+        let telemetry_capture = self
+            .telemetry_capture_interval_ms
+            .map(ReplayTelemetryCaptureSink::new);
+        let retain_per_request =
+            self.spec.record_per_request || self.capture.effective_per_request();
         let encoder = match &self.spec.encoder {
             None => None,
             Some(encoder) => {
@@ -591,9 +633,7 @@ impl<C: ReplayComposition> Replayer<C> {
                 .map_err(runtime_error)?
                 .with_capture_options(self.capture)
                 .with_sla_thresholds(self.spec.sla)
-                .with_per_request_records(
-                    self.spec.record_per_request || self.capture.effective_per_request(),
-                )
+                .with_per_request_records(retain_per_request || telemetry_capture.is_some())
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
                 .with_encoder(encoder.clone())
                 .with_tokenization(tokenization)
@@ -603,6 +643,11 @@ impl<C: ReplayComposition> Replayer<C> {
                 }
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let (Some(sink), Some(interval)) =
+                    (&telemetry_capture, self.telemetry_capture_interval_ms)
+                {
+                    runtime = runtime.with_telemetry_capture(interval, sink.clone());
                 }
                 if let Some((sample_interval_ms, observer)) = telemetry {
                     runtime = runtime.with_telemetry_observer(
@@ -669,15 +714,18 @@ impl<C: ReplayComposition> Replayer<C> {
                 .map_err(runtime_error)?
                 .with_capture_options(self.capture)
                 .with_sla_thresholds(self.spec.sla)
-                .with_per_request_records(
-                    self.spec.record_per_request || self.capture.effective_per_request(),
-                )
+                .with_per_request_records(retain_per_request || telemetry_capture.is_some())
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
                 .with_encoder(encoder.clone())
                 .with_tokenization(tokenization)
                 .with_detokenization(detokenization);
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let (Some(sink), Some(interval)) =
+                    (&telemetry_capture, self.telemetry_capture_interval_ms)
+                {
+                    runtime = runtime.with_telemetry_capture(interval, sink.clone());
                 }
                 if let Some((sample_interval_ms, observer)) = telemetry {
                     runtime = runtime.with_telemetry_observer(
@@ -692,6 +740,9 @@ impl<C: ReplayComposition> Replayer<C> {
         let mut report = collector
             .finish()
             .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0);
+        if let Some(capture) = telemetry_capture {
+            report.telemetry = Some(capture.finish(&mut report, retain_per_request));
+        }
         report.kv_eviction_policy = engine_config.kv_eviction_policy;
         report.kv_eviction_assumption = (engine_config.kv_eviction_policy
             == KvEvictionPolicy::Belady)
@@ -738,7 +789,12 @@ fn prepare_belady_oracle(
                 let request_id = *request.uuid.get_or_insert_with(Uuid::new_v4);
                 forecast.push((
                     request_id,
-                    input_sequence_hashes(&request.tokens, block_size as usize),
+                    crate::replay::loadgen::ReplayRequestHashes::from_tokens_with_cache_salt(
+                        &request.tokens,
+                        block_size,
+                        request.cache_salt.as_deref(),
+                    )
+                    .sequence_hashes,
                 ));
             }
             forecast
@@ -881,6 +937,7 @@ fn lower_requests(
             let routing = request.routing_metadata()?;
             Ok(DirectRequest {
                 tokens,
+                cache_salt: request.cache_salt.clone().filter(|salt| !salt.is_empty()),
                 max_output_tokens: request.output_tokens,
                 output_token_ids: request.output_token_ids.clone(),
                 uuid: Some(request_id),
@@ -945,6 +1002,39 @@ mod tests {
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
+
+    #[test]
+    fn cache_salt_keeps_belady_demand_in_the_request_namespace() {
+        let salts = [Some("alpha"), Some("beta"), None];
+        let mut input = ReplayRuntimeInput::Requests(
+            salts
+                .iter()
+                .enumerate()
+                .map(|(index, salt)| DirectRequest {
+                    tokens: vec![1, 2, 3, 4],
+                    cache_salt: salt.map(str::to_owned),
+                    uuid: Some(Uuid::from_u128(index as u128 + 1)),
+                    arrival_timestamp_ms: Some(index as f64),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        let oracle = prepare_belady_oracle(&mut input, 2).unwrap();
+        for (index, salt) in salts.into_iter().enumerate() {
+            let hashes = crate::replay::loadgen::ReplayRequestHashes::from_tokens_with_cache_salt(
+                &[1, 2, 3, 4],
+                2,
+                salt,
+            );
+            for hash in &hashes.sequence_hashes {
+                assert_eq!(oracle.next_use(*hash), index);
+            }
+            oracle.retire_requests([Uuid::from_u128(index as u128 + 1)]);
+            for hash in hashes.sequence_hashes {
+                assert_eq!(oracle.next_use(hash), usize::MAX);
+            }
+        }
+    }
 
     #[test]
     fn belady_native_forecast_preserves_queue_identity_and_rejects_unordered_arrivals() {
@@ -1025,6 +1115,7 @@ mod tests {
             sla: Default::default(),
             requests: vec![
                 ReplayRequest {
+                    cache_salt: None,
                     id: "length-only".into(),
                     arrival_time_ms: 0.0,
                     input_tokens: 3,
@@ -1044,6 +1135,7 @@ mod tests {
                     }),
                 },
                 ReplayRequest {
+                    cache_salt: None,
                     id: "materialized".into(),
                     arrival_time_ms: 1.0,
                     input_tokens: 2,
@@ -1095,6 +1187,7 @@ mod tests {
             record_per_request: false,
             sla: Default::default(),
             requests: vec![ReplayRequest {
+                cache_salt: None,
                 id: "random".into(),
                 arrival_time_ms: 0.0,
                 input_tokens: 1,

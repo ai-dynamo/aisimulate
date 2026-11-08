@@ -3,7 +3,10 @@
 # SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
 # Dense/decode composition and exclusion matching adapt (with modifications) SGLang:
-# https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+# Original audit revision: 02c5a855aceb968c310e6fbc6632270e26edc84b.
+# Public reference (not a verified mirror of the audit revision):
+# https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt
+# Source paths, modification status, and license: THIRD_PARTY_NOTICES.md.
 # The vLLM copyright is retained from SGLang's deepseek_v2.py, which cites:
 # https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py
 
@@ -279,10 +282,7 @@ class DeepSeekV32Model(BaseModel):
         # -> is_layer_skipped, modelopt.py:150-161 @0.24.0). Exclusions are
         # PER-PROJECTION: DeepSeek-V3.2-NVFP4 keeps q/kv/indexer in BF16 but
         # quantizes o_proj; GLM-5 NVFP4 excludes the whole self_attn block.
-        extra_params.setdefault(
-            "dsa_attn_quant_exclusions",
-            attention_projection_exclusions(raw_config, precise_module_paths=backend_name == "vllm"),
-        )
+        extra_params.setdefault("dsa_attn_quant_exclusions", attention_projection_exclusions(raw_config))
         if _shared_experts_excluded_from_quant(raw_config):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
         # GLM-5.2 shares one DSA topk index across ``index_topk_freq`` layers

@@ -159,6 +159,23 @@ def test_spline_initial_search_respects_larger_minimum_observation_count():
     assert store["spline"]["last_search_observation"] == 40
 
 
+@pytest.mark.parametrize("kind", ["linear", "spline"])
+def test_regression_rejects_native_seed_target_normalization_without_mutation(kind):
+    model = RustForwardPassPerfModel.best_available(_config({"kind": kind}))
+    try:
+        for index in range(1, 33):
+            model.tune_with_fpms(_sample(index))
+        before = model.regression_store_diagnostics()
+        assert before[0]["ready"]
+        prediction = model.estimate_forward_pass_time_ms(_sample(33))
+        with pytest.raises(ValueError, match="requires a native"):
+            model.fpm_seed_target_normalization()
+        assert model.regression_store_diagnostics() == before
+        assert model.estimate_forward_pass_time_ms(_sample(33)) == prediction
+    finally:
+        model.close()
+
+
 def test_spline_component_cannot_make_store_ready_without_linear_fit():
     model = RustForwardPassPerfModel.best_available(
         _config(
@@ -181,6 +198,14 @@ def test_spline_component_cannot_make_store_ready_without_linear_fit():
     assert store["spline"]["ready"]
     assert not store["ready"]
     assert model.diagnostics()["readiness"] == "insufficient_data"
+    assert model.readiness_report()["stores"] == [
+        {
+            "workload_kind": "pure_decode",
+            "ready": False,
+            "not_ready_reason": "no_usable_fit",
+            "retained_observations": 32,
+        }
+    ]
     for kv in (0, 15, 31, 32):
         assert (
             model.estimate_forward_pass_time_ms(

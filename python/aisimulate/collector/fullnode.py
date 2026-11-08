@@ -13,8 +13,9 @@ import random
 import traceback
 from datetime import datetime
 
-from collector.capabilities import filter_cases
+from collector.case_generator import without_models
 from collector.helper import create_test_case_id
+from collector.skips import filter_cases, models
 from collector.version_resolver import _check_compat
 
 SGLANG_FULLNODE_OPS = {
@@ -75,6 +76,7 @@ def collect_sglang_fullnode_op(
     get_test_cases_for_model,
     resume_checkpoint_cls,
     logger,
+    replay=None,
 ) -> list[dict]:
     """Run one SGLang full-node op with normal V3 checkpoint evidence."""
     op = collection["type"]
@@ -101,12 +103,21 @@ def collect_sglang_fullnode_op(
     run_func = getattr(run_module, collection["run_func"])
     run_func_name = collection["run_func"]
 
-    cases = get_test_cases_for_model(get_func, model_path)
-    cases, _dropped = filter_cases(cases, op=op, sm_version=sm_version)
+    with without_models(models(backend, op, sm_version)):
+        cases = get_test_cases_for_model(get_func, model_path)
+    cases, _skipped = filter_cases(cases, backend=backend, op=op, sm_version=sm_version)
     if case_filters:
         before_count = len(cases)
         cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
         logger.info(f"{op}: --case-filter kept {len(cases)}/{before_count} cases")
+    if replay is not None:
+        # same selection, in the same order, as the pool ops (collect.py get_func_with_limit)
+        before_count = len(cases)
+        cases = replay.select(op, cases, random.Random(shuffle_seed))
+        logger.info(
+            f"{op}: replay selected {len(replay.matched[op])} requested + "
+            f"{replay.controls[op]} control of {before_count} cases"
+        )
     if shuffle:
         rng = random.Random(shuffle_seed)
         rng.shuffle(cases)
