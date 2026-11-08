@@ -59,7 +59,11 @@ from aisimulate_core.sdk.fpm_profile import (
     load_fpm_profile,
 )
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
+from aisimulate_core.sdk.models.helpers import (
+    resolve_dsv4_moe_arch,
+    resolve_sglang_mla_compute,
+    resolve_trtllm_mla_compute,
+)
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
 from aisimulate_core.sdk.perf_database import load_system_spec
@@ -694,6 +698,12 @@ def compile_engine(
         resolve_sglang_mla_compute(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
+    if (
+        backend == "trtllm"
+        and model_config.forward_model != "fpm"
+        and model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    ):
+        resolve_trtllm_mla_compute(model_config, model_path, backend, load_system_spec(system, systems_path))
     model = get_model(model_path, model_config, backend)
     if deployment is not None and forward_model == "fpm":
         from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY

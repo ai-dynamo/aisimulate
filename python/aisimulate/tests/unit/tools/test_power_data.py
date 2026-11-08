@@ -70,7 +70,7 @@ DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aisimulate_core/systems/d
         ),
         (
             "mla/trtllm/1.3.0rc20/mla_context_module_perf.parquet",
-            "4e7932ce34c9e2ebc5732c0108dd4409bafe2cc712cf62039887d82aa86e96f2",
+            "ce170f9dbf08864bae6dc4156623299a66ae27e0cdbc9f0543aca9b4ec625e4e",
         ),
         (
             "mla/trtllm/1.3.0rc20/mla_generation_module_perf.parquet",

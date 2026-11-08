@@ -18,11 +18,14 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import yaml
+
+from scripts.release.package_identity import installed_distribution
 
 
 def verify(wheel: Path) -> dict:
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = installed_distribution()
     installed_root = Path(distribution.locate_file("")).resolve()
     with zipfile.ZipFile(wheel) as archive:
         for name in (

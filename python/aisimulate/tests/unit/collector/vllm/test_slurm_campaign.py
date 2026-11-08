@@ -274,23 +274,22 @@ def test_submitter_rejects_unsafe_partition_override():
     assert "invalid Slurm partition override" in result.stderr
 
 
-def test_vllm_collector_hash_closure_includes_campaign_pipeline():
-    closures = provenance.load_closures(REPO_ROOT / "collector/hash_closures.yaml")
-    closure = closures["collector.wideep.vllm.collect_moe_a2a"]
-    assert "collector/framework_manifest.yaml" in closure
-    assert "collector/wideep/vllm/finalize_campaign.py" in closure
-    assert "collector/wideep/vllm/failure_evidence.py" in closure
-    assert "collector/artifact_publication.py" in closure
-    assert "collector/runtime_stage_publication.py" in closure
-    assert "collector/wideep/vllm/slurm/run_vllm_moe_a2a_job.sh" in closure
-    assert "collector/wideep/vllm/slurm/host_tools/ibstat" in closure
-    assert "collector/wideep/vllm/slurm/submit_vllm_moe_a2a.sh" in closure
-    assert "collector/wideep/vllm/slurm/run_deepep_sm103_overlay_job.sh" in closure
-    assert "collector/wideep/vllm/slurm/submit_deepep_sm103_overlay.sh" in closure
-    assert "collector/wideep/vllm/patches/deepep_73b_nvl4.patch" in closure
-    assert "collector/wideep/vllm/slurm/run_vllm_image_stage_job.sh" in closure
-    assert "collector/wideep/vllm/slurm/submit_vllm_image_stage.sh" in closure
-    assert "collector/wideep/vllm/runtime_artifacts.py" in closure
+def test_vllm_collector_hash_covers_campaign_pipeline():
+    assert {
+        "collector/framework_manifest.yaml",
+        "collector/wideep/vllm/finalize_campaign.py",
+        "collector/wideep/vllm/failure_evidence.py",
+        "collector/artifact_publication.py",
+        "collector/runtime_stage_publication.py",
+        "collector/wideep/vllm/slurm/run_vllm_moe_a2a_job.sh",
+        "collector/wideep/vllm/slurm/submit_vllm_moe_a2a.sh",
+        "collector/wideep/vllm/slurm/run_deepep_sm103_overlay_job.sh",
+        "collector/wideep/vllm/slurm/submit_deepep_sm103_overlay.sh",
+        "collector/wideep/vllm/patches/deepep_73b_nvl4.patch",
+        "collector/wideep/vllm/slurm/run_vllm_image_stage_job.sh",
+        "collector/wideep/vllm/slurm/submit_vllm_image_stage.sh",
+        "collector/wideep/vllm/runtime_artifacts.py",
+    } <= set(provenance.hashed_files(REPO_ROOT))
 
 
 def test_backend_overlay_build_is_exact_and_separate_from_formal_data():

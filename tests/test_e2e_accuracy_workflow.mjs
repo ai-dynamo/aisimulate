@@ -240,3 +240,18 @@ test("PR preview requires an exact trusted copy of the open same-repository PR",
   await assert.rejects(resolve({...args, pr: {...pr, state: "closed"}}), /does not match/);
   await assert.rejects(resolve({...args, inputs: {...args.inputs, PREVIEW: "false"}}), /must run from main/);
 });
+
+test("candidate and partial silicon inputs are restricted to pinned trusted previews", async () => {
+  const branch = "simonec/preview";
+  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisimulate"}}};
+  const inputs = {PREVIEW: "true", EXPECTED_SHA: sha, EVALUATED_BRANCH: branch,
+    AGENTX_REVISION: "b".repeat(40), AGENTX_CAMPAIGN_CATALOG: "catalog/e2e/agentx/qualifications/campaign.json"};
+  const args = {event: "workflow_dispatch", ref: "refs/heads/pull-request/686", pr, inputs};
+  assert.deepEqual(await resolve(args), [{...entry(branch, sha), preview: true}]);
+  await assert.rejects(resolve({...args, inputs: {...inputs, AGENTX_REVISION: "refs/pr/7"}}), /immutable SHA/);
+  await assert.rejects(resolve({...args, inputs: {...inputs, PREVIEW: "false"}}), /trusted preview/);
+  for (const path of ["../outside.json", "https://outside.invalid/catalog.json", "catalog/e2e/agentx/qualifications/../catalog.json"]) {
+    await assert.rejects(resolve({...args, inputs: {...inputs, AGENTX_CAMPAIGN_CATALOG: path}}), /pinned trusted preview/);
+  }
+  await assert.rejects(resolve({...args, inputs: {...inputs, AGENTX_REVISION: ""}}), /pinned trusted preview/);
+});

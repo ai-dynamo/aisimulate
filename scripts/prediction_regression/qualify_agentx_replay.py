@@ -165,7 +165,7 @@ def run_gate(root: Path, source: Path, directory: Path) -> dict[str, Any]:
                 "--quiet",
                 "--locked",
                 "-p",
-                "aisimulate-core",
+                "aisim-core",
                 "--example",
                 "qualify_weka",
                 "--",

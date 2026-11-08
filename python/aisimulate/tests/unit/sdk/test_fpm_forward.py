@@ -414,6 +414,10 @@ def test_speculative_fpm_query_scales_widened_stp_once(tmp_path, backend, model_
             assert detail["stp_reference"]["latency_ms"] == baseline
             assert detail["stp_reference"]["max_rank"] == 1
         assert ranks == original
+        # A fully prefix-cached prefill schedules no fresh token: decode-only.
+        cached = copy.deepcopy(ranks)
+        cached[1]["scheduled_requests"].update(num_prefill_requests=1, sum_prefill_kv_tokens=4096)
+        assert model.estimate_forward_pass_time_ms(cached, draft_length=2) == pytest.approx(8 * 1.41)
         assert model.estimate_forward_pass_time_ms(ranks) == 4.0
         assert "stp_reference" not in model.estimate_forward_pass_detailed(ranks)
         assert model.estimate_forward_pass_time_ms({}, draft_length=2) == 0.0
@@ -679,6 +683,7 @@ def test_legacy_single_sample_optional_row_policy_retains_prior_behavior(tmp_pat
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("error:Hybrid FPM/OP:FutureWarning")
 class TestForwardModelRewrite:
     def test_default_keeps_op_level_lists(self):
         model = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
@@ -844,7 +849,9 @@ class TestForwardModelRewrite:
                 kind="draft_model", params={"num_speculative_tokens": 3}, draft_model_path="Qwen/Qwen3-0.6B"
             ),
         )
-        model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        assert len(caught) == 1
         assert model.generation_ops[0]._verify_width == 4
         assert model.generation_ops[1:]
         assert all(not isinstance(op, FPMForwardOp) for op in model.generation_ops[1:])
@@ -867,7 +874,15 @@ class TestForwardModelRewrite:
         )
         baseline = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
         target_weights = float(sum(op.get_weights() for op in baseline.context_ops))
-        model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
+        guidance = str(caught[0].message)
+        assert "Option 1" in guidance and "draft_length" in guidance
+        assert "Option 2" in guidance and "measured SD-round" in guidance
+        assert "Pure OP-based SD remains supported" in guidance
+        assert "no removal release is set" in guidance
 
         # Phase lists LEAD with the whole-model op; draft ops follow op-level.
         assert isinstance(model.generation_ops[0], FPMForwardOp)

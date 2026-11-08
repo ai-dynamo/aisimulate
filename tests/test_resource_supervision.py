@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
@@ -226,6 +227,69 @@ def _cli_arguments(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
     return ["predict", "--config", str(config), "--output-dir", str(tmp_path / "output")]
+
+
+@pytest.mark.parametrize(
+    "extra,backend,message",
+    [
+        (["--telemetry-sample-interval-ms", "0"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "-1"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "nan"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "inf"], "vllm", "finite and positive"),
+        (["--online"], "vllm", "telemetry capture requires offline --stack engine"),
+        (["--stack", "legacy"], "vllm", "telemetry capture requires offline --stack engine"),
+        ([], "trtllm", "telemetry capture requires offline native vLLM/SGLang"),
+    ],
+)
+@pytest.mark.parametrize("capture_flag", ["--capture-telemetry", "--export-html"])
+def test_supervisor_rejects_invalid_telemetry_before_overwrite(
+    tmp_path, monkeypatch, capsys, extra, backend, message, capture_flag
+):
+    from aisimulate import cli_args, supervision
+
+    prior = {
+        name: f"prior {name}\n"
+        for name in (
+            "prediction.json",
+            "report.html",
+            "telemetry-requests.jsonl",
+            "telemetry-samples.jsonl",
+            "keep.txt",
+        )
+    }
+    for name, contents in prior.items():
+        (tmp_path / name).write_text(contents)
+    raw = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": backend,
+            "workers": {"aggregated": {}},
+        }
+    }
+    monkeypatch.setattr(cli_args, "_load_mapping", lambda _: raw)
+    monkeypatch.setattr(supervision, "_installed_names", lambda _: ["legacy"])
+
+    def forbidden_run(*args, **kwargs):
+        pytest.fail("invalid telemetry options reached execution")
+
+    monkeypatch.setattr(supervision, "run_process", forbidden_run)
+    with pytest.raises(SystemExit) as exc:
+        supervision.main(
+            [
+                "predict",
+                "-c",
+                "unused.yaml",
+                capture_flag,
+                "--output-dir",
+                str(tmp_path),
+                "--overwrite",
+                *extra,
+            ]
+        )
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert {path.name: path.read_text() for path in tmp_path.iterdir()} == prior
 
 
 @pytest.mark.parametrize("probe", ["discover_host", "resolve_budget"])
@@ -490,6 +554,74 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     assert result.candidates[0].status == "resource_limited"
     assert result.execution_resources["termination_complete"]
     assert result.execution_resources["peak_observed_rss_bytes"] > 0
+
+
+@contextmanager
+def _child_with_grandchild():
+    """Yield a child and its detached grandchild's PID; the child exits when its stdin closes."""
+    import subprocess
+
+    source = """import subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+print(child.pid, flush=True)
+sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", source], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True
+    )
+    grandchild = None
+    try:
+        grandchild = int(process.stdout.readline())
+        yield process, grandchild
+    finally:
+        if grandchild is not None and psutil.pid_exists(grandchild):
+            psutil.Process(grandchild).kill()
+        process.kill()
+        process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
+@pytest.mark.parametrize("proc_children", [True, False])
+def test_owned_tree_close_stops_an_observed_descendant_after_its_parent_exits(monkeypatch, proc_children):
+    from aisimulate import resources
+    from aisimulate.supervision import OwnedTree
+
+    if proc_children and not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    monkeypatch.setattr(resources, "_PROC_CHILDREN", proc_children)
+    # The grandchild leaves the session and outlives its parent, so neither the
+    # process group nor a later discovery reaches it; only its observed identity does.
+    with _child_with_grandchild() as (process, grandchild):
+        tree = OwnedTree(process)
+        tree.sample()
+        process.stdin.close()
+        process.wait(timeout=5)
+        tree.sample()
+        assert grandchild in {pid for pid, _ in tree.known}
+        tree.close()
+        assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+
+
+def test_descendants_fall_back_instead_of_dropping_an_unreadable_subtree(monkeypatch):
+    import errno
+
+    from aisimulate import resources
+
+    if not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    iterdir = Path.iterdir
+    with _child_with_grandchild() as (process, grandchild):
+        unreadable = Path(f"/proc/{process.pid}/task")
+
+        def fail(path):
+            if path == unreadable:
+                raise OSError(errno.EMFILE, "Too many open files")
+            return iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail)
+        # A live child whose threads cannot be listed must not hide its subtree.
+        assert grandchild in {child.pid for child in resources.descendants_of(psutil.Process())}
 
 
 def test_pool_termination_reaps_before_shutdown_returns():

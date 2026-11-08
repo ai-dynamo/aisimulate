@@ -21,7 +21,7 @@ Generation (decode) phase:
       only — is_sm100_supported() is capability major EXACTLY 10, so sm
       100/103 yes, sm 120 no; sglang serving auto-selects this decode kernel
       only when the model's mamba_ssm_dtype is bfloat16 — server_args.py
-      _handle_linear_attn_backend, :4884-4915 @0.5.14). This describes
+      _handle_linear_attn_backend, :4884-4915). This describes
       hypothetical consumer-serving behavior: official repository collection
       remains FP32-only until a state-dtype-keyed persisted identity/schema is
       separately approved, so it cannot currently select this lane.
@@ -41,14 +41,13 @@ Output:
     gdn_perf.txt - Performance data for GDN Conv1D + scan operations
 """
 
-# Verified 2026-08-18 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1762 Task 4c/4d.
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones).
 # Compatible unchanged: chunk_gated_delta_rule and
 # fused_recurrent_gated_delta_rule_packed_decode signatures/bodies
 # byte-identical; causal_conv1d_fn path and dispatch unchanged;
-# causal_conv1d_update signature byte-identical; the #1533 lane's serving
+# causal_conv1d_update signature byte-identical; the FlashInfer lane's serving
 # call site (FlashInferGDNKernel.decode's use_state_pool=True branch,
-# gdn_flashinfer.py:180-193 @0.5.14 -> :236-249 @0.5.17) is 100% identical
+# gdn_flashinfer.py:180-193 -> :236-249) is 100% identical
 # text, same argument list this collector mirrors; server_args.py's SM100+
 # auto-flip to flashinfer + bf16 hard-requirement moved :4884 -> :6027
 # (function grew from unrelated features) but is unchanged in content, now
@@ -73,20 +72,11 @@ Output:
 # unaffected) -- cosmetic relocations (signatures independently re-diffed
 # byte-identical at both locations), fixed with version-conditional imports
 # mirroring collect_gemm.py's established try/except-import pattern (this
-# file had none of its own before this bump). 0.5.15/0.5.16 stay excluded:
-# never verified, and version_resolver's __compat__ grammar (AND-of-
-# comparators only, no OR) has no way to express a true two-point set either
-# -- this bounded range with the two untested base releases carved out via
-# != is the closest expressible approximation, NOT an exact {0.5.14, 0.5.17}
-# gate (CORRECTED 2026-08-18, code review): `_check_compat`'s `!=` only
-# excludes the literal point version, so 0.5.15.post1/0.5.15rc1/
-# 0.5.16.post2-style variants of the excluded releases still satisfy this
-# specifier (see tests/unit/collector/test_version_resolver.py's
-# TestExactVersionSet for the honest, probed semantics). This is an
-# accepted, narrow gap: the framework_manifest digest-pinned gate is the
-# true version enforcement upstream and only ever supplies exactly 0.5.14
-# or 0.5.17 in a sanctioned run, so the leak is unreachable there.
-__compat__ = "sglang>=0.5.14,<=0.5.17,!=0.5.15,!=0.5.16"
+# file had none of its own before this bump).
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file; earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import gc
 import os
@@ -97,7 +87,7 @@ if TYPE_CHECKING:
     # in run_gdn_torch() below) after a version-conditional import, so a
     # static type checker needs its own declaration to resolve the call
     # sites elsewhere in this file. Pointed at the >=0.5.17 paths (MINOR 4,
-    # code review 2026-08-18): the old sglang.srt.layers.attention.fla.*/
+    # code review): the old sglang.srt.layers.attention.fla.*/
     # sglang.srt.layers.attention.mamba.causal_conv1d_triton paths this block
     # used before this bump no longer exist at 0.5.17, which would leave
     # type-checking broken on a 0.5.17-only environment. causal_conv1d_fn's
@@ -112,7 +102,6 @@ if TYPE_CHECKING:
 import torch
 
 try:
-    from collector.case_generator import get_common_gdn_test_cases
     from collector.helper import (
         WORKER_RESTART,
         benchmark_with_power,
@@ -123,7 +112,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_gdn_test_cases
 
     from helper import (
         WORKER_RESTART,
@@ -132,53 +120,13 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
 
 
 def get_gdn_test_cases():
-    """
-    Generate test cases for GDN kernel benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_gdn_test_cases():
-        if common_case.phase == "context":
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                    common_case.mamba_ssm_dtype,
-                ]
-            )
-        else:
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                    common_case.mamba_ssm_dtype,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("gdn", "sglang", get_sm_version())
 
 
 def run_gdn_context_benchmark(
@@ -194,13 +142,16 @@ def run_gdn_context_benchmark(
     perf_filename: str,
     sglang_version: str,
     device: str = "cuda:0",
+    mamba_ssm_dtype: str = "float32",
 ):
     """
     Benchmark GDN operations for context (prefill) phase using SGLang's Triton FLA kernels.
 
     Benchmarks:
     1. causal_conv1d_fn  — Conv1D over packed Q+K+V channels
-    2. chunk_gated_delta_rule — GDN scan (Q, K, V, g, beta) via SGLang's vendored FLA
+    2. chunk_gated_delta_rule — GDN scan (Q, K, V, g, beta) via SGLang's vendored FLA,
+       or flashinfer_chunk_gated_delta_rule when sglang>=0.5.21 serving defaults the
+       prefill backend to FlashInfer for the case (see _resolve_flashinfer_gdn_prefill)
     """
     device = torch.device(device)
     torch.cuda.set_device(device)
@@ -219,6 +170,7 @@ def run_gdn_context_benchmark(
         )
 
     conv_weight = torch.randn(conv_channels, d_conv, dtype=dtype, device=device)
+    flashinfer_prefill = _resolve_flashinfer_gdn_prefill(head_k_dim, head_v_dim, mamba_ssm_dtype)
     successful_points = 0
     failed_points = 0
 
@@ -237,16 +189,21 @@ def run_gdn_context_benchmark(
                 # causal_conv1d_triton.py:373-379 at image source 49e384ce), so
                 # a cell whose packed-conv offset total_tokens * conv_channels
                 # reaches 2**31 elements wraps negative and corrupts device
-                # memory. RTX 6000 Pro memcheck (2026-07-06) pinned the invalid
+                # memory. RTX 6000 Pro memcheck pinned the invalid
                 # global write to that store at 262,144 tokens for both Qwen3.5
                 # conv widths (10,240 and 12,288); the 131,072-token cells
                 # pass. Same defect class as the ledger's
                 # DSA-FUSED-KS-4G-OFFSET row. Raise instead of launching the
                 # corrupting kernel: the async illegal access otherwise poisons
                 # the CUDA context and aborts every remaining sweep cell.
+                # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
+                # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
+                # cudaErrorIllegalAddress on H20 (0.5.21 smoke, facts/upgrade_rc29/
+                # sgl_smoke_r6) — silicon evidence keeps the guard; the int32 arithmetic is
+                # elsewhere in the kernel's per-block view strides.
                 if total_tokens * conv_channels >= 2**31:
                     raise ValueError(
-                        "SGLang 0.5.14 causal_conv1d Triton kernel int32 token-offset overflow: "
+                        "SGLang causal_conv1d Triton kernel int32 token-offset overflow: "
                         f"total_tokens={total_tokens} * conv_channels={conv_channels} >= 2**31 "
                         "(causal_conv1d_triton.py:373-379)"
                     )
@@ -336,19 +293,53 @@ def run_gdn_context_benchmark(
                     ):
                         raise RuntimeError(f"failed to persist SGLang GDN context row to {perf_filename}")
 
-                def run_gdn_scan():
-                    chunk_gated_delta_rule(
-                        q,
-                        k,
-                        v,
-                        g,
-                        beta,
-                        initial_state=recurrent_state,
-                        initial_state_indices=state_indices,
-                        cu_seqlens=cu_seqlens,
-                        head_first=False,
-                        use_qk_l2norm_in_kernel=True,
-                    )
+                if flashinfer_prefill is None:
+                    scan_kernel_source = "chunk_gated_delta_rule"
+
+                    def run_gdn_scan():
+                        chunk_gated_delta_rule(
+                            q,
+                            k,
+                            v,
+                            g,
+                            beta,
+                            initial_state=recurrent_state,
+                            initial_state_indices=state_indices,
+                            cu_seqlens=cu_seqlens,
+                            head_first=False,
+                            use_qk_l2norm_in_kernel=True,
+                        )
+
+                else:
+                    # FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:465-581):
+                    # l2norm/layout prepare, exp(g) and beta as fp32, the state rows gathered
+                    # (fp32 pool on SM90) and written back with index_copy_, int64 cu_seqlens,
+                    # use_qk_l2norm_in_kernel=False because the prepare already normalized.
+                    scan_kernel_source = "flashinfer_chunk_gated_delta_rule"
+                    prefill_fn, qkv_prepare = flashinfer_prefill
+                    cu_seqlens_i64 = cu_seqlens.to(torch.int64)
+                    state_rows = state_indices.to(torch.int64)
+
+                    def run_gdn_scan():
+                        # gather + output buffer per call, as extend does (:523-541)
+                        initial_state_fi = recurrent_state[state_rows].to(torch.float32)
+                        output_state_fi = torch.empty_like(initial_state_fi)
+                        q_fi, k_fi, v_fi = qkv_prepare(q[0], k[0], v[0])
+                        prefill_fn(
+                            q=q_fi,
+                            k=k_fi,
+                            v=v_fi,
+                            g=torch.exp(g[0].to(torch.float32)),
+                            beta=beta[0].to(torch.float32),
+                            scale=None,
+                            initial_state=initial_state_fi,
+                            output_final_state=True,
+                            cu_seqlens=cu_seqlens_i64,
+                            use_qk_l2norm_in_kernel=False,
+                            output=None,
+                            output_state=output_state_fi,
+                        )
+                        recurrent_state.index_copy_(0, state_rows, output_state_fi.to(recurrent_state.dtype))
 
                 with benchmark_with_power(
                     device=device,
@@ -363,7 +354,7 @@ def run_gdn_context_benchmark(
                         version=sglang_version,
                         device_name=torch.cuda.get_device_name(device),
                         op_name="gdn",
-                        kernel_source="chunk_gated_delta_rule",
+                        kernel_source=scan_kernel_source,
                         perf_filename=perf_filename,
                         power_stats=results["power_stats"],
                     ):
@@ -400,11 +391,11 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
     Resolve the FlashInfer bf16-state GDN decode kernel for the SM-major-10 lane.
 
     ``mamba_ssm_dtype`` is the case's model-config SSM state dtype (serving
-    default "float32" — configs/mamba_utils.py @0.5.14). Serving's own
+    default "float32" — configs/mamba_utils.py). Serving's own
     predicate for auto-selecting this backend is ``is_sm100_supported()``
     (capability major EXACTLY 10 — sm 100/103 yes, sm 120 NO) AND
     ``mamba_ssm_dtype == "bfloat16"`` (server_args.py's
-    _handle_linear_attn_backend, :4884-4915 @0.5.14; it hard-errors a
+    _handle_linear_attn_backend, :4884-4915; it hard-errors a
     non-bf16 state on that backend).
 
     Returns a ``(kernel_fn, classified_error)`` pair, at most one of which is
@@ -420,7 +411,7 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
       logging the non-serving FLA decode lane.
 
     The lazy import mirrors sglang's own guard for this kernel
-    (gdn_flashinfer.py:34-56 @0.5.14, _get_flashinfer_gdn_kernels ->
+    (gdn_flashinfer.py:34-56, _get_flashinfer_gdn_kernels ->
     gated_delta_rule_decode_pretranspose).
     """
     sm_version = get_sm_version()
@@ -445,6 +436,113 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
         print(f"  {message}")
         return None, message
     return gated_delta_rule_decode_pretranspose, None
+
+
+def _sglang_gdn_lanes_0521():
+    """Feature-probe the sglang>=0.5.21 GDN lane surface (None on older runtimes).
+
+    0.5.21 moved the GDN backend to srt/layers/attention/linear/gdn_backend.py and
+    changed what serving runs inside the GDN role (H20 serving golden,
+    results/pathdiff/sm90/sglang-0.5.21/gdn_{ctx,gen}_Qwen3.5-0.8B.json):
+      * prefill: attention_registry.py:425-430 asks flashinfer_gdn_prefill_default
+        (gdn_backend.py:188-234) and, when it answers "flashinfer", the extend path
+        runs FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:465-581):
+        gdn_prefill_qkv_prepare_fwd + flashinfer.gdn_prefill.chunk_gated_delta_rule
+        instead of the vendored FLA chunk_gated_delta_rule;
+      * decode: Qwen3.5 hands the backend the projected (qkvz, ba) pair
+        (models/qwen3_5.py:160-162, 940-953; SGLANG_ENABLE_GDN_DECODE_FUSED_PROJ_CONV
+        defaults True, environ.py:1800) and forward_decode runs
+        fused_qkvzba_causal_conv1d_update_contiguous (gdn_backend.py:668-760) in place
+        of the split + causal_conv1d_update.
+    """
+    try:
+        from sglang.kernels.ops.attention.fla.l2norm import gdn_prefill_qkv_prepare_fwd
+        from sglang.kernels.ops.attention.triton_gdn_fused_proj import (
+            can_use_fused_qkvzba_causal_conv1d_update_contiguous,
+            fused_qkvzba_causal_conv1d_update_contiguous,
+        )
+        from sglang.srt import environ as _environ
+        from sglang.srt.layers.attention.linear.gdn_backend import (  # noqa: F401 — lane marker
+            flashinfer_gdn_prefill_default,
+        )
+        from sglang.srt.layers.attention.linear.kernels.gdn_flashinfer import (
+            _get_flashinfer_gdn_kernels,
+            is_flashinfer_gdn_prefill_available,
+        )
+    except ImportError:
+        return None
+    return {
+        "qkv_prepare": gdn_prefill_qkv_prepare_fwd,
+        "fused_conv_eligible": can_use_fused_qkvzba_causal_conv1d_update_contiguous,
+        "fused_conv": fused_qkvzba_causal_conv1d_update_contiguous,
+        "fused_conv_enabled": bool(_environ.envs.SGLANG_ENABLE_GDN_DECODE_FUSED_PROJ_CONV.get()),
+        "flashinfer_prefill_available": is_flashinfer_gdn_prefill_available,
+        "flashinfer_kernels": _get_flashinfer_gdn_kernels,
+    }
+
+
+def _resolve_flashinfer_gdn_prefill(head_k_dim: int, head_v_dim: int, mamba_ssm_dtype: str):
+    """Mirror sglang>=0.5.21's own prefill-backend default for the case.
+
+    gdn_backend.py:188-234 flashinfer_gdn_prefill_default: FlashInfer only when
+    no explicit --linear-attn-prefill-backend, linear_attn_backend == triton,
+    no deterministic / page-major mode, SM major 9 or 10 (SM100 additionally
+    CUDA >= 13 and a bf16 state pool; SM90 an fp32 state pool), key/value head
+    dim 128, a static chunked_prefill_size within the validated chunk bound
+    (serving default sizing: derived, not None, dynamic chunking off), and the
+    FlashInfer prefill kernels importable. Everything else keeps Triton FLA,
+    and so does this collector. Returns ``(prefill_fn, qkv_prepare)`` or
+    ``None`` (FLA lane); FlashInfer missing is serving's own Triton fallback
+    (:230-231), so it is not an error here.
+    """
+    lanes = _sglang_gdn_lanes_0521()
+    if lanes is None:
+        return None
+    sm_version = get_sm_version()
+    sm_major = sm_version // 10
+    if sm_major not in (9, 10):
+        print(f"  SM{sm_version}: sglang>=0.5.21 keeps Triton FLA GDN prefill (flashinfer default is SM90/SM100 only).")
+        return None
+    if sm_major == 10:
+        cuda_major = int(torch.version.cuda.split(".", 1)[0]) if torch.version.cuda else 0
+        if cuda_major < 13 or mamba_ssm_dtype != "bfloat16":
+            print(
+                f"  SM{sm_version}, cuda={torch.version.cuda}, mamba_ssm_dtype={mamba_ssm_dtype!r}: "
+                "sglang>=0.5.21 FlashInfer GDN prefill needs CUDA>=13 and a bf16 state pool on SM100; Triton FLA."
+            )
+            return None
+    elif mamba_ssm_dtype != "float32":
+        print(
+            f"  SM{sm_version}, mamba_ssm_dtype={mamba_ssm_dtype!r}: "
+            "FlashInfer GDN prefill needs an fp32 state pool on SM90; Triton FLA."
+        )
+        return None
+    if head_k_dim != 128 or head_v_dim != 128:
+        print(
+            f"  head_k_dim={head_k_dim}, head_v_dim={head_v_dim}: FlashInfer GDN prefill is 128/128 only; Triton FLA."
+        )
+        return None
+    if not lanes["flashinfer_prefill_available"]():
+        print(
+            "  FlashInfer GDN prefill kernels unavailable in this runtime: "
+            "serving falls back to Triton FLA, so does this lane."
+        )
+        return None
+    _available, prefill_fn, *_rest = lanes["flashinfer_kernels"]()
+    return prefill_fn, lanes["qkv_prepare"]
+
+
+def _resolve_fused_gdn_decode_conv():
+    """sglang>=0.5.21 decode conv lane: the fused qkvz/ba unpack + indexed Conv1D
+    update (gdn_backend.py:668-760), on by default (environ.py:1800). Returns
+    ``(fused_fn, eligibility_fn)`` or ``None`` for the split + causal_conv1d_update
+    lane. When the fused kernel's own eligibility check refuses a shape, serving
+    logs and falls back to the unfused pair (gdn_backend.py:790-815), which the
+    caller mirrors and kernel_source records."""
+    lanes = _sglang_gdn_lanes_0521()
+    if lanes is None or not lanes["fused_conv_enabled"]:
+        return None
+    return lanes["fused_conv"], lanes["fused_conv_eligible"]
 
 
 def run_gdn_generation_benchmark(
@@ -477,7 +575,7 @@ def run_gdn_generation_benchmark(
     torch.set_default_device(device)
 
     dtype = torch.bfloat16
-    # Serving population @v0.5.14: configs/qwen3_next.py:294-305 builds
+    # Serving population: configs/qwen3_next.py:294-305 builds
     # Mamba2CacheParams with configs/mamba_utils.py:63-67,70-107's resolved
     # dtype; mem_cache/memory_pool.py:342-344,390-394 allocates the temporal
     # state in it, and linear/kernels/gdn_triton.py:81-92 consumes it unchanged.
@@ -503,6 +601,7 @@ def run_gdn_generation_benchmark(
     # Resolve serving's exact decode dispatch: SM-major 10 + bf16 uses FI;
     # current FP32 recipes stay on FLA, and a required-but-missing FI raises.
     flashinfer_gdn_decode_fn, flashinfer_gdn_decode_error = _resolve_flashinfer_gdn_decode(mamba_ssm_dtype)
+    fused_decode_conv = _resolve_fused_gdn_decode_conv()
     successful_points = 0
     failed_points = 0
     failures = []
@@ -528,7 +627,7 @@ def run_gdn_generation_benchmark(
             a = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             a_log = torch.zeros(num_v_heads, dtype=torch.float32, device=device)
-            # qwen3_5.py:237-239 @0.5.14 creates dt_bias with no explicit dtype
+            # qwen3_5.py:237-239 creates dt_bias with no explicit dtype
             # (model dtype); the kernel upcasts it on load
             # (fused_sigmoid_gating_recurrent.py:154-160).
             dt_bias = torch.ones(num_v_heads, dtype=dtype, device=device)
@@ -555,7 +654,36 @@ def run_gdn_generation_benchmark(
                 "model_name": model_name,
             }
 
+            conv_kernel_source = "causal_conv1d_update"
+            fused_conv_args = None
+            if fused_decode_conv is not None:
+                # Serving input at 0.5.21: the projection outputs as laid out by Qwen3.5
+                # (qwen3_5.py:940-953) — [Q|K|V|Z] of width qkv_dim + v_dim and [B|A] of
+                # width 2*num_v_heads, both model dtype; the kernel unpacks and runs the
+                # indexed Conv1D update in one launch (gdn_backend.py:749-761).
+                projected_qkvz = torch.randn(batch_size, conv_channels + value_dim, dtype=dtype, device=device)
+                projected_ba = torch.randn(batch_size, 2 * num_v_heads, dtype=dtype, device=device)
+                fused_conv_fn, fused_conv_eligible = fused_decode_conv
+                fused_conv_args = (projected_qkvz, projected_ba, conv_state, conv_weight, None, state_indices)
+                fused_conv_kwargs = dict(
+                    qkv_dim=conv_channels,
+                    v_dim=value_dim,
+                    num_v_heads=num_v_heads,
+                    activation="silu",
+                )
+                eligible, reason = fused_conv_eligible(*fused_conv_args, **fused_conv_kwargs)
+                if eligible:
+                    conv_kernel_source = "fused_qkvzba_causal_conv1d_update_contiguous"
+                else:
+                    # gdn_backend.py:790-815: serving logs the reason and runs the unfused
+                    # split + causal_conv1d_update for this shape.
+                    print(f"  fused GDN decode conv ineligible ({reason}); serving falls back to causal_conv1d_update")
+                    fused_conv_args = None
+
             def run_conv1d_update():
+                if fused_conv_args is not None:
+                    fused_conv_fn(*fused_conv_args, head_v_dim=head_v_dim, **fused_conv_kwargs)
+                    return
                 causal_conv1d_update(
                     mixed_qkv,
                     conv_state,
@@ -578,7 +706,7 @@ def run_gdn_generation_benchmark(
                     version=sglang_version,
                     device_name=torch.cuda.get_device_name(device),
                     op_name="gdn",
-                    kernel_source="causal_conv1d_update",
+                    kernel_source=conv_kernel_source,
                     perf_filename=perf_filename,
                     power_stats=results["power_stats"],
                 ):
@@ -633,12 +761,12 @@ def run_gdn_generation_benchmark(
             else:
                 # Mirrors FlashInferGDNKernel.decode's
                 # use_state_pool=True branch argument-for-argument
-                # (gdn_flashinfer.py:180-193 @0.5.14 — serving selects this
+                # (gdn_flashinfer.py:180-193 — serving selects this
                 # backend only on capability major 10, where use_state_pool =
                 # sm_major >= 10 takes this branch), which is fed
                 # q/k/v split+reshaped from mixed_qkv exactly as
-                # GDNAttnBackend.forward_decode does (gdn_backend.py:348-357
-                # @0.5.14) before calling the kernel_dispatcher. The state
+                # GDNAttnBackend.forward_decode does (gdn_backend.py:348-357)
+                # before calling the kernel_dispatcher. The state
                 # pool is bf16 here, independent of the FLA lane's case dtype,
                 # because server_args.py:4884-4915 hard-requires bf16 state on
                 # this capability-major-10 backend.
@@ -761,8 +889,8 @@ def run_gdn_torch(
         # sglang 0.5.17 relocated these two from
         # sglang.srt.layers.attention.fla.* to the new top-level
         # sglang.kernels.ops.attention.fla.* package; both function bodies
-        # are byte-identical at the new location (verified 2026-08-18
-        # against the v0.5.14/v0.5.17 tags directly). Try the new
+        # are byte-identical at the new location (verified against the
+        # v0.5.14/v0.5.17 tags directly). Try the new
         # (>=0.5.17) location first since that's where sglang's own code
         # now imports them from.
         try:
@@ -776,10 +904,10 @@ def run_gdn_torch(
                 fused_recurrent_gated_delta_rule_packed_decode,
             )
 
-        # gdn_backend.py:13-16 @0.5.14 imports both conv entry points from
+        # gdn_backend.py:13-16 imports both conv entry points from
         # causal_conv1d_triton and rebinds only causal_conv1d_fn to the CUDA
         # wrapper (:34-39) — GDN decode keeps the Triton update kernel.
-        # Re-verified 2026-08-18 at v0.5.17: same pattern, now at
+        # Re-verified at v0.5.17: same pattern, now at
         # gdn_backend.py:6-8 (import) / :38-43 (rebind). causal_conv1d_fn's
         # own module path is unaffected by the 0.5.17 kernel reorg;
         # causal_conv1d_update moved the same way as the two fla imports
@@ -820,6 +948,7 @@ def run_gdn_torch(
             perf_filename=perf_filename,
             sglang_version=sglang_version,
             device=device,
+            mamba_ssm_dtype=mamba_ssm_dtype,
         )
     elif phase == "generation":
         run_gdn_generation_benchmark(

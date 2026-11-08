@@ -43,7 +43,9 @@ class PredictionResult:
     Attributes:
         summary: The merged prediction summary (throughput/latency/power
             metrics), the same mapping the CLI renders.
-        native: The full native report with ``summary`` merged in.
+        native: The full native report with ``summary`` merged in. Requested
+            telemetry retains its arrays here; only CLI output splits them into
+            JSONL artifacts and a compact manifest.
         replay_spec: The compiled replay spec that was executed (e.g. for AFD
             qualification artifacts).
         report: The runner's :class:`ReplayReport`, retaining requested diagnostics.
@@ -133,6 +135,7 @@ def run_prediction(
     retain_native_report = (
         output_requirements.include_raw_report
         or output_requirements.capture_per_request
+        or output_requirements.capture_telemetry
         or capture_memory_details
         or output_requirements.capture_performance_diagnostics
     )

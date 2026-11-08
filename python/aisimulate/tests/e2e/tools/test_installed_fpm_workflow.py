@@ -52,7 +52,7 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
             cwd=APP_ROOT,
             timeout=600,
         )
-        wheels = tuple(wheel_dir.glob("aisimulate-*.whl"))
+        wheels = tuple(wheel_dir.glob("aisim-*.whl"))
     assert len(wheels) == 1
     assert wheels[0].is_file()
 
@@ -121,7 +121,7 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
         [
             str(installed_python),
             "-c",
-            "import importlib.metadata; print(importlib.metadata.version('aisimulate'))",
+            "import importlib.metadata; print(importlib.metadata.version('aisim'))",
         ],
         cwd=unrelated_repository,
         env=env,
@@ -130,6 +130,6 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
     expected_version = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]["version"]
     assert installed_version == expected_version
     assert f"Verified installed AISimulate {installed_version} FPM workflow" in completed.stdout
-    assert f"installed:aisimulate=={installed_version}:record-sha256:" in completed.stdout
+    assert f"installed:aisim=={installed_version}:record-sha256:" in completed.stdout
     assert unrelated_head not in completed.stdout
     assert str(unrelated_repository) not in completed.stdout

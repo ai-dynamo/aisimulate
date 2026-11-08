@@ -98,8 +98,8 @@ def test_unknown_op_is_a_hard_error(paths):
 
 def test_real_manifest_resolves_every_registry_op():
     # The fail-closed CI gate (spec §4): every op in every registry resolves to
-    # exactly one pinned runtime with the committed manifest (+ catalog, once
-    # PR #1345 lands). Runs in CI via the unit suite.
+    # exactly one pinned runtime with the committed manifest. Runs in CI via
+    # the unit suite.
     assert validate_resolution() == []
 
 

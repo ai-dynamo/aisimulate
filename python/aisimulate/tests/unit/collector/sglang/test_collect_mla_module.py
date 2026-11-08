@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
+from collector.op_plans import plan
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +21,9 @@ def _mock_helper_imports(monkeypatch):
     fake_helper.get_sm_version = lambda: 90  # default Hopper
     fake_helper.log_perf = lambda **kw: None
     fake_helper.benchmark_with_power = lambda **kw: None
+    fake_helper.PhaseClock = PhaseClock
+    fake_helper.render_phase_totals = render_phase_totals
+    fake_helper.run_measurement_subprocess = run_measurement_subprocess
     monkeypatch.setitem(__import__("sys").modules, "helper", fake_helper)
 
     fake_torch = types.ModuleType("torch")
@@ -148,30 +153,7 @@ class TestGetGenerationTestCases:
                 assert case[0] * case[1] <= 256 * 1024
 
 
-class TestDsaContextPrefixShape:
-    def test_rejects_single_token_prefill(self):
-        mod = _import_module()
-        assert not mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
-        assert not mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
-
-    def test_accepts_multi_token_prefill_with_prefix(self):
-        mod = _import_module()
-        assert mod._dsa_context_prefix_shape_is_valid(1, 2, 0)
-        assert mod._dsa_context_prefix_shape_is_valid(32, 4, 1024)
-
-    def test_rejects_negative_prefix(self):
-        mod = _import_module()
-        assert not mod._dsa_context_prefix_shape_is_valid(1, 2, -1)
-
-
 class TestDsaRuntimeLimits:
-    def test_total_kv_token_limit_matches_indexer_offset_capacity(self):
-        from collector.sglang.runtime_limits import dsa_indexer_total_kv_tokens_supported
-
-        assert dsa_indexer_total_kv_tokens_supported(32, 4, 1_000_000, is_prefill=True)
-        assert not dsa_indexer_total_kv_tokens_supported(32, 4, 1_048_575, is_prefill=True)
-        assert not dsa_indexer_total_kv_tokens_supported(64, 4, 524_288, is_prefill=True)
-
     def test_decode_allocation_counts_fresh_token_before_page_rounding(self):
         from collector.sglang.runtime_limits import required_kv_alloc_tokens
 
@@ -203,14 +185,68 @@ class TestDsaCudaGraph:
         mod = _import_module()
         runner = types.SimpleNamespace(
             server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=True,
                 cuda_graph_config=types.SimpleNamespace(
                     decode=types.SimpleNamespace(backend="cudagraphs", bs=[1, 4, 16], max_bs=None)
-                )
+                ),
             )
         )
 
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, 4)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 8)
+
+    @pytest.mark.parametrize("disable_padding, expected", [(False, 56), (True, None)])
+    def test_batch_52_uses_serving_bucket_only_when_padding_enabled(self, disable_padding, expected):
+        mod = _import_module()
+        runner = types.SimpleNamespace(
+            server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=disable_padding,
+                cuda_graph_config=types.SimpleNamespace(
+                    decode=types.SimpleNamespace(backend="full", bs=[1, 2, 4, 8, 48, 56, 64], max_bs=64)
+                ),
+            )
+        )
+        assert mod._generation_cuda_graph_batch_size(runner, 52) == expected
+        assert mod._generation_cuda_graph_batch_size(runner, 56) == 56
+        assert mod._generation_cuda_graph_batch_size(runner, 65) is None
+
+    def test_padding_uses_native_registry_and_backend_sentinel(self, monkeypatch):
+        mod = _import_module()
+        calls = {}
+        padded = types.SimpleNamespace(seq_lens_sum=None)
+
+        class Registry:
+            def fill_from(self, batch, **kwargs):
+                calls["fill"] = (batch, kwargs)
+
+            def extract_buffer(self, **kwargs):
+                calls["extract"] = kwargs
+                return padded
+
+        def build_registry(**kwargs):
+            calls["build"] = kwargs
+            return Registry()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "sglang.srt.model_executor.cuda_graph_buffer_registry",
+            types.SimpleNamespace(build_decode_registry=build_registry),
+        )
+        batch = types.SimpleNamespace(
+            batch_size=52,
+            seq_lens_sum=52 * 4097,
+            input_ids=types.SimpleNamespace(device="cuda:0"),
+            out_cache_loc=types.SimpleNamespace(dtype="int64"),
+        )
+        runner = types.SimpleNamespace(attn_backend=types.SimpleNamespace(get_cuda_graph_seq_len_fill_value=lambda: 7))
+        assert mod._padded_dsa_decode_batch(runner, batch, 56) is padded
+        assert calls["build"]["seq_len_fill_value"] == 7
+        assert calls["fill"] == (
+            batch,
+            dict(raw_bs=52, padded_bs=56, raw_num_tokens=52, padded_num_tokens=56),
+        )
+        assert padded.seq_lens_sum == batch.seq_lens_sum + 4 * 7
+        assert batch.batch_size == 52
 
     def test_generation_cuda_graph_can_be_disabled(self):
         mod = _import_module()
@@ -239,7 +275,16 @@ class TestDsaSkipIndexer:
         assert "attention_module.next_skip_topk = True" in prefill
         assert '_skip_state["prev_topk"] = warmup_output[1].detach()' in prefill
         assert "attention_module.skip_topk = _skip_uses_dense_mha" in prefill
-        assert 'not _skip_uses_dense_mha and _skip_state["prev_topk"] is None' in prefill
+        prefill_tree = ast.parse(prefill)
+        missing_producer = ast.parse(
+            "_skip_indexer and native_graph_context is None "
+            'and not _skip_uses_dense_mha and _skip_state["prev_topk"] is None',
+            mode="eval",
+        ).body
+        assert any(
+            isinstance(node, ast.If) and ast.dump(node.test) == ast.dump(missing_producer)
+            for node in ast.walk(prefill_tree)
+        )
         assert "sglang_dsa_dense_mha_" in prefill
         assert "dsa_backend.dsa_prefill_impl" in prefill
 
@@ -306,113 +351,65 @@ class TestBuildModuleTestCases:
 
         assert geometry(model_path) == geometry("zai-org/GLM-5.2")
 
-    def test_module_precision_respects_outer_sm_gate(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=89):
-            cases = mod._build_module_test_cases("dsa", "context")
-        assert cases
-        assert {case[3] for case in cases} == {"bfloat16"}
+    def test_dsa_rows_time_each_checkpoint_on_its_own_projection_gemm(self):
+        # One checkpoint per (architecture, projection GEMM), the longest-context one:
+        # GLM-5/5.1 and the GLM NVFP4 checkpoints (BF16 projections) reuse GLM-5.2.
+        # SGLang loads a checkpoint with its own quantization, so it times only that GEMM.
+        for sm in (90, 100):
+            rows = plan("dsa_context_module", "sglang", sm).rows
+            assert {(row[6], row[5]) for row in rows} == {
+                ("deepseek-ai/DeepSeek-V3.2", "fp8_block"),
+                ("zai-org/GLM-5.2", "bfloat16"),
+                ("zai-org/GLM-5.2-FP8", "fp8_block"),
+            }
 
-    def test_module_precision_passes_phase_and_sm_to_yaml(self):
-        mod = _import_module()
-        calls = []
+    @pytest.mark.parametrize(("sm", "fp8_backend"), [(90, "flashmla_kv"), (100, "trtllm")])
+    @pytest.mark.parametrize("op", ["dsa_context_module", "dsa_generation_module"])
+    def test_dsa_rows_pin_the_fp8_kv_backend_and_list_their_points(self, op, sm, fp8_backend):
+        rows = plan(op, "sglang", sm).rows
+        assert rows
+        for row in rows:
+            seq_len, batch, heads, kv, _compute, _gemm, model, attn, backend, target_tp, pinned, points = row
+            native = 128 if "DeepSeek" in model else 64
+            assert (seq_len, attn, backend, target_tp) == (0, "dsa", None, native // heads)
+            assert pinned == (fp8_backend if kv == "fp8" else None)
+            # A context row holds one batch; a decode row every batch (batch 0 is a placeholder).
+            batches = {b for b, _s, _p in points}
+            if op == "dsa_context_module":
+                assert batches == {batch}
+            else:
+                assert batch == 0 and len(batches) > 1
+            # Shortest prefix first: a fault at a long prefix leaves the shorter points measured.
+            assert points == sorted(points, key=lambda point: (point[2], point[0], point[1]))
 
-        def precision_specs(backend, *, phase, sm_version):
-            calls.append((backend, phase, sm_version))
-            return [
-                types.SimpleNamespace(
-                    compute_dtype="bfloat16",
-                    kv_cache_dtype="bfloat16",
-                    gemm_type="bfloat16",
-                )
-            ]
+    def test_dsa_rows_time_every_planned_point_once(self):
+        op_plan = plan("dsa_context_module", "sglang", 100)
+        timed = [(b, s, p, row[2], row[3], row[4], row[5], row[6]) for row in op_plan.rows for b, s, p in row[11]]
+        planned = [
+            (
+                c.batch_size,
+                c.seq_len,
+                c.prefix_len,
+                c.num_heads,
+                c.kv_cache_dtype,
+                c.compute_dtype,
+                c.gemm_type,
+                c.model_path,
+            )
+            for c in op_plan.cases
+        ]
+        assert sorted(timed) == sorted(planned)
 
-        with (
-            patch.object(mod, "get_sm_version", return_value=89),
-            patch.object(mod, "get_mla_module_precision_specs", side_effect=precision_specs),
-        ):
-            cases = mod._build_module_test_cases("dsa", "generation")
+    def test_dsa_context_leaves_out_the_one_token_prefill(self):
+        assert {case.seq_len for case in plan("dsa_context_module", "sglang", 100).cases} >= {16, 16384}
+        assert 1 not in {case.seq_len for case in plan("dsa_context_module", "sglang", 100).cases}
+        assert 1 in {case.seq_len for case in plan("dsa_context_module", "vllm", 100).cases}
 
-        assert cases
-        assert calls == [("sglang", "generation", 89)]
-
-    def test_full_dsa_sweep_canonicalizes_consumer_equivalent_checkpoints(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=100):
-            cases = mod._build_module_test_cases("dsa", "context")
-        model_paths = {case[6] for case in cases}
-        # #1378 canonicalization: one DSA collection per (architecture,
-        # DSA-gemm-type) group on the longest-context checkpoint, reused for the
-        # consumer-equivalent rest. GLM-5/5.1/5.2/5.3 share identical DSA geometry
-        # (index_n_heads=32, index_head_dim=128, index_topk=2048, heads/dims/lora,
-        # max_position_embeddings all equal for 5.2/5.3) so GLM-5.2 (bf16) and
-        # GLM-5.2-FP8 (fp8_block) are canonical by YAML iteration order; GLM-5/5.1
-        # and every NVFP4 checkpoint (which shares the bf16 DSA key) are reused.
-        assert model_paths == {
-            "deepseek-ai/DeepSeek-V3.2",
-            "zai-org/GLM-5.2",
-            "zai-org/GLM-5.2-FP8",
-        }
-        assert "zai-org/GLM-5" not in model_paths
-        assert "zai-org/GLM-5-FP8" not in model_paths
-        assert not any("NVFP4" in model_path for model_path in model_paths)
-
-    def test_mla_includes_v3_family(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=90):
-            cases = mod._build_module_test_cases("mla", "context")
-        model_paths = {c[6] for c in cases}
-        assert model_paths == {
-            "deepseek-ai/DeepSeek-R1",
-            "deepseek-ai/DeepSeek-V3",
-        }
-
-    def test_mla_blackwell_keeps_native_nvfp4_checkpoint(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=100):
-            cases = mod._build_module_test_cases("mla", "context")
-        assert "nvidia/DeepSeek-V3.1-NVFP4" in {c[6] for c in cases}
-
-    def test_hopper_dsa_uses_bf16_glm_checkpoint(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=90):
-            cases = mod._build_module_test_cases("dsa", "context")
-        model_paths = {case[6] for case in cases}
-        # bf16 canonical is GLM-5.2 (first in YAML among 5.2/5.3); GLM-5/5.1 reuse it.
-        assert "zai-org/GLM-5.2" in model_paths
-        assert "zai-org/GLM-5" not in model_paths
-        assert not any("NVFP4" in model_path for model_path in model_paths)
-
-    def test_targeted_quantized_artifact_keeps_requested_checkpoint(self, monkeypatch):
-        mod = _import_module()
-        monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
-        with patch.object(mod, "get_sm_version", return_value=100):
-            cases = mod._build_module_test_cases("dsa", "context")
-        assert cases
-        assert {case[6] for case in cases} == {"nvidia/GLM-5-NVFP4"}
-
-    def test_format_length_11(self):
-        """Each DSA module case includes target TP and prefill backend."""
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=90):
-            for case in mod._build_module_test_cases("dsa", "generation"):
-                assert len(case) == 11
-                assert case[7] == "dsa"
-                assert case[8] is None  # DSA backend resolved at runtime
-                assert case[9] in {1, 2, 4, 8}
-                assert case[10] == ("flashmla_kv" if case[3] == "fp8" else None)
-
-    def test_blackwell_context_uses_0514_default_backend(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=100):
-            cases = mod._build_module_test_cases("dsa", "context")
-        assert {case[10] for case in cases if case[3] == "fp8"} == {"trtllm"}
-
-    def test_blackwell_generation_uses_0514_default_backend(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=100):
-            cases = mod._build_module_test_cases("dsa", "generation")
-        assert {case[10] for case in cases if case[3] == "fp8"} == {"trtllm"}
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    def test_skip_indexer_rows_are_the_full_rows_of_index_sharing_checkpoints(self, phase):
+        full = plan(f"dsa_{phase}_module", "sglang", 100).rows
+        skip = plan(f"dsa_{phase}_module_skip_indexer", "sglang", 100).rows
+        assert skip == [row for row in full if row[6] in {"zai-org/GLM-5.2", "zai-org/GLM-5.2-FP8"}]
 
     def test_skip_indexer_cases_use_glm52_canonical_model(self):
         mod = _import_module()
@@ -425,70 +422,33 @@ class TestBuildModuleTestCases:
         # NVFP4 reuses the bf16 key.
         assert {case[6] for case in cases} == {"zai-org/GLM-5.2", "zai-org/GLM-5.2-FP8"}
 
-    def test_glm_sparse_selector_preserves_targeted_artifact(self, monkeypatch):
-        _import_module()
-        source_path = Path("collector/sglang/glm5_dsa_sparse_modules.py")
-        tree = ast.parse(source_path.read_text(), filename=str(source_path))
-        selector_node = next(
-            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_selected_glm5_models"
-        )
-        namespace = {"get_sm_version": lambda: 90}
-        exec(compile(ast.Module(body=[selector_node], type_ignores=[]), str(source_path), "exec"), namespace)
-        selector = namespace["_selected_glm5_models"]
+    def test_targeted_quantized_artifact_keeps_requested_checkpoint(self, monkeypatch):
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
+        cases = plan("dsa_context_module", "sglang", 100).cases
+        assert cases
+        assert {(case.model_path, case.gemm_type) for case in cases} == {("nvidia/GLM-5-NVFP4", "bfloat16")}
+
+    def test_glm_sparse_plan_keeps_one_checkpoint_per_sm_and_targeted_artifacts(self, monkeypatch):
+        def models(sm):
+            return {case.model_path for case in plan("glm5_mqa_logits_module", "sglang", sm).cases}
 
         monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-        assert selector() == ["zai-org/GLM-5"]
+        assert models(90) == {"zai-org/GLM-5"}
+        assert models(100) == {"nvidia/GLM-5.2-NVFP4"}
         for model_path in ("nvidia/GLM-5-NVFP4", "nvidia/GLM-5.2-NVFP4"):
             monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-            assert selector() == []
-
-        namespace["get_sm_version"] = lambda: 100
-        monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-        assert selector() == ["nvidia/GLM-5.2-NVFP4"]
+            assert models(90) == set()
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
-        assert selector() == ["nvidia/GLM-5-NVFP4"]
-
-        namespace["get_sm_version"] = lambda: 90
+        assert models(100) == {"nvidia/GLM-5-NVFP4"}
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3.2")
-        assert selector() == []
-
-    def test_deduplication(self):
-        """One entry per top-level sweep tuple, not per inner (seq, batch) shape."""
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=90):
-            cases = mod._build_module_test_cases("dsa", "context")
-        keys = {
-            (
-                c[6],
-                c[2],
-                c[3],
-                c[4],
-                c[5],
-                c[1],
-                c[9],
-                c[10],
-            )
-            for c in cases
-        }
-        assert len(cases) == len(keys)
-        assert all(c[0] == 0 for c in cases)
-
-    def test_dsa_context_is_sharded_by_batch_size(self):
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=90):
-            cases = mod._build_module_test_cases("dsa", "context")
-        batch_sizes = {c[1] for c in cases}
-        assert batch_sizes == set(mod.get_mla_module_sweep_spec("sglang").context_batch_sizes)
+        assert models(90) == set()
 
     # Reads the bundled export files, whatever shape they hold. The MIXED_PRECISION shape is pinned in
     # test_collect_mla_module_native_quant.py with export files written to tmp_path.
     @pytest.mark.parametrize("model_path", ["nvidia/GLM-5-NVFP4", "nvidia/GLM-5.3-NVFP4"])
     def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch, model_path):
-        mod = _import_module()
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-        with patch.object(mod, "get_sm_version", return_value=90):
-            cases = mod._build_module_test_cases("dsa", "context")
-        assert cases == []
+        assert plan("dsa_context_module", "sglang", 90).cases == []
 
     def test_targeted_nvfp4_wideep_mla_is_not_emitted_on_hopper(self, monkeypatch):
         mod = _import_module()
@@ -504,14 +464,6 @@ class TestBuildModuleTestCases:
             pytest.raises(ValueError, match=r"no collector-supported native NVFP4.*SM90"),
         ):
             mod.load_model_runner("example/NVFP4", 8, "bfloat16", "dsa")
-
-    def test_placeholder_seq_batch(self):
-        """seq_len and batch_size are placeholders (0) — subprocess sweeps internally."""
-        mod = _import_module()
-        with patch.object(mod, "get_sm_version", return_value=90):
-            for case in mod._build_module_test_cases("mla", "context"):
-                assert case[0] == 0  # seq_len placeholder
-                assert case[1] == 0  # batch_size placeholder
 
 
 class TestDsaTpShapeValidation:
@@ -644,7 +596,6 @@ class TestFailClosedOrchestration:
     def test_empty_case_list_raises_before_model_load(self, monkeypatch):
         mod = _import_module()
         monkeypatch.setattr(mod, "get_context_test_cases", lambda _attn_type: [])
-        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_kwargs: cases)
         monkeypatch.setattr(
             mod,
             "load_model_runner",
@@ -668,7 +619,6 @@ class TestFailClosedOrchestration:
         mod = _import_module()
         test_case = [128, 1, 8, "bfloat16", "bfloat16", "bfloat16"]
         monkeypatch.setattr(mod, "get_context_test_cases", lambda _attn_type: [test_case])
-        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_kwargs: cases)
         monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
         monkeypatch.setattr(mod, "load_model_runner", lambda **_kwargs: object())
         monkeypatch.setattr(mod, "run_attention_torch", lambda **_kwargs: 0)
@@ -686,28 +636,16 @@ class TestFailClosedOrchestration:
                 attention_backend="fa3",
             )
 
-    def test_configured_subprocess_timeout_raises(self, monkeypatch):
+    def test_configured_subprocess_timeout_raises(self, monkeypatch, capsys):
         mod = _import_module()
 
-        class TimedOutProcess:
-            returncode = None
-            killed = False
-            waited = False
+        def timed_out(argv, *, env, cwd, timeout):
+            # helper.run_measurement_subprocess kills the child and keeps its output
+            assert timeout == 7
+            raise mod.subprocess.TimeoutExpired(cmd=argv, timeout=timeout, output=b"partial sweep")
 
-            def communicate(self, timeout=None):
-                assert timeout == 7
-                raise mod.subprocess.TimeoutExpired(cmd="mla-collector", timeout=timeout)
-
-            def kill(self):
-                self.killed = True
-
-            def wait(self):
-                self.waited = True
-                self.returncode = -9
-
-        process = TimedOutProcess()
         monkeypatch.setenv("AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC", "7")
-        monkeypatch.setattr(mod.subprocess, "Popen", lambda *_args, **_kwargs: process)
+        monkeypatch.setattr(mod, "run_measurement_subprocess", timed_out)
 
         with pytest.raises(RuntimeError, match=r"MLA module context subprocess timed out after 7s"):
             mod._run_mla_subprocess(
@@ -722,8 +660,94 @@ class TestFailClosedOrchestration:
                 attention_backend="fa3",
             )
 
-        assert process.killed
-        assert process.waited
+        assert "partial sweep" in capsys.readouterr().out
+
+    def _dsa_runner(self, monkeypatch, *, runtime_chunk=8192, kv_capacity=None):
+        mod = _import_module()
+        timed = {}
+
+        def run_attention(**kwargs):
+            timed["cases"] = list(kwargs["test_cases"])
+            return len(kwargs["test_cases"])
+
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+        monkeypatch.setattr(mod, "load_model_runner", lambda **kwargs: timed.update(load=kwargs) or object())
+        monkeypatch.setattr(mod, "_runtime_chunk_size", lambda _runner: runtime_chunk)
+        monkeypatch.setattr(mod, "_kv_pool_capacity_tokens", lambda _runner: kv_capacity)
+        monkeypatch.setattr(mod, "kv_pool_page_size", lambda _runner: 64)
+        monkeypatch.setattr(mod, "sglang_dsa_mqa_logits_chunking_supported", lambda: True)
+        monkeypatch.setattr(mod, "run_attention_torch", run_attention)
+
+        def run(points, *, is_prefill=True, chunked_prefill_size=8192):
+            return mod.run_mla_module(
+                "dsa",
+                64,
+                "zai-org/GLM-5.2",
+                "fp8",
+                "bfloat16",
+                "bfloat16",
+                is_prefill,
+                0,
+                chunked_prefill_size=chunked_prefill_size,
+                points=points,
+            )
+
+        return run, timed
+
+    def test_dsa_points_past_the_device_chunk_are_refused_with_their_reason(self, monkeypatch):
+        run, timed = self._dsa_runner(monkeypatch)
+        with pytest.raises(
+            RuntimeError, match=r"^FIXME\(kernel-limit\): 1/2 point\(s\) refused: b=2 s=8192 prefix=0"
+        ) as exc:
+            run([[1, 4096, 512], [2, 8192, 0]])
+        assert "16384 new tokens exceed the chunked_prefill_size=8192" in str(exc.value)
+        # The refused point is never allocated: the ModelRunner is sized for the other.
+        assert timed["cases"] == [(1, 4096, True, 512)]
+        assert timed["load"]["max_total_tokens"] < 2 * 8192
+
+    def test_dsa_points_past_the_kv_pool_are_refused_after_the_runner_is_built(self, monkeypatch):
+        run, timed = self._dsa_runner(monkeypatch, kv_capacity=10_000)
+        with pytest.raises(
+            RuntimeError, match=r"^FIXME\(kernel-limit\): 1/2 point\(s\) refused: b=1 s=16 prefix=16384"
+        ) as exc:
+            run([[1, 16, 512], [1, 16, 16384]])
+        assert "needs 16448 KV tokens, the KV pool holds 10000" in str(exc.value)
+        assert timed["cases"] == [(1, 16, True, 512)]
+
+    def test_dsa_task_with_every_point_refused_builds_no_runner(self, monkeypatch):
+        run, timed = self._dsa_runner(monkeypatch)
+        with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): 1/1 point\(s\) refused"):
+            run([[2, 8192, 0]])
+        assert "load" not in timed
+
+    def test_dsa_run_takes_its_points_from_the_plan_row(self, monkeypatch):
+        run, _timed = self._dsa_runner(monkeypatch)
+        with pytest.raises(RuntimeError, match=r"DSA module context has no points"):
+            run([])
+
+    @pytest.mark.parametrize("rank", ["", "[rank0]: "])
+    def test_subprocess_keeps_the_kernel_limit_class_of_refused_points(self, monkeypatch, rank):
+        mod = _import_module()
+        refusal = "FIXME(kernel-limit): 1/2 point(s) refused: b=2 s=8192 prefix=0: does not fit"
+        launched = {}
+
+        def child(argv, *, env, cwd, timeout):
+            launched["code"] = argv[-1]
+            output = (
+                f"{rank}Traceback (most recent call last):\n"
+                f'{rank}  File "<string>", line 3\n'
+                f"{rank}RuntimeError: {refusal}\n"
+            )
+            # Output printed at interpreter exit follows the traceback.
+            return 1, (output + "[rank0]:[W1101] destroy_process_group() was not called before exit\n").encode()
+
+        monkeypatch.setattr(mod, "run_measurement_subprocess", child)
+        with pytest.raises(RuntimeError) as exc:
+            mod._run_mla_subprocess(
+                "dsa", 64, "zai-org/GLM-5.2", "fp8", "bfloat16", "bfloat16", True, 0, points=[[2, 8192, 0]]
+            )
+        assert str(exc.value) == refusal
+        assert "points=[[2, 8192, 0]]" in launched["code"]
 
 
 class TestOrdinaryMLAPrecision:
@@ -763,14 +787,14 @@ class TestOrdinaryMLACli:
         def capture_call(*_args, **kwargs):
             captured.update(kwargs)
 
-        def popen(argv, **_kwargs):
+        def run_child(argv, **_kwargs):
             # Execute the generated child call without importing the GPU runtime.
             tree = ast.parse(argv[2])
             call = ast.Expression(tree.body[-1].value)
             eval(compile(call, "<mla-subprocess>", "eval"), {"run_mla_module": capture_call})
-            return types.SimpleNamespace(returncode=0, communicate=lambda timeout: (b"", None))
+            return 0, b""
 
-        monkeypatch.setattr(mod.subprocess, "Popen", popen)
+        monkeypatch.setattr(mod, "run_measurement_subprocess", run_child)
         mod.run_mla_module_worker(
             128,
             1,
@@ -821,7 +845,6 @@ class TestOrdinaryMLACli:
         monkeypatch.setattr(
             mod, "get_context_test_cases", lambda _type: [[128, 1, 128 // tp_size, "bfloat16", "bfloat16", "bfloat16"]]
         )
-        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_kwargs: cases)
         monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
 
         captured = {}

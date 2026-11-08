@@ -118,12 +118,12 @@ The `optimization` section is required, even when its target uses a default.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. |
+| `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. With `--stack dynamo`, `min_gpus` accepts `router` and rejects `planner`. |
 | `optimization.hardware` | `null` | `x` | `-` | One nonempty hardware identifier; required for `engine.hardware: auto`. |
 | `optimization.strict_sla` | `false` | `x` | `-` | When true, reject candidates whose aggregate mean metrics exceed any configured SLA bound before ranking or Pareto analysis. |
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
-| `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with request-rate traffic and cannot exceed the offered rate. Optional with fixed concurrency. |
+| `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with open-loop traffic (a request or session rate, or `trace_timestamps` without `agentic_lanes`). It cannot exceed the offered request rate, which for sessions is `sessions_per_second` times `session.turns`; a trace's timestamp rate is not checked. Optional with fixed concurrency or agentic lanes. |
 
 `optimization.hardware` is one fallback SKU, never a list or inventory.
 Concrete P/D role SKUs can override it. `optimizer` controls execution of the

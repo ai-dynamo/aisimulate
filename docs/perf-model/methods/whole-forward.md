@@ -14,15 +14,61 @@ Use [FPM self-service](../fpm-self-service/README.md) to prepare, review, collec
 or import a profile. The existing [implementation guide](../fpm-self-service/implementation.md)
 owns artifact validation, publication, checkpoints, and recovery.
 
+## Hybrid FPM/OP deprecation and migration
+
+The legacy `forward_model="fpm"` route that combines an autoregressive target
+FPM with explicit operation-level draft operations is deprecated. Construction
+emits a deprecation warning when it retains a draft-operation tail; its existing
+timing and graph remain available during migration. Pure operation-level
+speculative decoding remains supported. Ordinary autoregressive FPM and n-gram
+FPM verification without a draft network are outside this deprecation.
+
+Choose the replacement according to the evidence and caller you have:
+
+| Route | Migration use | Current readiness |
+| --- | --- | --- |
+| **Option 1: non-SD FPM approximation** | Estimate a complete SD decode iteration from an ordinary STP FPM with query-only `draft_length`. | Available for pure-decode queries (including fully prefix-cached prefill records) through the canonical Rust/Python API. It does not yet replace prefill/mixed, static or Replay calls. |
+| **Option 2: measured SD FPM** | Query measurements of the complete target-plus-draft round at their recorded identity. | Available for the restricted measured-round profile contract below, with matching timing and observed memory evidence. |
+| Transitional hybrid FPM + OP | Preserve existing applicable OP draft estimates while callers and replacement coverage migrate. | The legacy route remains available with a warning; do not remove its draft cost or add an Option 1 estimate to it. |
+
+The transition preserves applicable OP draft estimates, with Option 1 as the
+fallback destination when an ordinary STP FPM can support the request. Today that
+fallback requires explicitly constructing an STP model and using the query API
+below. `best_available` retains its existing estimator priority: `auto` prefers
+OP timing, and explicit `speculation` currently admits only OP candidates. It
+does not automatically convert an unsupported speculative configuration into
+Option 1, or switch a selected estimator after a query failure. See the
+[configuration contract](../configuration.md#speculative-decoding-configuration).
+
+Removal has **no fixed date**. It depends on replacement readiness for affected
+callers and workloads: compatible timing coverage, accepted accuracy evidence,
+preserved draft memory and acceptance/progress semantics, and migrated caller
+queries. Option 1's decode-only API and Option 2's restricted measured profiles
+do not establish that readiness for every existing hybrid caller. Retain the
+legacy route where those conditions have not been met. Before changing defaults
+or removing it, document the supported native FPM replacements, validation
+evidence and caller migration plan; coordinate that switch with their availability.
+
 ## Estimate speculative decode from an STP FPM
 
 An ordinary single-token-prediction (STP) FPM can also estimate the complete
 latency of one speculative decode iteration. Supply `draft_length` on the
 existing query API; the model itself remains an STP estimator:
 
-```python
-from aisimulate_core.sdk import RustForwardPassPerfModel
+This is **Option 1**. Select an FPM explicitly so construction cannot choose an
+OP estimator, and leave `speculation` unset and `nextn` at zero:
 
+```python
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+stp_config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-0.6B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_interpolation",
+    fallback_policy="deny",
+)
 model = RustForwardPassPerfModel.best_available(stp_config)
 metrics = {
     "scheduled_requests": {
@@ -33,6 +79,12 @@ metrics = {
 sd_iteration_ms = model.estimate_forward_pass_time_ms(metrics, draft_length=3)
 detail = model.estimate_forward_pass_detailed(metrics, draft_length=3)
 ```
+
+The selected model/system/backend must have ordinary STP data; configure the
+existing [external FPM path](#external-whole-forward-fpm-data) or resource profile
+when needed. The example supplies logical request counts, not the packed OP
+verification counters. Do not retain a hybrid draft tail or add another draft
+estimate: this query already estimates the whole SD iteration.
 
 The fixed rule is:
 
@@ -68,11 +120,18 @@ tuning state; `tune_with_fpms` continues to take STP observations. The Rust
 counterparts are `estimate_speculative_forward_pass_time_ms(metrics, d)` and
 `estimate_speculative_forward_pass_detailed(metrics, d)`.
 
-V1 accepts pure decode iterations (including idle ranks). Prefill/mixed work,
-operation-level estimators, hybrid draft graphs and already-measured SD-round
-estimators are rejected. This option is a prediction API, not a new replay
-executor or CLI deployment switch. Ordinary replay SD controls and measured
-SD-round profiles retain their existing contracts.
+V1 accepts pure decode iterations (including idle ranks). Like every rank
+dispatch, a rank is prefill work only when it schedules fresh prefill tokens
+(`sum_prefill_tokens > 0`). A fully prefix-cached prefill record, with prefill
+request and KV metadata but no computed token, is therefore decode-only; its
+prefill metadata passes to the STP reference unchanged. With per-request lists,
+its requests must carry extend length 0 and are not widened. Ranks with fresh
+prefill tokens, operation-level estimators and hybrid draft graphs are rejected.
+A measured SD-round profile (Option 2) rejects `draft_length` with "a measured
+speculative-round profile already includes speculative decoding; omit
+draft_length": query it without the option. This option is a prediction API,
+not a new replay executor or CLI deployment switch. Ordinary replay SD controls
+and measured SD-round profiles retain their existing contracts.
 
 ### Calibration and limitations
 
@@ -151,13 +210,49 @@ observations separate from Dynamo scheduler wall-time measurements.
 
 ### Consuming a measured round
 
-Use the same canonical `ForwardPassPerfModel.best_available(config)` path as
+This is **Option 2**. Use the same canonical `ForwardPassPerfModel.best_available(config)` path as
 ordinary FPM profiles. Both prefill and decode cells must carry the identical
 execution binding. The decode lookup uses request count and actual total past
 KV tokens, without multiplying the request count by `nextn + 1`. The measured
 latency already includes target verification, sampling and draft work; no draft
 operation tail is added. Prefill must likewise use the matching measured SD
 prefill cell, not a relabelled AR prefill cell.
+
+For a reviewed profile and table whose identity matches the values below:
+
+```python
+import json
+from pathlib import Path
+
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+sd_config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-8B",
+    system="h200_sxm",
+    backend="vllm",
+    backend_version="0.24.0",
+    worker_type="decode",
+    fpm_profile=json.loads(Path("/data/measured-sd-profile.json").read_text()),
+    nextn=3,  # Must match the profile's recorded draft depth.
+    estimation_mode="fpm_interpolation",
+    fallback_policy="deny",
+    database_mode="SILICON",
+    estimator_config={
+        "fpm_interpolation": {
+            "method": "direct",
+            "fpm_parquet_path": "/data/measured-sd.parquet",
+        },
+    },
+)
+model = RustForwardPassPerfModel.best_available(sd_config)
+sd_iteration_ms = model.estimate_forward_pass_time_ms(metrics)
+```
+
+Use the logical decode metrics from Option 1 above. Omit `draft_length` and
+`speculation`: measured rounds already include their draft cost, and STP scaling
+or an OP draft tail would count it again. The paths above are user-supplied
+artifacts, including the table's required metadata sidecar; this example does
+not assert packaged measured-SD coverage for that identity.
 
 Resources must use a linear cache with observed `runtime_memory`. The recorded
 usable KV pool already reflects draft and graph allocations; capacity sizing
@@ -167,14 +262,20 @@ DCP and non-pure-TP topologies remain unsupported on this route. Use `nextn`
 with the exact recorded `execution_profile`; generic speculation cost graphs
 must not be composed with measurements that already include the draft work.
 
-Supported queries are pure-prefill and pure-decode `ForwardPassMetrics`, prefill
-static/detailed queries, and replay's prefill and decode queries with actual
-iteration totals. Raw mixed FPM, static multi-round generation, per-operation
-and ad-hoc operation queries fail explicitly. Ordinary replay with a measured
-round retains its existing separate P/D phase composition; this is an
-approximation for mixed iterations, not a measured mixed-round model. Partial-width decode rounds still
-use the configured depth's timing. Enable query coverage to identify holes
-rather than extrapolating.
+Supported queries are single-rank `ForwardPassMetrics` (pure prefill, pure
+decode and mixed), prefill static/detailed queries, and replay's prefill and
+decode queries with actual iteration totals. A measured round has no pass
+baseline for a marginal decode share, because its decode rows are complete
+target-plus-draft rounds. A mixed rank is therefore priced as the measured
+prefill cell **plus a full decode round** at its exact totals, and the detailed
+rank reports `prefill_ms` and `decode_ms` without a decode baseline. This is the
+same total as ordinary replay's separate P/D phase composition for a measured
+round. It is an approximation for mixed iterations, not a measured mixed-round
+model. The profile's DP1 identity still requires exactly one rank. A fully
+prefix-cached prefill with no fresh token is decode-only. Static multi-round
+generation, per-operation and ad-hoc operation queries fail explicitly.
+Partial-width decode rounds still use the configured depth's timing. Enable
+query coverage to identify holes rather than extrapolating.
 
 The SD identity does not expand the guided `onboard` collector or its replay
 validation scope. Prepare and validate the measured table separately, then use
@@ -282,16 +383,21 @@ scheduled per-rank FPM telemetry, including mixed work and its existing online
 correction behavior.
 
 Ordinary replay uses this returned model for FPM timing and emits
-`fpm_query_coverage` in its report when collection is enabled. A vLLM or
-TensorRT-LLM replay pass that computes prefill alongside decode steps runs as
-one forward. Replay charges the prefill at the pass's exact totals plus only
-the latency the decode requests add, `max(0, decode - decode_pass_baseline)`
-at their totals. A tuned model applies the online correction of that mixed
-iteration to both parts, so the pass costs what
-`estimate_forward_pass_time_ms()` returns for it. Measured SD-round profiles,
-MTP drafts (`nextn > 0`) and operation-level draft tails define no such decode
-share; replay prices their decode work as a separate decode pass. The CLI also
-saves `fpm-coverage.json`, including partial evidence when a native timing
+`fpm_query_coverage` in its report when collection is enabled. It prices each
+pass with one `estimate_forward_pass_time_ms()` query over every attention-DP
+rank (see [engine replay timing](../configuration.md#engine-replay-timing)).
+A vLLM or TensorRT-LLM rank that computes prefill alongside decode steps runs
+as one forward: the prefill at the rank's exact totals plus only the latency
+the decode requests add, `max(0, decode - decode_pass_baseline)` at their
+totals. A tuned model applies the online correction of that mixed iteration,
+so the pass costs what `estimate_forward_pass_time_ms()` returns for it.
+Measured SD-round profiles define no such decode share: their mixed rank costs
+the prefill plus a full decode round as one forward. Without online corrections
+that is the total of a separate prefill pass and decode pass; a tuned model
+applies the mixed iteration's correction to the sum instead of each phase's
+own. MTP drafts (`nextn > 0`) and operation-level draft tails keep pricing
+their decode work as a separate decode pass. The CLI also saves
+`fpm-coverage.json`, including partial evidence when a native timing
 error stops replay; the Python exception retains a `fpm_query_coverage`
 attribute for that failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from

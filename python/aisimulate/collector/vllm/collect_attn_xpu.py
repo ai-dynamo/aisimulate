@@ -10,7 +10,6 @@ isolated context/generation attention kernels with synthetic KV-cache state.
 
 __compat__ = "vllm==0.28.0"
 
-import functools
 import math
 import os
 
@@ -126,6 +125,12 @@ def run_attention_torch(
     device="xpu:0",
 ):
     get_device_module().set_device(device)
+    # The plan does not depend on the device: refuse a KV pool it cannot hold before allocating it.
+    reason = _kv_pool_does_not_fit(
+        num_kv_heads, head_dim, get_device_module().get_device_properties(device).total_memory
+    )
+    if reason is not None:
+        raise RuntimeError(reason)
 
     # Reclaim prior case's memory (gc drops old graph refs so their pools free).
     import gc
@@ -483,30 +488,29 @@ def run_attention_torch(
     )
 
 
-# KV-pool feasibility filter (generation-time, size-vs-capacity only). The pool
-# = num_gpu_blocks*block_size*num_kv_heads*head_dim*bytes*2(K+V); the hardcoded
-# 8192 blocks in run_attention_torch makes high-kv-head hd128 configs exceed a
-# 24GB card. Drop those so they are never queued.
+# The KV pool run_attention_torch allocates: num_gpu_blocks*block_size*num_kv_heads*
+# head_dim*bytes*2(K+V). The hardcoded 8192 blocks make high-kv-head hd128 configs
+# exceed a 24GB card, so the run refuses those cases before allocating.
 _KV_POOL_BLOCKS = 8192
 _KV_BLOCK_SIZE = 64
 _KV_POOL_MEM_FRACTION = 0.45
 
 
-@functools.lru_cache(maxsize=1)
-def _device_total_memory():
-    # Constant per device; cached so the per-case filter doesn't re-query it.
-    return get_device_module().get_device_properties(0).total_memory
-
-
-def _kv_pool_fits(num_kv_heads, head_dim):
+def _kv_pool_does_not_fit(num_kv_heads, head_dim, total_memory) -> str | None:
+    """Why the case's KV pool cannot fit the device, or None when it can."""
     # KV pool is allocated bf16-sized (2B) even when kv_cache_dtype is fp8.
     pool = _KV_POOL_BLOCKS * _KV_BLOCK_SIZE * num_kv_heads * head_dim * 2 * 2
-    return pool <= _device_total_memory() * _KV_POOL_MEM_FRACTION
+    allowed = int(total_memory * _KV_POOL_MEM_FRACTION)
+    if pool <= allowed:
+        return None
+    return (
+        f"FIXME(kernel-limit): does not fit: the KV pool needs {pool / 2**30:.1f} GiB, "
+        f"the device allows {allowed / 2**30:.1f} GiB ({_KV_POOL_MEM_FRACTION:g} of its memory)"
+    )
 
 
 def get_context_attention_test_cases(if_unit_test=False):
     test_cases = []
-    _dropped_mem = 0
 
     if if_unit_test:
         shape_sweeps = [
@@ -563,9 +567,6 @@ def get_context_attention_test_cases(if_unit_test=False):
                     if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
                         continue
                     for is_fp8_kv_cache in kv_cache_dtype_list:
-                        if not _kv_pool_fits(num_kv_heads, head_dim):
-                            _dropped_mem += 1
-                            continue
                         test_cases.append(
                             [
                                 b,
@@ -580,9 +581,6 @@ def get_context_attention_test_cases(if_unit_test=False):
                             ]
                         )
 
-    if _dropped_mem:
-        dev_gb = get_device_module().get_device_properties(0).total_memory / 1e9
-        print(f"attention_context: dropped {_dropped_mem} cases (KV-pool memory budget, device={dev_gb:.0f}GB)")
     return test_cases
 
 
@@ -610,7 +608,6 @@ def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads
 
 def get_generation_attention_test_cases():
     test_cases = []
-    _dropped_mem = 0
 
     # kv cache dtype fp8 to be supported
     kv_cache_dtype_list = [False, True]
@@ -651,9 +648,6 @@ def get_generation_attention_test_cases():
                     target_s_list = target_s_list[:-1]
                 for s in target_s_list:
                     for is_fp8_kv_cache in kv_cache_dtype_list:
-                        if not _kv_pool_fits(n_kv, head_dim):
-                            _dropped_mem += 1
-                            continue
                         test_cases.append(
                             [
                                 b,
@@ -667,9 +661,6 @@ def get_generation_attention_test_cases():
                                 head_config.has_attention_sink,
                             ]
                         )
-    if _dropped_mem:
-        dev_gb = get_device_module().get_device_properties(0).total_memory / 1e9
-        print(f"attention_generation: dropped {_dropped_mem} cases (KV-pool memory budget, device={dev_gb:.0f}GB)")
     return test_cases
 
 
