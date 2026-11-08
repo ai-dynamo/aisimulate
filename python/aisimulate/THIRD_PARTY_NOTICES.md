@@ -13,6 +13,165 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 HiCache residency and merged backups
+
+The merged backup submission in repository-root
+`crates/core/src/engine/host_offload/tier.rs`, host-backed radix residency in
+`crates/core/src/engine/cache/{radix_cache.rs,radix_cache/hicache.rs}`,
+the controller in `crates/core/src/engine/kv_manager/{sglang_backend.rs,sglang_backend/hicache.rs}`,
+admission and transfer timing in `crates/core/src/engine/scheduler/sglang/{core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the offline scenarios in `crates/core/tests/sglang_fidelity.rs`,
+the descriptions in `docs/replay/engine/kv-cache.md`, and their
+regression tests are modified behavioral adaptations of
+`python/sglang/srt/mem_cache/l2_transfer.py` and
+`python/sglang/srt/mem_cache/unified_radix_cache.py` and
+`python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py`, and
+`python/sglang/srt/managers/schedule_policy.py` in SGLang
+v0.5.22 at commit `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's private FIFO transfer lane
+and discrete-event acknowledgements. No serving implementation is vendored.
+
+## SGLang v0.5.22 cache-salt namespaces
+
+The cache-salt behavior in repository-root
+`crates/core/src/engine/common/hashing.rs`,
+`crates/core/src/engine/common/protocols.rs`,
+`crates/core/src/engine/protocol.rs`,
+`crates/core/src/engine/kv_manager/sglang_backend.rs`,
+`crates/core/src/engine/scheduler/sglang/request.rs`,
+`crates/core/src/engine/scheduler/sglang/tests.rs`,
+`crates/core/src/replay/{protocol.rs,spec.rs,replayer.rs}`,
+`crates/core/src/replay/loadgen/{types.rs,tests.rs}`,
+`crates/core/tests/replay_cache_salt.rs`,
+`docs/replay/engine/kv-cache.md`, and the inline request normalization in
+`src/aisimulate/traffic.py` and repository-root `tests/test_traffic.py`
+is a modified behavioral adaptation of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/managers/io_struct.py`,
+`python/sglang/srt/managers/schedule_batch.py`,
+`python/sglang/srt/managers/schedule_policy.py`, and
+`python/sglang/srt/mem_cache/{radix_cache.py,utils.py,events.py}`.
+Copyright 2023-2024 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's native request lifecycle,
+replay, and XXH3 page/sequence identities. No serving code is vendored;
+the hashes model namespace isolation rather than SGLang's SHA256 encoding.
+
+## SGLang v0.5.22 computed KV and finish boundaries
+
+The output/committed-KV bookkeeping and regression cases in repository-root
+`crates/core/src/engine/scheduler/sglang/{decode.rs,request.rs,tests.rs}` and
+the descriptions in `docs/replay/engine/workers.md` are modified behavioral
+adaptations of SGLang v0.5.22 at immutable commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/managers/{schedule_batch.py,scheduler.py}`,
+`python/sglang/srt/managers/scheduler_components/batch_result_processor.py`,
+`python/sglang/srt/mem_cache/{allocation.py,common.py}`, and
+`python/sglang/srt/disaggregation/decode.py`.
+Copyright 2023-2026 SGLang Team. Apache-2.0; the license is at the pinned
+repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's page leases, deterministic length stops, and sampled
+speculative acceptance. Tests use synthetic requests; no upstream fixture is vendored.
+
+## SGLang v0.5.22 disaggregated admission and retraction recovery
+
+The native controls and scheduler wiring in repository-root
+`crates/core/src/engine/{config.rs,common/protocols.rs,scheduler/rank.rs}`,
+the request-capacity, transfer-admission and restoration behavior in
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,host_loop.rs,prefill.rs,request.rs,tests.rs}`,
+the native-limit regression in `crates/core/tests/engine.rs`, and the
+descriptions in `docs/replay/engine/workers.md` are modified
+behavioral adaptations of SGLang v0.5.22 at immutable commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/disaggregation/{decode.py,prefill.py}`,
+`python/sglang/srt/arg_groups/{fields/disagg.py,pd_disaggregation_hook.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_batch.py}`, and
+`python/sglang/srt/mem_cache/kv_cache_configurator.py`.
+Copyright 2023-2026 SGLang Team. Apache-2.0; the license is at the pinned
+repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's synchronous request leases and discrete-event replay.
+Tests use synthetic requests; no upstream implementation or fixture is vendored.
+
+## SGLang v0.5.22 prefill admission and ratio lifecycle
+
+The admission budget, arrival limits, continuation priority, and ratio
+lifecycle in repository-root
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the protected-prefix capacity check in
+`crates/core/src/engine/kv_manager/sglang_backend.rs`, the regression fixtures in
+`crates/core/src/replay/components/engine.rs` and `crates/core/tests/engine.rs`,
+and the descriptions in
+`docs/replay/engine/{workers.md,sglang-vl-host-loop.md}` are modified behavioral
+adaptations of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/mem_cache/{prefill_budget.py,allocator/base.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_policy.py,schedule_batch.py,tp_worker.py,utils.py}`,
+and `python/sglang/srt/managers/scheduler_components/new_token_ratio_tracker.py`.
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's synchronous request leases
+and discrete-event scheduling. No serving implementation is vendored.
+
+## SGLang v0.5.22 semantic comparison probes
+
+The synthetic probes in repository-root
+`crates/core/src/engine/scheduler/sglang/semantic_evidence.rs` and their inputs,
+expected contracts and synthetic probe reports in
+`benchmarks/evidence/sglang-semantics-20261105/` are modified behavioral
+adaptations of the pinned SGLang v0.5.22 sources identified in the three
+preceding sections and the decode radix-cache section below.
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2026 SGLang Team. Apache-2.0; the upstream license is at the
+pinned repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISimulate's synchronous leases, synthetic token IDs and fixed
+timing model. No upstream implementation or production request is vendored.
+
+## SGLang native FPM counter correction
+
+The following repository-root files derive from
+`python/sglang/srt/managers/scheduler_components/metrics_reporter.py` in SGLang:
+
+- `scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch`
+- `scripts/fpm_self_service/native_patches/fixtures/metrics_reporter_scheduled_method.py.txt`
+
+Upstream: https://github.com/sgl-project/sglang , immutable revision
+`e087e662ba1ac4ef7747537e2a9141085efd4561`. Original source:
+https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py .
+Copyright 2023-2024 SGLang Team; Apache-2.0. The unmodified upstream license is
+retained at
+`scripts/fpm_self_service/native_patches/licenses/sglang-e087e662-LICENSE`.
+The pinned repository has no separate NOTICE on this source's ancestor paths.
+
+Modification status: the patch changes scheduled-prefill accounting to use
+pre-forward batch lengths and adds a prominent modification comment. The fixture
+extracts the unmodified original method into a standalone class wrapper; its
+comments identify the extraction and SGLang ownership. It is stored as text to
+preserve its byte-addressed provenance through formatters.
+
+The adjacent `materialize_sglang_patch.py` and tests are original orchestration.
+The helper generates a modified full SGLang source file, preserves the upstream
+license and explicit modification marker, and copies the patch and provenance
+beside it. The expected generated SHA256 is
+`80ca324b60beb470b4ea6057fde7ee9553dd32e851e9741831459614e40bee63`.
+`provenance.json` identifies the original, patch, fixture and license hashes.
+These notices also apply to generated source copies; materialization alone does
+not qualify a runtime or captured labels.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root
@@ -43,6 +202,16 @@ source-clock frontier handoff. NVIDIA modified these algorithms to use the
 native deterministic dependency executor and its transactional server-settlement
 barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
 upstream serving implementation is vendored.
+
+The primers-only warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs`, its regression test there, and its
+descriptions in `docs/replay/agentic/warmup.md` and `docs/replay/workloads.md`
+model the snapshot warmup of NVIDIA AIPerf without a cache-pressure warmup
+(https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py,
+`_execute_warmup` and `_capped_warmup_lead_ms`): one primer per stream, leads
+capped at the idle cap and aligned on the cut, and no further warmup request.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
+Licensed under Apache-2.0; no upstream implementation is vendored.
 
 The continuous-profile release rules in the same `driver.rs`, their regression
 tests there, and the release descriptions in
@@ -223,11 +392,22 @@ The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/
 
 The vLLM copyright in `src/aisimulate_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISimulate.
 
-Upstream source:
-https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+Public reference source: [SGLang v0.5.18 at `71de97b264b04dcd514cf904003028aefe9775c8`](https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt).
+The corresponding public files are:
 
-Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team. These source files are licensed under the Apache License, Version 2.0. The upstream license is at:
-https://gitlab-master.nvidia.com/dl/sglang/sglang/-/blob/02c5a855aceb968c310e6fbc6632270e26edc84b/LICENSE
+- [`models/deepseek_v2.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/models/deepseek_v2.py)
+- [`layers/communicator.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/communicator.py)
+- [`layers/quantization/modelopt_quant.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/modelopt_quant.py)
+- [`layers/quantization/utils.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/utils.py)
+
+These public files contain the corresponding dense MLP, communication, and
+quantization-exclusion behavior. The original audit revision above identifies
+the fork used for the adaptation; the public reference is not a verified
+byte-for-byte mirror of that fork.
+
+Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team.
+These source files are licensed under the Apache License, Version 2.0; see the
+[public SGLang license at the reference revision](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/LICENSE).
 
 ## vLLM
 
@@ -1344,7 +1524,8 @@ and does not relicense model weights, producer code or their upstream projects.
 
 ## AISim FPM Gym
 
-- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Public migrated source: [FPM evaluator and overview](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
+  This is the modified public copy; the predecessor revision and paths follow.
 - Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
 - Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
   `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
@@ -1356,6 +1537,7 @@ and does not relicense model weights, producer code or their upstream projects.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility.
+- Public dashboard migration: [dashboard source](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
 - Additional revision: `f934c030afc3a03cb04d8f3ff4709194f7445c98`.
   Original paths: `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`,
   `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,
@@ -1387,6 +1569,47 @@ and does not relicense model weights, producer code or their upstream projects.
 - Copyright (c) 2012–2026 Plotly, Inc. The dashboard template and telemetry
   transformations are AISimulate code; they do not modify Plotly.js.
 
+
+## jemalloc
+
+The Python wheel's native extension statically links jemalloc as its Rust
+global allocator. It is built, unmodified, from jemalloc 5.3.0 at commit
+`e13ca993e8ccb9ba9847cc330696e02839f328f7`, as vendored by the
+`tikv-jemalloc-sys` 0.6.1 crate. No jemalloc source is vendored in this
+repository.
+
+Upstream source:
+https://github.com/tikv/jemalloc/tree/e13ca993e8ccb9ba9847cc330696e02839f328f7
+
+```text
+Unless otherwise specified, files in the jemalloc source distribution are
+subject to the following license:
+--------------------------------------------------------------------------------
+Copyright (C) 2002-present Jason Evans <jasone@canonware.com>.
+All rights reserved.
+Copyright (C) 2007-2012 Mozilla Foundation.  All rights reserved.
+Copyright (C) 2009-present Facebook, Inc.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice(s),
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice(s),
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER(S) ``AS IS'' AND ANY EXPRESS
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO
+EVENT SHALL THE COPYRIGHT HOLDER(S) BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+--------------------------------------------------------------------------------
+```
 
 ## vLLM Kimi KDA state sizing
 
@@ -1585,7 +1808,10 @@ https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834
 from `traces.jsonl` in the SemiAnalysis dataset
 https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
 at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
-The original dataset card is preserved as `fixtures/DATASET_CARD.md`.
+`python/aisimulate/tools/simulation_perf_gate/fixtures/DATASET_CARD.md` is adapted
+from upstream `README.md` at the same revision. Modified by NVIDIA: omitted the
+distribution-plot section and added a source and scope note. The remaining
+upstream text and license declaration are retained.
 
 Upstream authors: SemiAnalysis. The upstream card supplies no separate
 copyright or NOTICE statement. License: Apache License 2.0, declared in the
@@ -1798,3 +2024,49 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## SGLang v0.5.22 decode radix cache and decode waiting-queue order
+
+The following repository-root files independently model the decode server's opt-in radix cache and its arrival-order waiting queue:
+
+- `crates/core/src/engine/config.rs`
+- `crates/core/src/engine/scheduler/sglang/config.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `python/aisimulate/src/aisimulate/config/engine.py`
+
+The modified Rust behavior, configuration validation and synthetic regression
+fixtures adapt the contract observed in SGLang v0.5.22, commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+Original source paths: python/sglang/srt/arg_groups/fields/disagg.py (disaggregation_decode_enable_radix_cache), python/sglang/srt/arg_groups/pd_disaggregation_hook.py (handle_pd_disaggregation), python/sglang/srt/mem_cache/registry.py (decode tree-cache selection), python/sglang/srt/managers/schedule_policy.py (_validate_and_adjust_policy), and python/sglang/srt/disaggregation/decode.py (waiting-queue batch selection).
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang 0.5.21 collector serving-shape adaptation
+
+The synthetic batch staging in repository-root file
+`python/aisimulate/collector/sglang/collect_mla_module.py` adapts the native
+padded-decode buffer contract at SGLang revision
+`e00930c5489053f26d86b179cee0d087f846acbb`:
+
+- `python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py`
+  (`DecodeCudaGraphRunner.load_batch`).
+- `python/sglang/srt/model_executor/cuda_graph_buffer_registry.py`.
+- `python/sglang/srt/model_executor/runner_utils/buffers.py`.
+
+Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+
+Copyright SGLang Team and contributors, Apache-2.0. Upstream license:
+https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/LICENSE
+
+Modified for isolated synthetic attention collection: preserve real request
+counts in performance keys while staging sentinel slots for native graph
+buckets. The evidence harness calls the installed native runner; it does not
+vendor its implementation. This source attribution does not assert separate
+OSRB approval.

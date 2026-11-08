@@ -159,6 +159,7 @@ impl VllmHostRequestState {
             let session_id = lease.session_id.as_deref().map(Arc::<str>::from);
             (0..prompt_blocks)
                 .map(|index| HostBlockMeta {
+                    cache_salt: None,
                     parent: index
                         .checked_sub(1)
                         .map(|parent| block_keys[parent].sequence_hash()),
@@ -200,6 +201,7 @@ impl VllmHostRequestState {
                     return;
                 };
                 meta.push(HostBlockMeta {
+                    cache_salt: None,
                     parent: index
                         .checked_sub(1)
                         .map(|parent| self.block_keys[parent].sequence_hash()),
@@ -1572,6 +1574,7 @@ mod tests {
             event_id: 0,
             dp_rank: 0,
             data: KvEventData::Stored(StoredBlocks {
+                cache_salt: None,
                 parent_hash: None,
                 start_position: Some(0),
                 blocks: vec![block(0), block(1)],

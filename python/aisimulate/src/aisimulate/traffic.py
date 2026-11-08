@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
+# Cache-salt normalization follows SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+# Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 """Dynamo-neutral materialization of configured replay traffic."""
 
@@ -22,6 +25,7 @@ _INLINE_REQUEST_FIELDS = {
     "dp_rank",
     "prefill_dp_rank",
     "session_id",
+    "cache_salt",
     "metadata",
 }
 _TRACE_CONFIG_FIELDS = {
@@ -147,6 +151,12 @@ def _materialize_inline_requests(
             if not isinstance(session_id, str):
                 raise ValueError(f"{label}.session_id must be a string")
             request["session_id"] = session_id
+        cache_salt = raw.get("cache_salt")
+        if cache_salt is not None:
+            if not isinstance(cache_salt, str):
+                raise ValueError(f"{label}.cache_salt must be a string")
+            if cache_salt:
+                request["cache_salt"] = cache_salt
         materialized.append(request)
     return materialized
 

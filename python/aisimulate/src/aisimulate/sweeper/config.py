@@ -314,7 +314,7 @@ class Workload(BaseModel):
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
-    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"] = "repeated_prefixes"
     agentic_profile: AgenticProfileOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
@@ -451,6 +451,8 @@ class Workload(BaseModel):
             not self.agentic_warmup or self.agentic_profile is None
         ):
             raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if self.agentic_warmup_policy == "primers_only" and not self.agentic_warmup:
+            raise ValueError("primers_only requires agentic_warmup")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if (
@@ -658,7 +660,8 @@ class SearchSpace(BaseModel):
     # pinned
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
-    decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_enable_prefix_caching: bool = False
+    decode_radix_cache: bool = False  # SGLang --disaggregation-decode-enable-radix-cache
     decode_kv_bytes_per_token: int | str = "auto"
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
@@ -901,6 +904,8 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_afd_contract(self) -> SearchSpace:
         afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if afd_modes and self.decode_radix_cache:
+            raise ValueError("decode_radix_cache is unsupported for AFD")
         if self.afd_phase not in {"prefill", "decode", "both"}:
             raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
         if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
@@ -1071,6 +1076,13 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_engine_controls(self):
+        if self.decode_radix_cache and "sglang" not in self.backend:
+            raise ValueError("decode_radix_cache requires a search with backend=sglang")
+        if self.decode_radix_cache and "disagg" in self.deployment_mode:
+            if not self.decode_enable_prefix_caching:
+                raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
+            if self.aic_nextn or self.speculation is not None:
+                raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
         if self.enable_chunked_prefill is not None and any(
             mode not in {"agg", "disagg"} for mode in self.deployment_mode
         ):

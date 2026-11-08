@@ -43,6 +43,56 @@ def _session(**load):
     return {**session, **load}
 
 
+@pytest.mark.parametrize("backend", [["vllm"], ["trtllm"], ["vllm", "trtllm"]])
+def test_decode_radix_cache_rejects_searches_without_sglang(backend):
+    with pytest.raises(ValidationError, match="decode_radix_cache requires a search with backend=sglang"):
+        SearchSpace(**_search_space(backend=backend, decode_radix_cache=True))
+
+
+@pytest.mark.parametrize("modes", [["disagg"], ["agg", "disagg"]])
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"decode_enable_prefix_caching": False}, "decode_enable_prefix_caching=true"),
+        ({"aic_nextn": 2, "nextn_accepted": 1.0}, "incompatible with speculative decoding"),
+    ],
+)
+def test_decode_radix_cache_rejects_invalid_mixed_searches_at_config_time(modes, overrides, message):
+    values = _search_space(
+        backend=["vllm", "sglang"],
+        deployment_mode=modes,
+        decode_radix_cache=True,
+        decode_enable_prefix_caching=True,
+    )
+    with pytest.raises(ValidationError, match=message):
+        SearchSpace(**(values | overrides))
+
+
+@pytest.mark.parametrize("modes", [["agg"], ["disagg"], ["agg", "disagg"]])
+def test_decode_radix_cache_accepts_valid_mixed_searches(modes):
+    space = SearchSpace(
+        **_search_space(
+            backend=["vllm", "sglang"],
+            deployment_mode=modes,
+            decode_radix_cache=True,
+            decode_enable_prefix_caching=True,
+        )
+    )
+    assert SearchSpace.model_validate_json(space.model_dump_json()) == space
+
+
+def test_decode_radix_cache_does_not_restrict_an_aggregated_only_search():
+    SearchSpace(
+        **_search_space(
+            backend=["vllm", "sglang"],
+            deployment_mode=["agg"],
+            decode_radix_cache=True,
+            aic_nextn=2,
+            nextn_accepted=1.0,
+        )
+    )
+
+
 @pytest.mark.parametrize("role", [None, "agg", "prefill", "decode"])
 def test_search_space_accepts_learned_timing_without_loading_source(role):
     policy = {

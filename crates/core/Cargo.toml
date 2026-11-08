@@ -42,6 +42,8 @@ sha2 = "0.10"
 slotmap = "1"
 thiserror = { workspace = true }
 tempfile = { workspace = true }
+# Python loads this extension with dlopen, so jemalloc must not use initial-exec TLS.
+tikv-jemallocator = { version = "0.6.1", optional = true, features = ["disable_initial_exec_tls"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 xxhash-rust = { workspace = true }
@@ -50,6 +52,9 @@ xxhash-rust = { workspace = true }
 default = []
 python = ["dep:pyo3"]
 extension-module = ["python", "pyo3/extension-module"]
+# jemalloc as the Rust global allocator; maturin enables it for the Python
+# extension. Crates that link this library keep their own allocator.
+jemalloc = ["dep:tikv-jemallocator"]
 embed-python = ["python", "pyo3/auto-initialize"]
 replay-bench = []
 

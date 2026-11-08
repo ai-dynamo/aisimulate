@@ -3,7 +3,10 @@
 # SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
 # Dense/decode composition and exclusion matching adapt (with modifications) SGLang:
-# https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+# Original audit revision: 02c5a855aceb968c310e6fbc6632270e26edc84b.
+# Public reference (not a verified mirror of the audit revision):
+# https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt
+# Source paths, modification status, and license: THIRD_PARTY_NOTICES.md.
 # The vLLM copyright is retained from SGLang's deepseek_v2.py, which cites:
 # https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py
 

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Public replay facade over the mechanically moved topology runtimes.
 
@@ -10,7 +13,9 @@ use anyhow::Result as AnyResult;
 use uuid::Uuid;
 
 use crate::engine::KvEvictionPolicy;
-use crate::engine::belady::{BeladyOracle, input_sequence_hashes};
+use crate::engine::belady::BeladyOracle;
+#[cfg(test)]
+use crate::engine::belady::input_sequence_hashes;
 use crate::replay::OfflineDisaggReplayConfig;
 use crate::replay::agg::AggRuntimeImpl;
 use crate::replay::artifact::{
@@ -147,6 +152,17 @@ where
     ) -> AnyResult<Vec<crate::replay::core::Placement>> {
         self.0
             .request_terminal(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn prefill_started(
+        &mut self,
+        request_id: Uuid,
+        reused_input_tokens: usize,
+        now_ms: f64,
+    ) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0
+            .prefill_started(request_id, reused_input_tokens, now_ms)
             .map_err(placement_boundary)
     }
 
@@ -773,7 +789,12 @@ fn prepare_belady_oracle(
                 let request_id = *request.uuid.get_or_insert_with(Uuid::new_v4);
                 forecast.push((
                     request_id,
-                    input_sequence_hashes(&request.tokens, block_size as usize),
+                    crate::replay::loadgen::ReplayRequestHashes::from_tokens_with_cache_salt(
+                        &request.tokens,
+                        block_size,
+                        request.cache_salt.as_deref(),
+                    )
+                    .sequence_hashes,
                 ));
             }
             forecast
@@ -916,6 +937,7 @@ fn lower_requests(
             let routing = request.routing_metadata()?;
             Ok(DirectRequest {
                 tokens,
+                cache_salt: request.cache_salt.clone().filter(|salt| !salt.is_empty()),
                 max_output_tokens: request.output_tokens,
                 output_token_ids: request.output_token_ids.clone(),
                 uuid: Some(request_id),
@@ -980,6 +1002,39 @@ mod tests {
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
+
+    #[test]
+    fn cache_salt_keeps_belady_demand_in_the_request_namespace() {
+        let salts = [Some("alpha"), Some("beta"), None];
+        let mut input = ReplayRuntimeInput::Requests(
+            salts
+                .iter()
+                .enumerate()
+                .map(|(index, salt)| DirectRequest {
+                    tokens: vec![1, 2, 3, 4],
+                    cache_salt: salt.map(str::to_owned),
+                    uuid: Some(Uuid::from_u128(index as u128 + 1)),
+                    arrival_timestamp_ms: Some(index as f64),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        let oracle = prepare_belady_oracle(&mut input, 2).unwrap();
+        for (index, salt) in salts.into_iter().enumerate() {
+            let hashes = crate::replay::loadgen::ReplayRequestHashes::from_tokens_with_cache_salt(
+                &[1, 2, 3, 4],
+                2,
+                salt,
+            );
+            for hash in &hashes.sequence_hashes {
+                assert_eq!(oracle.next_use(*hash), index);
+            }
+            oracle.retire_requests([Uuid::from_u128(index as u128 + 1)]);
+            for hash in hashes.sequence_hashes {
+                assert_eq!(oracle.next_use(hash), usize::MAX);
+            }
+        }
+    }
 
     #[test]
     fn belady_native_forecast_preserves_queue_identity_and_rejects_unordered_arrivals() {
@@ -1060,6 +1115,7 @@ mod tests {
             sla: Default::default(),
             requests: vec![
                 ReplayRequest {
+                    cache_salt: None,
                     id: "length-only".into(),
                     arrival_time_ms: 0.0,
                     input_tokens: 3,
@@ -1079,6 +1135,7 @@ mod tests {
                     }),
                 },
                 ReplayRequest {
+                    cache_salt: None,
                     id: "materialized".into(),
                     arrival_time_ms: 1.0,
                     input_tokens: 2,
@@ -1130,6 +1187,7 @@ mod tests {
             record_per_request: false,
             sla: Default::default(),
             requests: vec![ReplayRequest {
+                cache_salt: None,
                 id: "random".into(),
                 arrival_time_ms: 0.0,
                 input_tokens: 1,

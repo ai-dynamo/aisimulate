@@ -174,9 +174,13 @@ impl ReplayEngineConfig {
                     "belady requires aggregated replay with dp_size=1 per worker".into(),
                 ));
             }
-            if self.rank.native_host_offload.is_some() || self.rank.g3_offload.is_some() {
+            if self.rank.native_host_offload.is_some()
+                || self.rank.g3_offload.is_some()
+                || self.rank.sglang.hicache.is_some()
+            {
                 return Err(ReplayError::InvalidSpec(
-                    "belady does not support native_host_offload or g3_offload".into(),
+                    "belady does not support native_host_offload, g3_offload or sglang.hicache"
+                        .into(),
                 ));
             }
             if !self.rank.enable_prefix_caching {
