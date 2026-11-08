@@ -87,6 +87,7 @@ areas:
   - label: infra
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
+      - .cargo/
       - .github/
       - .dockerignore
       - .gitignore
