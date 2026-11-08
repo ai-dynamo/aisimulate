@@ -925,7 +925,7 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
 
 def test_engine_stack_adds_weka_chat_template_tokens_to_every_prompt() -> None:
     # Every request of the fixture opens its stream, so each prompt grows by
-    # exactly request_tokens; turn and tail tokens apply to later turns only.
+    # exactly request_tokens; message and tail tokens apply to later requests only.
     def input_lengths(chat_template: dict | None) -> list[int]:
         source = {"type": "trace", "paths": [str(_TRACE_FIXTURES / "weka")], "format": "weka"}
         if chat_template is not None:
@@ -939,7 +939,9 @@ def test_engine_stack_adds_weka_chat_template_tokens_to_every_prompt() -> None:
         return sorted(record["input_length"] for record in report.metadata["native_report"]["per_request"])
 
     plain = input_lengths(None)
-    templated = input_lengths({"request_tokens": 5, "turn_tokens": 7, "tail_tokens": 2})
+    templated = input_lengths(
+        {"request_tokens": 5, "user_tokens": 7, "assistant_tokens": 6, "tail_tokens": 2, "append_tail_tokens": 1}
+    )
     assert templated == [length + 5 for length in plain]
 
 

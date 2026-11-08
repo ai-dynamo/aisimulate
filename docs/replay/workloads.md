@@ -64,7 +64,7 @@ the current SA convention.
 | `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
 | `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
 | `traffic.source.client` | `recorded` | `x` | `-` | `recorded` or `agentx`; Weka only. See [Weka client](#weka-client). |
-| `traffic.source.chat_template` | Unset | `x` | `-` | Optional `request_tokens`, `turn_tokens` and `tail_tokens`, each a nonnegative integer; Weka only. Unset replays the trace's `in` lengths and blocks. See [chat template](#weka-chat-template). |
+| `traffic.source.chat_template` | Unset | `x` | `-` | Optional `request_tokens`, `user_tokens`, `assistant_tokens`, `tail_tokens` and `append_tail_tokens`, each a nonnegative integer, with `append_tail_tokens <= tail_tokens <= request_tokens`; Weka only. Unset replays the trace's `in` lengths and blocks. See [chat template](#weka-chat-template). |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -269,20 +269,32 @@ traffic:
       - traces/agentx
     chat_template:
       request_tokens: 16
-      turn_tokens: 13
+      user_tokens: 5
+      assistant_tokens: 8
       tail_tokens: 8
+      append_tail_tokens: 1
 ```
 
-- A stream's first request is `in + request_tokens` long. A stream is a
-  conversation, a detected chain or a subagent thread. Each later request of
-  the stream adds `turn_tokens` for one more assistant and one more user
-  message. A request that shares no hash block with its predecessor starts the
-  conversation over, like a stream's first request.
-- A request repeats its stream predecessor's prompt up to the trace content the
-  two share. It does not repeat the rest of that content or the predecessor's
-  last `tail_tokens`, so the shared prefix ends between hash blocks rather than
-  on them. Its remaining blocks are private. A stream's first request keeps the
-  trace's blocks.
+Each stream, that is a conversation, a detected chain or a subagent thread,
+keeps its messages as the AgentX client and AIPerf 0.13 build them from the
+trace (`ConversationReconstructor` in AIPerf's `weka_synth_buf.py`):
+
+- A stream's first request is one user message, `in + request_tokens` tokens on
+  the trace's blocks.
+- A later request cuts the message list at the hash blocks it shares with its
+  predecessor: a cut inside a message shortens it, and a cut at block 0 starts
+  the conversation over. It then adds the predecessor's reply, its `out`
+  rounded up to whole blocks, as an assistant message and the rest as a user
+  message. The reply leaves the last new block to the user message when
+  nothing else is new, and is left out when `out` is 0 or no user message is
+  left.
+- A prompt is `in + request_tokens`, plus `user_tokens` for each further user
+  message and `assistant_tokens` for each assistant message.
+- A request repeats its predecessor's prompt up to the cut. A cut inside a
+  message's content leaves out the rest of the prompt, including its last
+  `tail_tokens`, so the shared prefix ends between hash blocks rather than on
+  them. A request that keeps every message and adds a reply repeats all but the
+  last `append_tail_tokens`. Blocks past the repeated prefix are private.
 - A forked chain or subagent thread starts a new stream, so its first request
   is one message, as AIPerf 0.13 and the AgentX client send it. AIPerf versions
   that include
@@ -293,24 +305,30 @@ traffic:
   [client](#weka-client) another stream shares at most the blocks of a stream's
   first request. With `recorded`, streams then no longer share their whole
   common hash prefix.
-- The values approximate the template. Each later request is taken to add one
-  assistant and one user message, and to repeat its predecessor's template
-  tokens up to the shared content. A client that merges messages or drops them
-  at a cut sends a somewhat different prompt.
+- Two cases repeat a few more tokens than counted: a request that keeps every
+  message and adds only a user message, and a cut at the end of an earlier
+  message. Tool-call message shapes are not modeled, and a corpus that declares
+  tool or system tokens is rejected.
 
 Where the shared prefix ends matters for hybrid models whose prefix cache keeps
 recurrent state only at block ends: it decides whether a turn reaches the
 previous prompt's last cached state.
 
-Measure the three values by rendering messages with the model's chat template
-and tokenizer, as AIPerf does to size its prompts:
+Measure the values by rendering plain messages with the model's chat template
+and tokenizer, as AIPerf does to size its prompts. With messages `u` and `v`
+from the user and `a` from the assistant, and `p(...)` a rendered prompt with
+the generation prompt:
 
-- `request_tokens`: a one-user-message prompt with the generation prompt, minus
-  its content tokens.
-- `turn_tokens`: the tokens that appending one assistant and one user message
-  adds, minus their content tokens.
-- `tail_tokens`: the tokens after the last user message's content, that is its
-  end marker and the generation prompt.
+- `request_tokens`: the length of `p(u)`, minus the content tokens of `u`.
+- `user_tokens`: `p(u, v)` minus `p(u)`, minus the content tokens of `v`.
+- `assistant_tokens`: `p(u, a, v)` minus `p(u, v)`, minus the content tokens of
+  `a`.
+- `tail_tokens`: the tokens of `p(u)` after the content of `u`, that is its end
+  marker and the generation prompt.
+- `append_tail_tokens`: the tokens of `p(u)` past its longest common prefix
+  with `p(u, a, v)`. It is 0 when the generation prompt is the assistant
+  message's header, as in plain ChatML, and more when the history renders
+  assistant messages differently, for example with an empty reasoning block.
 
 A runner accepts `chat_template` only if it advertises
 `supports_weka_chat_template`, as the engine stack does.

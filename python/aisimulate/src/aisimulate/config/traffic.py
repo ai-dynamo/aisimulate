@@ -97,8 +97,16 @@ class WekaChatTemplate(StrictModel):
     """Tokens the served model's chat template adds around the content a Weka `in` counts."""
 
     request_tokens: NonNegativeInt
-    turn_tokens: NonNegativeInt
+    user_tokens: NonNegativeInt
+    assistant_tokens: NonNegativeInt
     tail_tokens: NonNegativeInt
+    append_tail_tokens: NonNegativeInt
+
+    @model_validator(mode="after")
+    def _validate_tails(self) -> WekaChatTemplate:
+        if not self.append_tail_tokens <= self.tail_tokens <= self.request_tokens:
+            raise ValueError("chat_template needs append_tail_tokens <= tail_tokens <= request_tokens")
+        return self
 
 
 class TraceSource(StrictModel):

@@ -153,31 +153,47 @@ pub struct WekaImportOptions {
 }
 
 /// Tokens a chat template adds around the message content that a Weka `in`
-/// counts. A turn is one request of a stream (a conversation, a detected chain
-/// or a subagent thread); each later turn's history adds one assistant and one
-/// user message, and a request that shares no block with its predecessor
-/// starts the conversation over. A later turn repeats only its predecessor's
+/// counts. Each stream (a conversation, a detected chain or a subagent thread)
+/// keeps its messages as the AgentX client's reconstructor builds them
+/// (`weka_synth_buf.py` `ConversationReconstructor`): a request cuts the list
+/// where its hash prefix leaves its predecessor's, then adds the predecessor's
+/// reply and a user message. A later request repeats only its predecessor's
 /// prompt, and the blocks it adds are its own, so with either client another
 /// stream shares at most the blocks of a conversation's first request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WekaChatTemplate {
-    /// Tokens on a stream's first request: the request's fixed tokens and its
-    /// one message's role header and end marker.
+    /// Tokens of a prompt with one user message, besides its content: the
+    /// request's fixed tokens, the message's role header and end marker, and
+    /// the generation prompt.
     pub request_tokens: usize,
-    /// Tokens each later turn adds: the role headers and end markers of one
-    /// assistant and one user message.
-    pub turn_tokens: usize,
-    /// Tokens at the end of a request that the next turn's prompt does not
-    /// repeat: the last message's end marker and the generation prompt.
+    /// Tokens each further user message adds: its role header and end marker.
+    pub user_tokens: usize,
+    /// Tokens each assistant message adds as the history renders it.
+    pub assistant_tokens: usize,
+    /// Tokens after a prompt's last content: the last message's end marker and
+    /// the generation prompt. A request that cuts into the prompt's content
+    /// repeats none of them.
     pub tail_tokens: usize,
+    /// Tokens at the end of a prompt that the next request does not repeat
+    /// when it keeps every message and adds an assistant reply.
+    pub append_tail_tokens: usize,
 }
 
 impl WekaChatTemplate {
-    fn prompt_length(self, content_tokens: usize, turn: usize) -> usize {
-        content_tokens
-            .saturating_add(self.request_tokens)
-            .saturating_add(self.turn_tokens.saturating_mul(turn))
+    fn validate(self) -> Result<()> {
+        if self.append_tail_tokens > self.tail_tokens || self.tail_tokens > self.request_tokens {
+            bail!("chat_template needs append_tail_tokens <= tail_tokens <= request_tokens");
+        }
+        Ok(())
+    }
+
+    fn message_tokens(self, message: Message) -> usize {
+        if message.assistant {
+            self.assistant_tokens
+        } else {
+            self.user_tokens
+        }
     }
 }
 
@@ -803,19 +819,27 @@ fn lower_trace(
     chat_template: Option<WekaChatTemplate>,
 ) -> Result<LoweredTrace> {
     validate_trace_header(trace, relative_path)?;
+    if let Some(template) = chat_template {
+        template.validate()?;
+    }
     let agentx = client == WekaClient::Agentx;
     // The AgentX client renders declared tool and system tokens as a system
     // message, which the per-stream rendering below does not model.
-    if agentx
-        && (trace.tool_tokens > 0
-            || trace.system_tokens > 0
-            || trace.requests.iter().any(|entry| {
-                matches!(entry, WekaEntry::Subagent(subagent)
-                    if subagent.tool_tokens > 0 || subagent.system_tokens > 0)
-            }))
-    {
+    let declares_system = trace.tool_tokens > 0
+        || trace.system_tokens > 0
+        || trace.requests.iter().any(|entry| {
+            matches!(entry, WekaEntry::Subagent(subagent)
+                if subagent.tool_tokens > 0 || subagent.system_tokens > 0)
+        });
+    if declares_system && agentx {
         bail!(
             "Weka trace {} declares tool or system tokens, which client agentx does not support",
+            relative_path
+        );
+    }
+    if declares_system && chat_template.is_some() {
+        bail!(
+            "Weka trace {} declares tool or system tokens, which a chat template does not support",
             relative_path
         );
     }
@@ -1211,7 +1235,7 @@ fn lower_trace(
         );
     }
 
-    let mut rows = Vec::new();
+    let mut rows: Vec<AgenticMooncakeRow> = Vec::new();
     let mut used_hashes = HashMap::new();
     let mut source_hashes = HashMap::new();
     for stream in streams {
@@ -1220,53 +1244,54 @@ fn lower_trace(
         let first_message_blocks =
             agentx.then(|| first_user_message_blocks(&stream.requests, trace.block_size));
         let mut stream_hashes = HashMap::new();
-        // With a chat template: the stream's previous request, as its row and
-        // its trace content, and the request's turn in its conversation.
-        let mut previous: Option<(usize, usize, Vec<u64>)> = None;
-        let mut turn = 0;
+        // With a chat template: the stream's messages, and its previous request
+        // as its row, its trace hash IDs and its output tokens.
+        let mut conversation = chat_template.map(|template| Conversation {
+            template,
+            block_size: trace.block_size,
+            messages: Vec::new(),
+        });
+        let assistant_caps = if conversation.is_some() {
+            assistant_block_caps(&stream.requests, trace.block_size)
+        } else {
+            Vec::new()
+        };
+        let mut previous: Option<(usize, Vec<u64>, usize)> = None;
         for (position, mut request) in stream.requests.into_iter().enumerate() {
             let request_id = row_by_source[&request.source_id].clone();
-            let content_tokens = request.request.input_length;
-            // A request that shares no block with its predecessor starts the
-            // conversation over, as a chat client cuts its whole message list.
-            if previous
-                .as_ref()
-                .is_some_and(|(_, _, hashes)| lcp(hashes, &request.request.hash_ids) == 0)
-            {
-                previous = None;
+            let repeated = match (&mut conversation, &previous) {
+                (Some(conversation), Some((row, hashes, output_length))) => conversation.advance(
+                    hashes,
+                    *output_length,
+                    rows[*row].input_length.unwrap_or_default(),
+                    &request.request,
+                    assistant_caps[position],
+                ),
+                (Some(conversation), None) => {
+                    conversation.start(&request.request);
+                    None
+                }
+                (None, _) => None,
+            };
+            if let Some(conversation) = &conversation {
+                request.request.input_length =
+                    conversation.prompt_length(request.request.input_length);
             }
-            turn = if previous.is_some() { turn + 1 } else { 0 };
-            if let Some(template) = chat_template {
-                request.request.input_length = template.prompt_length(content_tokens, turn);
-            }
-            let hash_ids = match (chat_template, &previous) {
-                (Some(template), Some((row, previous_content, previous_trace_hashes))) => {
+            let hash_ids = match (repeated, &previous) {
+                (Some(repeated), Some((row, ..))) => {
                     let previous_row: &AgenticMooncakeRow = &rows[*row];
-                    // The next prompt repeats the previous one up to the trace
-                    // content the two share; the rest of the previous content
-                    // and the template's tail are not repeated.
-                    let shared_content =
-                        lcp(previous_trace_hashes, &request.request.hash_ids) * trace.block_size;
-                    let not_repeated = previous_content
-                        .saturating_sub(shared_content)
-                        .saturating_add(template.tail_tokens);
-                    let shared_tokens = previous_row
-                        .input_length
-                        .unwrap_or_default()
-                        .saturating_sub(not_repeated);
-                    // `shared_tokens` never exceeds the previous prompt, so
-                    // only its full blocks are repeated.
+                    // Only the repeated tokens' full blocks are the same.
                     templated_hashes(
                         &request_id,
                         request.request.input_length,
                         previous_row.hash_ids.as_deref().unwrap_or_default(),
-                        shared_tokens / trace.block_size,
+                        repeated / trace.block_size,
                         trace.block_size,
                         &mut used_hashes,
                     )?
                 }
-                // A stream's first request keeps the trace's blocks; blocks
-                // past the trace's length are private to it.
+                // A conversation's first request keeps the trace's blocks;
+                // blocks past the trace's length are private to it.
                 _ => normalized_hashes(
                     relative_path,
                     &request_id,
@@ -1281,11 +1306,11 @@ fn lower_trace(
                     }),
                 )?,
             };
-            if chat_template.is_some() {
+            if conversation.is_some() {
                 previous = Some((
                     rows.len(),
-                    content_tokens,
                     std::mem::take(&mut request.request.hash_ids),
+                    request.request.output_length,
                 ));
             }
             rows.push(AgenticMooncakeRow {
@@ -1765,6 +1790,184 @@ fn first_user_message_blocks(requests: &[IndexedRequest], block_size: usize) -> 
     result
 }
 
+/// A message of a templated conversation, as the AgentX client's
+/// reconstructor keeps it (`RoleSegment`).
+#[derive(Debug, Clone, Copy)]
+struct Message {
+    assistant: bool,
+    /// Full source blocks the message holds.
+    blocks: usize,
+    /// Synthesized tokens past those blocks; only the last message has them.
+    extra_tokens: usize,
+}
+
+/// A stream's messages under a chat template, kept by the rules of the AgentX
+/// client's `ConversationReconstructor`.
+struct Conversation {
+    template: WekaChatTemplate,
+    block_size: usize,
+    messages: Vec<Message>,
+}
+
+impl Conversation {
+    /// Starts over with the request as one user message (`init_turn_0`).
+    fn start(&mut self, request: &WekaRequest) {
+        let (blocks, extra_tokens) = covered_blocks(request, self.block_size);
+        self.messages.clear();
+        self.messages.push(Message {
+            assistant: false,
+            blocks,
+            extra_tokens,
+        });
+    }
+
+    /// Moves to `request` after the request with `previous_hashes` and
+    /// `previous_output` tokens, whose prompt was `previous_length` tokens
+    /// (`advance_turn`). Returns how many leading tokens of that prompt the
+    /// new one repeats, or `None` when the two share no block and the
+    /// conversation starts over.
+    fn advance(
+        &mut self,
+        previous_hashes: &[u64],
+        previous_output: usize,
+        previous_length: usize,
+        request: &WekaRequest,
+        assistant_cap: Option<usize>,
+    ) -> Option<usize> {
+        let common = lcp(previous_hashes, &request.hash_ids);
+        if common == 0 {
+            self.start(request);
+            return None;
+        }
+        let template = self.template;
+        // Cut the list at block `common` (`truncate_synth_buf_at_block`). A
+        // cut into a message's content repeats the prompt up to the cut: the
+        // tokens before that content, then the `common` blocks. A cut at the
+        // end of an earlier message counts the same, without the end marker
+        // it also repeats.
+        let mut repeated = None;
+        let mut before_content = template.request_tokens.saturating_sub(template.tail_tokens);
+        let mut start = 0;
+        for index in 0..self.messages.len() {
+            let message = self.messages[index];
+            if index > 0 {
+                before_content += template.message_tokens(message);
+            }
+            let end = start + message.blocks;
+            if end < common {
+                start = end;
+                continue;
+            }
+            if end > common || message.extra_tokens > 0 || index + 1 < self.messages.len() {
+                repeated = Some(before_content + common * self.block_size);
+            }
+            self.messages[index].blocks = common - start;
+            self.messages[index].extra_tokens = 0;
+            self.messages.truncate(index + 1);
+            break;
+        }
+        let (covered, extra_tokens) = covered_blocks(request, self.block_size);
+        let new_blocks = covered.saturating_sub(common);
+        // The previous reply takes whole blocks, none when no user message is
+        // left, and gives its last block back rather than end the prompt.
+        let mut assistant_blocks = if self.messages.iter().any(|message| !message.assistant) {
+            previous_output.div_ceil(self.block_size)
+        } else {
+            0
+        };
+        assistant_blocks = assistant_blocks
+            .min(new_blocks)
+            .min(assistant_cap.unwrap_or(usize::MAX));
+        if extra_tokens == 0 && assistant_blocks == new_blocks && assistant_blocks > 0 {
+            assistant_blocks -= 1;
+        }
+        let user_blocks = new_blocks - assistant_blocks;
+        // A request that keeps every message repeats the previous prompt but
+        // for the tokens after its content that the next message does not:
+        // `append_tail_tokens` before an assistant reply, and `tail_tokens`,
+        // slightly fewer than are repeated, before a user message.
+        let not_repeated = if assistant_blocks > 0 {
+            template.append_tail_tokens
+        } else if user_blocks > 0 || extra_tokens > 0 {
+            template.tail_tokens
+        } else {
+            0
+        };
+        if assistant_blocks > 0 {
+            self.messages.push(Message {
+                assistant: true,
+                blocks: assistant_blocks,
+                extra_tokens: 0,
+            });
+        }
+        if user_blocks > 0 || extra_tokens > 0 {
+            self.messages.push(Message {
+                assistant: false,
+                blocks: user_blocks,
+                extra_tokens,
+            });
+        }
+        Some(
+            repeated
+                .unwrap_or_else(|| previous_length.saturating_sub(not_repeated))
+                .min(previous_length),
+        )
+    }
+
+    /// Prompt tokens of the conversation, whose messages hold `content_tokens`.
+    fn prompt_length(&self, content_tokens: usize) -> usize {
+        self.messages.iter().skip(1).fold(
+            content_tokens.saturating_add(self.template.request_tokens),
+            |length, &message| length.saturating_add(self.template.message_tokens(message)),
+        )
+    }
+}
+
+/// Full source blocks of a request that its hash IDs cover, and its tokens
+/// past them, which the client synthesizes: missing blocks and the partial
+/// tail (`compute_turn_block_geometry`).
+fn covered_blocks(request: &WekaRequest, block_size: usize) -> (usize, usize) {
+    let covered = (request.input_length / block_size).min(request.hash_ids.len());
+    (covered, request.input_length - covered * block_size)
+}
+
+/// For each request of a stream, a bound on the blocks of the assistant
+/// message it adds (`compute_asst_block_caps`), so that a later request that
+/// cuts back to a block boundary without adding content ends on a user
+/// message.
+fn assistant_block_caps(requests: &[IndexedRequest], block_size: usize) -> Vec<Option<usize>> {
+    let mut caps = vec![None; requests.len()];
+    // The request that added each block of the message list, and how many
+    // blocks of the list each request kept.
+    let mut owners = Vec::new();
+    let mut kept = vec![0; requests.len()];
+    for (index, request) in requests.iter().enumerate() {
+        let (covered, extra_tokens) = covered_blocks(&request.request, block_size);
+        if index == 0 {
+            owners = vec![0; covered];
+            continue;
+        }
+        let common = lcp(
+            &requests[index - 1].request.hash_ids,
+            &request.request.hash_ids,
+        )
+        .min(owners.len());
+        kept[index] = common;
+        let added = covered.saturating_sub(common);
+        if added == 0 && extra_tokens == 0 && common > 0 {
+            let owner = owners[common - 1];
+            if owner != 0
+                && let Some(bound) = (common - 1).checked_sub(kept[owner])
+            {
+                caps[owner] = Some(caps[owner].map_or(bound, |cap: usize| cap.min(bound)));
+            }
+        }
+        owners.truncate(common);
+        owners.extend(std::iter::repeat_n(index, added));
+    }
+    caps
+}
+
 /// Source blocks past a stream's first user message, which the AgentX client
 /// renders privately for the stream.
 struct StreamBlocks<'a> {
@@ -2158,8 +2361,10 @@ fn semantic_digest(
         hasher.update(WEKA_CHAT_TEMPLATE_DIGEST_DOMAIN_V1);
         for tokens in [
             template.request_tokens,
-            template.turn_tokens,
+            template.user_tokens,
+            template.assistant_tokens,
             template.tail_tokens,
+            template.append_tail_tokens,
         ] {
             hasher.update(&(tokens as u64).to_le_bytes());
         }
@@ -2750,25 +2955,30 @@ mod tests {
         );
     }
 
+    // Template tokens: 5 per request, 2 per further user message, 3 per
+    // assistant message, a tail of 4, of which 1 is not repeated by an append.
+    const TEMPLATE: WekaChatTemplate = WekaChatTemplate {
+        request_tokens: 5,
+        user_tokens: 2,
+        assistant_tokens: 3,
+        tail_tokens: 4,
+        append_tail_tokens: 1,
+    };
+
     #[test]
-    fn chat_template_sets_prompt_lengths_and_shared_blocks_per_turn() {
+    fn chat_template_follows_the_clients_message_list() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("trace.json");
-        // One stream: outer:1 rewrites the partial block 3 and is spliced back
-        // as the seam continuation; outer:2 extends outer:1.
         write_trace(
             &path,
             serde_json::json!([
-                {"t":0.0,"type":"s","model":"model","in":10,"out":1,"hash_ids":[1,2,3],"api_time":0.2},
-                {"t":1.0,"type":"s","model":"model","in":15,"out":1,"hash_ids":[1,2,9,10],"api_time":0.2},
-                {"t":2.0,"type":"s","model":"model","in":17,"out":1,"hash_ids":[1,2,9,10,11],"api_time":0.2}
+                request(0.0, 8, 8, &[1, 2]),
+                request(1.0, 16, 4, &[1, 2, 3, 4]),
+                request(2.0, 26, 4, &[1, 2, 3, 4, 5, 6]),
+                request(3.0, 28, 4, &[1, 2, 3, 4, 5, 6, 7]),
+                request(4.0, 12, 4, &[1, 50, 51])
             ]),
         );
-        let template = WekaChatTemplate {
-            request_tokens: 3,
-            turn_tokens: 2,
-            tail_tokens: 1,
-        };
         let open = |chat_template| {
             WekaImporter::open_with_options(
                 &path,
@@ -2779,16 +2989,8 @@ mod tests {
             )
             .unwrap()
         };
-        let row = |rows: &[AgenticMooncakeRow], suffix: &str| {
-            rows.iter()
-                .find(|row| row.request_id.ends_with(suffix))
-                .unwrap()
-                .clone()
-        };
         let plain = open(None);
-        let templated = open(Some(template));
-        let plain_rows = plain.collect_rows().unwrap().1;
-        let rows = templated.collect_rows().unwrap().1;
+        let templated = open(Some(TEMPLATE));
         assert_eq!(
             plain.header().source.digest,
             WekaImporter::open(&path).unwrap().header().source.digest
@@ -2797,44 +2999,126 @@ mod tests {
             plain.header().source.digest,
             templated.header().source.digest
         );
-        let (first, second, third) = (
-            row(&rows, "outer:0"),
-            row(&rows, "outer:1"),
-            row(&rows, "outer:2"),
-        );
-        assert_eq!(first.session_id, second.session_id);
-        assert_eq!(second.session_id, third.session_id);
-        let hashes = |row: &AgenticMooncakeRow| row.hash_ids.clone().unwrap();
-        let (first_hashes, second_hashes, third_hashes) =
-            (hashes(&first), hashes(&second), hashes(&third));
+        let plain_rows = plain.collect_rows().unwrap().1;
+        let rows = templated.collect_rows().unwrap().1;
+        assert!(rows.iter().all(|row| row.session_id == rows[0].session_id));
+        let length = |source| row(&rows, source).input_length.unwrap();
+        let hashes =
+            |rows: &[AgenticMooncakeRow], source| row(rows, source).hash_ids.clone().unwrap();
+        let shared = |left, right| lcp(&hashes(&rows, left), &hashes(&rows, right));
 
-        // Turn 0: 10 + 3 = 13 tokens: the trace's three blocks, all full now,
-        // then a partial one. Untemplated, 10 tokens fill only blocks 1 and 2.
-        assert_eq!(first.input_length, Some(13));
-        assert_eq!(first_hashes.len(), 4);
-        assert_eq!(first_hashes[..2], hashes(&row(&plain_rows, "outer:0"))[..2]);
-        // Turn 1: 15 + 3 + 2 = 20 tokens. The two share trace blocks 1 and 2
-        // (8 tokens), so outer:0's last 10 - 8 = 2 content tokens and its
-        // 1-token tail are not repeated: 13 - 3 = 10 shared tokens, 2 blocks.
-        assert_eq!(second.input_length, Some(20));
-        assert_eq!(second_hashes.len(), 5);
-        assert_eq!(second_hashes[..2], first_hashes[..2]);
-        // Turn 2: 17 + 3 + 4 = 24 tokens. It repeats all of outer:1's content,
-        // so only the tail is not repeated: 20 - 1 = 19 shared tokens, 4 blocks.
-        assert_eq!(third.input_length, Some(24));
-        assert_eq!(third_hashes.len(), 6);
-        assert_eq!(third_hashes[..4], second_hashes[..4]);
-        // Blocks past the shared prefix are private to their request.
-        let mut private = second_hashes[2..].to_vec();
-        private.extend_from_slice(&third_hashes[4..]);
-        private.push(first_hashes[3]);
+        // Outer 0 is one user message: 8 + 5 = 13 tokens.
+        assert_eq!(length("outer:0"), 13);
+        // Outer 1 appends whole blocks 3 and 4. The 8-token reply would take
+        // both, so it gives block 4 back to a user message: 16 + 5 + 3 + 2 =
+        // 26 tokens. It keeps outer 0 whole and adds a reply, so it repeats all
+        // but 1 of outer 0's 13 tokens: 3 blocks.
+        assert_eq!(length("outer:1"), 26);
+        assert_eq!(shared("outer:1", "outer:0"), 3);
+        // Outer 2 adds a 1-block reply and a user message with block 6 and 2
+        // more tokens: 26 + 5 + 10 = 41 tokens, repeating 26 - 1 = 25: 6 blocks.
+        assert_eq!(length("outer:2"), 41);
+        assert_eq!(shared("outer:2", "outer:1"), 6);
+        // Outer 3 cuts outer 2's last message after block 6, dropping its 2
+        // extra tokens and the 4-token tail. It repeats the 5 + 3 + 2 + 3 + 2
+        // - 4 = 11 template tokens before that message's content and 6 blocks:
+        // 35 tokens, 8 blocks. Its one new block is a user message:
+        // 28 + 5 + 12 = 45 tokens.
+        assert_eq!(length("outer:3"), 45);
+        assert_eq!(shared("outer:3", "outer:2"), 8);
+        // Outer 4 keeps only block 1, inside the first message, then adds a
+        // reply and a user message: 12 + 5 + 3 + 2 = 22 tokens. It repeats
+        // 5 - 4 = 1 template token and block 1: 5 tokens, 1 block.
+        assert_eq!(length("outer:4"), 22);
+        assert_eq!(shared("outer:4", "outer:3"), 1);
+        // Blocks past a shared prefix are private to their request.
         let seen = plain_rows
             .iter()
-            .flat_map(hashes)
-            .chain(first_hashes[..3].iter().copied())
+            .flat_map(|row| row.hash_ids.clone().unwrap())
             .collect::<HashSet<_>>();
-        assert!(private.iter().all(|hash| !seen.contains(hash)));
-        assert_eq!(private.iter().collect::<HashSet<_>>().len(), private.len());
+        assert!(
+            hashes(&rows, "outer:1")[3..]
+                .iter()
+                .all(|hash| !seen.contains(hash))
+        );
+    }
+
+    #[test]
+    fn chat_template_caps_a_reply_that_a_later_cut_would_end_on() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // Outer 2 cuts back to block 3 and adds nothing. The client therefore
+        // keeps block 3 out of outer 1's reply, so that outer 2 ends on a user
+        // message.
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 8, 8, &[1, 2]),
+                request(1.0, 16, 8, &[1, 2, 3, 4]),
+                request(2.0, 12, 1, &[1, 2, 3])
+            ]),
+        );
+        let options = WekaImportOptions {
+            chat_template: Some(TEMPLATE),
+            ..Default::default()
+        };
+        let rows = WekaImporter::open_with_options(&path, options)
+            .unwrap()
+            .collect_rows()
+            .unwrap()
+            .1;
+        let length = |source| row(&rows, source).input_length.unwrap();
+        let shared = |left, right| {
+            lcp(
+                row(&rows, left).hash_ids.as_ref().unwrap(),
+                row(&rows, right).hash_ids.as_ref().unwrap(),
+            )
+        };
+        // Outer 1 adds blocks 3 and 4 as one user message: 16 + 5 + 2 tokens.
+        // It repeats outer 0 up to its tail: 13 - 4 = 9 tokens, 2 blocks.
+        assert_eq!(length("outer:1"), 23);
+        assert_eq!(shared("outer:1", "outer:0"), 2);
+        // Outer 2 cuts that message after block 3: 12 + 5 + 2 tokens, repeating
+        // the 1 + 2 template tokens before its content and 3 blocks: 15 tokens.
+        assert_eq!(length("outer:2"), 19);
+        assert_eq!(shared("outer:2", "outer:1"), 3);
+    }
+
+    #[test]
+    fn chat_template_rejects_inconsistent_values_and_system_messages() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(&path, serde_json::json!([request(0.0, 8, 1, &[1, 2])]));
+        let open = |path: &Path, chat_template| {
+            WekaImporter::open_with_options(
+                path,
+                WekaImportOptions {
+                    chat_template: Some(chat_template),
+                    ..Default::default()
+                },
+            )
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap()
+        };
+        for template in [
+            WekaChatTemplate {
+                append_tail_tokens: 5,
+                ..TEMPLATE
+            },
+            WekaChatTemplate {
+                tail_tokens: 6,
+                append_tail_tokens: 1,
+                ..TEMPLATE
+            },
+        ] {
+            assert!(open(&path, template).contains("append_tail_tokens <= tail_tokens"));
+        }
+        let mut trace = trace_value("play", serde_json::json!([request(0.0, 8, 1, &[1, 2])]));
+        trace["system_tokens"] = serde_json::json!(4);
+        let system = directory.path().join("system.json");
+        std::fs::write(&system, serde_json::to_vec(&trace).unwrap()).unwrap();
+        assert!(open(&system, TEMPLATE).contains("a chat template does not support"));
     }
 
     #[test]
@@ -2859,8 +3143,8 @@ mod tests {
         };
         let template = WekaChatTemplate {
             request_tokens: 3,
-            turn_tokens: 2,
-            tail_tokens: 1,
+            tail_tokens: 2,
+            ..TEMPLATE
         };
         assert_eq!(length(load(None)), (10, false));
         assert_eq!(length(load(Some(template))), (13, false));
@@ -4154,8 +4438,10 @@ mod tests {
         let recorded = load_weka_agentic_rows(&path).unwrap().1;
         let chat_template = Some(WekaChatTemplate {
             request_tokens: 3,
-            turn_tokens: 2,
+            user_tokens: 1,
+            assistant_tokens: 1,
             tail_tokens: 1,
+            append_tail_tokens: 0,
         });
         for client in [WekaClient::Recorded, WekaClient::Agentx] {
             let options = WekaImportOptions {
@@ -4182,13 +4468,16 @@ mod tests {
                 row(&rows, "outer:1").hash_ids.as_ref().unwrap()[..4],
                 row(&recorded, "outer:1").hash_ids.as_ref().unwrap()[..4]
             );
-            // Turns 1 to 3 after the restart.
+            // After the restart, outer 2 cuts outer 1 after block 2 and adds a
+            // reply and a user message; outer 3 and outer 5 each add one block,
+            // which the reply gives back to a user message.
             assert_eq!(length("outer:2"), 16 + 3 + 2);
-            assert_eq!(length("outer:3"), 20 + 3 + 4);
-            assert_eq!(length("outer:5"), 24 + 3 + 6);
-            // Shared trace content 8, 16 and 20 tokens; not repeated 16 - 8 + 1,
-            // 1 and 1: shared prompts of 19 - 9 = 10, 21 - 1 = 20 and
-            // 27 - 1 = 26 tokens, so 2, 5 and 6 blocks.
+            assert_eq!(length("outer:3"), 20 + 3 + 3);
+            assert_eq!(length("outer:5"), 24 + 3 + 4);
+            // Outer 2 repeats 3 - 1 template tokens and 2 blocks: 10 tokens,
+            // 2 blocks. Outer 3 and outer 5 keep every message and add a user
+            // message, so they repeat all but the 1-token tail: 21 - 1 = 20 and
+            // 26 - 1 = 25 tokens, 5 and 6 blocks.
             assert_eq!(shared("outer:2", "outer:1"), 2);
             assert_eq!(shared("outer:3", "outer:2"), 5);
             assert_eq!(shared("outer:5", "outer:3"), 6);

@@ -1073,7 +1073,13 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
                     "client": "agentx",
-                    "chat_template": {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8},
+                    "chat_template": {
+                        "request_tokens": 16,
+                        "user_tokens": 5,
+                        "assistant_tokens": 8,
+                        "tail_tokens": 8,
+                        "append_tail_tokens": 1,
+                    },
                 },
                 "load": {
                     "type": "trace_timestamps",
@@ -1097,7 +1103,13 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["agentic_lanes"] == 3
     assert workload["weka_nested_timestamp_basis"] == "relative"
     assert workload["weka_client"] == "agentx"
-    assert workload["weka_chat_template"] == {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
+    assert workload["weka_chat_template"] == {
+        "request_tokens": 16,
+        "user_tokens": 5,
+        "assistant_tokens": 8,
+        "tail_tokens": 8,
+        "append_tail_tokens": 1,
+    }
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -1251,7 +1263,13 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
             {
                 "source_type": "trace",
                 "trace_format": "mooncake",
-                "weka_chat_template": {"request_tokens": 1, "turn_tokens": 1, "tail_tokens": 1},
+                "weka_chat_template": {
+                    "request_tokens": 1,
+                    "user_tokens": 1,
+                    "assistant_tokens": 1,
+                    "tail_tokens": 1,
+                    "append_tail_tokens": 1,
+                },
             },
             "weka_chat_template requires Weka input",
         ),
@@ -1259,7 +1277,13 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
             {
                 "source_type": "trace",
                 "trace_format": "weka",
-                "weka_chat_template": {"request_tokens": -1, "turn_tokens": 1, "tail_tokens": 1},
+                "weka_chat_template": {
+                    "request_tokens": -1,
+                    "user_tokens": 1,
+                    "assistant_tokens": 1,
+                    "tail_tokens": 1,
+                    "append_tail_tokens": 1,
+                },
             },
             "greater than or equal to 0",
         ),
@@ -3047,7 +3071,13 @@ def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
 
 
 def test_weka_chat_template_requires_explicit_runner_capability_and_reaches_native():
-    template = {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
+    template = {
+        "request_tokens": 16,
+        "user_tokens": 5,
+        "assistant_tokens": 8,
+        "tail_tokens": 8,
+        "append_tail_tokens": 1,
+    }
     workload = {
         "source_type": "trace",
         "load_type": "trace_timestamps",
