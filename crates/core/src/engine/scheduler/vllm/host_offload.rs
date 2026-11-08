@@ -29,6 +29,12 @@
 //!   load or lookup pin), the CPU block pool's free queue. A store holds its G1
 //!   source blocks until the copy completes, and a preemption waits for every
 //!   transfer in flight (`vllm/v1/simple_kv_offload/worker.py`).
+//!
+//! With a state cache in G1 (a hybrid model), both 0.32.0 profiles also keep
+//! recurrent states, one key per state slot ([`HostBlockKey::state`]). A state
+//! is offered when G1 publishes it, before the pass's blocks (the scheduler's
+//! boundary hand-off), and a hit ends at the deepest block boundary that holds
+//! the attention prefix and every slot of the state there.
 
 use rustc_hash::FxHashMap;
 use std::collections::BTreeSet;
@@ -45,13 +51,15 @@ use crate::engine::host_offload::{
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
-    SourceReuseDependency,
+    SourceReuseDependency, StateHandoff,
 };
 use crate::engine::{HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
 
 struct LoadingPrefix {
     transfer_id: TransferId,
     keys: Vec<HostBlockKey>,
+    /// State slots at the head of `keys`, restored with the prefix.
+    state_slots: usize,
     reservation: DestinationReservation,
     original_g1_tokens: usize,
     loaded_prefix_blocks: usize,
@@ -135,6 +143,9 @@ pub(super) struct VllmHostRequestState {
     /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
+    /// `offloading_v0_32`: boundaries, in blocks, of the states stored,
+    /// offered or loaded, re-ranked with the blocks.
+    accessed_states: BTreeSet<usize>,
 }
 
 impl VllmHostRequestState {
@@ -185,6 +196,7 @@ impl VllmHostRequestState {
             confirmed_tokens: 0,
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
+            accessed_states: BTreeSet::new(),
         }
     }
 
@@ -212,6 +224,11 @@ impl VllmHostRequestState {
             }
             self.block_keys.push(HostBlockKey::new(hash));
         }
+    }
+
+    /// A completed G2 load is activated and awaits admission.
+    pub(super) fn has_activated_load(&self) -> bool {
+        self.activated().is_some()
     }
 
     fn activated(&self) -> Option<ActivatedPrefix> {
@@ -243,7 +260,10 @@ impl VllmHostRequestState {
 }
 
 pub(super) struct HostLookupHit {
+    /// The state slots at the hit boundary (a hybrid hit), then the blocks
+    /// after the G1 prefix. SimpleCPU loads and frees the Mamba groups first.
     keys: Vec<HostBlockKey>,
+    state_slots: usize,
     base_g1_blocks: usize,
     original_g1_tokens: usize,
     request_footprint_blocks: usize,
@@ -273,10 +293,27 @@ pub(super) struct HostTransferProgress {
     pub(super) completed_any: bool,
 }
 
+/// Recurrent-state geometry of a hybrid model's G1 state cache.
+#[derive(Clone, Copy)]
+struct HybridStates {
+    /// Slots per state, one per Mamba KV cache group.
+    slots: usize,
+}
+
+impl HybridStates {
+    fn keys(self, prefix: HostBlockKey) -> Vec<HostBlockKey> {
+        (0..self.slots)
+            .map(|slot| HostBlockKey::state(prefix.sequence_hash(), slot))
+            .collect()
+    }
+}
+
 pub(super) struct VllmHostOffloadAdapter {
     host: HostClient,
     shared: bool,
     rules: ConnectorRules,
+    /// Set when G1 has a state cache: G2 keeps recurrent states too.
+    hybrid: Option<HybridStates>,
     /// The rank publishes G2 residency as `HostPinned` KV events.
     publishes_residency: bool,
     g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
@@ -361,6 +398,7 @@ impl VllmHostOffloadAdapter {
             host,
             shared,
             rules: config.connector.rules(),
+            hybrid: None,
             publishes_residency: subscribe,
             g3: None,
             kvcr: None,
@@ -374,11 +412,23 @@ impl VllmHostOffloadAdapter {
     /// Whether a store keeps a reference on the G1 blocks it copies until the
     /// copy completes, and the order it frees them in: the connector's rule,
     /// or tail first for a cluster-shared pool, like Mooncake Store and
-    /// LMCache MP.
+    /// LMCache MP, and for a hybrid G2, whose state allocations are not fenced
+    /// behind a pending copy.
     pub(super) fn store_source_hold(&self) -> Option<SourceReleaseOrder> {
         self.rules
             .holds_store_sources
-            .or(self.shared.then_some(SourceReleaseOrder::TailFirst))
+            .or((self.shared || self.hybrid.is_some()).then_some(SourceReleaseOrder::TailFirst))
+    }
+
+    /// G1 has a state cache: lookups, loads and stores carry recurrent states.
+    pub(super) fn set_hybrid(&mut self, blocks_per_state: usize) {
+        self.hybrid = Some(HybridStates {
+            slots: blocks_per_state,
+        });
+    }
+
+    pub(super) fn is_hybrid(&self) -> bool {
+        self.hybrid.is_some()
     }
 
     /// Whether requests must retain router identities for residency events.
@@ -410,6 +460,7 @@ impl VllmHostOffloadAdapter {
             return HostLookup::Deferred;
         }
         let rules = self.rules;
+        let hybrid = self.hybrid;
         let Self {
             host,
             g3,
@@ -432,9 +483,12 @@ impl VllmHostOffloadAdapter {
 
         debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
         let base_g1_blocks = g1_cost.cached_tokens / block_size;
-        // G2 loads only prompt blocks, so a preempted request recomputes the
-        // output blocks SimpleCPU stored, which vLLM reloads.
-        let end = if rules.leaves_last_token {
+        // SimpleCPU must recompute at least the last token, and so must the
+        // offloading connector of a hybrid model, whose Mamba groups count as
+        // sliding-window groups there. G2 loads only prompt blocks, so a
+        // preempted request recomputes the output blocks SimpleCPU stored,
+        // which vLLM reloads.
+        let end = if rules.leaves_last_token || hybrid.is_some() {
             ((sequence.len() - 1) / block_size).min(request.prompt_blocks)
         } else {
             request.prompt_blocks
@@ -482,27 +536,57 @@ impl VllmHostOffloadAdapter {
         {
             HostLookup::Deferred
         } else {
+            // `None` ends the match. A matched key that is being loaded, or
+            // still being stored when the connector waits for stores, defers
+            // the hit.
+            let busy = |key: &HostBlockKey| match tier.lookup(*key) {
+                Lookup::Hit => Some(load_by_key.contains_key(key)),
+                Lookup::Pending { .. } => rules.waits_for_stores.then_some(true),
+                Lookup::Miss => None,
+            };
             let mut matched = 0usize;
-            let mut deferred = false;
-            for key in request.block_keys[base_g1_blocks..end].iter().copied() {
-                match tier.lookup(key) {
-                    Lookup::Hit => deferred |= load_by_key.contains_key(&key),
-                    Lookup::Pending { .. } if rules.waits_for_stores => deferred = true,
-                    Lookup::Pending { .. } | Lookup::Miss => break,
+            let mut first_busy = usize::MAX;
+            for key in &request.block_keys[base_g1_blocks..end] {
+                let Some(key_busy) = busy(key) else {
+                    break;
+                };
+                if key_busy {
+                    first_busy = first_busy.min(matched);
                 }
                 matched += 1;
             }
-            let keys = &request.block_keys[base_g1_blocks..base_g1_blocks + matched];
+            // A hybrid hit ends at the deepest boundary that also holds every
+            // slot of its state.
+            let mut keys = Vec::new();
+            let mut states_busy = false;
+            if let Some(hybrid) = hybrid {
+                (matched, keys, states_busy) = (1..=matched)
+                    .rev()
+                    .find_map(|blocks| {
+                        let states = hybrid.keys(request.block_keys[base_g1_blocks + blocks - 1]);
+                        let mut any_busy = false;
+                        for key in &states {
+                            any_busy |= busy(key)?;
+                        }
+                        Some((blocks, states, any_busy))
+                    })
+                    .unwrap_or_default();
+            }
+            let state_slots = keys.len();
+            keys.extend_from_slice(&request.block_keys[base_g1_blocks..base_g1_blocks + matched]);
             if matched == 0 {
                 HostLookup::Miss
-            } else if deferred {
+            } else if states_busy || first_busy < matched {
                 HostLookup::Deferred
             } else {
                 HostLookup::Hit(HostLookupHit {
-                    keys: keys.to_vec(),
+                    keys,
+                    state_slots,
                     base_g1_blocks,
                     original_g1_tokens: g1_cost.cached_tokens,
-                    request_footprint_blocks: sequence.current_known_blocks(),
+                    // The first pass after a restore writes a new working state.
+                    request_footprint_blocks: sequence.current_known_blocks()
+                        + hybrid.map_or(0, |hybrid| hybrid.slots),
                 })
             }
         };
@@ -544,8 +628,7 @@ impl VllmHostOffloadAdapter {
         {
             return StartLoad::Deferred;
         }
-        let hashes = hit
-            .keys
+        let hashes = hit.keys[hit.state_slots..]
             .iter()
             .map(|key| key.sequence_hash())
             .collect::<Vec<_>>();
@@ -554,6 +637,7 @@ impl VllmHostOffloadAdapter {
             lease,
             hit.base_g1_blocks,
             &hashes,
+            hit.state_slots > 0,
         ) {
             G1Acquire::Ready(reservation) => reservation,
             G1Acquire::CapacityExhausted => return StartLoad::CapacityBlocked,
@@ -595,10 +679,14 @@ impl VllmHostOffloadAdapter {
                 assert!(self.load_by_key.insert(*key, transfer_id).is_none());
             }
         }
+        let loaded_prefix_blocks = hit.base_g1_blocks + hashes.len();
         if self.rules.reranks_at_finish {
             request
                 .accessed_blocks
-                .extend(hit.base_g1_blocks..hit.base_g1_blocks + hit.keys.len());
+                .extend(hit.base_g1_blocks..loaded_prefix_blocks);
+            if hit.state_slots > 0 {
+                request.accessed_states.insert(loaded_prefix_blocks);
+            }
         }
         if let Some(g3) = &mut self.g3 {
             g3.release(uuid);
@@ -610,9 +698,10 @@ impl VllmHostOffloadAdapter {
         request.load = Some(LoadState::Loading(LoadingPrefix {
             transfer_id,
             keys: hit.keys,
+            state_slots: hit.state_slots,
             reservation,
             original_g1_tokens: hit.original_g1_tokens,
-            loaded_prefix_blocks: hit.base_g1_blocks + hashes.len(),
+            loaded_prefix_blocks,
             request_footprint_blocks: hit.request_footprint_blocks,
         }));
         StartLoad::Queued
@@ -717,7 +806,7 @@ impl VllmHostOffloadAdapter {
         request.load = Some(LoadState::Activated(ActivatedPrefix {
             original_g1_tokens: load.original_g1_tokens,
             loaded_prefix_blocks: load.loaded_prefix_blocks,
-            loaded_blocks: load.keys.len(),
+            loaded_blocks: load.keys.len() - load.state_slots,
             request_footprint_blocks: load.request_footprint_blocks,
         }));
     }
@@ -918,6 +1007,78 @@ impl VllmHostOffloadAdapter {
         }
     }
 
+    /// Offer a state G1 published this pass, as the scheduler's boundary
+    /// hand-off does. SimpleCPU stores the missing slots together and drops
+    /// the hand-off when the pool is full; `offloading_v0_32` stores each slot
+    /// as its own job, and only inside the prompt.
+    pub(super) fn store_state_handoff(
+        &mut self,
+        handoff: &StateHandoff,
+        request: &mut VllmHostRequestState,
+        prompt_tokens: usize,
+        block_size: usize,
+        kv_manager: &mut G1Manager,
+        now_ms: f64,
+    ) {
+        let hybrid = self.hybrid.expect("only a hybrid G1 hands off states");
+        // A state retracted with its pass (a same-pass preemption) is gone.
+        if !kv_manager.state_handoff_is_live(handoff) {
+            return;
+        }
+        let keys = hybrid.keys(HostBlockKey::new(handoff.hash));
+        let mut tier = self.host.lock();
+        if self.rules.stores_what_fits {
+            let missing = (0..keys.len())
+                .filter(|slot| tier.lookup(keys[*slot]) == Lookup::Miss)
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                return;
+            }
+            // Like its block stores, SimpleCPU protects none of the state's
+            // present slots from eviction.
+            let missing_keys = missing.iter().map(|&slot| keys[slot]).collect::<Vec<_>>();
+            if let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.prepare_store(self.host.id(), handoff.owner, &missing_keys, None, now_ms)
+            {
+                kv_manager.attach_state_handoff_dependency(
+                    handoff,
+                    &missing,
+                    source_dependency(transfer_id),
+                );
+                request.latest_store = Some(transfer_id);
+            }
+            return;
+        }
+        if handoff.position > prompt_tokens {
+            return;
+        }
+        let mut offered = false;
+        for (slot, key) in keys.iter().enumerate() {
+            match tier.lookup(*key) {
+                Lookup::Pending { .. } => continue,
+                Lookup::Hit => offered = true,
+                Lookup::Miss => {
+                    offered = true;
+                    if let StoreOutcome::Prepared { transfer_id, .. } =
+                        tier.prepare_store(self.host.id(), handoff.owner, &[*key], None, now_ms)
+                    {
+                        kv_manager.attach_state_handoff_dependency(
+                            handoff,
+                            &[slot],
+                            source_dependency(transfer_id),
+                        );
+                        request.latest_store = Some(transfer_id);
+                    }
+                }
+            }
+        }
+        if offered {
+            request
+                .accessed_states
+                .insert(handoff.position / block_size);
+        }
+    }
+
     /// The connector's work when a request leaves the scheduler, before its
     /// G1 blocks are released. SimpleCPU drops its lookup pin and stores the
     /// blocks computed since its last store (`request_finished_all_groups`).
@@ -955,9 +1116,25 @@ impl VllmHostOffloadAdapter {
             );
         }
         if self.rules.reranks_at_finish {
+            // Head to tail by end position (`order_request_keys`); a state's
+            // slots precede the block ending at its boundary, as vLLM lists a
+            // hybrid model's Mamba groups first. Touched tail first.
+            let (hybrid, block_keys) = (self.hybrid, &request.block_keys);
+            let states = |boundary: usize| {
+                hybrid
+                    .into_iter()
+                    .flat_map(move |hybrid| hybrid.keys(block_keys[boundary - 1]).into_iter().rev())
+            };
+            let mut boundaries = request.accessed_states.iter().rev().copied().peekable();
             let mut tier = self.host.lock();
-            for index in request.accessed_blocks.iter().rev() {
-                tier.touch(request.block_keys[*index]);
+            for &index in request.accessed_blocks.iter().rev() {
+                while let Some(boundary) = boundaries.next_if(|&boundary| boundary > index + 1) {
+                    states(boundary).for_each(|key| tier.touch(key));
+                }
+                tier.touch(request.block_keys[index]);
+            }
+            for boundary in boundaries {
+                states(boundary).for_each(|key| tier.touch(key));
             }
         }
     }
@@ -2847,5 +3024,222 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(!core.is_ready() && core.is_drained());
+    }
+
+    #[test]
+    fn a_hybrid_hit_ends_at_the_deepest_state_with_every_slot() {
+        // vLLM's hybrid lookup needs the attention prefix and every Mamba
+        // group's block at one boundary (`_lookup_complete_chunks`, and the
+        // SimpleCPU coordinator's `find_longest_cache_hit`).
+        for connector in [G2Connector::SimpleCpuV032, G2Connector::OffloadingV032] {
+            let mut adapter = connector_adapter(connector, 16);
+            adapter.set_hybrid(2);
+            let manager = G1Manager::new_with_caching(16, 4, KvEventPublishers::default(), 0, true);
+            let (sequence, lease, mut host) = request(Uuid::from_u128(1), (1..=21).collect());
+            let blocks = host.block_keys.clone();
+            // G2 holds blocks 0..5, both slots of the states after blocks 0
+            // and 1, and one slot of the state after block 3.
+            let state =
+                |block: usize, slot| HostBlockKey::state(blocks[block].sequence_hash(), slot);
+            for key in blocks.iter().copied().chain([
+                state(0, 0),
+                state(0, 1),
+                state(1, 0),
+                state(1, 1),
+                state(3, 0),
+            ]) {
+                seed_host(&mut adapter, key);
+            }
+            let cost = raw_cost(&manager, &sequence, &lease);
+            let HostLookup::Hit(hit) = adapter.lookup(&mut host, &sequence, &cost, 4, 0.0) else {
+                panic!("{connector:?}: the state after block 1 is a hit")
+            };
+            assert_eq!(hit.state_slots, 2, "{connector:?}");
+            assert_eq!(hit.keys, [state(1, 0), state(1, 1), blocks[0], blocks[1]]);
+        }
+    }
+
+    /// A hybrid model in miniature: 64-byte blocks, a two-slot state, the
+    /// internal prefill checkpoint, and a G2 that copies instantly.
+    fn hybrid_args(connector: G2Connector, gpu_blocks: usize) -> MockEngineArgs {
+        MockEngineArgs::builder()
+            .num_gpu_blocks(gpu_blocks)
+            .block_size(4)
+            .max_num_seqs(Some(16))
+            .enable_prefix_caching(true)
+            .speedup_ratio(0.0)
+            .kv_cache_bytes_per_token(Some(16))
+            .state_cache(Some(crate::engine::StateCacheConfig {
+                bytes_per_request: 128,
+                num_speculative_states: None,
+                prefill_checkpoint: true,
+                junction_checkpoints: false,
+            }))
+            .prefix_match_unit(Some(4))
+            .native_host_offload(Some(
+                NativeHostOffloadConfig::new(64)
+                    .with_bandwidths(0.0, 0.0)
+                    .with_connector(connector),
+            ))
+            .build()
+            .unwrap()
+    }
+
+    /// Run `core` from `now` until it is idle. Returns `(reused, from G1, from
+    /// G2)` prompt tokens of each admission.
+    fn run_to_idle(core: &mut VllmCore, now: &mut f64) -> Vec<(usize, usize, usize)> {
+        let mut admissions = Vec::new();
+        for _ in 0..1_000 {
+            if core.is_ready() {
+                let pass = core.execute_pass(&mut TraceCollector::default(), *now);
+                *now = pass.end_ms.max(*now) + 1.0;
+                core.complete_engine_boundary(*now);
+                admissions.extend(pass.admissions.iter().map(|admission| {
+                    let tiers = admission.cache_tier_attribution.unwrap();
+                    (
+                        admission.reused_input_tokens,
+                        tiers.g1_reused_input_tokens,
+                        tiers.host_reused_input_tokens,
+                    )
+                }));
+            } else if let Some(deadline) = core.next_internal_deadline_ms() {
+                *now = now.max(deadline);
+                core.process_internal_work(*now);
+            } else {
+                return admissions;
+            }
+        }
+        panic!("the rank did not go idle");
+    }
+
+    /// Run each `(id, prompt, output)` turn to idle on one core. Returns the
+    /// admissions of each turn.
+    fn run_turns(
+        args: MockEngineArgs,
+        turns: &[(u128, std::ops::Range<u32>, usize)],
+    ) -> Vec<Vec<(usize, usize, usize)>> {
+        let mut core = VllmCore::new(args);
+        let mut now = 0.0;
+        let admissions = turns
+            .iter()
+            .map(|(id, tokens, output)| {
+                core.receive(DirectRequest {
+                    tokens: tokens.clone().collect(),
+                    max_output_tokens: *output,
+                    uuid: Some(Uuid::from_u128(*id)),
+                    arrival_timestamp_ms: Some(now),
+                    ..Default::default()
+                });
+                run_to_idle(&mut core, &mut now)
+            })
+            .collect();
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+        admissions
+    }
+
+    #[test]
+    fn a_follow_up_restores_attention_and_state_from_g2() {
+        // A one-token turn finishes in the pass whose prefill checkpoint
+        // publishes its state at 20, and still offers it: vLLM takes a pass's
+        // boundary hand-offs before a request can finish in it. A filler then
+        // evicts the turn from G1, and the follow-up loads blocks 0..5 and
+        // that state. 20 is the follow-up's last boundary before its final
+        // token, so the load also caches the state in G1 (vLLM's post-load
+        // `cache_blocks`), and the next turn resumes there without a load.
+        for connector in [G2Connector::SimpleCpuV032, G2Connector::OffloadingV032] {
+            let turns = [
+                (1, 0..22, 1),
+                (2, 1000..1040, 1),
+                (3, 0..21, 1),
+                (4, 0..30, 2),
+            ];
+            let admissions = run_turns(hybrid_args(connector, 16), &turns);
+            assert_eq!(
+                admissions[2..],
+                [[(20, 0, 20)], [(20, 20, 0)]],
+                "{connector:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_restored_state_brings_its_speculative_blocks_to_admission() {
+        // The load allocates the restored state's speculative blocks, so the
+        // follow-up's admission charges only its new slot (vLLM 43b4aaea's
+        // MambaManager adds them only for a request without blocks): 3 token
+        // blocks, 2 for the slot and 2 for the checkpoint fit the 7 free.
+        let mut args = hybrid_args(G2Connector::SimpleCpuV032, 20);
+        args.aic_nextn = Some(3);
+        args.aic_nextn_accept_rates = Some("1,1,1".to_string());
+        args.disable_eagle_block_drop = true;
+        args.state_cache.as_mut().unwrap().num_speculative_states = Some(3);
+        let turns = [(1, 0..22, 1), (2, 1000..1040, 1), (3, 0..30, 2)];
+        assert_eq!(run_turns(args, &turns)[2], [(20, 0, 20)]);
+    }
+
+    #[test]
+    fn a_state_retracted_by_a_draft_slot_preemption_is_not_stored() {
+        // Replay reserves MTP draft slots while emitting tokens, after the
+        // pass published its states (vLLM reserves them while scheduling). A
+        // request preempted there retracts its pass, so a hybrid G2 stores
+        // after emission: the second request's prefill checkpoint at 4 is
+        // retracted and never stored.
+        for connector in [G2Connector::SimpleCpuV032, G2Connector::OffloadingV032] {
+            let mut args = hybrid_args(connector, 12);
+            args.aic_nextn = Some(3);
+            args.aic_nextn_accept_rates = Some("1,1,1".to_string());
+            args.disable_eagle_block_drop = true;
+            let mut core = VllmCore::new(args);
+            let prompts: [Vec<u32>; 2] = [(0..8).collect(), (100..108).collect()];
+            for (id, tokens) in prompts.iter().enumerate() {
+                core.receive(DirectRequest {
+                    tokens: tokens.clone(),
+                    max_output_tokens: 8,
+                    uuid: Some(Uuid::from_u128(id as u128)),
+                    arrival_timestamp_ms: Some(0.0),
+                    ..Default::default()
+                });
+            }
+            let pass = core.execute_pass(&mut TraceCollector::default(), 0.0);
+            core.complete_engine_boundary(pass.end_ms);
+            assert_eq!(
+                (
+                    pass.admissions.len(),
+                    pass.mocker_metrics.vllm_preemptions_total
+                ),
+                (2, 1),
+                "{connector:?}"
+            );
+            let tier = core.host_offload().unwrap().host.lock();
+            let checkpoint = |tokens: &Vec<u32>| {
+                let (_, _, host) = request(Uuid::nil(), tokens.clone());
+                tier.lookup(HostBlockKey::state(host.block_keys[0].sequence_hash(), 0))
+            };
+            assert_eq!(checkpoint(&prompts[0]), Lookup::Hit, "{connector:?}");
+            assert_eq!(checkpoint(&prompts[1]), Lookup::Miss, "{connector:?}");
+        }
+    }
+
+    #[test]
+    fn offloading_v0_32_re_ranks_a_finished_request_s_states_with_its_blocks() {
+        // At finish the 0.32 connector re-ranks the request's keys with its
+        // head newest (lru.py `on_request_finished`), ordered by end position
+        // with Mamba groups first (`order_request_keys`). A 10-token prompt
+        // stores blocks 0 and 1 and its prefill checkpoint at 8, so eviction
+        // takes the tail block first, then the state, then the head.
+        let mut core = VllmCore::new(hybrid_args(G2Connector::OffloadingV032, 16));
+        core.receive(DirectRequest {
+            tokens: (0..10).collect(),
+            max_output_tokens: 1,
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        });
+        run_to_idle(&mut core, &mut 0.0);
+        let (_, _, host) = request(Uuid::nil(), (0..10).collect());
+        let [head, tail] = [host.block_keys[0], host.block_keys[1]];
+        let state = |slot| HostBlockKey::state(tail.sequence_hash(), slot);
+        let tier = core.host_offload().unwrap().host.lock();
+        assert_eq!(tier.lru_order(), [tail, state(1), state(0), head]);
     }
 }

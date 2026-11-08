@@ -38,6 +38,10 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
     bytes_per_token = result["kv_bytes_per_token"]
     if cache.prefix_match_unit is not None and block_size % cache.prefix_match_unit:
         raise ValueError("prefix_match_unit must be a positive divisor of resolved block_size")
+    if sizing.prefill_checkpoint and cache.prefix_match_unit != block_size:
+        raise ValueError("state_cache.prefill_checkpoint requires prefix_match_unit equal to block_size")
+    if cache.host_offload is not None and cache.prefix_match_unit != block_size:
+        raise ValueError("state_cache with host_offload requires prefix_match_unit equal to block_size")
     size = StateCacheConfig(bytes_per_request=result["bytes_per_request"])
     blocks = size.state_blocks(block_size, bytes_per_token)
     block_bytes = block_size * bytes_per_token

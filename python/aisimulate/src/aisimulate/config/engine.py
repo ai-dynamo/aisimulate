@@ -249,10 +249,39 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+def _validate_hybrid_host_offload(connector: str, prefix_match_unit: int | None, block_size: int | None) -> None:
+    # vLLM's CPU connectors hit a hybrid model at block boundaries; vLLM 0.24's
+    # connector stores no states.
+    if prefix_match_unit is None or block_size not in (None, prefix_match_unit):
+        raise ValueError("state_cache with host_offload requires prefix_match_unit equal to block_size")
+    if connector == "offloading_v0_24":
+        raise ValueError(
+            "state_cache with host_offload requires host_offload.connector=offloading_v0_32 or simple_cpu_v0_32"
+        )
+
+
+def _omit_unset_state_cache_fields(self, handler: Any) -> dict[str, Any]:
+    # Keep the existing state_cache shape unless a new field is set.
+    payload = handler(self)
+    for name, unset in (
+        ("num_speculative_states", None),
+        ("prefill_checkpoint", False),
+        ("junction_checkpoints", False),
+    ):
+        if name in payload and payload[name] is unset:
+            payload.pop(name)
+    return payload
+
+
 class StateCacheConfig(StrictModel):
     """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
+    num_speculative_states: PositiveU64 | None = None
+    prefill_checkpoint: StrictBool = False
+    junction_checkpoints: StrictBool = False
+
+    _omit_unset_fields = model_serializer(mode="wrap")(_omit_unset_state_cache_fields)
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -273,8 +302,13 @@ class StateCachePredictionConfig(StrictModel):
     """Sizing input; only resolved bytes cross the native engine boundary."""
 
     bytes_per_request: PositiveU64 | None = None
+    num_speculative_states: PositiveU64 | None = None
+    prefill_checkpoint: StrictBool = False
+    junction_checkpoints: StrictBool = False
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
+
+    _omit_unset_fields = model_serializer(mode="wrap")(_omit_unset_state_cache_fields)
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -333,12 +367,20 @@ class KvCachePredictionConfig(StrictModel):
             if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
+            # Inferred geometry checks the unit against the resolved block_size.
+            block_size = None if infer_state else self.block_size
+            if self.prefix_match_unit is None and self.state_cache.junction_checkpoints:
+                raise ValueError("state_cache.junction_checkpoints requires an explicit prefix_match_unit")
+            if self.state_cache.prefill_checkpoint and (
+                self.prefix_match_unit is None or block_size not in (None, self.prefix_match_unit)
+            ):
+                raise ValueError("state_cache.prefill_checkpoint requires prefix_match_unit equal to block_size")
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
-                raise ValueError("state_cache supports G1 only; host_offload is not supported")
+                _validate_hybrid_host_offload(self.host_offload.connector, self.prefix_match_unit, block_size)
             if self.g3_offload is not None:
-                raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+                raise ValueError("state_cache does not support g3_offload")
         if infer_state:
             # Capacity and prefix alignment use the backend's resolved block size.
             return self
@@ -350,8 +392,16 @@ class KvCachePredictionConfig(StrictModel):
             if self.state_cache is not None:
                 if self.block_size < 2:
                     raise ValueError("state_cache requires block_size at least two for vLLM")
-                if blocks < self.state_cache.state_blocks(self.block_size, self.bytes_per_token) + 1:
-                    raise ValueError("state_cache capacity must fit one token block and one request state")
+                if (
+                    blocks
+                    < self.state_cache.state_blocks(self.block_size, self.bytes_per_token)
+                    * (1 + (self.state_cache.num_speculative_states or 0))
+                    + 1
+                ):
+                    raise ValueError(
+                        "state_cache capacity must fit one token block and one request state "
+                        "plus its num_speculative_states scratch copies"
+                    )
         return self
 
 
@@ -382,6 +432,9 @@ class SchemeSpeculationConfig(StrictModel):
     draft_config: dict[str, Any] | None = None
     expected_accepted_tokens: NonNegativeFloat
     seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+    # vLLM speculative_config.disable_eagle_block_drop: prefix-cache hits keep
+    # their last matched block.
+    disable_eagle_block_drop: StrictBool = False
     _num_speculative_tokens: int = PrivateAttr(default=0)
 
     @model_validator(mode="after")
@@ -404,7 +457,17 @@ class SchemeSpeculationConfig(StrictModel):
         return self._num_speculative_tokens
 
     def cost_config(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"expected_accepted_tokens", "seed"}, exclude_none=True)
+        return self.model_dump(
+            exclude={"expected_accepted_tokens", "seed", "disable_eagle_block_drop"}, exclude_none=True
+        )
+
+    @model_serializer(mode="wrap")
+    def _omit_default_block_drop(self, handler: Any) -> dict[str, Any]:
+        # Keep the existing descriptor shape unless the switch is on.
+        payload = handler(self)
+        if payload.get("disable_eagle_block_drop") is False:
+            payload.pop("disable_eagle_block_drop")
+        return payload
 
 
 SpeculationConfig = NgramSpeculationConfig | SchemeSpeculationConfig
@@ -1281,6 +1344,16 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,
             )
+            if deployment.resources.cache_layout == "mamba_align":
+                cache = worker.kv_cache
+                if not cache.prefix_caching:
+                    raise ValueError("Mamba FPM cache requires the recorded prefix caching policy")
+                if role != "aggregated" or cache.host_offload is not None or cache.g3_offload is not None:
+                    raise ValueError("Mamba FPM cache supports aggregated HBM replay only")
+                if cache.capacity.type == "fixed" or cache.bytes_per_token != "auto" or cache.state_cache is not None:
+                    raise ValueError("Mamba FPM cache requires the recorded pool without manual geometry")
+                if cache.block_size != deployment.resources.mamba_cache.block_size_tokens:
+                    raise ValueError("kv_cache.block_size must match measured Mamba geometry")
             if deployment.resources.cache_layout == "grouped":
                 if role != "aggregated" or engine.nextn or engine.speculation is not None:
                     raise ValueError("grouped FPM cache supports only aggregated vLLM without speculative decoding")
@@ -1293,6 +1366,10 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                     raise ValueError(
                         "grouped FPM cache uses profile groups and a byte budget, not fixed blocks or bytes_per_token"
                     )
+        if not isinstance(worker, WorkerPredictionConfig) and any(
+            deployment.resources.cache_layout == "mamba_align" for deployment in profile.deployments
+        ):
+            raise ValueError("Mamba FPM cache requires a concrete prediction; recommendation search is unsupported")
         # Recommendation topology domains and the GPU budget are resolved by
         # lowering to SearchSpace, which validates reachable grouped workers.
 
@@ -1309,12 +1386,19 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
             f"{kind} speculation requires {'/'.join(sorted(supported_backends))} "
             "aggregated/disaggregated language workers"
         )
+    if getattr(engine.speculation, "disable_eagle_block_drop", False) and backends != {"vllm"}:
+        raise ValueError("speculation.disable_eagle_block_drop requires backend=vllm")
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError(f"{kind} speculation does not support host_offload")
+            if kind != "mtp":
+                raise ValueError(f"{kind} speculation does not support host_offload")
+            # Replay does not model the EAGLE block drop hiding the last block,
+            # and the state, that a host load restored.
+            if worker.kv_cache.state_cache is None or not engine.speculation.disable_eagle_block_drop:
+                raise ValueError("mtp speculation with host_offload requires state_cache and disable_eagle_block_drop")
         if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
@@ -1524,17 +1608,25 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         if worker is None or worker.kv_cache.state_cache is None:
             continue
         roles.append(role)
+        depth = worker.kv_cache.state_cache.num_speculative_states
+        if depth is not None:
+            if worker.kv_cache.state_cache.bytes_per_request is None:
+                raise ValueError("state_cache.num_speculative_states requires explicit bytes_per_request")
+            expected = engine.speculation.num_speculative_tokens if engine.speculation is not None else engine.nextn
+            if depth != expected:
+                raise ValueError("state_cache.num_speculative_states must match the speculative depth")
         if (
             worker.kv_cache.prefix_match_unit is not None
             and worker.kv_cache.prefix_match_unit != worker.kv_cache.block_size
             and (engine.speculation is not None or engine.nextn > 0)
+            and depth is None
         ):
             raise ValueError(
                 "sub-block prefix_match_unit does not support speculative decoding (speculation or nextn > 0)"
             )
         supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
         if engine.backend != "vllm" or not supported:
-            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated")
     # Both roles run the same hybrid model, and decode resumes from the transferred state.
     if engine.mode == "disaggregated" and roles and roles != ["prefill", "decode"]:
         raise ValueError("disaggregated state_cache must be set on both prefill and decode workers")

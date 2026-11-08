@@ -101,9 +101,9 @@ note = "vLLM reuses whole blocks, except hybrid KV models at prefix_match_unit; 
 [[sections.rows]]
 name = "Hybrid KV cache (per-request state)"
 doc = "replay/engine/kv-cache.md#state-cache"
-# config/engine.py: state_cache requires backend=vllm, aggregated or disaggregated, G1 only.
+# config/engine.py: state_cache requires backend=vllm, aggregated or disaggregated; G2 only with a vLLM 0.32 connector.
 cells = ["limited", "not_supported", "not_supported"]
-note = "Kimi K3 and DeepSeek V4 state in G1, aggregated and P/D; prefix reuse resumes from state snapshots. No G2/G3 or recommend."
+note = "Kimi K3 and DeepSeek V4 state in G1, aggregated and P/D; prefix reuse resumes from state snapshots; a local G2 that follows a vLLM 0.32 connector keeps states too. No G3 or recommend."
 
 [[sections.rows]]
 name = "Frontend tokenization cost"
@@ -165,7 +165,7 @@ name = "G2 local"
 detail = "Host memory per DP rank"
 doc = "replay/engine/kv-cache.md#g2-scope"
 cells = ["limited", "limited:HiCache", "not_supported", "na", "na", "na"]
-note = "Requires prefix caching. vLLM rejects generic speculation; it follows vLLM 0.24's OffloadingConnector or, on an aggregated worker, vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR). SGLang HiCache supports aggregated prediction with per-rank local host pools and all three write policies; no P/D, recommendation, external storage or peer KVCR."
+note = "Requires prefix caching. On vLLM it follows vLLM 0.24's OffloadingConnector or, on an aggregated worker, vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR), which state caches require; MTP needs a state cache and disable_eagle_block_drop. SGLang HiCache supports aggregated prediction with per-rank local host pools and all three write policies; no P/D, recommendation, external storage or peer KVCR."
 
 [[sections.rows]]
 name = "G2 shared"
@@ -262,7 +262,7 @@ name = "G2 host offload"
 doc = "replay/engine/kv-cache.md#agentic-g2"
 # crates/core/src/python.rs agentic host-offload checks.
 cells = ["limited", "not_supported", "not_supported"]
-note = "One aggregated worker, several aggregated workers each with local G2, or 1P1D; attention DP 1 on every role, static pools, no speculation."
+note = "One aggregated worker, several aggregated workers each with local G2, or 1P1D; attention DP 1 on every role, static pools, no speculation except MTP on a hybrid G2."
 
 [[sections.rows]]
 name = "G3 offload, KVCR"
@@ -273,8 +273,8 @@ note = "G3 is rejected; KVCR stays idle without router hints."
 [[sections.rows]]
 name = "Speculative decoding"
 doc = "replay/engine/speculation.md#mtp"
-cells = ["limited:HBM only", "limited:HBM only", "not_supported"]
-note = "MTP and EAGLE-family schemes with KV kept in GPU memory."
+cells = ["limited", "limited:HBM only", "not_supported"]
+note = "MTP and EAGLE-family schemes with KV kept in GPU memory; vLLM also runs MTP on a hybrid G2."
 
 [[sections.rows]]
 name = "KV-aware routing, Planner"
