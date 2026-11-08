@@ -516,7 +516,7 @@ finished request.
 
 With a state cache, the same profiles also keep recurrent states: the
 connectors' hybrid lookup and their stores of the states the scheduler hands
-off, with the G1 side in
+off, with the G1 side in repository-root
 `crates/core/src/engine/kv_manager/{g1_manager,state_cache_manager,vllm_backend}.rs`.
 These follow the connector files above and, at the same commit, the boundary
 hand-off, its drain and the hybrid hit in:
@@ -2060,8 +2060,9 @@ OSRB approval.
 
 ## vLLM speculative Mamba state reservations
 
-The private scratch reservations in `crates/core/src/engine/kv_manager/state_cache_manager.rs`
-and `vllm_backend.rs` adapt the align-mode allocation lifecycle from vLLM revision
+The private scratch reservations in repository-root
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs` adapt
+the align-mode allocation lifecycle from vLLM revision
 `db9527a46873454610df6dbedf79a36d6bf1a7f6`,
 `vllm/v1/core/single_type_kv_cache_manager.py` (`MambaManager`).
 AISimulate models ownership and capacity without allocating GPU tensors.
@@ -2072,12 +2073,14 @@ Copyright contributors to the vLLM project. Licensed under Apache-2.0.
 The full license text is reproduced in `LICENSE`.
 
 The same revision supplies the fine-grained MTP lookup and prefill-boundary
-behavior in `vllm_backend.rs` and `crates/core/src/engine/scheduler/vllm/core.rs`.
+behavior in repository-root `crates/core/src/engine/kv_manager/vllm_backend.rs`
+and `crates/core/src/engine/scheduler/vllm/core.rs`.
 The source paths are `vllm/v1/core/single_type_kv_cache_manager.py`,
 `vllm/v1/core/kv_cache_coordinator.py`, `vllm/v1/core/kv_cache_manager.py`,
 `vllm/v1/core/sched/scheduler.py`, and `vllm/v1/kv_cache_interface.py`.
-The modified tests in `state_cache_tests.rs` and the scheduler use synthetic
-fixtures derived from the same lookup and retention rules.
+The modified tests in `crates/core/src/engine/kv_manager/state_cache_tests.rs`
+and the scheduler use synthetic fixtures derived from the same lookup and
+retention rules.
 The shared-pool geometry in `crates/core/src/perfmodel/fpm/resources.rs`
 adapts `vllm/v1/core/kv_cache_utils.py` at that revision.
 
