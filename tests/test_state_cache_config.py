@@ -691,6 +691,25 @@ def test_prefill_checkpoint_matches_the_resolved_block_size(auto_k3_payload, for
     assert spec.backend_deployment.agg_engine_args["block_size"] == 768
 
 
+@pytest.mark.parametrize(
+    "changes,error",
+    [
+        ({"state_cache": {"prefill_checkpoint": True}}, "prefill_checkpoint requires prefix_match_unit equal"),
+        (
+            {"state_cache": {}, "host_offload": {"num_host_blocks": 8, "connector": "offloading_v0_32"}},
+            "host_offload requires prefix_match_unit equal",
+        ),
+    ],
+)
+def test_block_rules_reject_a_unit_below_the_resolved_block_size(auto_k3_payload, forbid_estimators, changes, error):
+    # 128 divides the resolved 768-token block but is not equal to it.
+    kv = auto_k3_payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    kv.update(block_size=64, prefix_match_unit=128, **changes)
+    config = CorePredictionConfig.model_validate(auto_k3_payload)
+    with pytest.raises(ValueError, match=error):
+        prediction_to_replay_spec(config)
+
+
 def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid_estimators):
     payload = auto_k3_payload
     payload["engine"]["context_length"] = 32768
