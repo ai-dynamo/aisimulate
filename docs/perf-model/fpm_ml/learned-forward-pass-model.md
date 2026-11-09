@@ -95,9 +95,17 @@ compared with a decode next step; `carrier` is `prefill` for a record with
 prefill tokens, else `decode`. A record with prefill runs long enough to hide
 most of a piecewise launch. The values above are an illustration: measure them
 on your deployment, for example as the weights of next-step indicators in a
-linear fit of `wall_time`. Records follow each other when they share
-`worker_id` and their `counter_id` values differ by one. The output is ordinary
-iterations, so a regression's `tune_with_fpms` takes it too. The SGLang
+linear fit of `wall_time`. A stall can grow with load: on a one-GPU GB300
+worker, the eager stall was about 260 ms at low load and 330 ms at high load.
+One value per transition is an approximation, so measure it on runs whose loads
+bracket the loads you predict. Records follow each other when they share
+`worker_id` and their `counter_id` values differ by one, and only records loaded
+together pair up: all `--fpm` paths form one set, and `--holdout-fpm` paths
+another. A record whose next step is not in its set keeps its launch, so give
+every record of a run to `--fpm`, for example both halves of
+`scripts/fpm_accuracy/prepare_native_training.py`'s alternating split. The
+output is ordinary iterations, so a regression's `tune_with_fpms` takes it too.
+The SGLang
 producer reads a CUDA-event `DeviceTimer` around the forward, but it
 accumulates every *finished* interval at emission time and drops the record
 when nothing finished. With the overlap scheduler on, a step whose result
