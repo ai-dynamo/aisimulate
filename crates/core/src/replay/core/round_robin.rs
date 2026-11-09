@@ -258,6 +258,11 @@ where
 #[derive(Debug)]
 pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
     next: usize,
+    /// SGLang `--load-balance-method total_tokens`: pick the scheduler holding the fewest
+    /// placed tokens instead of the next in turn.
+    token_balance: bool,
+    loads: FxHashMap<usize, usize>,
+    assigned: FxHashMap<Uuid, (usize, usize)>,
     workers: BTreeMap<usize, Vec<usize>>,
     hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
@@ -268,6 +273,9 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
     pub fn new(workers: Vec<WorkerTopology>) -> Self {
         Self {
             next: 0,
+            token_balance: false,
+            loads: FxHashMap::default(),
+            assigned: FxHashMap::default(),
             hints: AuthoredKvHintSources::new(&workers),
             workers: workers
                 .into_iter()
@@ -281,6 +289,13 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
     /// Pin each session to its first selected scheduler until that worker retires.
     pub fn with_session_affinity(mut self, enabled: bool) -> Self {
         self.session_pins = SessionPins(enabled.then(FxHashMap::default));
+        self
+    }
+
+    /// Place each unpinned request on the scheduler holding the fewest placed
+    /// tokens (SGLang `total_tokens`); ties go to the next scheduler in turn.
+    pub fn with_token_balance(mut self, enabled: bool) -> Self {
+        self.token_balance = enabled;
         self
     }
 
@@ -336,20 +351,38 @@ where
                 return Err(anyhow!("no active workers for round-robin placement"));
             }
             let index = self.next % active_count;
-            let scheduler_id = match preferred_dp_rank {
-                Some(rank) => self
-                    .workers
-                    .values()
-                    .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
-                    .nth(index),
-                None => self
-                    .workers
-                    .values()
-                    .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
-                    .nth(index),
+            let balanced = (self.token_balance && preferred_dp_rank.is_none())
+                .then(|| {
+                    let all: Vec<usize> = self.workers.values().flatten().copied().collect();
+                    // Least-loaded scheduler; ties fall to the next in turn.
+                    (0..all.len())
+                        .map(|offset| all[(index + offset) % all.len()])
+                        .min_by_key(|id| self.loads.get(id).copied().unwrap_or(0))
+                })
+                .flatten();
+            let scheduler_id = if let Some(id) = balanced {
+                Some(id)
+            } else {
+                match preferred_dp_rank {
+                    Some(rank) => self
+                        .workers
+                        .values()
+                        .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
+                        .nth(index),
+                    None => self
+                        .workers
+                        .values()
+                        .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
+                        .nth(index),
+                }
             }
             .expect("active round-robin pool must contain a scheduler");
             self.next = index + 1;
+            if self.token_balance {
+                let tokens = request.load_tokens();
+                *self.loads.entry(scheduler_id).or_default() += tokens;
+                self.assigned.insert(request_id, (scheduler_id, tokens));
+            }
             self.session_pins.insert(session_id, scheduler_id);
             scheduler_id
         };
@@ -377,7 +410,12 @@ where
         false
     }
 
-    fn request_terminal(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<Vec<Placement>> {
+    fn request_terminal(&mut self, request_id: Uuid, _now_ms: f64) -> Result<Vec<Placement>> {
+        if let Some((scheduler_id, tokens)) = self.assigned.remove(&request_id) {
+            if let Some(load) = self.loads.get_mut(&scheduler_id) {
+                *load = load.saturating_sub(tokens);
+            }
+        }
         Ok(Vec::new())
     }
 
@@ -612,6 +650,47 @@ mod tests {
                     .contains("no active workers")
             );
         }
+    }
+
+    #[test]
+    fn pool_token_balance_places_on_the_least_loaded_scheduler() {
+        // SGLang `total_tokens`: a request goes to the rank holding the fewest placed tokens
+        // (prompt plus output budget) and its tokens leave that rank when it terminates.
+        let request = |ordinal: u128, prompt: usize| DirectRequest {
+            uuid: Some(Uuid::from_u128(ordinal)),
+            tokens: vec![0; prompt],
+            max_output_tokens: 10,
+            ..DirectRequest::default()
+        };
+        let worker = WorkerTopology {
+            worker_id: 0,
+            scheduler_ids: vec![0, 1, 2, 3],
+            router_hint: false,
+        };
+        let place = |policy: &mut PoolRoundRobinPlacement<()>, request: &DirectRequest| {
+            immediate(
+                PlacementPolicy::<DirectRequest>::place(policy, request, (), None, 0.0).unwrap(),
+            )
+            .scheduler_id
+        };
+        let prompts = [1_000, 10, 10, 10, 10];
+        for (balanced, expected) in [(false, [0, 1, 2, 3, 0]), (true, [0, 1, 2, 3, 1])] {
+            let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker.clone()])
+                .with_token_balance(balanced);
+            let placed: Vec<usize> = prompts
+                .iter()
+                .enumerate()
+                .map(|(ordinal, &prompt)| place(&mut policy, &request(ordinal as u128, prompt)))
+                .collect();
+            assert_eq!(placed, expected);
+        }
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker]).with_token_balance(true);
+        for (ordinal, &prompt) in prompts.iter().enumerate() {
+            place(&mut policy, &request(ordinal as u128, prompt));
+        }
+        PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(0), 0.0)
+            .unwrap();
+        assert_eq!(place(&mut policy, &request(9, 10)), 0);
     }
 
     #[test]

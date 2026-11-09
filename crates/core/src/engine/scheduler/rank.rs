@@ -522,6 +522,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,
         decode_speedup_ratio: config.decode_speedup_ratio,
+        pipeline_fill_passes: config.pipeline_fill_passes,
         worker_type: match config.worker_type {
             WorkerType::Aggregated => CoreWorkerType::Aggregated,
             WorkerType::Prefill => CoreWorkerType::Prefill,

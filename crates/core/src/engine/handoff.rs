@@ -75,6 +75,10 @@ pub struct HandoffTransferTiming {
     pub state_bytes: usize,
     /// Modeled transfer bandwidth in decimal gigabytes per second.
     pub bandwidth_gb_s: Option<f64>,
+    /// Milliseconds the source's last forward still spends in later pipeline stages after the
+    /// scheduler sees it complete (a PP prefill worker retires its passes at the per-stage rate).
+    #[serde(default)]
+    pub pipeline_fill_ms: f64,
 }
 
 impl HandoffTransferTiming {
@@ -88,19 +92,22 @@ impl HandoffTransferTiming {
             TransferTimingMode::FullPrompt => self.full_prompt_tokens,
             TransferTimingMode::DestinationMissing => destination_missing_tokens,
         };
+        let fill = (self.pipeline_fill_ms > 0.0).then_some(self.pipeline_fill_ms);
         let (Some(bytes_per_token), Some(bandwidth_gb_s)) =
             (self.kv_bytes_per_token, self.bandwidth_gb_s)
         else {
-            return None;
+            return fill;
         };
         if bandwidth_gb_s <= 0.0 {
-            return None;
+            return fill;
         }
 
-        Some(transfer_delay_ms(
-            tokens as f64 * bytes_per_token as f64 + self.state_bytes as f64,
-            bandwidth_gb_s,
-        ))
+        Some(
+            transfer_delay_ms(
+                tokens as f64 * bytes_per_token as f64 + self.state_bytes as f64,
+                bandwidth_gb_s,
+            ) + self.pipeline_fill_ms,
+        )
     }
 
     /// Calculate delay using the full prompt irrespective of `mode`.
@@ -140,6 +147,7 @@ pub fn prefill_handoff_delay_ms(
         kv_bytes_per_token,
         state_bytes: 0,
         bandwidth_gb_s,
+        pipeline_fill_ms: 0.0,
     }
     .full_prompt_delay_ms()
 }
@@ -163,6 +171,7 @@ mod tests {
             kv_bytes_per_token: Some(1_000),
             state_bytes: 0,
             bandwidth_gb_s: Some(1.0),
+            pipeline_fill_ms: 0.0,
         };
 
         assert_eq!(timing.delay_ms(20), Some(0.02));
@@ -177,6 +186,7 @@ mod tests {
             kv_bytes_per_token: Some(1_000),
             state_bytes: 50_000,
             bandwidth_gb_s: Some(1.0),
+            pipeline_fill_ms: 0.0,
         };
         let close = |value: Option<f64>, expected: f64| (value.unwrap() - expected).abs() < 1e-12;
         assert!(close(timing.delay_ms(0), 0.05));
@@ -192,6 +202,7 @@ mod tests {
             kv_bytes_per_token: None,
             state_bytes: 0,
             bandwidth_gb_s: Some(1.0),
+            pipeline_fill_ms: 0.0,
         };
         assert_eq!(timing.delay_ms(0), None);
 

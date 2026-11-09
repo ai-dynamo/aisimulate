@@ -23,6 +23,7 @@ pub fn prefill_handoff_transfer_timing(
         kv_bytes_per_token,
         state_bytes,
         bandwidth_gb_s: kv_transfer_bandwidth,
+        pipeline_fill_ms: 0.0,
     }
 }
 

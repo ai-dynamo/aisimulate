@@ -48,11 +48,21 @@ def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
     return layout
 
 
-def reject_pipeline_parallelism(role: str, *sizes: object) -> None:
-    """Engine replay has no pipeline-stage scheduler; fail before any capacity work."""
+def reject_pipeline_parallelism(role: str, *sizes: object, backend: str | None = None) -> None:
+    """Fail before any capacity work unless the role's pipeline stages are priced.
 
+    Engine replay models pipeline stages only on an SGLang disaggregated prefill
+    worker: passes retire at the per-stage rate and the last forward crosses the
+    remaining stages before its KV handoff.
+    """
+
+    if role == "prefill" and backend == "sglang":
+        return
     if any(size is not None and size != 1 for size in sizes):
-        raise ValueError(f"engine replay does not support pipeline parallelism for {role}; use pipeline=1")
+        raise ValueError(
+            f"engine replay does not support pipeline parallelism for {role}; use pipeline=1 "
+            "(only an SGLang disaggregated prefill worker accepts pipeline > 1)"
+        )
 
 
 def materialize_aic_num_gpu_blocks(
@@ -578,6 +588,17 @@ def estimate_kv_bytes_per_token(
         allow_hf_config_download=True,
     )
     kvcache_quant_mode = _quant_mode_name("kvcache", kvcache_quant_mode)
+    if getattr(estimator, "architecture", None) == "DeepseekV4ForCausalLM":
+        # The dense formula prices every layer's full BF16 KV (88 KiB/token for V4 Flash). V4 stores
+        # FP8 compressed KV (ratio 4 and 128 layers) plus the indexer K; its sliding-window rows are a
+        # fixed per-request state, not token bytes. Replicated on every TP rank.
+        from aisimulate_core.sdk.memory.deepseek_v4 import deepseek_v4_state_cache
+        from aisimulate_core.sdk.models import _get_model_info
+
+        if kvcache_quant_mode not in (None, "fp8"):
+            raise ValueError("DeepSeek V4 stores fp8_ds_mla KV; use kvcache_quant_mode fp8")
+        geometry = _get_model_info(model_name)["extra_params"]
+        return int(deepseek_v4_state_cache(geometry, indexer_cache_dtype="auto")["kv_bytes_per_token"])
     if kvcache_quant_mode is not None:
         from aisimulate_core.sdk.common import KVCacheQuantMode
 

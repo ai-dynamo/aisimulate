@@ -267,6 +267,19 @@ pub enum ReplayRuntimeInput {
 #[serde(default, deny_unknown_fields)]
 pub struct RoundRobinComposition {
     pub session_affinity: bool,
+    /// How the disaggregated decode pool picks a request's attention-DP rank.
+    pub load_balance_method: LoadBalanceMethod,
+}
+
+/// SGLang `--load-balance-method` for the decode pool's attention-DP ranks.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBalanceMethod {
+    /// Ranks in turn.
+    #[default]
+    RoundRobin,
+    /// The rank holding the fewest placed tokens (prompt plus output budget).
+    TotalTokens,
 }
 
 impl ReplayComposition for RoundRobinComposition {
@@ -296,6 +309,10 @@ impl ReplayComposition for RoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> AnyResult<Self::AggregatedPlacement> {
+        anyhow::ensure!(
+            self.load_balance_method == LoadBalanceMethod::RoundRobin,
+            "load_balance_method applies only to a disaggregated decode pool"
+        );
         Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
             .with_session_affinity(self.session_affinity))
     }
@@ -311,7 +328,8 @@ impl ReplayComposition for RoundRobinComposition {
             PoolRoundRobinPlacement::new(prefill_topology)
                 .with_session_affinity(self.session_affinity),
             PoolRoundRobinPlacement::new(decode_topology)
-                .with_session_affinity(self.session_affinity),
+                .with_session_affinity(self.session_affinity)
+                .with_token_balance(self.load_balance_method == LoadBalanceMethod::TotalTokens),
         ))
     }
 }

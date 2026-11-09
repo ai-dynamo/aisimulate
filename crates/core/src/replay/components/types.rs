@@ -27,6 +27,10 @@ impl RequestIdentity for DirectRequest {
     fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
         self.kv_hints
     }
+
+    fn load_tokens(&self) -> usize {
+        self.tokens.len() + self.max_output_tokens
+    }
 }
 
 impl RequestIdentity for ReplayRequestPayload {
@@ -40,6 +44,10 @@ impl RequestIdentity for ReplayRequestPayload {
 
     fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
         self.metadata().kv_hints
+    }
+
+    fn load_tokens(&self) -> usize {
+        self.input_length() + self.metadata().max_output_tokens
     }
 }
 

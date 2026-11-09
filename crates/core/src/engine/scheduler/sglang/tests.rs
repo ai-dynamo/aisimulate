@@ -2080,6 +2080,38 @@ mod source_holds {
     }
 
     #[test]
+    fn pp_prefill_handoff_waits_for_the_remaining_stages() {
+        // A PP4 prefill worker retires passes at the per-stage rate; the
+        // prompt's last forward still crosses three more stages before its KV
+        // can leave, so the handoff waits three of that pass's forwards.
+        let mut args = args();
+        args.speedup_ratio = 1.0;
+        args.pipeline_fill_passes = 3.0;
+        let mut core = SglangCore::new(args);
+        let request_id = Uuid::from_u128(311);
+        let handoff_id = HandoffId::from(Uuid::from_u128(411));
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: request(request_id),
+        })
+        .unwrap();
+
+        let first = execute(&mut core, 0.0);
+        let terminal = execute(&mut core, first.end_ms);
+        let forward_ms = terminal.end_ms - first.end_ms;
+        assert!(forward_ms > 0.0);
+        let [
+            SchedulerLifecycleEvent::SourceHeld {
+                transfer_timing, ..
+            },
+        ] = terminal.lifecycle_events.as_slice()
+        else {
+            panic!("expected one held source: {:?}", terminal.lifecycle_events);
+        };
+        assert!((transfer_timing.pipeline_fill_ms - 3.0 * forward_ms).abs() < 1e-9);
+    }
+
+    #[test]
     fn host_loop_prefill_rank_hands_off_when_the_next_iteration_observes_the_extend() {
         // Replay caps a prefill-rank request at one output token; under the host
         // loop the finished extend joins SGLang's inflight queue instead of the

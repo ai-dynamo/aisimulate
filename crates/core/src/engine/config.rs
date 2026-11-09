@@ -886,6 +886,10 @@ pub struct EngineConfig {
     /// Additional divisor applied to decode latency.
     #[serde(default = "default_one")]
     pub decode_speedup_ratio: f64,
+    /// Passes a completed prefill forward still spends in later pipeline stages (PP size - 1 on a
+    /// PP prefill worker, whose passes retire at the per-stage rate); delays the KV handoff.
+    #[serde(default)]
+    pub pipeline_fill_passes: f64,
     /// MTP/EAGLE draft-token count. One verification forward can emit up to
     /// `aic_nextn + 1` output tokens.
     pub aic_nextn: Option<usize>,
@@ -991,6 +995,8 @@ struct EngineConfigWire {
     #[serde(default = "default_one")]
     decode_speedup_ratio: f64,
     #[serde(default)]
+    pipeline_fill_passes: f64,
+    #[serde(default)]
     aic_nextn: Option<usize>,
     #[serde(default)]
     aic_nextn_accept_rates: Option<String>,
@@ -1071,6 +1077,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
             decode_speedup_ratio: wire.decode_speedup_ratio,
+            pipeline_fill_passes: wire.pipeline_fill_passes,
             aic_nextn: wire.aic_nextn,
             aic_nextn_accept_rates: wire.aic_nextn_accept_rates,
             aic_mtp_seed: wire.aic_mtp_seed,
@@ -1118,6 +1125,7 @@ impl Default for EngineConfig {
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
             decode_speedup_ratio: 1.0,
+            pipeline_fill_passes: 0.0,
             aic_nextn: None,
             aic_nextn_accept_rates: None,
             aic_mtp_seed: default_aic_mtp_seed(),

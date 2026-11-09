@@ -270,7 +270,7 @@ def _deployment(
     for role in ("aggregated",) if mode == "agg" else ("prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is not None:
-            reject_pipeline_parallelism(role, worker.parallelism.pipeline)
+            reject_pipeline_parallelism(role, worker.parallelism.pipeline, backend=engine.backend)
     if mode == "disagg":
         from aisimulate_core.sdk.perf_database import load_system_spec
 
@@ -976,6 +976,11 @@ def _worker_engine_args(
         )
     if cache.hicache is not None:
         payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
+    if worker.scheduler.load_balance_method != "round_robin":
+        if role != "decode":
+            raise ValueError(f"workers.{role}.scheduler.load_balance_method is supported only for the decode role")
+        # Replay-only: the runner moves it to the decode pool's placement.
+        payload["load_balance_method"] = worker.scheduler.load_balance_method
     if backend == "sglang" and role != "decode":
         # SGLang chunks a prefill at `--chunked-prefill-size`, the public `max_batched_tokens`. Without it
         # the scheduler keeps its 8192 default, and a PD prefill or aggregate worker launched with a smaller

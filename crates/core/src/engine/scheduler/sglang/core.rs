@@ -129,6 +129,9 @@ struct UnpricedPass {
     /// the previous forward is observed.
     end_ms: Option<f64>,
     launch: Option<HostLaunch>,
+    /// PP prefill handoffs this forward completes; they wait `pipeline_fill_passes`
+    /// more forwards for the remaining stages.
+    pipeline_fill_requests: Vec<Uuid>,
     result: EnginePassResult,
 }
 
@@ -1239,6 +1242,20 @@ impl SglangCore {
             .max(self.kv_manager.host_load_end_ms());
         let forward_ms = forward_end_ms - stream_start_ms;
         let mut result = pass.result;
+        if !pass.pipeline_fill_requests.is_empty() {
+            let fill_ms = self.config.pipeline_fill_passes * forward_ms;
+            for event in &mut result.lifecycle_events {
+                if let SchedulerLifecycleEvent::SourceHeld {
+                    request_id,
+                    transfer_timing,
+                    ..
+                } = event
+                    && pass.pipeline_fill_requests.contains(request_id)
+                {
+                    transfer_timing.pipeline_fill_ms = fill_ms;
+                }
+            }
+        }
         if let Some(launch) = pass.launch {
             let host = self
                 .host
@@ -1566,6 +1583,17 @@ impl SglangCore {
                     .extract_if(.., |request| request.pending_terminal),
             );
         }
+        // A PP prefill forward's last stages run after this pass retires; its
+        // handoffs wait for them once the forward is priced.
+        let pipeline_fill_requests = if self.config.pipeline_fill_passes > 0.0 {
+            decode
+                .completed_requests
+                .iter()
+                .map(|request| request.uuid)
+                .collect()
+        } else {
+            Vec::new()
+        };
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
@@ -1862,6 +1890,7 @@ impl SglangCore {
             decode: decode_shape,
             end_ms,
             launch,
+            pipeline_fill_requests,
             result,
         });
         Ok(work)

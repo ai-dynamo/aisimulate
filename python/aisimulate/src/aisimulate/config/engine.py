@@ -142,6 +142,13 @@ class SchedulerPredictionConfig(StrictModel):
             "or MTP with G2 host offload."
         ),
     )
+    load_balance_method: Literal["round_robin", "total_tokens"] = Field(
+        default="round_robin",
+        description=(
+            "SGLang PD decode only: how a request picks its attention-DP rank (SGLang --load-balance-method). "
+            "total_tokens sends it to the rank holding the fewest tokens; round_robin takes ranks in turn."
+        ),
+    )
 
 
 class KvCapacityPredictionConfig(StrictModel):
@@ -1374,6 +1381,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
             ("async_scheduling", "vllm", None),
+            ("load_balance_method", "sglang", "round_robin"),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")

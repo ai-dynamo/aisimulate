@@ -29,6 +29,12 @@ pub trait RequestIdentity {
     fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
         None
     }
+
+    /// Tokens the request can occupy on its rank (prompt plus output budget),
+    /// for load-balancing placement. Zero when unknown.
+    fn load_tokens(&self) -> usize {
+        0
+    }
 }
 
 #[derive(Debug)]
