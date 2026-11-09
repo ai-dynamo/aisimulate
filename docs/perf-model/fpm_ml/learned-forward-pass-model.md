@@ -80,28 +80,50 @@ takes far longer to launch than a decode step takes to run, so the decode
 record carries the rest of that launch and the eager record looks short. A
 model fitted on such records learns how often each kind of step follows
 another, which changes with the workload. `charge_own_launch(iterations,
-stall_ms, max_cudagraph_capture_size)` moves each launch back to its own step;
-`train` and `evaluate` apply it with `--launch-stall FILE`:
+own_work_ms, max_cudagraph_capture_size)` moves each launch back to its own
+step; `train` and `evaluate` apply it with `--launch-stall FILE`:
 
 ```json
 {"max_cudagraph_capture_size": 4096,
- "stall_ms": {"decode":  {"piecewise": 50, "eager": 180},
-              "prefill": {"piecewise": 15, "eager": 190}}}
+ "own_work_ms": {
+   "decode":  {"num_decode_requests": [0, 64], "decode_kv_per_request": [0, 16384],
+               "ms": [[18, 22], [26, 34]]},
+   "prefill": {"num_decode_requests": [0, 64], "sum_prefill_tokens": [0, 1024],
+               "ms": [[30, 80], [45, 95]]}}}
 ```
 
-`stall_ms[carrier][next]` is what a record carries when the next step is
-piecewise (with prefill, at most `max_cudagraph_capture_size` tokens) or eager,
-compared with a decode next step; `carrier` is `prefill` for a record with
-prefill tokens, else `decode`. A record with prefill runs long enough to hide
-most of a piecewise launch. The values above are an illustration: measure them
-on your deployment, for example as the weights of next-step indicators in a
-linear fit of `wall_time`. A stall can grow with load, since larger eager steps
-need more host work. One value per transition is an approximation, so measure it
-on runs whose loads bracket the loads you predict. Records follow each other
-when they share `worker_id` and their `counter_id` values differ by one, and
-only records loaded together pair up: all `--fpm` paths form one set, and
-`--holdout-fpm` paths another. A record whose next step is not in its set keeps
-its launch, so give
+A record lasts about the longer of its own work and the next step's launch.
+When the next step is piecewise (with prefill, at most
+`max_cudagraph_capture_size` tokens) or eager, the record keeps at most its
+own-work reference `w` and gives the rest to the next record, which then
+carries the launch it measured; a decode next step takes nothing. Each worker's
+total time is unchanged, and the spread of the launches comes from the records.
+`carrier` is `prefill` for a record with prefill tokens, else `decode`, and
+`own_work_ms[carrier]` is a table over two axes, each a list of bucket lower
+edges from 0: `num_decode_requests`, then `decode_kv_per_request`
+(`sum_decode_kv_tokens` per decode request) or `sum_prefill_tokens`.
+`ms[i][j]` is `w` for bucket `i` of the first axis and `j` of the second. Set
+it to the mean `wall_time` of that carrier's records in the bucket whose next
+step is decode, since they hide no launch, and give every bucket a value. The
+values above are an illustration.
+
+A record that gives time only bounds its own work from above, so
+`charge_own_launch` sets it to `w` and flags it `launch_censored`. `train` and
+`evaluate` count these rows as `_launch_censored`: `--launch-censored keep`,
+the default, scores them at `w`, and `--launch-censored exclude` leaves them
+out. The next record gets `launch_ms`, the giving record's `wall_time`, and
+`train` stores the mean per kind of step in the artifact's `launch_ms`
+metadata, for the `piecewise_ms` and `eager_ms` of
+[Replay's `launch`](../../replay/engine/workers.md#vllm-pass-launch). Replay
+uses the mean and does not model the spread. A decode launch hides behind the
+step before it, so the records do not give `decode_ms`. A launch can grow with
+load, since larger eager steps need more host work, so take the mean from runs
+whose loads bracket the loads you predict.
+
+Records follow each other when they share `worker_id` and their `counter_id`
+values differ by one, and only records loaded together pair up: all `--fpm`
+paths form one set, and `--holdout-fpm` paths another. A record whose next step
+is not in its set keeps its launch, so give
 every record of a run to `--fpm`, for example both halves of
 `scripts/fpm_accuracy/prepare_native_training.py`'s alternating split. The
 output is ordinary iterations, so a regression's `tune_with_fpms` takes it too.

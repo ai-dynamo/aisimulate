@@ -181,60 +181,108 @@ def test_counter_join_rejects_heartbeat_offset_ranks() -> None:
     assert len(fpm_learned.group_iterations(rank0 + rank1, "none")) == 6
 
 
-def test_charge_own_launch_moves_the_next_launch_back() -> None:
-    def prefill(tokens: int, wall: float, counter: int) -> dict:
-        fpm = _decode_fpm(0, 0, wall, counter=counter)
-        fpm["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": tokens}
-        return fpm
+_OWN_WORK_MS = {
+    "decode": {"num_decode_requests": [0, 8], "decode_kv_per_request": [0, 1000], "ms": [[20.0, 24.0], [30.0, 36.0]]},
+    "prefill": {"num_decode_requests": [0], "sum_prefill_tokens": [0, 2048], "ms": [[40.0, 90.0]]},
+}
 
-    # decode, eager prefill, decode, piecewise prefill, then an idle heartbeat (counter 4) before a decode
-    records = [
-        _decode_fpm(8, 800, 0.200, counter=0),
-        prefill(8192, 0.120, 1),
-        _decode_fpm(8, 800, 0.070, counter=2),
-        prefill(1024, 0.040, 3),
-        _decode_fpm(8, 800, 0.030, counter=5),
-    ]
-    stall_ms = {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
-    out = fpm_learned.charge_own_launch([[fpm] for fpm in records], stall_ms, 4096)
-    # each record loses the launch of the pass after it and takes back its own; the total is unchanged
-    assert [fpm_learned.iteration_wall_ms(ranks) for ranks in out] == pytest.approx([20.0, 300.0, 20.0, 90.0, 30.0])
-    assert records[0]["wall_time"] == 0.200
+
+def _prefill_pass(tokens: int, wall: float, counter: int) -> dict:
+    fpm = _decode_fpm(0, 0, wall, counter=counter)
+    fpm["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": tokens}
+    return fpm
+
+
+def test_charge_own_launch_recovers_own_work_and_launch() -> None:
+    def chain(worker: str, passes: list[tuple[dict, float, float]]) -> tuple[list[dict], list[float]]:
+        # (record, own work, launch): a record lasts the longer of its own work and
+        # the next pass's launch; a pass's label is its own work plus the part of
+        # its launch that the pass before it did not hide
+        records, labels = [], []
+        for i, (fpm, work, _) in enumerate(passes):
+            counter = fpm["counter_id"]
+            nxt = passes[i + 1] if i + 1 < len(passes) and passes[i + 1][0]["counter_id"] == counter + 1 else None
+            prev = passes[i - 1] if i and passes[i - 1][0]["counter_id"] == counter - 1 else None
+            records.append({**fpm, "worker_id": worker, "wall_time": max(work, nxt[2] if nxt else 0.0) / 1000.0})
+            labels.append(work + (max(passes[i][2] - prev[1], 0.0) if prev else 0.0))
+        return records, labels
+
+    w0, w0_labels = chain(
+        "w0",
+        [
+            (_decode_fpm(4, 2000, 0.0, counter=0), 20.0, 0.0),
+            (_prefill_pass(8192, 0.0, 1), 90.0, 250.0),  # eager, launched during a short decode pass
+            (_decode_fpm(8, 16000, 0.0, counter=2), 36.0, 0.0),
+            (_prefill_pass(1024, 0.0, 3), 40.0, 30.0),  # piecewise, hidden by the decode pass before it
+            (_prefill_pass(1024, 0.0, 4), 40.0, 60.0),
+            (_prefill_pass(8192, 0.0, 6), 90.0, 250.0),  # after an idle heartbeat (counter 5): nothing to take back
+            (_decode_fpm(4, 2000, 0.0, counter=7), 20.0, 0.0),
+        ],
+    )
+    w1, w1_labels = chain(
+        "w1", [(_decode_fpm(4, 2000, 0.0, counter=1), 20.0, 0.0), (_prefill_pass(8192, 0.0, 2), 90.0, 300.0)]
+    )
+    records = [w0[0], w1[0], *w0[1:3], w1[1], *w0[3:]]
+    out = [ranks[0] for ranks in fpm_learned.charge_own_launch([[fpm] for fpm in records], _OWN_WORK_MS, 4096)]
+    by_worker = {worker: [fpm for fpm in out if fpm["worker_id"] == worker] for worker in ("w0", "w1")}
+    for worker, raw, labels in (("w0", w0, w0_labels), ("w1", w1, w1_labels)):
+        charged = [1000.0 * fpm["wall_time"] for fpm in by_worker[worker]]
+        assert charged == pytest.approx(labels)
+        assert sum(charged) == pytest.approx(sum(1000.0 * fpm["wall_time"] for fpm in raw))
+    # a record that gave time is censored; the next one measured the launch
+    assert [fpm["counter_id"] for fpm in by_worker["w0"] if fpm.get("launch_censored")] == [0, 3]
+    launches = {fpm["counter_id"]: fpm["launch_ms"] for fpm in by_worker["w0"] if "launch_ms" in fpm}
+    assert launches == {1: pytest.approx(250.0), 4: pytest.approx(60.0)}
+    assert fpm_learned._mean_launch_ms([[fpm] for fpm in out], 4096) == {
+        "eager": {"n": 2, "mean_ms": pytest.approx(275.0)},
+        "piecewise": {"n": 1, "mean_ms": pytest.approx(60.0)},
+    }
     with pytest.raises(ValueError, match="one rank per iteration"):
-        fpm_learned.charge_own_launch([records[:2]], stall_ms, 4096)
+        fpm_learned.charge_own_launch([records[:2]], _OWN_WORK_MS, 4096)
+
+
+def test_charge_own_launch_leaves_records_without_a_launch_to_move() -> None:
+    # every piecewise or eager pass follows an idle heartbeat, so no record is before it
+    records = [
+        [_decode_fpm(4, 2000, 0.0201, counter=0)],
+        [_decode_fpm(4, 2000, 0.0203, counter=1)],
+        [_prefill_pass(1024, 0.0407, 3)],
+        [_decode_fpm(8, 16000, 0.0367, counter=4)],
+        [_prefill_pass(8192, 0.0911, 6)],
+        [_prefill_pass(1024, 0.0413, 9)],
+    ]
+    out = fpm_learned.charge_own_launch(records, _OWN_WORK_MS, 4096)
+    assert json.dumps(out) == json.dumps(records)
 
 
 def test_charge_own_launch_rejects_ambiguous_records() -> None:
-    stall_ms = {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
     first, second = _decode_fpm(8, 800, 0.020, counter=0), _decode_fpm(8, 800, 0.020, counter=1)
     # a second capture of the same worker restarts its counters
     with pytest.raises(ValueError, match="duplicate FPM record for worker_id='w0' counter_id=0"):
-        fpm_learned.charge_own_launch([[first], [second], [dict(first)]], stall_ms, 4096)
+        fpm_learned.charge_own_launch([[first], [second], [dict(first)]], _OWN_WORK_MS, 4096)
     no_counter = {key: value for key, value in first.items() if key != "counter_id"}
     for record in ({**first, "worker_id": ""}, no_counter):
         with pytest.raises(ValueError, match="non-empty worker_id"):
-            fpm_learned.charge_own_launch([[record]], stall_ms, 4096)
+            fpm_learned.charge_own_launch([[record]], _OWN_WORK_MS, 4096)
 
 
-def test_charge_own_launch_needs_every_stall_value() -> None:
-    piecewise = _decode_fpm(0, 0, 0.040, counter=1)
-    piecewise["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": 1024}
-    records = [[_decode_fpm(8, 800, 0.020, counter=0)], [piecewise]]
-    full = {"decode": {"piecewise": 0.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
-    # an explicit zero moves nothing
-    out = fpm_learned.charge_own_launch(records, full, 4096)
-    assert [fpm_learned.iteration_wall_ms(ranks) for ranks in out] == pytest.approx([20.0, 40.0])
-    for stall_ms in (
-        {"decode": {"eager": 180.0}, "prefill": full["prefill"]},
-        {"decode": {**full["decode"], "eager": -1.0}, "prefill": full["prefill"]},
-        {"decode": {**full["decode"], "eager": math.nan}, "prefill": full["prefill"]},
-        {"decode": full["decode"]},
+def test_charge_own_launch_checks_the_own_work_table() -> None:
+    records = [[_decode_fpm(8, 800, 0.020, counter=0)]]
+    decode = _OWN_WORK_MS["decode"]
+    for table in (
+        {"decode": decode},
+        {**_OWN_WORK_MS, "decode": {key: value for key, value in decode.items() if key != "decode_kv_per_request"}},
+        {**_OWN_WORK_MS, "decode": {**decode, "num_decode_requests": [1, 8]}},
+        {**_OWN_WORK_MS, "decode": {**decode, "num_decode_requests": [0, 8, 8]}},
+        {**_OWN_WORK_MS, "decode": {**decode, "ms": [[20.0, 24.0]]}},
+        {**_OWN_WORK_MS, "decode": {**decode, "ms": [[20.0, 0.0], [30.0, 36.0]]}},
+        {**_OWN_WORK_MS, "decode": {**decode, "ms": [[20.0, math.nan], [30.0, 36.0]]}},
     ):
-        with pytest.raises(ValueError, match="stall_ms"):
-            fpm_learned.charge_own_launch(records, stall_ms, 4096)
+        with pytest.raises(ValueError, match="own_work_ms"):
+            fpm_learned.charge_own_launch(records, table, 4096)
     for size in (0, 4096.0):
         with pytest.raises(ValueError, match="max_cudagraph_capture_size"):
-            fpm_learned.charge_own_launch(records, full, size)
+            fpm_learned.charge_own_launch(records, _OWN_WORK_MS, size)
 
 
 def _stump_artifact() -> dict:
@@ -502,21 +550,24 @@ def test_cli_train_records_the_default_fpm5_preset(tmp_path: Path) -> None:
 
 def test_cli_launch_stall_moves_launches_for_train_and_evaluate(tmp_path: Path, capsys) -> None:
     pytest.importorskip("sklearn")
-    # 20 ms decode passes; every fourth pass is an eager prefill whose 180 ms
-    # launch lands in the decode record before it
+    # 20 ms decode passes; every fourth pass is an eager prefill whose 200 ms
+    # launch outlasts the decode pass before it and ends that record
     records = []
     for counter in range(60):
         if counter % 4 == 3:
-            fpm = _decode_fpm(0, 0, 0.100, counter=counter)
-            fpm["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": 8192}
+            fpm = _prefill_pass(8192, 0.100, counter)
         else:
             fpm = _decode_fpm(4, 4000, 0.200 if counter % 4 == 2 else 0.020, counter=counter)
         records.append(fpm)
     source = tmp_path / "fpm.jsonl"
     source.write_text("".join(json.dumps(fpm) + "\n" for fpm in records))
+    one_bucket = {"num_decode_requests": [0], "ms": [[20.0]]}
     spec = {
         "max_cudagraph_capture_size": 4096,
-        "stall_ms": {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}},
+        "own_work_ms": {
+            "decode": {**one_bucket, "decode_kv_per_request": [0]},
+            "prefill": {**one_bucket, "sum_prefill_tokens": [0]},
+        },
     }
     stall = tmp_path / "stall.json"
     stall.write_text(json.dumps(spec))
@@ -527,27 +578,32 @@ def test_cli_launch_stall_moves_launches_for_train_and_evaluate(tmp_path: Path, 
         assert fpm_learned.main(["train", "--fpm", str(source), *fit, "--out", str(out), *extra]) == 0
     plain = json.loads((tmp_path / "plain.json").read_text())
     charged = json.loads((tmp_path / "charged.json").read_text())
-    assert "launch_stall" not in plain["metadata"]
+    assert not {"launch_stall", "launch_ms", "launch_censored"} & set(plain["metadata"])
     assert charged["metadata"]["launch_stall"] == spec
+    assert charged["metadata"]["launch_ms"] == {"eager": {"n": 15, "mean_ms": pytest.approx(200.0)}}
+    assert charged["metadata"]["launch_censored"] == {"policy": "keep", "rows": {"pure_decode": 15}}
     # the plain fit spreads the eager launch over decode passes
     assert fpm_learned.rust_predictor(plain)(decode) > 30.0
     assert fpm_learned.rust_predictor(charged)(decode) == pytest.approx(20.0, rel=0.01)
 
-    def decode_mape(*extra: str) -> float:
+    def report(*extra: str) -> dict[str, list[str]]:
         capsys.readouterr()
         argv = ["evaluate", "--model", str(tmp_path / "charged.json"), "--fpm", str(source), *extra]
         assert fpm_learned.main(argv) == 0
-        row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("pure_decode"))
-        return float(row.split()[2])
+        return {row[0]: row[1:] for row in map(str.split, capsys.readouterr().out.splitlines()[1:])}
 
     # against the records as written, the third of decode passes that carry the launch miss by 90%
-    assert decode_mape() == pytest.approx(30.0)
-    assert decode_mape("--launch-stall", str(stall)) < 1.0
+    assert float(report()["pure_decode"][1]) == pytest.approx(30.0)
+    kept = report("--launch-stall", str(stall))
+    assert float(kept["pure_decode"][1]) < 1.0
+    assert kept["pure_decode"][0] == "45" and kept["_launch_censored"][0] == "15"
+    excluded = report("--launch-stall", str(stall), "--launch-censored", "exclude")
+    assert excluded["pure_decode"][0] == "30" and excluded["_launch_censored"][0] == "15"
 
     bad_out = ["--out", str(tmp_path / "bad.json"), "--launch-stall", str(stall)]
     for bad, match in (
-        ({"stall_ms": spec["stall_ms"]}, "--launch-stall needs exactly"),
-        ({**spec, "stall_ms": {"decode": spec["stall_ms"]["decode"]}}, "stall_ms needs exactly the carriers"),
+        ({"own_work_ms": spec["own_work_ms"]}, "--launch-stall needs exactly"),
+        ({**spec, "own_work_ms": {"decode": spec["own_work_ms"]["decode"]}}, "own_work_ms needs exactly the carriers"),
     ):
         stall.write_text(json.dumps(bad))
         with pytest.raises(ValueError, match=match):

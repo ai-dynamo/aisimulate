@@ -389,7 +389,11 @@ Measure the launch costs on your own deployment, for example from an Nsight
 Systems trace of the engine core: the time from `schedule()` to the end of
 `sample_tokens()` for each kind of pass, and for eager passes how far the GPU
 has got when that launch ends. They depend mostly on the model, the engine
-version and the host CPU; the values above are only an illustration.
+version and the host CPU; the values above are only an illustration. A learned
+model trained with `--launch-stall` also gives the mean piecewise and eager
+launch measured in its FPM records
+([learned forward-pass model](../../perf-model/fpm_ml/learned-forward-pass-model.md#1-collect-the-fpm-stream));
+Replay uses one value per kind and does not model the spread.
 
 `launch` needs aggregated vLLM workers with async scheduling and one GPU each
 (`tensor`, `pipeline`, `attention_data` and `prefill_context` of 1): only then
