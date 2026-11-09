@@ -1255,7 +1255,12 @@ def _evidence(result):
 
 
 def glm_tp4_cache_groups():
-    """The imported cache groups of GLM-5.3-Flash at TP 4: every page is one 13,045,120-byte pool block."""
+    """The imported cache groups of GLM-5.3-Flash at TP 4: every page is one 13,045,120-byte pool block.
+
+    A block transfer moves the viewed bytes of each layer, without padding: the MLA latent and indexer pages of the 11
+    attention layers, 2,048 bytes for each tail ring layer, whose recorded page is padded to the 71,808-byte indexer
+    page, and the 1,085,440-byte real page of each KDA layer. Only the tail ring takes no part in prefix caching.
+    """
     page = 13_045_120
     return [
         {
@@ -1265,6 +1270,8 @@ def glm_tp4_cache_groups():
             "block_size_tokens": 2176,
             "page_size_bytes": page,
             "sliding_window": None,
+            "prefix_cacheable": True,
+            "transfer_bytes_per_block": 11 * (1_114_112 + 71_808),
         },
         {
             "name": "runtime_group_1",
@@ -1274,6 +1281,8 @@ def glm_tp4_cache_groups():
             "page_size_bytes": page,
             "sliding_window": None,
             "blocks_per_request": 1,
+            "prefix_cacheable": False,
+            "transfer_bytes_per_block": 11 * 2_048,
         },
         *(
             {
@@ -1284,6 +1293,9 @@ def glm_tp4_cache_groups():
                 "page_size_bytes": page,
                 "sliding_window": None,
                 "blocks_per_request": 1,
+                "prefix_cacheable": True,
+                "transfer_bytes_per_block": layers * 1_085_440,
+                "prefill_checkpoint_blocks": 0,
             }
             for index, layers in zip(range(2, 6), (9, 9, 8, 8), strict=True)
         ),
@@ -1296,6 +1308,15 @@ def test_glm_tp4_observations_import_state_groups(tmp_path):
     assert result["status"] == "complete", result["diagnostics"]
     resources = result["resources"]
     assert resources["cache_groups"] == glm_tp4_cache_groups()
+    # The transfer bytes of one block of each group, without padding.
+    assert [group["transfer_bytes_per_block"] for group in resources["cache_groups"]] == [
+        13_045_120,
+        22_528,
+        9_768_960,
+        9_768_960,
+        8_683_520,
+        8_683_520,
+    ]
     assert resources["runtime_memory"]["kv_cache_bytes"] == 7 * 13_045_120 == 91_315_840
     assert _evidence(result) == (True, "align", 2176)
     FpmResourceProfile.model_validate(resources)
@@ -1593,6 +1614,8 @@ def test_mamba_hybrid_observations_import_state_groups(tmp_path):
             "block_size_tokens": 64,
             "page_size_bytes": 16_384,
             "sliding_window": None,
+            "prefix_cacheable": True,
+            "transfer_bytes_per_block": 2 * 8192,
         },
         *(
             {
@@ -1603,6 +1626,10 @@ def test_mamba_hybrid_observations_import_state_groups(tmp_path):
                 "page_size_bytes": 16_384,
                 "sliding_window": None,
                 "blocks_per_request": 1,
+                "prefix_cacheable": True,
+                # Each Mamba layer moves its 8,000-byte real page, not its 8,192-byte padded page.
+                "transfer_bytes_per_block": 2 * 8000,
+                "prefill_checkpoint_blocks": 0,
             }
             for index in (1, 2)
         ),
@@ -2870,8 +2897,9 @@ def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, s
         if record["phase"] in strided:
             _make_layer_strided(record)
 
-    # Only a layer-strided phase holds prefix-caching evidence, so phases that differ in that are refused. The role
-    # with both phases layer-strided shows that the edits build a valid layer-strided phase.
+    # Only a layer-strided phase holds prefix-caching evidence, and only its imported groups carry the prefix-caching
+    # marker and the transfer bytes. So the groups of the two phases differ, and import refuses the role there. The
+    # role with both phases layer-strided shows that the edits build a valid layer-strided phase.
     _mutate(path, edit)
     result = validate_observations(path, launches)["tp2"]
     if complete:
@@ -2880,7 +2908,7 @@ def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, s
         assert result["provenance"]["prefix_caching"] == {"prefill": evidence, "decode": evidence}
         return
     assert result["status"] == "incomplete"
-    assert result["diagnostics"] == ["tp2: runtime observation prefix-caching evidence across phases mismatch"]
+    assert result["diagnostics"] == ["tp2: runtime observation physical page cost across phases/ranks mismatch"]
 
 
 @pytest.mark.parametrize(
