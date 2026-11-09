@@ -69,9 +69,10 @@ routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
 GEMMs in BF16, as the export stores them. The export keeps the GDN
 `in_proj_a` and `in_proj_b` projections in BF16, and AISimulate prices their
 fused `in_proj_ba` GEMM in BF16 too. The bundled Qwen3.6 NVFP4 exports leave
-the same two projections out of their quantized layers, so that GEMM is BF16
-for them as well. One lane is an approximation. The export keeps its
-multi-token prediction (MTP) layer in BF16. With `nextn` above zero,
+the same two projections out of their quantized layers, and a MIXED_PRECISION
+export leaves an unlisted module unquantized, so AISimulate prices that GEMM in
+BF16 for them as well. The remaining approximation is the MTP layer. The export
+keeps its multi-token prediction (MTP) layer in BF16. With `nextn` above zero,
 AISimulate scales the decode graph by `(nextn + L) / L` for `L` decoder
 layers, so it prices that layer with the decoder-layer lanes.
 

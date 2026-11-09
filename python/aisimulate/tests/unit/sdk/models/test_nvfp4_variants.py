@@ -566,23 +566,48 @@ def test_qwen35_gdn_in_proj_ba_lane_follows_the_checkpoint_metadata(hf_id, ignor
         assert by_name[name]._quant_mode == common.GEMMQuantMode.bfloat16, name
 
 
-@pytest.mark.parametrize(
-    "shards",
-    [
-        {"in_proj_b": "FP8"},
-        {"in_proj_a": "FP8", "in_proj_b": "NVFP4"},
-    ],
-    ids=["one_shard_listed", "two_precisions"],
-)
-def test_qwen35_gdn_ba_pair_with_mixed_shards_fails_loudly(shards):
-    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
-
+def _qwen35_gdn_ba_raw_config(shards):
     layers = {"model.language_model.layers.0.linear_attn.in_proj_qkv": {"quant_algo": "FP8"}}
     for shard, algo in shards.items():
         layers[f"model.language_model.layers.0.linear_attn.{shard}"] = {"quant_algo": algo}
-    raw = {"quantization_config": {"quant_algo": "MIXED_PRECISION", "quantized_layers": layers}}
-    with pytest.raises(ValueError, match="in_proj_a"):
-        _qwen35_mixed_precision_gemm_modes(raw, common.GEMMQuantMode.fp8_static, allow_checkpoint_split=True)
+    return {"quantization_config": {"quant_algo": "MIXED_PRECISION", "quantized_layers": layers}}
+
+
+@pytest.mark.parametrize(
+    ("shards", "message"),
+    [
+        ({"in_proj_b": "FP8"}, "but not in_proj_a"),
+        ({"in_proj_a": "FP8", "in_proj_b": "NVFP4"}, "more than one precision"),
+    ],
+    ids=["one_shard_listed", "two_precisions"],
+)
+def test_qwen35_gdn_ba_pair_with_mixed_shards_fails_loudly(shards, message):
+    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    with pytest.raises(ValueError, match=message):
+        _qwen35_mixed_precision_gemm_modes(
+            _qwen35_gdn_ba_raw_config(shards), common.GEMMQuantMode.fp8_static, allow_checkpoint_split=True
+        )
+
+
+@pytest.mark.parametrize(
+    ("shards", "expected"),
+    [
+        ({"in_proj_a": "NVFP4", "in_proj_b": "NVFP4"}, common.GEMMQuantMode.nvfp4),
+        ({"in_proj_ba": "NVFP4"}, common.GEMMQuantMode.nvfp4),
+    ],
+    ids=["both_shards_one_precision", "fused_module_listed"],
+)
+def test_qwen35_gdn_ba_pair_listed_at_one_precision_takes_that_lane(shards, expected):
+    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    # An explicit entry is authoritative: the listed precision wins over the BF16 inference that an
+    # export with other attention projections listed but not this pair would otherwise get.
+    modes = _qwen35_mixed_precision_gemm_modes(
+        _qwen35_gdn_ba_raw_config(shards), common.GEMMQuantMode.fp8_static, allow_checkpoint_split=True
+    )
+    assert modes[3] == expected
+    assert modes[0] == common.GEMMQuantMode.fp8_static
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
