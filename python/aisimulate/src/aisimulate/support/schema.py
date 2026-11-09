@@ -200,12 +200,28 @@ class FPMDeployment(StrictModel):
     dynamo_version: str | None = None
     image: str | None = Field(default=None, pattern=r"^[^\s\x00]+$")
     container_mount: list[str] = Field(default_factory=list)
+    extra_env: list[dict[str, str]] | None = None
     cpus_per_task: int | None = Field(default=None, strict=True, gt=0)
     cpu_bind: Literal["cores", "none"] | None = None
     namespace: str | None = Field(default=None, pattern=rf"^{_DNS_LABEL}$")
     model_cache: str | None = None
     transport: Literal["nvlink", "ib", "efa"] | None = None
     image_pull_secret: str | None = Field(default=None, pattern=rf"^{_DNS_SUBDOMAIN}$", max_length=253)
+
+    @field_validator("extra_env")
+    @classmethod
+    def _environment(cls, values: list[dict[str, str]] | None) -> list[dict[str, str]] | None:
+        names = set()
+        for item in values or ():
+            if (
+                set(item) != {"name", "value"}
+                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item["name"])
+                or "\x00" in item["value"]
+                or item["name"] in names
+            ):
+                raise ValueError("extra_env requires unique literal {name, value} environment entries")
+            names.add(item["name"])
+        return values
 
     @model_validator(mode="after")
     def _executor_options(self) -> FPMDeployment:

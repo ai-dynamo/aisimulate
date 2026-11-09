@@ -2101,8 +2101,10 @@ OSRB approval.
 
 The Kimi K3.1 native backend, cache precision and MXFP4 evidence mappings in
 `python/aisimulate/collector/fpm_forward/{model_capability,planner,runtime_memory,runtime_observations}.py`,
-the configuration observations in `runtime/instrumentation/observer.py`, and
-associated collector tests are original AISimulate integrations informed by
+the configuration observations in `runtime/instrumentation/observer.py`,
+`runtime_k31.py`, the `runtime/instrumentation/{kimi_k31,vllm_kimi_k31}.py`
+adapters, `runtime/vllm-kimi-k31.example.json`, and associated collector tests
+are original AISimulate integrations informed by
 vLLM's runtime interfaces. The inspected upstream artifact is
 `vllm/vllm-openai:kimi-k31`, pinned to AMD64 image manifest
 `sha256:88175ddf4f59944ccbb24c6b60c1bc535a160be3c4f09a3b08702c5e301a599e`
@@ -2121,3 +2123,16 @@ Copyright contributors to the vLLM project. The inspected files are licensed
 under Apache-2.0, available in the repository root `LICENSE` and Python
 distribution. No upstream implementation is copied; the integrations are
 modified for AISimulate's explicit policy and evidence validation contracts.
+
+The ARM64 image child is
+`sha256:52b793567651780dc529647a211a3d15cec11ebc872ac7492636d7d75340eab4`.
+The complete original path and SHA-256 inventory for the 32 inspected vLLM
+interfaces is in `runtime/vllm-kimi-k31.example.json`; the adjacent
+`runtime/instrumentation/vllm-kimi-k31.md` records their observation contracts.
+The source mapping also reads Dynamo's
+`components/src/dynamo/vllm/instrumented_scheduler.py` at immutable commit
+`17628144dc33c9d5916b08789f9d317924217dad`:
+https://github.com/ai-dynamo/dynamo/blob/17628144dc33c9d5916b08789f9d317924217dad/components/src/dynamo/vllm/instrumented_scheduler.py
+(Apache-2.0; Copyright NVIDIA Corporation & Affiliates). No upstream
+implementation is copied into these adapters; native scheduling and timing
+continue to execute the upstream runtime unchanged.

@@ -133,6 +133,8 @@ def fpm_cli_args(
                     command.extend(("--fpm-slurm-container-image", value))
                 else:
                     command.extend(("--generator-set", f"K8sConfig.k8s_image={json.dumps(value)}"))
+            elif name == "extra_env":
+                command.extend(("--generator-set", f"K8sConfig.extra_env={json.dumps(value)}"))
             else:
                 prefix = "--fpm-slurm-" if name in {"cpus_per_task", "cpu_bind"} else "--"
                 command.extend((prefix + name.replace("_", "-"), str(value)))

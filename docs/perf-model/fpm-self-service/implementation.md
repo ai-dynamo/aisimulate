@@ -1504,6 +1504,13 @@ An onboarding agent should investigate and author a campaign-local adapter when 
 
 Save source research and outstanding questions after each meaningful finding with `onboard checkpoint`, using its current revision. Register the local bundle files and source notes as input artifacts; do not put independent configurations' byte bounds into shared inputs. Probe and import also register their results, but they do not observe or save the agent's investigation automatically.
 
+For an audited runtime assembled from mounted dependencies, `collection_deployment.extra_env`
+accepts unique literal `{name, value}` entries through the existing Generator environment
+interface. These entries remain part of the frozen launch and formal collection settings.
+`PYTHONPATH`, `PYTHONNOUSERSITE`, `HF_HOME`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE`
+also reach the Collector's startup checks before the engine starts. Record mounted source
+and binary hashes alongside the image identity; environment declarations do not qualify them.
+
 ### Choose or author the instrumentation bundle
 
 Omit `--instrumentation` for the audited bundled vLLM 0.27.0 adapter. For the inspected vLLM 0.28.0/Dynamo build, export the complete [campaign-local example](../../../python/aisimulate/collector/fpm_forward/runtime/vllm-0.28.0.example.json) into a fresh directory:

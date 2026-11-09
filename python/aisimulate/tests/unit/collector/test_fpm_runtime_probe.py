@@ -1215,3 +1215,94 @@ def test_pending_probe_launch_validates_other_facts_before_runtime_resolution(tm
     launch["topology"]["tp"] = 0
     with pytest.raises(ValueError, match="topology.tp"):
         normalize_probe_launch(launch, allow_pending_version=True)
+
+
+def _k31_native_probe_inputs(tmp_path):
+    from collector.fpm_forward import runtime_probe
+
+    from .test_fpm_forward import _kimi_k31_config
+
+    launch, _, marker = _inputs(tmp_path)
+    config, _ = _kimi_k31_config(tmp_path)
+    launch["model_config"] = {"path": str(config), "sha256": hashlib.sha256(config.read_bytes()).hexdigest()}
+    launch["worker_type"] = "decode"
+    launch["identity"].update(model="example/k31", framework_version="0.1.dev24216+g266e88c05")
+    launch["topology"].update(tp=8, moe_tp=8, moe_ep=1)
+    launch["precision"].update(
+        moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm", kvcache_quant_mode="fp8", attention_backend="trtllm_mla"
+    )
+    manifest = Path(runtime_probe.__file__).parent / "runtime/vllm-kimi-k31.example.json"
+    return launch, manifest, marker
+
+
+def test_k31_probe_binds_native_activation_candidate_and_private_decode_state(tmp_path):
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    plan = runtime_probe.build_runtime_probe_plan("k31-decode", launch, load_instrumentation(manifest))
+    assert plan.capability.architecture == "KimiK31ForConditionalGeneration"
+    assert len(plan.cells) == 1
+    cell = plan.cells[0]
+    assert cell.moe_quant_mode == "w4a8_mxfp4_mxfp8_trtllm"
+    request = runner._cell_generator_overrides(plan, cell, {})
+    args = request["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--mamba-cache-mode") + 1] == "none"
+    assert args[args.index("--mamba-ssm-cache-dtype") + 1] == "float32"
+    assert args.count("--no-enable-prefix-caching") == 1
+    assert "--language-model-only" in args
+    assert "--trust-remote-code" in args
+    assert json.loads(args[args.index("--attention-config") + 1]) == {
+        "backend": "FLASHINFER_MLA_SPARSE",
+        "indexer_kv_dtype": "fp8",
+    }
+    assert runner._configured_sampling_metadata(plan, cell, smoke=True)["decode_prefix_caching"] == "disabled"
+
+
+def test_probe_deployment_environment_reaches_startup_and_engine(tmp_path):
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    from aisimulate.support.schema import FPMDeployment
+
+    launch, manifest, _ = _inputs(tmp_path)
+    environment = [
+        {"name": "PYTHONPATH", "value": "/runtime/dynamo:/runtime/wheel"},
+        {"name": "PYTHONNOUSERSITE", "value": "1"},
+        {"name": "HF_HOME", "value": "/runtime/hf"},
+        {"name": "HF_HUB_OFFLINE", "value": "1"},
+        {"name": "TRANSFORMERS_OFFLINE", "value": "1"},
+    ]
+    launch["deployment"] = FPMDeployment(**launch["deployment"], extra_env=environment).model_dump(exclude_none=True)
+    plan = runtime_probe.build_runtime_probe_plan("custom-runtime", launch, load_instrumentation(manifest))
+    overrides = runner._cell_generator_overrides(plan, plan.cells[0], runtime_probe.probe_generator_overrides(launch))
+    assert all(item in overrides["K8sConfig"]["extra_env"] for item in environment)
+    runner._write_runtime_environment(tmp_path, overrides)
+    startup = (tmp_path / runner.RUNTIME_ENV_FILENAME).read_text()
+    for item in environment:
+        assert f"export {item['name']}={item['value']}" in startup
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "aggregated", None])
+def test_k31_private_state_probe_does_not_claim_cached_prefill(tmp_path, worker_type):
+    from collector.fpm_forward import runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    launch["worker_type"] = worker_type
+    with pytest.raises(ValueError, match="decode-only"):
+        runtime_probe.build_runtime_probe_plan("k31", launch, load_instrumentation(manifest))
+
+
+def test_k31_activation_candidate_requires_exact_source_map(tmp_path):
+    from collector.fpm_forward import runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import freeze_instrumentation, load_instrumentation
+
+    launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    frozen = freeze_instrumentation(load_instrumentation(manifest), tmp_path / "changed-runtime")
+    changed = frozen.manifest
+    changed["runtime"]["source_files"][next(iter(changed["runtime"]["source_files"]))] = "f" * 64
+    frozen.manifest_path.write_text(json.dumps(changed))
+    bundle = load_instrumentation(frozen.manifest_path)
+    with pytest.raises(ValueError, match="checkpoint-native"):
+        runtime_probe.build_runtime_probe_plan("k31", launch, bundle)

@@ -234,7 +234,10 @@ def probe_generator_overrides(launch: dict[str, Any]) -> dict[str, Any]:
     image = deployment["image"]
     args = argparse.Namespace(
         generator_config=None,
-        generator_set=[f"K8sConfig.k8s_image={json.dumps(image)}"],
+        generator_set=[
+            f"K8sConfig.k8s_image={json.dumps(image)}",
+            f"K8sConfig.extra_env={json.dumps(deployment.get('extra_env', []))}",
+        ],
         generator_dynamo_version=deployment.get("dynamo_version"),
         generated_config_version=None,
         namespace=deployment.get("namespace"),
@@ -262,19 +265,40 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
     _model_config_bytes(launch["model_config"])
     config = model.effective_payload
     architecture = (config.get("architectures") or [None])[0]
+    if model.payload.get("architectures") == ["KimiK31ForConditionalGeneration"]:
+        architecture = "KimiK31ForConditionalGeneration"
     if not isinstance(architecture, str) or not architecture:
         raise ValueError("runtime probe model config requires an architecture")
     from aisimulate.sdk.models.helpers import _infer_quant_modes_from_raw_config
     from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
     inferred = _infer_quant_modes_from_raw_config(_attach_inferred_quant_fields(config), architecture)
+    # K3.1's MXFP4 checkpoint describes expert weights only. The audited
+    # Mxfp4MoEMethod selects activation quantization after loading, so the
+    # source-bound probe may request its precise TRTLLM MXFP8 candidate.
+    # Every initialized layer is independently checked by the observer/importer;
+    # this exception is permission to probe, never evidence of execution.
+    from .runtime_k31 import is_audited_runtime
+
+    k31_native = architecture == "KimiK31ForConditionalGeneration" and is_audited_runtime(bundle.manifest["runtime"])
+    if k31_native:
+        if launch.get("worker_type") != "decode":
+            raise ValueError("K3.1 native state probing currently requires a decode-only worker")
+        if precision["moe_quant_mode"] != "w4a8_mxfp4_mxfp8_trtllm":
+            raise ValueError("K3.1 native probe requires the initialized TRTLLM MXFP4/MXFP8 candidate")
+        if precision["kvcache_quant_mode"] != "fp8" or precision["attention_backend"] not in {
+            "trtllm_mla",
+            "flashmla",
+        }:
+            raise ValueError("K3.1 native probe requires explicit sparse MLA and FP8 cache")
     for name in ("gemm_quant_mode", "moe_quant_mode"):
         actual = getattr(inferred.get(name), "name", inferred.get(name))
         if actual is None:
             actual = {"bfloat16": "bfloat16", "float16": "half", "half": "half"}.get(
                 config.get("dtype") or config.get("torch_dtype")
             )
-        if actual != precision[name]:
+        native_activation_candidate = k31_native and name == "moe_quant_mode" and actual == "w4a16_mxfp4"
+        if actual != precision[name] and not native_activation_candidate:
             raise ValueError(f"precision.{name}={precision[name]!r} does not match checkpoint-native {actual!r}")
     topology = ParallelTopology(**launch["topology"])
     is_moe = identity["model_kind"] == "moe"
@@ -318,7 +342,7 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
     admitted = enumerate_fpm_topologies(backend="vllm", is_moe=is_moe, options=options, allow_pure_tp=True)
     if topology not in admitted:
         raise ValueError(f"collector does not admit exact topology {topology.to_dict()}")
-    policy = _backend_policies(options, {}, backend="vllm")[0]
+    policy = _backend_policies(options, {}, backend="vllm", architecture=architecture)[0]
     sha256 = _canonical_hash({"launch": launch, "bundle_sha256": bundle.sha256})
     cells = tuple(
         FPMCell(
