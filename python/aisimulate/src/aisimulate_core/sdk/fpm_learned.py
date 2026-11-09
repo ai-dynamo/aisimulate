@@ -84,6 +84,7 @@ _TRAINING_METADATA_FIELDS = frozenset(
         "hyperparameters",
         "train_rows",
         "launch_censored",
+        "launch_refused",
         "trees_fitted",
         "sklearn_version",
         "exporter_version",
@@ -817,6 +818,7 @@ def _build_dataset(
     *,
     provenance: dict[str, list[tuple[int, str]]] | None = None,
     censored: dict[str, int] | None = None,
+    refused: dict[str, int] | None = None,
 ) -> dict[str, tuple[list[list[float]], list[float]]]:
     unknown = [name for name in features if name not in FEATURE_NAMES]
     if unknown:
@@ -843,6 +845,8 @@ def _build_dataset(
             continue
         if any(fpm.get("launch_refused") for fpm in metrics_by_rank):
             # charge_own_launch could not tell this record's launch from its own work
+            if refused is not None:
+                refused[kind] = refused.get(kind, 0) + 1
             continue
         if censored is not None and any(fpm.get("launch_censored") for fpm in metrics_by_rank):
             censored[kind] = censored.get(kind, 0) + 1
@@ -1195,7 +1199,8 @@ def train(
 
     The metadata's ``launch_censored`` counts, per store, the rows that
     :func:`charge_own_launch` set to their own-work reference; they are fitted
-    like the others.
+    like the others. ``launch_refused`` counts the rows it flagged
+    ``launch_refused``, which are skipped.
     """
     import sklearn
     from sklearn.ensemble import HistGradientBoostingRegressor
@@ -1236,12 +1241,14 @@ def train(
             "collect with the per-request FPM extension or use the default aggregate --features fpm5 (or v1)"
         )
     censored: dict[str, int] = {}
+    refused: dict[str, int] = {}
     dataset = _build_dataset(
         iterations,
         worker_type,
         features,
         provenance=provenance if online_checkpoint_dir is not None else None,
         censored=censored,
+        refused=refused,
     )
     if not dataset:
         raise ValueError("no trainable iterations (all idle, zero wall_time, or role-incompatible)")
@@ -1292,6 +1299,7 @@ def train(
             },
             "train_rows": counts,
             **({"launch_censored": censored} if censored else {}),
+            **({"launch_refused": refused} if refused else {}),
             "trees_fitted": trees,
             **(metadata or {}),
             **({"identity": checkpoint_identity} if checkpoint_identity is not None else {}),
