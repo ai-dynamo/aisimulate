@@ -3,57 +3,61 @@
 
 """DeepSeek-V4 mHC pre/post module collector for TensorRT-LLM.
 
-TRT-LLM 1.3.0rc20 ships the DeepSeek-V4 mHC (manifold-constrained
-hyper-connection) module as ``tensorrt_llm._torch.modules.mhc`` —
-``mHC.pre_mapping`` / ``mHC.post_mapping`` / ``mHC.fused_hc`` over the
-``torch.ops.trtllm.mhc_*`` CUDA kernels — with backend selection handled by
-TRT-LLM's AutoTuner (mhc_cuda.py: MhcPreMappingRunner profiles FMA vs
-DeepGEMM tf32 tactics at warmup). The wheel does not yet include a
-``modeling_deepseekv4.py`` model class, so unlike the SGLang collector this
-one cannot build a framework-constructed decoder layer; it drives the module
-API directly, exactly as the (unshipped) model forward does per the module's
-own serving contract (hyper_connection.py HCState docstring).
+TRT-LLM serves DeepSeek-V4's manifold-constrained hyper-connections through
+``tensorrt_llm._torch.modules.mhc``: every ``DeepseekV4DecoderLayer`` builds two
+``mHC`` sites, ``hc_attn`` and ``hc_ffn``, through its ``_make_mhc`` hook
+(models/modeling_deepseekv4.py:1923-1937, 1965, 1979@v1.4.0rc2), whose
+``pre_mapping`` / ``post_mapping`` / ``fused_hc`` run the
+``torch.ops.trtllm.mhc_*`` CUDA kernels (modules/mhc/hyper_connection.py,
+modules/mhc/mhc_cuda.py). ``pre_mapping`` takes its GEMM+sqrsum backend
+(CUDA-core FMA, or DeepGEMM TF32 split-K / no-split) and BigFuse block size
+from the AutoTuner (mhc_cuda.py:263-343, 468-524). This collector builds the
+sites through that hook and drives the module API without the attention and
+MoE blocks between them.
 
-KNOWN GAP vs the fused serving path — same decomposition as the vLLM
-collector: the serving contract optionally runs ``mHC.fused_hc`` at layer
-boundaries (previous site's post_mapping + next site's pre_mapping in one
-autotuned pipeline, optionally folding the next RMSNorm), while this
-collector measures ``pre_mapping`` (no norm fold) and ``post_mapping``
-standalone, because the SDK's DeepSeekV4 model bills mhc_pre + attn_norm
-(ElementWise) + mhc_post as separate per-layer ops
-(src/aisimulate_core/sdk/models/deepseek_v4.py) — fusing the
-norm here would double-count it downstream. Measured on H20-3e (SM90,
-hc_mult=4, hidden 4096/7168): fused_hc = 0.80x of pre+post at
-M=16 (decode), but 3.8-6.5x SLOWER at M=1024/8192 — on pre-SM100 the
-fused_hc tactic space is FMA-only (the tcgen05 MMA paths require SM100,
-mhc_cuda.py:_fused_hc_mma_supported) while standalone pre_mapping can take
-the DeepGEMM tensor-core tactics, so a Hopper deployment runs with fused_hc
-disabled (HCState "resolved" mode) and this decomposition IS the serving
-path there. On SM100/SM103 (hidden 4096/7168 are exactly the two
-statically-instantiated MMA sizes) fused_hc is the serving fast path and
-pre+post is the documented approximation. Aligning row semantics with the
-fused path is a coordinated producer+consumer contract change; do not
-switch variants unilaterally.
+Serving's mHC calls per forward of L layers (models/modeling_deepseekv4.py
+@v1.4.0rc2). fused_hc is on by default on every SM (``_resolve_enable_fused_hc``
+:332-337 reads TRTLLM_MHC_ENABLE_FUSED_HC, else the config's enable_fused_hc,
+which no DeepSeek-V4 checkpoint config sets), and then:
+  - layer 0 entry: ``hc_attn.pre_mapping`` and a standalone input_layernorm
+    (``_entry_boundary`` :2283-2293);
+  - every mid-layer boundary: ``hc_ffn.fused_hc`` with no norm folded, the
+    post_attention_layernorm standalone (:2201-2207, forward_MoE :2336-2338);
+  - every later layer entry: ``hc_attn.fused_hc`` with input_layernorm folded
+    (:2273-2281; the previous layer defers its post_mapping,
+    post_load_weights :3120-3142);
+  - last layer: ``hc_ffn.post_mapping`` (:2236-2241), then the model's HCHead
+    (DeepseekV4Model.hc_head, :2579, 2633-2634).
+With fused_hc off, every site runs pre_mapping and post_mapping (:2208-2216,
+:2236-2241, :2291): the path these rows time.
 
-The shipped mhc_module_perf tables measure the unfused pre+post path on
-every SM, and the rows'
-kernel_source labels (trtllm_mhc_pre_* / trtllm_mhc_post_mapping) name the
-measured variant. On SM100/103 that is a deviation: serving defaults to
-fused_hc there (models/modeling_deepseekv4.py), so the table over-charges the
-mHC boundary. mHC is 9-14% of the DSV4 per-layer cost on b200, an upper bound
-on the error; the actual fused/unfused delta is unmeasured. Retire it by
-collecting fused_hc on SM100/103 and switching the SDK consumer
+Deviation (every SM): the rows time ``pre_mapping`` with no norm folded and
+``post_mapping`` for both sites of a layer, the decomposition the SDK's
+DeepSeekV4 model bills (mhc_pre + attn_norm (ElementWise) + mhc_post,
+src/aisimulate_core/sdk/models/deepseek_v4.py); folding the norm here would
+double-count it. Serving runs 2L-1 of the 2L boundaries as fused_hc instead.
+On SM100/103, fused_hc has tcgen05 TF32 MMA tactics for hidden 4096/5120/7168
+(mhc_cuda.py:37-51, 589, 929-953): the rows over-charge the boundary. The
+delta is unmeasured; mHC is 9-14% of the DSV4 per-layer cost on b200, an upper
+bound on the error. Off the SM100 family (SM90, SM120, SM89), fused_hc has FMA
+tactics only (mhc_cuda.py:916-927, 955-960) while pre_mapping keeps its
+DeepGEMM tactics. On H20-3e (SM90, hidden 4096/7168, measured at 1.3.0rc20)
+fused_hc took 0.80x of pre+post at M=16 but 3.8-6.5x at M=1024/8192, so there
+the rows over-charge decode and under-charge prefill-sized boundaries. Retire
+it by collecting DeepSeek-V4 fused_hc rows (the ``fused_post_pre`` op that
+this table's GLM-5.3-Flash rows already carry) and switching the SDK consumer
 (https://github.com/ai-dynamo/aiconfigurator/issues/1580).
 """
 
 from __future__ import annotations
 
-__compat__ = "trtllm==1.3.0rc29"
+__compat__ = "trtllm==1.4.0rc2"
 
 import argparse
 import os
 import sys
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import torch
 
@@ -74,12 +78,12 @@ from collector.op_plans import plan_cases
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 DEFAULT_HIDDEN_SIZE = 4096
 DEFAULT_HC_MULT = 4
-# hc_sinkhorn_iters/hc_eps from the DeepSeek-V4 checkpoint configs
-# (src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-*_config.json:
-# hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6). The remaining mHC ctor
-# defaults (norm_eps/sinkhorn_eps=1e-6, post_mult_value=1.0) are the module's
-# own serving defaults (hyper_connection.py mHC.__init__).
-MHC_NUM_SITES = 2  # one decoder block runs mHC once before attention, once before FFN
+# A decoder layer holds two sites, hc_attn and hc_ffn (models/modeling_deepseekv4.py:1965,
+# 1979@v1.4.0rc2); every row times both.
+MHC_NUM_SITES = 2
+# hc_sinkhorn_iters of every DeepSeek-V4 checkpoint config
+# (src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-{Flash,Pro}_config.json),
+# which _make_mhc passes to mHC.
 MHC_SINKHORN_ITERS = 20
 
 
@@ -110,19 +114,20 @@ def _default_num_tokens() -> list[int]:
 
 
 def _make_mhc_site(hidden_size: int, hc_mult: int, *, device: str):
-    """One mHC parameter set (a real block holds two: attention and FFN).
+    """One mHC site, built by serving's own hook.
 
-    Serving-parity citations (TensorRT-LLM 1.3.0rc20,
-    tensorrt_llm/_torch/modules/mhc/hyper_connection.py):
-    parameter shapes/dtypes mirror ``mHC.__init__`` — ``fn`` [mix_hc, mult*hidden]
-    fp32, ``base`` [mix_hc] fp32, ``scale`` [3] fp32 (hyper_connection.py:99-105),
-    with mix_hc = (2+mult)*mult (hyper_connection.py:95). Random values stand in
-    for checkpoint weights: both pre/post kernels dispatch on shapes/dtypes only
-    (mhc_cuda.py tactic selection keys on num_tokens/hidden_size, never values).
+    ``DeepseekV4DecoderLayer._make_mhc`` (models/modeling_deepseekv4.py:1923-1937@v1.4.0rc2)
+    reads only ``self.config`` (hc_mult, hidden_size, hc_sinkhorn_iters), so it runs on a
+    stand-in that carries the checkpoint's values and sets the rest as serving does
+    (post_mult_value=2.0, the module's default eps / norm_eps / sinkhorn_eps).
+    ``mHC.__init__`` allocates ``fn`` [(2+mult)*mult, mult*hidden], ``base`` and ``scale``
+    in fp32 (modules/mhc/hyper_connection.py:111-121). Random values stand in for the
+    checkpoint weights: the kernels and the AutoTuner tactics key on shapes, never values.
     """
-    from tensorrt_llm._torch.modules.mhc.hyper_connection import mHC
+    from tensorrt_llm._torch.models.modeling_deepseekv4 import DeepseekV4DecoderLayer
 
-    site = mHC(mult=hc_mult, hidden_size=hidden_size, sinkhorn_iters=MHC_SINKHORN_ITERS)
+    config = SimpleNamespace(hc_mult=hc_mult, hidden_size=hidden_size, hc_sinkhorn_iters=MHC_SINKHORN_ITERS)
+    site = DeepseekV4DecoderLayer._make_mhc(SimpleNamespace(config=config))
     with torch.no_grad():
         site.fn.normal_()
         site.base.normal_()
@@ -131,44 +136,45 @@ def _make_mhc_site(hidden_size: int, hc_mult: int, *, device: str):
 
 
 def _make_residual(num_tokens: int, hidden_size: int, hc_mult: int, *, device: str) -> torch.Tensor:
-    """Residual stream input in the exact ``pre_mapping`` contract (TensorRT-LLM
-    1.3.0rc20 hyper_connection.py): x layout [..., mult, hidden]
-    (hyper_connection.py:108), bfloat16 and trailing-dim shapes asserted at
-    hyper_connection.py:114-116, outer dims flattened to
-    [num_tokens, mult, hidden] at hyper_connection.py:117-119 — collapsing
-    batch*seq into ``num_tokens`` up front is therefore identity-preserving.
-    ``post_mapping`` consumes the same layout (hyper_connection.py:225-251).
+    """Residual stream in the exact ``pre_mapping`` contract
+    (modules/mhc/hyper_connection.py:123-155@v1.4.0rc2): bfloat16 [..., mult, hidden],
+    asserted at :130-132 and flattened to [num_tokens, mult, hidden] at :134, so
+    collapsing batch*seq into ``num_tokens`` up front preserves the call.
+    ``post_mapping`` takes the same layout (:482-507).
     """
     return torch.randn(num_tokens, hc_mult, hidden_size, dtype=torch.bfloat16, device=device)
 
 
 def _autotune_pre(site_inputs) -> None:
-    """Serving-parity warmup: profile pre_mapping tactics like engine warmup does.
+    """Tune pre_mapping at the case's token count, as serving's warmup does.
 
-    Serving selects the pre_mapping backend via AutoTuner profiling at engine
-    warmup (mhc_cuda.py mhc_pre_mapping_fused: AutoTuner.choose_one over
-    MhcPreMappingRunner tactics — FMA tile variants, plus DeepGEMM
-    split-K/no-split when tf32_hc_prenorm_gemm is importable). Without this
-    pass every call would take the cache-miss fallback tactic instead of the
-    tuned serving one.
+    Serving runs its warmup forwards under autotune() (_run_autotuner_warmup,
+    pyexecutor/engine/runners/decoder/warmup.py:1050-1104@v1.4.0rc2), where
+    ``mhc_pre_mapping_fused`` (mhc_cuda.py:468-524) profiles every MhcPreMappingRunner
+    tactic (FMA tile variants, plus DeepGEMM split-K / no-split when tf32_hc_prenorm_gemm
+    imports, :322-343) at each token bucket up to the warmup's count. A call of M tokens
+    then runs the winner of M's bucket (:241-249: powers of two up to 128, 128-token steps
+    up to 8192, 1024-token steps above). ``skip_dynamic_tuning_buckets`` profiles only
+    that bucket (and M itself): the same winner for M, without first profiling every
+    bucket below it, which above 8192 tokens is up to ~500 buckets at near-M sizes.
     """
     from tensorrt_llm._torch.autotuner import autotune
 
-    with torch.inference_mode(), autotune():
+    with torch.inference_mode(), autotune(skip_dynamic_tuning_buckets=True):
         for site, residual in site_inputs:
             site.pre_mapping(residual)
     torch.cuda.synchronize()
 
 
 def _observe_pre_backend(site, residual) -> str:
-    """Record which GEMM+sqrsum entry the tuned pre_mapping actually invokes.
+    """Record which GEMM+sqrsum entry the tuned pre_mapping invokes.
 
-    ``MhcPreMappingRunner.forward`` dispatches the tactic's backend through
-    exactly one of two module-level entry points (mhc_cuda.py:333-347):
-    ``mhc_gemm_rms_dg_cuda`` (tactics ``dg_splitk`` /
-    ``dg_nosplit``, DeepGEMM tf32) or ``mhc_gemm_rms_fma_cuda`` (``fma``,
-    CUDA-core FMA). Observing the call is ground truth for ``kernel_source``
-    — no assumption about autotuner cache internals.
+    ``MhcPreMappingRunner.forward`` runs the tactic's backend through one of two
+    module-level entries (mhc_cuda.py:363-373@v1.4.0rc2): ``mhc_gemm_rms_dg_cuda``
+    (``dg_splitk`` with num_splits=16 or ``dg_nosplit`` with num_splits=1, DeepGEMM
+    TF32) or ``mhc_gemm_rms_fma_cuda`` (``fma``, CUDA-core FMA). Observing the call
+    is ground truth for ``kernel_source``, with no assumption about the AutoTuner's
+    cache.
     """
     from tensorrt_llm._torch.modules.mhc import mhc_cuda
 
@@ -181,8 +187,8 @@ def _observe_pre_backend(site, residual) -> str:
         return orig_fma(*args, **kwargs)
 
     def _dg(*args, **kwargs):
-        num_splits = kwargs.get("num_splits", args[5] if len(args) > 5 else 1)
-        calls.append("dg_splitk" if int(num_splits) > 1 else "dg_nosplit")
+        # Both DeepGEMM tactics pass num_splits by keyword (mhc_cuda.py:365-369).
+        calls.append("dg_splitk" if int(kwargs["num_splits"]) > 1 else "dg_nosplit")
         return orig_dg(*args, **kwargs)
 
     mhc_cuda.mhc_gemm_rms_fma_cuda = _fma
@@ -246,10 +252,12 @@ def run_mhc_module(
                         return [site.pre_mapping(residual) for site, residual in site_inputs]
 
             else:
-                # Single CUDA kernel, no tactic axis (mhc_cuda.py
-                # mhc_post_mapping_cuda -> torch.ops.trtllm.mhc_post_mapping),
-                # so no autotune pass; the pre_mapping below only builds
-                # inputs and its tactic cannot change post_mapping latency.
+                # One CUDA kernel with no tactic axis (mhc_cuda.py:532-570@v1.4.0rc2,
+                # mhc_post_mapping_cuda -> torch.ops.trtllm.mhc_post_mapping), so no
+                # autotune pass; the pre_mapping below only builds inputs, and its tactic
+                # cannot change post_mapping latency. Its layer_input stands in for the
+                # attention / MoE output serving passes as ``x``: the same [M, hidden]
+                # bfloat16 (models/modeling_deepseekv4.py:2210-2215, 2236-2241).
                 kernel_source = "trtllm_mhc_post_mapping"
                 with torch.no_grad():
                     post_inputs = [(site, residual, site.pre_mapping(residual)) for site, residual in site_inputs]

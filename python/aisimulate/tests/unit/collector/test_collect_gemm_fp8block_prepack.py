@@ -1,30 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the fp8_block GEMM weight/scale pre-packing (AIC-1744).
+"""Tests for the SGLang fp8_block GEMM weight preparation and timed call (AIC-1744).
 
-``collector/sglang/collect_gemm.py`` imports ``sglang``/``sgl_kernel`` (and
-``torch``) at module scope and only runs on a GPU node with those installed.
-This test loads ``_prepare_fp8_block_weights`` (plus the ``cdiv``/
-``scale_shape`` helpers it calls) straight from the source AST and executes
-the real function bodies against a minimal fake ``torch`` -- the same
-technique already used for this class of collector file by
-``tests/unit/collector/sglang/test_collect_moe_population.py`` and
-``tests/unit/collector/test_vllm_collect_attn.py``.
+``collector/sglang/collect_gemm.py`` imports ``sglang`` (and ``torch``) at
+module scope and only runs on a GPU node with those installed. These tests load
+``_prepare_fp8_block_weights`` (plus the ``cdiv``/``scale_shape`` helpers it
+calls) and ``create_gemm`` (nested inside ``run_gemm``) straight from the
+source AST and execute the real bodies against a minimal fake ``torch``. The
+sandboxed globals resolve only the names a test wires in, so a call the
+fp8_block path is not allowed to make raises ``NameError``.
 
-``_load_create_gemm`` extends the same technique one level further: it
-AST-extracts ``create_gemm`` itself (nested inside ``run_gemm``) and execs
-it into a namespace that seeds its free variables (``gemm_type``, ``M``,
-``N``, ``K``, ``device``) as globals. Running the real ``create_gemm``/
-``gemm_op`` closures this way -- rather than pattern-matching their source
-text -- lets a behavioral test catch ANY reintroduction of weight-scale
-packing inside ``gemm_op``, including through a renamed import alias or a
-new attribute path: the sandboxed globals resolve only the names a test
-explicitly wires in, so anything else raises ``NameError`` instead of
-silently slipping past a substring check.
+The weight is repacked the way serving loads it, once at setup, through
+serving's ``requant_block_scale_ue8m0_for_deepgemm``; the timed ``gemm_op``
+only calls the block-FP8 linear serving dispatched.
 """
 
 import ast
+import functools
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +32,7 @@ SOURCE_PATH = REPO_ROOT / "collector" / "sglang" / "collect_gemm.py"
 def _load_functions(*names: str, namespace: dict | None = None) -> dict:
     tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    assert {node.name for node in selected} == set(names)
     loaded = dict(namespace or {})
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE_PATH), "exec"), loaded)
     return loaded
@@ -69,13 +63,15 @@ class _FakeTensor:
     __rmul__ = __mul__
 
 
-def _normalize_fake_shape(shape: tuple) -> tuple:
-    """Mirror ``torch.randn``/``torch.empty``'s dual call shape.
+class _FakeParameter:
+    def __init__(self, data, requires_grad=True):
+        self.data = data
+        self.shape = data.shape
+        self.requires_grad = requires_grad
 
-    Real torch accepts either N size ints (``randn(M, K, ...)``, used by
-    ``create_gemm``) or a single size tuple (``randn((M, K), ...)``, used by
-    ``_prepare_fp8_block_weights``). Both must produce the same shape here.
-    """
+
+def _normalize_fake_shape(shape: tuple) -> tuple:
+    """Mirror ``torch.randn``/``torch.empty``'s dual call shape (sizes or one tuple)."""
     if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
         return tuple(shape[0])
     return tuple(shape)
@@ -90,31 +86,81 @@ def _fake_torch():
         rand=lambda *shape, device=None: _FakeTensor(tuple(shape), FLOAT32),
         randn=lambda *shape, device=None, dtype=None: _FakeTensor(_normalize_fake_shape(shape), dtype),
         empty=lambda *shape, device=None, dtype=None: _FakeTensor(_normalize_fake_shape(shape), dtype),
+        nn=SimpleNamespace(Parameter=_FakeParameter),
     )
 
 
-def _prepare_fp8_block_weights(namespace):
+def deepgemm_runner(**_kwargs):
+    return "deepgemm-out"
+
+
+def triton_runner(**_kwargs):
+    return "triton-out"
+
+
+def _requant_recorder(calls: list):
+    def requant_block_scale_ue8m0_for_deepgemm(
+        weight, weight_scale, weight_block_size, use_deepgemm_runner, output_dtype=None, weight_shape=None
+    ):
+        calls.append(
+            {
+                "weight": weight,
+                "weight_scale": weight_scale,
+                "block": list(weight_block_size),
+                "use_deepgemm_runner": use_deepgemm_runner,
+                "output_dtype": output_dtype,
+                "weight_shape": weight_shape,
+            }
+        )
+        if use_deepgemm_runner:
+            weight_scale.data = weight_scale.data.to(INT32)  # stand-in for the packed UE8M0 scale
+        return use_deepgemm_runner
+
+    return requant_block_scale_ue8m0_for_deepgemm
+
+
+def _prepare(calls: list):
     return _load_functions(
         "_prepare_fp8_block_weights",
         "cdiv",
         "scale_shape",
-        namespace=namespace,
+        namespace={
+            "torch": _fake_torch(),
+            "_BLOCK_SIZE": [128, 128],
+            "requant_block_scale_ue8m0_for_deepgemm": _requant_recorder(calls),
+            "deepgemm_w8a8_block_fp8_linear_with_fallback": deepgemm_runner,
+        },
     )["_prepare_fp8_block_weights"]
 
 
-def _load_create_gemm(namespace: dict):
-    """AST-extract ``create_gemm`` (nested inside ``run_gemm``) plus the
-    module-level helpers its ``fp8_block`` branch calls, and exec them all
-    into one shared namespace/``__globals__`` in a single ``exec`` call.
+@pytest.mark.parametrize(
+    ("linear", "use_deepgemm_runner"),
+    [
+        (deepgemm_runner, True),
+        (functools.partial(deepgemm_runner, act_scale_ue8m0=True), True),
+        (triton_runner, False),
+    ],
+)
+def test_fp8_block_weights_go_through_serving_requant_once(linear, use_deepgemm_runner):
+    calls = []
+    weight, weight_scale = _prepare(calls)(256, 384, "cpu", linear)
 
-    ``create_gemm`` takes no arguments in the real module -- ``gemm_type``,
-    ``M``, ``N``, ``K``, ``device`` (and ``fp4_backend``) are free variables
-    closed over from ``run_gemm``'s enclosing scope. Once extracted to top
-    level, those same names resolve as globals instead, so the caller seeds
-    them via ``namespace``. This runs the REAL ``create_gemm``/``gemm_op``
-    bodies -- including whatever names they reference -- entirely CPU-side,
-    with no reimplementation of either function.
-    """
+    (call,) = calls
+    assert call["use_deepgemm_runner"] is use_deepgemm_runner
+    assert call["block"] == [128, 128]
+    assert call["output_dtype"] is BFLOAT16
+    assert call["weight_shape"] == (256, 384)
+    assert call["weight"] is weight and call["weight_scale"] is weight_scale
+    assert weight.requires_grad is False and weight_scale.requires_grad is False
+    assert weight.data.dtype is FLOAT8 and weight.data.shape == (256, 384)
+    # A checkpoint without ue8m0 scales loads fp32 [N/128, K/128] block scales.
+    assert weight_scale.data.shape == (2, 3)
+    assert weight_scale.data.dtype is (INT32 if use_deepgemm_runner else FLOAT32)
+
+
+def _load_create_gemm(namespace: dict):
+    """AST-extract ``create_gemm`` (nested inside ``run_gemm``) plus the module-level
+    helpers its ``fp8_block`` branch calls; its free variables become globals."""
     tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
     helpers = [
         node
@@ -130,122 +176,80 @@ def _load_create_gemm(namespace: dict):
     return loaded["create_gemm"]
 
 
-def test_fp8_block_weights_are_prepacked_once_when_ue8m0():
-    calls = []
+def test_fp8_block_gemm_op_calls_the_dispatched_linear_and_never_repacks():
+    requant_calls, linear_calls = [], []
 
-    def fake_requant(w, s, block):
-        calls.append((w.shape, s.shape, tuple(block)))
-        return w, s.to(INT32)  # stand-in for the packed UE8M0 scale
-
-    prepare = _prepare_fp8_block_weights({"torch": _fake_torch(), "requant_weight_ue8m0": fake_requant})
-
-    b_fp8, scale_b = prepare(256, 256, "cpu", ue8m0=True)
-
-    assert len(calls) == 1
-    assert calls[0] == ((256, 256), (2, 2), (128, 128))
-    assert scale_b.dtype is INT32
-    assert b_fp8.dtype is FLOAT8
-
-
-def test_fp8_block_weights_stay_raw_fp32_when_not_ue8m0():
-    calls = []
-
-    def fake_requant(w, s, block):
-        calls.append((w.shape, s.shape, tuple(block)))
-        return w, s.to(INT32)
-
-    prepare = _prepare_fp8_block_weights({"torch": _fake_torch(), "requant_weight_ue8m0": fake_requant})
-
-    b_fp8, scale_b = prepare(256, 256, "cpu", ue8m0=False)
-
-    assert calls == []
-    assert scale_b.dtype is FLOAT32
-    assert b_fp8.dtype is FLOAT8
-
-
-def test_create_gemm_fp8_block_branch_delegates_to_the_prepack_helper():
-    """Locks in that ``create_gemm`` no longer builds ``scale_b`` inline.
-
-    Weight/scale packing must happen exactly once, at setup, via
-    ``_prepare_fp8_block_weights`` -- never inside the ``fp8_block``
-    ``gemm_op`` closure, which the timed benchmark replays every call.
-    """
-    source = SOURCE_PATH.read_text()
-    start = source.index('elif gemm_type == "fp8_block":')
-    end = source.index('elif gemm_type == "fp8":', start)
-    branch_source = source[start:end]
-
-    assert "_prepare_fp8_block_weights(" in branch_source
-    assert "requant_weight_ue8m0" not in branch_source
-    assert "torch.randn(scale_shape(" not in branch_source
-
-    def_start = branch_source.index("def gemm_op():")
-    gemm_op_source = branch_source[def_start:]
-
-    assert "sglang_per_token_group_quant_fp8(" in gemm_op_source
-    assert "fp8_gemm_deepgemm(" in gemm_op_source
-    assert "_prepare_fp8_block_weights(" not in gemm_op_source
-    assert "requant_weight_ue8m0" not in gemm_op_source
-
-
-def test_fp8_block_gemm_op_never_repacks_weights_after_setup():
-    """Behavioral guard added for the review finding on b813b55.
-
-    ``test_create_gemm_fp8_block_branch_delegates_to_the_prepack_helper``
-    above only checks ``gemm_op``'s source TEXT for the literal substring
-    ``"requant_weight_ue8m0"``. The reviewer showed that's evadable: import
-    the same function under a renamed alias (``from ... import
-    requant_weight_ue8m0 as _pack_weight_scale_evasive``) and call the alias
-    inside ``gemm_op`` -- no banned substring appears, so the text check
-    passes while per-call packing is back.
-
-    This test instead runs the REAL ``create_gemm``/``gemm_op`` closures
-    (``_load_create_gemm``, AST-extracted like every other function this
-    file tests) inside a sandbox that defines only the names the *current*
-    fp8_block path is allowed to call. A counting recorder sits at the
-    packing boundary (``requant_weight_ue8m0``): setup (``create_gemm()``)
-    must call it exactly once, and calling the returned ``gemm_op()`` any
-    number of times afterward must add zero further calls. Any
-    reintroduction of packing inside ``gemm_op`` -- same name, renamed
-    alias, or a new module-attribute path -- either increments the recorder
-    (caught by the count) or references a name absent from this sandbox
-    (caught by ``NameError``, itself a test failure) -- it cannot slip
-    through unnoticed the way a source-substring check can.
-
-    Mutation-tested (see task-1-report.md, "Fix round 1"): reintroducing the
-    packing call inside ``gemm_op`` under a renamed import alias makes this
-    test fail; the unmodified source makes it pass.
-    """
-    calls = []
-
-    def fake_requant(w, s, block):
-        calls.append((w.shape, s.shape, tuple(block)))
-        return w, s.to(INT32)
-
-    def fake_quant_fp8(a, **_kwargs):
-        return _FakeTensor(a.shape, FLOAT8), _FakeTensor((1,), INT32)
-
-    def fake_fp8_gemm_deepgemm(x_fp8, x_scale, y_fp8, y_scale, out, m, n, k):
-        return out
+    def block_linear(**kwargs):
+        linear_calls.append(kwargs)
+        return "out"
 
     namespace = {
         "torch": _fake_torch(),
-        "requant_weight_ue8m0": fake_requant,
-        "sglang_per_token_group_quant_fp8": fake_quant_fp8,
-        "fp8_gemm_deepgemm": fake_fp8_gemm_deepgemm,
-        "DEEPGEMM_SCALE_UE8M0": True,
+        "_BLOCK_SIZE": [128, 128],
+        "requant_block_scale_ue8m0_for_deepgemm": _requant_recorder(requant_calls),
+        "deepgemm_w8a8_block_fp8_linear_with_fallback": block_linear,
+        "block_linear": block_linear,
         "gemm_type": "fp8_block",
         "M": 4,
         "N": 256,
         "K": 256,
         "device": "cpu",
-        "fp4_backend": None,
     }
-    create_gemm = _load_create_gemm(namespace)
-
-    gemm_op = create_gemm()
-    assert len(calls) == 1  # setup-time packing, exactly once
+    gemm_op = _load_create_gemm(namespace)()
+    assert len(requant_calls) == 1  # setup-time repacking, exactly once
 
     for _ in range(5):
-        gemm_op()
-    assert len(calls) == 1  # zero additional packing calls from the timed op
+        assert gemm_op() == "out"
+    assert len(requant_calls) == 1  # zero repacking from the timed op
+
+    call = linear_calls[0]
+    # Fp8LinearMethod.apply for an unquantized activation (fp8.py:1427-1435 @v0.5.23).
+    assert set(call) == {"input", "weight", "block_size", "weight_scale", "input_scale", "bias"}
+    assert call["input"].shape == (4, 256) and call["input"].dtype is BFLOAT16
+    assert call["weight"] is requant_calls[0]["weight"]
+    assert call["weight_scale"] is requant_calls[0]["weight_scale"]
+    assert call["block_size"] == [128, 128]
+    assert call["input_scale"] is None and call["bias"] is None
+    assert len(linear_calls) == 5
+
+
+def cutlass_runner(**_kwargs):
+    return "cutlass-out"
+
+
+def _label(linear, n, k):
+    return _load_functions(
+        "_fp8_block_kernel_source",
+        namespace={
+            "torch": _fake_torch(),
+            "_BLOCK_SIZE": [128, 128],
+            "deepgemm_w8a8_block_fp8_linear_with_fallback": deepgemm_runner,
+            "cutlass_w8a8_block_fp8_linear_with_fallback": cutlass_runner,
+            "triton_w8a8_block_fp8_linear": triton_runner,
+            # _deepgemm_block_fp8_supported at fp8_utils.py:1449-1459 @v0.5.23.
+            "_deepgemm_block_fp8_supported": lambda shape, block, dtype: (
+                block == [128, 128] and dtype is BFLOAT16 and shape[0] % 64 == 0 and shape[1] % 128 == 0
+            ),
+        },
+    )["_fp8_block_kernel_source"](linear, n, k)
+
+
+@pytest.mark.parametrize(
+    ("linear", "n", "k", "label"),
+    [
+        (deepgemm_runner, 4096, 7168, "sglang_deepgemm_gemm_nt_f8f8bf16"),
+        (functools.partial(deepgemm_runner, act_scale_ue8m0=True), 4096, 7168, "sglang_deepgemm_gemm_nt_f8f8bf16"),
+        (deepgemm_runner, 3336, 4096, "sglang_triton_w8a8_block_fp8"),
+        (deepgemm_runner, 4096, 1000, "sglang_triton_w8a8_block_fp8"),
+        (cutlass_runner, 4096, 7168, "sglang_cutlass_w8a8_block_fp8"),
+        (cutlass_runner, 4160, 7168, "sglang_triton_w8a8_block_fp8"),
+        (triton_runner, 4096, 7168, "sglang_triton_w8a8_block_fp8"),
+    ],
+)
+def test_fp8_block_label_names_the_kernel_the_dispatched_linear_runs(linear, n, k, label):
+    assert _label(linear, n, k) == label
+
+
+def test_fp8_block_label_refuses_an_unknown_linear():
+    with pytest.raises(RuntimeError, match="unexpected block-FP8 linear"):
+        _label(lambda **_kwargs: None, 4096, 7168)

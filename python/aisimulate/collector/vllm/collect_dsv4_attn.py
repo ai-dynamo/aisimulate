@@ -67,9 +67,9 @@ from vllm.version import __version__ as vllm_version
 # The campaign manifest still selects one exact release per run.
 # Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
-# away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm==0.30.0"
+# away and prior-version DATA stays permanent under its version key. Serving
+# citations are @v0.32.0 unless stated otherwise.
+__compat__ = "vllm==0.32.0"
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
@@ -113,16 +113,16 @@ def _patched_config_dir(model_id: str, *, compress_ratio: int):
     config = dict(_read_model_config(model_id))
     config.pop("auto_map", None)
 
-    # The converted sgl-project configs use ``deepseek_ref``. vLLM 0.24.0 has a
-    # native DeepseekV4Config, so use the production model type rather than
-    # routing the layer through a DeepSeek-V3 config compatibility hack.
+    # The converted sgl-project configs use ``deepseek_ref``. vLLM has a native
+    # DeepseekV4Config, so use the production model type rather than routing the
+    # layer through a DeepSeek-V3 config compatibility hack.
     config["model_type"] = "deepseek_v4"
     config["architectures"] = [ARCHITECTURE]
     config["num_hidden_layers"] = 1
     config["num_key_value_heads"] = 1
     config["compress_ratios"] = [compress_ratio]
     # The converted SGLang FP8 artifacts omit this field, while their canonical
-    # DeepSeek-V4 configs and vLLM 0.24.0's native attention module require it.
+    # DeepSeek-V4 configs and vLLM's native attention module require it.
     config["rms_norm_eps"] = 1e-6
 
     with tempfile.TemporaryDirectory(prefix=f"aic_vllm_dsv4_{compress_ratio}_{os.getpid()}_") as tmp_dir:
@@ -209,7 +209,19 @@ def _create_dsv4_attention_module(
 ):
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO[attn_kind]
     with _patched_config_dir(model_path, compress_ratio=compress_ratio) as local_model:
-        max_model_len = max(seq_len, 4096)
+        # Serving's default max_model_len is the checkpoint's max_position_embeddings
+        # (config/model.py:2592-2602,2621-2634: YaRN keeps it unscaled), 1M for the
+        # DeepSeek-V4 checkpoints, and DSV4 plans its prefill with it: the FlashMLA
+        # prefill splits a step into chunks whose gather workspace area is
+        # PREFILL_CHUNK_SIZE * (max_model_len / compress_ratio + window + tokens)
+        # (v1/attention/backends/mla/sparse_swa.py:250-329, models/deepseek_v4/attention.py:155,
+        # nvidia/flashmla.py:310), and the indexer's prefill buffer, its chunking and its
+        # decode-logits width follow it too (models/deepseek_v4/attention.py:995-1002,
+        # config/vllm.py:1790-1798). A max_model_len of the point's own length splits
+        # small-isl, large-batch prefills into chunks serving never runs, so build at
+        # serving's default.
+        max_position = int(_read_model_config(model_path).get("max_position_embeddings") or 0)
+        max_model_len = max(seq_len, max_position or 4096)
         if query_len is None:
             query_len = seq_len if is_context else 1
         query_tokens = batch_size * query_len
@@ -250,8 +262,9 @@ def _create_dsv4_attention_module(
                 f"does not support SM{capability.to_int()}"
             )
 
-        # Keep production selection for SM100/SM103 and SM120. These paths are
-        # source-derived from vLLM 0.24.0 and remain hardware-unvalidated here.
+        # Keep production selection for SM100/SM103 and SM120 (_select_dsv4_attn_cls,
+        # models/deepseek_v4/nvidia/model.py:1013-1044: FlashInfer on SM12x, FlashMLA
+        # elsewhere). B200 was qualified (header); SM103 and SM120 are source-derived.
         # DeepSeek rotary construction creates CPU tensors internally; setting the
         # default device only for module construction keeps those tensors aligned.
         torch.set_default_device(device)
@@ -348,13 +361,13 @@ def _remap_common_metadata(common, *, block_size: int, device: str):
 
 
 def _allocate_attention_kv_cache(backend, spec, num_blocks: int, cache_dtype: str, *, device: str) -> torch.Tensor:
-    # 0.29: the shape contract lives in the generic spec pipeline. Serving
+    # The shape contract lives in the generic spec pipeline. Serving
     # allocates flat bytes and views each layer as the 4D logical [B,H,N,C]
-    # page (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:253-269;
-    # per-layer element view = bytes.view(spec.dtype), create_kv_cache_views).
+    # page (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:319-334;
+    # per-layer element view = bytes.view(spec.dtype), create_kv_cache_views :377).
     # The dsv4 layout facts (584B fp8_ds_mla state content, 576B alignment,
-    # tokens_per_state=compress_ratio) are spec fields at 0.29
-    # (models/deepseek_v4/attention.py:741-753), so the helper output IS the
+    # tokens_per_state=compress_ratio) are spec fields
+    # (models/deepseek_v4/attention.py:865-878), so the helper output IS the
     # serving shape. Page padding: mirror create_kv_cache_views' block stride
     # (page_size_bytes per block) via empty_strided when the spec pads pages.
     from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
@@ -371,16 +384,16 @@ def _allocate_attention_kv_cache(backend, spec, num_blocks: int, cache_dtype: st
 
 
 def _make_builder(backend, spec, prefix, vllm_config, common, *, device: str):
-    """Construct the layer's metadata builder exactly as serving does at 0.29.
+    """Construct the layer's metadata builder exactly as serving does.
 
     Builders may demand kw-only block_table_width (DeepseekV32IndexerMetadataBuilder,
-    mla/indexer.py:519,531); serving computes it via get_block_table_width and
-    ALLOCATES the block table at that width (v1/worker/utils.py:276-283 +
-    v1/worker/block_table.py:29-49), so builders assume
+    mla/indexer.py:988,1000); serving computes it via get_block_table_width and
+    ALLOCATES the block table at that width (v1/worker/utils.py:308-316 +
+    v1/worker/block_table.py:29-41), so builders assume
     table.shape[1] == width — the family-100 decode path copies the table into
-    a width-sized expanded buffer (indexer.py:609,745) and crashes on narrower
-    tables (found on B300 in the mla 029 lane; same contract here).
-    Zero-pad our ceil(seq/block)-column table to the width.
+    a width-sized expanded buffer (indexer.py:1091-1095,1197-1248) and crashes on
+    narrower tables (found on B300 in the mla 029 lane; same contract here).
+    Zero-pad our ceil(seq/block)-column table to the width. All @v0.32.0.
     """
     builder_cls = backend.get_builder_cls()
     kwargs = {}
@@ -416,7 +429,7 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         )
         cache_dtype = getattr(spec, "cache_dtype_str", None) or "auto"
         # serving binds through each layer's bind_kv_cache
-        # (v1/worker/utils.py:622) — layer overrides may reshape the
+        # (v1/worker/utils.py:811-880) — layer overrides may reshape the
         # raw view (e.g. squeeze the H=1 dim), so never assign .kv_cache raw
         registered_layer.bind_kv_cache(
             _allocate_attention_kv_cache(
@@ -553,6 +566,21 @@ def _bench_attention_shape(
             ):
                 attn_module(positions, hidden_states, None)
 
+            # Deviations from serving, which runs DeepseekV4ForCausalLM on breakable CUDA
+            # graphs (config/vllm.py:74-102,812-840) where this times one graph per step:
+            # - CSA: serving runs a step above its graph ceiling (1024 tokens on the SM100
+            #   family, else 512; config/vllm.py:2341-2446) eagerly, and there the indexer's
+            #   short-context branch (max_seq_len // 4 <= index_topk) skips the indexer query
+            #   projection, MQA logits and top-k (models/deepseek_v4/attention.py:1082-1107,
+            #   keyed on torch.cuda.is_current_stream_capturing()). The graph captured here
+            #   always runs them, so such rows overstate serving: about 1.1k (SM100) / 1.4k
+            #   (SM90) of the 9,880 CSA context points, and SM90 generation above 512
+            #   requests. Steps up to the ceiling are captured in serving too and match.
+            #   Retired by timing eager-regime steps eagerly (the pending measurement-method
+            #   decision) or by pinning that capture check as collect_mla_module does for DSA.
+            # - SM120: serving autotunes the FlashInfer sparse-MLA decode at warm-up
+            #   (model_executor/warmup/flashinfer_sparse_mla_warmup.py:225-289,
+            #   kernel_warmup.py:234-235); these rows time FlashInfer's untuned tactic.
             with benchmark_with_power(
                 device=torch.device(device),
                 kernel_func=kernel_func,

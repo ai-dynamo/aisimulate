@@ -37,7 +37,7 @@ from __future__ import annotations
 # 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 import functools
 import json
@@ -309,17 +309,16 @@ def _bench_paged_mqa_logits(
     """
     from deep_gemm import fp8_paged_mqa_logits
 
-    try:
-        # sglang>=0.5.21 builds the paged-MQA schedule with its own JIT kernel
-        # (sglang::paged_mqa_metadata_tiny_kernel) whenever SGLANG_OPT_USE_JIT_INDEXER_METADATA
-        # is set (default True, environ.py:1570) or the query row count exceeds 11673
-        # (dsv4/metadata.py:213-224, force_deep_gemm_metadata defaults False :184); the
-        # DeepGEMM sched kernel is only the opt-out path. Same (seq_lens, page_size, num_sm)
-        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate the serving
-        # decode trace carries the tiny kernel, never deep_gemm::sched::sm90_paged_mqa_logits_metadata.
-        from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
-    except ImportError:
-        from deep_gemm import get_paged_mqa_logits_metadata
+    # Serving builds the paged-MQA schedule with SGLang's own JIT kernel
+    # (sglang::paged_mqa_metadata_tiny_kernel) whenever SGLANG_OPT_USE_JIT_INDEXER_METADATA
+    # is set (default True, srt/environ.py:1829) or the query rows exceed 11673
+    # (srt/layers/attention/dsv4/metadata.py:66, :212-219), for one row per request
+    # (rows_per_request, :188) and without force_deep_gemm_metadata (:184, set only for
+    # the SM120 FP4 indexer); the DeepGEMM sched kernel is the opt-out path. Same
+    # (seq_lens, page_size, num_sm) contract (kernels/ops/attention/dsv4/attn.py:55).
+    # Citations are v0.5.23. The H20 serving decode trace carries the tiny kernel, never
+    # deep_gemm::sched::sm90_paged_mqa_logits_metadata.
+    from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
 
     if batch_size <= 0 or M % batch_size:
         raise ValueError(f"M={M} must be divisible by positive batch_size={batch_size}")
@@ -485,81 +484,22 @@ def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_vari
 _CHUNKED_PREFILL = None
 
 
-def _chunked_prefill_size_from_gpu_mem(gpu_mem):
-    """Replicate ``ServerArgs._handle_gpu_memory_settings`` chunked_prefill_size
-    tiering directly from device memory (MB). Thresholds are identical across the
-    old (cuda_graph_max_bs) and new (cuda_graph_config) sglang server_args, so
-    this is the same derivation sglang performs -- used as a forward-compatible
-    fallback when the bare ServerArgs instance can't run the method itself.
-    B200 (>=160GB) -> 16384, matching the GLM-5.2 model card launch command."""
-    if gpu_mem < 60 * 1024:
-        return 4096 if gpu_mem >= 35 * 1024 else 2048
-    if gpu_mem < 160 * 1024:
-        return 8192
-    return 16384
-
-
 def _sglang_chunked_prefill_size():
-    # The csa/hca MODULE (collect_dsv4_attn) launches sglang with
-    # chunked_prefill_size=None -> sglang DERIVES it from GPU memory. Mirror
-    # that here (sglang's own GPU-mem tiering: get_device_memory_capacity +
-    # ServerArgs._handle_gpu_memory_settings; 2k/4k/8k/16k by device mem),
-    # model-free and weight-free. NOT a hardcoded 8192 and NOT a guessed
-    # ServerArgs. chunked_prefill_size depends only on device memory.
+    """The chunked_prefill_size a server launched without the flag derives on this device.
+
+    The csa/hca modules (collect_dsv4_attn) and the DSA modules launch SGLang with
+    chunked_prefill_size=None, which SGLang derives from device memory alone
+    (_handle_gpu_memory_settings, srt/arg_groups/memory_hook.py:89-176 at v0.5.23):
+    2048 below 20 GiB, 4096 below 60 GiB (and without a memory reading), 8192 below
+    160 GiB, 16384 above. runtime_limits.serving_memory_defaults holds that table;
+    the chunk does not depend on the TP world. The earlier local copy put 20-35 GiB
+    devices at 2048 and raised without a memory reading.
+    """
     global _CHUNKED_PREFILL
     if _CHUNKED_PREFILL is None:
-        try:
-            from sglang.srt.model_executor.cuda_graph_config import default_cuda_graph_config
-            from sglang.srt.server_args import ServerArgs
+        from collector.sglang.runtime_limits import serving_memory_defaults
 
-            try:  # 0.5.21: moved to utils/common.py:904 (server_args no longer re-exports it)
-                from sglang.srt.utils.common import get_device_memory_capacity
-            except ImportError:
-                from sglang.srt.server_args import get_device_memory_capacity
-        except ModuleNotFoundError:
-            from srt.model_executor.cuda_graph_config import default_cuda_graph_config
-            from srt.server_args import ServerArgs, get_device_memory_capacity
-        gpu_mem = None
-        try:
-            gpu_mem = get_device_memory_capacity("cuda")
-        except Exception:
-            pass
-        chunked = None
-        try:
-            sa = ServerArgs.__new__(ServerArgs)
-        except TypeError:
-            # sglang>=0.5.20: ServerArgs is a msgspec Struct (no bare __new__); the
-            # GPU-memory tiering below is sglang's own and needs no instance.
-            sa = None
-        if sa is not None:
-            sa.chunked_prefill_size = None
-            sa.cuda_graph_config = default_cuda_graph_config()
-            sa.tp_size = 1
-            sa.device = "cuda"
-            try:
-                sa._handle_gpu_memory_settings(gpu_mem)
-            except Exception:
-                pass  # chunked_prefill_size is set first, before any model-dependent step
-            chunked = sa.chunked_prefill_size
-        if chunked is None and gpu_mem is not None:
-            # Newer sglang (0.0.0.dev / >=0.5.x) refactored cuda_graph_max_bs/_bs
-            # into a cuda_graph_config object that _handle_gpu_memory_settings
-            # dereferences at entry (self.cuda_graph_config.decode), so it
-            # AttributeErrors on the bare __new__ instance before assigning
-            # chunked_prefill_size. Fall back to sglang's OWN tiering (same
-            # thresholds) computed directly from device memory -- still a
-            # derivation from GPU memory, not a guess. Backward compatible:
-            # on old sglang the method assigns it and this branch is skipped.
-            chunked = _chunked_prefill_size_from_gpu_mem(gpu_mem)
-        if chunked is None:
-            # gpu_mem itself unavailable -> nothing to derive from. Fail loud
-            # rather than int(None) or guessing a value.
-            raise RuntimeError(
-                "Could not derive sglang chunked_prefill_size from GPU memory "
-                "(get_device_memory_capacity failed). Cannot derive DSV4 "
-                "sparse-kernel context shapes."
-            )
-        _CHUNKED_PREFILL = int(chunked)
+        _CHUNKED_PREFILL = int(serving_memory_defaults(tp_size=1)[0])
     return _CHUNKED_PREFILL
 
 
@@ -694,34 +634,33 @@ def _bench_topk_512(
 ) -> float:
     """Time one v1/v2 topk_transform shape via the shared bench path.
 
-    SGLang 0.5.14 context uses v1 with ``out_raw_indices`` while normal decode
-    uses planned v2. Both execute inside production CUDA graphs, so capture is
-    mandatory here too.
+    v1 is topk_transform_paged (kernels/ops/attention/dsv4/topk.py:106-125, the JIT
+    _jit_topk_v1_module on CUDA) and v2 topk_transform_paged_v2 (:209-268) on its
+    plan_topk_v2 routing plan (:134-156). Both execute inside production CUDA graphs,
+    so capture is mandatory here too. Citations are v0.5.23.
+
+    Deviation (the v1 lane on SM90/SM100/SM103): the op plan times context points on v1
+    (op_plans.Dsv4TopkCase), but SGLang's C4 indexer runs v2 in both phases there:
+    run_topk_transform takes v2 whenever DSATopKBackend.should_use_topk_v2() (sgl-kernel
+    backend and SGLANG_OPT_USE_TOPK_V2, default True; srt/layers/attention/dsv4/
+    indexer.py:948-998, dsa/dsa_topk_backend.py:55-56, srt/environ.py:1486), and a
+    prefill passes the raw-index output too (deepseek_v4_backend.py:897-900). Only
+    SM120 serving takes v1 (arg_groups/model_hook.py:487-488 sets the flag False), and
+    there the v2 decode lane is the mismatch; both lanes are parked on SM120
+    (registry unverified_sms). The context v1_* rows therefore calibrate a kernel
+    serving does not launch on SM90/SM10x; the error direction is unmeasured. Retire
+    by planning context points on v2 with the raw-index output and moving the
+    consumer's context lookup to v2_*.
     """
-    try:
-        from sglang.jit_kernel.dsv4.topk import (
-            plan_topk_v2,
-            topk_transform_512,
-            topk_transform_512_v2,
-        )
-    except ImportError:
-        # sglang>=0.5.21 moved the JIT ops to sglang.kernels.ops.attention.dsv4.topk and
-        # renamed the entry points: topk_transform_512 -> topk_transform_paged (CUDA branch =
-        # the same _jit_topk_v1_module().topk_transform, topk.py:104-125; the ROCm branch is the
-        # deepseek_v4_topk_transform_512 AOT op) and topk_transform_512_v2 ->
-        # topk_transform_paged_v2 (topk.py:222, identical positional signature, out_raw_indices
-        # now optional). Serving DSV4 dispatches exactly these two from
-        # indexer.topk_transform_paged_from_metadata (srt/layers/attention/dsv4/indexer.py:446-486,
-        # v2 iff metadata.use_topk_v2), so the v1/v2 calib lanes keep their meaning.
-        from sglang.kernels.ops.attention.dsv4.topk import (
-            plan_topk_v2,
-        )
-        from sglang.kernels.ops.attention.dsv4.topk import (
-            topk_transform_paged as topk_transform_512,
-        )
-        from sglang.kernels.ops.attention.dsv4.topk import (
-            topk_transform_paged_v2 as topk_transform_512_v2,
-        )
+    from sglang.kernels.ops.attention.dsv4.topk import (
+        plan_topk_v2,
+    )
+    from sglang.kernels.ops.attention.dsv4.topk import (
+        topk_transform_paged as topk_transform_512,
+    )
+    from sglang.kernels.ops.attention.dsv4.topk import (
+        topk_transform_paged_v2 as topk_transform_512_v2,
+    )
 
     if variant not in ("v1", "v2"):
         raise ValueError(f"unknown topk variant: {variant}")
@@ -730,7 +669,13 @@ def _bench_topk_512(
     generator.manual_seed(1234)
     rows = seq_lens.numel()
     c4_len = int(seq_lens.max().item())
-    meta = plan_topk_v2(seq_lens, 0) if variant == "v2" else None
+    # Serving plans with the kernel's own threshold heuristic (static_threshold=-1):
+    # PagedIndexerMetadata (srt/layers/attention/dsv4/metadata.py:278) and the per-step
+    # refresh (deepseek_v4_backend.py:1188) call plan_topk_v2(compressed_seq_lens).
+    # A static threshold of 0 sent every row past the 32768 floor to the persistent
+    # cluster pool, which the heuristic declines for long-KV batches above its per-arch
+    # caps (kernels/jit/csrc/deepseek_v4/topk_v2.cuh:655-745 at v0.5.23).
+    meta = plan_topk_v2(seq_lens) if variant == "v2" else None
     torch.cuda.synchronize(device)
     pages = (c4_len + _dsv4_kv_page_size() - 1) // _dsv4_kv_page_size()
     page_table = torch.arange(pages, dtype=torch.int32, device=device).unsqueeze(0).repeat(rows, 1)

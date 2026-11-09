@@ -3,27 +3,49 @@
 
 """vLLM encoder (non-causal) attention collector for multimodal encoders.
 
-Directly invokes the ViT wrappers used by vLLM's ``MMEncoderAttention`` path
-(``vit_flash_attn_wrapper`` / ``vit_triton_attn_wrapper`` / ``vit_torch_sdpa_wrapper``).
+Times the kernel vLLM's ``MMEncoderAttention`` runs for the ViT backend its
+selector picks: FlashAttention called as ``vit_flash_attn_wrapper`` calls it
+eagerly, ``vit_triton_attn_wrapper`` or ``vit_torch_sdpa_wrapper``.
 
 Quant: bf16 only. vLLM upstream supports fp8 ViT FMHA via FLASHINFER;
 enabling that path here is left for the future.
 """
 
-# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
-# encoder_attention: 8/8 representative cases. The native framework
-# builders/selectors remain authoritative; no kernel fallback is introduced.
-# The campaign manifest still selects one exact release per run.
-__compat__ = "vllm==0.30.0"
+# Audited against vLLM v0.32.0 (5df63a72, from v0.30.0 ced6857a); citations
+# below are v0.32.0 lines. Every import and wrapper signature used here exists
+# unchanged. Selection is unchanged: MMEncoderAttention asks
+# get_vit_attn_backend (model_executor/layers/attention/
+# mm_encoder_attention.py:352-367 -> models/vision.py:100-113), which on SM80
+# and newer takes the first of FLASH_ATTN and TRITON_ATTN that accepts the head
+# size and dtype, else TORCH_SDPA (platforms/cuda.py:518-572); FLASHINFER
+# (cuDNN) is reachable only through --mm-encoder-attn-backend. The FA version is
+# get_flash_attn_version(head_size) (fa_utils.py:74-221): FA3 on SM90, FA4 on
+# SM10x up to head_dim 128 (FA2 above, :193-209), FA2 elsewhere. Kernel-side
+# changes: vllm-flash-attention moves 506341a1 -> 9cd61de3
+# (cmake/external_projects/vllm_flash_attn.cmake:42) and nvidia-cutlass-dsl,
+# which compiles FA4, 4.7.1 -> 4.8.0 (requirements/cuda.txt), so the FA rows
+# change. Triton's context_attention_fwd narrows its tile only at head_dim 512
+# or on ROCm (ops/triton_prefill_attention.py:248-249, :265), which these
+# shapes never reach. The SDPA wrapper now copies its output contiguous when
+# called without cu_seqlens (ops/vit_attn_wrappers.py:287-288), in serving too.
+#
+# Deviation (every SM): serving runs the encoder eagerly by default
+# (compile_mm_encoder and cudagraph_mm_encoder are False, config/
+# compilation.py:520-528), so each layer pays its Python launch path and the
+# `.item()` host sync on the max_seqlen tensor the model passes
+# (vit_attn_wrappers.py:53-58). The rows time CUDA-graph replays of the same
+# kernels: GPU time without launch gaps. They under-predict where the eager
+# encoder is launch-bound (small batch x seq_len); size unmeasured. Retire it by
+# timing eagerly, which the row must then record.
+__compat__ = "vllm==0.32.0"
 
 import torch
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
 from vllm.model_executor.models.vision import get_vit_attn_backend
-from vllm.v1.attention.backends.fa_utils import get_flash_attn_version
+from vllm.v1.attention.backends.fa_utils import flash_attn_varlen_func, get_flash_attn_version
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.attention.ops.vit_attn_wrappers import (
-    vit_flash_attn_wrapper,
     vit_torch_sdpa_wrapper,
     vit_triton_attn_wrapper,
 )
@@ -65,20 +87,35 @@ def run_encoder_attention_torch(
     )
 
     if backend == AttentionBackendEnum.FLASH_ATTN:
+        # mm_encoder_attention.py:363-367.
         fa_version = get_flash_attn_version(head_size=head_dim)
         if fa_version is None:
             raise RuntimeError("vLLM selected FlashAttention for ViT without a concrete FA version")
+        # vit_flash_attn_wrapper (mm_encoder_attention.py:580-590 ->
+        # vit_attn_wrappers.py:26-86) zero-fills a fresh output buffer whenever
+        # it runs inside a CUDA-graph capture (:63-67); eager it hands
+        # flash_attn_varlen_func an empty buffer (:68-69). Serving runs the
+        # encoder eagerly (see the deviation note above), so time that eager
+        # call: the same FlashAttention kernel and arguments with a
+        # preallocated output and no zero fill, which a capture of the wrapper
+        # would add. The (b s) flattening is the wrapper's view (:60).
+        q_flat, k_flat, v_flat = (x.reshape(batch_size * seq_len, num_heads, head_dim) for x in (q, k, v))
+        out = torch.empty_like(q_flat)
 
         def run():
-            vit_flash_attn_wrapper(
-                q,
-                k,
-                v,
-                batch_size=batch_size,
-                is_rocm_aiter=False,
+            flash_attn_varlen_func(
+                q_flat,
+                k_flat,
+                v_flat,
+                cu_seqlens_q=cu_seqlens,
+                cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=seq_len,
+                max_seqlen_k=seq_len,
+                dropout_p=0.0,
+                causal=False,
+                softmax_scale=scale,
                 fa_version=fa_version,
-                scale=scale,
-                cu_seqlens=cu_seqlens,
+                out=out,
             )
     elif backend == AttentionBackendEnum.TRITON_ATTN:
 

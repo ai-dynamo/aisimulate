@@ -37,8 +37,8 @@ common_case_values:
     - 20480
     - 32768
     - 49152
+    # Ends at 65536: above it every shipped table (61, three frameworks, pre/post/
+    # fused_post_pre) is linear in tokens (per-token latency within 0.98-1.00 of
+    # 65536's, median), the SDK's beyond-range util-hold extends it, and the larger
+    # points only ran out of memory on the smaller GPUs.
     - 65536
-    - 98304
-    - 131072
-    - 262144
-    - 524288

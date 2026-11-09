@@ -50,12 +50,123 @@ def test_glm5_flash_mla_heads_are_architecture_specific():
     assert "q_heads = 128 if sm_major >= 10 else native_heads" in source
 
 
-def test_glm5_flash_mla_keeps_the_production_topk_width():
-    source = SOURCE_PATH.read_text(encoding="utf-8")
+def _real_torch():
+    torch = pytest.importorskip("torch")
+    if not isinstance(getattr(torch, "__version__", None), str) or not hasattr(torch, "where"):
+        pytest.skip("requires real torch, not another collector test's import stub")
+    return torch
 
-    assert "torch.full((M, 1, topk), -1" in source
-    assert "indices[:, :, :valid_k]" in source
-    assert "if k % 64" not in source
+
+def _load_with(namespace, *names):
+    tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    assert len(functions) == len(names)
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    return namespace
+
+
+def _run_once(kernel_fn, **_kwargs):
+    kernel_fn()
+    return {"latency_ms": 1.0}
+
+
+def test_glm5_flash_mla_keeps_the_production_topk_width_and_passes_serving_topk_length(monkeypatch):
+    """The serving call (dsa_backend._forward_flashmla_sparse @v0.5.23): flash_mla_interface's
+    kernel, topk columns per row, -1 past the row's causal count, and that count as topk_length."""
+    import sys
+    from types import ModuleType
+
+    torch = _real_torch()
+    calls = []
+    interface = ModuleType("sglang.kernels.ops.attention.flash_mla_interface")
+    interface.flash_mla_sparse_fwd = lambda **kwargs: calls.append(kwargs)
+    monkeypatch.setitem(sys.modules, interface.__name__, interface)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _device: (10, 0))
+    bench = _load_with({"torch": torch, "_bench_cuda_graph": _run_once}, "_bench_glm5_dsa_attn")["_bench_glm5_dsa_attn"]
+
+    bs, isl, past_kv, topk = 2, 3, 4, 6
+    bench(bs * isl, past_kv, isl, native_heads=64, d_qk=576, d_v=512, topk=topk, device="cpu")
+
+    (call,) = calls
+    assert call["q"].shape == (6, 128, 576)  # SM100 pads the heads to 128
+    assert call["kv"].shape == (bs * (past_kv + isl), 1, 576)
+    assert call["topk_length"].dtype == torch.int32
+    assert call["topk_length"].tolist() == [5, 6, 6, 5, 6, 6]  # min(past_kv + p + 1, topk)
+    indices = call["indices"]
+    assert indices.shape == (6, 1, topk) and indices.dtype == torch.int32
+    assert indices[0, 0].tolist() == [0, 1, 2, 3, 4, -1]
+    assert indices[3, 0].tolist() == [7, 8, 9, 10, 11, -1]  # the second request's own segment
+    assert indices[5, 0].tolist() == [7, 8, 9, 10, 11, 12]
+
+
+def _topk_namespace(monkeypatch, torch, *, v2):
+    import sys
+    from types import ModuleType
+
+    calls = []
+    sgl_kernel = ModuleType("sgl_kernel")
+    sgl_kernel.fast_topk_transform_fused = lambda **kwargs: calls.append(("fused", kwargs))
+    sgl_kernel.fast_topk_v2 = lambda *args, **kwargs: calls.append(("v2_unfused", args, kwargs))
+    topk_ops = ModuleType("sglang.kernels.ops.attention.dsv4.topk")
+    topk_ops.plan_topk_v2 = lambda lengths: calls.append(("plan", lengths.tolist())) or "plan"
+    topk_ops.topk_transform_paged_v2 = lambda *args: calls.append(("paged_v2", args))
+    monkeypatch.setitem(sys.modules, "sgl_kernel", sgl_kernel)
+    monkeypatch.setitem(sys.modules, topk_ops.__name__, topk_ops)
+    namespace = {
+        "torch": torch,
+        "_bench_cuda_graph": _run_once,
+        "_glm5_fuse_topk_enabled": lambda: True,
+        "_glm5_topk_v2_enabled": lambda: v2,
+    }
+    _load_with(namespace, "_bench_glm5_topk", "_glm5_topk_metadata", "_make_glm5_topk_scores")
+    return namespace, calls
+
+
+def test_glm5_decode_topk_runs_the_serving_v2_paged_kernel(monkeypatch):
+    """Decode PAGED top-k without row_starts goes to _topk_transform_v2_paged when
+    SGLANG_OPT_USE_TOPK_V2 is on (dsa_topk_backend.py:123-133 @v0.5.23)."""
+    torch = _real_torch()
+    namespace, calls = _topk_namespace(monkeypatch, torch, v2=True)
+
+    results, kernel_source = namespace["_bench_glm5_topk"](2, 4095, 1, 2, topk=2048, device="cpu")
+
+    assert kernel_source == "topk_transform_v2"
+    assert [mode for mode, _ in results] == ["flat", "top_last"]
+    plans = [call for call in calls if call[0] == "plan"]
+    assert plans == [("plan", [4096, 4096])]  # once, outside the timed kernel
+    paged = [call[1] for call in calls if call[0] == "paged_v2"]
+    assert len(paged) == 2
+    score, lengths, page_table, out, page_size, plan = paged[0]
+    assert score.shape == (2, 4096) and score.stride(0) % 4 == 0
+    assert lengths.tolist() == [4096, 4096]
+    assert page_table.shape == (2, 64) and page_size == 64 and plan == "plan"
+    assert out.shape == (2, 2048) and out.dtype == torch.int32
+    assert not [call for call in calls if call[0] == "fused"]
+
+
+def test_glm5_decode_topk_keeps_the_legacy_fused_kernel_when_v2_is_off(monkeypatch):
+    torch = _real_torch()
+    namespace, calls = _topk_namespace(monkeypatch, torch, v2=False)
+
+    _results, kernel_source = namespace["_bench_glm5_topk"](2, 4095, 1, 2, topk=2048, device="cpu")
+
+    assert kernel_source == "fast_topk_transform_fused"
+    fused = [call[1] for call in calls if call[0] == "fused"]
+    assert len(fused) == 2 and all("row_starts" not in kwargs for kwargs in fused)
+    assert not [call for call in calls if call[0] in {"plan", "paged_v2"}]
+
+
+def test_glm5_context_topk_stays_on_the_fused_paged_transform_with_row_starts(monkeypatch):
+    torch = _real_torch()
+    namespace, calls = _topk_namespace(monkeypatch, torch, v2=True)
+    namespace["_glm5_score_rows_per_chunk"] = lambda num_q, _num_k, _device: num_q
+
+    _results, kernel_source = namespace["_bench_glm5_topk"](2 * 4096, 0, 4096, 2, topk=2048, device="cpu")
+
+    assert kernel_source == "fast_topk_transform_fused"
+    fused = [call[1] for call in calls if call[0] == "fused"]
+    assert len(fused) == 2 and all(kwargs["row_starts"] is not None for kwargs in fused)
+    assert not [call for call in calls if call[0] in {"plan", "paged_v2"}]
 
 
 def test_glm5_sparse_collector_uses_the_dsa_fuse_topk_switch_not_the_nsa_spelling():

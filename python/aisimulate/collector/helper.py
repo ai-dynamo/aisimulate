@@ -409,6 +409,7 @@ def benchmark_with_power(
     *,
     explicit_graph_cleanup: bool = False,
     num_eager_warmups: int | None = None,
+    min_warmup_seconds: float = 0.0,
 ):
     """
     Context manager that handles warmup, graph capture, timing, and power monitoring.
@@ -436,6 +437,13 @@ def benchmark_with_power(
                          replay warmups stay at num_warmups. Set lower when the
                          kernel already ran (a dry run) and the measurement is
                          graph-based; eager measurements should keep the default.
+        min_warmup_seconds: Keep running the measured path (graph replays, or eager
+                         calls without a graph) after the warmups until this much wall
+                         time has passed. Right after seconds of heavy work (an
+                         autotune pass, a large shape) the GPU runs a short kernel up
+                         to ~30% slower for up to ~0.1 s: on B200 a 1-token MoE layer
+                         timed 0.110 ms after 3 replay warmups, 0.084 ms (steady)
+                         after ~0.1 s of them. Default 0 keeps the count-only warmup.
 
     Yields:
         dict with keys:
@@ -573,6 +581,15 @@ def benchmark_with_power(
             for _ in range(num_warmups):
                 g.replay()
             dev_mod.synchronize()
+        if min_warmup_seconds > 0:
+            warm_until = time.perf_counter() + min_warmup_seconds
+            while time.perf_counter() < warm_until:
+                for _ in range(8):
+                    if use_graph:
+                        g.replay()
+                    else:
+                        kernel_func()
+                dev_mod.synchronize()
         _close_phase("graph_warmup")
 
         # Initialize power monitor if enabled
@@ -967,6 +984,60 @@ def _flashinfer_device_tag() -> str:
     return ""
 
 
+# Wall time to keep replaying the first point of a sweep before timing it: that point
+# follows the case's autotune pass or the previous case's largest shape, and a short
+# kernel right after seconds of heavy work runs up to ~30% slow for up to ~0.1 s
+# (benchmark_with_power, min_warmup_seconds). Later points follow a smaller one.
+FIRST_POINT_WARMUP_SECONDS = 0.1
+
+# Parameter names of the expert weight matrices themselves (w13_weight, w2_weight, the
+# compressed-tensors *_weight_packed, the GPTQ/AWQ *_qweight). Scales, zero points,
+# shapes and g_idx/sort-index tensors keep the values their caller gives them.
+MOE_WEIGHT_MATRIX_SUFFIXES = ("_weight", "_weight_packed", "_qweight")
+_DENSE_FILL_CHUNK = 1 << 27  # elements per float32 temporary (512 MiB)
+
+
+def fill_dense_weight_(tensor) -> None:
+    """Fill one expert weight matrix in place with dense, checkpoint-like bits.
+
+    A collector builds its layer without a checkpoint, and the grouped GEMMs' timing
+    depends on the weight bits. On B200 (DeepSeek-V3 MoE shapes, TP1 EP1) zero or
+    near-zero weights timed the layer 10-23% faster from 2048 tokens than dense ones for
+    FP8 block-scale on all three frameworks and for SGLang NVFP4, and moved FlashInfer's
+    tactic choice at 4096 tokens; real checkpoints are dense. vLLM's and SGLang's dummy
+    loaders do not give dense low-bit weights: they draw floats from U(-1e-3, 1e-3),
+    which rounds FP8 to zero or the smallest subnormal, and leave packed integer weights
+    untouched (vllm model_executor/model_loader/weight_utils.py
+    initialize_single_dummy_weight, sglang srt/model_loader/weight_utils.py
+    initialize_dummy_weights).
+
+    FP8 storage: N(0, 64) clamped to +-448, so the values spread over the e4m3
+    exponents; 16/32-bit floats: N(0, 0.02); 8-bit integer storage (packed FP4, MXFP4,
+    INT4/INT8): uniform random bytes; 32-bit integer storage (packed INT4): uniform
+    random bits. Every bit pattern of these storages is a finite value.
+    """
+    import torch
+
+    if tensor.is_floating_point():
+        if tensor.element_size() >= 2:
+            tensor.normal_(0.0, 0.02)
+            return
+        flat = tensor.view(-1)
+        for start in range(0, flat.numel(), _DENSE_FILL_CHUNK):
+            part = flat[start : start + _DENSE_FILL_CHUNK]
+            values = torch.randn(part.shape, dtype=torch.float32, device=part.device).mul_(64.0).clamp_(-448.0, 448.0)
+            part.copy_(values.to(part.dtype))
+            del values
+    elif tensor.dtype == torch.uint8:
+        tensor.random_(0, 256)
+    elif tensor.dtype == torch.int8:
+        tensor.random_(-128, 128)
+    elif tensor.dtype == torch.int32:
+        tensor.random_(-(2**31), 2**31 - 1)
+    else:
+        raise TypeError(f"no dense fill for an expert weight of dtype {tensor.dtype}")
+
+
 def _flashinfer_autotune_api():
     """FlashInfer's ``autotune`` context manager and ``AutoTuner`` class, or ``(None, None)``."""
     try:
@@ -976,25 +1047,69 @@ def _flashinfer_autotune_api():
     return autotune, AutoTuner
 
 
+def flashinfer_tuning_bucket(
+    num_tokens: int, max_tuned_tokens: int | None = None, *, tune_max_num_tokens: int | None = None
+) -> int | None:
+    """The token count serving's FlashInfer warm-up tuned the tactic it runs at ``num_tokens`` for.
+
+    FlashInfer's MoE and FP4 GEMM ops map a runtime token count up to the next bucket of
+    its hybrid list at lookup (``map_to_hybrid_bucket_uncapped``, flashinfer 0.7.0.post1
+    fused_moe/utils.py:276-291, the ``map_to_tuning_buckets`` of mm_fp4,
+    gemm/gemm_base.py:7887-7915). The MoE ops clamp that bucket to the
+    ``tune_max_num_tokens`` the caller hands them (``make_hybrid_bucket_mapper`` ->
+    ``map_to_hybrid_bucket``, fused_moe/utils.py:245-273; fused_moe/shared/tuning.py:
+    304-308, core.py:938-946), so every count at or above it runs the tactic of that
+    bucket: pass the op's ``tune_max_num_tokens`` to model it, or ``None`` for an op
+    whose mapper is uncapped (mm_fp4, the cute-dsl MoE). Serving warm-up profiles the
+    hybrid list up to ``max_tuned_tokens`` (``get_hybrid_num_tokens_buckets``,
+    fused_moe/utils.py:195-242, which appends that maximum; these functions are
+    unchanged at 0.7.2, which SGLang 0.5.23 pins). Returns ``None`` when ``num_tokens``
+    maps to a bucket off the profiled list: serving has no tuned entry there and runs
+    the op's fallback tactic. ``max_tuned_tokens=None`` means serving profiles every
+    bucket the caller times. Callers pass the result to :func:`flashinfer_autotuned`
+    and time ``num_tokens``.
+    """
+    from flashinfer.fused_moe.utils import (
+        get_hybrid_num_tokens_buckets,
+        map_to_hybrid_bucket,
+        map_to_hybrid_bucket_uncapped,
+    )
+
+    if tune_max_num_tokens is None:
+        bucket = map_to_hybrid_bucket_uncapped(int(num_tokens))
+    else:
+        bucket = map_to_hybrid_bucket(int(num_tokens), int(tune_max_num_tokens))
+    if max_tuned_tokens is None or bucket in get_hybrid_num_tokens_buckets(int(max_tuned_tokens)):
+        return bucket
+    return None
+
+
 @contextmanager
 def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label: str = ""):
     """Time FlashInfer-backed kernels on the tactic FlashInfer's autotuner picks, as serving does.
 
-    vLLM (``enable_flashinfer_autotune``, default on for Blackwell) and SGLang (warm-up
-    autotune, plus the extend bucket) both run FlashInfer kernels on
-    autotuned tactics. Without this context the collector times FlashInfer's *untuned*
+    vLLM (``enable_flashinfer_autotune``, on from O1, SM90 and newer) and SGLang (decode
+    warm-up autotune up to the decode CUDA-graph batch size; the extend pass is opt-in)
+    run FlashInfer kernels on autotuned tactics. Without this context the collector times FlashInfer's *untuned*
     fallback: tile = clamp(next_pow2(num_tokens * top_k / local_num_experts), 8, 128) and
     the first config of an unstable ``std::sort`` over the kernel manifest -- a value that
     moved between FlashInfer 0.6.12 and 0.6.18 and broke every SM100
     nvfp4 MoE EP sweep whose average tokens per local expert exceeded 128 (vLLM 0.30.0 /
     SGLang 0.5.21 campaign tables).
 
-    ``tune_fn()`` runs once inside ``autotune(True, tuning_buckets=(num_tokens,))`` so
-    every FlashInfer op it reaches is profiled at exactly this token count (with the
-    caller's real routing, so the EP-local expert load is what gets tuned). The ``with``
-    body then runs under ``autotune(False, ...)`` with the same bucket: lookups hit the
-    entries just profiled, nothing is profiled inside the body (CUDA-graph capture safe),
-    and an op the tuner has no entry for keeps FlashInfer's fallback exactly as before.
+    ``num_tokens`` is the bucket to profile: serving's bucket for the timed count
+    (:func:`flashinfer_tuning_bucket`), which may exceed the count ``tune_fn`` runs.
+    ``tune_fn()`` runs once inside ``autotune(True, tuning_buckets=(num_tokens,))``, so
+    every FlashInfer op it reaches is profiled at that bucket. The tuner does not profile
+    the caller's tensors: it re-creates every input with a dynamic token dimension at the
+    bucket size through the op's tensor initializers and reuses only the static ones
+    (flashinfer 0.7.0.post1 autotuner/autotuner.py:3339-3359). Routing logits are
+    therefore synthetic; only the TRT-LLM-gen MoE ops given precomputed top-k ids tile the
+    caller's ids (fused_moe/backends/trtllm/sm100_runner.py:173-191). The ``with`` body
+    then runs under ``autotune(False, ...)`` with the same single bucket, which every
+    token count maps to: lookups hit the entries just profiled, nothing is profiled inside
+    the body (CUDA-graph capture safe), and an op the tuner has no entry for keeps
+    FlashInfer's fallback exactly as before.
 
     The tuning pass runs under :func:`flashinfer_autotune_budget` (default 1 warm-up, 3
     timed launches, 1 ms delay per tactic instead of FlashInfer's 3 / 10 / 5 ms; see

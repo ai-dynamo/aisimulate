@@ -68,24 +68,10 @@ except ModuleNotFoundError:
 from collector.op_plans import plan_cases
 
 aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
-# Use cached inputs (same data each iteration) instead of randomized inputs
-aic_cached_inputs = int(os.getenv("AIC_GDN_CACHED_INPUTS", "0"))
 
 
 def get_gdn_test_cases():
     return plan_cases("gdn", "trtllm", get_sm_version())
-
-
-def _make_input_pool(
-    shapes: dict[str, tuple[int, ...]],
-    count: int,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> dict[str, list[torch.Tensor]]:
-    """Pre-generate a pool of random input tensors for randomized benchmarking."""
-    return {
-        name: [torch.randn(*shape, dtype=dtype, device=device) for _ in range(count)] for name, shape in shapes.items()
-    }
 
 
 def run_gdn_context_benchmark(
@@ -146,7 +132,6 @@ def run_gdn_context_benchmark(
             try:
                 num_warmups = 3
                 num_runs = 10
-                total_iters = num_warmups + num_runs
 
                 # Conv state: (batch, channels, d_conv - 1)
                 conv_state = torch.randn(batch_size, conv_channels, d_conv - 1, dtype=dtype, device=device)
@@ -165,197 +150,90 @@ def run_gdn_context_benchmark(
                     "model_name": model_name,
                 }
 
-                if aic_cached_inputs:
-                    k_input = torch.randn(batch_size, conv_channels, seq_len, dtype=dtype, device=device)
-                    q = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
-                    k = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
-                    v = torch.randn(batch_size, seq_len, num_v_heads, head_v_dim, dtype=dtype, device=device)
-                    # g is fp32 in serving (fused_gdn_gating output); FlashInfer's
-                    # chunk kernel asserts it ("g must be fp32"), Triton accepts both
-                    g = torch.nn.functional.logsigmoid(
-                        torch.randn(batch_size, seq_len, num_v_heads, dtype=torch.float32, device=device)
+                # One input set per cell: the cell is timed as CUDA-graph replays, which reuse
+                # the tensors captured once, so a pool of fresh inputs per call (removed) never
+                # reached the timed runs; it held 13 copies and ran large cells out of memory.
+                k_input = torch.randn(batch_size, conv_channels, seq_len, dtype=dtype, device=device)
+                q = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
+                k = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
+                v = torch.randn(batch_size, seq_len, num_v_heads, head_v_dim, dtype=dtype, device=device)
+                # g is fp32 in serving (fused_gdn_gating output); FlashInfer's
+                # chunk kernel asserts it ("g must be fp32"), Triton accepts both
+                g = torch.nn.functional.logsigmoid(
+                    torch.randn(batch_size, seq_len, num_v_heads, dtype=torch.float32, device=device)
+                )
+                beta = torch.sigmoid(torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device))
+                # serving feeds the chunk kernel PACKED tokens [1, B*S, H, D] plus
+                # cu_seqlens (gdn_mixer.forward_extend); FlashInfer's chunk kernel
+                # accepts only that layout ("q must be [1, T, H_q, D_k]")
+                q, k, v, g, beta = (t.reshape(1, batch_size * seq_len, *t.shape[2:]) for t in (q, k, v, g, beta))
+                cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
+                # Deviation: serving updates the pooled per-request state in place
+                # (gdn_mixer.py:1028-1050, inplace_indexed_state_update=True,
+                # output_final_state=False); this times a dense initial state and
+                # asks for the final state back, the same state size per call.
+                gdn_init_state = torch.zeros(
+                    batch_size, num_v_heads, head_k_dim, head_v_dim, dtype=torch.bfloat16, device=device
+                )
+
+                # --- Benchmark causal_conv1d_fn ---
+                torch.cuda.synchronize()
+                causal_conv1d_fn(k_input, conv_weight, conv_bias, activation="silu", conv_states=conv_state)
+                torch.cuda.synchronize()
+
+                def run_conv1d(_ki=k_input, _cs=conv_state):
+                    causal_conv1d_fn(_ki, conv_weight, conv_bias, activation="silu", conv_states=_cs)
+
+                with benchmark_with_power(
+                    device=device,
+                    kernel_func=run_conv1d,
+                    num_warmups=num_warmups,
+                    num_runs=num_runs,
+                    repeat_n=1,
+                ) as results:
+                    log_perf(
+                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                        framework="TRTLLM",
+                        version=trtllm_version,
+                        device_name=torch.cuda.get_device_name(device),
+                        op_name="gdn",
+                        kernel_source="causal_conv1d_fn",
+                        perf_filename=perf_filename,
+                        power_stats=results["power_stats"],
                     )
-                    beta = torch.sigmoid(torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device))
-                    # serving feeds the chunk kernel PACKED tokens [1, B*S, H, D] plus
-                    # cu_seqlens (gdn_mixer.forward_extend); FlashInfer's chunk kernel
-                    # accepts only that layout ("q must be [1, T, H_q, D_k]")
-                    q, k, v, g, beta = (t.reshape(1, batch_size * seq_len, *t.shape[2:]) for t in (q, k, v, g, beta))
-                    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
-                    # Deviation: serving updates the pooled per-request state in place
-                    # (gdn_mixer.py:1028-1050, inplace_indexed_state_update=True,
-                    # output_final_state=False); this times a dense initial state and
-                    # asks for the final state back, the same state size per call.
-                    gdn_init_state = torch.zeros(
-                        batch_size, num_v_heads, head_k_dim, head_v_dim, dtype=torch.bfloat16, device=device
-                    )
 
-                    # --- Benchmark causal_conv1d_fn ---
-                    torch.cuda.synchronize()
-                    causal_conv1d_fn(k_input, conv_weight, conv_bias, activation="silu", conv_states=conv_state)
-                    torch.cuda.synchronize()
+                # --- Benchmark chunk_gated_delta_rule ---
+                torch.cuda.synchronize()
+                chunk_gated_delta_rule(
+                    q, k, v, g, beta, initial_state=gdn_init_state, output_final_state=True, cu_seqlens=cu_seqlens
+                )
+                torch.cuda.synchronize()
 
-                    def run_conv1d(_ki=k_input, _cs=conv_state):
-                        causal_conv1d_fn(_ki, conv_weight, conv_bias, activation="silu", conv_states=_cs)
-
-                    with benchmark_with_power(
-                        device=device,
-                        kernel_func=run_conv1d,
-                        num_warmups=num_warmups,
-                        num_runs=num_runs,
-                        repeat_n=1,
-                    ) as results:
-                        log_perf(
-                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                            framework="TRTLLM",
-                            version=trtllm_version,
-                            device_name=torch.cuda.get_device_name(device),
-                            op_name="gdn",
-                            kernel_source="causal_conv1d_fn",
-                            perf_filename=perf_filename,
-                            power_stats=results["power_stats"],
-                        )
-
-                    # --- Benchmark chunk_gated_delta_rule ---
-                    torch.cuda.synchronize()
+                def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _cu=cu_seqlens, _st=gdn_init_state):
                     chunk_gated_delta_rule(
-                        q, k, v, g, beta, initial_state=gdn_init_state, output_final_state=True, cu_seqlens=cu_seqlens
+                        _q, _k, _v, _g, _beta, initial_state=_st, output_final_state=True, cu_seqlens=_cu
                     )
-                    torch.cuda.synchronize()
 
-                    def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _cu=cu_seqlens, _st=gdn_init_state):
-                        chunk_gated_delta_rule(
-                            _q, _k, _v, _g, _beta, initial_state=_st, output_final_state=True, cu_seqlens=_cu
-                        )
-
-                    with benchmark_with_power(
-                        device=device,
-                        kernel_func=run_gdn_scan,
-                        num_warmups=num_warmups,
-                        num_runs=num_runs,
-                        repeat_n=1,
-                    ) as results:
-                        log_perf(
-                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                            framework="TRTLLM",
-                            version=trtllm_version,
-                            device_name=torch.cuda.get_device_name(device),
-                            op_name="gdn",
-                            kernel_source=_CHUNK_KERNEL_SOURCE,
-                            perf_filename=perf_filename,
-                            power_stats=results["power_stats"],
-                        )
-
-                else:
-                    input_pool = _make_input_pool(
-                        {
-                            "k_input": (batch_size, conv_channels, seq_len),
-                            # packed [1, B*S, ...] + cu_seqlens, as serving feeds the chunk kernel
-                            "q": (1, batch_size * seq_len, num_k_heads, head_k_dim),
-                            "k": (1, batch_size * seq_len, num_k_heads, head_k_dim),
-                            "v": (1, batch_size * seq_len, num_v_heads, head_v_dim),
-                            "g": (1, batch_size * seq_len, num_v_heads),
-                            "beta": (1, batch_size * seq_len, num_v_heads),
-                        },
-                        total_iters,
-                        dtype,
-                        device,
+                with benchmark_with_power(
+                    device=device,
+                    kernel_func=run_gdn_scan,
+                    num_warmups=num_warmups,
+                    num_runs=num_runs,
+                    repeat_n=1,
+                ) as results:
+                    log_perf(
+                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                        framework="TRTLLM",
+                        version=trtllm_version,
+                        device_name=torch.cuda.get_device_name(device),
+                        op_name="gdn",
+                        kernel_source=_CHUNK_KERNEL_SOURCE,
+                        perf_filename=perf_filename,
+                        power_stats=results["power_stats"],
                     )
-                    input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
-                    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
-                    gdn_init_state = torch.zeros(
-                        batch_size, num_v_heads, head_k_dim, head_v_dim, dtype=torch.bfloat16, device=device
-                    )
-                    for i in range(total_iters):
-                        input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
-                        input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
-
-                    # --- Benchmark causal_conv1d_fn ---
-                    torch.cuda.synchronize()
-                    causal_conv1d_fn(
-                        input_pool["k_input"][0], conv_weight, conv_bias, activation="silu", conv_states=conv_state
-                    )
-                    torch.cuda.synchronize()
-
-                    conv1d_iter_idx = [0]
-
-                    def run_conv1d(_pool=input_pool, _cs=conv_state, _idx=conv1d_iter_idx):
-                        idx = _idx[0] % total_iters
-                        _idx[0] += 1
-                        causal_conv1d_fn(
-                            _pool["k_input"][idx], conv_weight, conv_bias, activation="silu", conv_states=_cs
-                        )
-
-                    with benchmark_with_power(
-                        device=device,
-                        kernel_func=run_conv1d,
-                        num_warmups=num_warmups,
-                        num_runs=num_runs,
-                        repeat_n=1,
-                    ) as results:
-                        log_perf(
-                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                            framework="TRTLLM",
-                            version=trtllm_version,
-                            device_name=torch.cuda.get_device_name(device),
-                            op_name="gdn",
-                            kernel_source="causal_conv1d_fn",
-                            perf_filename=perf_filename,
-                            power_stats=results["power_stats"],
-                        )
-
-                    # --- Benchmark chunk_gated_delta_rule ---
-                    torch.cuda.synchronize()
-                    chunk_gated_delta_rule(
-                        input_pool["q"][0],
-                        input_pool["k"][0],
-                        input_pool["v"][0],
-                        input_pool["g"][0],
-                        input_pool["beta"][0],
-                        initial_state=gdn_init_state,
-                        output_final_state=True,
-                        cu_seqlens=cu_seqlens,
-                    )
-                    torch.cuda.synchronize()
-
-                    gdn_iter_idx = [0]
-
-                    def run_gdn_scan(_pool=input_pool, _idx=gdn_iter_idx):
-                        idx = _idx[0] % total_iters
-                        _idx[0] += 1
-                        chunk_gated_delta_rule(
-                            _pool["q"][idx],
-                            _pool["k"][idx],
-                            _pool["v"][idx],
-                            _pool["g"][idx],
-                            _pool["beta"][idx],
-                            initial_state=gdn_init_state,
-                            output_final_state=True,
-                            cu_seqlens=cu_seqlens,
-                        )
-
-                    with benchmark_with_power(
-                        device=device,
-                        kernel_func=run_gdn_scan,
-                        num_warmups=num_warmups,
-                        num_runs=num_runs,
-                        repeat_n=1,
-                    ) as results:
-                        log_perf(
-                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                            framework="TRTLLM",
-                            version=trtllm_version,
-                            device_name=torch.cuda.get_device_name(device),
-                            op_name="gdn",
-                            kernel_source=_CHUNK_KERNEL_SOURCE,
-                            perf_filename=perf_filename,
-                            power_stats=results["power_stats"],
-                        )
 
                 # Cleanup
-                if aic_cached_inputs:
-                    del k_input, q, k, v, g, beta, conv_state
-                else:
-                    del input_pool, conv_state
+                del k_input, q, k, v, g, beta, conv_state
                 gc.collect()
                 torch.cuda.empty_cache()
                 successful_points += 1
@@ -511,7 +389,6 @@ def run_gdn_generation_benchmark(
         try:
             num_warmups = 3
             num_runs = 10
-            total_iters = num_warmups + num_runs
 
             conv_state = torch.randn(batch_size, conv_channels, d_conv - 1, dtype=dtype, device=device)
             # GDN state: [batch, num_v_heads, head_k_dim, head_v_dim] stored as BF16
@@ -548,123 +425,71 @@ def run_gdn_generation_benchmark(
                 num_runs=num_runs,
             )
 
-            if aic_cached_inputs:
-                k_input = torch.randn(batch_size, conv_channels, dtype=dtype, device=device)
-                q = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
-                k = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
-                v = torch.randn(batch_size, 1, num_v_heads, head_v_dim, dtype=dtype, device=device)
-                g = torch.nn.functional.logsigmoid(
-                    torch.randn(batch_size, 1, num_v_heads, dtype=torch.float32, device=device)
-                )  # serving g is fp32
-                beta = torch.sigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=dtype, device=device))
+            k_input = torch.randn(batch_size, conv_channels, dtype=dtype, device=device)
+            q = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
+            k = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
+            v = torch.randn(batch_size, 1, num_v_heads, head_v_dim, dtype=dtype, device=device)
+            g = torch.nn.functional.logsigmoid(
+                torch.randn(batch_size, 1, num_v_heads, dtype=torch.float32, device=device)
+            )  # serving g is fp32
+            beta = torch.sigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=dtype, device=device))
 
-                # --- Benchmark causal_conv1d_update ---
-                torch.cuda.synchronize()
-                causal_conv1d_update(k_input, conv_state, conv_weight, conv_bias, activation="silu")
-                torch.cuda.synchronize()
+            # --- Benchmark causal_conv1d_update ---
+            torch.cuda.synchronize()
+            causal_conv1d_update(k_input, conv_state, conv_weight, conv_bias, activation="silu")
+            torch.cuda.synchronize()
 
-                def run_conv1d_update(_k=k_input, _cs=conv_state):
-                    causal_conv1d_update(_k, _cs, conv_weight, conv_bias, activation="silu")
+            def run_conv1d_update(_k=k_input, _cs=conv_state):
+                causal_conv1d_update(_k, _cs, conv_weight, conv_bias, activation="silu")
 
-                with benchmark_with_power(
-                    device=device,
-                    kernel_func=run_conv1d_update,
-                    num_warmups=num_warmups,
-                    num_runs=num_runs,
-                    repeat_n=1,
-                ) as results:
-                    log_perf(
-                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                        framework="TRTLLM",
-                        version=trtllm_version,
-                        device_name=torch.cuda.get_device_name(device),
-                        op_name="gdn",
-                        kernel_source="causal_conv1d_update",
-                        perf_filename=perf_filename,
-                        power_stats=results["power_stats"],
-                    )
-
-                if fused_recurrent_gated_delta_rule is None:
-                    print(
-                        "[gdn] fused_recurrent_gated_delta_rule row omitted: kernel absent in this trtllm (>=1.3.0rc29)"
-                    )
-                else:
-                    # --- Benchmark fused_recurrent_gated_delta_rule ---
-                    torch.cuda.synchronize()
-                    fused_recurrent_gated_delta_rule(
-                        q,
-                        k,
-                        v,
-                        g,
-                        beta,
-                        initial_state=gdn_state,
-                        output_final_state=True,
-                    )
-                    torch.cuda.synchronize()
-
-                    def run_gdn_update(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
-                        fused_recurrent_gated_delta_rule(
-                            _q,
-                            _k,
-                            _v,
-                            _g,
-                            _beta,
-                            initial_state=_state,
-                            output_final_state=True,
-                        )
-
-                    with benchmark_with_power(
-                        device=device,
-                        kernel_func=run_gdn_update,
-                        num_warmups=num_warmups,
-                        num_runs=num_runs,
-                        repeat_n=1,
-                    ) as results:
-                        log_perf(
-                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                            framework="TRTLLM",
-                            version=trtllm_version,
-                            device_name=torch.cuda.get_device_name(device),
-                            op_name="gdn",
-                            kernel_source="fused_recurrent_gated_delta_rule",
-                            perf_filename=perf_filename,
-                            power_stats=results["power_stats"],
-                        )
-
-            else:
-                input_pool = _make_input_pool(
-                    {
-                        "k_input": (batch_size, conv_channels),
-                        "q": (batch_size, 1, num_k_heads, head_k_dim),
-                        "k": (batch_size, 1, num_k_heads, head_k_dim),
-                        "v": (batch_size, 1, num_v_heads, head_v_dim),
-                        "g": (batch_size, 1, num_v_heads),
-                        "beta": (batch_size, 1, num_v_heads),
-                    },
-                    total_iters,
-                    dtype,
-                    device,
+            with benchmark_with_power(
+                device=device,
+                kernel_func=run_conv1d_update,
+                num_warmups=num_warmups,
+                num_runs=num_runs,
+                repeat_n=1,
+            ) as results:
+                log_perf(
+                    item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                    framework="TRTLLM",
+                    version=trtllm_version,
+                    device_name=torch.cuda.get_device_name(device),
+                    op_name="gdn",
+                    kernel_source="causal_conv1d_update",
+                    perf_filename=perf_filename,
+                    power_stats=results["power_stats"],
                 )
-                input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
-                for i in range(total_iters):
-                    input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
-                    input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
 
-                # --- Benchmark causal_conv1d_update ---
+            if fused_recurrent_gated_delta_rule is None:
+                print("[gdn] fused_recurrent_gated_delta_rule row omitted: kernel absent in this trtllm (>=1.3.0rc29)")
+            else:
+                # --- Benchmark fused_recurrent_gated_delta_rule ---
                 torch.cuda.synchronize()
-                causal_conv1d_update(input_pool["k_input"][0], conv_state, conv_weight, conv_bias, activation="silu")
+                fused_recurrent_gated_delta_rule(
+                    q,
+                    k,
+                    v,
+                    g,
+                    beta,
+                    initial_state=gdn_state,
+                    output_final_state=True,
+                )
                 torch.cuda.synchronize()
 
-                conv1d_iter_idx = [0]
-
-                def run_conv1d_update(_pool=input_pool, _cs=conv_state, _idx=conv1d_iter_idx):
-                    idx = _idx[0] % total_iters
-                    _idx[0] += 1
-                    causal_conv1d_update(_pool["k_input"][idx], _cs, conv_weight, conv_bias, activation="silu")
+                def run_gdn_update(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
+                    fused_recurrent_gated_delta_rule(
+                        _q,
+                        _k,
+                        _v,
+                        _g,
+                        _beta,
+                        initial_state=_state,
+                        output_final_state=True,
+                    )
 
                 with benchmark_with_power(
                     device=device,
-                    kernel_func=run_conv1d_update,
+                    kernel_func=run_gdn_update,
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
@@ -675,67 +500,13 @@ def run_gdn_generation_benchmark(
                         version=trtllm_version,
                         device_name=torch.cuda.get_device_name(device),
                         op_name="gdn",
-                        kernel_source="causal_conv1d_update",
+                        kernel_source="fused_recurrent_gated_delta_rule",
                         perf_filename=perf_filename,
                         power_stats=results["power_stats"],
                     )
-
-                if fused_recurrent_gated_delta_rule is None:
-                    print(
-                        "[gdn] fused_recurrent_gated_delta_rule row omitted: kernel absent in this trtllm (>=1.3.0rc29)"
-                    )
-                else:
-                    # --- Benchmark fused_recurrent_gated_delta_rule ---
-                    torch.cuda.synchronize()
-                    fused_recurrent_gated_delta_rule(
-                        input_pool["q"][0],
-                        input_pool["k"][0],
-                        input_pool["v"][0],
-                        input_pool["g"][0],
-                        input_pool["beta"][0],
-                        initial_state=gdn_state,
-                        output_final_state=True,
-                    )
-                    torch.cuda.synchronize()
-
-                    gdn_iter_idx = [0]
-
-                    def run_gdn_update(_pool=input_pool, _state=gdn_state, _idx=gdn_iter_idx):
-                        idx = _idx[0] % total_iters
-                        _idx[0] += 1
-                        fused_recurrent_gated_delta_rule(
-                            _pool["q"][idx],
-                            _pool["k"][idx],
-                            _pool["v"][idx],
-                            _pool["g"][idx],
-                            _pool["beta"][idx],
-                            initial_state=_state,
-                            output_final_state=True,
-                        )
-
-                    with benchmark_with_power(
-                        device=device,
-                        kernel_func=run_gdn_update,
-                        num_warmups=num_warmups,
-                        num_runs=num_runs,
-                        repeat_n=1,
-                    ) as results:
-                        log_perf(
-                            item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                            framework="TRTLLM",
-                            version=trtllm_version,
-                            device_name=torch.cuda.get_device_name(device),
-                            op_name="gdn",
-                            kernel_source="fused_recurrent_gated_delta_rule",
-                            perf_filename=perf_filename,
-                            power_stats=results["power_stats"],
-                        )
 
             # Cleanup
-            if aic_cached_inputs:
-                del k_input, q, k, v, g, beta, conv_state, gdn_state
-            else:
-                del input_pool, conv_state, gdn_state
+            del k_input, q, k, v, g, beta, conv_state, gdn_state
             gc.collect()
             torch.cuda.empty_cache()
             successful_points += 1

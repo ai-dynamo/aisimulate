@@ -10,7 +10,7 @@ the backend each runs on come from the shared attention plan
 setup and perf logging for the SGLang runtime.
 """
 
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 import math
 import os
@@ -25,10 +25,11 @@ from collector.op_plans import plan_cases
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
 from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
-from sglang.srt.runtime_context import get_parallel
+from sglang.srt.runtime_context import get_buffer, get_parallel
 
 DISABLE_BACKWARD = os.getenv("FLASH_ATTENTION_DISABLE_BACKWARD", "FALSE") == "TRUE"
 
@@ -37,9 +38,10 @@ class Timing(NamedTuple):
     mean: float
 
 
-# Mock objects to satisfy RadixAttention dependencies
+# Mock objects to satisfy RadixAttention dependencies. Citations are sglang v0.5.23.
 class MockModelConfig:
-    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 (triton_backend.py:255)
+    # model_config.py:1692; read by flashinfer_backend.py and triton_backend.py
+    def get_max_num_attention_heads(self) -> int:
         return int(self.num_attention_heads)
 
     def __init__(
@@ -69,10 +71,10 @@ class MockModelConfig:
         self.is_multimodal = False
         self.hidden_size = num_attention_heads * head_dim
         self.is_local_attention_model = attention_chunk_size is not None
-        # sglang 0.5.16: configs/hybrid_arch.py:30-31 reads
-        # model_config.linear_attn_registry_result (ModelConfig property,
-        # model_config.py:707) to detect hybrid linear-attention archs; the
-        # dense-attention mock has none.
+        # TritonAttnBackend asks mambaish_config(model_config) (triton_backend.py:298),
+        # which reads model_config.linear_attn_registry_result (configs/hybrid_arch.py:35-36,
+        # a ModelConfig property at model_config.py:1259) to detect hybrid linear-attention
+        # archs; the dense-attention mock has none.
         self.linear_attn_registry_result = None
 
         class MockHFConfig:
@@ -88,10 +90,9 @@ class MockModelConfig:
                 self.attn_logit_softcapping = None
 
             def get_text_config(self):
-                # HF PretrainedConfig API: sglang 0.5.16 unwraps multimodal
-                # configs through it (configs/hybrid_arch.py:49,
-                # linear_attn_model_registry.py:56); a text-only mock is its own
-                # text config.
+                # HF PretrainedConfig API: hybrid_gdn_config unwraps multimodal configs
+                # through it (configs/hybrid_arch.py:55-56, reached from
+                # triton_backend.py:298); a text-only mock is its own text config.
                 return self
 
         self.hf_config = MockHFConfig(
@@ -104,42 +105,27 @@ class MockModelConfig:
         self.hf_text_config = self.hf_config
         self.dtype = torch.bfloat16
 
-    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 adds dcp_size (DCP replicates KV)
+    # model_config.py:1700 adds dcp_size (DCP replicates KV); the collector runs no DCP
+    def get_num_kv_heads(self, tp_size, dcp_size=1):
         return self.num_key_value_heads // tp_size
 
 
 class MockServerArgs:
-    def __init__(self, page_size: int):
-        self.enable_lora = False
-        self.enable_deterministic_inference = False
-        self.kv_cache_dtype = "auto"
-        self.speculative_eagle_topk = 0
-        self.speculative_num_draft_tokens = 0
-        self.speculative_num_steps = None
-        self.page_size = page_size
-        self.multi_item_scoring_delimiter = None
-        self.dllm_algorithm = None
-        self.dllm_algorithm_config = None
-        self.is_embedding = False
-        self.disable_radix_cache = False
-        self.enable_dp_attention = False
-        self.model_path = None
-        self.revision = None
-        # Required by TritonAttnBackend
-        self.triton_attention_num_kv_splits = 8
-        self.triton_attention_split_tile_size = None
-        self.disable_cuda_graph = False
-        self.chunked_prefill_size = -1
-        self.enable_mis = False
-        self.enable_two_batch_overlap = False
-        self.disable_attn_tp_gather = False
-        self.moe_dense_tp_size = None
-        # sglang 0.5.16: flashattention_backend.py:51 reads
-        # server_args.enable_prefill_cp (prefill context parallelism) — off
-        self.enable_prefill_cp = False
+    # The only server-args field a dense attention backend reads off the runner:
+    # FlashInferAttnBackend builds DllmConfig.from_server_args(model_runner.server_args)
+    # (flashinfer_backend.py:348 -> dllm/config.py:43-45), None for every collected model.
+    # Every other server-args value the backends read comes from the published runtime
+    # context (ensure_offline_runtime_published: get_exec()/get_spec()/get_schedule()).
+    dllm_algorithm = None
 
 
 class MockModelRunner:
+    """The ModelRunner fields the v0.5.23 dense backends read (flashattention_backend.py,
+    flashinfer_backend.py, triton_backend.py, trtllm_mha_backend.py), each set where
+    serving's ModelRunner sets it."""
+
+    # model_runner.py:876-895: logits rows per decode slot, 1 without speculative decoding
+    # (read at triton_backend.py:229,233)
     def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
         return 1
 
@@ -158,68 +144,38 @@ class MockModelRunner:
         attn_backend_name=None,
     ):
         self.device = device
+        # Set once the pools exist (ModelRunner.init_memory_pool / init_kv_index_translator).
         self.req_to_token_pool = None
         self.token_to_kv_pool = None
-        self.attn_backend = None
-        self.server_args = MockServerArgs(page_size=page_size)
-        self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
-        # sglang 0.5.21 TRTLLMHAAttnBackend (the dense backend sglang picks on SM100/103) reads
-        # model_runner.prefill_attention_backend_str / decode_attention_backend_str to decide its
-        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke
-        # AttributeError 'MockModelRunner' object has no attribute 'prefill_attention_backend_str').
+        self.token_to_kv_pool_allocator = None
+        self.kv_index_translator = None
+        self.server_args = MockServerArgs()
+        # One lane = one backend for both phases (model_runner.py:1120 resolved.prefill /
+        # .decode); TRTLLMHAAttnBackend (trtllm_mha_backend.py:218-225) and
+        # FlashInferAttnBackend (flashinfer_backend.py:358-359) gate their kv-access
+        # checks on it.
         self.prefill_attention_backend_str = attn_backend_name
         self.decode_attention_backend_str = attn_backend_name
-        # trtllm_mha_backend.py:310 scans model_runner.model.modules for ENCODER_ONLY attention
-        # layers (expanded TARGET_VERIFY metadata); the collector has no model — an empty Module
-        # declares none, which is the dense-decoder answer.
+        # trtllm_mha_backend.py:325-328 scans model_runner.model.modules() for ENCODER_ONLY
+        # attention layers (expanded TARGET_VERIFY metadata); an empty Module declares none,
+        # which is the dense-decoder answer.
         self.model = torch.nn.Module()
-        # TRTLLMHAAttnBackend also sizes its workspaces from model_runner.max_running_requests
-        # (512 = the generator's --max-running-requests default).
+        # TRTLLMHAAttnBackend sizes its multi-CTA KV counter from it (trtllm_mha_backend.py:
+        # 396-401, floored at 8192 requests by trtllm_mla_backend.py:113-119); 512 = the
+        # generator's --max-running-requests default.
         self.max_running_requests = 512
-        # sglang 0.5.16 reads the parallel geometry from ``model_runner.ps``
-        # (flashattention_backend.py:183 attn_cp_size, :271-274 tp_size; the
-        # runner sets it at model_runner.py:262 from a ParallelState). Provide
-        # the real trivial ParallelState when the wrapper exists, else a
-        # namespace with the same fields (parallel_state_wrapper.py:6-24).
-        try:
-            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-
-            self.ps = ParallelState.trivial(gpu_id=0)
-        except ImportError:
-            from types import SimpleNamespace
-
-            self.ps = SimpleNamespace(
-                tp_rank=0,
-                tp_size=1,
-                pp_rank=0,
-                pp_size=1,
-                dp_rank=0,
-                dp_size=1,
-                attn_tp_rank=0,
-                attn_tp_size=1,
-                attn_cp_rank=0,
-                attn_cp_size=1,
-                attn_dp_rank=0,
-                attn_dp_size=1,
-                moe_ep_rank=0,
-                moe_ep_size=1,
-                moe_dp_rank=0,
-                moe_dp_size=1,
-                dcp_size=1,
-                gpu_id=0,
-            )
+        # The backends read spec_algorithm only on a draft worker (flashinfer_backend.py:601-602,
+        # trtllm_mha_backend.py:561-562, triton_backend.py:253-256); the collector runs none.
         self.is_draft_worker = False
-        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
-        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
-        # the kernel collectors never run speculative decoding -> 1
         self.spec_algorithm = None
-        self.model_is_mrope = False
+        # model_runner.py:1353 -> load_model_utils.py:144-157 resolve_sliding_window_size: the
+        # model's window, else a chunked-local model's (Llama 4) attention chunk, which
+        # FlashAttentionBackend's local-attention builder also reads (flashattention_backend.py:
+        # 386-398; runner.attention_chunk_size at model_runner.py:407).
         self.sliding_window_size = attention_chunk_size
         if self.sliding_window_size is None and runtime_window_size >= 0:
             self.sliding_window_size = runtime_window_size
         self.attention_chunk_size = attention_chunk_size
-        # Initialized after the KV pool is created.
-        self.token_to_kv_pool_allocator = None
         self.model_config = MockModelConfig(
             num_heads,
             num_kv_heads,
@@ -229,25 +185,16 @@ class MockModelRunner:
             runtime_window_size,
             attention_chunk_size,
         )
-        self.kv_cache_dtype = kv_cache_dtype  # Default
-        # sglang>=0.5.21 FlashAttentionBackend reads the server-args string next to the
-        # torch dtype (flashattention_backend.py:192-194 kv_cache_dtype_str, drives the
-        # mxfp8 branch); serving sets it from server_args.kv_cache_dtype
-        # (model_runner.py:1481). The collector's kv_cache_dtype is that same string.
+        # The KV-cache torch dtype; the caller replaces the string with it.
+        self.kv_cache_dtype = kv_cache_dtype
+        # FlashAttentionBackend reads the server-args string next to the torch dtype
+        # (flashattention_backend.py:191-192, drives the mxfp8 branch); serving sets it from
+        # server_args.kv_cache_dtype (model_runner.py:1572). The collector's kv_cache_dtype is
+        # that same string.
         self.kv_cache_dtype_str = kv_cache_dtype
         self.page_size = page_size
-        self.tp_size = 1
-        self.is_hybrid = False
-        self.dtype = torch.bfloat16
-        # Provide compatibility across sglang versions that expect this flag
-        self.is_hybrid_swa = self.model_config.is_hybrid_swa
-        self.server_args.kv_cache_dtype = kv_cache_dtype
-        self.server_args.page_size = page_size
-        # Required by TritonAttnBackend
-        self.gpu_id = 0
-        self.hybrid_gdn_config = None
-        self.kimi_linear_config = None
-        self.linear_attn_model_spec = None
+        self.dtype = torch.bfloat16  # model_runner.py:1362 (model dtype; trtllm/flashinfer q dtype)
+        self.gpu_id = 0  # model_runner.py:366; triton_backend.py:315 reads its SM count
 
 
 def create_req_to_token_pool(batch_size, total_len, page_size, torch_device, device_str):
@@ -277,55 +224,46 @@ def get_generation_attention_test_cases():
 _FLASHINFER_WORKSPACE_MIN_BYTES = 4 << 30
 
 
-def _ensure_flashinfer_workspace() -> int | None:
-    """Raise SGLang's FlashInfer workspace floor BEFORE the first backend of this
-    process is built, through the knob the pinned version actually reads.
+def _ensure_flashinfer_workspace(device) -> int:
+    """Give this process SGLang's shared FlashInfer workspace at the collector's floor
+    BEFORE the first FlashInfer-family backend (FlashInferAttnBackend, or
+    TRTLLMHAAttnBackend, which subclasses it) is built. Returns the workspace size in bytes.
 
-    0.5.21 sizes the shared decode/prefill plan buffer from
-    ``sglang.srt.environ.envs.SGLANG_FLASHINFER_WORKSPACE_SIZE`` (EnvInt, default
-    384 MiB) and allocates it ONCE per process via ``get_buffer("flashinfer_workspace")``
-    (flashinfer_backend.py:430-436); serving itself bumps the knob to 512 MiB for
-    Qwen2/Qwen3/MiMo architectures (:394-404). The decode sweep's wide cells need
-    more than the default — l40s 0.5.21: "Buffer overflow when allocating
-    batch_prefill_tmp_v with size 536870912 ... only 402653184 bytes available",
-    671 attention_generation cases (heads 128 / kv 1 / head_dim 128, batch 32 x isl
-    255..4095). ed9109ec wrote ``global_config.flashinfer_workspace_size``, an
-    attribute 0.5.21 no longer has — a no-op (pipeline 72343559 reproduced all 671).
-    Older series keep the global_config path as a fallback. Returns the floor
-    applied (bytes) or None when no knob was found.
+    sglang v0.5.23 sizes the shared decode/prefill plan buffer from
+    ``envs.SGLANG_FLASHINFER_WORKSPACE_SIZE`` (EnvInt, default 384 MiB, environ.py:1221)
+    and allocates it ONCE per process through ``get_buffer("flashinfer_workspace")``
+    (flashinfer_backend.py:456-463; runtime_context.py:1014-1020 keeps the first
+    allocation). The backend constructor first resets the knob to 512 MiB for
+    Qwen2/Qwen3/MiMo/Qwen3-VL architectures (flashinfer_backend.py:421-431), and the
+    collector's FlashInfer rows carry ``Qwen3ForCausalLM`` and ``MiMoForCausalLM``: raising
+    the knob alone left the whole worker on 512 MiB whenever such a row built its first
+    backend. So the buffer is created here, under serving's own name, and the knob is
+    raised too (TRTLLMHAAttnBackend sizes its own workspace from the knob when it is set,
+    trtllm_mha_backend.py:200-207).
 
-    Floor history: 1 GiB (5c0f54a5) cleared 447 of the 671 l40s failures (pipeline
-    72369799, job 475655072); the remaining 224 — all heads 128 / kv 1 / head_dim 128,
-    bf16 and fp8 KV alike, batch x isl from 32x255 up to 4x16383 — asked the tensor-core
-    decode planner for batch_prefill_tmp_v of 1.5-2.22 GiB ("only 1073741824 bytes
-    available"). 4 GiB covers the largest observed request with margin; the buffer is one
-    torch.empty per worker process, never touched beyond what the plan uses, and the
-    planner's split decision does not depend on the buffer size, so the measured kernels
-    are unchanged (flashinfer prefill planner sizes tmp_v from the split count, not the
-    workspace).
+    Why a floor at all: the decode sweep's wide cells need more than the default — l40s
+    0.5.21: "Buffer overflow when allocating batch_prefill_tmp_v with size 536870912 ...
+    only 402653184 bytes available", 671 attention_generation cases (heads 128 / kv 1 /
+    head_dim 128, batch 32 x isl 255..4095). 1 GiB (5c0f54a5) cleared 447 of them
+    (pipeline 72369799, job 475655072); the remaining 224 — bf16 and fp8 KV alike, batch x
+    isl from 32x255 up to 4x16383 — asked the tensor-core decode planner for
+    batch_prefill_tmp_v of 1.5-2.22 GiB. 4 GiB covers the largest observed request with
+    margin. The buffer is one torch.empty per worker process, never touched beyond what
+    the plan uses, and neither the FlashInfer planner's split decision (it sizes tmp_v
+    from the split count) nor the trtllm-gen kernel choice (the workspace only carries
+    the multi-CTA scratch, flashinfer csrc/trtllm_fmha_kernel_launcher.cu:304-370 @v0.7.2)
+    depends on the buffer size, so the measured kernels are unchanged.
     """
-    try:
-        from sglang.srt.environ import envs
+    from sglang.srt.environ import envs
 
-        knob = getattr(envs, "SGLANG_FLASHINFER_WORKSPACE_SIZE", None)
-        if knob is not None:
-            current = int(knob.get())
-            if current < _FLASHINFER_WORKSPACE_MIN_BYTES:
-                knob.set(_FLASHINFER_WORKSPACE_MIN_BYTES)
-            return max(current, _FLASHINFER_WORKSPACE_MIN_BYTES)
-    except Exception:
-        pass
-    try:
-        from sglang.global_config import global_config
-
-        current = getattr(global_config, "flashinfer_workspace_size", None)
-        if isinstance(current, int):
-            if current < _FLASHINFER_WORKSPACE_MIN_BYTES:
-                global_config.flashinfer_workspace_size = _FLASHINFER_WORKSPACE_MIN_BYTES
-            return max(current, _FLASHINFER_WORKSPACE_MIN_BYTES)
-    except Exception:
-        pass
-    return None
+    knob = envs.SGLANG_FLASHINFER_WORKSPACE_SIZE
+    floor = max(int(knob.get()), _FLASHINFER_WORKSPACE_MIN_BYTES)
+    knob.set(floor)
+    workspace = get_buffer(
+        "flashinfer_workspace",
+        lambda: torch.empty(floor, dtype=torch.uint8, device=device),
+    )
+    return int(workspace.numel())
 
 
 @get_parallel().override(
@@ -361,7 +299,6 @@ def run_attention_torch(
     from collector.sglang.runtime_compat import ensure_offline_runtime_published
 
     ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
-    _ensure_flashinfer_workspace()
     if use_fp8_context_fmha:
         assert use_fp8_kv_cache, "If you want to use fp8 context fmha, kv cache must be fp8"
     kvtype = torch.float8_e4m3fn if use_fp8_kv_cache else torch.bfloat16
@@ -386,15 +323,27 @@ def run_attention_torch(
         if attn_backend_name is None:
             raise ValueError(f"No SGLang attention backend for SM{sm_version}")
     if page_size is None:
-        page_size = 64 if attn_backend_name == "trtllm_mha" else 1
+        # The page size serving resolves for the backend: trtllm_mha forces 64 when unset
+        # (arg_groups/overrides.py:1174-1187 _mla_backend_page_constraints), fa4 on SM100/103
+        # forces 128 (:1273-1297 _fa4_page_constraint, get_platform().is_sm100 = capability
+        # major 10); the others keep the default 1.
+        if attn_backend_name == "trtllm_mha":
+            page_size = 64
+        elif attn_backend_name == "fa4" and get_sm_version() // 10 == 10:
+            page_size = 128
+        else:
+            page_size = 1
 
-    # Prefill rows are labeled with the compute dtype the backend actually uses;
-    # the input dtype is an API contract. fa3 (head_dim <= 256) and trtllm_mha
-    # quantize Q to FP8 themselves when the KV cache is FP8, and the flashinfer
-    # prefill computes BF16 against an FP8 KV cache, so the plan leaves out the
-    # combinations that do not exist (collector/skips.py). trtllm_mha takes BF16
-    # inputs: an external FP8 cast would break its input contract without
-    # changing the (already FP8) compute.
+    # Inputs are BF16 on every lane, as serving hands attention the model-dtype Q/K/V after
+    # RoPE; the backend's own per-call FP8 work stays in the timed call. With an FP8 KV
+    # cache, fa3 (head_dim <= 256) casts Q in prepare_paged_mha_query
+    # (flashattention_backend.py:1426-1436) and set_kv_buffer casts K/V
+    # (mem_cache/memory_pool.py:2926-2933); trtllm_mha quantizes Q and writes K/V in one
+    # fused kernel (trtllm_mha_backend.py:1058-1100, called at :1611 and :1718). fa4 prefill
+    # (flashattention_backend.py:1430), flashinfer and triton never quantize Q, so their
+    # prefill computes BF16 against the FP8 cache. Rows are labeled with the compute dtype
+    # the backend runs; the plan leaves out the labels a lane cannot produce
+    # (collector/skips.py).
 
     model_runner = MockModelRunner(
         torch_device,
@@ -410,12 +359,6 @@ def run_attention_torch(
         attn_backend_name=attn_backend_name,
     )
     model_runner.kv_cache_dtype = kvtype
-    # sglang>=0.5.21 backends ask the runner which backend serves each phase
-    # (model_runner.py:1020-1021 resolved.prefill/decode; flashinfer_backend.py:331-332
-    # gate the kv-access checks on it). One lane = one backend for both phases. Hopper's
-    # fa3 / Blackwell's trtllm_mha never read it, so only the sm89/sm120 flashinfer lane failed.
-    model_runner.prefill_attention_backend_str = attn_backend_name
-    model_runner.decode_attention_backend_str = attn_backend_name
 
     total_len = input_len if is_context_phase else input_len + 1
     # TRTLLM MHA sizes its page table from context_len.
@@ -446,22 +389,34 @@ def run_attention_torch(
         enable_memory_saver=False,
     )
     model_runner.token_to_kv_pool = kv_pool
+    # The backends ask the allocator only for its pool (flashinfer_backend.py:596-606 and
+    # trtllm_mha_backend.py:548-568 _resolve_swa_kv_pool); a static MHA pool is not an SWA pool.
     model_runner.token_to_kv_pool_allocator = SimpleNamespace(
         page_size=model_runner.page_size,
         get_kvcache=lambda: model_runner.token_to_kv_pool,
     )
-    from collector.sglang.runtime_compat import attach_kv_index_translator
+    # ModelRunner.init_kv_index_translator (model_runner.py:950-961): over a static pool the
+    # translator translates nothing, and every backend reads its page tables through it.
+    model_runner.kv_index_translator = KVIndexTranslator(
+        req_to_token=req_to_token_pool.req_to_token,
+        token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
+        token_to_kv_pool=kv_pool,
+        page_size=model_runner.page_size,
+        device=device_str,
+        is_draft_worker=model_runner.is_draft_worker,
+    )
 
-    attach_kv_index_translator(model_runner)
-
+    # Each lane builds the backend class serving's factory builds for its name
+    # (layers/attention/attention_registry.py:55-77, 206-214, 238-284).
     if attn_backend_name == "flashinfer":
         from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
 
-        _ensure_flashinfer_workspace()  # the shared workspace is allocated by the first backend of the process
+        _ensure_flashinfer_workspace(torch_device)
         attn_backend = FlashInferAttnBackend(model_runner)
     elif attn_backend_name == "trtllm_mha":
         from sglang.srt.layers.attention.trtllm_mha_backend import TRTLLMHAAttnBackend
 
+        _ensure_flashinfer_workspace(torch_device)  # TRTLLMHAAttnBackend subclasses FlashInferAttnBackend
         attn_backend = TRTLLMHAAttnBackend(model_runner)
     elif attn_backend_name == "triton":
         from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
@@ -469,10 +424,12 @@ def run_attention_torch(
         attn_backend = TritonAttnBackend(model_runner)
     elif attn_backend_name == "fa3":
         attn_backend = FlashAttentionBackend(model_runner)
+    elif attn_backend_name == "fa4":
+        # create_flashattention_v4_backend (attention_registry.py:264-274): the FA3 class on
+        # the FA4 kernels (flashattention_backend.py:290-316).
+        attn_backend = FlashAttentionBackend(model_runner, fa_impl_ver=4)
     else:
         raise ValueError(f"Unsupported SGLang attention backend: {attn_backend_name}")
-
-    model_runner.attn_backend = attn_backend
 
     layer = RadixAttention(
         num_heads=num_heads,
@@ -534,8 +491,10 @@ def run_attention_torch(
             seq_lens_cpu=seq_lens_cpu,
             extend_seq_lens=seq_lens,
             extend_prefix_lens=prefix_lens,
-            extend_seq_lens_cpu=seq_lens_cpu,
-            extend_prefix_lens_cpu=prefix_lens.cpu(),
+            # Host lists, as ForwardBatch.init_new fills them (forward_batch_info.py:1240-1241);
+            # trtllm_mha's mixed-prefill split walks and sums them (trtllm_mha_backend.py:1316-1327).
+            extend_seq_lens_cpu=[input_len] * batch_size,
+            extend_prefix_lens_cpu=[0] * batch_size,
             extend_num_tokens=int(seq_lens.sum().item()),
         )
     else:
@@ -595,26 +554,23 @@ def run_attention_torch(
                 layer.v_scale,
             )
 
-    forward_batch.req_to_token_pool = req_to_token_pool
-    forward_batch.token_to_kv_pool = kv_pool
+    # ForwardBatch.init_new binds every forward to its iteration's KV-location plan
+    # (forward_batch_info.py:1139-1141). TRTLLMHAAttnBackend.init_forward_metadata reads its
+    # page table through the plan unconditionally (trtllm_mha_backend.py:1341-1343), and
+    # KVIndexTranslator.read_table takes plan.req_pool_indices even over a static pool
+    # (kv_index_translator.py:499-512): an unbound batch fails every trtllm_mha case.
+    translator = model_runner.kv_index_translator
+    translator.own_plan(forward_batch).bind(forward_batch, translator)
 
     with forward_context(ForwardContext(attn_backend=attn_backend)):
         attn_backend.init_forward_metadata(forward_batch)
 
-        # fp8_context_fmha (labels: see the refusals before the model runner):
-        # trtllm_mha casts Q itself; every other lane takes FP8 inputs.
-        if is_context_phase and use_fp8_context_fmha and attn_backend_name != "trtllm_mha":
-            q = q.to(kvtype)
-            k = k.to(kvtype)
-            v = v.to(kvtype)
-
         # Mirror the serving call contract: only sink-carrying models pass the
-        # ``sinks`` kwarg (e.g. gpt_oss.py), and SGLang 0.5.14
+        # ``sinks`` kwarg (gpt_oss.py:499, mimo_v2.py:849), and
         # FlashInferAttnBackend.forward_extend/forward_decode do not accept it
-        # at all — passing ``sinks=None`` unconditionally breaks every
-        # flashinfer-routed case (first seen on SM100 NemotronH; flashinfer is
-        # never the selected dense backend on SM90). A sink profile routed to
-        # flashinfer still fails closed with the framework's own TypeError.
+        # (flashinfer_backend.py:1357, 1521) — passing ``sinks=None``
+        # unconditionally breaks every flashinfer-routed case. A sink profile
+        # routed to flashinfer still fails closed with the framework's own TypeError.
         layer_kwargs = {"sinks": sinks} if has_attention_sink else {}
 
         def run_iter():

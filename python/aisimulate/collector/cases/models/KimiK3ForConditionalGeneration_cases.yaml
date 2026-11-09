@@ -53,6 +53,13 @@ model_case_values:
       inter_size: 3072
       topk: 16
       num_experts: 896
+      # SGLang builds K3's experts with activation=config.hidden_act (situ) and
+      # the SiTU betas as gemm1_alpha / gemm1_clamp_limit
+      # (activation_situ_beta 4.0, activation_situ_linear_beta 25.0;
+      # models/kimi_k3.py:503-521 at v0.5.23).
+      sglang_moe_activation: situ
+      sglang_moe_gemm1_alpha: 4.0
+      sglang_moe_gemm1_clamp_limit: 25.0
       sglang_moe_scoring_func: sigmoid
       sglang_moe_routing_method_type: DeepSeekV3
       sglang_moe_routed_scaling_factor: 1.0
@@ -61,24 +68,22 @@ model_case_values:
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
       sglang_moe_backends:
-        # kimi-k3 branch dispatch: Blackwell -> flashinfer_mxfp4
-        # (trtllm-gen SiTU), SM90 -> marlin W4A16 (cookbook §2 MoE runner).
-        # SM89/120 keys made explicit (previously rode the base map's
-        # GPT-OSS-era citations): the branch's K3 moe-runner override fires
-        # on SM100/103 ONLY and otherwise leaves auto
-        # (arg_groups/overrides.py:479-504 @ c6ad1f26 — the flashinfer_mxfp4
-        # default is gated `get_device_sm() in (100, 103)`), so SM120
-        # resolves to the marlin W4A16 repack lane like SM90 and SM89 stays
-        # on the Triton default — matching the collected kernel_source truth
-        # (rtx marlin, l40s triton).
-        w4a16_mxfp4: {89: triton, 90: marlin, 100: flashinfer_mxfp4, 103: flashinfer_mxfp4, 120: marlin}
-        # Blackwell serving truth: the branch's Mxfp4MoEMethod default
-        # precision quantizes activations to mxfp8 (per_token_group_quant
-        # group 32 / mxfp8_quantize -> trtllm_fp4_block_scale_moe,
-        # mxfp4.py:1311-1330 @ kimi-k3 branch; B300 nsys shows the
-        # bmm_MxE4m3_MxE2m1MxE4m3 kernels). The base moe.yaml quant-mode
-        # axis gates this label to SM in [100, 120). Hopper keeps the
-        # bf16-activation marlin W4A16 lane above.
+        # SGLang v0.5.23: K3's runner override picks flashinfer_mxfp4 on
+        # SM100/103/107 only (arg_groups/model_overrides/kimi_k3.py:172-190).
+        # Every other SM keeps auto, which Mxfp4MoEMethod resolves to the
+        # Triton runner (layers/quantization/mxfp4.py:1443-1450): it upcasts the
+        # MXFP4 experts to BF16 at load (:1115-1133; triton_kernels ships with
+        # sglang-kernel, kernels/aot/CMakeLists.txt:548-553) and applies SiTU
+        # from gemm1_alpha / gemm1_clamp_limit (moe_runner/triton.py:162-170,
+        # 208-215; triton_utils/fused_moe.py:825-834).
+        w4a16_mxfp4: {89: triton, 90: triton, 100: flashinfer_mxfp4, 103: flashinfer_mxfp4, 120: triton}
+        # On SM100/103 flashinfer_mxfp4 runs the default precision, MXFP8
+        # activations on the trtllm-gen leaf (fields/exec_.py:892-897,
+        # moe_runner/flashinfer_trtllm.py:1145-1166), so serving runs this
+        # label there and collector/skips.py leaves the W4A16 cases out. The
+        # base moe.yaml quant-mode axis gates this label to SM100 and newer;
+        # collector/skips.py leaves it out on SM120, where K3 runs BF16
+        # activations.
         w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
       # Do not enroll K3 in the standalone DeepEP WideEP collectors.  The
       # pinned vLLM 0.24.0 source predates K3 serving support, and the current

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -96,3 +97,68 @@ def test_mhc_worker_params_match_run_signature(monkeypatch):
     assert captured["hc_mult"] == case["params"][3]
     assert captured["perf_filename"] == "mhc_module_perf.txt"
     assert captured["output_path"] == "/tmp/out"
+
+
+def _stub_trtllm_module(monkeypatch, name: str, **attrs) -> ModuleType:
+    """Install ``name`` (and stub parents) so the collector's lazy TRT-LLM imports resolve."""
+    parts = name.split(".")
+    for depth in range(1, len(parts)):
+        parent = ".".join(parts[:depth])
+        if parent not in sys.modules:
+            monkeypatch.setitem(sys.modules, parent, ModuleType(parent))
+    module = ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+def test_sites_are_built_by_servings_make_mhc_hook(monkeypatch):
+    module = _load_module_with_torch_stub(monkeypatch)
+    monkeypatch.setattr(module.torch, "no_grad", contextlib.nullcontext, raising=False)
+    seen = {}
+
+    class _Param:
+        def normal_(self):
+            return self
+
+        def fill_(self, value):
+            return self
+
+    class _Site:
+        fn = base = scale = _Param()
+
+        def to(self, device):
+            seen["device"] = device
+            return self
+
+    class DeepseekV4DecoderLayer:
+        # Serving's hook reads only self.config (modeling_deepseekv4.py:1923-1937@v1.4.0rc2).
+        def _make_mhc(self):
+            seen["config"] = vars(self.config)
+            return _Site()
+
+    _stub_trtllm_module(
+        monkeypatch, "tensorrt_llm._torch.models.modeling_deepseekv4", DeepseekV4DecoderLayer=DeepseekV4DecoderLayer
+    )
+    module._make_mhc_site(7168, 4, device="cuda:1")
+    assert seen == {"config": {"hc_mult": 4, "hidden_size": 7168, "hc_sinkhorn_iters": 20}, "device": "cuda:1"}
+
+
+@pytest.mark.parametrize(("num_splits", "label"), [(16, "dg_splitk"), (1, "dg_nosplit")])
+def test_pre_backend_label_reads_the_deepgemm_split(monkeypatch, num_splits, label):
+    module = _load_module_with_torch_stub(monkeypatch)
+    monkeypatch.setattr(module.torch, "no_grad", contextlib.nullcontext, raising=False)
+    mhc_cuda = ModuleType("mhc_cuda")
+    mhc_cuda.mhc_gemm_rms_fma_cuda = lambda *args, **kwargs: None
+    mhc_cuda.mhc_gemm_rms_dg_cuda = lambda *args, **kwargs: None
+    originals = (mhc_cuda.mhc_gemm_rms_fma_cuda, mhc_cuda.mhc_gemm_rms_dg_cuda)
+    _stub_trtllm_module(monkeypatch, "tensorrt_llm._torch.modules.mhc", mhc_cuda=mhc_cuda)
+
+    class _Site:
+        def pre_mapping(self, residual):
+            # MhcPreMappingRunner.forward's DeepGEMM calls (mhc_cuda.py:365-369@v1.4.0rc2).
+            return mhc_cuda.mhc_gemm_rms_dg_cuda(residual, None, 16, 24, 16384, num_splits=num_splits)
+
+    assert module._observe_pre_backend(_Site(), object()) == label
+    assert (mhc_cuda.mhc_gemm_rms_fma_cuda, mhc_cuda.mhc_gemm_rms_dg_cuda) == originals

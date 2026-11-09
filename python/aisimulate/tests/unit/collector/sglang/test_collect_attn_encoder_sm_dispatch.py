@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """The encoder collector picks the vision-attention lane the way sglang does: by capability MAJOR
-(vision.py:1298-1303), so SM103 (B300) shares FA4 with SM100 instead of falling to Triton."""
+(vision.py:1304-1311 @v0.5.23), so SM103 (B300) shares FA4 with SM100 instead of falling to Triton."""
 
 import ast
 from pathlib import Path

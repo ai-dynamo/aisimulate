@@ -5,9 +5,10 @@
 
 # Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
-# away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm==0.30.0"
+# away and prior-version DATA stays permanent under its version key. Every
+# vLLM citation below without a version is @v0.32.0 (paths under vllm/,
+# model paths under vllm/models/minimax_m3/).
+__compat__ = "vllm==0.32.0"
 
 """
 MSA Module Collector for vLLM — MiniMax-M3 sparse-attention benchmarking.
@@ -17,17 +18,19 @@ Profiles the complete MiniMax-M3 sparse-attention module forward pass
 paged KV/index-cache insert, lightning-indexer top-k block selection,
 block-sparse GQA attend, output projection), not a bare kernel. Uses vLLM's
 own modeling code (``MiniMaxM3SparseAttention``, the exact module
-``MiniMaxM3DecoderLayer`` builds for sparse layers —
-vllm/models/minimax_m3/nvidia/model.py:671-679@v0.24.0) with dummy weights,
-the same framework-builder approach as ``collect_mla_module.py``.
+``MiniMaxM3DecoderLayer`` builds for sparse layers — nvidia/model.py:712-720)
+with dummy weights, the same framework-builder approach as
+``collect_mla_module.py``.
 
-Kernel dispatch is the framework's own: the attend impl is chosen by
-``select_main_impl_cls`` (Triton on non-SM100, fmha_sm100 "MSA" attend on the
-SM100 family — common/sparse_attention.py:391-422@v0.24.0) and the indexer
-impl by ``select_indexer_impl_cls`` (common/indexer.py:457-507@v0.24.0), both
-at module construction. ``kernel_source`` records the actually-selected impl
-class. Hardware-validated on SM90; other SMs carry registry
-``unverified_sms`` markers until validated.
+Kernel dispatch is the framework's own: the attend backend and impl are chosen
+by ``select_main_backend_and_impl_cls`` (Triton off the SM100 family; the
+fmha_sm100 "MSA" attend on it for top-k 4/8/16/32 and a non-e5m2 KV cache —
+common/sparse_attention.py:525-587) and the indexer impl by
+``select_indexer_impl_cls`` (fmha_sm100 score + top-k on the SM100 family at
+top-k 16, Triton elsewhere — common/indexer.py:495-550), both at module
+construction (nvidia/model.py:518-550). ``kernel_source`` records the
+actually-selected attend impl class. Per-SM validation state lives in the
+registry's ``unverified_sms``.
 
 Supported models and micro-sweeps come from collector v2 YAML
 (``cases/models/MiniMaxM3ForCausalLM_cases.yaml`` `mla_module` rows with
@@ -52,8 +55,9 @@ from vllm.forward_context import set_forward_context
 
 # ═══════════════════════════════════════════════════════════════════════
 # Config registry shim — the MiniMax-M3 HF release config carries
-# model_type "minimax_m3", but vLLM 0.24.0's _CONFIG_REGISTRY only maps
-# "minimax_m3_vl" / "minimax_m3_mtp" (transformers_utils/config.py:106-107)
+# model_type "minimax_m3", but vLLM's _CONFIG_REGISTRY only maps
+# "minimax_m3_vl" / "minimax_m3_mtp" (transformers_utils/config.py:114-115,
+# resolved lazily by LazyConfigDict :71-78)
 # and transformers doesn't know the model_type either, so the
 # AutoConfig fallback fails offline. Serving loads such checkpoints via
 # trust_remote_code; the bundled config dir has auto_map stripped (see
@@ -114,7 +118,7 @@ def _generation_kv_footprint_bytes(total_tokens: int, num_heads: int, kv_cache_d
 
     run_msa_module allocates the paged main K/V cache (2 x kv_heads x 128
     elems/token; 2 B/elem for bf16, 1 B/elem for the fp8 cache's uint8
-    storage — STR_DTYPE_TO_TORCH_DTYPE["fp8"], utils/torch_utils.py:38)
+    storage — STR_DTYPE_TO_TORCH_DTYPE["fp8"], utils/torch_utils.py:39)
     plus the indexer's key side-cache (128 elems/token, always
     bf16). Module weights, metadata, and the top-k buffer are deliberately
     excluded so the estimate stays a provable lower bound: a case refused on
@@ -198,30 +202,6 @@ _ATTN_LAYER_NAME = "model.layers.0.self_attn.attn"
 _INDEX_CACHE_LAYER_NAME = "model.layers.0.self_attn.attn.index_cache"
 
 
-def msa_decode_scorer_kernel_limit(
-    num_idx_heads: int, num_heads: int, *, is_context: bool, query_len: int | None
-) -> str | None:
-    """Classified kernel-limit message when the M3 DECODE indexer scorer
-    cannot tile this index-head count, else None.
-
-    The scorer tiles BLOCK_SIZE_HQ = num_idx_heads * BLOCK_SIZE_Q through
-    tl.arange (power of 2 required). It runs for every generation cell and
-    for a one-token context query only; prefill queries take the other
-    kernel, which the 0.29 full-grid sweep collected at 48/96 heads
-    (904/976 rows per head, the 72 misses being exactly the isl=1 cells).
-    """
-    decode_scorer_runs = (not is_context) or (query_len is not None and query_len <= 1)
-    if decode_scorer_runs and num_idx_heads & (num_idx_heads - 1):
-        return (
-            f"FIXME(kernel-limit): num_idx_heads={num_idx_heads} (from num_heads={num_heads}) "
-            "is not a power of 2; MiniMax-M3 sparse decode indexer Triton kernel requires "
-            "power-of-2 tl.arange tiles (models/minimax_m3/common/ops/"
-            "sparse_attn.py@0.29.0) and serving tp shards can never produce "
-            "this count"
-        )
-    return None
-
-
 def _create_msa_attention_module(
     model_path: str,
     num_heads: int,
@@ -229,22 +209,22 @@ def _create_msa_attention_module(
     kv_cache_dtype: str,
     max_seq_len: int,
     max_batch_size: int,
+    max_query_len: int,
     is_context: bool,
     device: str = "cuda:0",
-    query_len: int | None = None,
 ):
     """Create a ``MiniMaxM3SparseAttention`` module from vLLM's own modeling
     code.
 
-    ``query_len`` is the per-request query length of the case (context
-    ``seq_len``; ``1`` for generation) — it decides whether the decode-path
-    kernel-limit guard below applies.
+    ``max_seq_len`` is the case's KV length (cached prefix + new tokens) and
+    ``max_query_len`` its per-request new-token count (context ``seq_len``;
+    ``1`` for generation).
 
     Loads the real HF config from model_path, applies the TP-shard head
     emulation in-memory, and constructs the exact module serving builds for
     sparse layers (``MiniMaxM3DecoderLayer.__init__``,
-    nvidia/model.py:671-679). Backend selection happens inside the
-    module constructor exactly as in serving (select_main_impl_cls /
+    nvidia/model.py:712-720). Backend selection happens inside the
+    module constructor exactly as in serving (select_main_backend_and_impl_cls /
     select_indexer_impl_cls); ``kv_cache_dtype`` must therefore be baked
     into cache_config before construction — "fp8" here models serving's
     global ``--kv-cache-dtype fp8``.
@@ -252,7 +232,7 @@ def _create_msa_attention_module(
     from vllm.platforms import current_platform
 
     if current_platform.is_rocm():
-        # This collector benchmarks the NVIDIA path (vllm/models/minimax_m3/
+        # This collector benchmarks the NVIDIA path (models/minimax_m3/
         # __init__.py:16-27 routes ROCm to amd/model.py, a different
         # module with different kernels).
         raise RuntimeError("collect_msa_module benchmarks the NVIDIA MiniMax-M3 path; ROCm is unsupported")
@@ -273,43 +253,55 @@ def _create_msa_attention_module(
     gqa_ratio = max(1, native_q // native_kv)
     num_kv_heads = max(1, num_heads // gqa_ratio)
 
-    # Page size == sparse block size: the M3 backend supports exactly one
-    # kernel block size, 128 (MiniMaxM3SparseBackend
-    # .get_supported_kernel_block_sizes, common/sparse_attention.py:81-84),
-    # so serving's cache block size resolves to 128.
-    block_size = 128
     max_model_len = max(max_seq_len, 4096)
 
     vllm_config = create_vllm_config(
         model_name=local_model_path,
         max_model_len=max_model_len,
-        block_size=block_size,
-        num_gpu_blocks=1 + _ceil_div(max_seq_len + 1, block_size) * max_batch_size,
+        # No --block-size: serving derives the page from the layers' backends
+        # after the model is built (_serving_kv_block_size). An explicit value
+        # would mark the config user-specified and skip that derivation.
+        block_size=None,
+        # cache_config.num_gpu_blocks is not read on this path; an upper bound
+        # at the smallest page.
+        num_gpu_blocks=1 + _ceil_div(max_seq_len + 1, 16) * max_batch_size,
         max_num_seqs=max_batch_size,
-        max_num_batched_tokens=max(max_batch_size * max_seq_len, 131072) if is_context else max_batch_size,
+        # The serving scheduler budgets NEW tokens per step, not cached ones
+        # (token_budget = max_num_batched_tokens, debited by each request's
+        # num_new_tokens: v1/core/sched/scheduler.py:137-141,611,856,1366).
+        # Here the budget only sizes persistent buffers whose per-step views
+        # the kernels read: the shared top-k buffer (nvidia/model.py:831-844)
+        # and, on the SM100 indexer, a [max_num_batched_tokens, index heads,
+        # 8192] fp32 score buffer (nvidia/indexer_msa.py:132-138), which cost
+        # up to ~140 GB at a 1M-token prefix when the budget counted cached
+        # tokens too. Keep the existing 131072-token floor for context steps.
+        max_num_batched_tokens=max(max_batch_size * max_query_len, 131072) if is_context else max_batch_size,
         # Serving's global --kv-cache-dtype: use_fp8_kv_cache=True sets
-        # cache_config.cache_dtype "fp8" (= fp8_e4m3 on CUDA, config/cache.py
-        # 75-78), False leaves "auto" (model dtype, bf16). The module
-        # reads it at construction (self.kv_cache_dtype =
-        # cache_config.cache_dtype, nvidia/model.py:483-488) and
-        # selects the attend impl off it (select_main_impl_cls(
-        # kv_cache_dtype=...), nvidia/model.py:501-513), so the dtype must be
-        # set before the module is built for dispatch to match serving.
+        # cache_config.cache_dtype "fp8" (= fp8_e4m3 on CUDA), False leaves
+        # "auto" (model dtype, bf16). The module reads it at construction
+        # (self.kv_cache_dtype = cache_config.cache_dtype, nvidia/model.py:
+        # 493-498) and selects the attend impl off it
+        # (select_main_backend_and_impl_cls(kv_cache_dtype=...),
+        # nvidia/model.py:518-534), so the dtype must be set before the module
+        # is built for dispatch to match serving.
         use_fp8_kv_cache=(kv_cache_dtype == "fp8"),
         trust_remote_code=False,
         # The HF release config declares architectures
-        # ["MiniMaxM3ForCausalLM"], which vLLM 0.24.0's model registry does
+        # ["MiniMaxM3ForCausalLM"], which vLLM's model registry does
         # not know; the registered text-backbone architecture is
         # "MiniMaxM3SparseForCausalLM" (model_executor/models/registry.py
         # 163-166) — the same class vLLM's own VL wrapper routes
-        # the text backbone through (nvidia/model.py:1039-1044). Map it via
+        # the text backbone through (nvidia/model.py:1171-1176). Map it via
         # hf_overrides, vLLM's first-class --hf-overrides mechanism
-        # (config/model.py:496-541 applies it before arch resolution).
+        # (config/model.py:605-676 applies it before arch resolution). The
+        # architecture also auto-enables breakable CUDA graphs
+        # (config/vllm.py:74-102, 812-840): see the timing note in
+        # run_msa_module.
         hf_overrides={"architectures": ["MiniMaxM3SparseForCausalLM"]},
         # TP-shard emulation: shrink the head axes exactly like serving's TP
         # sharding would. Per-rank q heads = total/tp and kv heads =
         # max(1, total_kv/tp) (MiniMaxM3SparseAttention.__init__,
-        # nvidia/model.py:411-419), so with tp_size=1 here we bake
+        # nvidia/model.py:419-433), so with tp_size=1 here we bake
         # the sharded counts into the config.
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
@@ -323,52 +315,29 @@ def _create_msa_attention_module(
 
     # Index-head TP emulation: index_q has the same head count as the KV
     # heads and shards identically — including replication when
-    # tp > total_kv (num_idx_heads = num_kv_heads, nvidia/model.py:427-431;
+    # tp > total_kv (num_idx_heads = num_kv_heads, nvidia/model.py:435-442;
     # MinimaxM3QKVParallelLinearWithIndexer asserts total_num_index_heads ==
     # total_num_kv_heads and rides the KV-head sharding/replication path,
-    # linear.py:1317-1345; index_k is a single head replicated to
-    # every rank). Natively sparse_num_index_heads (4) == num_key_value_heads
-    # (4), so the per-rank emulated counts are reproduced by setting the
-    # config's index-head count to the emulated kv-head count. The indexer
-    # metadata builder derives the same per-rank count from this field
-    # (common/indexer.py:229-239), and the shared top-k buffer as well
-    # (nvidia/model.py:769-781).
+    # model_executor/layers/linear.py:1352-1430; index_k is a single head
+    # replicated to every rank). Natively sparse_num_index_heads (4) ==
+    # num_key_value_heads (4), so the per-rank emulated counts are reproduced
+    # by setting the config's index-head count to the emulated kv-head count.
+    # The indexer metadata builder derives the same per-rank count from this
+    # field (common/indexer.py:225-235), and the shared top-k buffer as well
+    # (nvidia/model.py:831-844).
     sparse_cfg = dict(hf_config.sparse_attention_config)
     sparse_cfg["sparse_num_index_heads"] = num_kv_heads
-
-    # KERNEL LIMIT GUARD (verified on the 0.29 full-grid sweep):
-    # the M3 DECODE indexer-score Triton kernel tiles BLOCK_SIZE_HQ =
-    # num_idx_heads * BLOCK_SIZE_Q through tl.arange, whose range must be a
-    # power of 2 (models/minimax_m3/common/ops/sparse_attn.py — the sweep's
-    # heads 48/96 shard to idx_heads 3/6 and fail compilation
-    # deterministically). Serving cannot reach these points either: real tp
-    # in {1,2,4,8} on the native 4 index heads yields idx_heads in {4,2,1},
-    # always a power of 2. Raise the classified error up front instead of
-    # burning a Triton compile per case.
-    # SCOPE (0.30 full-grid sweep): the limit is the decode
-    # path's. On 0.29 the 48/96-head failures were every generation cell and
-    # ONLY the isl=1 context cells (the single-query-token context case runs
-    # the decode scorer): 736/736 generation, 72/976 context per head, while
-    # context isl >= 16 collected 904/904 rows per head. A guard on the head
-    # count alone dropped those 1808 prefill rows on 0.30 — so it now fires
-    # only where the decode scorer runs (generation, or a one-token query).
-    _limit = msa_decode_scorer_kernel_limit(
-        int(sparse_cfg["sparse_num_index_heads"]), num_heads, is_context=is_context, query_len=query_len
-    )
-    if _limit:
-        raise ValueError(_limit)
     hf_config.sparse_attention_config = sparse_cfg
 
     # Reserved top-k indices buffer shared by the indexer and the attend —
-    # mirrors MiniMaxM3Model.__init__ (nvidia/model.py:769-781):
-    # shape [num_index_heads, tokens padded to a multiple of 4 for
-    # build_k2q_csr's int4 loads, sparse_topk_blocks], int32.
+    # mirrors MiniMaxM3Model.__init__ (nvidia/model.py:826-844): token-major
+    # [tokens padded to a multiple of 4 for build_k2q_csr's int4 loads,
+    # num_index_heads, sparse_topk_blocks], int32. The indexers write
+    # buf[:num_tokens] (nvidia/indexer_msa.py:347-355; the Triton indexer
+    # writes its transposed view, common/indexer.py:430-433).
     max_num_batched_tokens = vllm_config.scheduler_config.max_num_batched_tokens
-    # vLLM dd10e03f9 changes HTK -> THK (nvidia/model.py:796-803).
-    # Its indexer writes buf[:num_tokens] (nvidia/indexer_msa.py:340-347),
-    # so retaining 0.24's head-first allocation gives the wrong output shape.
     topk_indices_buffer = torch.empty(
-        *_msa_topk_buffer_shape(num_kv_heads, max_num_batched_tokens, sparse_cfg["sparse_topk_blocks"], vllm_version),
+        *_msa_topk_buffer_shape(num_kv_heads, max_num_batched_tokens, sparse_cfg["sparse_topk_blocks"]),
         dtype=torch.int32,
         device=device,
     )
@@ -377,7 +346,7 @@ def _create_msa_attention_module(
     # MiniMaxM3SparseAttention.__init__ reads the current vllm config for
     # attention_config.indexer_kv_dtype and registers itself (and its
     # indexer side cache) in compilation_config.static_forward_context
-    # (nvidia/model.py:481-534, common/indexer.py:145-148).
+    # (nvidia/model.py:491-557, common/indexer.py:136-139).
     from vllm.models.minimax_m3.nvidia.model import MiniMaxM3SparseAttention
     from vllm.utils.torch_utils import set_default_torch_dtype
 
@@ -432,23 +401,105 @@ def _create_msa_attention_module(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _serving_kv_block_size(vllm_config, attn_module) -> int:
+    """The KV page serving runs the sparse layer and its index cache with.
+
+    After loading the model, serving sizes the cache-manager block with the
+    platform's update_block_size_for_backend (v1/executor/uniproc_executor.py:75,
+    multiproc_executor.py:701): without --block-size, the smallest size every
+    non-SSM attention backend accepts (platforms/interface.py:750-794,
+    _preferred_block_size_for_backends :700-748). Each group's kernel page is
+    select_common_block_size of that block, its backend and spec
+    (v1/worker/utils.py:284-300). Both M3 sparse backends accept only 128
+    (common/sparse_attention.py:162-165, common/indexer.py:93-95), and the
+    dense layers' backend, which serving also counts, accepts 128 too. One
+    block table serves both caches here, as serving's two groups share the
+    block size.
+    """
+    from vllm.platforms import current_platform
+    from vllm.v1.worker.utils import select_common_block_size
+
+    current_platform.update_block_size_for_backend(vllm_config)
+    pages = {
+        int(
+            select_common_block_size(
+                vllm_config.cache_config.block_size, [layer.get_attn_backend()], [layer.get_kv_cache_spec(vllm_config)]
+            )
+        )
+        for layer in (attn_module, attn_module.indexer.index_cache)
+    }
+    if len(pages) != 1:
+        raise RuntimeError(f"MSA main and index caches resolved different KV pages {sorted(pages)}")
+    return pages.pop()
+
+
+def _serving_kv_cache_layout(vllm_config, attn_module):
+    """The physical KV-cache layout serving resolves for MiniMax-M3.
+
+    The engine resolves one layout for the whole model from every attention
+    backend's supported set (v1/engine/core.py:296-300 ->
+    resolve_kv_cache_layout, v1/attention/backends/utils.py:209-244,259-349).
+    Besides the sparse layers' two backends (no declared set) that includes
+    the dense layers 0-2, whose generic Attention picks its backend with
+    get_attn_backend(head_dim, model dtype, kv_cache_dtype)
+    (nvidia/model.py:355-362, model_executor/layers/attention/attention.py:
+    348-360): FLASHINFER on the SM100 family declares LBHNC/BLHNC
+    (v1/attention/backends/flashinfer.py:603-610), so the model resolves
+    LBHNC there; elsewhere nothing declares, and the main and index caches'
+    different head shapes keep only block-compact layouts of the default
+    preference, so it resolves LBNHC (utils.py:195-202). The kernels read the
+    cache through its strides (fused insert csrc/
+    fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu:1053-1123, Triton
+    common/ops/sparse_attn.py).
+    """
+    from vllm.v1.attention.backends.utils import get_supported_kv_cache_layouts, resolve_kv_cache_layout
+    from vllm.v1.attention.selector import get_attn_backend
+
+    model_config = vllm_config.model_config
+    index_cache = attn_module.indexer.index_cache
+    with set_current_vllm_config(vllm_config):
+        dense_backend = get_attn_backend(
+            model_config.hf_text_config.head_dim, model_config.dtype, vllm_config.cache_config.cache_dtype
+        )
+    backends = [dense_backend, attn_module.get_attn_backend(), index_cache.get_attn_backend()]
+    supported = [layout.name for layout in get_supported_kv_cache_layouts(backends)]
+    specs = [attn_module.get_kv_cache_spec(vllm_config), index_cache.get_kv_cache_spec(vllm_config)]
+    return resolve_kv_cache_layout(vllm_config, [supported], specs)
+
+
+def _layer_kv_cache(spec, num_blocks: int, layout, device):
+    """One layer's zeroed cache: the logical [B, H, N, C] view over memory in ``layout``.
+
+    Serving views a flat byte buffer per layer as [B, H, N, C] with C in bytes
+    (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:319-335) in
+    the resolved physical axis order, then as spec.dtype (create_kv_cache_views,
+    :377-441). For a single layer that is this permuted allocation.
+    """
+    from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
+
+    logical = compute_layer_kv_cache_shape_bytes(spec, num_blocks)
+    order = layout.layer_view_order
+    physical = torch.zeros([logical[axis] for axis in order], dtype=torch.uint8, device=device)
+    return physical.permute(*(order.index(axis) for axis in range(len(order)))).view(spec.dtype)
+
+
 def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
     """Reserve block 0 as the null block and derive the slot mapping from the
     block table.
 
     Serving computes each group's slot mapping from that group's block table
     as ``block_id * block_size + intra_block_offset`` for the tokens being
-    written (BlockTable.compute_slot_mapping, called from _prepare_inputs —
-    gpu_model_runner.py:2126), with block id 0 reserved as the null
-    block. create_common_attn_metadata's arange path starts at block 0 and
+    written (_compute_slot_mappings_kernel, v1/worker/gpu/block_table.py:
+    341-348), with block 0 taken as the null block (v1/core/block_pool.py:
+    187). create_common_attn_metadata's arange path starts at block 0 and
     fills slot_mapping with a plain arange, so rebase both here.
     """
     block_table = common_attn_metadata.block_table_tensor
     block_table += 1
 
     query_start_loc = common_attn_metadata.query_start_loc_cpu
-    # 0.30: property removed; seq_lens - query_lens on device
-    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens)
+    # seq_lens - query_lens on device (CommonAttentionMetadata
+    # .compute_num_computed_tokens, v1/attention/backend.py:486-491)
     context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()
     slot_mapping = common_attn_metadata.slot_mapping
     device = slot_mapping.device
@@ -461,14 +512,11 @@ def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
     return int(block_table.max().item()) + 1  # blocks needed incl. null block
 
 
-def _msa_topk_buffer_shape(num_heads: int, max_tokens: int, topk: int, version: str) -> tuple[int, int, int]:
-    """Match the serving allocation's versioned index-head/token axis order."""
-    from packaging.version import Version
-
+def _msa_topk_buffer_shape(num_heads: int, max_tokens: int, topk: int) -> tuple[int, int, int]:
+    """Serving's allocation: token-major, tokens padded to a multiple of 4
+    (MiniMaxM3Model.__init__, nvidia/model.py:826-844 @v0.32.0)."""
     padded_tokens = (max_tokens + 3) // 4 * 4
-    if Version(version) >= Version("0.25.0"):
-        return padded_tokens, num_heads, topk
-    return num_heads, padded_tokens, topk
+    return padded_tokens, num_heads, topk
 
 
 def _msa_query_positions(batch_size: int, seq_len: int, is_context: bool, prefix_len: int = 0) -> list[int]:
@@ -490,17 +538,35 @@ def _create_kv_caches_and_metadata(
     """Create the main + indexer KV caches and both metadata objects via the
     framework's own specs and metadata builders, mirroring serving.
 
-    Metadata: serving builds one metadata per KV-cache group via the layer's
-    backend builder over CommonAttentionMetadata and hands the model a
+    Metadata: serving (Model Runner V2, the default: config/vllm.py:703-738)
+    builds one metadata per KV-cache group via the layer's backend builder
+    over CommonAttentionMetadata (build_attn_metadata,
+    v1/worker/gpu/attn_utils.py:457-581) and hands the model a
     ``{layer_name: metadata}`` dict plus a per-layer slot-mapping dict
-    (gpu_model_runner._get_slot_mappings, :3972-4045, passed into
-    set_forward_context at :4315-4324). The cached prefix travels as
+    (build_slot_mappings_by_layer, :446-455, passed into set_forward_context
+    at v1/worker/gpu/model_runner.py:2015-2024). The cached prefix travels as
     num_computed_tokens (context_lens) inside CommonAttentionMetadata; the
     builders derive decode/prefill splits themselves
-    (split_decodes_and_prefills, common/sparse_attention.py:197-203).
+    (split_decodes_and_prefills, common/sparse_attention.py:288-294,
+    common/indexer.py:270-276, nvidia/indexer_msa.py:152-158).
+
+    Deviation (generation, Triton indexer: SM89/90/120): serving replays a
+    uniform decode step of up to its capture ceiling (min(2 * max_num_seqs,
+    1024 on the SM100 family else 512), config/vllm.py:2354-2366) as one FULL
+    CUDA graph whose metadata was built at capture with max_seq_len =
+    max_model_len (v1/worker/gpu/model_states/default.py:196-201). The Triton
+    indexer splits its decode top-k by that bound (chunk_blocks from
+    max_block = cdiv(max_seq_len, 128), common/ops/index_topk.py:922,951-958,
+    via common/indexer.py:452-467). These rows build decode metadata with the
+    case's own max_seq_len, so below max_model_len the top-k work is spread
+    over more CTAs than serving's (rows faster than serving there; equal at
+    max_model_len). The SM100 indexer ignores max_seq_len (index_decode_score
+    .py:476; fixed MAX_K_TILES, nvidia/indexer_msa.py:62), and so do the
+    attends. Retire by building decode metadata at serving's max_model_len
+    once its deployment value is settled.
     """
     torch_device = torch.device(device)
-    block_size = vllm_config.cache_config.block_size
+    block_size = _serving_kv_block_size(vllm_config, attn_module)
 
     prefix_len = int(prefix_len) if is_context else 0
 
@@ -525,11 +591,11 @@ def _create_kv_caches_and_metadata(
         )
 
     common_attn_metadata = create_common_attn_metadata(batch_spec, block_size, torch_device, arange_block_indices=True)
-    # vLLM dd10e03f9 supplies CommonAttentionMetadata.positions in
-    # gpu_model_runner.py:2393; its values are cached-token count plus the
-    # query-local offset (:1946-1949). MSA's new indexer consumes this field
-    # at models/minimax_m3/nvidia/indexer_msa.py:169-172. The field already
-    # exists in 0.24.0; leaving it None fails the 0.25.0 MSA builder.
+    # Serving passes the step's token positions (cached-token count plus the
+    # query-local offset, _prepare_pos_seq_lens_kernel, v1/worker/gpu/
+    # input_batch.py:348-381) into CommonAttentionMetadata.positions
+    # (v1/worker/gpu/attn_utils.py:540). The SM100 indexer builder derives each
+    # token's causal page count from it (nvidia/indexer_msa.py:168-172).
     common_attn_metadata.positions = torch.tensor(
         _msa_query_positions(batch_size, seq_len, is_context, prefix_len),
         dtype=torch.long,
@@ -537,48 +603,37 @@ def _create_kv_caches_and_metadata(
     )
     num_blocks = _rebase_block_table_and_slots(common_attn_metadata, block_size)
 
-    # Main paged K/V cache. 0.29 removed AttentionBackend.get_kv_cache_shape;
-    # the shape contract moved into the generic spec pipeline: serving
-    # allocates a flat byte buffer and views each layer as the 4D logical
-    # [B, H, N, C] page, C in bytes (compute_layer_kv_cache_shape_bytes,
-    # v1/kv_cache_interface.py:253-269; the per-layer element view is
-    # cache_logical.view(spec.dtype), create_kv_cache_views :371-376). For
-    # M3's main cache the spec is FullAttentionSpec (nvidia/model.py:556-565)
-    # so the element view is [num_blocks, num_kv_heads, block_size,
-    # 2*head_size] — merged K|V on the last dim: the impl splits it back with
+    # Both caches in serving's physical layout (_serving_kv_cache_layout). The
+    # main cache's spec is FullAttentionSpec (nvidia/model.py:562-571), so the
+    # element view is [num_blocks, num_kv_heads, block_size, 2*head_size] —
+    # merged K|V on the last dim: the MSA impl splits it back with
     # k_cache, v_cache = kv_cache.split(head_size, dim=-1)
-    # (nvidia/sparse_attention_msa.py:277) and the fused insert kernel reads
-    # the block size off dim 2 (kv_cache.size(2), nvidia/model.py:635).
-    # Dtype semantics are unchanged: spec.dtype is bf16 for "auto", uint8
-    # storage for "fp8"; the impl reinterprets uint8 as e4m3 at use
-    # (nvidia/sparse_attention_msa.py:221-222).
-    from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
-
+    # (nvidia/sparse_attention_msa.py:386) and the fused insert kernel reads
+    # the block size off dim 2 (kv_cache.size(2), nvidia/model.py:642).
+    # spec.dtype is bf16 for "auto" and uint8 storage for "fp8"
+    # (kv_cache_dtype_str_to_dtype, nvidia/model.py:496-498); the impls
+    # reinterpret uint8 as e4m3 at use (nvidia/sparse_attention_msa.py:277-278,
+    # common/sparse_attention.py:479-481).
+    layout = _serving_kv_cache_layout(vllm_config, attn_module)
     backend_cls = attn_module.get_attn_backend()
     kv_cache_spec = attn_module.get_kv_cache_spec(vllm_config)
-    kv_cache = torch.zeros(
-        compute_layer_kv_cache_shape_bytes(kv_cache_spec, num_blocks),
-        dtype=torch.uint8,
-        device=torch_device,
-    ).view(kv_cache_spec.dtype)
+    kv_cache = _layer_kv_cache(kv_cache_spec, num_blocks, layout, torch_device)
 
     # Indexer key side-cache: MLAAttentionSpec, key-only — one head slot, one
-    # vector per token (common/indexer.py:144-151), logical
+    # vector per token (common/indexer.py:145-153), logical
     # [num_blocks, 1, block_size, head_size] after the dtype view. Serving
     # hands this 4D view to the layer's bind_kv_cache, which squeezes the
-    # H=1 dim (common/indexer.py:140-142); binding below mirrors that.
+    # H=1 dim (common/indexer.py:141-143); binding below mirrors that.
     index_cache_layer = attn_module.indexer.index_cache
     index_backend_cls = index_cache_layer.get_attn_backend()
     index_spec = index_cache_layer.get_kv_cache_spec(vllm_config)
-    index_kv_cache = torch.zeros(
-        compute_layer_kv_cache_shape_bytes(index_spec, num_blocks),
-        dtype=torch.uint8,
-        device=torch_device,
-    ).view(index_spec.dtype)
+    index_kv_cache = _layer_kv_cache(index_spec, num_blocks, layout, torch_device)
 
+    # common_prefix_len 0 as serving's AttentionGroup.build_metadata passes
+    # (v1/worker/utils.py:341-352); the M3 builders do not read it.
     main_builder = backend_cls.get_builder_cls()(kv_cache_spec, [_ATTN_LAYER_NAME], vllm_config, torch_device)
     attn_metadata = main_builder.build(
-        common_prefix_len=prefix_len,
+        common_prefix_len=0,
         common_attn_metadata=common_attn_metadata,
     )
 
@@ -586,7 +641,7 @@ def _create_kv_caches_and_metadata(
         index_spec, [_INDEX_CACHE_LAYER_NAME], vllm_config, torch_device
     )
     index_metadata = index_builder.build(
-        common_prefix_len=prefix_len,
+        common_prefix_len=0,
         common_attn_metadata=common_attn_metadata,
     )
 
@@ -652,9 +707,9 @@ def run_msa_module(
         kv_cache_dtype=kv_cache_dtype,
         max_seq_len=prefix_len + seq_len,
         max_batch_size=batch_size,
+        max_query_len=seq_len if is_context else 1,
         is_context=is_context,
         device=device,
-        query_len=seq_len if is_context else 1,
     )
 
     # 2. Create KV caches + metadata via the framework's builders.
@@ -671,11 +726,11 @@ def run_msa_module(
 
     # 2b. Bind the caches to the registered layers exactly as serving does:
     # forward_context[layer_name].bind_kv_cache(kv_cache)
-    # (v1/worker/utils.py:622). The main layer's bind is the
+    # (v1/worker/utils.py:880). The main layer's bind is the
     # AttentionLayerBase default (stores the view as-is,
-    # model_executor/layers/attention_layer_base.py:26-32); the indexer's
+    # model_executor/layers/attention_layer_base.py:27-33); the indexer's
     # override squeezes the H=1 head dim, [B,1,N,C] -> [B,N,C]
-    # (common/indexer.py:140-142).
+    # (common/indexer.py:141-143).
     forward_ctx = vllm_config.compilation_config.static_forward_context
     forward_ctx[_ATTN_LAYER_NAME].bind_kv_cache(kv_cache)
     forward_ctx[_INDEX_CACHE_LAYER_NAME].bind_kv_cache(index_kv_cache)
@@ -683,11 +738,12 @@ def run_msa_module(
     # 2c. Prove the requested KV precision actually reached the framework
     # path — a benchmark that silently ran bf16 under an "fp8" label would be
     # wrong data, worse than a crash. For "fp8": the layer must have been
-    # built with cache_dtype "fp8" (nvidia/model.py:483-488), the
-    # cache storage must be the fp8 uint8 layout (utils/torch_utils.py:38),
+    # built with cache_dtype "fp8" (nvidia/model.py:493-498), the
+    # cache storage must be the fp8 uint8 layout (utils/torch_utils.py:39),
     # and the framework-selected impl must be in fp8 mode (use_fp8_kv,
-    # common/sparse_attention.py:298-306). The indexer side-cache stays bf16
-    # in both combos (default indexer_kv_dtype, config/attention.py:55).
+    # common/sparse_attention.py:412). The indexer side-cache stays bf16
+    # in both combos (indexer_kv_dtype "auto" resolves to the layer's "bf16",
+    # config/attention.py:88,163-167; nvidia/model.py:507-509).
     want_fp8_kv = kv_cache_dtype == "fp8"
     expected_cache_dtype = torch.uint8 if want_fp8_kv else torch.bfloat16
     impl_use_fp8_kv = bool(getattr(attn_module.impl, "use_fp8_kv", False))
@@ -704,8 +760,9 @@ def run_msa_module(
         )
 
     # 3. Input tensors. Positions are absolute (cached prefix precedes the
-    # current chunk); generation decodes token seq_len-1 with seq_len-1
-    # cached tokens.
+    # current chunk); generation decodes position seq_len with seq_len
+    # cached tokens (the KV coordinate contract in
+    # _create_kv_caches_and_metadata).
     hidden_size = vllm_config.model_config.hf_text_config.hidden_size
     torch_device = torch.device(device)
     if is_context:
@@ -730,11 +787,13 @@ def run_msa_module(
 
     # 4. Forward context: metadata + slot-mapping dicts keyed by layer name,
     # exactly the structures serving passes into set_forward_context
-    # (gpu_model_runner.py:4315-4324 with _get_slot_mappings :3972-4045).
+    # (v1/worker/gpu/model_runner.py:2015-2024 with
+    # build_slot_mappings_by_layer, v1/worker/gpu/attn_utils.py:446-455).
     # The model consumes slot_mapping[self.layer_name] and
-    # slot_mapping[indexer.index_cache.prefix] (nvidia/model.py:574-583) and
+    # slot_mapping[indexer.index_cache.prefix] (nvidia/model.py:605-614) and
     # attn_metadata[layer_name] inside the impls
-    # (common/sparse_attention.py:337-340, common/indexer.py:395-398).
+    # (nvidia/sparse_attention_msa.py:253-256, common/sparse_attention.py:
+    # 458-461, common/indexer.py:415-418, nvidia/indexer_msa.py:268-271).
     attn_metadata_dict = {
         _ATTN_LAYER_NAME: attn_metadata,
         _INDEX_CACHE_LAYER_NAME: index_metadata,
@@ -766,9 +825,32 @@ def run_msa_module(
             raise
 
         # 6. Benchmark. CUDA graph capture is mandatory (allow_graph_fail=False):
-        # the M3 Triton kernels are capture-safe (no host syncs; the builders
-        # declare AttentionCGSupport.UNIFORM_BATCH, common/sparse_attention.py
-        # 161-167, common/indexer.py:214-219), verified on SM90.
+        # every builder declares AttentionCGSupport.UNIFORM_BATCH
+        # (common/sparse_attention.py:242, common/indexer.py:212,
+        # nvidia/indexer_msa.py:116) and the forward has no host syncs (the
+        # SM100 prefill plan's .tolist() runs in the builder,
+        # nvidia/indexer_msa.py:198-221). The SM100 prefill kernels come from
+        # the fmha_sm100 package, pinned at 968061ab (f355c37e at 0.30.0;
+        # cmake/external_projects/fmha_sm100.cmake:20), whose capture safety
+        # only a GPU run shows.
+        #
+        # Deviation (graph mode): serving runs MiniMaxM3SparseForCausalLM on
+        # breakable CUDA graphs with torch.compile off (config/vllm.py:74-102,
+        # 812-840). A step with prefill tokens of up to the capture ceiling
+        # (min(2 * max_num_seqs, 1024 on the SM100 family else 512),
+        # config/vllm.py:2354-2366) replays graph segments around an eager
+        # break at _run_attention (indexer + attend, @eager_break_during_capture,
+        # nvidia/model.py:657-675; compilation/breakable_cudagraph.py:101-118,
+        # 198-211), and a larger step runs eagerly. A uniform decode step of up
+        # to the ceiling replays one FULL graph, attention included
+        # (breakable_cudagraph.py:108-111); a larger one runs eagerly. This
+        # collector times every case as one CUDA graph, so context rows leave
+        # out the host launch gaps of the eager indexer and attend, and
+        # generation rows above the ceiling (batch 1024 off the SM100 family)
+        # leave out the module's launch gaps: those rows are lower than
+        # serving by the launch overhead, largest for small steps. The kernels
+        # and their arguments match (no capture-dependent branch in the M3
+        # path). Retired by the pending measurement-method decision.
         def kernel_func():
             attn_module.forward(positions, hidden_states)
 
@@ -795,7 +877,8 @@ def run_msa_module(
         op_name = f"msa_{phase}_module"
 
         # Ground truth: the impl class the framework's own dispatch selected at
-        # construction (select_main_impl_cls — Triton off-SM100, MSA on SM100).
+        # construction (select_main_backend_and_impl_cls — Triton off the
+        # SM100 family, MSA on it; common/sparse_attention.py:525-587).
         kernel_source = type(attn_module.impl).__name__
 
         _persist_msa_row(
@@ -845,10 +928,10 @@ def run_msa_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    # Serving executes model forward under inference mode (vLLM dd10e03f9,
-    # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
-    # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13
-    # mutates a cached workspace that may have been created by the dry run.
+    # Serving executes model forward under inference mode
+    # (v1/worker/gpu/model_runner.py:1718-1719, execute_model). Keep module
+    # initialization, dry runs, graph warmup and timing in the SAME mode: a
+    # cached workspace created by the dry run is mutated later.
     with torch.inference_mode():
         return run_msa_module(
             seq_len=seq_len,

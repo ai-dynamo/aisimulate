@@ -76,6 +76,108 @@ def fake_flashinfer(monkeypatch):
     return types.SimpleNamespace(events=events, active=active, tuner=_FakeTuner)
 
 
+def _hybrid_buckets(max_num_tokens, min_num_tokens=1):
+    """flashinfer 0.7.0.post1 fused_moe/utils.py get_hybrid_num_tokens_buckets, restated."""
+    buckets = []
+    m = max(min_num_tokens, 1)
+    while m <= min(max_num_tokens, 256):
+        buckets.append(m)
+        m *= 2
+    buckets += list(range(512, min(max_num_tokens, 2048) + 1, 256))
+    buckets += list(range(2560, min(max_num_tokens, 4096) + 1, 512))
+    m = 8192
+    while m <= max_num_tokens:
+        buckets.append(m)
+        m *= 2
+    if not buckets or buckets[-1] != max_num_tokens:
+        buckets.append(max_num_tokens)
+    return tuple(sorted(set(buckets)))
+
+
+def _hybrid_bucket_uncapped(x):
+    """flashinfer 0.7.0.post1 fused_moe/utils.py map_to_hybrid_bucket_uncapped, restated."""
+    if x <= 0:
+        return 1
+    if x <= 256:
+        return 1 << (x - 1).bit_length()
+    if x <= 2048:
+        return -(-x // 256) * 256
+    if x <= 4096:
+        return -(-x // 512) * 512
+    return 1 << (x - 1).bit_length()
+
+
+def _hybrid_bucket(x, max_num_tokens):
+    """flashinfer 0.7.0.post1 fused_moe/utils.py map_to_hybrid_bucket, restated."""
+    if x <= 0:
+        return 1
+    if x >= max_num_tokens:
+        return max_num_tokens
+    return min(_hybrid_bucket_uncapped(x), max_num_tokens)
+
+
+@pytest.fixture
+def fake_flashinfer_buckets(monkeypatch):
+    utils = types.ModuleType("flashinfer.fused_moe.utils")
+    utils.get_hybrid_num_tokens_buckets = _hybrid_buckets
+    utils.map_to_hybrid_bucket = _hybrid_bucket
+    utils.map_to_hybrid_bucket_uncapped = _hybrid_bucket_uncapped
+    for name in ("flashinfer", "flashinfer.fused_moe"):
+        monkeypatch.setitem(sys.modules, name, sys.modules.get(name) or types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "flashinfer.fused_moe.utils", utils)
+
+
+@pytest.mark.parametrize(
+    ("num_tokens", "bucket"),
+    [(1, 1), (3, 4), (48, 64), (160, 256), (257, 512), (320, 512), (769, 1024), (2305, 2560), (6144, 8192)],
+)
+def test_tuning_bucket_is_the_next_hybrid_bucket_up(fake_flashinfer_buckets, num_tokens, bucket):
+    # No ceiling: serving's warm-up covers every count (vLLM: max_num_batched_tokens).
+    assert helper.flashinfer_tuning_bucket(num_tokens) == bucket
+    assert helper.flashinfer_tuning_bucket(num_tokens, 65536) == bucket
+
+
+def test_tuning_bucket_matches_the_vllm_moe_plan_points(fake_flashinfer_buckets):
+    plan = (1, 2, 48, 80, 96, 128, 160, 192, 320, 384, 768, 1536, 3072, 6144, 12288, 65536)
+    tuned = [helper.flashinfer_tuning_bucket(m, 65536) for m in plan]
+    assert tuned == [1, 2, 64, 128, 128, 128, 256, 256, 512, 512, 768, 1536, 3072, 8192, 16384, 65536]
+
+
+@pytest.mark.parametrize(
+    ("num_tokens", "max_tuned", "bucket"),
+    [
+        (512, 512, 512),
+        (300, 512, 512),
+        (513, 512, None),  # maps to 768, past a 512 warm-up: serving runs the fallback
+        (150, 160, None),  # a non-hybrid ceiling is profiled, but lookups map 150 to 256
+        (160, 160, None),  # ... and 160 itself to 256
+        (100, 160, 128),
+    ],
+)
+def test_tuning_bucket_is_none_past_the_tuned_list(fake_flashinfer_buckets, num_tokens, max_tuned, bucket):
+    assert helper.flashinfer_tuning_bucket(num_tokens, max_tuned) == bucket
+
+
+@pytest.mark.parametrize(
+    ("num_tokens", "tune_max", "max_tuned", "bucket"),
+    [
+        # FlashInferExperts / TRT-LLM-gen ops hand FlashInfer a tune_max_num_tokens and
+        # every larger count runs that bucket's tactic.
+        (6144, 8192, 65536, 8192),
+        (12288, 8192, 65536, 8192),
+        (65536, 8192, 65536, 8192),
+        (320, 8192, 65536, 512),
+        # SGLang's CUTLASS runner: the warm-up profiles the list up to the same cap.
+        (12288, 4096, 4096, 4096),
+        (3000, 4096, 4096, 3072),
+        # A cap that is not a bucket of the warm-up list has no tuned entry.
+        (20000, 10000, 65536, None),
+    ],
+)
+def test_tuning_bucket_is_clamped_to_the_ops_tune_max(fake_flashinfer_buckets, num_tokens, tune_max, max_tuned, bucket):
+    assert helper.flashinfer_tuning_bucket(num_tokens, max_tuned, tune_max_num_tokens=tune_max) == bucket
+
+
 def test_tunes_once_at_the_exact_token_count_then_times_under_lookup_only(fake_flashinfer):
     seen: list[tuple] = []
 
@@ -153,11 +255,16 @@ def test_both_moe_collectors_wrap_their_timing_in_the_tuning_context():
     from pathlib import Path
 
     collector_root = Path(helper.__file__).resolve().parent
-    for backend in ("vllm", "sglang"):
+    # vLLM tunes at the hybrid bucket its warmup profiles for num_tokens
+    # (helper.flashinfer_tuning_bucket).
+    for backend, call in (
+        ("vllm", "flashinfer_autotuned(tune_tokens, "),
+        ("sglang", "flashinfer_autotuned(tune_tokens, "),
+    ):
         source = (collector_root / backend / "collect_moe.py").read_text(encoding="utf-8")
         assert "flashinfer_autotuned," in source, backend
-        assert source.count("flashinfer_autotuned(num_tokens, ") == 1, backend
-        tuned_at = source.index("flashinfer_autotuned(num_tokens, ")
+        assert source.count(call) == 1, backend
+        tuned_at = source.index(call)
         timed_at = source.index("benchmark_with_power(", tuned_at)
         assert 0 < timed_at - tuned_at < 400, f"{backend}: tuning context must directly wrap the timing"
 

@@ -1,19 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""DeepSeek-V4 and GLM-5.3-Flash (Glm5Next) mHC module collector for SGLang."""
+"""DeepSeek-V4 mHC (manifold hyper-connection) module collector for SGLang."""
 
-# Requires an SGLang build with DeepSeek-V4 support. Stock lmsysorg/sglang:v*
-# images may not include the required deepseek_v4 modules; use a DeepSeek-V4
-# capable image or put a matching SGLang source tree on PYTHONPATH.
 from __future__ import annotations
 
-# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# Each architecture is additionally gated by _ARCHITECTURE_COMPAT
-# (DeepSeek-V4 on 0.5.21 via the native DeepseekV4Config).
+# Each architecture is additionally gated by _ARCHITECTURE_COMPAT.
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 import argparse
 import copy
@@ -26,8 +20,6 @@ from collections.abc import Sequence
 from importlib.metadata import version as get_version
 
 import torch
-
-os.environ.setdefault("SGLANG_APPLY_CONFIG_BACKUP", "none")
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if THIS_DIR not in sys.path:
@@ -53,47 +45,72 @@ DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
 PERF_FILENAME = PerfFile.MHC_MODULE.value
 
 DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
-GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 
 # Per-architecture audited SGLang releases; anything else raises
 # MhcRuntimeNotAuditedError (a classified failure) instead of running.
 _ARCHITECTURE_COMPAT = {
-    DSV4_ARCHITECTURE: "sglang==0.5.21",
-    # GLM-5.3-Flash (0.5.20 only) retired its route is git history
-    # (main at c540ff90a). 0.5.21 moved MHCState to layer_boundary, removed
-    # ParallelState/init_torch_distributed and fuses post+pre for T<=16, so the
-    # GLM path needs a port before it is re-admitted.
+    DSV4_ARCHITECTURE: "sglang==0.5.23",
+    # GLM-5.3-Flash has no route (collector/skips.py); its 0.5.20 route is git
+    # history (main at c540ff90a). Serving runs its mHC through
+    # layers/layer_boundary/residual/mhc.py MHCState and fuses post+pre up to 16
+    # tokens (models/glm5_next.py:149 @v0.5.23), so it needs a port first.
 }
 
-# GLM-5.3-Flash mHC call sites in SGLang 0.5.20 serving
-# (lmsysorg/sglang arm64 sha256:b0d8718a..., python/sglang/srt/models/glm5_next.py
-# sha256 12c5157b..., layers/communicator_mhc.py sha256 d1b8b711...,
-# kernels/ops/layernorm/mhc.py sha256 37c79625...). Every decoder layer builds
-# an MHCLayerCommunicator (glm5_next.py L694-705) whose MHCState runs, per layer:
-#   attention pre:  hc_attn_pre with input_layernorm as out_norm
-#                   (communicator_mhc.py L84-92, called from prepare_attn L474)
-#   attention post: hc_post (L97) then FFN pre: hc_ffn_pre with
-#                   post_attention_layernorm (L98-105, prepare_mlp)
-#   FFN post:       hc_post (mlp_combine L107-108, postprocess_layer)
-# plus hc_expand on the first layer (L472) and hc_contract on the last
-# (L302/L345/L361). There is no fused post->pre call for this model
-# (SGLANG_OPT_FUSE_MHC_POST_PRE is read only by deepseek_v4 code). Per forward
-# with L=45 layers: pre=2L=90, post=2L=90, expand=1, contract=1. The decoder
-# layer's _hc_pre (glm5_next.py L709-725) calls kernels/ops/layernorm/mhc.py
-# hc_pre with post_mult_value=2.0 and out_norm_weight, and hc_pre dispatches on
-# SGLANG_OPT_USE_TILELANG_MHC_PRE / SGLANG_OPT_DEEPGEMM_HC_PRENORM /
-# SGLANG_OPT_USE_TILELANG_MHC_POST (mhc.py L1034, L1838, L1877; defaults True,
-# environ.py L1468-1470). The only server-args hooks that change them are the
-# DeepseekV4 SM120/HIP branches (arg_groups/model_hook.py L372-414); the
-# Glm5Next branch (L187) leaves them at their defaults, so the collector
-# publishes real ServerArgs and records the resolved values.
+# DeepSeek-V4 mHC in SGLang 0.5.23 CUDA serving. V4 configs leave
+# hc_pre_from_prev_sublayer False (configs/deepseek_v4.py:135; the lagged V4.1
+# scheme is collect_dsv41_module.py's), and DeepseekV4CudaDecoderLayer
+# (models/deepseek_v4.py:3553) runs each hyper-connection through the residual
+# read and update that models/deepseek_v4_boundary.py declares (stages,
+# L376-457):
+#   read    the stack's first read, layer 0 attention (layer_boundary/prepare.py:450):
+#           HcReadCall.read (L204-263) -> layer.hc_pre with the sublayer's RMSNorm
+#           (deepseek_v4.py:3345-3503), then that norm separately when hc_pre did
+#           not fold it in;
+#   seam    every other read, attention -> FFN inside a layer and FFN -> the next
+#           layer's attention (prepare.py:173, 451): HcReadCall.update_and_read
+#           (L265-312). With use_fused_mhc_post_pre (deepseek_v4.py:3191-3196; on
+#           for every CUDA SM by default, deepseek_common/amd/deepseek_v4_fused_mhc.py:70-101,
+#           environ.py:1819-1823, arg_groups/model_hook.py:489-494 on SM120) the
+#           previous sublayer's post and this read run as one
+#           apply_mhc_post_pre_boundary (L396-457) -> kernels/ops/layernorm/mhc.py
+#           mhc_fused_post_pre (L1608-1861);
+#   post    the last FFN's post: FinalRead -> HcUpdate.update -> layer.hc_post
+#           (deepseek_v4.py:3505-3512 -> models/deepseek_v4_mhc.py post, L525-608).
+# A forward of L layers runs 1 read, 2L-1 seams and 1 post.
 #
-# Row convention (shared with the DeepSeek-V4 rows of this table): pre and
-# post rows time both per-layer sites in one graph (num_sites=2), pre
-# including its input/post-attention RMSNorm (fused or not, as dispatched);
-# expand/contract occur once per forward (num_sites=1).
-GLM5NEXT_SGLANG_OPS = ("pre", "post", "expand", "contract")
-_GLM5NEXT_NUM_SITES = {"pre": 2, "post": 2, "expand": 1, "contract": 1}
+# The ops below time those same calls on serving's own HcRead/HcUpdate objects,
+# each over both per-layer sites in one CUDA graph (num_sites=2): "pre" the read,
+# "post" the post, "fused_post_pre" the seam.
+#
+# Deviation (pre and post rows, every SM): the plan collects pre and post only
+# (op_plans._MHC_SITES) and the SDK prices every layer as one pre row plus one
+# post row (src/aisimulate_core/sdk/models/deepseek_v4.py DeepSeekV4MHCModule),
+# i.e. the standalone halves serving runs once per forward, while its 2L-1 seams
+# run the fused kernel. Above 32 tokens a seam is the same launches as post + pre
+# (TileLang post, the prenorm GEMM, big_fuse_with_norm; mhc.py:1734-1832), except
+# that its post runs one CTA per token where the standalone mhc_post splits the
+# hidden dimension over hidden/1024 CTAs up to 256 tokens (mhc.py:1343-1347), so
+# post rows read low from 33 to 256 tokens. Up to 32 tokens a seam is one TileLang
+# kernel computing the post and the prenorm GEMM partials (mhc.py:1693-1731) in
+# place of mhc_post + the standalone prenorm GEMM; direction unmeasured. Retire by
+# collecting fused_post_pre rows (add the site to op_plans._MHC_SITES for
+# DeepSeek-V4) and pricing a DeepSeek-V4 layer like GLM-5.3-Flash's
+# (sdk/models/glm53flash.py: pre on layer 0, fused_post_pre at every seam).
+#
+# Deviation (pre rows, SM120): serving resolves SGLANG_OPT_USE_TILELANG_MHC_PRE
+# and SGLANG_OPT_DEEPGEMM_HC_PRENORM off there (model_hook.py:489-494), so the
+# read takes hc_pre's torch path (deepseek_v4.py:3458-3503), whose
+# hc_pre_torch_impl serving torch.compiles while capturing its decode CUDA graphs
+# (compile_in_capture_mode, model_executor/runner_utils/capture_mode.py:48-59);
+# this collector captures the eager torch ops. Retire by timing decode-sized
+# token counts under model_capture_mode(). collect.py's collect_sglang presets both
+# flags, which keeps that hook from firing in the collector: until it stops, SM120
+# pre rows time the TileLang read serving does not run there.
+DSV4_SGLANG_OPS = ("pre", "post", "fused_post_pre")
+_NUM_SITES = 2
+# mhc_fused_post_pre runs its fused post+GEMM kernel up to this many tokens
+# (kernels/ops/layernorm/mhc.py:1693 fma_token_threshold @v0.5.23).
+_FUSED_POST_GEMM_MAX_TOKENS = 32
 
 
 class MhcRuntimeNotAuditedError(RuntimeError):
@@ -179,26 +196,26 @@ def _patched_model_dir(model_id: str) -> str:
        are NOT needed because the collector always runs with
        ``load_format="dummy"``.
     3. Preset ``SGLANG_DSV4_FP4_EXPERTS`` from ``original_config.expert_dtype``,
-       since SGLang would otherwise probe routed-expert dtype from safetensors.
-       An explicit user-provided env var always wins.
+       since SGLang would otherwise probe routed-expert dtype from safetensors
+       (configs/model_config.py:745-752 @v0.5.23). An explicit user-provided env
+       var always wins.
     """
     original_config = _read_model_config(model_id)
     config = copy.deepcopy(original_config)
 
     num_layers = int(os.environ.get("SGLANG_TEST_NUM_LAYERS", "2"))
     config["num_hidden_layers"] = num_layers  # shrink depth to speed up collector init
-    if config.get("architectures") != ["DeepseekV4ForCausalLM"]:
-        config["architectures"] = ["DeepseekV4ForCausalLM"]
-    # Match collect_dsv4_attn.py: current Transformers does not know a
-    # native deepseek_v4 config, while SGLang selects the V4 model class from
-    # the architectures field.
-    try:
-        # sglang>=0.5.21: native DeepseekV4Config (V4-only fields such as hc_pre_from_prev_sublayer)
-        import sglang.srt.configs.deepseek_v4  # noqa: F401
-
-        config["model_type"] = "deepseek_v4"
-    except ImportError:
-        config["model_type"] = "deepseek_v3"
+    if config.get("architectures") != [DSV4_ARCHITECTURE]:
+        config["architectures"] = [DSV4_ARCHITECTURE]
+    # SGLang's native DeepSeekV4Config (configs/deepseek_v4.py:48-65) carries the
+    # V4-only fields the model reads (hc_pre_from_prev_sublayer, deepseek_v4.py:3129-3133).
+    config["model_type"] = "deepseek_v4"
+    # The mHC parameters and kernels read only hidden_size, hc_mult, the hc_*
+    # fields and rms_norm_eps (deepseek_v4.py:3173-3205), never the MoE geometry.
+    # Shrink the routed experts as collect_dsv4_attn.py does: Pro's two dummy MoE
+    # layers would otherwise hold ~25 GB the largest token counts need.
+    config["n_routed_experts"] = min(int(config["n_routed_experts"]), 8)
+    config["num_experts_per_tok"] = min(int(config["num_experts_per_tok"]), 2)
 
     tmp_dir = os.path.join(
         tempfile.gettempdir(),
@@ -261,6 +278,9 @@ def _load_one_layer_runner(
 
     nccl_port = free_local_port()
 
+    # init_runtime_config publishes the ServerArgs, which resolves them and runs
+    # the DeepSeek-V4 model hook that sets the mHC kernel flags on SM120/HIP
+    # (arg_groups/model_hook.py:470-510) before the layers read them.
     _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     return ModelRunner(
         model_config=model_config,
@@ -277,6 +297,8 @@ def _hidden_size(layer) -> int:
 
 
 def _make_residual(layer, num_tokens: int, device: str) -> torch.Tensor:
+    # The residual streams [T, hc_mult, hidden] in bf16, as hc_broadcast builds
+    # them from the embedding (deepseek_v4.py:4435-4437) and every post rewrites them.
     return torch.randn(
         num_tokens,
         layer.hc_mult,
@@ -286,46 +308,114 @@ def _make_residual(layer, num_tokens: int, device: str) -> torch.Tensor:
     )
 
 
-def _mhc_call_args(layer):
-    # A real DSV4 layer executes mHC once before attention and once before FFN.
-    # This collector folds both calls into the reported pre/post op.
-    return (
-        (layer.hc_attn_fn, layer.hc_attn_scale, layer.hc_attn_base, layer.input_layernorm),
-        (layer.hc_ffn_fn, layer.hc_ffn_scale, layer.hc_ffn_base, layer.post_attention_layernorm),
+def _refuse_unaudited_paths(layer) -> None:
+    """Raise for a layer or flag that sends mHC down a path this collector does not time."""
+    from sglang.srt.environ import envs
+
+    if layer.boundary_pre_from_prev:
+        # The lagged V4.1 scheme (deepseek_v4_mhc.py) is collect_dsv41_module.py's.
+        raise RuntimeError("layer uses the lagged hc_pre_from_prev_sublayer mHC scheme; not a DeepSeek-V4 layer")
+    if envs.SGLANG_OPT_USE_FLASHINFER_MHC.get():
+        # An opt-in (environ.py:1822, default off) that hc_pre and post check
+        # first (deepseek_v4.py:3409, deepseek_v4_mhc.py:571): not what serving runs.
+        raise RuntimeError("SGLANG_OPT_USE_FLASHINFER_MHC is set; the pinned serving path does not take FlashInfer mHC")
+
+
+def _hyper_connections(layer):
+    """The layer's (read, update, norm) for its attention and FFN hyper-connections.
+
+    Built as deepseek_v4_boundary.stages declares them for this layer
+    (L431-453): ``HcRead(layer, attention)`` with the sublayer's norm and
+    ``HcUpdate(layer, attention)``. The reads are bound to no batch and no call:
+    for a non-lagged CUDA layer ``read`` passes the batch only to hc_pre, which
+    reads it on NPU alone (deepseek_v4.py:3378), and ``call`` only rides along in
+    the returned ReadState.
+    """
+    from sglang.srt.models import deepseek_v4_boundary as hc_boundary
+
+    return tuple(
+        (hc_boundary.HcRead(layer, attention).bind(None, None), hc_boundary.HcUpdate(layer, attention), norm)
+        for attention, norm in ((True, layer.input_layernorm), (False, layer.post_attention_layernorm))
     )
 
 
-def _hc_pre_post_inputs(hc_pre_output):
-    if len(hc_pre_output) == 3:
-        return hc_pre_output
-    if len(hc_pre_output) == 4:
-        x, post, comb, _norm_fused = hc_pre_output
-        return x, post, comb
-    raise ValueError(f"unexpected hc_pre output arity: {len(hc_pre_output)}")
-
-
 def _make_kernel(layer, op: str, residual: torch.Tensor):
+    sites = _hyper_connections(layer)
     if op == "pre":
-        call_args = _mhc_call_args(layer)
+        return lambda: [read.read(residual, norm) for read, _update, norm in sites]
 
-        def kernel():
-            return [layer.hc_pre(residual, fn, scale, base, norm=norm) for fn, scale, base, norm in call_args]
-
-        return kernel
+    # Each site's read output stands in for its sublayer's output, the [T, hidden]
+    # bf16 that attention's wo_b and the MoE return; the ReadState carries the
+    # residual and the (post, comb) the post consumes.
+    with torch.no_grad():
+        states = [read.read(residual, norm) for read, _update, norm in sites]
+    torch.cuda.synchronize()
 
     if op == "post":
-        with torch.no_grad():
-            post_inputs = [
-                _hc_pre_post_inputs(layer.hc_pre(residual, fn, scale, base, norm=norm))
-                for fn, scale, base, norm in _mhc_call_args(layer)
-            ]
-        torch.cuda.synchronize()
+        # HcUpdate.update -> post -> layer.hc_post (deepseek_v4_boundary.py:84-86, 109-110).
+        return lambda: [
+            update.update(output, state) for (_read, update, _norm), (output, state) in zip(sites, states, strict=True)
+        ]
+    if op == "fused_post_pre":
+        # Each read follows the other sublayer's post: attention the previous
+        # layer's FFN, the FFN this layer's attention (prepare.py:173, 451).
+        previous = list(zip((update for _read, update, _norm in reversed(sites)), reversed(states), strict=True))
+        return lambda: [
+            read.update_and_read(update, output, state, norm)
+            for (read, _own_update, norm), (update, (output, state)) in zip(sites, previous, strict=True)
+        ]
+    raise ValueError(f"unsupported mHC op: {op}")
 
-        def kernel():
-            return [layer.hc_post(x, residual, post, comb) for x, post, comb, *_ in post_inputs]
 
-        return kernel
+def _observe_norm_fusion(layer, device: str) -> bool:
+    """Whether the read folds its RMSNorm into hc_pre, as hc_pre reports it to HcReadCall.read.
 
+    Same call as deepseek_v4_boundary.py:240-257: the attention site's parameters,
+    its norm when the layer keeps its boundary fusions.
+    """
+    probe = torch.randn(1, layer.hc_mult, _hidden_size(layer), dtype=torch.bfloat16, device=device)
+    with torch.no_grad():
+        *_outputs, norm_fused = layer.hc_pre(
+            probe,
+            layer.hc_attn_fn,
+            layer.hc_attn_scale,
+            layer.hc_attn_base,
+            norm=layer.input_layernorm if layer.boundary_mhc_fusions else None,
+        )
+    torch.cuda.synchronize()
+    return bool(norm_fused)
+
+
+def _kernel_source(layer, op: str, num_tokens: int, norm_fused: bool) -> str:
+    """Name the kernels serving's dispatch runs for ``op`` at ``num_tokens``."""
+    from sglang.kernels.ops.layernorm.mhc import _use_deep_gemm_hc_prenorm
+    from sglang.srt.environ import envs
+
+    # deepseek_v4_mhc.post (L525-608) for a non-lagged CUDA layer.
+    post = "sglang.hc_post[tilelang]" if envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get() else "sglang.hc_post[torch]"
+    if op == "post":
+        return post
+    norm = "fused" if norm_fused else "separate"
+    if envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get():
+        # mhc_pre: DeepGEMM's tf32 prenorm GEMM when available, else TileLang (mhc.py:1118-1199).
+        gemm = "deepgemm" if _use_deep_gemm_hc_prenorm() else "tilelang"
+        pre = f"sglang.hc_pre[tilelang,prenorm_gemm={gemm},norm={norm}]"
+    else:
+        from sglang.srt.models.deepseek_v4 import _HC_PRENORM_DEEPGEMM_MIN_TOKENS
+
+        # deepseek_v4.py:3460-3481: DeepGEMM from _HC_PRENORM_DEEPGEMM_MIN_TOKENS up, torch below.
+        deepgemm = envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.get() and num_tokens >= _HC_PRENORM_DEEPGEMM_MIN_TOKENS
+        pre = f"sglang.hc_pre[torch{',prenorm_gemm=deepgemm' if deepgemm else ''},norm={norm}]"
+    if op == "pre":
+        return pre
+    if op == "fused_post_pre":
+        if not (layer.boundary_mhc_fusions and layer.use_fused_mhc_post_pre):
+            # update_and_read runs the post, then the read (deepseek_v4_boundary.py:312).
+            return f"{post}+{pre}"
+        if num_tokens <= _FUSED_POST_GEMM_MAX_TOKENS:
+            return "sglang.mhc_fused_post_pre[fused_post_gemm,norm=fused]"
+        gemm = "deepgemm" if _use_deep_gemm_hc_prenorm() else "tilelang"
+        return f"sglang.mhc_fused_post_pre[post+prenorm_gemm={gemm},norm=fused]"
     raise ValueError(f"unsupported mHC op: {op}")
 
 
@@ -410,7 +500,11 @@ def run_mhc_module(
 ) -> list[dict[str, float]]:
     if num_iterations < 3:
         raise ValueError("num_iterations must be at least 3")
-    _require_audited_runtime(DSV4_ARCHITECTURE, get_version("sglang"))
+    version = get_version("sglang")
+    _require_audited_runtime(DSV4_ARCHITECTURE, version)
+    for op in ops:
+        if op not in DSV4_SGLANG_OPS:
+            raise ValueError(f"unsupported mHC op: {op}")
 
     token_cases = [int(num_tokens) for num_tokens in (num_tokens_cases or _default_num_tokens(model_path))]
     results: list[dict[str, float]] = []
@@ -429,46 +523,30 @@ def run_mhc_module(
         )
 
         layer = model_runner.model.model.layers[0]
+        _refuse_unaudited_paths(layer)
         hidden_size = _hidden_size(layer)
-        version = get_version("sglang")
         device_name = torch.cuda.get_device_name(device)
+        norm_fused = _observe_norm_fusion(layer, device)
 
-        # Print the RESOLVED kernel-selection env values, not only the raw
-        # process environment: MHC-PRENORM-ENV history shows the module-level
-        # default and the central collect_sglang() setdefault can disagree, and
-        # the H20 log that omitted the resolved prenorm value could not prove
-        # which kernel won.
-        from sglang.srt.environ import envs as _envs
+        # Print the RESOLVED kernel-selection values: the SM120 model hook
+        # leaves a flag alone when the process environment already sets it.
+        from sglang.srt.environ import envs
 
         print(
             "[mhc-collector] "
             f"hc_mult={layer.hc_mult}, hidden_size={hidden_size}, "
             f"tilelang_pre={os.environ.get('SGLANG_OPT_USE_TILELANG_MHC_PRE', 'default')}, "
-            f"tilelang_post={os.environ.get('SGLANG_OPT_USE_TILELANG_MHC_POST', 'default')}, "
-            f"resolved_tilelang_pre={_envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get()}, "
-            f"resolved_tilelang_post={_envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get()}, "
-            f"resolved_deepgemm_hc_prenorm={_envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.get()}"
+            f"deepgemm_hc_prenorm={os.environ.get('SGLANG_OPT_DEEPGEMM_HC_PRENORM', 'default')}, "
+            f"resolved_tilelang_pre={envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get()}, "
+            f"resolved_tilelang_post={envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get()}, "
+            f"resolved_deepgemm_hc_prenorm={envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.get()}, "
+            f"fused_post_pre={layer.boundary_mhc_fusions and layer.use_fused_mhc_post_pre}, "
+            f"norm_fused={norm_fused}"
         )
 
         for op in ops:
-            from sglang.srt.environ import envs
-
-            if op == "pre":
-                if envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get():
-                    kernel_source = "sglang_tilelang_mhc_pre"
-                elif envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.get():
-                    kernel_source = "sglang_deepgemm_mhc_pre"
-                else:
-                    kernel_source = "sglang_torch_mhc_pre"
-            elif op == "post":
-                kernel_source = (
-                    "sglang_tilelang_mhc_post"
-                    if envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get()
-                    else "sglang_torch_mhc_post"
-                )
-            else:
-                raise ValueError(f"unsupported mHC op: {op}")
             for num_tokens in token_cases:
+                kernel_source = _kernel_source(layer, op, num_tokens, norm_fused)
                 try:
                     residual = _make_residual(layer, num_tokens, device)
                     bench_result = _benchmark_mhc_kernel(
@@ -478,15 +556,12 @@ def run_mhc_module(
                         num_iterations=num_iterations,
                     )
                 except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
-                    print(f"  OOM: op={op}, num_tokens={num_tokens}; skipping")
+                    print(f"  OOM: op={op}, num_tokens={num_tokens}; recorded as failure")
                     error_count += 1
                     torch.cuda.empty_cache()
                     continue
                 except RuntimeError as err:
-                    # Runtime-incompatible kernels (e.g. tilelang version mismatch,
-                    # unsupported shapes) should skip the single case rather than
-                    # abort the whole sweep.
-                    print(f"  RuntimeError: op={op}, num_tokens={num_tokens}; skipping ({err})")
+                    print(f"  RuntimeError: op={op}, num_tokens={num_tokens}; recorded as failure ({err})")
                     error_count += 1
                     torch.cuda.empty_cache()
                     continue
@@ -497,10 +572,10 @@ def run_mhc_module(
                     perf_filename=perf_filename,
                     op=op,
                     num_tokens=num_tokens,
-                    num_sites=len(_mhc_call_args(layer)),
+                    num_sites=_NUM_SITES,
                     hc_mult=layer.hc_mult,
                     hidden_size=hidden_size,
-                    sinkhorn_iters=int(getattr(layer.config, "hc_sinkhorn_iters", 20)),
+                    sinkhorn_iters=int(layer.hc_sinkhorn_iters),
                     latency_ms=latency_ms,
                     version=version,
                     device_name=device_name,
@@ -527,13 +602,11 @@ def run_mhc_module(
             destroy_model_parallel,
         )
 
-        # Mirror SGLang 0.5.14 cleanup_dist_env_and_memory: destroying only the
-        # torch process group leaves parallel_state._WORLD pointing at a dead
-        # group, so the NEXT task in the same worker fails ModelRunner init
-        # with "not initialized in the world group map". H20 never sequenced
-        # two mHC tasks through one worker (4 tasks over 8 GPU workers); the
-        # single-worker B200 smoke exposed it. Teardown errors still propagate
-        # and fail the worker rather than hiding retained groups.
+        # Destroying only the torch process group leaves parallel_state._WORLD
+        # pointing at a dead group, so the NEXT task in the same worker fails
+        # ModelRunner init with "not initialized in the world group map".
+        # Teardown errors still propagate and fail the worker rather than
+        # hiding retained groups.
         destroy_model_parallel()
         destroy_distributed_environment()
         # SGLang has no public reset for the expert-location metadata (its
@@ -543,290 +616,6 @@ def run_mhc_module(
         reset_expert_location_metadata()
         torch.cuda.empty_cache()
         gc.collect()
-    summary = f"ok={len(results)} error={error_count} skip=0 total={len(results) + error_count}"
-    print(f"[mhc-collector] {summary}")
-    if not results or error_count > 0:
-        raise RuntimeError(f"mHC sweep failed: {summary}")
-    return results
-
-
-def _init_glm5next_runtime(model_path: str, *, device: str, mem_fraction_static: float):
-    """Publish GLM ServerArgs and init the TP=1 groups like the serving scheduler.
-
-    Mirrors the serving process start: run_scheduler_process publishes the
-    ServerArgs before anything reads config (managers/scheduler.py L5807-5808,
-    which also runs the model hooks), then ModelRunner initialises torch
-    distributed (model_executor/model_runner.py L1144-1157 ->
-    distributed/bootstrap.py L70-172) and the DeepGEMM config
-    (model_runner.py L456-458). No model weights are loaded: the mHC kernels
-    only need this process state plus the layer's own parameters.
-    """
-    from collector.sglang.runtime_compat import free_local_port
-    from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.distributed import bootstrap
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-    from sglang.srt.entrypoints.engine import _set_envs_and_config
-    from sglang.srt.layers import deep_gemm_wrapper
-    from sglang.srt.runtime_context import publish
-    from sglang.srt.server_args import ServerArgs
-    from sglang.srt.utils import suppress_other_loggers
-
-    suppress_other_loggers()
-    device_obj = torch.device(device)
-    torch.cuda.set_device(device_obj)
-    gpu_id = device_obj.index if device_obj.index is not None else torch.cuda.current_device()
-
-    original_config = _read_model_config(model_path)
-    if original_config.get("architectures") != [GLM5NEXT_ARCHITECTURE]:
-        raise ValueError(f"{model_path!r} is not a {GLM5NEXT_ARCHITECTURE} config")
-    tmp_dir = os.path.join(tempfile.gettempdir(), f"aic_mhc_{model_path.replace('/', '_')}_{os.getpid()}")
-    os.makedirs(tmp_dir, exist_ok=True)
-    with open(os.path.join(tmp_dir, "config.json"), "w") as f:
-        json.dump(original_config, f)
-
-    server_args = ServerArgs(
-        model_path=tmp_dir,
-        dtype="auto",
-        device="cuda",
-        load_format="dummy",
-        tp_size=1,
-        trust_remote_code=True,
-        mem_fraction_static=mem_fraction_static,
-        disable_radix_cache=True,
-        disable_cuda_graph=True,
-        skip_tokenizer_init=True,
-    )
-    _set_envs_and_config(server_args)
-    publish(server_args, role="scheduler")
-    model_config = ModelConfig.from_server_args(server_args)
-    bootstrap.init_torch_distributed(
-        server_args=server_args,
-        model_config=model_config,
-        device="cuda",
-        ps=ParallelState.trivial(gpu_id=gpu_id),
-        dist_port=free_local_port(),
-        is_draft_worker=False,
-        local_omp_cpuid=None,
-    )
-    if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM:
-        deep_gemm_wrapper.update_deep_gemm_config(gpu_id)
-    text_config = model_config.hf_text_config
-    if not getattr(text_config, "mhc", False):
-        raise ValueError(f"{model_path!r} text config has mhc disabled")
-    return text_config
-
-
-def _teardown_glm5next_runtime() -> None:
-    from sglang.srt.distributed.parallel_state import (
-        destroy_distributed_environment,
-        destroy_model_parallel,
-    )
-    from sglang.srt.runtime_context import reset_context
-
-    destroy_model_parallel()
-    destroy_distributed_environment()
-    reset_context()
-    torch.cuda.empty_cache()
-    gc.collect()
-
-
-def _build_glm5next_sites(text_config, *, device: str):
-    """One Glm5NextDecoderLayer's mHC state, without its attention/MLP.
-
-    Binds the serving decoder layer's own ``_hc_pre`` / ``hc_attn_pre`` /
-    ``hc_ffn_pre`` / ``hc_post`` (glm5_next.py L709-756), so every kernel
-    argument is the one serving passes; parameters and norms mirror
-    ``Glm5NextDecoderLayer.__init__`` (L657-679). The norms are bf16 like the
-    served (bfloat16) checkpoint weights.
-    """
-    from sglang.srt.layers.layernorm import RMSNorm
-    from sglang.srt.models.glm5_next import Glm5NextDecoderLayer
-
-    class _Glm5NextMhcSites(torch.nn.Module):
-        _hc_pre = Glm5NextDecoderLayer._hc_pre
-        hc_attn_pre = Glm5NextDecoderLayer.hc_attn_pre
-        hc_ffn_pre = Glm5NextDecoderLayer.hc_ffn_pre
-        hc_post = Glm5NextDecoderLayer.hc_post
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.config = text_config
-            hc_mult = int(text_config.hc_mult)
-            mix_hc = (2 + hc_mult) * hc_mult
-            hc_dim = hc_mult * int(text_config.hidden_size)
-            for site in ("attn", "ffn"):
-                setattr(self, f"hc_{site}_base", torch.nn.Parameter(torch.randn(mix_hc, dtype=torch.float32)))
-                setattr(self, f"hc_{site}_scale", torch.nn.Parameter(torch.ones(3, dtype=torch.float32)))
-                setattr(self, f"hc_{site}_fn", torch.nn.Parameter(torch.randn(mix_hc, hc_dim, dtype=torch.float32)))
-            eps = text_config.rms_norm_eps
-            self.input_layernorm = RMSNorm(text_config.hidden_size, eps=eps, weight_dtype=torch.bfloat16)
-            self.post_attention_layernorm = RMSNorm(text_config.hidden_size, eps=eps, weight_dtype=torch.bfloat16)
-
-    return _Glm5NextMhcSites().to(device)
-
-
-def _glm5next_mhc_states(sites):
-    """The two per-layer pre sites as the communicator's own MHCState objects.
-
-    MHCState.attn_split (communicator_mhc.py L84-92) is the attention pre; the
-    FFN pre inside attn_to_mlp (L98-105) is the same code with hc_ffn_pre and
-    post_attention_layernorm, so a second MHCState bound to hc_ffn_pre runs it
-    verbatim without the preceding hc_post.
-    """
-    from sglang.srt.layers.communicator_mhc import MHCState
-
-    hc_mult = int(sites.config.hc_mult)
-    return (
-        (MHCState(hc_mult, sites.hc_attn_pre, sites.hc_ffn_pre, sites.hc_post), sites.input_layernorm),
-        (MHCState(hc_mult, sites.hc_ffn_pre, sites.hc_ffn_pre, sites.hc_post), sites.post_attention_layernorm),
-    )
-
-
-def _glm5next_kernel(sites, op: str, num_tokens: int, *, device: str):
-    from sglang.kernels.ops.layernorm.mhc import hc_contract, hc_expand
-
-    hc_mult = int(sites.config.hc_mult)
-    hidden_size = int(sites.config.hidden_size)
-
-    def stream():  # widened residual stream [T, hc_mult * H]
-        return torch.randn(num_tokens, hc_mult * hidden_size, dtype=torch.bfloat16, device=device)
-
-    def layer_out():  # sublayer output [T, H]
-        return torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
-
-    if op == "expand":
-        x = layer_out()
-        return lambda: hc_expand(x, hc_mult)
-    if op == "contract":
-        x = stream()
-        return lambda: hc_contract(x, hc_mult)
-
-    states = _glm5next_mhc_states(sites)
-    streams = [stream() for _ in states]
-    if op == "pre":
-        return lambda: [state.attn_split(x, out_norm=norm) for x, (state, norm) in zip(streams, states, strict=True)]
-    if op == "post":
-        with torch.no_grad():
-            for x, (state, norm) in zip(streams, states, strict=True):
-                state.attn_split(x, out_norm=norm)
-        outs = [layer_out() for _ in states]
-        torch.cuda.synchronize()
-        return lambda: [
-            sites.hc_post(x, residual, state.h_res, state.h_post)
-            for x, residual, (state, _norm) in zip(outs, streams, states, strict=True)
-        ]
-    raise ValueError(f"unsupported GLM mHC op: {op}")
-
-
-def _glm5next_kernel_source(sites, op: str, *, device: str) -> str:
-    """Name what actually runs; the pre label records the observed norm fusion."""
-    if op == "expand":
-        return "sglang.kernels.ops.layernorm.mhc.hc_expand"
-    if op == "contract":
-        return "sglang.kernels.ops.layernorm.mhc.hc_contract"
-    from sglang.srt.environ import envs
-
-    if op == "post":
-        return "sglang.hc_post[tilelang]" if envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get() else "sglang.hc_post[torch]"
-    if op == "pre":
-        if not envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get():
-            impl = "torch"
-        elif envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.get():
-            impl = "tilelang,prenorm_gemm=deepgemm"
-        else:
-            impl = "tilelang,prenorm_gemm=tilelang"
-        hc_mult = int(sites.config.hc_mult)
-        probe = torch.randn(1, hc_mult * int(sites.config.hidden_size), dtype=torch.bfloat16, device=device)
-        norm = sites.input_layernorm
-        with torch.no_grad():
-            *_outputs, norm_fused = sites.hc_attn_pre(probe, norm.weight.data, norm.variance_epsilon)
-        return f"sglang.hc_pre[{impl},norm={'fused' if norm_fused else 'separate'}]"
-    raise ValueError(f"unsupported GLM mHC op: {op}")
-
-
-def run_glm5next_mhc_module(
-    *,
-    ops: Sequence[str],
-    model_path: str,
-    num_tokens_cases: Sequence[int] | None = None,
-    num_warmup: int = 5,
-    num_iterations: int = 20,
-    device: str = "cuda:0",
-    output_path: str | None = None,
-    mem_fraction_static: float = 0.5,
-    perf_filename: str | None = None,
-) -> list[dict[str, float]]:
-    if num_iterations < 3:
-        raise ValueError("num_iterations must be at least 3")
-    version = get_version("sglang")
-    _require_audited_runtime(GLM5NEXT_ARCHITECTURE, version)
-    for op in ops:
-        if op not in GLM5NEXT_SGLANG_OPS:
-            raise ValueError(f"unsupported GLM mHC op: {op}")
-
-    token_cases = [int(num_tokens) for num_tokens in (num_tokens_cases or _default_num_tokens(model_path))]
-    results: list[dict[str, float]] = []
-    error_count = 0
-    try:
-        text_config = _init_glm5next_runtime(model_path, device=device, mem_fraction_static=mem_fraction_static)
-        sites = _build_glm5next_sites(text_config, device=device)
-        device_name = torch.cuda.get_device_name(device)
-
-        from sglang.srt.environ import envs as _envs
-
-        print(
-            "[mhc-collector] "
-            f"arch={GLM5NEXT_ARCHITECTURE}, hc_mult={text_config.hc_mult}, hidden_size={text_config.hidden_size}, "
-            f"sinkhorn={text_config.hc_sinkhorn_iters}, hc_eps={text_config.hc_eps}, "
-            f"rms_eps={text_config.rms_norm_eps}, "
-            f"resolved_tilelang_pre={_envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get()}, "
-            f"resolved_tilelang_post={_envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get()}, "
-            f"resolved_deepgemm_hc_prenorm={_envs.SGLANG_OPT_DEEPGEMM_HC_PRENORM.get()}"
-        )
-        for op in ops:
-            kernel_source = _glm5next_kernel_source(sites, op, device=device)
-            for num_tokens in token_cases:
-                try:
-                    bench_result = _benchmark_mhc_kernel(
-                        device=device,
-                        kernel_func=_glm5next_kernel(sites, op, num_tokens, device=device),
-                        num_warmup=num_warmup,
-                        num_iterations=num_iterations,
-                    )
-                except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
-                    print(f"  OOM: op={op}, num_tokens={num_tokens}; recorded as failure")
-                    error_count += 1
-                    torch.cuda.empty_cache()
-                    continue
-                except RuntimeError as err:
-                    print(f"  RuntimeError: op={op}, num_tokens={num_tokens}; recorded as failure ({err})")
-                    error_count += 1
-                    torch.cuda.empty_cache()
-                    continue
-
-                latency_ms = float(bench_result["latency_ms"])
-                _log_result(
-                    output_path=output_path,
-                    perf_filename=perf_filename,
-                    op=op,
-                    num_tokens=num_tokens,
-                    num_sites=_GLM5NEXT_NUM_SITES[op],
-                    hc_mult=int(text_config.hc_mult),
-                    hidden_size=int(text_config.hidden_size),
-                    sinkhorn_iters=int(text_config.hc_sinkhorn_iters),
-                    latency_ms=latency_ms,
-                    version=version,
-                    device_name=device_name,
-                    kernel_source=kernel_source,
-                    power_stats=bench_result.get("power_stats"),
-                    architecture=GLM5NEXT_ARCHITECTURE,
-                )
-                print(f"[mhc-collector] op={op} tokens={num_tokens} latency={latency_ms:.4f} ms")
-                results.append({"op": op, "num_tokens": num_tokens, "mean_ms": latency_ms})
-                torch.cuda.empty_cache()
-                gc.collect()
-    finally:
-        _teardown_glm5next_runtime()
     summary = f"ok={len(results)} error={error_count} skip=0 total={len(results) + error_count}"
     print(f"[mhc-collector] {summary}")
     if not results or error_count > 0:
@@ -850,19 +639,9 @@ def run_mhc_module_worker(
     default Pro model. ``perf_filename`` and ``device`` are keyword-only args
     supplied by collect.py via functools.partial and the worker dispatch loop.
     """
+    _require_audited_runtime(architecture, get_version("sglang"))
     model_path = model_path or os.environ.get("COLLECTOR_MODEL_PATH") or DEFAULT_MODEL
     output_path = os.path.dirname(perf_filename) or os.getcwd()
-    if architecture == GLM5NEXT_ARCHITECTURE:
-        run_glm5next_mhc_module(
-            ops=[op],
-            model_path=model_path,
-            device=device,
-            output_path=output_path,
-            perf_filename=os.path.basename(perf_filename),
-        )
-        return
-    if architecture != DSV4_ARCHITECTURE:
-        raise MhcRuntimeNotAuditedError(f"no audited SGLang mHC dispatch for architecture {architecture!r}")
     run_mhc_module(
         ops=[op],
         num_tokens_cases=None,
@@ -874,10 +653,9 @@ def run_mhc_module_worker(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Collect DeepSeek-V4 / GLM-5.3-Flash mHC module latency on SGLang.")
-    parser.add_argument("--architecture", choices=[DSV4_ARCHITECTURE, GLM5NEXT_ARCHITECTURE], default=DSV4_ARCHITECTURE)
+    parser = argparse.ArgumentParser(description="Collect DeepSeek-V4 mHC module latency on SGLang.")
     parser.add_argument("--model-path", default=DEFAULT_MODEL)
-    parser.add_argument("--op", choices=["pre", "post", "expand", "contract", "all"], default="all")
+    parser.add_argument("--op", choices=[*DSV4_SGLANG_OPS, "all"], default="all")
     parser.add_argument("--num-tokens", default=None)
     parser.add_argument("--num-warmup", type=int, default=5)
     parser.add_argument("--num-iterations", type=int, default=20)
@@ -886,22 +664,8 @@ def main() -> None:
     parser.add_argument("--mem-fraction-static", type=float, default=0.5)
     args = parser.parse_args()
 
-    if args.architecture == GLM5NEXT_ARCHITECTURE:
-        run_glm5next_mhc_module(
-            ops=list(GLM5NEXT_SGLANG_OPS) if args.op == "all" else [args.op],
-            model_path=args.model_path,
-            num_tokens_cases=_parse_int_list(args.num_tokens) if args.num_tokens else None,
-            num_warmup=args.num_warmup,
-            num_iterations=args.num_iterations,
-            device=args.device,
-            output_path=args.output_path,
-            mem_fraction_static=args.mem_fraction_static,
-        )
-        return
-    if args.op not in {"pre", "post", "all"}:
-        parser.error(f"--op {args.op} is GLM-only")
     run_mhc_module(
-        ops=["pre", "post"] if args.op == "all" else [args.op],
+        ops=list(DSV4_SGLANG_OPS) if args.op == "all" else [args.op],
         num_tokens_cases=_parse_int_list(args.num_tokens) if args.num_tokens else None,
         model_path=args.model_path,
         num_warmup=args.num_warmup,

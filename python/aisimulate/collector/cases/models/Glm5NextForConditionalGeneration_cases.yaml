@@ -25,7 +25,7 @@ description: >
   shared + routed experts and MLA q_a/q_b/kv_a/o; BF16 elsewhere) and
   nvidia/GLM-5.3-Flash-NVFP4 (NVFP4 routed experts + dense MLP; everything
   else, including the shared expert, BF16). KDA / mHC are audited on stock
-  vLLM 0.31.0 only: the SGLang 0.5.20 lane retired (#649), and 0.5.21 needs a
+  vLLM 0.32.0 only: the SGLang 0.5.20 lane retired (#649), and 0.5.21 needs a
   port of both paths before SGLang collects them again (the 0.5.20 tables stay).
   Generic ops land in the generic tables (gemm_perf, moe_perf, kda_perf,
   mhc_module_perf, comm); only the GLM attention layer gets a GLM-specific
@@ -182,7 +182,7 @@ framework_specific_op_cases:
   vllm:
     moe:
       cases: all
-    # Stock vLLM 0.31.0 is the audited GLM KDA / mHC runtime
+    # Stock vLLM 0.32.0 is the audited GLM KDA / mHC runtime
     # (collect_kda.py _KDA_ARCHITECTURE_COMPAT,
     # collect_mhc_module.py _ARCHITECTURE_COMPAT).
     kda:

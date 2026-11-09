@@ -34,27 +34,15 @@ def _load_fresh(*names: str) -> dict:
 
 
 def _stub_sglang(monkeypatch, gpu_mem_mb):
-    class ServerArgs:
-        """sglang>=0.5.20: a msgspec Struct, which rejects the bare ``__new__``."""
-
-        def __new__(cls):
-            raise TypeError("Struct.__new__ needs its fields")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.model_executor.cuda_graph_config",
-        SimpleNamespace(default_cuda_graph_config=lambda: SimpleNamespace()),
-    )
-    monkeypatch.setitem(sys.modules, "sglang.srt.server_args", SimpleNamespace(ServerArgs=ServerArgs))
     monkeypatch.setitem(
         sys.modules,
         "sglang.srt.utils.common",
-        SimpleNamespace(get_device_memory_capacity=lambda _device: gpu_mem_mb),
+        SimpleNamespace(get_device_memory_capacity=lambda *_args: gpu_mem_mb),
     )
 
 
 def test_fresh_module_derives_and_caches_the_chunk_size(monkeypatch):
-    ns = _load_fresh("_CHUNKED_PREFILL", "_sglang_chunked_prefill_size", "_chunked_prefill_size_from_gpu_mem")
+    ns = _load_fresh("_CHUNKED_PREFILL", "_sglang_chunked_prefill_size")
     # The cache starts empty; the first call must not read an unbound global.
     assert "_CHUNKED_PREFILL" in ns and ns["_CHUNKED_PREFILL"] is None
 
@@ -69,9 +57,18 @@ def test_fresh_module_derives_and_caches_the_chunk_size(monkeypatch):
 
 @pytest.mark.parametrize(
     ("gpu_mem_mb", "expected"),
-    [(24 * 1024, 2048), (48 * 1024, 4096), (80 * 1024, 8192), (180 * 1024, 16384)],
+    # SGLang's table (arg_groups/memory_hook.py:89-176 at v0.5.23); no reading -> 4096.
+    [
+        (16 * 1024, 2048),
+        (24 * 1024, 4096),
+        (48 * 1024, 4096),
+        (80 * 1024, 8192),
+        (141 * 1024, 8192),
+        (180 * 1024, 16384),
+        (None, 4096),
+    ],
 )
 def test_chunk_size_follows_sglang_memory_tiers(monkeypatch, gpu_mem_mb, expected):
-    ns = _load_fresh("_CHUNKED_PREFILL", "_sglang_chunked_prefill_size", "_chunked_prefill_size_from_gpu_mem")
+    ns = _load_fresh("_CHUNKED_PREFILL", "_sglang_chunked_prefill_size")
     _stub_sglang(monkeypatch, gpu_mem_mb=gpu_mem_mb)
     assert ns["_sglang_chunked_prefill_size"]() == expected

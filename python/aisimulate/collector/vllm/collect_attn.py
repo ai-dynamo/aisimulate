@@ -3,9 +3,30 @@
 #
 # Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
-# away and prior-version DATA stays permanent under its version key. The
-# Attention-family pin: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6 (0.31.0).
-__compat__ = "vllm==0.31.0"
+# away and prior-version DATA stays permanent under its version key.
+#
+# Audited against vLLM v0.32.0 (5df63a72, from v0.31.0 db9527a4); citations
+# below are v0.32.0 lines. Every import, constructor argument and metadata
+# field used here exists with the same signature. Backend selection is
+# unchanged for this collector's BF16/FP8-KV, no-sink cases: the CUDA priority
+# lists (platforms/cuda.py:154-179), FlashAttention's head-size, FP8-KV and
+# FA-version rules (flash_attn.py:422-509, fa_utils.py:74-221) and FlashInfer's
+# head and page sizes (flashinfer.py:459-479, :565-568) only gained XPU,
+# NVFP4-KV and cascade-removal edits; cascade attention is gone and
+# common_prefix_len is always 0 (v1/attention/backend.py:693-694).
+# Kernel-side changes: vllm-flash-attention stays at 9cd61de3
+# (cmake/external_projects/vllm_flash_attn.cmake:42) and FlashInfer at
+# 0.7.0.post1; nvidia-cutlass-dsl, which compiles FA4 (SM90 head_dim 512),
+# moves 4.7.1 -> 4.8.0 (requirements/cuda.txt); Triton unified attention
+# scales P before its FP8 P@V dot (ops/triton_unified_attention.py:589-597) and
+# uses 64 softmax segments on SM120 when 16 under-fill the SMs
+# (triton_attn.py:146-186, :240-256); reshape_and_cache_flash moved out of
+# csrc/libtorch_stable with include-only edits. FA2/FA3 and FlashInfer rows
+# keep their kernels. FlashInfer's autotuner owns no dense-attention op
+# (flashinfer 0.7.0.post1 decode.py, prefill.py and xqa.py never reach
+# AutoTuner), so serving's warmup autotune (warmup/kernel_warmup.py:261-268)
+# leaves these kernels on their fixed heuristics, as timed here.
+__compat__ = "vllm==0.32.0"
 
 import os
 
@@ -24,15 +45,22 @@ from collector.vllm.utils import (
 )
 from vllm.config import set_current_vllm_config
 from vllm.platforms import current_platform
-from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.attention.backends.utils import (
     get_supported_kv_cache_layouts,
     resolve_kv_cache_layout,
 )
-from vllm.v1.attention.selector import AttentionSelectorConfig
+from vllm.v1.attention.selector import get_attn_backend
 from vllm.version import __version__ as vllm_version
+
+# Serving's default scheduler bound on GPUs with 70 GB or more (H100 and newer,
+# RTX PRO 6000); 256 below (engine/arg_utils.py:2924-2952). The CUDA-graph
+# capture sizes derive from it: up to min(2 * max_num_seqs, 1024 on SM100/SM103,
+# else 512) (config/vllm.py:2354-2364). 1024 reproduces serving's capture sizes
+# on every target GPU: SM10x parts all have 160 GB or more, and the 48 GB L40S
+# (256) still reaches the 512 cap.
+SERVING_MAX_NUM_SEQS = 1024
 
 
 class MockAttentionLayer:
@@ -75,9 +103,9 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
     if backend_name_str == "FLASHINFER":
         # FlashInfer classifies requests by query length, not by the
         # collector's phase label: with query_len <= reorder_batch_threshold
-        # (1, flashinfer.py:563 @0.24.0) an s=1 "context" batch is entirely
-        # decodes and metadata.prefill is None (flashinfer.py:540-546), so
-        # read the portion vLLM actually populated.
+        # (1, flashinfer.py:737, :928-941) an s=1 "context" batch is entirely
+        # decodes (split_decodes_and_prefills, :1401-1411) and metadata.prefill
+        # stays None (:1487-1501), so read the portion vLLM actually populated.
         if attn_metadata.num_prefills > 0:
             phase_metadata = attn_metadata.prefill
         else:
@@ -85,17 +113,44 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
         if phase_metadata is None:
             raise RuntimeError("vLLM FlashInfer metadata has neither a prefill nor a decode portion")
         label = f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
-        # 0.30 folds XQA and trtllm-gen decode into ONE metadata class,
-        # FlashInferTrtllmAPIDecode, and names the kernel in its `kernel` field
-        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611 @v0.30.0;
-        # decode_with_xqa / decode_with_trtllm_gen at :1997-1998). The class
-        # name alone would label SM120's XQA row and SM100's trtllm-gen row
-        # identically — kernel_source must name the kernel that ran.
+        # XQA (SM90, SM12x) and trtllm-gen (SM10x) decode share ONE metadata
+        # class, FlashInferTrtllmAPIDecode, which names the kernel in its
+        # `kernel` field (flashinfer.py:629-633 FlashInferDecodeKernel,
+        # :668-672, :1153-1160; decode_with_xqa / decode_with_trtllm_gen at
+        # :2058-2059). The class name alone would label SM120's XQA row and
+        # SM100's trtllm-gen row identically; kernel_source must name the
+        # kernel that ran.
         kernel = getattr(phase_metadata, "kernel", None)
         if kernel is not None:
             label += "_" + str(getattr(kernel, "value", kernel)).lower().replace("-", "_")
         return label
     return f"vllm_{backend_name_str}".lower()
+
+
+def match_serving_fa_aot_schedule(builder, window_size: int) -> None:
+    """Put a FlashAttention builder in the AOT-scheduling state serving reaches.
+
+    FA3's builder schedules ahead of time (get_scheduler_metadata in build())
+    only when every FlashAttention layer of the model shares one sliding-window
+    config. On its first build it collects the configs of all registered layers
+    (flash_attn.py:563-578, :834-848): one config keeps AOT with that window,
+    more than one turns AOT off for the whole model, and FA3 then schedules
+    inside each forward. The collector registers no layer, so it sets the
+    outcome itself. The sliding-window profiles in cases/models (GPT-OSS,
+    Gemma 4, MiMo-V2-Flash, Step-3.7-Flash, Muse Glimmer) all belong to models
+    that also have full-attention layers, so window_size > 0 rows run with AOT
+    off, as serving runs those models; window_size 0 rows keep the pure
+    full-attention state (AOT on, window (-1, -1)). Llama 4's window 8192 rows
+    stay an approximation either way: vLLM serves its local layers as fixed
+    chunks with no sliding window (AOT on), and the rows time a sliding window
+    (cases/models/Llama4ForConditionalGeneration_cases.yaml). Builders without
+    the field (not FlashAttention) are left alone; on FA2/FA4 aot_schedule is
+    already off (:703).
+    """
+    if window_size <= 0 or not hasattr(builder, "aot_sliding_window"):
+        return
+    builder.aot_sliding_window = (-1, -1)
+    builder.aot_schedule = False
 
 
 @with_exit_stack
@@ -142,10 +197,21 @@ def run_attention_torch(
         max_model_len=max(batch_spec.seq_lens),
         block_size=block_size,
         num_gpu_blocks=8192,
-        max_num_seqs=batch_size,
+        # Serving's scheduler bound, not this case's batch: the builders read
+        # the capture sizes it sets (SERVING_MAX_NUM_SEQS). FA3 caps split-KV at
+        # flash_attn_max_num_splits_for_cuda_graph (32) for every batch of up
+        # to the largest capture size in tokens and uses its heuristic above it
+        # (flash_attn.py:742-767, :850-860); FlashInfer plans its CUDA-graph
+        # decode wrapper up to it (flashinfer.py:787-801, :1777-1781); Triton
+        # takes its 2D/3D decode threshold from the capture sizes
+        # (triton_attn.py:115-144). With max_num_seqs=batch_size, FA3 prefills
+        # of up to 512 tokens and more than 2 tokens per request ran the split
+        # heuristic where serving caps at 32 splits. A batch above serving's
+        # bound keeps its own size.
+        max_num_seqs=max(batch_size, SERVING_MAX_NUM_SEQS),
         # One collector call represents the full prefill, including shapes
         # above a serving scheduler's new-token budget. Size native builder
-        # buffers for that call (flashinfer.py:721-723 @v0.31.0).
+        # buffers for that call (flashinfer.py:770-772, workspace :1107-1130).
         max_num_batched_tokens=max(8192, batch_spec.compute_num_tokens()),
         use_fp8_kv_cache=use_fp8_kv_cache,
         sliding_window=window_size if window_size > 0 else None,
@@ -156,35 +222,37 @@ def run_attention_torch(
 
     exit_stack.enter_context(set_current_vllm_config(vllm_config))
 
-    attn_selector_config = AttentionSelectorConfig(
-        head_size=head_dim,
-        dtype=dtype,
-        kv_cache_dtype="fp8" if use_fp8_kv_cache else "auto",
-        block_size=None,  # serving passes None unless the user set --block-size (selector.py:131-135)
-        use_mla=False,
-        has_sink=False,
-        use_sparse=False,
-        use_mm_prefix=False,
+    # Serving's Attention layer selects through get_attn_backend
+    # (model_executor/layers/attention/attention.py:350-360), which builds the
+    # selector config from the current VllmConfig (v1/attention/selector.py:
+    # 105-200; block_size stays None without --block-size, :131-135). This
+    # collector times no attention sinks (op_plans._vllm_attention_rows).
+    # Deviation (Gemma 4 shapes: head_dim 256 window 1024, head_dim 512; no
+    # other model has them): serving's Gemma4Config (model_executor/models/
+    # config.py:229-290) keeps per-layer selection only for FP8 KV on SM90,
+    # forces FA4 on every FlashAttention layer elsewhere when FA4 is available,
+    # and forces TRITON_ATTN when it is not. These rows time native per-shape
+    # selection, so on SM90 with BF16 KV the head_dim 256 layer runs FA3 where
+    # Gemma 4 runs FA4, and where FA4 is unavailable the rows run FA2 or
+    # FlashInfer where Gemma 4 runs Triton. Direction unknown. Retiring it needs
+    # a model-aware row for these shapes.
+    backend_cls = get_attn_backend(
+        head_dim,
+        dtype,
+        "fp8" if use_fp8_kv_cache else "auto",
+        has_sliding_window=window_size > 0,
     )
-    # v0.31.0 model_executor/models/config.py:217-222,242-255 uses per-layer
-    # FA3/FA4 selection for Gemma4 FP8 KV on SM90. The native FlashAttention
-    # selector admits head512 FP8 via FA4 (flash_attn.py:476-490), replacing
-    # the older forced-Triton workaround. Let native selection choose both
-    # prefill and generation backends for this layer's geometry.
-    backend_path = current_platform.get_attn_backend_cls(
-        None,
-        attn_selector_config,
-        num_heads=num_heads,
-    )
-    backend_cls = resolve_obj_by_qualname(backend_path)
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
 
-    # Native v0.31.0: CacheConfig.DEFAULT_BLOCK_SIZE=16 (config/cache.py:71),
-    # FlashInfer supports 16 (flashinfer.py:430-449), and get_preferred_block_size
-    # preserves it (backend.py:154-162). Thus the isolated Qwen n=4/kv=1/d=256
-    # case uses page 16 without an override. Full-model hybrid manager-page
-    # alignment is separate (platforms/interface.py:699-702).
+    # Serving without --block-size pages the cache manager at the first
+    # backend's get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE=16)
+    # (platforms/interface.py:767-781, :721-722; v1/attention/backend.py:151-160;
+    # config/cache.py:72) and the kernels at select_common_block_size
+    # (v1/worker/utils.py:515-557); utils.framework_kv_block_size asks the same.
+    # FlashInfer accepts 16 (flashinfer.py:459-479), so the isolated Qwen
+    # n=4/kv=1/d=256 case pages at 16. Hybrid-model page alignment
+    # (platforms/interface.py:783-787) is outside one isolated layer.
     block_size = framework_kv_block_size(backend_cls)
     vllm_config.cache_config.block_size = block_size
 
@@ -236,30 +304,31 @@ def run_attention_torch(
         randomize_blocks=True,
     )
 
-    # serving-same layout resolution for the single backend under test
-    # (utils.py:240-307@v0.29.0); reset cache_config after the case so the
-    # next backend re-resolves instead of inheriting ("existing wins outright")
+    # Serving resolves one layout for the model from its backends' supported
+    # sets (v1/attention/backends/utils.py:209-244, :259-350); reset
+    # cache_config after the case so the next case re-resolves instead of
+    # inheriting ("a layout already present on cache_config wins outright").
     _supported = get_supported_kv_cache_layouts([backend_cls])
     resolve_kv_cache_layout(vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
     exit_stack.callback(lambda: setattr(vllm_config.cache_config, "kv_cache_layout", None))
-    # 0.29 impls consume ONE merged tensor [num_blocks, H, block, 2*D] with
-    # K/V split on the last dim (flash_attn.py:1013-1014 "(B,H,N,2*D) ->
-    # ((B,N,H,D),(B,N,H,D))"); the 0.24-era per-backend stride permutation
-    # (get_kv_cache_stride_order) no longer exists. Convert the populated
-    # helper layout [2, B, N, H, D] once, value-equivalent.
+    # The impls consume ONE logical tensor [num_blocks, H, block, 2*D] with K/V
+    # split on the last dim (flash_attn.py:1251-1252, triton_attn.py:625-627,
+    # flashinfer.py:2660-2663 "(B, H, N, 2*hs) -> ((B, N, H, hs), (B, N, H,
+    # hs))"). Convert the populated helper layout [2, B, N, H, D] once,
+    # value-equivalent.
     _k, _v = kv_cache[0], kv_cache[1]  # [B, N, H, D]
     kv_cache = torch.cat((_k.permute(0, 2, 1, 3), _v.permute(0, 2, 1, 3)), dim=-1).contiguous()  # [B, H, N, 2*D]
     # Serving allocates the per-layer cache in the RESOLVED physical layout and
     # backends read it through kv_cache.permute(*layout.layer_view_order)
-    # (v1/kv_cache_layout.py KVCacheLayout.layer_view_order; flashinfer.py:2091
-    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous"
-    # @v0.30.0). A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
-    # family (HND) that FLASH_ATTN and the SM100 trtllm-gen FlashInfer path
-    # resolve (flashinfer.py:543-549); FlashInfer elsewhere resolves the NHD
-    # default, whose XQA decode asserts "KV cache inner dims (block_size,
-    # head_size) must be contiguous" on this HND memory (flashinfer.py:2448) —
-    # every fp8-KV GQA generation case on SM120, 2026-10-01. Lay the memory out
-    # per the resolved layout and hand the backend the same logical view.
+    # (v1/kv_cache_layout.py:34-37; flashinfer.py:2135-2136). FlashInfer on
+    # SM10x resolves LBHNC (head-major blocks, flashinfer.py:603-610);
+    # FLASH_ATTN, TRITON_ATTN and FlashInfer elsewhere declare no layout and
+    # resolve the default LBNHC (v1/attention/backends/utils.py:195-202). The
+    # XQA and trtllm-gen decode paths assert "KV cache inner dims (block_size,
+    # head_size) must be contiguous" (flashinfer.py:2488-2495): HND memory under
+    # the NHD layout failed every fp8-KV GQA generation case on SM120,
+    # 2026-10-01. Lay the memory out per the resolved layout and hand the
+    # backend the same logical view.
     kv_cache = kv_cache_in_resolved_layout(
         kv_cache, vllm_config.cache_config.get_resolved_kv_cache_layout().layer_view_order
     )
@@ -267,7 +336,12 @@ def run_attention_torch(
     builder_cls, impl_cls = get_attention_backend(backend_name)
     layer_names = ["placeholder"]
 
-    # Mock flashinfer's get_per_layer_parameters if needed
+    # FlashInfer's builder reads window, soft cap and scale from the registered
+    # layers (get_per_layer_parameters, v1/attention/backends/utils.py:369-397,
+    # called at flashinfer.py:943-948); the collector registers none, so hand
+    # it what one layer of this shape gives: window_left = sliding_window - 1
+    # (flashinfer.py:1867-1873), no soft cap (0.0 and None plan alike,
+    # :2201, :2408) and scale 1/sqrt(head_dim).
     if backend_name_str == "FLASHINFER":
         import unittest.mock
 
@@ -295,15 +369,7 @@ def run_attention_torch(
     else:
         # Build metadata
         builder = builder_cls(kv_cache_spec, layer_names, vllm_config, device)
-        # FA3's metadata builder auto-detects sliding_window by walking registered
-        # Attention layers; the collector doesn't register any, so the auto-detect
-        # finds nothing and aot_sliding_window stays at (-1, -1). Then FA3's
-        # AOT scheduler computes scheduler_metadata for "no sliding window", but
-        # impl.forward later passes the actual (window_size-1, 0) tuple, and FA3's
-        # shape check rejects the mismatched metadata_size. Pre-populate the
-        # builder's aot_sliding_window to match what impl.sliding_window will be.
-        if window_size > 0 and hasattr(builder, "aot_sliding_window"):
-            builder.aot_sliding_window = (window_size - 1, 0)
+        match_serving_fa_aot_schedule(builder, window_size)
         attn_metadata = builder.build(
             common_prefix_len=0,
             common_attn_metadata=common_attn_metadata,
@@ -342,17 +408,31 @@ def run_attention_torch(
     test_ite = 6
     warm_up = 3
 
+    # The timed closure is serving's per-layer attention call. With an FP8 KV
+    # cache, impls that take an FP8 query get it from the Attention layer's
+    # QuantFP8 (model_executor/layers/attention/attention.py:467-486,
+    # :509-521), a torch op that Inductor fuses into the op producing the query,
+    # so it stays outside the timing; impls that quantize the query themselves
+    # (FlashInfer prefill on SM90, maybe_quant_query, flashinfer.py:1984-2003)
+    # keep it inside forward, as serving does. The KV-cache write is a separate
+    # op per layer (unified_kv_cache_update, attention.py:540-570) and is timed:
+    # the RoPE+KV-cache fusion passes are ROCm-only on this release
+    # (config/compilation.py:282-293).
     needs_fp8_query = use_fp8_kv_cache and impl.supports_quant_query_input
     query_fwd = query_vllm.to(current_platform.fp8_dtype()) if needs_fp8_query else query_vllm
     # Output buffer is always BF16 — the impl dequantises internally.
     output = torch.empty_like(query_vllm)
 
-    # FIXME(kernel-limit): v0.31.0 source recheck retains the FA4 SM100/SM110
-    # rejection of (192,192): flash-attention@9cd61de3, flash_attn/cute/
-    # interface.py:112-128. That dependency is pinned in vLLM's cmake/
-    # external_projects/vllm_flash_attn.cmake:42. The vLLM selector still
-    # accepts head192 (flash_attn.py:421-427); keep the native failure visible.
-    # Historical B200 failure is not a GPU qualification of this revision.
+    # head_dim 192 on SM100/SM103: FlashInfer does not take 192
+    # (flashinfer.py:565-568), so FLASH_ATTN serves it (flash_attn.py:422-430),
+    # and get_flash_attn_version moves FA4 head sizes above 128 other than 256
+    # and (192, V=128) to FA2 (fa_utils.py:193-209). With V=192 these rows run
+    # FA2 (kernel_source vllm_flash_attn_fa2); FA4's own (192, 192) rejection
+    # (flash-attention 9cd61de3 flash_attn/cute/interface.py) is not reached.
+    # MiMo-V2-Flash, whose head_dim 192 rows these are, serves V=128 on
+    # FLASH_ATTN_DIFFKV or TRITON_ATTN_DIFFKV (model_executor/models/
+    # mimo_v2.py:300-321); op_plans._vllm_attention_rows notes the V=192
+    # deviation. No GPU run has qualified this at v0.32.0.
     def run():
         if not backend_cls.forward_includes_kv_cache_update:
             impl.do_kv_cache_update(

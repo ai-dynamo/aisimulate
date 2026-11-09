@@ -256,3 +256,129 @@ def test_dsv4_generation_enters_sglang_model_capture_mode():
     function_source = ast.get_source_segment(source, function)
 
     assert "model_capture_mode() if not is_prefill" in function_source
+
+
+def test_tp_rows_are_refused_before_a_model_or_child_is_built(monkeypatch, tmp_path):
+    """SGLang shards DeepSeek-V4 attention by get_parallel(), which this process cannot
+    emulate; a TP>1 row would time the TP=1 module under a rank-local label."""
+    run, timed = _runner(monkeypatch)
+    mod = sys.modules["collector.sglang.collect_dsv4_attn"]
+    with pytest.raises(RuntimeError, match=r"tp_size=2: single-process TP emulation"):
+        mod.run_dsv4_mla_module(
+            model_path=MODEL_PATH,
+            mode="generation",
+            attn_kind="csa",
+            batch_size=1,
+            seq_lens_by_prefix={0: [1024]},
+            tp_size=2,
+        )
+    assert "load" not in timed
+
+    def no_child(*_args, **_kwargs):
+        raise AssertionError("a TP>1 row must not start a child process")
+
+    monkeypatch.setattr(mod.subprocess, "Popen", no_child)
+    with pytest.raises(RuntimeError, match=r"tp_size=4: single-process TP emulation"):
+        mod._run_subprocess(
+            mode="generation",
+            attn_kind="hca",
+            model_path=MODEL_PATH,
+            kv_cache_dtype_sglang="fp8_e4m3",
+            batch_size=1,
+            output_path=str(tmp_path),
+            gpu_id=0,
+            inner_shapes=((0, (1024,)),),
+            tp_size=4,
+        )
+
+
+def test_a_row_fails_when_the_module_runs_other_heads_than_its_label(monkeypatch):
+    mod = _import_module(monkeypatch)
+    mod._check_module_local_heads(types.SimpleNamespace(n_local_heads=64), 64, 1)
+    mod._check_module_local_heads(types.SimpleNamespace(), 8, 8)  # no attribute: nothing to compare
+    with pytest.raises(RuntimeError, match=r"runs n_local_heads=64, but the row would persist num_heads=8"):
+        mod._check_module_local_heads(types.SimpleNamespace(n_local_heads=64), 8, 8)
+
+
+def test_the_child_leaves_the_fp8_wo_a_gemm_to_sglang(monkeypatch, tmp_path):
+    mod = _import_module(monkeypatch)
+    monkeypatch.setenv("SGLANG_OPT_FP8_WO_A_GEMM", "1")
+    seen = {}
+
+    class Child:
+        returncode = 0
+
+        def __init__(self, _argv, *, env, stdout, stderr, cwd):
+            seen["env"] = env
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(mod.subprocess, "Popen", Child)
+    mod._run_subprocess(
+        mode="generation",
+        attn_kind="csa",
+        model_path=MODEL_PATH,
+        kv_cache_dtype_sglang="fp8_e4m3",
+        batch_size=1,
+        output_path=str(tmp_path),
+        gpu_id=0,
+        inner_shapes=((0, (1024,)),),
+        gemm_type="fp8_block",
+    )
+    assert "SGLANG_OPT_FP8_WO_A_GEMM" not in seen["env"]
+
+
+def test_a_prefix_is_held_in_the_request_row_with_only_its_swa_tail(monkeypatch):
+    """0.5.23 requests carry no prefix indices: a held row's [0, prefix_len) is the
+    prefix, and only the SWA window tail holds SWA slots (the PD-decode recipe)."""
+    mod = _import_module(monkeypatch)
+    swa = object()
+    component_module = types.ModuleType("sglang.srt.mem_cache.unified_cache.component_type")
+    component_module.ComponentType = types.SimpleNamespace(SWA=swa)
+    monkeypatch.setitem(sys.modules, component_module.__name__, component_module)
+    monkeypatch.setattr(mod, "_alloc_prefix_indices", lambda _runner, n, prefix: [f"slots{i}" for i in range(n)])
+    writes = []
+
+    def alloc(reqs):
+        for row, req in enumerate(reqs, start=1):
+            req.kv.req_pool_idx = row
+        return [req.kv.req_pool_idx for req in reqs]
+
+    runner = types.SimpleNamespace(
+        req_to_token_pool=types.SimpleNamespace(
+            alloc=alloc, write=lambda index, value: writes.append((index, value)), available_size=lambda: 8
+        ),
+        token_to_kv_pool_allocator=types.SimpleNamespace(page_size=256, alloc_extend_swa_tail=lambda *_: None),
+        model_config=types.SimpleNamespace(window_size=128),
+    )
+
+    def req():
+        kv = types.SimpleNamespace(evicted={})
+        kv.set_evicted_seqlen = lambda component, length: kv.evicted.__setitem__(component, length)
+        return types.SimpleNamespace(kv=kv)
+
+    reqs = [req(), req()]
+    mod._hold_prefix_rows(runner, reqs, 1000)
+    assert writes == [((1, slice(0, 1000)), "slots0"), ((2, slice(0, 1000)), "slots1")]
+    assert {(r.kv.kv_allocated_len, r.kv.kv_committed_len) for r in reqs} == {(1000, 1000)}
+    # The page-aligned window start alloc_prefix_indices allocates SWA from.
+    assert [r.kv.evicted for r in reqs] == [{swa: 768}, {swa: 768}]
+
+    fresh = [req()]
+    mod._hold_prefix_rows(runner, fresh, 0)
+    assert not hasattr(fresh[0].kv, "req_pool_idx")
+
+
+def test_sources_follow_the_v0_5_23_serving_calls():
+    source = SOURCE_PATH.read_text(encoding="utf-8")
+    # ChunkCache is gone (sglang #43201); Req has no prefix_indices or set_extend_range.
+    for removed in ("mem_cache.chunk_cache", "req.prefix_indices", "set_extend_range", "_tp_load_model_patch"):
+        assert removed not in source
+    # The pool configurator factory takes the KV-cache configurator, as serving passes it.
+    assert "create_memory_pool_configurator(kv_cache_configurator)" in source
+    sparse = (REPO_ROOT / "collector" / "sglang" / "deepseekv4_sparse_modules.py").read_text(encoding="utf-8")
+    # Serving plans top-k v2 with the kernel's heuristic threshold.
+    assert "plan_topk_v2(seq_lens)" in sparse
+    assert "plan_topk_v2(seq_lens, 0)" not in sparse

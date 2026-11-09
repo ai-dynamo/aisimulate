@@ -80,11 +80,15 @@ def _install_helper_stub(monkeypatch):
 def _install_trtllm_stubs(monkeypatch):
     _stub_torch(monkeypatch)
     transformers = _stub_module(monkeypatch, "transformers", PretrainedConfig=_Dummy)
-    trtllm = _stub_module(monkeypatch, "tensorrt_llm", __version__="1.3.0rc23")
+    trtllm = _stub_module(monkeypatch, "tensorrt_llm", __version__="1.4.0rc2")
     for package in (
         "tensorrt_llm._torch",
-        "tensorrt_llm._torch.attention_backend",
+        "tensorrt_llm._torch.attention",
+        "tensorrt_llm._torch.attention.backends",
+        "tensorrt_llm._torch.attention.backends.sparse",
+        "tensorrt_llm._torch.attention.backends.sparse.minimax_m3",
         "tensorrt_llm._torch.models",
+        "tensorrt_llm._torch.modules",
         "tensorrt_llm._torch.pyexecutor",
         "tensorrt_llm.bindings",
         "tensorrt_llm.bindings.internal",
@@ -93,8 +97,15 @@ def _install_trtllm_stubs(monkeypatch):
         "tensorrt_llm.quantization",
     ):
         _stub_module(monkeypatch, package)
-    _stub_module(monkeypatch, "tensorrt_llm._torch.attention_backend.interface", AttentionRuntimeFeatures=_Dummy)
-    _stub_module(monkeypatch, "tensorrt_llm._torch.attention_backend.utils", get_attention_backend=_noop)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.attention.backends.interface", AttentionRuntimeFeatures=_Dummy)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.attention.backends.utils", get_attention_backend=_noop)
+    _stub_module(
+        monkeypatch,
+        "tensorrt_llm._torch.attention.backends.sparse.minimax_m3.msa_backend",
+        MiniMaxM3MsaSparseAttentionMetadata=_Dummy,
+    )
+    _stub_module(monkeypatch, "tensorrt_llm._torch.autotuner", autotune=nullcontext)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.modules.linear", Linear=_Dummy)
     _stub_module(monkeypatch, "tensorrt_llm._torch.metadata", KVCacheParams=_Dummy)
     _stub_module(monkeypatch, "tensorrt_llm._torch.model_config", ModelConfig=_Dummy)
     _stub_module(

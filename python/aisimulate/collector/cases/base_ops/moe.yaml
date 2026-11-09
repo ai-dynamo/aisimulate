@@ -132,17 +132,22 @@ common_case_values:
       # NVFP4 path on SM120 and requires the explicit
       # --moe-runner-backend flashinfer_cutlass in serving.
       nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      # SGLang 0.5.14 server_args leaves SM90 GPT-OSS on auto, whose
-      # Mxfp4MoEMethod resolves to Triton; SM100/103 select FlashInfer MXFP4.
-      # SM120 serving explicitly selects Marlin ("trtllm-gen only supports
-      # SM100", server_args.py:3876-3887 at image source 49e384ce), and the
-      # MXFP4 Marlin repack path itself asserts SM90-or-SM120
-      # (mxfp4.py:520-521). SM89 also stays on auto (no mxfp4 branch fires
-      # at server_args.py:3876-3898; Mxfp4Config.get_min_capability() is 80)
-      # and resolves to the same Triton default as SM90; an L40S probe ran
-      # the GPT-OSS w4a16 Triton case on SM89 hardware.
+      # SGLang 0.5.23 leaves SM89/SM90 GPT-OSS at EP>1 on auto, whose
+      # Mxfp4MoEMethod resolves to Triton (layers/quantization/mxfp4.py:
+      # 1443-1450); at EP1 it serves triton_kernel (arg_groups/model_overrides/
+      # gpt_oss.py:102-120), which the op plan's dispatch picks where this pin
+      # is Triton (collector/op_plans.py _sglang_moe_runner).
+      # SM100/103 select FlashInfer MXFP4 (arg_groups/model_overrides/
+      # gpt_oss.py:64-68). SM120 serves GPT-OSS as MXFP8 x MXFP4 (the w4a8 pin
+      # below), so collector/skips.py leaves the SM120 GPT-OSS W4A16 cases out
+      # and the SM120 pin here is not planned.
       w4a16_mxfp4: {89: triton, 90: triton, 100: flashinfer_mxfp4, 103: flashinfer_mxfp4, 120: marlin}
-      w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
+      # flashinfer_mxfp4 runs MXFP8 activations on the trtllm-gen leaf on
+      # SM100/103 and on the CUTLASS MXFP8 x MXFP4 kernel on SM120, where SGLang
+      # serves GPT-OSS (gpt_oss.py:69-74; mxfp4.py:426-427) and the DeepSeek-V4
+      # FP4 experts (model_overrides/deepseek_v4.py:75-88;
+      # mxfp4_flashinfer_cutlass_moe.py:36-44) on it.
+      w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4, 120: flashinfer_mxfp4}
   moe_vllm_xpu:
     token_counts:
     - 1

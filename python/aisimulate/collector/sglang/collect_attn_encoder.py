@@ -3,24 +3,27 @@
 
 """SGLang encoder (non-causal) attention collector for multimodal / omni-modal models.
 
-SM dispatch mirrors ``VisionAttention._determine_attention_backend``:
+SM dispatch mirrors ``VisionAttention._determine_attention_backend`` (sglang v0.5.23):
 
-- capability major 9  (SM90, Hopper)            -> ``flash_attn_varlen_func``         (FA3)
-- capability major 10 (SM100/SM103, B200/B300)  -> ``flash_attn_varlen_func(ver=4)``  (FA4)
-- other CUDA (SM<90, SM120)                     -> ``context_attention_fwd``          (Triton)
+- capability major 9  (SM90, Hopper)            -> FA3 ``flash_attn_varlen_func``
+- capability major 10 (SM100/SM103, B200/B300)  -> FA4 ``flash_attn_varlen_func``
+- other CUDA (SM<90, SM120)                     -> Triton ``context_attention_fwd``
 
-Serving branches on the capability MAJOR (layers/attention/vision.py:1298-1303:
-``major == 9 -> fa3``, ``major == 10 -> fa4``, else ``triton_attn``), so SM103 shares the FA4
-lane with SM100. The collector's earlier ``sm == 100`` test sent SM103 down the Triton path
-(B300 encoder gate failed) — a wrong-kernel measurement, not a crash.
+Serving branches on the capability MAJOR when neither ``--mm-attention-backend`` nor the
+model passes a backend (layers/attention/vision.py:1304-1311: ``major == 9 -> fa3``,
+``major == 10 -> fa4``, else ``triton_attn``), so SM103 shares the FA4 lane with SM100.
+The collector's earlier ``sm == 100`` test sent SM103 down the Triton path (B300 encoder
+gate failed) — a wrong-kernel measurement, not a crash.
+
+Each lane calls the kernel function the serving module calls per layer
+(VisionFlash3Attention / VisionFlash4Attention / VisionTritonAttention.forward,
+vision.py:453-639), with the same arguments.
 
 Quant: bf16 only. SGLang upstream does not support fp8 ViT FMHA.
 """
 
-# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 from importlib.metadata import (
     version as _dist_version,  # setuptools/pkg_resources is absent from recent framework images
@@ -33,7 +36,7 @@ from collector.op_plans import plan_cases
 
 
 def serving_vision_backend(sm_version: int) -> str:
-    """The vision-attention backend sglang selects for a CUDA capability (vision.py:1298-1303)."""
+    """The vision-attention backend sglang selects for a CUDA capability (vision.py:1304-1311)."""
     major = sm_version // 10
     if major == 9:
         return "fa3"
@@ -82,11 +85,10 @@ def _build_kernel_runner(
 
     backend = serving_vision_backend(sm)
     if backend == "fa3":
-        # Matches VisionFlash3Attention.forward.
-        try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
-            from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
-        except ImportError:
-            from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+        # VisionFlash3Attention.forward (vision.py:525-582) calls flash_attn_func(q, k, v,
+        # **fa_kwargs), which is flash_attention.flash_attn_varlen_func at ver=3
+        # (vision.py:54, 62-69).
+        from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
 
         def run_iter():
             flash_attn_varlen_func(
@@ -104,11 +106,10 @@ def _build_kernel_runner(
         return run_iter, "flash_attention_v3"
 
     if backend == "fa4":
-        # Matches VisionFlash4Attention.forward.
-        try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
-            from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
-        except ImportError:
-            from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+        # VisionFlash4Attention.forward (vision.py:585-639) calls flash_attn_func(..., ver=4),
+        # which goes straight to flash_attention_v4.flash_attn_varlen_func with only these
+        # arguments (vision.py:62-68), not through the generic ver dispatcher.
+        from sglang.kernels.ops.attention.flash_attention_v4 import flash_attn_varlen_func
 
         def run_iter():
             flash_attn_varlen_func(
@@ -120,18 +121,13 @@ def _build_kernel_runner(
                 max_seqlen_q=max_seqlen,
                 max_seqlen_k=max_seqlen,
                 softmax_scale=softmax_scale,
-                ver=4,
             )
 
         return run_iter, "flash_attention_v4"
 
-    # every other capability (SM<90, SM120): Triton path matching VisionTritonAttention.forward.
-    try:  # sglang>=0.5.21 (layers/attention/vision.py imports it from kernels/ops/attention)
-        from sglang.kernels.ops.attention.prefill_attention import context_attention_fwd
-    except ImportError:
-        from sglang.srt.layers.attention.triton_ops.prefill_attention import (
-            context_attention_fwd,
-        )
+    # every other capability (SM<90, SM120): VisionTritonAttention.forward (vision.py:453-522)
+    # calls context_attention_fwd (imported at vision.py:83-85).
+    from sglang.kernels.ops.attention.prefill_attention import context_attention_fwd
 
     seq_lens = torch.full(
         (batch_size,),

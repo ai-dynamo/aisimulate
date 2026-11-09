@@ -15,8 +15,9 @@ A module key is (model, heads, precision, batch); a point is one
     (``TrtllmAttentionMetadata.max_seq_len``, attention/backends/trtllm.py);
   - DeepSeek-V4 sizes its compressed-index buffers from that value
     (attention/backends/sparse/deepseek_v4/metadata.py, ``max_compressed_indices``);
-  - the MSA indexer copies the whole index-K pool on every forward (see
-    collect_msa_module.create_kv_cache_and_metadata).
+  - an MSA decode step selects blocks over the manager's worst-case block
+    extent, which picks the selection kernel (see
+    collect_msa_module.run_msa_module_series).
 - The dry run only checks the forward and warms lazily initialised paths before
   timing, so it runs once per seq_len.
 - Points run largest first, so a capacity failure shows on the first point.

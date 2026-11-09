@@ -18,31 +18,35 @@ from collector.op_plans import plan
 
 pytestmark = pytest.mark.unit
 PKG_ROOT = Path(__file__).resolve().parents[3]
-# Generated from actual plans at #676 69232f77ce94de85e8ca7c40da8c2e484a6bdff4.
+# Generated from actual plans at #676 69232f77ce94de85e8ca7c40da8c2e484a6bdff4; the DSA and MSA
+# context entries regenerated after the context grid gained prefix 1, 1536, 3072, 6144, 10240 and
+# 12288 and every sequence length at prefixes from 16k on; SGLang attention_context regenerated
+# after the FP8-compute skip widened to triton and fa4 prefill (no FP8-compute path there) and
+# fa4's FP8-KV prefill was left out (serving cannot run it).
 BASELINE = {
-    "sglang:attention_context": [32844, "13e62f1fa7c957e45811469b761781e6c73858e2b6b183ddf9e4f9605aff51b3"],
+    "sglang:attention_context": [28645, "6c0dfd64be096af68aee88ce03a86bb4e104e9e8ff536c56b04e8c9853681267"],
     "sglang:attention_generation": [36096, "403666ff16ab29e96d2ef9a79c7c1595a64d8208f2c4ce5c1d3abc7274994653"],
-    "sglang:dsa_context_module": [14590, "02bfb9ebbb0131639bacdb8713770a866574aa387c3b0c306dfe0879b6bffb51"],
+    "sglang:dsa_context_module": [32940, "0774184fcb3fc62175675a77e5d5d63c9dee99efb1840ecbb0d7be28c018c82f"],
     "sglang:dsa_generation_module": [5700, "995f99c01c986b3fa038f21eb7c3f306965cad81b18516c7bf8f774d1d8b1d13"],
     "sglang:mla_context_module": [13176, "d63d0534649bab9324ee70c23fcfcce0373bc7903537342c42850dcfa88e46fa"],
     "sglang:mla_generation_module": [13248, "da66d1707e49f320831b1acbd6e090a7a5e615b9fe9523c38817ac3816f75391"],
-    "sglang:msa_context_module": [5630, "e2c1607b33608e6c4bb37328bc68abc0ac923d59f2b24fff034f0b64ca5c1928"],
+    "sglang:msa_context_module": [12350, "ec381d6168ee455b9e4a2666aee44d7fde609bf7ebe19412ac25e7704b59aaa1"],
     "sglang:msa_generation_module": [1930, "18a1aaa0f67336597f617632a1b8d7bb5893f0874e79cfdec84bf88dff21c7d6"],
     "trtllm:attention_context": [36261, "1dcb3ce260dd61381831f647b287b7c41640273508900ea18e361096109f3757"],
     "trtllm:attention_generation": [30054, "10f11fc455c7123272fa4fee898f3b962ab11d7a24f43bb1b3e34afd7ea77e2a"],
-    "trtllm:dsa_context_module": [29952, "e1686d3fad4245e9fa62b03bc0977608ea1fc835d00717aac58ea4d8cc11cc33"],
+    "trtllm:dsa_context_module": [65220, "76c41b415880af8991b96ce5f79b1bc1326429703f358461a9c96a6b660a559c"],
     "trtllm:dsa_generation_module": [10152, "64009d7847fe4065c7a7f2047560c34535a96d614c69d50227bffdb36a314731"],
     "trtllm:mla_context_module": [8784, "be7ad7e1b3f779960be249f05a95cfb90e0fc341881528a77f1d8196fd56a29f"],
     "trtllm:mla_generation_module": [13248, "da66d1707e49f320831b1acbd6e090a7a5e615b9fe9523c38817ac3816f75391"],
-    "trtllm:msa_context_module": [8445, "d3b8bab7fafebbdb0664972849bb4fd4d0487de4de142cba5fd21854d73026d3"],
+    "trtllm:msa_context_module": [18525, "d078285ec076d16221ff7ed2d65321719a3062788be39412f2648474894e62f6"],
     "trtllm:msa_generation_module": [2895, "527698244a19b01034190b05e4d3f2fc134e60fa47f9d5222c4a5d2cfcd188dd"],
     "vllm:attention_context": [28390, "a1ed1fd7cdd56512af271c151a4b141d771a3e5585a88fc9c2e1f18aad471db3"],
     "vllm:attention_generation": [36096, "403666ff16ab29e96d2ef9a79c7c1595a64d8208f2c4ce5c1d3abc7274994653"],
-    "vllm:dsa_context_module": [29952, "e1686d3fad4245e9fa62b03bc0977608ea1fc835d00717aac58ea4d8cc11cc33"],
+    "vllm:dsa_context_module": [65220, "76c41b415880af8991b96ce5f79b1bc1326429703f358461a9c96a6b660a559c"],
     "vllm:dsa_generation_module": [10152, "64009d7847fe4065c7a7f2047560c34535a96d614c69d50227bffdb36a314731"],
     "vllm:mla_context_module": [13176, "d63d0534649bab9324ee70c23fcfcce0373bc7903537342c42850dcfa88e46fa"],
     "vllm:mla_generation_module": [13248, "da66d1707e49f320831b1acbd6e090a7a5e615b9fe9523c38817ac3816f75391"],
-    "vllm:msa_context_module": [16890, "49be27bf6ac2ea100dd6e7f2b57587ed3a74b1a0fa09e2dc011e32e374a9db7c"],
+    "vllm:msa_context_module": [37050, "f6e84a28e1f2b84992b264097c70884126e42c00dbc939b7b1da8c86496bd370"],
     "vllm:msa_generation_module": [5790, "e4fad3bb4e4c216880d90f66c7ff38906d069ae57e581b3ad8165958d53b2235"],
 }
 

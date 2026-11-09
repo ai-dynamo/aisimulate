@@ -64,8 +64,8 @@ def test_every_ssm_kernel_call_hands_over_the_caller_owned_out_buffer():
         for node in ast.walk(_function("run_mamba2_generation_benchmark"))
         if isinstance(node, ast.Call) and _callee(node) == "ssu_func"
     ]
-    assert len(scan_calls) == 4  # cached + pooled, warm-up call + timed closure
-    assert len(update_calls) == 4
+    assert len(scan_calls) == 2  # warm-up call + timed closure
+    assert len(update_calls) == 2
     for call in scan_calls + update_calls:
         assert any(keyword.arg == "out" for keyword in call.keywords), ast.unparse(call)
     for call in update_calls:
@@ -149,12 +149,8 @@ def _fake_torch():
     )
 
 
-def _fake_input_pool(shapes, count, _dtype, _device):
-    return {name: [_Tensor(shape) for _ in range(count)] for name, shape in shapes.items()}
-
-
 def _load_runner(
-    name, benchmark_with_power, log_perf, *, cached_inputs=1, ssu_label="selective_state_update_flashinfer"
+    name, benchmark_with_power, log_perf, *, ssu_label="selective_state_update_flashinfer", token_major=False
 ):
     ssu_calls = []
 
@@ -165,7 +161,6 @@ def _load_runner(
         "torch": _fake_torch(),
         "gc": SimpleNamespace(collect=lambda: None),
         "aic_debug": 0,
-        "aic_cached_inputs": cached_inputs,
         "benchmark_with_power": benchmark_with_power,
         "log_perf": log_perf,
         "repeat": lambda tensor, _pattern, **_axes: tensor,
@@ -176,10 +171,9 @@ def _load_runner(
         "selective_state_update": lambda *args, **kwargs: None,
         "_decode_state_update_kernel": lambda *geometry: (ssu, ssu_label),
         "_decode_dt": lambda batch_size, nheads, head_dim, _device: _Tensor((batch_size, nheads, head_dim)),
-        "_token_major_prefill_conv": lambda: False,
-        "_prefill_conv_token_major_inputs": None,
-        "_run_prefill_conv_token_major": None,
-        "_make_input_pool": _fake_input_pool,
+        "_token_major_prefill_conv": lambda: token_major,
+        "_prefill_conv_token_major_inputs": lambda xbc, b, s, _device: (xbc, xbc, None, None, None),
+        "_run_prefill_conv_token_major": lambda *args: None,
     }
     module = ast.Module(body=[_function(name)], type_ignores=[])
     exec(compile(module, str(SOURCE), "exec"), namespace)
@@ -232,10 +226,9 @@ def test_trtllm_mamba2_context_scan_capture_failure_fails_the_case_instead_of_dr
     assert logged == ["causal_conv1d_fn", "causal_conv1d_fn", "mamba_chunk_scan_combined"]
 
 
-@pytest.mark.parametrize("cached_inputs", [1, 0])
-def test_trtllm_mamba2_context_all_cells_captured_returns_quietly(cached_inputs):
+def test_trtllm_mamba2_context_all_cells_captured_returns_quietly():
     benchmark_with_power, log_perf, logged = _failing_on(0)
-    run, _ = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf, cached_inputs=cached_inputs)
+    run, _ = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf)
     assert run(batch_size_list=[1, 2], seq_len_list=[32], **_LAYER) is None
     assert logged == ["causal_conv1d_fn", "mamba_chunk_scan_combined"] * 2
 
@@ -249,15 +242,13 @@ def test_trtllm_mamba2_generation_state_update_capture_failure_fails_the_case():
     assert logged == ["causal_conv1d_update", "selective_state_update_flashinfer", "causal_conv1d_update"]
 
 
-@pytest.mark.parametrize("cached_inputs", [1, 0])
 @pytest.mark.parametrize("ssu_label", ["selective_state_update_flashinfer", "selective_state_update_triton"])
-def test_trtllm_mamba2_generation_labels_the_rows_with_the_kernel_serving_selected(cached_inputs, ssu_label):
+def test_trtllm_mamba2_generation_labels_the_rows_with_the_kernel_serving_selected(ssu_label):
     benchmark_with_power, log_perf, logged = _failing_on(0)
     run, ssu_calls = _load_runner(
         "run_mamba2_generation_benchmark",
         benchmark_with_power,
         log_perf,
-        cached_inputs=cached_inputs,
         ssu_label=ssu_label,
     )
     assert run(batch_size_list=[1], **_LAYER) is None
@@ -271,16 +262,16 @@ def test_trtllm_mamba2_generation_labels_the_rows_with_the_kernel_serving_select
 
 
 def test_generation_runner_builds_dt_only_through_the_serving_layout_helper():
-    # Both input modes take dt from _decode_dt; no dense (batch, nheads, head_dim) dt is made.
+    # dt comes from _decode_dt; no dense (batch, nheads, head_dim) dt is made.
     runner = _function("run_mamba2_generation_benchmark")
     helper_calls = [node for node in ast.walk(runner) if isinstance(node, ast.Call) and _callee(node) == "_decode_dt"]
-    assert len(helper_calls) == 2
+    assert len(helper_calls) == 1
     dt_assignments = [
         node
         for node in ast.walk(runner)
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "dt" for t in node.targets)
     ]
-    assert dt_assignments, "cached-input mode no longer binds dt"
+    assert dt_assignments, "the generation runner no longer binds dt"
     for assignment in dt_assignments:
         assert isinstance(assignment.value, ast.Call) and _callee(assignment.value) == "_decode_dt"
 
@@ -306,3 +297,12 @@ def test_decode_dt_is_an_fp32_per_head_tensor_broadcast_over_head_dim():
     assert seen["randn"] == ((4, 128), "fp32")
     assert seen["repeat"] == ((4, 128), "b h -> b h p", {"p": 64})
     assert dt.shape == (4, 128, 64)
+
+
+def test_trtllm_mamba2_token_major_context_cells_complete():
+    """The token-major prefill conv frees its channel-major input before timing; at 53a83fcd6
+    the cell cleanup deleted the name again and every context cell raised UnboundLocalError."""
+    benchmark_with_power, log_perf, logged = _failing_on(0)
+    run, _ = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf, token_major=True)
+    assert run(batch_size_list=[1, 2], seq_len_list=[32], **_LAYER) is None
+    assert logged == ["causal_conv1d_fn_token_major", "mamba_chunk_scan_combined"] * 2

@@ -341,3 +341,51 @@ def test_cli_past_kv_is_context_prefix_only(dsv4_module, monkeypatch, mode, expe
 
     assert calls["prefix_len"] == expected_prefix
     assert calls["seq_len"] == 64
+
+
+@pytest.mark.parametrize(
+    ("max_position", "seq_len", "expected"),
+    [
+        # Serving's default: the checkpoint's max_position_embeddings (1M for DeepSeek-V4).
+        (1048576, 16385, 1048576),
+        (1048576, 1048576, 1048576),
+        # No declared limit: the previous 4096 floor, never below the point itself.
+        (None, 192, 4096),
+        (None, 8193, 8193),
+    ],
+)
+def test_module_is_built_at_serving_default_max_model_len(dsv4_module, monkeypatch, max_position, seq_len, expected):
+    """DSV4 plans its prefill chunks, indexer buffer and decode logits by max_model_len
+    (sparse_swa.py:250-329, deepseek_v4/attention.py:995-1002 @v0.32.0): build at serving's."""
+    mod = dsv4_module
+    seen = {}
+
+    class Built(Exception):
+        pass
+
+    def create_vllm_config(**kwargs):
+        seen.update(kwargs)
+        raise Built
+
+    config = {} if max_position is None else {"max_position_embeddings": max_position}
+    monkeypatch.setattr(mod, "_patched_config_dir", lambda *_args, **_kwargs: nullcontext("config-dir"))
+    monkeypatch.setattr(mod, "_read_model_config", lambda _model: config)
+    monkeypatch.setattr(mod, "create_vllm_config", create_vllm_config)
+
+    with (
+        pytest.raises(Built),
+        mod._create_dsv4_attention_module(
+            model_path="sgl-project/DeepSeek-V4-Flash-FP8",
+            attn_kind="csa",
+            batch_size=256,
+            seq_len=seq_len,
+            tp_size=1,
+            is_context=True,
+            device="cuda:0",
+            query_len=1,
+        ),
+    ):
+        pass
+
+    assert seen["max_model_len"] == expected
+    assert seen["model_name"] == "config-dir"

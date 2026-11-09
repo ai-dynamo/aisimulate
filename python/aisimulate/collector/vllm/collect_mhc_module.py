@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""mHC module collector for vLLM DeepSeek-V4 and GLM-5.3-Flash (Glm5Next)."""
+"""mHC module collector for vLLM GLM-5.3-Flash (Glm5Next)."""
 
 from __future__ import annotations
 
@@ -18,104 +18,97 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
-from collector.case_generator import get_common_mhc_test_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from collector.version_resolver import _check_compat
 
-# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968046:
-# mHC: 4/4 representative shape/operation cases. The native framework
-# builders/selectors remain authoritative; no kernel fallback is introduced.
-# The campaign manifest still selects one exact release per run.
-#
-# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin).
+# The mhc family runs on 0.32.0 (framework_manifest.yaml family pin).
 # Each architecture is additionally gated by
 # ``_ARCHITECTURE_COMPAT`` below; an architecture that is not audited on the
 # installed release raises instead of running.
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "vllm==0.31.0"
+__compat__ = "vllm==0.32.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
 # inside collect.py's per-op error handling (after the __compat__ gate can
 # label it) rather than at module import.
-_MHC_TILELANG_KERNELS: tuple | None = None
 
-
-def _mhc_tilelang_kernels():
-    global _MHC_TILELANG_KERNELS
-    if _MHC_TILELANG_KERNELS is None:
-        from vllm.model_executor.kernels.mhc.tilelang import mhc_post_tilelang, mhc_pre_tilelang
-
-        _MHC_TILELANG_KERNELS = (mhc_pre_tilelang, mhc_post_tilelang)
-    return _MHC_TILELANG_KERNELS
-
-
-DEFAULT_HIDDEN_SIZE = 4096
-DEFAULT_HC_MULT = 4
-ARCHITECTURE = "DeepseekV4ForCausalLM"
-MHC_NUM_SITES = 2
-MHC_SINKHORN_ITERS = 20
-MHC_EPS = 1.0e-6
-
+DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
 GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 
 # Per-architecture audited vLLM releases. A case whose architecture is not
 # audited on the installed release raises MhcRuntimeNotAuditedError (a
 # classified failure) instead of running an unverified dispatch.
-# DeepSeek-V4 is NOT audited on 0.31.0. mhc_module_perf's architecture-free
-# view (MhcKey = op_name, hc_mult, hidden_size; the DeepSeek-V4 consumer)
-# would merge GLM-5.3-Flash's fused-site rows at (4, 4096) into one
-# 0.31.0 table, so DeepSeek-V4 rows stay on the 0.24.0-0.30.0 tables and
-# their collector route is `git log -- <this file>` away. Re-admitting it
-# needs an architecture-keyed DeepSeek-V4 lookup first (consumer change).
+# DeepSeek-V4 is not audited here (collector/skips.py leaves its vLLM rows
+# out). mhc_module_perf's architecture-free view (MhcKey = op_name, hc_mult,
+# hidden_size; the DeepSeek-V4 consumer) would merge GLM-5.3-Flash's
+# fused-site rows at (4, 4096) into one table, so DeepSeek-V4 rows stay on the
+# 0.24.0-0.30.0 tables and their collector route is `git log -- <this file>`
+# away. Re-admitting it needs an architecture-keyed DeepSeek-V4 lookup first
+# (consumer change).
 _ARCHITECTURE_COMPAT = {
-    # Stock vllm 0.31.0 only (no overlay) — see the GLM audit below.
-    GLM5NEXT_ARCHITECTURE: "vllm==0.31.0",
+    # Stock vllm 0.32.0 only (no overlay) — see the GLM audit below.
+    GLM5NEXT_ARCHITECTURE: "vllm==0.32.0",
 }
 
-# GLM-5.3-Flash mHC call sites in stock vLLM 0.31.0 serving (tag v0.31.0 ==
-# db9527a4). The registry maps Glm5NextForConditionalGeneration to
-# vllm.models.glm5next (vllm/model_executor/models/registry.py:428-431), whose
-# __init__ re-exports vllm/models/glm5next/common/model.py (sha256
-# 9ad4952e...; Glm5NextDecoderLayer.forward L451-556, Glm5NextModel.forward
-# layer loop L730):
-#   layer 0 attn:   hc_expand (L493) + standalone hc_pre with the fused
-#                   input_layernorm (L495-502)
+# GLM-5.3-Flash mHC call sites in stock vLLM 0.32.0 serving. vLLM paths below
+# are @v0.32.0 (5df63a72) unless marked; "model.py" is
+# vllm/models/glm5next/common/model.py. The registry maps
+# Glm5NextForConditionalGeneration (and Glm5NextForCausalLM) to
+# vllm.models.glm5next (vllm/model_executor/models/registry.py:121, 423-426),
+# whose __init__ re-exports model.py (Glm5NextDecoderLayer.forward L518-623,
+# Glm5NextModel.forward layer loop L823-833):
+#   layer 0 attn:   hc_expand (L559-560) + standalone hc_pre with the fused
+#                   input_layernorm (L561-569)
 #   every other attn site and every ffn site: hc_fused_post_pre with the fused
-#                   input/post_attention layernorm (L504-514, L530-540) — the
+#                   input/post_attention layernorm (L570-581, L596-607) — the
 #                   previous sublayer's hc_post is deferred into this kernel
-#   last layer:     standalone hc_post (L552) + hc_contract (L553)
+#   last layer:     standalone hc_post (L619) + hc_contract (L620)
 # i.e. per forward with L=45 layers: pre=1, fused_post_pre=2L-1=89, post=1,
-# expand=1, contract=1. MHCPreOp/MHCPostOp/MHCFusedPostPreOp.forward_cuda
-# dispatch unconditionally to torch.ops.vllm.mhc_{pre,post,fused_post_pre}_tilelang
-# (vllm/model_executor/layers/mhc.py sha256 923828e7..., L110-138, L533-542,
-# L738-774); hc_expand/hc_contract are plain torch (mhc.py L969-976).
+# expand=1, contract=1. With EAGLE3 speculative decoding (SupportsEagle3), each
+# aux hidden-state layer adds one hc_post (Glm5NextModel._aux_post_op) and one
+# hc_contract (L748, L773-791, L822-849); the counts above are for serving
+# without EAGLE3 (aux_hidden_state_layers defaults to (),
+# vllm/model_executor/models/interfaces.py:1571).
+# MHCPreOp/MHCPostOp/MHCFusedPostPreOp report enabled() == True, so they take
+# forward_cuda whatever the compilation config says, and it dispatches
+# unconditionally to torch.ops.vllm.mhc_{pre,post,fused_post_pre}_tilelang
+# (vllm/model_executor/layers/mhc.py L118-150, L573-586, L778-818);
+# hc_expand/hc_contract are plain torch (mhc.py L1013-1020). Glm5NextModel has
+# no @support_torch_compile, so serving runs both as standalone eager torch
+# ops, as here (graph mode: see the note in run_glm5next_mhc_module).
 #
 # mHC is replicated per rank: the decoder layer runs it on the rank's full
-# token batch unless sequence-parallel MoE is on (model.py L305, L516-527,
-# Glm5NextModel L689-691/L727-728), and ParallelConfig.use_sequence_parallel_moe
-# requires EP and TP>1 and DP>1 (vllm/config/parallel.py:718-735). Rows carry
-# no TP dimension; pure-TP (TP1/2/4) serving reads the same num_tokens rows.
+# token batch unless sequence-parallel MoE is on (model.py L372, L583-594,
+# Glm5NextModel L761-763/L819-820), and ParallelConfig.use_sequence_parallel_moe
+# requires a listed all2all backend, EP, TP>1 and DP>1
+# (vllm/config/parallel.py:763-781). Rows carry no TP dimension; pure-TP
+# serving reads the same num_tokens rows.
 #
-# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
-# ced6857a): glm5next/nvidia/model.py moved to glm5next/common/model.py; the
-# only diff on the decoder layer is one added Glm5NextMLP kwarg (L358), so
-# every model.py line above is the 0.30.0 line +1 with identical content
-# (registry entry 429 -> 428, identical content).
-# layers/mhc.py is byte-identical (923828e7). kernels/mhc/tilelang.py differs
-# only in docstrings/blank lines (dispatch logic identical; fused entry moved
-# L812-981 -> L814-983). kernels/mhc/tilelang_kernels.py: the fused split
-# config (L57-95: <=32 tokens and hidden % 128 == 0) and compute_num_split
-# (L44-54) are identical; the big_fuse kernel gained a split_mode argument
-# defaulting to "fused" (L325) that the GLM path never sets (only
-# deepseek_v41 uses "stats"/"input"), and ROCm-only thread-role helpers.
-# utils/deep_gemm.py is_deep_gemm_supported (L109-115) only reorders the same
-# AND terms. Glm5NextConfig switched its base to transformers
-# PreTrainedConfig (no field change). Toolchain: requirements/cuda.txt pins
-# tilelang==0.1.12 at both tags and cmake/external_projects/deepgemm.cmake
-# pins DeepGEMM e1f418c2 at both tags (measured in-container identity:
-# DeepGEMM e1f418c2 unchanged; tilelang not separately measured).
+# 0.32.0 audit (source-only: v0.32.0 == 5df63a72 vs v0.31.0 db9527a4):
+# - vllm/transformers_utils/configs/glm5_next.py is gone. Serving loads
+#   transformers' Glm5NextConfig through AutoConfig and reads its text config
+#   (model.py:9, L694; requirements/common.txt pins transformers >= 5.16.1,
+#   < 5.20.0). The mHC fields keep the checkpoint's names: hc_mult (L444,
+#   L450), hc_eps (L446), hc_sinkhorn_iters (L447). The post multiplier is the
+#   module constant _MHC_POST_MULT_VALUE (L108, L448), no longer a config
+#   field; tau (_MHC_TAU) feeds no kernel.
+# - hc_pre / hc_post / hc_fused_post_pre (L625-687) and every call site above
+#   are unchanged apart from line moves; the EAGLE3 aux path is new.
+# - layers/mhc.py changes only the ROCm AITER path (forward_hip);
+#   kernels/mhc/tilelang.py and tilelang_kernels.py are byte-identical, and
+#   requirements/cuda.txt pins tilelang==0.1.12 at both tags.
+#   utils/deep_gemm.py is_deep_gemm_supported (L110-116) and
+#   CudaPlatform.support_deep_gemm (SM90, SM100 family, SM120 family;
+#   vllm/platforms/cuda.py:689-695) are unchanged.
+# - DeepGEMM moves e1f418c2 -> 1e1842a8 (cmake/external_projects/
+#   deepgemm.cmake:37): the binding moves from pybind11 to TORCH_LIBRARY
+#   (csrc/apis/hyperconnection.hpp). The SM90 and SM100 tf32_hc_prenorm_gemm
+#   kernels change only their host includes; the SM120 kernel adds a
+#   fence_view_async_shared() before each stage release
+#   (deep_gemm/include/deep_gemm/impls/sm120_tf32_hc_prenorm_gemm.cuh:231-232
+#   @1e1842a8).
 #
 # Row convention (shared with the DeepSeek-V4 rows of this table): pre, post
 # and fused_post_pre rows time BOTH per-layer sites (attention params +
@@ -124,6 +117,9 @@ _ARCHITECTURE_COMPAT = {
 # consumer scales by the per-forward call counts above.
 GLM5NEXT_VLLM_OPS = ("pre", "post", "fused_post_pre", "expand", "contract")
 _GLM5NEXT_NUM_SITES = {"pre": 2, "post": 2, "fused_post_pre": 2, "expand": 1, "contract": 1}
+# GLM-5.3-Flash geometry (both packaged configs); the CLI defaults.
+_GLM5NEXT_HIDDEN_SIZE = 4096
+_GLM5NEXT_HC_MULT = 4
 
 _MODEL_CONFIG_DIR = REPO_ROOT / "src" / "aisimulate_core" / "model_configs"
 
@@ -170,139 +166,6 @@ def get_mhc_module_test_cases() -> list[dict]:
     return plan_cases("mhc_module", "vllm", get_sm_version())
 
 
-def _default_num_tokens() -> list[int]:
-    cases = get_common_mhc_test_cases()
-    if not cases:
-        raise RuntimeError("get_common_mhc_test_cases() returned no cases")
-    return cases[0].num_tokens_list
-
-
-def _make_mhc_tensors(num_tokens: int, hidden_size: int, hc_mult: int, *, device: str):
-    mix_hc = (2 + hc_mult) * hc_mult
-    hc_dim = hc_mult * hidden_size
-    residual = torch.randn(num_tokens, hc_mult, hidden_size, dtype=torch.bfloat16, device=device)
-    fn = torch.randn(mix_hc, hc_dim, dtype=torch.float32, device=device)
-    base = torch.randn(mix_hc, dtype=torch.float32, device=device)
-    scale = torch.ones(3, dtype=torch.float32, device=device)
-    return residual, fn, base, scale
-
-
-def _mhc_pre(residual, fn, base, scale):
-    # KNOWN GAP vs vLLM 0.24 serving: the NVIDIA DeepSeek-V4 model calls
-    # mhc_pre_tilelang standalone only on the FIRST layer and always with
-    # norm_weight=attn_norm.weight (fused-RMSNorm big_fuse variant), and every
-    # subsequent layer boundary runs the fused mhc_fused_post_pre_tilelang
-    # (vllm/models/deepseek_v4/nvidia/model.py:854-890). This
-    # collector measures the norm_weight=None variant because the SDK's
-    # DeepSeekV4 model composes mhc_pre + attn_norm (ElementWise) + mhc_post
-    # as separate per-layer ops (src/aisimulate/sdk/models/deepseek_v4.py)
-    # — fusing the norm here would double-count it downstream.
-    # Measured impact (H20, hc_mult=4, hidden=4096, T=1k/8k, 2026-07):
-    # fused(post+pre+norm) matches pre(no-norm)+post within 1-2%, and the
-    # fused norm adds only 2-3% to pre — so this decomposition tracks the
-    # fused serving path closely; the SDK's separately-billed attn_norm is
-    # the only (small) over-count. Aligning row semantics with the fused
-    # serving path is a coordinated producer+consumer contract change; do
-    # not switch variants unilaterally.
-    mhc_pre_tilelang, _ = _mhc_tilelang_kernels()
-    post, comb, layer_input = mhc_pre_tilelang(
-        residual,
-        fn,
-        scale,
-        base,
-        MHC_EPS,
-        MHC_EPS,
-        MHC_EPS,
-        2.0,
-        MHC_SINKHORN_ITERS,
-    )
-    return layer_input, post, comb
-
-
-def run_mhc_module(
-    *,
-    ops: Sequence[str],
-    num_tokens_cases: Sequence[int] | None = None,
-    hidden_size: int = DEFAULT_HIDDEN_SIZE,
-    hc_mult: int = DEFAULT_HC_MULT,
-    device: str = "cuda:0",
-    output_path: str | None = None,
-    perf_filename: str | None = None,
-    num_warmup: int = 5,
-    num_iterations: int = 10,
-) -> list[dict]:
-    _require_audited_runtime(ARCHITECTURE, get_version("vllm"))
-    _init_cuda(device)
-    hidden_size = int(hidden_size)
-    hc_mult = int(hc_mult)
-    token_cases = list(num_tokens_cases or _default_num_tokens())
-    if "--smoke" in sys.argv and num_tokens_cases is None:
-        token_cases = [16]
-
-    results = []
-    for op in ops:
-        if op not in {"pre", "post"}:
-            raise ValueError(f"unsupported mHC op: {op}")
-        for num_tokens in token_cases:
-            site_inputs = [
-                _make_mhc_tensors(num_tokens, hidden_size, hc_mult, device=device) for _ in range(MHC_NUM_SITES)
-            ]
-            if op == "pre":
-
-                def kernel_func(site_inputs=site_inputs):
-                    with torch.no_grad():
-                        return [_mhc_pre(residual, fn, base, scale) for residual, fn, base, scale in site_inputs]
-
-            else:
-                _, mhc_post_tilelang = _mhc_tilelang_kernels()
-                with torch.no_grad():
-                    post_inputs = [
-                        (_mhc_pre(residual, fn, base, scale), residual) for residual, fn, base, scale in site_inputs
-                    ]
-                torch.cuda.synchronize()
-
-                def kernel_func(post_inputs=post_inputs, mhc_post_tilelang=mhc_post_tilelang):
-                    with torch.no_grad():
-                        return [mhc_post_tilelang(x, residual, post, comb) for (x, post, comb), residual in post_inputs]
-
-            with benchmark_with_power(
-                device=torch.device(device),
-                kernel_func=kernel_func,
-                num_warmups=num_warmup,
-                num_runs=num_iterations,
-                repeat_n=1,
-                allow_graph_fail=False,
-                use_cuda_graph=True,
-            ) as result:
-                pass
-            latency = float(result["latency_ms"])
-            log_perf(
-                item_list=[
-                    {
-                        "architecture": ARCHITECTURE,
-                        "num_tokens": num_tokens,
-                        "num_sites": MHC_NUM_SITES,
-                        "hc_mult": hc_mult,
-                        "hidden_size": hidden_size,
-                        "sinkhorn_iters": MHC_SINKHORN_ITERS,
-                        "latency": f"{latency:.4f}",
-                    }
-                ],
-                framework="VLLM",
-                version=get_version("vllm"),
-                device_name=torch.cuda.get_device_name(device),
-                op_name=op,
-                kernel_source=f"vllm.model_executor.kernels.mhc.tilelang.mhc_{op}_tilelang",
-                perf_filename=_resolve_perf_path(output_path, perf_filename or PerfFile.MHC_MODULE.value),
-                power_stats=result.get("power_stats"),
-            )
-            print(f"[vllm-mhc] op={op} tokens={num_tokens} latency={latency:.4f} ms")
-            results.append({"op": op, "num_tokens": num_tokens, "latency": latency})
-            del site_inputs
-            torch.cuda.empty_cache()
-    return results
-
-
 def _read_packaged_model_config(model_path: str) -> dict:
     """Load AIC's packaged ``model_configs/<id>_config.json`` (no HF download)."""
     config_file = _MODEL_CONFIG_DIR / (model_path.replace("/", "--") + "_config.json")
@@ -312,13 +175,21 @@ def _read_packaged_model_config(model_path: str) -> dict:
 
 
 def _glm5next_text_config(model_path: str):
-    """Resolve the text config through vLLM's own Glm5NextConfig (HF field aliases included)."""
-    from vllm.transformers_utils.configs.glm5_next import Glm5NextConfig
+    """Resolve the text config the way serving does.
+
+    vLLM registers no config class for model_type glm5_next, so
+    HFConfigParser.parse loads transformers' Glm5NextConfig through
+    AutoConfig.from_pretrained (vllm/transformers_utils/config.py:399), and the
+    decoder reads ``model_config.hf_text_config``, i.e. ``get_text_config()``
+    (get_hf_text_config, config.py:1195-1209; model.py:694).
+    """
+    from transformers import Glm5NextConfig
 
     raw = _read_packaged_model_config(model_path)
     if raw.get("architectures") != [GLM5NEXT_ARCHITECTURE]:
         raise ValueError(f"{model_path!r} is not a {GLM5NEXT_ARCHITECTURE} config: {raw.get('architectures')!r}")
-    text_config = Glm5NextConfig(**raw).text_config
+    text_config = Glm5NextConfig.from_dict(raw).get_text_config()
+    # Glm5NextDecoderLayer.__init__ reads the checkpoint's own `mhc` flag (model.py:369).
     if not text_config.mhc:
         raise ValueError(f"{model_path!r} text_config has mhc disabled")
     return text_config
@@ -328,17 +199,17 @@ def _build_glm5next_sites(text_config, *, device: str):
     """Build the mHC state of one Glm5NextDecoderLayer without its attention/MLP.
 
     The returned module binds the serving decoder layer's own ``hc_pre`` /
-    ``hc_post`` / ``hc_fused_post_pre`` methods (glm5next/common/model.py
-    L558-620), so every
+    ``hc_post`` / ``hc_fused_post_pre`` methods (model.py L625-687), so every
     kernel argument (eps values, post multiplier, Sinkhorn repeat, n_splits,
-    tile_n, fused-norm weight) is the one serving passes. Parameters mirror
-    ``Glm5NextDecoderLayer.__init__`` (model.py L362-405): fp32 hc fn/base/scale
-    and the two RMSNorms whose weights are fused into the pre kernels.
+    tile_n, fused-norm weight) is the one serving passes. The attributes those
+    methods read mirror ``Glm5NextDecoderLayer.__init__`` (model.py L366,
+    L442-472): fp32 hc fn/base/scale and the two RMSNorms (L429, L438-440)
+    whose weights are fused into the pre kernels.
     """
     from vllm.config import VllmConfig, set_current_vllm_config
     from vllm.model_executor.layers.layernorm import RMSNorm
     from vllm.model_executor.layers.mhc import MHCFusedPostPreOp, MHCPostOp, MHCPreOp
-    from vllm.models.glm5next.common.model import Glm5NextDecoderLayer
+    from vllm.models.glm5next.common.model import _MHC_POST_MULT_VALUE, Glm5NextDecoderLayer
 
     class _Glm5NextMhcSites(torch.nn.Module):
         hc_pre = Glm5NextDecoderLayer.hc_pre
@@ -350,9 +221,9 @@ def _build_glm5next_sites(text_config, *, device: str):
             hidden_size = int(text_config.hidden_size)
             self.rms_norm_eps = text_config.rms_norm_eps
             self.hc_eps = text_config.hc_eps
-            self.mhc_sinkhorn_iterations = text_config.mhc_sinkhorn_iterations
-            self.mhc_post_mult_value = text_config.mhc_post_mult_value
-            self.n = int(text_config.mhc_num_residual_streams)
+            self.mhc_sinkhorn_iterations = text_config.hc_sinkhorn_iters
+            self.mhc_post_mult_value = _MHC_POST_MULT_VALUE
+            self.n = int(text_config.hc_mult)
             mix_hc = (2 + self.n) * self.n
             d_model = self.n * hidden_size
             for site in ("attn", "ffn"):
@@ -411,11 +282,11 @@ def _glm5next_kernel(sites, op: str, num_tokens: int, *, device: str):
         return torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
 
     if op == "expand":
-        # model.py L493: embedding output [T, H] -> [T, n, H].
+        # model.py L559-560: embedding output [T, H] -> [T, n, H].
         x = layer_out()
         return lambda: hc_expand(x, n)
     if op == "contract":
-        # model.py L553: last layer's post output [T, n, H] -> [T, H].
+        # model.py L620: last layer's post output [T, n, H] -> [T, H].
         x = residual()
         return lambda: hc_contract(x, n)
 
@@ -431,10 +302,10 @@ def _glm5next_kernel(sites, op: str, num_tokens: int, *, device: str):
     outs = [layer_out() for _ in state]
     torch.cuda.synchronize()
     if op == "post":
-        # model.py L552: hc_post(x, residual, post, comb).
+        # model.py L619: hc_post(x, residual, post, comb).
         return lambda: [sites.hc_post(x, res, post, comb) for x, (post, comb, res) in zip(outs, state, strict=True)]
     if op == "fused_post_pre":
-        # model.py L504-514 (attention site) and L530-540 (FFN site).
+        # model.py L570-581 (attention site) and L596-607 (FFN site).
         params = _glm5next_site_params(sites)
         return lambda: [
             sites.hc_fused_post_pre(
@@ -473,7 +344,7 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
         from vllm.model_executor.kernels.mhc.tilelang_kernels import mhc_fused_post_pre_split_config
 
         # mhc_fused_post_pre_tilelang (tilelang.py L814-983; branch
-        # L893/L914-976) picks the fused post+GEMM kernel when a split config
+        # L893/L914-975) picks the fused post+GEMM kernel when a split config
         # exists (tilelang_kernels.py L67-95: num_tokens <= 32 and
         # hidden_size % 128 == 0), else post + prenorm GEMM.
         if mhc_fused_post_pre_split_config(num_tokens, hidden_size, hc_mult) is not None:
@@ -498,12 +369,13 @@ def run_glm5next_mhc_module(
     version = get_version("vllm")
     _require_audited_runtime(GLM5NEXT_ARCHITECTURE, version)
     text_config = _glm5next_text_config(model_path)
-    config_shape = (int(text_config.hidden_size), int(text_config.mhc_num_residual_streams))
+    config_shape = (int(text_config.hidden_size), int(text_config.hc_mult))
     if config_shape != (int(hidden_size), int(hc_mult)):
         raise ValueError(f"case shape {(hidden_size, hc_mult)} does not match {model_path} config {config_shape}")
     _init_cuda(device)
     sites = _build_glm5next_sites(text_config, device=device)
-    sinkhorn_iters = int(text_config.mhc_sinkhorn_iterations)
+    # The repeat count the kernels receive (hc_pre / hc_fused_post_pre).
+    sinkhorn_iters = int(sites.mhc_sinkhorn_iterations)
 
     results = []
     for op in ops:
@@ -516,6 +388,23 @@ def run_glm5next_mhc_module(
                 with torch.no_grad():
                     return kernel()
 
+            # Deviation (graph mode): serving runs this architecture on
+            # breakable CUDA graphs with torch.compile off (config/vllm.py:74-121
+            # lists it on CUDA; L812-840 enables them and sets
+            # CompilationMode.NONE). A step of up to the capture ceiling
+            # (min(2 * max_num_seqs * decode_query_len, 1024 on the SM100
+            # family else 512), config/vllm.py:2357-2364) replays graph
+            # segments, and mHC replays inside them: no mHC op carries
+            # @eager_break_during_capture (the breaks sit in attention: the KDA
+            # core glm5next/common/kda.py:501, the MLA attention op
+            # model_executor/layers/attention/mla_attention.py:1462 and the
+            # sparse indexer glm5next/nvidia/sparse_indexer.py:100). A larger
+            # step runs mHC eagerly. Every row here is one CUDA graph, so rows above the
+            # ceiling leave out mHC's host launch gaps (the Python wrappers and
+            # 1-3 kernel launches per site): lower than serving by that
+            # overhead whenever the host, not the GPU, bounds the step. The
+            # kernels and their arguments match (no capture-dependent branch in
+            # the mHC path). Retired by the pending measurement-method decision.
             with benchmark_with_power(
                 device=torch.device(device),
                 kernel_func=kernel_func,
@@ -562,36 +451,25 @@ def run_mhc_module_worker(
     num_tokens: int,
     hidden_size: int,
     hc_mult: int,
-    architecture: str = ARCHITECTURE,
+    architecture: str = DSV4_ARCHITECTURE,
     model_path: str | None = None,
     *,
     perf_filename: str,
     device: str = "cuda:0",
 ) -> None:
+    # The op plan gives DeepSeek-V4 rows no architecture (the default above);
+    # they, and any other architecture without a route here, raise.
+    if architecture != GLM5NEXT_ARCHITECTURE:
+        raise MhcRuntimeNotAuditedError(f"no audited vLLM mHC dispatch for architecture {architecture!r}")
+    if not model_path:
+        raise ValueError("GLM mHC cases require a model_path")
     output_path = os.path.dirname(perf_filename) or os.getcwd()
     num_warmup = 3 if "--smoke" in sys.argv else 5
     num_iterations = 3 if "--smoke" in sys.argv else 10
-    if architecture == GLM5NEXT_ARCHITECTURE:
-        if not model_path:
-            raise ValueError("GLM mHC cases require a model_path")
-        run_glm5next_mhc_module(
-            ops=[op],
-            num_tokens_cases=[num_tokens],
-            model_path=model_path,
-            hidden_size=hidden_size,
-            hc_mult=hc_mult,
-            device=device,
-            output_path=output_path,
-            perf_filename=os.path.basename(perf_filename),
-            num_warmup=num_warmup,
-            num_iterations=num_iterations,
-        )
-        return
-    if architecture != ARCHITECTURE:
-        raise MhcRuntimeNotAuditedError(f"no audited vLLM mHC dispatch for architecture {architecture!r}")
-    run_mhc_module(
+    run_glm5next_mhc_module(
         ops=[op],
         num_tokens_cases=[num_tokens],
+        model_path=model_path,
         hidden_size=hidden_size,
         hc_mult=hc_mult,
         device=device,
@@ -603,35 +481,20 @@ def run_mhc_module_worker(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Collect vLLM DeepSeek-V4 / GLM-5.3-Flash mHC module latency.")
-    parser.add_argument("--architecture", choices=[ARCHITECTURE, GLM5NEXT_ARCHITECTURE], default=ARCHITECTURE)
-    parser.add_argument("--model-path", default=None, help="Packaged AIC model id (required for GLM)")
-    parser.add_argument("--op", choices=["pre", "post", "fused_post_pre", "expand", "contract", "all"], default="all")
+    parser = argparse.ArgumentParser(description="Collect vLLM GLM-5.3-Flash mHC module latency.")
+    parser.add_argument("--model-path", required=True, help="Packaged AIC model id")
+    parser.add_argument("--op", choices=[*GLM5NEXT_VLLM_OPS, "all"], default="all")
     parser.add_argument("--num-tokens", default="16")
-    parser.add_argument("--hidden-size", type=int, default=DEFAULT_HIDDEN_SIZE)
-    parser.add_argument("--hc-mult", type=int, default=DEFAULT_HC_MULT)
+    parser.add_argument("--hidden-size", type=int, default=_GLM5NEXT_HIDDEN_SIZE)
+    parser.add_argument("--hc-mult", type=int, default=_GLM5NEXT_HC_MULT)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-path", default=None)
 
     args = parser.parse_args()
-    if args.architecture == GLM5NEXT_ARCHITECTURE:
-        if not args.model_path:
-            parser.error("--model-path is required for GLM")
-        run_glm5next_mhc_module(
-            ops=list(GLM5NEXT_VLLM_OPS) if args.op == "all" else [args.op],
-            num_tokens_cases=_parse_int_list(args.num_tokens),
-            model_path=args.model_path,
-            hidden_size=args.hidden_size,
-            hc_mult=args.hc_mult,
-            device=args.device,
-            output_path=args.output_path,
-        )
-        return
-    if args.op not in {"pre", "post", "all"}:
-        parser.error(f"--op {args.op} is GLM-only")
-    run_mhc_module(
-        ops=["pre", "post"] if args.op == "all" else [args.op],
+    run_glm5next_mhc_module(
+        ops=list(GLM5NEXT_VLLM_OPS) if args.op == "all" else [args.op],
         num_tokens_cases=_parse_int_list(args.num_tokens),
+        model_path=args.model_path,
         hidden_size=args.hidden_size,
         hc_mult=args.hc_mult,
         device=args.device,

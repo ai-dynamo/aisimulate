@@ -46,8 +46,7 @@ def runtime(monkeypatch):
         monkeypatch.setitem(sys.modules, name, fake)
 
     class Request(SimpleNamespace):
-        def set_extend_input_len(self, length):
-            self.extend_input_len = length
+        pass
 
     batch = SimpleNamespace(prepare_for_extend=record("prepare"))
     forward_batch = SimpleNamespace()
@@ -56,19 +55,19 @@ def runtime(monkeypatch):
         AttentionInputs=lambda *_: object(),
         get_attn_tp_context=lambda: SimpleNamespace(set_attn_inputs=record("inputs")),
     )
-    module(
-        "sglang.srt.managers.schedule_batch",
-        Req=Request,
-        ScheduleBatch=SimpleNamespace(init_new=lambda **_: batch),
-    )
-    module("sglang.srt.mem_cache.cache_init_params", CacheInitParams=SimpleNamespace)
-    module("sglang.srt.mem_cache.chunk_cache", ChunkCache=lambda _: object())
+    module("sglang.srt.managers.schedule_batch", Req=Request)
+
+    def checkpoint(req, _tree_cache):
+        # mem_cache/common.py checkpoint_kv_cache: the next extend resumes after this one.
+        events.append("checkpoint")
+        req.prefix_len = req.extend_end
+
+    module("sglang.srt.mem_cache.common", checkpoint_kv_cache=checkpoint)
     module(
         "sglang.srt.model_executor.forward_batch_info",
         ForwardBatch=SimpleNamespace(init_new=lambda *_: forward_batch),
     )
     module("sglang.srt.sampling.sampling_params", SamplingParams=SimpleNamespace)
-    module("sglang.srt.speculative.spec_info", SpeculativeAlgorithm=SimpleNamespace(NONE=None))
     module("sglang.srt.utils", BumpAllocator=lambda **_: object())
     module("sglang.srt.managers.overlap_utils", resolve_forward_inputs=record("resolve"))
     module("flashinfer.autotuner", autotune=lambda _: nullcontext())
@@ -153,7 +152,8 @@ def runtime(monkeypatch):
             "json": json,
             "traceback": traceback,
             "_import_sglang_forward_context": lambda: (SimpleNamespace, lambda *_: nullcontext()),
-            "_alloc_prefix_indices": lambda _runner, size, _prefix: [object()] * size,
+            "_radix_disabled_tree_cache": lambda _runner: object(),
+            "_new_schedule_batch": lambda *_: batch,
             "_temporarily_chunked_alloc_extend": lambda *_: nullcontext(),
             "_dsa_forward_input_relay": lambda *_: object(),
             "_validate_dsa_forward_tokens": lambda *_: None,
@@ -287,3 +287,35 @@ def test_group_does_not_swallow_or_reclassify_unrelated_worker_exceptions(runtim
     assert exc.value is failure
     later.assert_not_called()
     assert not runtime.rows
+
+
+def test_prefix_is_the_requests_own_row_from_a_previous_extend(runtime):
+    """Radix disabled, a cached context exists only as the request's row from its previous chunk:
+    one extend over [0, prefix), the scheduler's checkpoint, then the timed extend."""
+    batches = []
+
+    def new_batch(_runner, reqs, _tree_cache):
+        def prepare():
+            batches.append([(req.extend_end, getattr(req, "prefix_len", 0)) for req in reqs])
+
+        return SimpleNamespace(prepare_for_extend=prepare)
+
+    runtime.loaded["_new_schedule_batch"] = new_batch
+    runtime.kwargs.update(batch_size=2, seq_length=4096, prefix_len=128)
+    assert runtime.loaded["_run_prefill"](**runtime.kwargs) is True
+    assert batches == [[(128, 0), (128, 0)], [(4224, 128), (4224, 128)]]
+    assert runtime.events.count("checkpoint") == 2
+    assert len(runtime.rows) == 1 and runtime.rows[0]["item_list"][0]["step"] == 128
+
+
+def test_prefix_free_prefill_is_one_extend(runtime):
+    batches = []
+
+    def new_batch(_runner, reqs, _tree_cache):
+        return SimpleNamespace(prepare_for_extend=lambda: batches.append([req.extend_end for req in reqs]))
+
+    runtime.loaded["_new_schedule_batch"] = new_batch
+    runtime.kwargs.update(seq_length=4096)
+    assert runtime.loaded["_run_prefill"](**runtime.kwargs) is True
+    assert batches == [[4096]]
+    assert "checkpoint" not in runtime.events

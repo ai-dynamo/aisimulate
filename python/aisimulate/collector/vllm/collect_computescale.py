@@ -15,16 +15,25 @@ predictions bill a launch and an extra pass over the activation that serving
 does not have (observed on l40s, h100 and h200:
 benchmarks/evidence/collector/op-probe-2026-10/findings.yaml, entries
 full_reprobe_framework_mode_2026_09_24 and sm89_vllm_0300_probe_2026_10_04).
-Retire it by modelling the fused quant (fold compute_scale into the gemm row
-when the deployment compiles), or by dropping the standalone row for compiled
-deployments.
+The fold still holds: a per-tensor checkpoint leaves the quant_fp8 custom op
+off (only block-quantized weights turn it on, config/vllm.py:1733-1748), so
+QuantFP8 runs as a native op that Inductor compiles together with its
+neighbours (model_executor/custom_op.py:172-192). Retire it by modelling the
+fused quant (fold compute_scale into the gemm row when the deployment
+compiles), or by dropping the standalone row for compiled deployments.
 """
 
-# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968047:
-# compute_scale: 8/8 representative cases. The native framework
-# builders/selectors remain authoritative; no kernel fallback is introduced.
-# The campaign manifest still selects one exact release per run.
-__compat__ = "vllm==0.30.0"
+# Audited against vLLM v0.32.0 (from v0.30.0): scaled_fp8_quant has the same
+# signature and body (_custom_ops.py:1823-1891), GroupShape still lives in
+# quant_utils (quantization/utils/quant_utils.py:116-140), and the two CUDA
+# kernels it launches, dynamic_per_token_scaled_fp8_quant and
+# static_scaled_fp8_quant (csrc/quantization/w8a8/fp8/common.cu:249,467), are
+# unchanged in source: v0.31.0 rewrote only the per-tensor dynamic abs-max
+# reduction, which this collector does not call, and v0.32.0 moved the files
+# out of csrc/libtorch_stable with include-only edits into the same
+# _C_stable_libtorch target, built with the same CUDA 13.0.3, torch 2.13.0 and
+# arch list. Earlier audits are git history.
+__compat__ = "vllm==0.32.0"
 
 import torch
 from collector.helper import benchmark_with_power, get_sm_version, log_perf

@@ -15,7 +15,9 @@ Sub-kernels (GLM-5 DSA prefill path, in order):
     2. ``fast_topk_transform_fused`` (sgl_kernel) (topk)
                                                 top-2048 plus the paged output
                                                 transform over the mqa logits
-                                                (FULL length, NOT /4).
+                                                (FULL length, NOT /4); decode
+                                                points run the top-k v2 kernel
+                                                (``topk_transform_v2``).
     3. ``flash_mla_sparse_fwd``      (dsa_attn) sparse FMLA over topk-selected
                                                 positions; d_qk=576 (kv_lora 512
                                                 + rope 64), d_v=512.
@@ -29,7 +31,7 @@ from __future__ import annotations
 # 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 import os
 
@@ -181,7 +183,21 @@ def _bench_glm5_mqa(M, past_kv, isl, *, index_n_heads, index_head_dim, device): 
     M = bs*isl query tokens over a CONCATENATED per-request KV cache (bs
     segments of past_kv + isl); ks/ke are absolute [start, end) into that
     cache, matching sglang's dsa_indexer (per-token k_start / k_end). Each
-    request r local pos p scans causal [r*seg, r*seg + past_kv + p + 1)."""
+    request r local pos p scans causal [r*seg, r*seg + past_kv + p + 1).
+
+    Deviation (decode points, isl == 1, every SM): serving's decode indexer scores
+    with DeepGEMM fp8_paged_mqa_logits over the page-64 index-K cache
+    (Indexer._get_topk_paged, dsa/dsa_indexer.py:1219-1449 @v0.5.23, through
+    deepgemm_paged_mqa_logits_split, kernels/ops/attention/dsa/paged_mqa_logits.py:
+    69-92, with get_paged_mqa_logits_metadata built at metadata time,
+    dsa_backend.py:960-973, and batches above the SM count split per chunk); these
+    rows time the ragged prefill kernel of a one-token extend instead (the op plan
+    declares them decode steps, op_plans.Glm5SparseCase). The direction of the error
+    is not measured. The only reader, the CP prefill composition
+    (crates/core/src/perfmodel/operators/dsa.rs:429-490), interpolates across them.
+    Retire by timing fp8_paged_mqa_logits for isl == 1 once the owner settles which
+    kernel these points mean.
+    """
     from deep_gemm import fp8_mqa_logits
 
     bs = max(1, M // isl)
@@ -199,7 +215,7 @@ def _bench_glm5_mqa(M, past_kv, isl, *, index_n_heads, index_head_dim, device): 
     ks = seg_start
     ke = (seg_start + past_kv + causal).clamp(max=full_s)
 
-    # Match SGLang 0.5.14 Indexer._get_topk_ragged: fp8_mqa_logits
+    # Match SGLang Indexer._get_topk_ragged (dsa/dsa_indexer.py:1540-1700 @v0.5.23): fp8_mqa_logits
     # materializes a float32 [query_rows, concatenated_kv_rows] workspace, so
     # large ragged batches must be split along Q. Without this loop the
     # standalone collector can request terabytes even though the serving path
@@ -228,6 +244,14 @@ def _glm5_fuse_topk_enabled() -> bool:
     from sglang.srt import environ as _environ
 
     return bool(_environ.envs.SGLANG_DSA_FUSE_TOPK.get())
+
+
+def _glm5_topk_v2_enabled() -> bool:
+    """DSATopKBackend.should_use_topk_v2 for serving's default sgl-kernel top-k backend
+    (dsa/dsa_topk_backend.py:55-56 @v0.5.23; SGLANG_OPT_USE_TOPK_V2 defaults to True)."""
+    from sglang.srt import environ as _environ
+
+    return bool(_environ.envs.SGLANG_OPT_USE_TOPK_V2.get())
 
 
 def _glm5_topk_metadata(bs, isl, past_kv):
@@ -274,14 +298,16 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
     """GLM-5 indexer top-k — the kernel SGLang's DSA backend ACTUALLY runs,
     benched as a FLAT/TOP_LAST DELTA calibration (DSV4-style).
 
-    Kernel selection for the fixed SGLang 0.5.14 retained profile
-    (``SGLANG_DSA_FUSE_TOPK`` env default = True): both context and decode use
-    the PAGED ``fast_topk_transform_fused`` output transform.  The emitted FP8
-    profile selects ``flashmla_kv`` on SM90 and ``flashmla_kv``/``trtllm`` on
-    SM100/103.  SGLang uses the RAGGED transform only for an explicitly forced
-    FP8 + ``flashmla_sparse`` EXTEND profile, which this collector does not
-    emit and must not merge into the same persisted contract.  Fuse-topk
-    disabled uses plain ``fast_topk_v2``.
+    Kernel selection at SGLang v0.5.23 (``SGLANG_DSA_FUSE_TOPK`` and
+    ``SGLANG_OPT_USE_TOPK_V2`` both default True, sgl-kernel top-k backend):
+    context uses the PAGED ``fast_topk_transform_fused`` output transform with
+    row_starts (dsa/dsa_topk_backend.py:204-211), decode the top-k v2 kernel
+    (``topk_transform_v2``, :123-133).  The emitted FP8 profile selects
+    ``flashmla_kv`` on SM90 and ``trtllm`` on SM100/103
+    (arg_groups/overrides.py:714-720), both PAGED (dsa_backend.py:4101-4124).
+    SGLang uses the RAGGED transform only for an FP8 + ``flashmla_sparse``
+    EXTEND profile, which this collector does not emit and must not merge into
+    the same persisted contract.  Fuse-topk disabled uses plain ``fast_topk_v2``.
 
     Context still uses the production concatenated-ragged MQA score geometry
     and absolute row starts; PAGED describes how selected local indices are
@@ -300,7 +326,7 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
     independently warmed steady-state chunk-kernel measurements.  It excludes
     score construction, Python orchestration, and power, and is not an
     end-to-end timing of production's interleaved MQA/top-k/copy loop.  Decode
-    remains the existing single-kernel paged calibration.
+    is a single-kernel paged calibration on the kernel serving's decode runs.
 
     Returns ``(results, kernel_source)``.
     """
@@ -408,13 +434,36 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
 
         return [(mode, round(mode_latency_ms[mode], 6)) for mode in ("flat", "top_last")], kernel_src
 
-    # Production _get_topk_paged omits row_starts for decode.  In sgl-kernel
-    # that optional argument is also the dispatch signal for the dedicated
-    # decode transform kernel, so a zero tensor is not equivalent here.
+    # Decode: Indexer._get_topk_paged calls metadata.topk_transform(logits, index_topk)
+    # without row_starts (dsa/dsa_indexer.py:1448-1449 @v0.5.23). With the default
+    # SGLANG_OPT_USE_TOPK_V2=True (environ.py:1486) and the sgl-kernel top-k backend
+    # (arg_groups/fields/exec_.py:386-393), that PAGED decode shape goes to the
+    # DeepSeek-V4 top-k v2 kernel over the indexer's page-64 real_page_table
+    # (dsa/dsa_topk_backend.py:123-133 -> _topk_transform_v2_paged :312-381); its plan
+    # is built once per forward when the metadata is (dsa_backend.py:975-989), not in
+    # the layer. sgl-kernel's fast_topk_transform_fused without row_starts runs only
+    # when v2 is off.
     if not fused:
 
         def make_fn(score):
             return lambda: fast_topk_v2(score, lengths, topk)
+    elif _glm5_topk_v2_enabled() and topk <= 2048:
+        from sglang.kernels.ops.attention.dsv4.topk import plan_topk_v2, topk_transform_paged_v2
+
+        page_size = 64  # dsa/dsa_indexer.py:1247: the DSA index-K pool page
+        pages = (max_seqlen_k + page_size - 1) // page_size
+        real_page_table = torch.arange(M * pages, dtype=torch.int32, device=device).view(M, pages)
+        plan = plan_topk_v2(lengths)
+        kernel_src = "topk_transform_v2"
+
+        def make_fn(score):
+            def run():
+                # _topk_transform_v2_paged allocates its output per call (:378).
+                out = score.new_empty((M, topk), dtype=torch.int32)
+                topk_transform_paged_v2(score, lengths, real_page_table, out, page_size, plan)
+                return out
+
+            return run
     else:
         pt = torch.arange(max_seqlen_k, dtype=torch.int32, device=device)
         page_table_size_1 = pt.view(1, max_seqlen_k).repeat(M, 1).contiguous()
@@ -439,30 +488,42 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
 
 def _bench_glm5_dsa_attn(M, past_kv, isl, *, native_heads, d_qk, d_v, topk, device):  # noqa: N803
     """flash_mla_sparse_fwd — sparse FMLA, ragged batch of bs = M // isl reqs.
+
+    The call serving's flashmla_sparse prefill makes (layers/attention/dsa_backend.py:
+    2464-2471 -> _forward_flashmla_sparse :2805-2878 @v0.5.23): the sgl-flash-mla
+    wheel's legacy kernel through kernels/ops/attention/flash_mla_interface.py:144-168,
+    which replaced sgl_kernel.flash_mla in serving at v0.5.23.
     q (M=bs*isl, heads->64 on SM90 / pad128 on SM100+, d_qk), kv = CONCATENATED bs segments of
     (past_kv + isl); indices (M, 1, K) are absolute into each token's own
-    segment. The production top-k transform always returns ``topk`` columns,
-    filling positions beyond the current context with -1."""
-    from sgl_kernel.flash_mla import flash_mla_sparse_fwd
+    segment. The production top-k transform always returns ``topk`` columns:
+    token p of a request sees past_kv + p + 1 positions, selects
+    min(past_kv + p + 1, topk) of them and pads the rest with -1. Serving passes
+    that count as ``topk_length`` (dsa_cache_seqlens_int32 = compute_dsa_seqlens,
+    dsa/utils.py:159-161, dsa_backend.py:1353-1360) so the kernel skips the padded
+    tail."""
+    from sglang.kernels.ops.attention.flash_mla_interface import flash_mla_sparse_fwd
 
     bs = max(1, M // isl)
     seg = past_kv + isl
     full_s = max(1, bs * seg)  # concatenated bs segments of (past_kv + isl)
-    valid_k = min(topk, seg)
     sm_major, _ = torch.cuda.get_device_capability(device)
     q_heads = 128 if sm_major >= 10 else native_heads
     q = torch.randn(M, q_heads, d_qk, dtype=torch.bfloat16, device=device)
     kv = torch.randn(full_s, 1, d_qk, dtype=torch.bfloat16, device=device)
-    # each token selects k positions inside its own segment [r*seg, r*seg+seg)
+    # each token selects positions inside its own causal window [r*seg, r*seg + past_kv + p + 1)
     seg_start = torch.repeat_interleave(torch.arange(bs, dtype=torch.int32, device=device) * seg, isl)
-    indices = torch.full((M, 1, topk), -1, dtype=torch.int32, device=device)
-    indices[:, :, :valid_k] = seg_start.view(M, 1, 1) + torch.arange(valid_k, dtype=torch.int32, device=device).view(
-        1, 1, valid_k
-    )
+    causal = torch.arange(1, isl + 1, dtype=torch.int32, device=device).repeat(bs)
+    topk_length = (past_kv + causal).clamp(max=topk).to(torch.int32)
+    columns = torch.arange(topk, dtype=torch.int32, device=device)
+    indices = torch.where(
+        columns.view(1, topk) < topk_length.view(M, 1),
+        seg_start.view(M, 1) + columns.view(1, topk),
+        torch.full((), -1, dtype=torch.int32, device=device),
+    ).view(M, 1, topk)
     sm_scale = 1.0 / (d_qk**0.5)
 
     def kernel_fn():
-        return flash_mla_sparse_fwd(q=q, kv=kv, indices=indices, sm_scale=sm_scale, d_v=d_v)
+        return flash_mla_sparse_fwd(q=q, kv=kv, indices=indices, sm_scale=sm_scale, d_v=d_v, topk_length=topk_length)
 
     return _bench_cuda_graph(kernel_fn, allow_graph_fail=False, device=device)
 

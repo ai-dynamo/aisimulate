@@ -100,25 +100,23 @@ def test_sglang_plans_one_row_per_dsv4_site_and_model(monkeypatch):
 
 def test_glm_row_conventions_match_the_shared_table(monkeypatch):
     vllm = _load(monkeypatch, "vllm")
-    sglang = _load(monkeypatch, "sglang")
-    # pre/post (and vLLM fused_post_pre) fold both per-layer sites like the
-    # DeepSeek-V4 rows; expand/contract happen once per forward.
+    # pre/post/fused_post_pre fold both per-layer sites like the DeepSeek-V4
+    # rows; expand/contract happen once per forward.
     assert vllm._GLM5NEXT_NUM_SITES == {"pre": 2, "post": 2, "fused_post_pre": 2, "expand": 1, "contract": 1}
-    assert sglang._GLM5NEXT_NUM_SITES == {"pre": 2, "post": 2, "expand": 1, "contract": 1}
-    assert vllm.MHC_NUM_SITES == 2
 
 
 @pytest.mark.parametrize(
     ("backend", "architecture", "version", "audited"),
     [
-        # DeepSeek-V4 is not audited on 0.31.0 (shared architecture-free key, see the module)
-        ("vllm", DSV4, "0.31.0", False),
-        ("vllm", GLM, "0.31.0", True),
+        # DeepSeek-V4 is not audited on vLLM (shared architecture-free key, see the module)
+        ("vllm", DSV4, "0.32.0", False),
+        ("vllm", GLM, "0.32.0", True),
+        ("vllm", GLM, "0.31.0", False),
         ("vllm", GLM, "0.30.0", False),
-        ("sglang", DSV4, "0.5.21", True),
-        ("sglang", DSV4, "0.5.20", False),
-        ("sglang", GLM, "0.5.21", False),  # not ported to 0.5.21 yet
-        ("sglang", "UnknownForCausalLM", "0.5.21", False),
+        ("sglang", DSV4, "0.5.23", True),
+        ("sglang", DSV4, "0.5.21", False),
+        ("sglang", GLM, "0.5.23", False),  # no SGLang GLM route
+        ("sglang", "UnknownForCausalLM", "0.5.23", False),
     ],
 )
 def test_each_architecture_runs_only_on_its_audited_release(monkeypatch, backend, architecture, version, audited):
@@ -143,20 +141,44 @@ def test_audited_releases_never_overlap_across_architectures(monkeypatch, backen
     module = _load(monkeypatch, backend)
     from collector.version_resolver import _check_compat
 
-    candidates = ["0.24.0", "0.25.0", "0.27.1", "0.30.0", "0.31.0", "0.5.14", "0.5.16", "0.5.20", "0.5.21"]
+    candidates = [
+        "0.24.0",
+        "0.25.0",
+        "0.27.1",
+        "0.30.0",
+        "0.31.0",
+        "0.32.0",
+        "0.5.14",
+        "0.5.16",
+        "0.5.20",
+        "0.5.21",
+        "0.5.23",
+    ]
     for version in candidates:
         admitted = [arch for arch, spec in module._ARCHITECTURE_COMPAT.items() if _check_compat(spec, version)]
         assert len(admitted) <= 1, (version, admitted)
 
 
-def test_vllm_glm_sites_import_the_0_31_0_module_location():
-    # vllm.models.glm5next.nvidia.model moved to .common.model at 0.31.0.
+def test_vllm_glm_sites_follow_the_0_32_0_model_and_config_surface():
+    # The decoder layer lives in glm5next/common/model.py. vLLM 0.32.0 dropped
+    # vllm.transformers_utils.configs.glm5_next: serving reads transformers'
+    # Glm5NextTextConfig under the checkpoint's field names and takes the post
+    # multiplier from a model.py constant.
     source = (COLLECTOR_DIR / "vllm" / "collect_mhc_module.py").read_text(encoding="utf-8")
-    assert "from vllm.models.glm5next.common.model import Glm5NextDecoderLayer" in source
+    assert "from vllm.models.glm5next.common.model import _MHC_POST_MULT_VALUE, Glm5NextDecoderLayer" in source
     assert "vllm.models.glm5next.nvidia.model" not in source
+    assert "from transformers import Glm5NextConfig" in source
+    assert "vllm.transformers_utils.configs.glm5_next" not in source
+    for field in ("hc_mult", "hc_eps", "hc_sinkhorn_iters"):
+        assert f"text_config.{field}" in source
+    removed = ("mhc_num_residual_streams", "text_config.mhc_sinkhorn_iterations", "text_config.mhc_post_mult_value")
+    assert not [name for name in removed if name in source]
 
 
-def test_worker_rejects_unknown_architecture(monkeypatch):
+@pytest.mark.parametrize("architecture", [None, DSV4, "UnknownForCausalLM"])
+def test_worker_rejects_architectures_without_a_route(monkeypatch, architecture):
+    # DeepSeek-V4 rows carry no architecture param (None: the worker's default).
     module = _load(monkeypatch, "vllm")
+    args = ("pre", 16, 4096, 4) if architecture is None else ("pre", 16, 4096, 4, architecture)
     with pytest.raises(module.MhcRuntimeNotAuditedError):
-        module.run_mhc_module_worker("pre", 16, 4096, 4, "UnknownForCausalLM", perf_filename="/tmp/x_perf.txt")
+        module.run_mhc_module_worker(*args, perf_filename="/tmp/x_perf.txt")

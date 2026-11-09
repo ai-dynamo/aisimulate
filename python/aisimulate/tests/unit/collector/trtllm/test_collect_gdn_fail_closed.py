@@ -97,13 +97,11 @@ def _load_context_runner(benchmark_with_power, log_perf):
         "torch": _fake_torch(),
         "gc": SimpleNamespace(collect=lambda: None),
         "aic_debug": 0,
-        "aic_cached_inputs": 1,
         "benchmark_with_power": benchmark_with_power,
         "log_perf": log_perf,
         "causal_conv1d_fn": lambda *a, **k: None,
         "chunk_gated_delta_rule": lambda *a, **k: None,
         "_CHUNK_KERNEL_SOURCE": "chunk_gated_delta_rule_flashinfer",
-        "_make_input_pool": None,
     }
     module = ast.Module(body=[_function("run_gdn_context_benchmark")], type_ignores=[])
     exec(compile(module, str(SOURCE), "exec"), namespace)
@@ -145,3 +143,39 @@ def test_trtllm_gdn_context_capture_failure_fails_the_case_but_keeps_the_other_c
     assert "CUDA graph capture failed" in str(info.value)
     # the first cell shipped both of its rows; the failed cell shipped none
     assert logged == ["causal_conv1d_fn", "chunk_gated_delta_rule_flashinfer"]
+
+
+def test_trtllm_gdn_context_builds_one_input_set_per_cell():
+    """CUDA-graph replays reuse the tensors captured once, so a per-call input pool never
+    reached the timed runs; its 13 copies of the full q|k|v conv input ran large cells out of
+    memory on every system (1.4.0rc2 family-0 run). One conv input per cell now."""
+    conv_inputs = []
+
+    @contextmanager
+    def benchmark_with_power(**_kwargs):
+        yield {"latency_ms": 0.01, "power_stats": None, "used_cuda_graph": True}
+
+    run = _load_context_runner(benchmark_with_power, lambda **_kwargs: True)
+    real_randn = run.__globals__["torch"].randn
+
+    def randn(*shape, **kwargs):
+        if shape[1:] == (2 * 16 * 128 + 32 * 128, 32):
+            conv_inputs.append(shape)
+        return real_randn(*shape, **kwargs)
+
+    run.__globals__["torch"].randn = randn
+    run(
+        d_model=2048,
+        d_conv=4,
+        num_k_heads=16,
+        head_k_dim=128,
+        num_v_heads=32,
+        head_v_dim=128,
+        batch_size_list=[1, 2],
+        seq_len_list=[32],
+        model_name="Qwen/Qwen3.5-test",
+        perf_filename="gdn_perf.txt",
+        trtllm_version="1.4.0rc2",
+        device="cuda:0",
+    )
+    assert conv_inputs == [(1, 8192, 32), (2, 8192, 32)]

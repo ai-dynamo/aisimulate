@@ -34,16 +34,15 @@ model_case_values:
       head_dim: 192
       v_head_dim: 128
       window_size: 0
-      # TRTLLM MHA treats V as qk_head_dim=192 (B200 probe
-      # in-kernel failure), and the SM120 default flashinfer rejects the
-      # asymmetric K/V pool in both phases (RTX 6000 Pro probe
-      # prefill reshape '[-1, 4, 192]' on the 128-wide V pool, decode paged
-      # K/V stride check 768 vs 512). The SM89 default flashinfer rejects it
-      # the same way (L40S probe prefill reshape '[-1, 1, 192]'
-      # / '[-1, 2, 192]' on the 128-wide V pool, decode paged K/V stride
-      # check 384 vs 256 / 192 vs 128). Triton is the only runnable 0.5.14
-      # QK192/V128 path on Ada and Blackwell; SM103 remains source-derived.
-      sglang_backends: {89: triton, 90: fa3, 100: triton, 103: triton, 120: triton}
+      # SGLang serves MiMo-V2 on fa4 on SM100/103 (arg_groups/model_overrides/
+      # mimo_v2.py _mimo_v2_overrides; the generic default also picks fa4 for
+      # asymmetric K/V, model_override_base.py get_default_attn_backend), on fa3
+      # on SM90, and on triton on SM89/SM120: MiMo-V2-Flash sets the sink-bias
+      # flags, so the generic default skips flashinfer (model_config.py
+      # _detect_attention_sinks), which also rejects the 192/128 K/V pool (L40S
+      # and RTX 6000 Pro probes: prefill reshape '[-1, 4, 192]' on the 128-wide
+      # V pool, decode paged K/V stride check 768 vs 512).
+      sglang_backends: {89: triton, 90: fa3, 100: fa4, 103: fa4, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
     - id: mimo_v2_swa_attention
       model_path: XiaomiMiMo/MiMo-V2-Flash
@@ -53,7 +52,7 @@ model_case_values:
       v_head_dim: 128
       window_size: 128
       has_attention_sink: true
-      sglang_backends: {89: triton, 90: fa3, 100: triton, 103: triton, 120: triton}
+      sglang_backends: {89: triton, 90: fa3, 100: fa4, 103: fa4, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
   moe:
     - model_path: XiaomiMiMo/MiMo-V2-Flash
@@ -62,13 +61,20 @@ model_case_values:
       topk: 8
       num_experts: 256
       sglang_moe_scoring_func: sigmoid
+      # MiMoV2MoE passes DeepSeekV3 routing to FusedMoE when the gate has a
+      # correction bias (noaux_tc) and norm_topk_prob is set
+      # (models/mimo_v2.py:446-450 at SGLang v0.5.23).
+      sglang_moe_routing_method_type: DeepSeekV3
       sglang_moe_routed_scaling_factor: 1.0
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
       sglang_moe_backends:
-        fp8_block: {default: triton}
+        # An FP8 checkpoint without FP4 experts runs flashinfer_trtllm on
+        # SM100/103 (arg_groups/model_overrides/mimo_v2.py:33-49) and the auto
+        # Triton runner elsewhere.
+        fp8_block: {default: triton, 100: flashinfer_trtllm, 103: flashinfer_trtllm}
 
 all_frameworks_op_cases:
   moe:

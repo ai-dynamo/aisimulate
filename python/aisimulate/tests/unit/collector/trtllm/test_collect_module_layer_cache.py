@@ -65,3 +65,67 @@ def test_msa_layer_cache_keys_on_model_heads_gemm_and_device():
     assert builds[0] == expected
     cached("MiniMaxAI/MiniMax-M3", 64, "fp8_block", "cuda:0")
     assert len(builds) == 2 and evictions == ["gc", "empty_cache"]
+
+
+def test_mla_projections_are_tuned_at_each_count_under_autotune():
+    """Serving's warmup pass forwards every projection under autotune() at its token counts."""
+    import contextlib
+    import weakref
+
+    tree = ast.parse((COLLECTOR / "collect_mla_module.py").read_text())
+    selected = [
+        n
+        for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name == "_autotune_projections")
+        or (isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == "_TUNED_NUM_TOKENS")
+    ]
+    assert len(selected) == 2
+    events = []
+
+    class Linear:
+        def __init__(self, name, in_features):
+            self.name, self.in_features, self.dtype = name, in_features, "bf16"
+
+        def forward(self, x):
+            events.append((self.name, x, tuning[-1]))
+
+    class Module:
+        def __init__(self, children):
+            self.children = children
+
+        def modules(self):
+            return [self, *self.children]
+
+    tuning = [False]
+
+    @contextlib.contextmanager
+    def autotune():
+        tuning.append(True)
+        yield
+        tuning.append(False)
+
+    torch = SimpleNamespace(
+        inference_mode=contextlib.nullcontext,
+        randn=lambda shape, dtype, device: (shape, dtype, device),
+        bfloat16="bf16",
+        cuda=SimpleNamespace(synchronize=lambda: None),
+    )
+    namespace = {
+        "weakref": weakref,
+        "time": __import__("time"),
+        "torch": torch,
+        "Linear": Linear,
+        "autotune": autotune,
+    }
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "collect_mla_module.py", "exec"), namespace)
+    module = Module([Linear("q_b_proj", 1536), object(), Linear("o_proj", 16384)])
+    namespace["_autotune_projections"](module, (8192, 1), "cuda:0")
+    assert events == [
+        ("q_b_proj", ((8192, 1536), "bf16", "cuda:0"), True),
+        ("o_proj", ((8192, 16384), "bf16", "cuda:0"), True),
+        ("q_b_proj", ((1, 1536), "bf16", "cuda:0"), True),
+        ("o_proj", ((1, 16384), "bf16", "cuda:0"), True),
+    ]
+    assert namespace["_TUNED_NUM_TOKENS"][module] == 8192
+    namespace["_autotune_projections"](module, (32768,), "cuda:0")
+    assert namespace["_TUNED_NUM_TOKENS"][module] == 32768

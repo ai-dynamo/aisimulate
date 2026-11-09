@@ -54,16 +54,19 @@ def _install_trtllm_stubs(monkeypatch):
         cuda=types.SimpleNamespace(empty_cache=_noop, Stream=_noop),
         device=lambda value: value,
     )
-    _stub_module(monkeypatch, "tensorrt_llm", __version__="1.3.0rc20")
+    _stub_module(monkeypatch, "tensorrt_llm", __version__="1.4.0rc2")
     for package in (
         "tensorrt_llm._torch",
+        "tensorrt_llm._torch.custom_ops",
         "tensorrt_llm._torch.models",
-        "tensorrt_llm._torch.modules",
+        "tensorrt_llm._torch.moe",
         "tensorrt_llm.models",
     ):
         _stub_module(monkeypatch, package)
 
     _stub_module(monkeypatch, "tensorrt_llm._torch.autotuner", AutoTuner=_Dummy, autotune=_noop)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.custom_ops.torch_custom_ops", MoERunner=_Dummy)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.memory_buffer_utils", get_memory_buffers=_noop)
     _stub_module(monkeypatch, "tensorrt_llm._torch.model_config", ModelConfig=_Dummy)
     _stub_module(
         monkeypatch,
@@ -72,10 +75,21 @@ def _install_trtllm_stubs(monkeypatch):
     )
     _stub_module(
         monkeypatch,
-        "tensorrt_llm._torch.modules.fused_moe",
+        "tensorrt_llm._torch.moe.fused_moe",
+        DEFAULT_MOE_ACTIVATION=None,
+        ConfigurableMoE=_Dummy,
+        DeepSeekV3MoeRoutingMethod=_Dummy,
+        Llama4RenormalizeMoeRoutingMethod=_Dummy,
+        MiniMaxM2MoeRoutingMethod=_Dummy,
         RenormalizeMoeRoutingMethod=_Dummy,
+        SimpleActivation=_Dummy,
+        SiTuActivation=_Dummy,
+        SwigluActivation=_Dummy,
+        SwigluBiasActivation=_Dummy,
+        TritonFusedMoE=_Dummy,
         create_moe=_noop,
     )
+    _stub_module(monkeypatch, "tensorrt_llm._torch.utils", ActivationType=_Dummy)
     _stub_module(monkeypatch, "tensorrt_llm.mapping", Mapping=_Dummy)
     _stub_module(
         monkeypatch,
@@ -83,10 +97,13 @@ def _install_trtllm_stubs(monkeypatch):
         is_sm_100f=lambda sm_version=None: sm_version in (100, 103),
     )
     _stub_module(monkeypatch, "tensorrt_llm.models.modeling_utils", QuantAlgo=_Dummy(), QuantConfig=_Dummy)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.pyexecutor")
+    _stub_module(monkeypatch, "tensorrt_llm._torch.pyexecutor.model_loader", initialize_dummy_weights=_noop)
     _stub_module(
         monkeypatch,
         "collector.helper",
         EXIT_CODE_RESTART=1,
+        FIRST_POINT_WARMUP_SECONDS=0.1,
         balanced_logits=_noop,
         benchmark_with_power=_noop,
         get_sm_version=lambda: 100,
@@ -135,9 +152,13 @@ def _install_vllm_stubs(monkeypatch):
     _stub_module(
         monkeypatch,
         "collector.helper",
+        FIRST_POINT_WARMUP_SECONDS=0.1,
+        MOE_WEIGHT_MATRIX_SUFFIXES=("_weight",),
         balanced_logits=_noop,
         benchmark_with_power=_noop,
+        fill_dense_weight_=_noop,
         flashinfer_autotuned=_noop,
+        flashinfer_tuning_bucket=_noop,
         get_sm_version=lambda: 100,
         log_perf=_noop,
         power_law_logits_v3=_noop,
@@ -426,7 +447,8 @@ def test_vllm_moe_resolves_dynamic_experts_inside_token_loop():
     token_loop = next(
         node
         for node in ast.walk(run_moe)
-        if isinstance(node, ast.For) and isinstance(node.target, ast.Name) and node.target.id == "num_tokens"
+        if isinstance(node, ast.For)
+        and any(isinstance(name, ast.Name) and name.id == "num_tokens" for name in ast.walk(node.target))
     )
 
     selected_leaf_calls = [

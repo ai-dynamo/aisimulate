@@ -90,10 +90,10 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         def fp8_dtype(self):
             return FP8
 
-        def get_attn_backend_cls(self, _backend, selector, *, num_heads):
-            calls["selector"] = selector
-            calls["selector_num_heads"] = num_heads
-            return "fake.backend"
+    def get_attn_backend(*args, **kwargs):
+        # serving's entry point (attention.py:350-360 @v0.32.0)
+        calls["selector"] = (args, kwargs)
+        return Backend
 
     class Backend:
         forward_includes_kv_cache_update = False
@@ -160,9 +160,9 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "set_random_seed": lambda _seed: None,
         "create_vllm_config": create_config,
         "set_current_vllm_config": lambda _config: nullcontext(),
-        "AttentionSelectorConfig": lambda **kwargs: SimpleNamespace(**kwargs),
+        "get_attn_backend": get_attn_backend,
+        "SERVING_MAX_NUM_SEQS": 1024,
         "current_platform": Platform(),
-        "resolve_obj_by_qualname": lambda _path: Backend,
         "AttentionBackendEnum": {"FLASH_ATTN": object()},
         "create_standard_kv_cache_spec": lambda *_args: SimpleNamespace(dtype=UINT8 if use_fp8_kv_cache else BF16),
         "create_common_attn_metadata": create_metadata,
@@ -183,6 +183,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "kv_cache_in_resolved_layout": lambda kv, order: (calls.setdefault("kv_layout_order", order), kv)[1],
     }
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
+    _load_function(ATTN_SOURCE, "match_serving_fa_aot_schedule", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
     with ExitStack() as stack:
         run(
@@ -199,7 +200,9 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
 
     assert calls["batch"] == BatchSpec(seq_lens=[65, 65], query_lens=[1, 1])
     assert calls["config"]["max_model_len"] == 65
-    assert calls["selector"].kv_cache_dtype == ("fp8" if use_fp8_kv_cache else "auto")
+    # serving's scheduler bound, not the case's batch of 2 (CUDA-graph capture sizes)
+    assert calls["config"]["max_num_seqs"] == 1024
+    assert calls["selector"] == ((128, BF16, "fp8" if use_fp8_kv_cache else "auto"), {"has_sliding_window": False})
     assert calls["log"]["item_list"][0]["isl"] == 1
     assert calls["log"]["item_list"][0]["step"] == 64
     assert calls["log"]["kernel_source"] == "vllm_flash_attn_fa3"

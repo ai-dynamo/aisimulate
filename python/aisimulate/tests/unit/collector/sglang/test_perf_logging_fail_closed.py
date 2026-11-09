@@ -84,16 +84,17 @@ def test_benchmarks_do_not_silently_fall_back_from_cuda_graph(relative_path):
         ),
         (
             "collector/sglang/collect_mla_bmm.py",
-            {"sglang_torch_bmm", "sglang_sgl_kernel_bmm_fp8"},
+            {"sglang_torch_bmm", "sglang_flashinfer_bmm_fp8"},
         ),
         (
             "collector/sglang/collect_mhc_module.py",
             {
-                "sglang_tilelang_mhc_pre",
-                "sglang_deepgemm_mhc_pre",
-                "sglang_torch_mhc_pre",
-                "sglang_tilelang_mhc_post",
-                "sglang_torch_mhc_post",
+                "sglang.hc_pre[tilelang,prenorm_gemm=",
+                "sglang.hc_pre[torch",
+                "sglang.hc_post[tilelang]",
+                "sglang.hc_post[torch]",
+                "sglang.mhc_fused_post_pre[fused_post_gemm,norm=fused]",
+                "sglang.mhc_fused_post_pre[post+prenorm_gemm=",
             },
         ),
     ],

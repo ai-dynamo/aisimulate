@@ -1,19 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""sglang mla_context on SM100 is timed under CUDA-graph replay again.
+"""sglang mla_context / mla_generation are timed under CUDA-graph replay only.
 
 Between 2026-10-05 and 2026-10-11 the trtllm_mla PREFILL lane was timed eagerly
-because flashinfer 0.6.18 refuses to capture trtllm_ragged_attention_deepseek
-without the CPU length mirrors sglang 0.5.21 does not pass; the eager rows
-floored at the Python launch loop (B200 0.13 ms, GB200 0.29 ms for every
-isl <= 1024 cell). The collector now hands flashinfer the mirrors from
-sglang's own extend_seq_lens_cpu and refuses to publish any eager result."""
+because flashinfer 0.6.18 refused to capture trtllm_ragged_attention_deepseek
+without CPU length mirrors; the eager rows floored at the Python launch loop
+(B200 0.13 ms, GB200 0.29 ms for every isl <= 1024 cell). flashinfer 0.7.2
+(sglang 0.5.23's pin) assumes every row active by default and captures the
+call sglang makes (prefill.py:6115, :6472-6491 @v0.7.2), so the collector runs
+sglang's own TRTLLMMLABackend and still refuses to publish any eager result."""
 
 import ast
 import contextlib
-import inspect
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +22,6 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SOURCE = REPO_ROOT / "collector" / "sglang" / "collect_mla.py"
-FORWARD_MODE = SimpleNamespace(EXTEND="extend", DECODE="decode")
 
 
 def _tree():
@@ -38,103 +36,6 @@ def _load(names, namespace):
     loaded = dict(namespace)
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE), "exec"), loaded)
     return loaded
-
-
-def _fake_torch():
-    return SimpleNamespace(
-        int32="int32",
-        tensor=lambda data, dtype=None, device=None: SimpleNamespace(values=tuple(data), dtype=dtype, device=device),
-    )
-
-
-def _install_fake_flashinfer(monkeypatch):
-    calls = []
-
-    def trtllm_ragged_attention_deepseek(
-        *, query, cum_seq_lens_q, cum_seq_lens_kv, q_seq_lens_cpu=None, kv_seq_lens_cpu=None
-    ):
-        calls.append({"q_seq_lens_cpu": q_seq_lens_cpu, "kv_seq_lens_cpu": kv_seq_lens_cpu})
-        return "out"
-
-    prefill = SimpleNamespace(trtllm_ragged_attention_deepseek=trtllm_ragged_attention_deepseek)
-    monkeypatch.setitem(sys.modules, "flashinfer", SimpleNamespace(prefill=prefill))
-    monkeypatch.setitem(sys.modules, "flashinfer.prefill", prefill)
-    return prefill, calls, trtllm_ragged_attention_deepseek
-
-
-class _ServingBackend:
-    """Stand-in for sglang 0.5.21's TRTLLMMLABackend: metadata init + the kernel hook."""
-
-    def __init__(self):
-        self.metadata_batches = []
-
-    def init_forward_metadata(self, forward_batch):
-        self.metadata_batches.append(forward_batch)
-
-    def _run_prefill_kernel(self, *, q, cum_seq_lens_q, cum_seq_lens_kv, **_rest):
-        # sglang calls flashinfer through the package attribute at call time
-        # (trtllm_mla_backend.py:1121), without the CPU mirrors.
-        import flashinfer
-
-        return flashinfer.prefill.trtllm_ragged_attention_deepseek(
-            query=q, cum_seq_lens_q=cum_seq_lens_q, cum_seq_lens_kv=cum_seq_lens_kv
-        )
-
-
-def _backend():
-    loaded = _load(
-        ["_extend_seq_lens_cpu", "_ragged_prefill_with_cpu_seq_lens", "_GraphCapturableTRTLLMMLABackend"],
-        {
-            "torch": _fake_torch(),
-            "ForwardMode": FORWARD_MODE,
-            "TRTLLMMLABackend": _ServingBackend,
-            "contextlib": contextlib,
-            "inspect": inspect,
-        },
-    )
-    return loaded["_GraphCapturableTRTLLMMLABackend"]()
-
-
-def _extend_batch(lens):
-    return SimpleNamespace(forward_mode=FORWARD_MODE.EXTEND, extend_seq_lens_cpu=list(lens))
-
-
-def test_no_prefix_prefill_call_carries_the_cpu_length_mirrors(monkeypatch):
-    prefill, calls, original = _install_fake_flashinfer(monkeypatch)
-    backend = _backend()
-    backend.init_forward_metadata(_extend_batch([512, 512]))
-    cum = object()
-
-    assert backend._run_prefill_kernel(q="q", cum_seq_lens_q=cum, cum_seq_lens_kv=cum) == "out"
-
-    (call,) = calls
-    assert call["q_seq_lens_cpu"].values == (512, 512)
-    assert call["q_seq_lens_cpu"].dtype == "int32"
-    assert call["q_seq_lens_cpu"].device == "cpu"
-    assert call["kv_seq_lens_cpu"] is call["q_seq_lens_cpu"]
-    # the patch is scoped to the call: serving's function is back afterwards
-    assert prefill.trtllm_ragged_attention_deepseek is original
-
-
-def test_chunked_prefix_call_goes_through_sglang_unchanged(monkeypatch):
-    _, calls, _ = _install_fake_flashinfer(monkeypatch)
-    backend = _backend()
-    backend.init_forward_metadata(_extend_batch([512]))
-
-    backend._run_prefill_kernel(q="q", cum_seq_lens_q=object(), cum_seq_lens_kv=object())
-
-    assert calls == [{"q_seq_lens_cpu": None, "kv_seq_lens_cpu": None}]
-
-
-def test_decode_metadata_leaves_the_prefill_hook_inert(monkeypatch):
-    _, calls, _ = _install_fake_flashinfer(monkeypatch)
-    backend = _backend()
-    backend.init_forward_metadata(SimpleNamespace(forward_mode=FORWARD_MODE.DECODE, seq_lens_cpu=[9]))
-    cum = object()
-
-    backend._run_prefill_kernel(q="q", cum_seq_lens_q=cum, cum_seq_lens_kv=cum)
-
-    assert calls == [{"q_seq_lens_cpu": None, "kv_seq_lens_cpu": None}]
 
 
 def test_benchmark_layer_refuses_eager_timing():
@@ -153,14 +54,45 @@ def test_benchmark_layer_refuses_eager_timing():
             "ForwardContext": lambda **_kw: None,
         },
     )["benchmark_layer"]
-    forward_batch = SimpleNamespace(attn_backend=None)
 
     with pytest.raises(RuntimeError, match="refusing to publish eager timing"):
-        benchmark_layer(lambda *a, **k: None, forward_batch, SimpleNamespace(device="cuda:0"), None, None, None, None)
+        benchmark_layer(lambda *a, **k: None, object(), SimpleNamespace(), SimpleNamespace(device="cuda:0"), None, None)
 
     # graph timing is the helper default; the lane must not opt out of it
     assert "use_cuda_graph" not in benchmark_kwargs
     assert benchmark_kwargs.get("allow_graph_fail") is not True
+
+
+def test_benchmark_layer_times_the_layer_call_inside_the_backend_context():
+    calls = []
+    contexts = []
+
+    @contextlib.contextmanager
+    def benchmark_with_power(*, kernel_func, **_kwargs):
+        kernel_func()
+        yield {"latency_ms": 1.0, "power_stats": None, "used_cuda_graph": True}
+
+    @contextlib.contextmanager
+    def forward_context(ctx):
+        contexts.append(ctx)
+        yield
+
+    benchmark_layer = _load(
+        ["benchmark_layer"],
+        {
+            "benchmark_with_power": benchmark_with_power,
+            "forward_context": forward_context,
+            "ForwardContext": lambda **kw: kw,
+        },
+    )["benchmark_layer"]
+    backend, batch = object(), object()
+    q = SimpleNamespace(device="cuda:0")
+
+    latency, _ = benchmark_layer(lambda *a, **k: calls.append((a, k)), backend, batch, q, "k", "v", save_kv_cache=False)
+
+    assert latency == 1.0
+    assert contexts == [{"attn_backend": backend}]
+    assert calls == [((q, "k", "v", batch), {"save_kv_cache": False})]
 
 
 def test_run_mla_has_no_eager_prefill_switch():
@@ -172,4 +104,10 @@ def test_run_mla_has_no_eager_prefill_switch():
         for node in ast.walk(run_mla)
         if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("TRTLLMMLABackend")
     }
-    assert constructed == {"_GraphCapturableTRTLLMMLABackend"}
+    assert constructed == {"TRTLLMMLABackend"}
+    # No collector subclass rewires how sglang calls its kernels.
+    assert not [
+        node.name
+        for node in _tree().body
+        if isinstance(node, ast.ClassDef) and any(ast.unparse(base) == "TRTLLMMLABackend" for base in node.bases)
+    ]

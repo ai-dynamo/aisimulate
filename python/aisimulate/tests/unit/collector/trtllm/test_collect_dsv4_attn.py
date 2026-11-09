@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -176,8 +178,9 @@ def test_module_cache_reuses_same_geometry_and_evicts_on_change(monkeypatch):
 
 
 def test_generation_geometry_matches_serving_invariant(monkeypatch):
-    """position == past-seen/cached == persisted step (model_engine.py:4148,
-    4164-4169): the decode dummy request registers seq_len+1 beam
+    """position == past-seen/cached == persisted step (TensorRT-LLM
+    pyexecutor/engine/runners/decoder/inputs.py:1616, 1625, 1663-1665): the
+    decode dummy request registers seq_len+1 beam
     tokens, so all three sides of the triple are seq_len. Guards the
     off-by-one found in review (position was seq_len - 1)."""
     module = _load_module_with_torch_stub(monkeypatch)
@@ -205,6 +208,9 @@ class _CapturingManager:
 
     def add_dummy_requests(self, request_ids, token_nums, is_gen):
         self.dummy_calls.append({"request_ids": request_ids, "token_nums": token_nums, "is_gen": is_gen})
+        # KVCacheManagerV2.add_dummy_requests returns the requests, or None when the pool
+        # cannot hold them.
+        return [object() for _ in request_ids]
 
     def shutdown(self):
         pass
@@ -232,15 +238,16 @@ def _install_trtllm_stubs(monkeypatch, module):
 
     tl = _mod("tensorrt_llm")
     _mod("tensorrt_llm._torch")
-    iface = _mod("tensorrt_llm._torch.attention_backend.interface")
-    _mod("tensorrt_llm._torch.attention_backend")
-    utils_mod = _mod("tensorrt_llm._torch.attention_backend.utils")
+    _mod("tensorrt_llm._torch.attention")
+    _mod("tensorrt_llm._torch.attention.backends")
+    iface = _mod("tensorrt_llm._torch.attention.backends.interface")
+    utils_mod = _mod("tensorrt_llm._torch.attention.backends.utils")
     bindings = _mod("tensorrt_llm.bindings")
     _mod("tensorrt_llm.bindings.internal")
     bm = _mod("tensorrt_llm.bindings.internal.batch_manager")
     llm_args = _mod("tensorrt_llm.llmapi.llm_args")
     _mod("tensorrt_llm.llmapi")
-    tl.__version__ = "1.3.0rc23"
+    tl.__version__ = "1.4.0rc2"
 
     iface.AttentionRuntimeFeatures = lambda **kw: SimpleNamespace(**kw)
     iface.KVCacheParams = lambda **kw: SimpleNamespace(**kw)
@@ -302,7 +309,7 @@ def test_context_metadata_constructor_args_match_serving(monkeypatch):
     manager, metadata, captured = _run_create(
         module, monkeypatch, batch_size=bs, seq_len=sl, is_context=True, prefix_len=prefix
     )
-    # manager construction (pyexecutor/_util.py:1843-1867)
+    # manager construction (pyexecutor/_util.py:3575-3609)
     mk = manager.ctor_kwargs
     assert mk["num_kv_heads"] == 1 and mk["num_layers"] == 1
     assert mk["head_dim"] == 448 + 64
@@ -312,7 +319,7 @@ def test_context_metadata_constructor_args_match_serving(monkeypatch):
     # dummy requests register the REAL request size, not the floored envelope
     dc = manager.dummy_calls[0]
     assert dc["token_nums"] == [prefix + sl] * bs and dc["is_gen"] is False
-    # Metadata population (model_engine.py:2475-2489, :3960-3998)
+    # Metadata population (engine/metadata.py:48-90, engine/runners/decoder/inputs.py:985-1014)
     kw = metadata.kwargs
     assert kw["seq_lens"].data == [sl] * bs  # chunk-local fresh tokens
     assert kw["num_contexts"] == bs
@@ -333,12 +340,12 @@ def test_generation_metadata_constructor_args_match_serving(monkeypatch):
     geo = module.generation_request_geometry(past_kv)
     dc = manager.dummy_calls[0]
     # decode dummy request registers past_kv + 1 beam tokens -> serving's
-    # past_seen = max_beam_num_tokens - 1 == past_kv (model_engine.py:4308)
+    # past_seen = max_beam_num_tokens - 1 == past_kv (inputs.py:1616)
     assert dc["token_nums"] == [past_kv + 1] * bs and dc["is_gen"] is True
     kw = metadata.kwargs
     assert kw["seq_lens"].data == [1] * bs  # one new token per decode step
     assert kw["num_contexts"] == 0
-    # cached == past_seen == position triple (model_engine.py:4315,4332-4335)
+    # cached == past_seen == position triple (inputs.py:1625, 1663-1665)
     assert kw["kv_cache_params"].num_cached_tokens_per_seq == [geo["num_cached_tokens"]] * bs
     assert kw["prompt_lens"] == [past_kv] * bs
     assert kw["enable_context_mla_with_cached_kv"] is False
@@ -380,16 +387,17 @@ def test_budget_file_moves_both_hashes(tmp_path, monkeypatch):
 
 
 def _serving_oracle(bs, seq_len, prefix, is_context):
-    """Independent re-derivation of the rc23 serving population for one
-    uniform dummy batch, written ONLY from the pinned serving sources (never
-    from the collector's own code), so a collector drift FAILS against it:
+    """Independent re-derivation of the serving population (TensorRT-LLM
+    1.4.0rc2) for one uniform dummy batch, written ONLY from the pinned serving
+    sources (never from the collector's own code), so a collector drift FAILS
+    against it. Paths are under tensorrt_llm/_torch/pyexecutor/:
 
-    - context: chunk slicing/positions model_engine.py:3941-3947; past-seen
-      prefix accounting :3960-3998; mixed-batch assignment :4735-4777.
+    - context: chunk slicing/positions engine/runners/decoder/inputs.py:985-1001;
+      past-seen prefix accounting :1012-1014; per-batch assignment :2031-2095.
     - decode: the dummy request registers token_num beam tokens and
-      resource_manager.py:988-995 sets req.prompt_len = token_num - 1;
-      past_seen = max_beam_num_tokens - 1 (:4308); position = past_seen
-      (:4315); cached = past_seen - compressed(=0) (:4332-4335); seq_lens
+      kv_cache/kv_cache_manager_v2.py:6052-6055 sets req.prompt_len = token_num - 1;
+      past_seen = max_beam_num_tokens - 1 (inputs.py:1616); position = past_seen
+      (:1625); cached = past_seen - compressed(=0) (:1663-1665); seq_lens
       appends 1 per decode request.
     """
     if is_context:
@@ -402,13 +410,13 @@ def _serving_oracle(bs, seq_len, prefix, is_context):
             "cache_reuse": prefix > 0,
         }
     token_num = seq_len + 1  # what the collector registers per decode request
-    past_seen = token_num - 1  # model_engine.py:4308
+    past_seen = token_num - 1  # inputs.py:1616
     return {
         "seq_lens": [1] * bs,
         "num_cached": [past_seen] * bs,
-        "prompt_lens": [token_num - 1] * bs,  # resource_manager.py:988-995
+        "prompt_lens": [token_num - 1] * bs,  # kv_cache_manager_v2.py:6052-6055
         "num_contexts": 0,
-        "first_position": past_seen,  # model_engine.py:4315
+        "first_position": past_seen,  # inputs.py:1625
         "cache_reuse": False,
     }
 
@@ -473,3 +481,188 @@ def test_rows_label_the_kv_cache_with_an_sdk_enum_member_name(monkeypatch, sm):
     labels = {row[3] for row in module.get_dsv4_hca_generation_test_cases()}
     assert labels == {"fp8"}
     assert labels <= set(KVCacheQuantMode.__members__)
+
+
+@pytest.mark.parametrize("sm, dtype", [(90, "fp8_ds_mla"), (100, None)])
+def test_hopper_pool_is_the_packed_fp8_sparse_mla_cache(monkeypatch, sm, dtype):
+    """Serving's DSV4 default on Hopper is kv_cache_config.dtype='fp8_ds_mla', the only pool
+    DeepseekV4CacheManager accepts there; other SMs keep the checkpoint's KV dtype."""
+    module = _load_module_with_torch_stub(monkeypatch)
+    _CapturingManager.instances.clear()
+    _CapturingMetadata.instances.clear()
+    captured = _install_trtllm_stubs(monkeypatch, module)
+    monkeypatch.setattr(module, "get_sm_version", lambda: sm)
+    module.create_dsv4_kv_cache_and_metadata(
+        model_config=_fake_model_config(),
+        attn_module=SimpleNamespace(indexer=None),
+        batch_size=2,
+        seq_len=64,
+        is_context=True,
+        device="cuda:0",
+    )
+    (kw,) = captured["kv_cache_config"]
+    assert kw.get("dtype") == dtype
+
+
+def test_a_pool_that_cannot_hold_the_requests_is_a_classified_capacity_refusal(monkeypatch):
+    """KVCacheManagerV2.add_dummy_requests returns None when the pool cannot hold the
+    requests; the case fails as a classified capacity refusal, never with unset block tables."""
+    module = _load_module_with_torch_stub(monkeypatch)
+    _CapturingManager.instances.clear()
+    _CapturingMetadata.instances.clear()
+    _install_trtllm_stubs(monkeypatch, module)
+    shutdowns = []
+
+    class _FullManager(_CapturingManager):
+        def add_dummy_requests(self, request_ids, token_nums, is_gen):
+            return None
+
+        def shutdown(self):
+            shutdowns.append(self)
+
+    sys.modules["collect_mla_module"].get_kv_cache_manager_cls = lambda mc, cfg: _FullManager
+    with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): does not fit"):
+        module.create_dsv4_kv_cache_and_metadata(
+            model_config=_fake_model_config(),
+            attn_module=SimpleNamespace(indexer=None),
+            batch_size=2,
+            seq_len=64,
+            is_context=True,
+            device="cuda:0",
+        )
+    assert len(shutdowns) == 1, "the pool is released before the refusal propagates"
+    assert _CapturingMetadata.instances == []
+
+
+class _Module:
+    """A weak-referenceable stand-in for a built attention module or its metadata."""
+
+
+def _install_autotune_stub(monkeypatch, module, events):
+    tuning = [False]
+
+    @contextlib.contextmanager
+    def autotune():
+        tuning.append(True)
+        yield
+        tuning.append(False)
+
+    for name in ("tensorrt_llm", "tensorrt_llm._torch"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    sys.modules["tensorrt_llm"].__version__ = "1.4.0rc2"
+    autotuner = ModuleType("tensorrt_llm._torch.autotuner")
+    autotuner.autotune = autotune
+    monkeypatch.setitem(sys.modules, "tensorrt_llm._torch.autotuner", autotuner)
+    utils_mod = ModuleType("tensorrt_llm._torch.utils")
+    utils_mod._model_extra_attrs = SimpleNamespace(attrs=None)
+    monkeypatch.setitem(sys.modules, "tensorrt_llm._torch.utils", utils_mod)
+    mla_stub = ModuleType("collect_mla_module")
+    mla_stub._cleanup = lambda manager: events.append(("cleanup", manager))
+    monkeypatch.setitem(sys.modules, "collect_mla_module", mla_stub)
+    monkeypatch.setattr(
+        module.torch,
+        "cuda",
+        SimpleNamespace(
+            synchronize=lambda: None,
+            empty_cache=lambda: None,
+            set_device=lambda device: None,
+            get_device_name=lambda device: "GPU",
+        ),
+    )
+    monkeypatch.setattr(module.torch, "device", lambda device: device, raising=False)
+    monkeypatch.setattr(
+        module,
+        "_dsv4_inputs",
+        lambda model_config, batch_size, seq_len, prefix_len, is_context, device: (
+            batch_size * seq_len if is_context else batch_size,
+            "position_ids",
+            "hidden_states",
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_forward_dsv4",
+        lambda attn_module, model_config, metadata, position_ids, hidden_states: events.append(
+            ("forward", getattr(metadata, "tokens", None), tuning[-1])
+        ),
+    )
+
+
+def test_built_module_is_tuned_on_serving_warmup_passes(monkeypatch):
+    """Serving forwards the model under autotune() on a context batch of max_num_tokens
+    (8192) tokens and one one-token generation request; the module has tunable ops beyond
+    its projections (CuTe DSL FP8 BMM, fused indexer Q GEMM), so the module itself is
+    forwarded, each pass on its own KV pool, which is released afterwards."""
+    module = _load_module_with_torch_stub(monkeypatch)
+    events = []
+    _install_autotune_stub(monkeypatch, module, events)
+
+    def fake_create(*, model_config, attn_module, batch_size, seq_len, is_context, device, kv_cache_dtype_str):
+        events.append(("create", is_context, batch_size, seq_len, kv_cache_dtype_str))
+        metadata = _Module()
+        metadata.tokens = seq_len
+        return ("manager", seq_len), metadata, "Backend"
+
+    monkeypatch.setattr(module, "create_dsv4_kv_cache_and_metadata", fake_create)
+    attn = _Module()
+    module._autotune_dsv4_module(attn, "model_config", module._SERVING_AUTOTUNE_PASSES, "cuda:0", "fp8")
+    assert events == [
+        ("create", True, 1, 8192, "fp8"),
+        ("forward", 8192, True),
+        ("cleanup", ("manager", 8192)),
+        ("create", False, 1, 1, "fp8"),
+        ("forward", 1, True),
+        ("cleanup", ("manager", 1)),
+    ]
+    assert module._TUNED_NUM_TOKENS[attn] == 8192
+
+    tree = ast.parse((REPO_ROOT / "collector" / "trtllm" / "collect_dsv4_attn.py").read_text())
+    build = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "create_dsv4_attention_module")
+    assert any(
+        isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_autotune_dsv4_module" for n in ast.walk(build)
+    ), "every built module is tuned before it is cached"
+
+
+def test_a_point_past_the_tuned_count_is_tuned_at_its_own_count(monkeypatch):
+    module = _load_module_with_torch_stub(monkeypatch)
+    events = []
+    _install_autotune_stub(monkeypatch, module, events)
+    attn = _Module()
+    metadata = _Module()
+    model_config = SimpleNamespace(extra_attrs={})
+    monkeypatch.setattr(module, "_cached_dsv4_attention_module", lambda *args: (attn, model_config, {"local_heads": 8}))
+    monkeypatch.setattr(
+        module,
+        "create_dsv4_kv_cache_and_metadata",
+        lambda **kwargs: ("manager", metadata, SimpleNamespace(__name__="Backend")),
+    )
+
+    @contextlib.contextmanager
+    def fake_benchmark(**kwargs):
+        yield {"latency_ms": 1.0, "power_stats": None}
+
+    monkeypatch.setattr(module, "benchmark_with_power", fake_benchmark)
+    monkeypatch.setattr(module, "log_perf", lambda **kwargs: None)
+    module._TUNED_NUM_TOKENS[attn] = 8192
+
+    def run(**kwargs):
+        module.run_dsv4_attn(
+            tp_size=8,
+            kv_cache_dtype="fp8",
+            compute_dtype="bfloat16",
+            gemm_type="fp8_block",
+            model_path="m",
+            attn_kind="csa",
+            perf_filename="p",
+            **kwargs,
+        )
+
+    run(seq_len=8192, batch_size=2, mode="context", dry_run=False)
+    forwards = [event[2] for event in events if event[0] == "forward"]
+    assert forwards == [True], "16384 new tokens > 8192 tuned: the point is forwarded under autotune()"
+    assert module._TUNED_NUM_TOKENS[attn] == 16384
+    run(seq_len=4096, batch_size=2, mode="context", dry_run=True)
+    run(seq_len=65536, batch_size=64, mode="generation", dry_run=False)
+    forwards = [event[2] for event in events if event[0] == "forward"]
+    assert forwards == [True, False], "a tuned count runs only the plain dry run"
+    assert [event for event in events if event[0] == "cleanup"] == [("cleanup", "manager")] * 3

@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from contextlib import ExitStack, contextmanager, nullcontext
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,6 +41,7 @@ def _module_runner(
     point_failures=None,
     total_memory=2**40,
     module_query_len=16,
+    tuned_linears=(),
 ):
     events, published, benchmark_calls = [], [], []
     point_failures = dict(point_failures or {})
@@ -110,8 +111,19 @@ def _module_runner(
         return module, config
 
     @contextmanager
+    def autotuned(num_tokens, tune_fn, *, label):
+        events.append(("tune", num_tokens, label))
+        tune_fn()
+        active_contexts.append("autotuned")
+        try:
+            yield True
+        finally:
+            assert active_contexts.pop() == "autotuned"
+
+    @contextmanager
     def benchmark(**kwargs):
-        benchmark_calls.append(dict(kwargs, skip_indexer=module.mla_attn.skip_topk))
+        tuned = "autotuned" in active_contexts
+        benchmark_calls.append(dict(kwargs, skip_indexer=module.mla_attn.skip_topk, tuned=tuned))
         assert "forward" in events  # Real full dry run seeds the shared top-k buffer.
         assert kwargs["use_cuda_graph"] is True
         assert kwargs["allow_graph_fail"] is False
@@ -138,6 +150,11 @@ def _module_runner(
         assert module.mla_attn.skip_topk is False
         events.append("cleanup")
 
+    def capture_parity(_module, *, serving_captures_forward):
+        assert "forward" in active_contexts, "the choices are pinned inside the point's forward context"
+        events.append(("serving capture", serving_captures_forward))
+        return nullcontext()
+
     namespace = {
         "ExitStack": ExitStack,
         "wraps": wraps,
@@ -162,12 +179,21 @@ def _module_runner(
         "init_workspace_manager": lambda device: events.append("workspace init"),
         "_create_attention_module": create_module,
         "_install_rope_missing_key_shims": lambda module: ([], []),
+        # Serving's graph ceiling for these fixtures: 16 tokens (b=2 x s=8) is captured, 32 is eager.
+        "_serving_cudagraph_ceiling": lambda: 16,
+        "_dsa_serving_capture_parity": capture_parity,
         "_process_module_weights": lambda *args: None,
         "_create_kv_cache_and_metadata": create_kv,
         "set_current_vllm_config": lambda config: context("config"),
         "set_forward_context": forward_context,
         "benchmark_with_power": benchmark,
         "_mla_backend_name": lambda *args: "FLASHINFER_MLA_SPARSE",
+        "_serving_autotuned_linears": lambda _module: list(tuned_linears),
+        "_run_linears": lambda linears, num_tokens, device: events.append(("run linears", tuple(linears), num_tokens)),
+        "flashinfer_tuning_bucket": lambda num_tokens: 2 * num_tokens,
+        "flashinfer_autotuned": autotuned,
+        "nullcontext": nullcontext,
+        "partial": partial,
         "log_perf": lambda **kwargs: published.append(kwargs),
         "_cleanup": cleanup,
         "vllm_version": "0.25.0",
@@ -249,6 +275,25 @@ def test_failed_skip_capture_is_raised_and_does_not_publish_a_skip_row():
     assert [call["skip_indexer"] for call in calls] == [False, True]
     assert [row["op_name"] for row in published] == ["dsa_context_module"]
     assert events[-1] == "cleanup"
+
+
+def test_dsa_points_pin_the_capture_serving_gives_their_step_size():
+    """Serving graph-replays a DSA step of up to its ceiling and runs a larger one eagerly;
+    each point's dry run and timed graph make the choice serving makes for its own size."""
+    execute, events, published, _, _ = _module_runner(reuse_frequency=4)
+    execute(seq_len=[8, 16])
+    pinned = [e for e in events if isinstance(e, tuple) and e[0] == "serving capture"]
+    # b=2: s=16 is 32 tokens (eager in serving), s=8 is 16 tokens (captured); largest first.
+    assert pinned == [("serving capture", False), ("serving capture", True)]
+    assert len(published) == 4
+
+    execute, events, _, _, _ = _module_runner()
+    execute(phase="generation")
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "serving capture"] == [("serving capture", True)]
+
+    execute, events, _, _, _ = _module_runner()
+    execute(attn_type="mla")
+    assert not [e for e in events if isinstance(e, tuple) and e[0] == "serving capture"]
 
 
 def test_ordinary_mla_does_not_publish_dsa_reuse_rows():
@@ -485,3 +530,25 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     # capacity is an upper bound at the smallest page (16) and is recomputed
     # per selected page in _create_kv_cache_and_metadata.
     assert configs[0]["num_gpu_blocks"] == max(1 + math.ceil((prefix + query + 1) / 16) * batch, 8192)
+
+
+@pytest.mark.parametrize(("phase", "tokens"), [("context", 32), ("generation", 2)])
+def test_serving_autotuned_linears_are_timed_on_their_tuned_tactic(phase, tokens):
+    """Only the linears serving autotunes are run in the tuning pass, at the forward's token
+    count, and the graph is captured and timed inside the tuned context."""
+    execute, events, published, calls, _ = _module_runner(tuned_linears=("q_b_proj", "o_proj"))
+    assert execute("mla", phase) == [0.015]
+    tune = [event for event in events if isinstance(event, tuple) and event[0] in {"tune", "run linears"}]
+    assert tune == [
+        ("tune", 2 * tokens, "FlashInferCutlassNvFp4LinearKernel"),
+        ("run linears", ("q_b_proj", "o_proj"), tokens),
+    ]
+    assert [call["tuned"] for call in calls] == [True]
+    assert len(published) == 1
+
+
+def test_modules_without_serving_autotuned_linears_are_not_tuned():
+    execute, events, _, calls, _ = _module_runner()
+    execute("mla", "generation")
+    assert not [event for event in events if isinstance(event, tuple) and event[0] == "tune"]
+    assert [call["tuned"] for call in calls] == [False]

@@ -656,12 +656,9 @@ class MLAModuleSweepSpec:
     context_prefix_lengths: list[int]
     # The long-context module ops (DSA, MSA) follow serving's chunked prefill:
     # the new-token budget is the chunk size, and the long context enters
-    # through the prefix (context_prefix_lengths). From context_long_prefix_min
-    # on, only the long-prefix sequence lengths run.
+    # through the prefix (context_prefix_lengths).
     context_chunk_prefill_size: int | None = None
     context_max_full_sequence_length: int | None = None
-    context_long_prefix_min: int | None = None
-    context_long_prefix_sequence_lengths: list[int] | None = None
     # Their decode beyond the generation grid: these KV lengths at these batches.
     generation_long_kv_lengths: list[int] | None = None
     generation_long_kv_batch_sizes: list[int] | None = None
@@ -959,8 +956,6 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         ),
         context_chunk_prefill_size=_optional_int(context.get("chunk_prefill_size")),
         context_max_full_sequence_length=_optional_int(context.get("max_full_sequence_length")),
-        context_long_prefix_min=_optional_int(context.get("long_prefix_min")),
-        context_long_prefix_sequence_lengths=_optional_plan_list(context, "context", "long_prefix_sequence_lengths"),
         generation_long_kv_lengths=_optional_plan_list(generation, "generation", "long_kv_lengths"),
         generation_long_kv_batch_sizes=_optional_plan_list(generation, "generation", "long_kv_batch_sizes"),
     )

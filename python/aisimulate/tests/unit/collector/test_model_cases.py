@@ -674,14 +674,16 @@ def test_deepseek_minimax_and_nemotron_moe_quantization_is_artifact_specific():
             assert allowed == expected, (backend, model_path)
 
 
-def test_gptoss_mxfp4_modes_are_additive_on_blackwell(monkeypatch):
+def test_gptoss_mxfp4_runs_w4a8_from_blackwell(monkeypatch):
     model_path = "openai/gpt-oss-120b"
 
+    # SGLang (flashinfer_mxfp4 at its default precision, gpt_oss.py:64-75) and TRT-LLM
+    # (ModelConfig.get_mxfp4_quant_algo) serve GPT-OSS MXFP4 with MXFP8 activations from
+    # SM100, so collector/skips.py leaves the W4A16 cases out there.
     for backend in ("sglang", "trtllm"):
         assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == {"w4a16_mxfp4"}, backend
-        assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}, backend
-    # SM120: SGLang has no verified w4a8 runner pin (collector/skips.py).
-    assert _planned_moe_modes(monkeypatch, "sglang", model_path, 120) == {"w4a16_mxfp4"}
+        for sm in (100, 103, 120):
+            assert _planned_moe_modes(monkeypatch, backend, model_path, sm) == {"w4a8_mxfp4_mxfp8"}, (backend, sm)
     # vLLM serves gpt-oss MXFP4 experts with BF16 activations on every SM, and
     # its collector builds the MXFP8-activation path for DeepSeek-V4 only
     # (collector/skips.py).
@@ -697,7 +699,10 @@ def test_dsv4_native_w4a8_mode_is_planned_from_sm100(monkeypatch, backend):
     assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == set()
     assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a8_mxfp4_mxfp8"}
     assert _planned_moe_modes(monkeypatch, backend, model_path, 103) == {"w4a8_mxfp4_mxfp8"}
-    expected_sm120 = {"w4a8_mxfp4_mxfp8"} if backend == "trtllm" else set()
+    # SGLang runs the FP4 experts as MXFP8 x MXFP4 on SM120 too
+    # (model_overrides/deepseek_v4.py:75-88, mxfp4_flashinfer_cutlass_moe.py:36-44);
+    # vLLM serves MXFP4 MoE on SM120 without MXFP8 activations (collector/skips.py).
+    expected_sm120 = set() if backend == "vllm" else {"w4a8_mxfp4_mxfp8"}
     assert _planned_moe_modes(monkeypatch, backend, model_path, 120) == expected_sm120
 
 
@@ -988,7 +993,8 @@ def test_module_prefix_context_sweeps_are_yaml_backed():
     from collector.case_generator import get_mla_module_sweep_spec
 
     assert get_mla_module_sweep_spec("plan").context_prefix_lengths == [
-        0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575
+        0, 1, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
+        16384, 32768, 65536, 131072, 262144, 524288, 1048575,
     ]  # fmt: skip
     assert 128 in get_mla_module_sweep_spec("sglang").context_prefix_lengths
 

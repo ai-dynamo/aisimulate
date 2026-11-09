@@ -32,8 +32,15 @@ model_case_values:
       inter_size: 3072
       topk: 4
       num_experts: 128
+      # SGLang's MiniMaxM3MoE passes FusedMoE no routing method and runs SiLU
+      # SwiGLU with the checkpoint's alpha / limit (swiglu_alpha 1.702,
+      # swiglu_limit 7.0; beta 1.0, every runner's default once alpha is set),
+      # and applies routed_scaling_factor in its TopK only
+      # (models/minimax_m3.py:421-452 at v0.5.23; scaling placement:
+      # collector/sglang/collect_moe.py deviation note).
+      sglang_moe_gemm1_alpha: 1.702
+      sglang_moe_gemm1_clamp_limit: 7.0
       sglang_moe_scoring_func: sigmoid
-      sglang_moe_routing_method_type: DeepSeekV3
       sglang_moe_routed_scaling_factor: 2.0
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
@@ -54,8 +61,15 @@ model_case_values:
       inter_size: 3072
       topk: 4
       num_experts: 128
+      # SGLang's MiniMaxM3MoE passes FusedMoE no routing method and runs SiLU
+      # SwiGLU with the checkpoint's alpha / limit (swiglu_alpha 1.702,
+      # swiglu_limit 7.0; beta 1.0, every runner's default once alpha is set),
+      # and applies routed_scaling_factor in its TopK only
+      # (models/minimax_m3.py:421-452 at v0.5.23; scaling placement:
+      # collector/sglang/collect_moe.py deviation note).
+      sglang_moe_gemm1_alpha: 1.702
+      sglang_moe_gemm1_clamp_limit: 7.0
       sglang_moe_scoring_func: sigmoid
-      sglang_moe_routing_method_type: DeepSeekV3
       sglang_moe_routed_scaling_factor: 2.0
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true

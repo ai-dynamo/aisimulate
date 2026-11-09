@@ -3,14 +3,14 @@
 #
 # Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
-# away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0. On 0.29 the
-# kv dtype FORKS the backend (bf16 -> FLASH_ATTN_MLA_SPARSE, fp8 ->
-# FLASHMLA_SPARSE on SM90) — both keys are collected.
+# away and prior-version DATA stays permanent under its version key. The kv
+# dtype FORKS the SM90 DSA backend (bf16 -> FLASH_ATTN_MLA_SPARSE, fp8 ->
+# FLASHMLA_SPARSE; platforms/cuda.py:137-153 @v0.32.0) — both keys are
+# collected.
 #
 # Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
 # Copyright contributors to the vLLM project. Modified for collector execution.
-__compat__ = "vllm==0.30.0"
+__compat__ = "vllm==0.32.0"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.
@@ -58,14 +58,14 @@ import os
 import tempfile
 import time
 import traceback
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 
 import torch
 from collector.case_generator import get_mla_module_model_specs
 from collector.helper import benchmark_with_power as _benchmark_with_power
-from collector.helper import get_sm_version, log_perf
+from collector.helper import flashinfer_autotuned, flashinfer_tuning_bucket, get_sm_version, log_perf
 from collector.op_plans import plan, plan_cases
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
@@ -74,7 +74,6 @@ from collector.vllm.utils import (
     create_common_attn_metadata,
     create_vllm_config,
     enable_engine_fused_ops,
-    framework_kv_block_size,
     setup_distributed,
     with_exit_stack,
 )
@@ -219,8 +218,8 @@ def _strided_throwaway_copy(query):
     """A scratch tensor with the query's shape AND strides — never a contiguous clone.
 
     vLLM's own rope kernel derives ONE head stride from the query and applies it to the
-    key as well (csrc/libtorch_stable/pos_encoding_kernels.cu:57,68,164-165). The q_pe
-    that attention.py:534 ropes alone is a last-dim slice of
+    key as well (csrc/pos_encoding_kernels.cu:57,68,164-165 @v0.32.0). The q_pe that
+    models/deepseek_v32/attention.py:558-562 @v0.32.0 ropes alone is a last-dim slice of
     q, so its head stride is qk_head_dim (256 for GLM-5.2, 192 for DeepSeek-V3.2) while a
     contiguous clone's is 64: the kernel then addresses the clone at
     token*heads*64 + head*256, i.e. up to 192*(heads-1) elements PAST its end, and ropes
@@ -244,10 +243,12 @@ def _strided_throwaway_copy(query):
 def _rope_tolerating_missing_key(forward):
     """Wrap a rotary module's forward so `forward(positions, query)` (key=None) works.
 
-    vLLM 0.30's DeepseekV32 attention ropes q_pe alone in its dense-MHA FP8 branch, but
-    both DeepseekScalingRotaryEmbedding implementations require a key (FlashInfer op:
-    key.view; native: assert). Rope the query against a throwaway copy that shares the
-    query's strides (see _strided_throwaway_copy) and drop it.
+    vLLM's DeepseekV32 attention ropes q_pe alone on its dense/masked-MHA prefill path
+    when the forward quantized the MQA query to FP8 (models/deepseek_v32/attention.py:
+    556-562 @v0.32.0), but both DeepseekScalingRotaryEmbedding implementations require a
+    key (forward_native asserts, deepseek_scaling_rope.py:115-123; the FlashInfer op calls
+    key.view, flashinfer 0.7.0.post1 rope.py:1278). Rope the query against a throwaway
+    copy that shares the query's strides (see _strided_throwaway_copy) and drop it.
     """
     import functools
 
@@ -260,8 +261,9 @@ def _rope_tolerating_missing_key(forward):
 
     @functools.wraps(forward)
     def wrapped(positions, query, key=None, *args, **kwargs):
-        # Forward only what the caller passed: vLLM 0.30's forward_cuda signatures take
-        # (positions, query, key) — no `offsets` — so a positional None for offsets raised
+        # Forward only what the caller passed: the base RotaryEmbedding.forward_cuda takes
+        # (positions, query, key) — no `offsets` (rotary_embedding/base.py:221-226 @v0.32.0) —
+        # so a positional None for offsets raised
         # "takes from 3 to 4 positional arguments but 5 were given" (508 GLM-5 cases, same runs).
         if key is None:
             out = forward(positions, query, _strided_throwaway_copy(query), *args, **kwargs)
@@ -277,15 +279,15 @@ def _rope_module_rejects_missing_key(module) -> bool:
     """True only for rotary classes whose forward cannot take key=None.
 
     Serving calls ``self.rotary_emb(positions, q_pe)`` with no key
-    (models/deepseek_v32/attention.py:534). vLLM's base RotaryEmbedding and every
-    subclass that reaches ops.rotary_embedding accept that (the kernel gets a null key
-    pointer and never touches key memory; _custom_ops.rotary_embedding key: Tensor | None),
+    (models/deepseek_v32/attention.py:558-562 @v0.32.0). vLLM's base RotaryEmbedding and
+    every subclass that reaches ops.rotary_embedding accept that (the kernel gets a null
+    key pointer and never touches key memory; _custom_ops.py:210-219 key: Tensor | None),
     so GLM-5.x (rope_type "default" -> RotaryEmbedding) must run exactly serving's call —
     wrapping it fed vLLM's kernel a contiguous key whose head stride differs from the
     query's (see _strided_throwaway_copy). Only DeepseekScalingRotaryEmbedding's own
     forward_cuda rejects None (deepseek_scaling_rope.py:203-221: FlashInfer op
     key.view / forward_native assert key is not None); its DeepseekV4 subclass overrides
-    forward_cuda onto ops.rotary_embedding and accepts None again.
+    forward_cuda onto ops.rotary_embedding and accepts None again. All @v0.32.0.
     """
     mro = type(module).__mro__
     if not any(c.__name__ == "DeepseekScalingRotaryEmbedding" for c in mro):
@@ -395,15 +397,15 @@ def _move_module_preserving_buffers(module, device):
     rebuilt from its owner's own constructor recipe:
 
     - rotary cos/sin tables: `rotary_emb` and `indexer_rope_emb` on
-      DeepseekV32Attention (models/deepseek_v32/attention.py:272-283),
-     registered non-persistent by rotary_embedding/base.py:60-63
+      DeepseekV32Attention (models/deepseek_v32/attention.py:272-284 @v0.32.0),
+      registered non-persistent by rotary_embedding/base.py:58-63
       and deepseek_scaling_rope.py:241-242 from a device-free recipe
       (_compute_cos_sin_cache: torch.arange / einsum on the default device),
       cast to the dtype the constructor chose (the meta tensor carries it);
     - KV-quant scales `_k_scale/_v_scale/_q_scale/_prob_scale` that
       MLAAttention registers through _init_kv_cache_quant ->
       set_default_quant_scales(register_buffer=True) as 1.0 fp32
-      (layers/attention/attention.py:129-135,184), together with
+      (layers/attention/attention.py:133-139,188 @v0.32.0), together with
       the `<name>_cpu` host copies the same call keeps beside them.
 
     Any other meta buffer is refused rather than filled: a filled table
@@ -451,14 +453,14 @@ def _initialize_synthetic_parameters(module):
                 continue
             if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
                 if name.rsplit(".", 1)[-1] != "weight":
-                    # NVFP4's weight_scale also uses FP8 storage (modelopt.py:
-                    # 1117,1188-1199 at the revision below). It is a scale,
-                    # not a projection weight; retain its previous policy.
+                    # NVFP4's weight_scale also uses FP8 storage (KNvfp4Static,
+                    # modelopt.py:2019-2035 @v0.32.0). It is a scale, not a
+                    # projection weight; retain its previous policy.
                     tensor.zero_()
                     continue
                 # Serialized FP8 weights feed the real indexer query projection
-                # (Indexer.wq_b in deepseek_v2.py:666-672 @ vLLM v0.25.1,
-                # commit 752a3a504485790a). Zero weights
+                # (DeepseekV32Indexer.wq_b, models/deepseek_v32/attention.py:71-77
+                # @v0.32.0). Zero weights
                 # make every query/logit zero even with valid historical keys;
                 # top-k latency depends on that distribution. Generate on CPU
                 # because CUDA RNG can be unavailable after module construction.
@@ -485,18 +487,18 @@ def _initialize_nvfp4_parameters(module):
     from vllm import _custom_ops as ops
     from vllm.model_executor.layers.quantization.utils.quant_utils import kNvfp4Static
 
-    # Native API contracts at vLLM v0.30.0: every ModelOpt linear is the
+    # Native API contracts at vLLM v0.32.0: every ModelOpt linear is the
     # generic ModelOptLinearMethod carrying a (weight, activation) QuantSpec
-    # and a CkptCtx (modelopt.py:2448-2476). The NVFP4 weight scheme
-    # KNvfp4Static stores two E2M1 values per uint8, one E4M3 scale per
+    # and a CkptCtx (modelopt.py:2522-2560, CkptCtx :1923). The NVFP4 weight
+    # scheme KNvfp4Static stores two E2M1 values per uint8, one E4M3 scale per
     # ctx.group_size inputs (created as a NaN sentinel that process() refuses)
     # and a per-partition FP32 global scale `weight_scale_2`
-    # (modelopt.py:1913-1990); the W4A4 activation scheme KNvfp4Dynamic adds
-    # the per-partition `input_scale` (modelopt.py:1993-2028) while W4A16 has
+    # (modelopt.py:1987-2064); the W4A4 activation scheme KNvfp4Dynamic adds
+    # the per-partition `input_scale` (modelopt.py:2067-2101) while W4A16 has
     # none. Both global scales are ModelOpt's dequantizing amax/(6*448)
     # values, raw-max'ed at process_weights_after_loading. _custom_ops.py:
-    # 1525-1531 accepts the inverse global scale and can return unswizzled
-    # block scales. (v0.25.1's ModelOptNvFp4LinearMethod no longer exists.)
+    # 1513-1532 accepts the inverse global scale and can return unswizzled
+    # block scales.
     generator = torch.Generator(device="cpu").manual_seed(0)
     initialized = 0
     with torch.no_grad():
@@ -581,9 +583,10 @@ def _create_attention_module(
             family with a FLASHINFER/TRTLLM_RAGGED/TOKENSPEED_MLA prefill
             backend (determine_prefill_query_data_type +
             backend_supports_prefill_query_quantization,
-            mla_attention.py:1371-1396,1453-1493), and the SM100 auto
-            selector always picks FLASH_ATTN instead
-            (prefill/selector.py:60-66); the metadata probe in
+            mla_attention.py:1877-1903,2320-2360 @v0.32.0), and the SM100
+            auto selector picks FLASH_ATTN for DeepSeek-V3 dims instead
+            (platforms/interface.py:462-480 get_mla_prefill_backend_cls
+            @v0.32.0); the metadata probe in
             _create_kv_cache_and_metadata fails closed if the decision
             does not match the case label.
         gemm_type: Precision for linear-layer GEMMs — "bfloat16",
@@ -593,8 +596,8 @@ def _create_attention_module(
 
     local_model_path = _resolve_model_path(model_path)
 
-    # The module is built at the framework default page; the real page is asked from the
-    # backend the module selected (_create_kv_cache_and_metadata, utils.framework_kv_block_size).
+    # The module is built at the framework default page; the real page is the one serving
+    # derives from the backend the module selected (_create_kv_cache_and_metadata).
     block_size = None  # unconstrained selection; _create_kv_cache_and_metadata asks the selected backend for the page
     # seq_len includes the current token; generation caches only seq_len - 1.
     # Keep exact-limit models such as Kimi-K2-Instruct at their declared limit.
@@ -607,12 +610,17 @@ def _create_attention_module(
     )
 
     # FIXME(gap): the module is built at TP=1 with the per-rank head count, so a check that
-    # multiplies by the TP world size sees the shard. vLLM 0.30's sparse-MLA masked-MHA prefill
-    # (SM100, FA4, BF16 KV) admits only model-level head counts 128/64
-    # (sparse_mla_attention.py:93-127, called with num_heads * tp at :708), and _use_masked_mha
-    # reads its thresholds by tensor_parallel_size (mla_attention.py:1844). So for a TP>1 shard,
-    # e.g. GLM-5.2 TP8 BF16 KV, serving runs masked MHA for pure prefills up to 64K while this
-    # module times sparse MQA. Affects SM100 BF16-KV DSA context rows below the full head count.
+    # multiplies by the TP world size sees the shard. The sparse-MLA masked-MHA prefill (SM100
+    # family, FA4, unquantized KV) admits only the model-level dims of DeepSeek-V3.2 (128
+    # heads) and GLM-5.x (64 heads) (_is_masked_mha_available, sparse_mla_attention.py:93-127,
+    # called with num_heads * the TP world size at :695-702), and _use_masked_mha reads its
+    # thresholds by tensor_parallel_size (mla_attention.py:1193-1218,1761-1872). So for a TP>1
+    # shard, e.g. GLM-5.2 TP8 BF16 KV, serving runs masked MHA for pure prefills up to 64K
+    # while this module times sparse MQA. Affects SM100 BF16-KV DSA context rows below the full
+    # head count (FP8 KV never takes masked MHA; TP1 rows match). Not a gap: the indexer's TP
+    # prefill row sharding (indexer.py:208-261,1577-1586) engages only for steps of at least
+    # 16384 * TP prefill rows, above serving's default token budget (8192/16384,
+    # engine/arg_utils.py:2923-2943). All @v0.32.0.
     # Determine kv cache dtype string for sparse MLA.
     # For DSA (DeepSeekV3.2), fp8 uses the custom ``fp8_ds_mla`` 656-byte
     # cache format (512B quantized NoPE + 16B scales + 128B RoPE).
@@ -624,11 +632,25 @@ def _create_attention_module(
         max_model_len=max_model_len,
         block_size=block_size,
         num_gpu_blocks=num_kv_cache_blocks,
+        # The case's batch, not serving's scheduler bound (1024 on 70 GB+ GPUs,
+        # collect_attn.SERVING_MAX_NUM_SEQS). Of the dense-MLA decode builders only
+        # FLASH_ATTN_MLA (SM90, BF16 KV) times differently with it: it caps FA3 split-KV
+        # at flash_attn_max_num_splits_for_cuda_graph (32) for decode batches of up to
+        # max_cudagraph_capture_size tokens (v1/attention/backends/mla/flashattn_mla.py:
+        # 151-176,225-236), and that size is min(2 * max_num_seqs, 512 on SM90,
+        # max_num_batched_tokens) (config/vllm.py:2354-2364,2445-2446, all @v0.32.0).
+        # Generation batches reach serving's decision either way. Context batches with
+        # s <= 512 also take the decode path (reorder_batch_threshold 512,
+        # flashattn_mla.py:130); for b*s in (2b, 512] serving caps at 32 splits where these
+        # rows run FA3's heuristic, but with no cached prefix their KV is at most 512 tokens,
+        # fewer key blocks than the cap. TRITON_MLA (SM89, SM120) reserves its decode
+        # workspace at max_num_seqs x heads x splits (triton_mla.py:67-92): at serving's
+        # 1024 that is 70-95 GiB for 128 heads, which those GPUs cannot hold.
         max_num_seqs=max_batch_size,
         # The serving scheduler budgets NEW tokens, excluding computed prefix
         # tokens (v1/core/sched/scheduler.py:472-480). DeepseekV2Model
         # sizes its indexer output as [max_num_batched_tokens, index_topk]
-        # (model_executor/models/deepseek_v2.py:1355-1361). Keep the
+        # (model_executor/models/deepseek_v2.py:1442-1446 @v0.32.0). Keep the
         # existing sweep floor, but do not allocate one output row per cached
         # token. max_model_len and KV capacity still include the entire prefix.
         max_num_batched_tokens=max(max_batch_size * max_query_len, 131072) if is_context else max_batch_size,
@@ -662,24 +684,27 @@ def _create_attention_module(
         if current_platform.is_device_capability_family(100):
             from vllm.v1.attention.backends.mla.prefill.registry import MLAPrefillBackendEnum
 
-            # The quantization flag alone never engages on SM100: the auto
-            # selector ranks FLASH_ATTN first (prefill/selector.py:60-66)
-            # and FLASH_ATTN is always eligible there, but FP8 query
-            # compute requires a FLASHINFER/TRTLLM_RAGGED/TOKENSPEED_MLA
-            # prefill backend (backend_supports_prefill_query_quantization,
-            # mla_attention.py:1371-1396). The FP8-prefill serving
+            # The quantization flag alone never engages on SM100: for
+            # DeepSeek-V3 dims the auto selector ranks FLASH_ATTN first
+            # (platforms/interface.py:474-480 @v0.32.0) and FLASH_ATTN is
+            # always eligible there, but FP8 query compute requires a
+            # FLASHINFER/TRTLLM_RAGGED/TOKENSPEED_MLA prefill backend
+            # (backend_supports_prefill_query_quantization,
+            # mla_attention.py:1877-1903 @v0.32.0). The FP8-prefill serving
             # configuration therefore also pins attention_config
             # .mla_prefill_backend; TRTLLM_RAGGED is the framework's own
             # highest-priority SM100 backend among the supporting set
-            # (prefill/selector.py:60-66). get_mla_prefill_backend validates
-            # the explicit selection and raises when it is invalid, and the
+            # (interface.py:474-480). get_mla_prefill_backend validates the
+            # explicit selection and raises when it is invalid
+            # (prefill/selector.py:84-107 @v0.32.0), and the
             # metadata probe below still fails closed on the resolved
             # q_data_type.
             vllm_config.attention_config.mla_prefill_backend = MLAPrefillBackendEnum.TRTLLM_RAGGED
         # Outside the SM100 family the pin has no source proof: vLLM gates
         # FP8 prefill query quantization to that family outright
         # (backend_supports_prefill_query_quantization returns False when
-        # not is_device_capability_family(100), mla_attention.py:1385-1386),
+        # not is_device_capability_family(100), mla_attention.py:1891-1892
+        # @v0.32.0),
         # and TRTLLM_RAGGED fails its own capability validation
         # (e.g. "compute capability 12.0 not supported" on SM120). Leave the
         # auto selector in charge so the q_data_type probe below raises the
@@ -687,7 +712,7 @@ def _create_attention_module(
 
     # backend_supports_prefill_query_quantization() is a zero-argument
     # functools.cache that reads the *current* vllm config on first call
-    # (mla_attention.py:1371). Serving processes hold one config, but
+    # (mla_attention.py:1877-1898 @v0.32.0). Serving processes hold one config, but
     # collector workers build many per process, so a value cached from a
     # previous case (e.g. bf16-prefill, FLASH_ATTN) would silently redirect
     # this case's q_data_type decision. Clear it so vLLM re-decides from this
@@ -749,8 +774,13 @@ def _create_attention_module(
                     f"framework model {model_cls.__name__} exposes no "
                     "layers.0.self_attn — extend the extraction, do not pin a class"
                 )
-            # the model allocated its shared topk buffer on meta; swap in the
-            # real one the collector allocated (same shape contract)
+            # Every reader of the shared top-k buffer (this layer, its indexer and
+            # SparseAttnIndexer; the impl reads it through the indexer) takes the
+            # collector's buffer of the same shape. DeepseekV32Model allocates its
+            # own with an explicit device, so that one is real memory even under
+            # the meta device, and the index group built over it keeps it alive
+            # unread (models/deepseek_v32/nvidia/model.py:188-201,
+            # sparse_mla_attention.py:616-620,672-686 @v0.32.0).
             for _n, _m in attn_module.named_modules():
                 if getattr(_m, "topk_indices_buffer", None) is not None:
                     _m.topk_indices_buffer = topk_indices_buffer
@@ -821,6 +851,49 @@ def _process_module_weights(attn_module, vllm_config, device):
                 module.process_weights_after_loading(vllm_config.model_config.dtype)
 
 
+def _serving_autotuned_linears(attn_module) -> list:
+    """The module's linears whose FlashInfer GEMM serving runs on an autotuned tactic.
+
+    Serving's warm-up autotunes the FlashInfer ops it reaches on SM90 and newer
+    (model_executor/warmup/kernel_warmup.py:261-268; enable_flashinfer_autotune is on
+    from O1) in a dummy run of max_num_batched_tokens tokens over at most max_num_seqs
+    requests (:334-381; v1/worker/gpu/model_runner.py:841-871). Every default bound
+    gives that batch more tokens than requests (engine/arg_utils.py:2923-2952), so
+    MLA attention runs it as prefill and the dense decode op (flashinfer
+    trtllm_batch_decode_mla, tuner-owned in flashinfer 0.7.0.post1 mla/_core.py:
+    4293-4298) is never tuned; this module's MLA prefill kernels are not tuner ops.
+    That leaves the NVFP4 linears' fp4_gemm, which serving skips when any linear runs
+    the SM100/SM103 cute-dsl kernel (_flashinfer_autotune_skip_ops, :295-311): only
+    FlashInferCutlassNvFp4LinearKernel (mm_fp4 "cutlass"), vLLM's NVFP4 linear on
+    SM120 (kernels/linear/__init__.py:574-591; nvfp4/flashinfer.py:119-126,194-207),
+    is tuned. All vLLM citations @v0.32.0.
+    """
+    from vllm.platforms import current_platform
+    from vllm.utils.flashinfer import has_flashinfer
+
+    if not (has_flashinfer() and current_platform.has_device_capability(90)):
+        return []
+    from vllm.model_executor.kernels.linear import (
+        FlashInferCuteDslNvFp4LinearKernel,
+        FlashInferCutlassNvFp4LinearKernel,
+    )
+
+    kernels = [
+        (module, getattr(getattr(module, holder, None), "kernel", None))
+        for _, module in attn_module.named_modules()
+        for holder in ("quant_method", "scheme")
+    ]
+    if any(isinstance(kernel, FlashInferCuteDslNvFp4LinearKernel) for _, kernel in kernels):
+        return []
+    return [module for module, kernel in kernels if isinstance(kernel, FlashInferCutlassNvFp4LinearKernel)]
+
+
+def _run_linears(linears, num_tokens: int, device: str) -> None:
+    """One forward of each linear on a num_tokens-row activation: the ops a tuning pass profiles."""
+    for layer in linears:
+        layer(torch.full((num_tokens, layer.input_size_per_partition), 0.01, dtype=torch.bfloat16, device=device))
+
+
 def _create_context_kv_inputs(batch_spec: BatchSpec, kv_lora_rank: int, qk_rope_head_dim: int, device: str):
     """
     Create cached KV tensors for the tokens that already exist in the paged KV
@@ -874,10 +947,13 @@ def _populate_indexer_kv_cache(
             block_ids = block_table[i, token_offsets // block_size]
             slots = block_ids.to(torch.long) * block_size + token_offsets % block_size
             # This writes both FP8 values and their valid per-group scales;
-            # values/scales are block-planar, not token-interleaved. Serving
-            # uses this producer in sparse_attn_indexer.py:380-390; its layout
-            # and ue8m0 rounding are in csrc/libtorch_stable/cache_kernels.cu:
-            # 550-609 (vLLM v0.25.1, commit 752a3a504485790a).
+            # values/scales are block-planar, not token-interleaved. It is the
+            # producer of serving's unfused path (sparse_attn_indexer.py:523-541);
+            # the fused DSV3.2 path writes the same layout for the indexer cache
+            # it reads back (fused_norm_rope -> _fp8_quant_and_cache_write,
+            # models/deepseek_v32/common/kernels.py:77-117,509-564); layout and
+            # ue8m0 rounding are in csrc/cache_kernels.cu:624-700,1917-1940. This
+            # fill precedes the timed region. All @v0.32.0.
             # The physical slot is the page-table block ID plus token offset.
             ops.indexer_k_quant_and_cache(keys, indexer_kv_cache, slots, quant_block_size, scale_fmt)
 
@@ -892,6 +968,34 @@ def _populate_indexer_kv_cache(
 # (framework setup per case vs. the timed forwards); _create_kv_cache_and_metadata
 # records the indexer-cache fill here because its return tuple is a contract.
 _PHASE_TIMINGS: dict[str, float] = {}
+
+
+def _serving_kv_block_size(vllm_config, attn_layer) -> int:
+    """The KV page serving runs the layer's selected backend with.
+
+    After loading the model, serving sizes the cache-manager block with the platform's
+    own update_block_size_for_backend (v1/executor/uniproc_executor.py:75,
+    multiproc_executor.py:701): without --block-size, the smallest size every non-SSM
+    attention backend of the model accepts (platforms/interface.py:750-781 ->
+    _find_non_ssm_backends :679-697, _preferred_block_size_for_backends :700-748). The
+    kernel page is select_common_block_size of that block, the layer's backend and its
+    spec (v1/worker/utils.py:515-561, called per KV-cache group at :672-674). Dense MLA
+    has one backend, so the block is its get_preferred_block_size(16)
+    (v1/attention/backend.py:152-160). DSA adds the indexer cache, whose CUDA backend
+    accepts only 64 (v1/attention/backends/mla/indexer.py:284-285), so
+    FLASHINFER_MLA_SPARSE (MultipleOf(32)) runs at 64. All @v0.32.0.
+    """
+    from vllm.platforms import current_platform
+    from vllm.v1.worker.utils import select_common_block_size
+
+    current_platform.update_block_size_for_backend(vllm_config)
+    return int(
+        select_common_block_size(
+            vllm_config.cache_config.block_size,
+            [attn_layer.get_attn_backend()],
+            [attn_layer.get_kv_cache_spec(vllm_config)],
+        )
+    )
 
 
 def _create_kv_cache_and_metadata(
@@ -910,19 +1014,8 @@ def _create_kv_cache_and_metadata(
     hf_config = vllm_config.model_config.hf_text_config
     kv_lora_rank = hf_config.kv_lora_rank
     qk_rope_head_dim = hf_config.qk_rope_head_dim
-    # page = what the framework would run the SELECTED backend with. Serving sizes the cache
-    # block from the FIRST non-SSM attention layer (platforms/interface.py:588-640).
-    # For DSA that is the indexer cache — deepseek_v2.py:1175 builds the Indexer (its
-    # k_cache registers at :724) before :1211 registers .attn — whose CUDA backend accepts
-    # only 64 (v1/attention/backends/mla/indexer.py:203-204), so FLASHINFER_MLA_SPARSE
-    # ([32, 64]) runs at 64, not at its own preferred 32.
-    from vllm.platforms import current_platform
-
     _attn_layer = vllm_config.compilation_config.static_forward_context["model.layers.0.self_attn.attn"]
-    block_size = framework_kv_block_size(
-        _attn_layer.get_attn_backend(),
-        cache_backend_cls=current_platform._find_non_ssm_backend(vllm_config),
-    )
+    block_size = _serving_kv_block_size(vllm_config, _attn_layer)
     vllm_config.cache_config.block_size = block_size
     is_dsa = attn_type == "dsa"
 
@@ -1008,8 +1101,8 @@ def _create_kv_cache_and_metadata(
     # Fail closed on the framework's own prefill query dtype decision:
     # vLLM silently falls back to the model dtype when FP8 prefill query
     # quantization is requested but unsupported (fp8 KV cache + SM100 family
-    # + FLASHINFER/TRTLLM_RAGGED prefill backend required —
-    # determine_prefill_query_data_type, mla_attention.py:1453-1493).
+    # + FLASHINFER/TRTLLM_RAGGED/TOKENSPEED_MLA prefill backend required —
+    # determine_prefill_query_data_type, mla_attention.py:2320-2360 @v0.32.0).
     # A silently-bf16 run must not be recorded as an mla_dtype=fp8 row.
     if is_context:
         from vllm.platforms import current_platform
@@ -1021,7 +1114,7 @@ def _create_kv_cache_and_metadata(
             raise RuntimeError(
                 f"vLLM selected prefill query dtype {actual_q_dtype} but the case is labeled "
                 f"compute_dtype={compute_dtype!r}; refusing to record a mislabeled row "
-                "(see determine_prefill_query_data_type @0.24.0 for the support conditions)"
+                "(see determine_prefill_query_data_type for the support conditions)"
             )
 
     attn_metadata = builder.build(
@@ -1044,9 +1137,9 @@ def _create_kv_cache_and_metadata(
             device=device,
         )
         indexer_builder_cls = indexer_layer.get_attn_backend().get_builder_cls()
-        # 0.29.0: builders may demand block_table_width (indexer.py:519,531);
-        # mirror serving's population exactly (v1/worker/utils.py:276-283)
-        # using vllm's own width helper (v1/worker/block_table.py:29-49).
+        # The indexer builder demands block_table_width (mla/indexer.py:988,1000);
+        # mirror serving's population exactly (v1/worker/utils.py:308-316)
+        # using vllm's own width helper (v1/worker/block_table.py:29-41), all @v0.32.0.
         builder_kwargs = {}
         if getattr(indexer_builder_cls, "requires_block_table_width", False):
             from vllm.v1.worker.block_table import get_block_table_width
@@ -1058,7 +1151,7 @@ def _create_kv_cache_and_metadata(
             # table.shape[1] == width. The family-100 decode path acts on
             # that assumption: it copies the metadata's table into
             # expanded_block_table_buffer sized by the width
-            # (v1/attention/backends/mla/indexer.py:609,745) and
+            # (v1/attention/backends/mla/indexer.py:1091-1095,1197-1248) and
             # crashes on our ceil(seq/block)-column table ("expanded size
             # (64) must match existing size (32)"). Zero-pad to the width —
             # padding blocks are never dereferenced for absent tokens. SM90
@@ -1144,6 +1237,103 @@ def _is_fatal_cuda_error(exc: BaseException) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _serving_cudagraph_ceiling() -> int:
+    """The largest step, in tokens, serving replays as a CUDA graph; larger steps run eagerly.
+
+    Serving's default max_cudagraph_capture_size is min(2 * max_num_seqs, 1024 on the
+    SM100 family else 512, max_num_batched_tokens) (config/vllm.py:2341-2446), and the
+    dispatcher runs any step above it with no graph (v1/worker/gpu/cudagraph_utils.py:
+    518-548). Serving's scheduler defaults on the GPUs this op runs on (max_num_seqs 1024 or
+    256, max_num_batched_tokens 2048 or more; engine/arg_utils.py:2923-2952) never bind
+    below the platform constant. All @v0.32.0.
+    """
+    from vllm.platforms import current_platform
+
+    return 1024 if current_platform.is_device_capability_family(100) else 512
+
+
+@contextmanager
+def _dsa_serving_capture_parity(attn_module, *, serving_captures_forward: bool):
+    """Make DeepseekV32Attention's capture-dependent choices the ones serving makes for this step.
+
+    Serving runs the DSA architectures on breakable CUDA graphs with torch.compile off
+    (DEFAULT_BREAKABLE_CUDAGRAPH_ARCHITECTURES and _maybe_enable_breakable_cudagraph,
+    config/vllm.py:74-102,812-840): a prefill step of up to _serving_cudagraph_ceiling()
+    tokens replays the forward as graph segments around eager breaks, a larger one runs
+    eagerly, and a uniform decode step replays one FULL graph (breakable_cudagraph.py:318-343,
+    v1/worker/gpu/cudagraph_utils.py:189-194,571-576). _sparse_indexer_and_attn is such a
+    break (@eager_break_during_capture, models/deepseek_v32/attention.py:465-466): add_eager
+    ends the segment before running it (breakable_cudagraph.py:67-120,198-211), so serving
+    never runs it on a capturing stream outside a FULL graph. This collector times every
+    step as one CUDA graph, so two choices vLLM keys on torch.cuda.is_current_stream_capturing()
+    would see a capture serving does not have:
+
+    1. _should_prepare_mqa_query (attention.py:286-296, applied at :336-338,422-425,446): a
+       captured forward always runs the W_UK BMM and, on an FP8-query backend, the FP8
+       MQA-query quantization; an eager forward skips both on the dense/masked-MHA prefill
+       path. Here the capture term is whether serving captures a step of this size.
+    2. sparse_attn_indexer's dense-MHA early return (sparse_attn_indexer.py:542-558): on a
+       pure prefill whose MLA metadata takes dense MHA, serving's eager break returns before
+       any indexer kernel (no cp_gather, MQA logits or top-k; skip_k_cache_insert is set on
+       this path, attention.py:501). Here the same predicate skips the indexer call through
+       the layer's own skip_topk, which _sparse_indexer_and_attn reads only at attention.py:481.
+
+    Both are serving's own conditions with only the capture state replaced, all @v0.32.0;
+    re-check them at every pin bump. Raises when the pinned class no longer has these hooks.
+    """
+    from vllm.config import CUDAGraphMode
+    from vllm.forward_context import get_forward_context
+
+    cls = type(attn_module)
+    sparse_indexer_and_attn = getattr(cls, "_sparse_indexer_and_attn", None)
+    hooks = ("_should_prepare_mqa_query", "_use_sparse_mha")
+    if not (
+        callable(sparse_indexer_and_attn)
+        and all(callable(getattr(cls, hook, None)) for hook in hooks)
+        and hasattr(attn_module, "skip_topk")
+        and hasattr(attn_module, "_dense_mha_metadata_layer_name")
+    ):
+        raise RuntimeError(
+            f"{cls.__name__} lacks the capture-dependent DSA choices this collector pins to serving "
+            "(_should_prepare_mqa_query, _sparse_indexer_and_attn, skip_topk); re-derive them from the pin"
+        )
+
+    def should_prepare_mqa_query(attn_metadata, cudagraph_runtime_mode):
+        return (
+            attn_metadata is None
+            or not attn_module._use_sparse_mha(attn_metadata)
+            or cudagraph_runtime_mode == CUDAGraphMode.FULL
+            or serving_captures_forward
+        )
+
+    def serving_skips_indexer_scoring() -> bool:
+        forward_context = get_forward_context()
+        layer_name = attn_module._dense_mha_metadata_layer_name
+        attn_metadata = forward_context.attn_metadata
+        if forward_context.cudagraph_runtime_mode == CUDAGraphMode.FULL or not layer_name:
+            return False
+        mla_metadata = attn_metadata.get(layer_name) if isinstance(attn_metadata, dict) else None
+        prefill = getattr(mla_metadata, "prefill", None)
+        return bool(getattr(prefill, "use_dense_mha", False)) and getattr(mla_metadata, "num_decode_tokens", -1) == 0
+
+    def sparse_indexer_and_attn_as_serving(*args, **kwargs):
+        if attn_module.skip_topk or not serving_skips_indexer_scoring():
+            return sparse_indexer_and_attn(attn_module, *args, **kwargs)
+        attn_module.skip_topk = True
+        try:
+            return sparse_indexer_and_attn(attn_module, *args, **kwargs)
+        finally:
+            attn_module.skip_topk = False
+
+    attn_module._should_prepare_mqa_query = should_prepare_mqa_query
+    attn_module._sparse_indexer_and_attn = sparse_indexer_and_attn_as_serving
+    try:
+        yield
+    finally:
+        del attn_module._should_prepare_mqa_query
+        del attn_module._sparse_indexer_and_attn
+
+
 @with_exit_stack
 def run_mla_module(
     exit_stack,
@@ -1187,8 +1377,8 @@ def run_mla_module(
     if compute_dtype == "fp8" and kv_cache_dtype != "fp8":
         raise ValueError(
             "vLLM FP8 MLA prefill query compute requires an FP8 KV cache "
-            "(determine_prefill_query_data_type, mla_attention.py:1462-1466 "
-            f"@0.24.0); got kv_cache_dtype={kv_cache_dtype!r}"
+            "(determine_prefill_query_data_type, mla_attention.py:2329-2333 "
+            f"@0.32.0); got kv_cache_dtype={kv_cache_dtype!r}"
         )
     is_context = "context" in perf_filename
     points = _series_points(seq_len, prefix_len if is_context else 0)
@@ -1246,9 +1436,11 @@ def run_mla_module(
     # 1. Create attention module, sized for the series' largest point and at the
     #    model's max_position_embeddings as max_model_len — serving's default, and
     #    independent of the batch: the DSA indexer's decode logits
-    #    [rows, max_model_len] (sparse_attn_indexer.py:711-721) and prefill
-    #    buffer max_model_len * 40 (mla/indexer.py:722-731) scale with it, so a
-    #    series-max size would bend batch scaling within one table. The other sizes
+    #    [rows, max_model_len] (sparse_attn_indexer.py:825-833) and its prefill
+    #    buffer, max_model_len * 8 * sparse_mla_prefill_workspace_factor (5 up to
+    #    256K, else 2; mla/indexer.py:918-929, config/vllm.py:1790-1798), scale
+    #    with it, all @v0.32.0, so a series-max size would bend batch scaling
+    #    within one table. The other sizes
     #    only reach capacity declarations (max_num_batched_tokens, the top-k index
     #    buffer); the backend selection is dtype/SM driven and every point's KV
     #    cache + metadata is built below for that point's own shape.
@@ -1268,33 +1460,40 @@ def run_mla_module(
     )
     _lap(_setup_phase, "module")
     if attn_type == "dsa" and use_fp8_kv_cache:
-        # vLLM 0.30 DeepseekV32 attention: the short-prefill dense-MHA branch with an FP8 query
-        # calls `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) —
-        # key=None. Serving takes that branch on the SM100 family with an FP8 KV cache
-        # (_fp8_query = fp8 KV and FlashInferMLASparseImpl.supports_quant_query_input,
-        # attention.py:239 / flashinfer_mla_sparse.py:481; _use_sparse_mha for prompts <=
-        # index_topk). The yarn rope of DeepSeek-V3.2 (DeepseekScalingRotaryEmbedding) rejects
-        # key=None — FlashInfer op `key.view(...)` ("'NoneType' object has no attribute 'view'",
-        # 3.9k b200 + ~3k b300 + ~3k gb200 cases) / forward_native `assert key is not None`
+        # DeepseekV32 attention on the dense/masked-MHA prefill path calls
+        # `self.rotary_emb(positions, q_pe)[0]` — key=None — when the forward quantized the MQA
+        # query to FP8 (`mqa_q.dtype != q_pe.dtype`, models/deepseek_v32/attention.py:556-562
+        # @v0.32.0). That happens on the SM100 family with an FP8 KV cache (_fp8_query = FP8 KV
+        # and FlashInferMLASparseImpl.supports_quant_query_input, attention.py:238-239 /
+        # flashinfer_mla_sparse.py:493) for steps serving captures (see
+        # _dsa_serving_capture_parity); an eager step keeps q_pe in bf16 and makes no call. The
+        # yarn rope of DeepSeek-V3.2 (DeepseekScalingRotaryEmbedding) rejects key=None —
+        # FlashInfer op `key.view(...)` ("'NoneType' object has no attribute 'view'", 3.9k b200
+        # + ~3k b300 + ~3k gb200 cases at 0.30) / forward_native `assert key is not None`
         # (deepseek_scaling_rope.py:123; the ed9109ec attempt to run native moved every case
-        # onto that assert: gb200 pipeline 72343556) — so for THAT class the call's intent,
-        # "rope q_pe only", is given to the module: rope the query against a throwaway copy
-        # and return (query, None). GLM-5.x's default rope (RotaryEmbedding) accepts key=None
-        # natively and is left on serving's exact call: wrapping it too handed vLLM's own rope
-        # kernel a contiguous key with the wrong head stride -> out-of-bounds in-place writes,
-        # the GLM-5.2 fp8-KV illegal-address / stall family (see
-        # _strided_throwaway_copy). Kernels and labels unchanged either way. Drop the shim once
-        # vLLM's :534 call or DeepseekScalingRotaryEmbedding accepts key=None.
+        # onto that assert: gb200 pipeline 72343556), so serving fails those steps too — for
+        # THAT class the call's intent, "rope q_pe only", is given to the module: rope the
+        # query against a throwaway copy and return (query, None). Deviation: the copy and the
+        # rope of the throwaway key are extra work in those rows. GLM-5.x's default rope
+        # (RotaryEmbedding) accepts key=None natively and is left on serving's exact call:
+        # wrapping it too handed vLLM's own rope kernel a contiguous key with the wrong head
+        # stride -> out-of-bounds in-place writes, the GLM-5.2 fp8-KV illegal-address / stall
+        # family (see _strided_throwaway_copy). Drop the shim once vLLM's call or
+        # DeepseekScalingRotaryEmbedding accepts key=None.
         _patched, _left = _install_rope_missing_key_shims(attn_module)
         if _patched:
             print(
                 f"[vllm-mla-module] dsa fp8: rope shim on {sorted(set(_patched))} (reject key=None; "
-                f"vLLM 0.30 attention.py:534 ropes q_pe alone); on serving's own call: {sorted(set(_left))}"
+                f"attention.py:556-562 ropes q_pe alone); on serving's own call: {sorted(set(_left))}"
             )
+    # The step size up to which serving replays a DSA forward as a CUDA graph.
+    capture_ceiling = _serving_cudagraph_ceiling() if attn_type == "dsa" else None
 
     # 1b. Process weights (FP8 quantization + create W_UK_T / W_UV for MLA)
     _process_module_weights(attn_module, vllm_config, device)
     _lap(_setup_phase, "weights")
+    # 1c. The linears serving runs on FlashInfer-autotuned tactics (SM120 NVFP4 only).
+    tuned_linears = _serving_autotuned_linears(attn_module)
 
     # set_current_vllm_config — needed by quantised layers and RoPE for every
     # forward of the series; entered once, after _cleanup was registered, so it
@@ -1307,9 +1506,10 @@ def run_mla_module(
     hidden_size = vllm_config.model_config.hf_text_config.hidden_size
 
     # Index reuse (GLM-5.x index_topk_freq / index_topk_pattern): the full dry run below
-    # populates the shared top-k buffer; serving's reuse layers run with skip_topk=True,
-    # keeping the MLA projections and sparse attention while skipping the indexer
-    # (vllm/models/deepseek_v32/attention.py:169-177,226,297,324,406,460; the
+    # populates the shared top-k buffer; serving builds its reuse layers without an
+    # indexer, keeping the MLA projections and sparse attention while skipping all indexer
+    # work, and skip_topk=True on this indexer layer takes exactly those branches
+    # (vllm/models/deepseek_v32/attention.py:166-200,226,309,339,427,481 @v0.32.0; the
     # generic DeepseekV2 wrapper keeps the flag on mla_attn, layers/mla.py:109,147,232).
     # Emit both op_name variants for checkpoints declaring reuse; never a model-averaged
     # latency in a full-indexer row.
@@ -1318,7 +1518,7 @@ def run_mla_module(
     has_reuse = attn_type == "dsa" and (
         "S" in reuse_pattern if reuse_pattern is not None else (getattr(hf_text_config, "index_topk_freq", 1) or 1) > 1
     )
-    # 0.30 DeepseekV32Attention IS the MLA layer and owns skip_topk; the legacy generic
+    # DeepseekV32Attention IS the MLA layer and owns skip_topk; the legacy generic
     # DeepseekV2MLAAttention nests it under mla_attn.
     skip_owner = next(
         (c for c in (attn_module, getattr(attn_module, "mla_attn", None)) if c is not None and hasattr(c, "skip_topk")),
@@ -1356,7 +1556,9 @@ def run_mla_module(
         )
         _lap(point_phase, "kv_metadata")
 
-        # 2b. Bind KV cache to the 0.24.0 attention layer.
+        # 2b. Bind the KV cache to the attention layer, as MLAAttention.bind_kv_cache does
+        # for serving's [B, 1, N, C] view (mla_attention.py:734-736 @v0.32.0); this cache is
+        # allocated as [B, N, C] already.
         forward_ctx[attn_layer_name].kv_cache = kv_cache
 
         # For DSA, also bind the indexer's KV cache.
@@ -1395,27 +1597,27 @@ def run_mla_module(
         # FIXME(kernel-limit): on SM100, FlashInfer's trtllm-gen sparse-MLA decode
         # ships kernels only for tileSizeQ >= 8. DSA cases whose per-rank head
         # count is 1/2/4 (tileSizeQ = heads for q_len 1) raise "Missing TRTLLM-GEN
-        # kernel (decode)" (flashinfer csrc/trtllm_fmha_kernel_launcher.cu:272,
-        # flashinfer 0.6.12) whenever vLLM selects FLASHINFER_MLA_SPARSE — always
-        # for FP8 KV, and for BF16 KV at heads <= 16 (platforms/cuda.py:98-116).
-        # Heads 8..128 pass; boundary measured on B200. Serving fails
-        # identically; run_mla_module_worker raises for them before the build.
+        # kernel (decode)" (flashinfer csrc/trtllm_fmha_kernel_launcher.cu:382 at
+        # 0.7.0.post1, vLLM 0.32.0's pin; measured at 0.6.12) whenever vLLM selects
+        # FLASHINFER_MLA_SPARSE — always for FP8 KV, and for BF16 KV at heads <= 16
+        # (platforms/cuda.py:96-118 @v0.32.0). Heads 8..128 pass; boundary measured
+        # on B200. Serving fails identically; collector/skips.py leaves them out.
         #
         # FIXME(kernel-limit): on SM120 and SM89, vLLM's dense-MLA decode backend
-        # is TRITON_MLA (SM120: platforms/cuda.py:130-134; SM89: the else-branch
-        # priority list at cuda.py:135-142, where FLASH_ATTN_MLA/FLASHMLA/
+        # is TRITON_MLA (SM120: platforms/cuda.py:132-136; SM89: the else-branch
+        # priority list at cuda.py:137-153, where FLASH_ATTN_MLA/FLASHMLA/
         # FLASHINFER_MLA all reject major != 9/10 and TRITON_MLA is the only
-        # eligible backend). Two measured limits (RTX PRO 6000
-        # Blackwell; serving fails identically; re-verify on the next vLLM
-        # bump):
+        # eligible backend; @v0.32.0). Two measured limits (RTX PRO 6000
+        # Blackwell; serving fails identically; the kernel and its launch
+        # are unchanged at v0.32.0, re-verify on the next vLLM bump):
         # 1. FP8 KV + q-heads >= 2 routes to the grouped decode kernel, which
         #    requests 102400B shared memory vs SM120's 101376B limit ->
         #    OutOfResources (heads == 1 takes the non-grouped kernel and
         #    passes; bf16 KV passes). vLLM's overflow guard only drops
         #    num_stages at BLOCK_DMODEL >= 1024, which the MLA Lk=576 path
-        #    (BLOCK_DMODEL=512) never reaches (triton_decode_attention.py
-        # 490-532). Upstream fix in flight: vllm#46728 (open PR,
-        #    num_stages=1 fallback for exactly this tile, fixes vllm#46721).
+        #    (BLOCK_DMODEL=512) never reaches (triton_decode_attention.py:
+        #    489-492,519-531 @v0.32.0). Upstream fix: vllm#46728 (num_stages=1
+        #    fallback for exactly this tile, fixes vllm#46721), not in v0.32.0.
         # 2. Decode batches whose total cached tokens exceed ~2^31/576 raise
         #    a deterministic illegal memory access (reproduced in isolation
         #    on a clean GPU): largest passing batch*seq = 2.10M tokens,
@@ -1426,27 +1628,36 @@ def run_mla_module(
         #    SM89 (L40S): 33/400 sampled generation cases, smallest failing
         #    batch*seq again 4.19M tokens (bf16 KV; fp8-KV combos are not
         #    declared below SM90).
-        # FIXME(kernel-limit): on SM120, every DSA case fails: the CUDA sparse
-        # attention indexer hard-requires DeepGEMM (sparse_attn_indexer.py:468-472),
-        # whose fp8 MQA-logits kernels ship for SM90/SM100 only
-        # (vllm/third_party/deep_gemm .../impls/sm{90,100}_fp8_mqa_logits.cuh) and
-        # assert "Unsupported architecture" (deepgemm csrc/apis/attention.hpp:184);
-        # cases with fp8_block linears die even earlier in DeepGEMM's scale-factor
-        # layout transform ("Unknown SF transformation", layout.hpp:59). Serving
-        # fails identically. Upstream: vllm#45317 (gap report), TRITON_MLA_SPARSE
-        # backend for SM8x/11x/12x in vllm#38476/#47629 (open PRs), sparse decode
-        # in vllm#47527; DeepGEMM SM120 support in DeepGEMM#318 (open PR).
+        # FIXME(re-verify): an earlier vLLM pin failed every DSA case on SM120: the
+        # CUDA sparse attention indexer hard-requires DeepGEMM, whose fp8 MQA-logits
+        # kernels then shipped for SM90/SM100 only and asserted "Unsupported
+        # architecture" (deepgemm csrc/apis/attention.hpp:184); cases with fp8_block
+        # linears died even earlier in DeepGEMM's scale-factor layout transform
+        # ("Unknown SF transformation", layout.hpp:59). That premise no longer holds
+        # in source: vLLM 0.32.0 (as 0.30.0) builds the vllm-project DeepGEMM fork,
+        # "upstream 2.8.0 plus the SM120 port", for 12.0a/12.0f
+        # (cmake/external_projects/deepgemm.cmake:32-37,80-85), sizes its paged MQA
+        # logits pages for SM120 (utils/deep_gemm.py:33-36), and serves SM120 DSA
+        # on FLASHINFER_MLA_SPARSE_SM120 (platforms/cuda.py:132-136). A targeted
+        # SM120 run decides whether these cases now pass.
         #
         attn_metadata_dict = {attn_layer_name: attn_metadata}
         if indexer_metadata is not None:
             attn_metadata_dict[indexer_layer_name] = indexer_metadata
-        # 0.29: DeepseekV32Attention reads per-layer slot mappings from
-        # forward_context.slot_mapping (attention.py:303-306 — a dict
+        # DeepseekV32Attention reads per-layer slot mappings from
+        # forward_context.slot_mapping (attention.py:323-331 @v0.32.0 — a dict
         # keyed by layer name); mirror serving's population with the SAME slot
         # tensor the metadata was built from.
         _slot = getattr(common_attn_metadata, "slot_mapping", None)
         _slot_map = dict.fromkeys(attn_metadata_dict, _slot) if _slot is not None else None
         point_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config, slot_mapping=_slot_map))
+        if capture_ceiling is not None:
+            # The dry run and the timed graph make the capture-dependent choices serving
+            # makes for a step of num_tokens tokens: graph-replayed up to the ceiling,
+            # eager above it (see _dsa_serving_capture_parity).
+            point_stack.enter_context(
+                _dsa_serving_capture_parity(attn_module, serving_captures_forward=num_tokens <= capture_ceiling)
+            )
         try:
             with torch.inference_mode():
                 _fwd_args = (
@@ -1484,21 +1695,41 @@ def run_mla_module(
             # rows at isl <= 1024 measured 1.6-8x the graph-timed values of the same cells
             # (b200/l40s vs #404's B200 tables). benchmark_with_power
             # (explicit_graph_cleanup) resets each graph and the ExitStack releases vLLM's
-            # workspace after the forward contexts unwind. FIXME(re-verify): confirm on 0.30
+            # workspace after the forward contexts unwind. FIXME(re-verify): confirm on 0.32
             # with a small->large DSA context sweep that the retention is gone before a campaign.
-            with benchmark_with_power(
-                device=torch.device(device),
-                kernel_func=kernel_func,
-                num_warmups=warming_up,
-                # The point's dry run already executed this forward; three eager
-                # passes cover lazily initialised paths (eager_warmup was ~40% of a
-                # measurement's wall time at ten).
-                num_eager_warmups=3,
-                num_runs=test_ite,
-                repeat_n=1,
-                use_cuda_graph=True,
-                allow_graph_fail=False,
-            ) as results:
+            # Deviation (DSA): serving runs a prefill step above _serving_cudagraph_ceiling()
+            # eagerly and _sparse_indexer_and_attn as an eager break below it, so those
+            # rows exclude the host launch gaps serving pays there; the kernels match
+            # (_dsa_serving_capture_parity). Retired by the pending measurement-method decision.
+            # The linears serving autotunes run on the tactic tuned at the bucket serving maps
+            # this token count to (mm_fp4, flashinfer gemm/gemm_base.py:7887-7915 @0.7.0.post1);
+            # the tuning pass runs only those linears, so no other FlashInfer op is tuned.
+            tune_tokens = flashinfer_tuning_bucket(num_tokens) if tuned_linears else None
+            autotuned = (
+                nullcontext()
+                if tune_tokens is None
+                else flashinfer_autotuned(
+                    tune_tokens,
+                    partial(_run_linears, tuned_linears, num_tokens, device),
+                    label="FlashInferCutlassNvFp4LinearKernel",
+                )
+            )
+            with (
+                autotuned,
+                benchmark_with_power(
+                    device=torch.device(device),
+                    kernel_func=kernel_func,
+                    num_warmups=warming_up,
+                    # The point's dry run already executed this forward; three eager
+                    # passes cover lazily initialised paths (eager_warmup was ~40% of a
+                    # measurement's wall time at ten).
+                    num_eager_warmups=3,
+                    num_runs=test_ite,
+                    repeat_n=1,
+                    use_cuda_graph=True,
+                    allow_graph_fail=False,
+                ) as results,
+            ):
                 pass
             _lap(point_phase, "measure_skip" if skip_indexer else "measure_full")
             # Protocol phases of this measurement (eager_warmup, capture, graph_warmup,
@@ -1630,8 +1861,9 @@ def run_mla_module_worker(
     ``seq_len`` is one point (the CLI's --quick) or the case's list of points
     measured on one module (the registry plan, see _series_points).
     """
-    # Serving executes model forward under inference mode (vLLM dd10e03f9,
-    # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
+    # Serving executes model forward under inference mode (execute_model of the
+    # default Model Runner V2, v1/worker/gpu/model_runner.py:1718-1719 @v0.32.0;
+    # config/vllm.py:703-738 picks it). Keep module initialization,
     # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13
     # mutates a cached workspace that may have been created by the dry run.
     with torch.inference_mode():
