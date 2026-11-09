@@ -40,7 +40,7 @@ def audited_memory_release(version: str | None) -> str | None:
         return None
     if version in MEMORY_OBSERVATION_VERSIONS:
         return version
-    if not re.fullmatch(r"\d+(?:\.\d+){2,}", version):
+    if not re.fullmatch(r"\d+(?:\.\d+){2,}", version, re.ASCII):
         return None
     line = version.split(".")[:2]
     candidates = [

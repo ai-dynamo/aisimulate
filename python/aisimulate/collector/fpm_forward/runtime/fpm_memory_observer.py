@@ -155,7 +155,7 @@ def audited_release(version: str | None, audited: tuple[str, ...]) -> str | None
         return None
     if version in audited:
         return version
-    if not re.fullmatch(r"\d+(?:\.\d+){2,}", version):
+    if not re.fullmatch(r"\d+(?:\.\d+){2,}", version, re.ASCII):
         return None
     line = version.split(".")[:2]
     candidates = [release for release in audited if release in SOURCE_MANIFESTS and release.split(".")[:2] == line]

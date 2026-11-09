@@ -253,6 +253,7 @@ def test_patch_release_rule_mirrors_the_collector_observer():
         "0.33.0.post1",
         "0.34.0",
         "v0.33.1",
+        "0.33.\u0661",
         "0.33",
         None,
     ):

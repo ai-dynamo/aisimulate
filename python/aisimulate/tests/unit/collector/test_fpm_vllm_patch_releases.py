@@ -118,6 +118,7 @@ def fake_vllm(tmp_path_factory, monkeypatch):
         ("v0.33.1", None),
         (" 0.33.1", None),
         ("0.33", None),
+        ("0.33.\u0661", None),
         (None, None),
     ],
 )
