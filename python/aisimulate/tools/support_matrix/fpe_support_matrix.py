@@ -7,7 +7,7 @@ This module deliberately stops at the FPE boundary.  It compiles one native
 engine per resolved identity and runs representative prefill, decode, and
 mixed-step calls.  It does not run the CLI, Sweeper, scheduler simulation,
 Replay, or disaggregated rate matching, so its output must not be presented as
-full AISimulate or deployment support.
+full AISim or deployment support.
 """
 
 from __future__ import annotations
@@ -838,14 +838,14 @@ def _csv_rows(results: Sequence[FPEProbeResult]) -> list[dict[str, Any]]:
 def _markdown_summary(results: Sequence[FPEProbeResult], metadata: dict[str, Any]) -> str:
     counts = Counter(result.status for result in results)
     lines = [
-        "# AISimulate FPE coverage matrix",
+        "# AISim FPE coverage matrix",
         "",
         "> This artifact validates strict native Forward Pass Engine construction and representative",
-        "> forward-pass queries only. It does not certify the AISimulate CLI, Sweeper, scheduler,",
+        "> forward-pass queries only. It does not certify the AISim CLI, Sweeper, scheduler,",
         "> Replay, disaggregated rate matching, deployment validity, or prediction accuracy.",
         "",
         f"- Schema version: `{SCHEMA_VERSION}`",
-        f"- AISimulate version: `{metadata['source_version']}`",
+        f"- AISim version: `{metadata['source_version']}`",
         f"- Source SHA: `{metadata['source_sha']}`",
         f"- Engine plans: `{metadata['plan_count']}`",
         f"- Probe results: `{len(results)}`",

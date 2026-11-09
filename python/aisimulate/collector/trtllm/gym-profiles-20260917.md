@@ -2,7 +2,7 @@
 
 ## Scope
 
-The `max_model_len` replay at AISimulate `89d2051137b772944a3e303c452108811790bef4`
+The `max_model_len` replay at AISim `89d2051137b772944a3e303c452108811790bef4`
 left 62 missing-profile failures: 31 DeepSeek-R1 points on B200, 10 on H200,
 and 21 GPT-OSS-120B points on B200. All use the original TRT-LLM database
 query version `1.3.0rc20`.
@@ -50,7 +50,7 @@ established. These diagnostic repeats remain separate from the published rows.
   or removed (excluding Python bytecode caches).
 
 The replay uses the frozen `89d2051137b772944a3e303c452108811790bef4` build from
-[PR #261](https://github.com/ai-dynamo/aisimulate/pull/261), with the measured
+[PR #261](https://github.com/ai-dynamo/aisim/pull/261), with the measured
 data overlaid. [Per-point replay evidence](gym-profiles-20260917-replay.json)
 includes metrics, native spec hashes, original errors, and package hashes.
 This verifies prediction availability and request completion; it does not

@@ -6,7 +6,7 @@
 The packaged configuration files are unmodified copies of the upstream files at
 revision da5b2650a835292c678994a1fa3fb653250fb508
 (model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md). Vision inputs are out of
-scope: AISimulate models the text path of this vision-language model.
+scope: AISim models the text path of this vision-language model.
 """
 
 import hashlib

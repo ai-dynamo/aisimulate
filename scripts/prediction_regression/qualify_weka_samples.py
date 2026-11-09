@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Qualify AISimulate Weka ingestion against two public AgentX trace rows."""
+"""Qualify AISim Weka ingestion against two public AgentX trace rows."""
 
 from __future__ import annotations
 

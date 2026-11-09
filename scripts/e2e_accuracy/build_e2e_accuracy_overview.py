@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build the public AISimulate E2E accuracy overview from a validated snapshot.
+"""Build the public AISim E2E accuracy overview from a validated snapshot.
 
 The source ``predictions.json`` retains historical ``dynamo_*`` field names for
 frontend compatibility. Rows with ``aisimulate_runner`` provenance are emitted
-as AISimulate results. The public output contains aggregate errors and identity
+as AISim results. The public output contains aggregate errors and identity
 dimensions and chart metrics, with public InferenceX GitHub run IDs for tracing
 measurements. Internal database run IDs are never published.
 """
@@ -426,7 +426,8 @@ def _aic_source(
     source = runtime.get("source_checkout") if isinstance(runtime, dict) else None
     if (
         not isinstance(source, dict)
-        or source.get("repository") != "https://github.com/ai-dynamo/aisimulate"
+        or source.get("repository")
+        not in {"https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"}
         or source.get("clean") is not True
         or not isinstance(source.get("branch"), str)
         or not isinstance(source.get("commit_sha"), str)
@@ -434,9 +435,9 @@ def _aic_source(
         or source["commit_sha"] != predictions.get("aic_commit_sha")
         or runtime.get("cli_entry_point") not in {"aisimulate.legacy_cli.entrypoint:main", "aiconfigurator.main:main"}
     ):
-        raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISimulate checkout")
+        raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISim checkout")
     if revision and any(source[key] != revision[key] for key in ("branch", "commit_sha")):
-        raise SnapshotError("AIC baseline and AISimulate replay must evaluate the same branch and commit")
+        raise SnapshotError("AIC baseline and AISim replay must evaluate the same branch and commit")
     result = {key: source[key] for key in ("repository", "branch", "commit_sha")}
     if "baseline_api" in runtime or "config_adapter" in runtime:
         expected = (
@@ -574,15 +575,15 @@ def _validate_inputs(
         has_ttft = _finite(row.get("dynamo_ttft_ms")) is not None
         has_tpot = _finite(row.get("dynamo_tpot_ms")) is not None
         if has_ttft != has_tpot:
-            raise SnapshotError("AISimulate TTFT and TPOT must be present or absent together")
+            raise SnapshotError("AISim TTFT and TPOT must be present or absent together")
         if has_ttft and (row["dynamo_ttft_ms"] <= 0 or row["dynamo_tpot_ms"] <= 0):
-            raise SnapshotError("successful AISimulate latencies must be positive")
+            raise SnapshotError("successful AISim latencies must be positive")
         if status == "success" and not has_ttft:
-            raise SnapshotError("successful AISimulate row is missing latency metrics")
+            raise SnapshotError("successful AISim row is missing latency metrics")
         if status != "success" and has_ttft:
-            raise SnapshotError("non-success AISimulate row contains latency metrics")
+            raise SnapshotError("non-success AISim row contains latency metrics")
         if status == "success" and row.get("aisimulate_runner") != "aisimulate.engine_replay":
-            raise SnapshotError("successful row does not identify the public AISimulate runner")
+            raise SnapshotError("successful row does not identify the public AISim runner")
 
     aisimulate_run = metadata.get("aisimulate_run")
     if not isinstance(aisimulate_run, dict):
@@ -645,7 +646,7 @@ def build_summary(
 
     result = {
         "schema_version": SCHEMA_VERSION,
-        "title": "AISimulate E2E Accuracy Overview",
+        "title": "AISim E2E Accuracy Overview",
         "snapshot": {
             "release_tag": predictions["release_tag"],
             "measurement_source": "SemiAnalysis InferenceX",

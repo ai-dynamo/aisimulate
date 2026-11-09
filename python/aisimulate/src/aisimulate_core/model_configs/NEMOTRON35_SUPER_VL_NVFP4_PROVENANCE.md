@@ -18,7 +18,7 @@ layers, the Mamba and attention projections are static per-tensor FP8, and
 so is the LM head. The latent projections, the router, `conv1d`, the
 embeddings, the attention projections and `eh_proj` of the multi-token
 prediction (MTP) layer, and the vision tower and projector modules stay
-BF16. The KV cache is FP8. AISimulate models the text path only.
+BF16. The KV cache is FP8. AISim models the text path only.
 
 Copyright owner: NVIDIA CORPORATION & AFFILIATES.
 

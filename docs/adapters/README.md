@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Adapter contracts
 
-AISimulate exposes separate boundaries for execution, configuration, output
+AISim exposes separate boundaries for execution, configuration, output
 and native Replay composition. An adapter's support at one boundary does not
 establish support at the others. This directory is an ABI reference; usage of
 the existing Dynamo integration is documented [with Replay](../replay/dynamo.md).
@@ -24,10 +24,10 @@ installed package/crate pair rather than inferring compatibility from a shared
 method name. Explicit version checks fail instead of silently translating an
 unsupported contract.
 
-AISimulate owns traffic, engine schemas, optimization, process supervision and
+AISim owns traffic, engine schemas, optimization, process supervision and
 canonical output. Config adapters return data and hooks; a runner combines them
-and starts execution once. The native composition depends on AISimulate's
-neutral types, while AISimulate core does not import Dynamo's Router/Planner.
+and starts execution once. The native composition depends on AISim's
+neutral types, while AISim core does not import Dynamo's Router/Planner.
 Output adapters do not influence simulation or ranking.
 
 Discovery imports selected plugins only. Configuration/output names must be

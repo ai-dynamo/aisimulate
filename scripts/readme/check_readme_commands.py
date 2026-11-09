@@ -161,10 +161,10 @@ def run_profile(profile: str, workspace: Path, output: Path, blocks: dict, manif
     env.update(
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0=f"url.{ROOT}.insteadOf",
-        GIT_CONFIG_VALUE_0="https://github.com/ai-dynamo/aisimulate.git",
+        GIT_CONFIG_VALUE_0="https://github.com/ai-dynamo/aisim.git",
     )
     source = profile in {"source", "macos", "development"}
-    cwd = workspace / "aisimulate" if source else workspace
+    cwd = workspace / "aisim" if source else workspace
     environment = cwd / ".venv"
     if not source:
         venv.create(environment, with_pip=True)

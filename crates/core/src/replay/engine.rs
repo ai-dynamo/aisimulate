@@ -40,7 +40,7 @@ fn default_parallel_size() -> u32 {
     1
 }
 
-/// Serializable execution-time descriptor for the AISimulate engine.
+/// Serializable execution-time descriptor for the AISim engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReplayEngineConfig {

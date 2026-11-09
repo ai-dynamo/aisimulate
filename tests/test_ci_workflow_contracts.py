@@ -375,12 +375,12 @@ def _fast_run(**overrides):
         "path": ".github/workflows/fast-ci.yml",
         "head_sha": "a" * 40,
         "head_branch": "main",
-        "head_repository": {"full_name": "ai-dynamo/aisimulate"},
+        "head_repository": {"full_name": "ai-dynamo/aisim"},
         "event": "push",
         "status": "completed",
         "conclusion": "success",
         "run_attempt": 1,
-        "html_url": "https://github.com/ai-dynamo/aisimulate/actions/runs/10",
+        "html_url": "https://github.com/ai-dynamo/aisim/actions/runs/10",
         **overrides,
     }
 
@@ -393,7 +393,7 @@ def _fast_jobs():
 
 
 def _require_fast(api, **kwargs):
-    return require_fast_ci("ai-dynamo/aisimulate", "a" * 40, "refs/heads/main", "push", api=api, **kwargs)
+    return require_fast_ci("ai-dynamo/aisim", "a" * 40, "refs/heads/main", "push", api=api, **kwargs)
 
 
 def test_fast_prerequisite_accepts_all_jobs_from_the_latest_attempt_across_pages():
@@ -432,9 +432,7 @@ def test_fast_prerequisite_rejects_wrong_commit_branch_origin_workflow_and_event
 def test_manual_full_ci_can_reuse_a_same_branch_push_or_manual_fast_run():
     for event in ("push", "workflow_dispatch"):
         run = _fast_run(event=event)
-        assert (
-            latest_run([{"workflow_runs": [run]}], "a" * 40, "main", "workflow_dispatch", "ai-dynamo/aisimulate") == run
-        )
+        assert latest_run([{"workflow_runs": [run]}], "a" * 40, "main", "workflow_dispatch", "ai-dynamo/aisim") == run
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "neutral", "timed_out", None])
@@ -527,7 +525,7 @@ def _run_fast_prerequisite_cli(tmp_path, *, overrides=False, failure=None):
     env = {
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-        "GITHUB_REPOSITORY": "ai-dynamo/aisimulate",
+        "GITHUB_REPOSITORY": "ai-dynamo/aisim",
         "GITHUB_SHA": "a" * 40,
         "GITHUB_REF": "refs/heads/codex/manual",
         "GITHUB_EVENT_NAME": "workflow_dispatch",
@@ -555,13 +553,13 @@ def test_fast_prerequisite_cli_verifies_manual_run_and_appends_summary(tmp_path,
     result, summary = _run_fast_prerequisite_cli(tmp_path, overrides=overrides)
     assert result.returncode == 0, result.stdout + result.stderr
     assert summary.read_text().startswith("Existing evidence\n### Standalone Fast CI verified")
-    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisimulate/actions/runs/10", "attempt 1"):
+    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisim/actions/runs/10", "attempt 1"):
         assert evidence in result.stdout
         assert evidence in summary.read_text()
     calls = (tmp_path / "calls").read_text().splitlines()
     assert calls[0] == calls[2]
-    assert calls[0].startswith("repos/ai-dynamo/aisimulate/actions/workflows/fast-ci.yml/runs?")
-    assert calls[1] == "repos/ai-dynamo/aisimulate/actions/runs/10/attempts/1/jobs?per_page=100"
+    assert calls[0].startswith("repos/ai-dynamo/aisim/actions/workflows/fast-ci.yml/runs?")
+    assert calls[1] == "repos/ai-dynamo/aisim/actions/runs/10/attempts/1/jobs?per_page=100"
 
 
 @pytest.mark.parametrize("failure", ["api", "wrong-job-sha"])
@@ -1135,7 +1133,7 @@ def _run_comparison_base(
     assert step["env"]["PR_BASE_SHA"] == "${{ steps.pr-target.outputs.base }}"
     gh = tmp_path / "gh"
     gh.write_text(
-        '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisimulate/commits/main --jq .sha" ]] || exit 9\n'
+        '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisim/commits/main --jq .sha" ]] || exit 9\n'
         'touch "${GH_CALLED}"\nprintf "%s\\n" "${TEST_API_SHA}"\nexit "${TEST_API_STATUS}"\n'
     )
     gh.chmod(0o755)
@@ -1149,7 +1147,7 @@ def _run_comparison_base(
             "GITHUB_REF": ref,
             "BEFORE_SHA": before,
             "PR_BASE_SHA": pr_base,
-            "REPOSITORY": "ai-dynamo/aisimulate",
+            "REPOSITORY": "ai-dynamo/aisim",
             "GITHUB_OUTPUT": str(output_path),
             "GH_CALLED": str(tmp_path / "gh-called"),
             "TEST_API_SHA": api_sha,
@@ -1257,7 +1255,7 @@ def _run_pr_target(
             "GITHUB_EVENT_NAME": "push",
             "GITHUB_REF": "refs/heads/pull-request/121",
             "RUN_SHA": "a" * 40,
-            "REPOSITORY": "ai-dynamo/aisimulate",
+            "REPOSITORY": "ai-dynamo/aisim",
             "GITHUB_OUTPUT": str(output_path),
             "GH_CALLED": str(calls_path),
             "TEST_PR_HEAD": head,
@@ -1266,7 +1264,7 @@ def _run_pr_target(
         },
     )
     assert calls_path.read_text().splitlines() == [
-        "api -X GET repos/ai-dynamo/aisimulate/pulls/121 --jq [.head.sha, .base.sha] | @tsv"
+        "api -X GET repos/ai-dynamo/aisim/pulls/121 --jq [.head.sha, .base.sha] | @tsv"
     ]
     output = dict(line.split("=", 1) for line in output_path.read_text().splitlines()) if output_path.exists() else {}
     return result, output
@@ -1362,7 +1360,7 @@ def _run_whitespace_step(
             "TARGET_SHA": target,
             "GH_TOKEN": "ci-contract-dummy-token",
             "PATH": f"{repository}{os.pathsep}{os.environ['PATH']}",
-            "REPOSITORY": "ai-dynamo/aisimulate",
+            "REPOSITORY": "ai-dynamo/aisim",
             "TEST_PR_BASE": base,
         },
         capture_output=True,
@@ -1756,7 +1754,7 @@ def test_full_ci_scope_resolver_handles_copy_manual_and_race_cases(
         "GITHUB_SHA": target_sha,
         "GITHUB_OUTPUT": str(output),
         "RUNNER_TEMP": str(tmp_path),
-        "REPOSITORY": "ai-dynamo/aisimulate",
+        "REPOSITORY": "ai-dynamo/aisim",
         "FAKE_PR_HEAD": target_sha,
         "FAKE_FILES": "\n".join(
             base64.b64encode(path.encode()).decode() for path in ("README.md", "crates/core/src/replay/event.rs")
@@ -2838,8 +2836,8 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
         "MATRIX_ARCH": "amd64",
         "MATRIX_RUNNER": "fixture",
         "CONTAINER_IMAGE": "fixture@sha256:" + "b" * 64,
-        "GH_REPOSITORY": "ai-dynamo/aisimulate",
-        "GH_WORKFLOW_REF": "ai-dynamo/aisimulate/.github/workflows/nightly-ci.yml@refs/heads/main",
+        "GH_REPOSITORY": "ai-dynamo/aisim",
+        "GH_WORKFLOW_REF": "ai-dynamo/aisim/.github/workflows/nightly-ci.yml@refs/heads/main",
         "GH_REF": source_ref,
         "GH_SHA": "a" * 40,
         "GH_RUN_ID": "123",
@@ -3416,7 +3414,7 @@ _PLACEMENT_LITERAL = (
     "        }\n"
     "    }\n"
 )
-_MARKER = "// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+_MARKER = "// Modified by AISim CI: Dynamo does not set these optional fields yet.\n"
 
 
 def _literal_fixture(tmp_path, monkeypatch, request_extra="", placement_extra="", request_literal=_REQUEST_LITERAL):
@@ -3522,7 +3520,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "            session_id: None,\n"
         "            cache_salt: None,\n"
         "            kv_hint: None,\n"
-        "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        "            // Modified by AISim CI: the pinned Dynamo request is text-only.\n"
         "            images: {\n"
         "                assert!(\n"
         "                    request.images.is_empty(),\n"
@@ -3535,7 +3533,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
     expected = expected.replace(
         "        Ok(match event {\n",
         "        Ok(match event {\n"
-        "            // Modified by AISimulate CI: host-loop/frontend events are unsupported.\n"
+        "            // Modified by AISim CI: host-loop/frontend events are unsupported.\n"
         "            LifecycleEvent::TtftMilestone { request_id, stage, at_ms } => {\n"
         "                return Err(anyhow!(\n"
         '                    "pinned Dynamo CI adapter does not support TTFT milestone {stage:?}'
@@ -3800,7 +3798,7 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
     site = site._replace(sha256=hashlib.sha256(_SYNTHETIC_TRACE_LITERAL.encode()).hexdigest())
     monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", (site,))
     if image_field not in ("", "pub images: Option<SyntheticImages>,") or drift:
-        with pytest.raises(ValueError, match="reviewed source|unreviewed AISimulate SyntheticTraceSpec"):
+        with pytest.raises(ValueError, match="reviewed source|unreviewed AISim SyntheticTraceSpec"):
             builder.patch_optional_literal_fields(core, dynamo)
         assert path.read_text() == original
     else:
@@ -3810,7 +3808,7 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
             original.replace(
                 "        arrival_seed,\n",
                 "        arrival_seed,\n"
-                "        // Modified by AISimulate CI: retain the pinned text-only replay configuration.\n"
+                "        // Modified by AISim CI: retain the pinned text-only replay configuration.\n"
                 "        images: None,\n",
             )
             if image_field
@@ -3837,7 +3835,7 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
         builder, "OPTIONAL_FIELD_LITERALS", (site._replace(sha256=hashlib.sha256(source.encode()).hexdigest()),)
     )
     if client_type == "OtherClient":
-        with pytest.raises(ValueError, match="unreviewed AISimulate WekaImportOptions"):
+        with pytest.raises(ValueError, match="unreviewed AISim WekaImportOptions"):
             builder.patch_optional_literal_fields(core, dynamo)
         assert adapter.read_text() == source
     else:
@@ -3879,7 +3877,7 @@ def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monke
     adapter.write_text(source)
     monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
     if drift:
-        with pytest.raises(ValueError, match="unreviewed AISimulate SglangConfig"):
+        with pytest.raises(ValueError, match="unreviewed AISim SglangConfig"):
             builder.patch_replay_engine_config(core, dynamo)
         assert adapter.read_text() == source
     else:
@@ -3939,7 +3937,7 @@ def test_simulation_dynamo_lifecycle_rejects_unsupported_host_events(extra):
 
     api = "pub enum LifecycleEvent { SourceHeld {}, DestinationReserved {}, " + extra + "}"
     if "u64" in extra or "OtherEvent" in extra:
-        with pytest.raises(ValueError, match="unreviewed AISimulate lifecycle API"):
+        with pytest.raises(ValueError, match="unreviewed AISim lifecycle API"):
             builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
     else:
         patched, rejected = builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
@@ -4046,7 +4044,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     monkeypatch.setattr(builder, "patch_speculation_depth", patch_speculation_depth)
     monkeypatch.setattr(builder, "patch_replay_engine_config", patch_replay_engine_config)
     if wrong_core:
-        with pytest.raises(ValueError, match="different AISimulate core"):
+        with pytest.raises(ValueError, match="different AISim core"):
             builder.build(source, dynamo, output)
         assert not built
         assert not list(output.iterdir())

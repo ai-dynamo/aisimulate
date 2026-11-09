@@ -182,9 +182,7 @@ def build_afd_qualification(spec: ReplaySpec) -> dict[str, JSONValue]:
             "status": "qualified_for_analytical_replay",
             "execution": "analytical_foreground",
             "native_deployment_supported": False,
-            "native_deployment_reason": (
-                "AISimulate does not provide a physical AFD serving adapter or launch renderer"
-            ),
+            "native_deployment_reason": ("AISim does not provide a physical AFD serving adapter or launch renderer"),
         },
         "identity": {
             "replay_spec_api_version": spec.api_version,

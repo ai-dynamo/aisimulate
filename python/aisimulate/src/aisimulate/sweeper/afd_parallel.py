@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attention--FFN parallel topology contracts for the AISimulate Sweeper.
+"""Attention--FFN parallel topology contracts for the AISim Sweeper.
 
 This module owns only the backend-neutral A/F parallel shape, validation, GPU
 accounting, and complete finite enumeration. Performance measurement, staged

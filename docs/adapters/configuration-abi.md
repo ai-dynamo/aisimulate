@@ -37,7 +37,7 @@ materialize_candidate(
 
 These are bound-method signatures. Every operation is required. Prediction
 compiles one concrete section; recommendation prepares domains once, then
-materializes one concrete selection at a time. AISimulate owns core engine and
+materializes one concrete selection at a time. AISim owns core engine and
 traffic schemas. Each optional section owns separate typed prediction and
 recommendation models; resolved runtime config is a third representation,
 not the public search schema.

@@ -506,7 +506,7 @@ the canonical quant-mode fields and `attention_backend`, alongside estimator
 selection and controls. DCP FPM replay requires explicit fixed KV block capacity;
 automatic DCP/hybrid capacity sizing is not implemented. Host offload or P/D
 transfer also requires explicit KV bytes per token with DCP.
-`decode_context` is currently supported by AISimulate's `--stack engine` only.
+`decode_context` is currently supported by AISim's `--stack engine` only.
 Dynamo Replay and Planner do not yet support this field; their configuration
 propagation, cache identity, and dependency version need a downstream update.
 These timing precision/backend overrides are prediction-only; recommendation

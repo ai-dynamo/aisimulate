@@ -4,7 +4,7 @@
 """Freeze native AIPerf Weka chat requests in its isolated, pinned environment.
 
 Executed as a fixed package resource script with a structured JSON input. No
-AISimulate imports or GPU model are needed in the AIPerf environment. Upstream
+AISim imports or GPU model are needed in the AIPerf environment. Upstream
 Weka reconstruction supplies content/history, and upstream Session/ChatEndpoint
 supplies the complete request payload. Native Mooncake replay then sends that
 payload verbatim with the original timestamp and end-to-start delay.

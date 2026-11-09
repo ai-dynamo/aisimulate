@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Discovery for optional AISimulate execution stacks."""
+"""Discovery for optional AISim execution stacks."""
 
 from __future__ import annotations
 

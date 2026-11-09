@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate packaging.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISim packaging.
 # Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 
 name: Build and verify a platform wheel
-description: Build and verify one unified AISimulate platform wheel
+description: Build and verify one unified AISim platform wheel
 
 inputs:
   build_method:

@@ -124,7 +124,7 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
-AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISim behavior, not downstream Dynamo planner integration.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
 simulator workload assumption, supplied separately by the unified CLI as
@@ -1038,7 +1038,7 @@ FPM also checks the preserved GEMM/MoE identity before selecting a timing cell,
 including profiles without an original op-level graph.
 Missing hardware metadata still follows the system-spec/data diagnostics.
 Serving runtimes may execute FP8 checkpoints through weight-only kernels such as
-Marlin on these GPUs; AISimulate does not model that path.
+Marlin on these GPUs; AISim does not model that path.
 
 ### KV precision and token capacity
 
@@ -1055,7 +1055,7 @@ recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 | KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
 | Other supported configurations | BF16 |
 
-These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+These are AISim policies, not serving-engine defaults. `torch_dtype: bfloat16`
 does not prevent FP8 KV inference. For regular language roles using default timing,
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;

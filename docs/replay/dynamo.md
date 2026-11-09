@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 # Dynamo integration
 
 Select `--stack dynamo` to use Dynamo-owned Router/Planner behavior. Install the
-integration in the same environment as AISimulate and select the same stack when
+integration in the same environment as AISim and select the same stack when
 replaying a saved recommendation. The YAML does not embed stack selection.
 The engine stack remains sufficient for reading native Dynamo trace files.
 
@@ -21,7 +21,7 @@ installed Dynamo integration, independently of Engine-stack acceptance.
 
 ## Planner installation check
 
-This example runs the public AISimulate CLI with Planner enabled. It uses
+This example runs the public AISim CLI with Planner enabled. It uses
 synthetic traffic, local model metadata, fixed timing, and fixed KV capacity;
 no model weights, GPU, or Kubernetes cluster are needed. Its timings are
 synthetic and do not measure model performance or qualify scaling accuracy.
@@ -29,7 +29,7 @@ synthetic and do not measure model performance or qualify scaling accuracy.
 ### Install matching dependencies
 
 Use Linux with Python 3.12, matching the release validation environment. From
-the AISimulate repository root, place the compatible AISimulate, `ai-dynamo`,
+the AISim repository root, place the compatible AISim, `ai-dynamo`,
 and `ai-dynamo-runtime` wheel artifacts in `./wheels/` (one of each):
 
 ```bash
@@ -59,7 +59,7 @@ python3 -m pip check
 
 The `grpcio-tools` cap matches RC9's
 [common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
-AISimulate's `google-vizier` dependency can install a newer `grpcio-tools`
+AISim's `google-vizier` dependency can install a newer `grpcio-tools`
 that requires a different protobuf version. Include the cap in the same pip
 invocation as the Planner requirements so the resolver can select compatible
 versions together, including when repairing an existing environment. When
@@ -73,7 +73,7 @@ image from the same Dynamo release you intend to validate.
 
 ### Run a Planner-enabled prediction
 
-From the AISimulate repository root, using the environment above:
+From the AISim repository root, using the environment above:
 
 ```bash
 cd examples/cli/dynamo-planner
@@ -106,7 +106,7 @@ verify that Planner loads.
 
 ## Router configuration
 
-Router is not part of the AISimulate core schema. The `dynamo.router` config adapter owns this
+Router is not part of the AISim core schema. The `dynamo.router` config adapter owns this
 section's concrete model, defaults, recommendation domains, validation, and runtime lowering. The
 section is accepted only when the selected stack provides that adapter; omitting it keeps an
 engine-only configuration engine-only.
@@ -143,7 +143,7 @@ run may download model metadata from Hugging Face.
 
 ### Check the Dynamo version
 
-Use Linux with Python 3.12 and a compatible AISimulate/Dynamo environment
+Use Linux with Python 3.12 and a compatible AISim/Dynamo environment
 following the [installation guide](../getting-started/installation.md#optional-dynamo-integration).
 The Dynamo Python adapter **and native runtime** must include
 [Dynamo #17856](https://github.com/ai-dynamo/dynamo/pull/17856), which supplies
@@ -223,7 +223,7 @@ that can reuse blocks held by another worker.
 
 ## Planner configuration
 
-Planner is not part of the AISimulate core schema. The `dynamo.planner` config adapter owns this
+Planner is not part of the AISim core schema. The `dynamo.planner` config adapter owns this
 section's presets, recommendation domains, and runtime lowering. Concrete enabled settings use
 Dynamo's production `PlannerConfig` for defaults, validation, and target normalization. The section
 is accepted only when the selected stack provides that adapter.

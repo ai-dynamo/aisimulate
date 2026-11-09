@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Top-level core envelopes for the two AISimulate commands."""
+"""Top-level core envelopes for the two AISim commands."""
 
 from __future__ import annotations
 

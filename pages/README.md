@@ -1,4 +1,4 @@
-# AISimulate webpages
+# AISim webpages
 
 This directory owns webpage HTML and its assets. The public build is explicitly
 allowlisted by `scripts/pages/build_pages_site.py`; a new directory is not published
@@ -46,3 +46,8 @@ Build an empty output directory and serve it locally:
 python scripts/pages/build_pages_site.py --output-dir /tmp/aisim-pages
 python -m http.server --directory /tmp/aisim-pages 8000
 ```
+
+
+## Publication URL after the repository rename
+
+The canonical site is `https://ai-dynamo.org/aisim/`. Navigation uses relative links so dashboards and their assets remain under the project prefix. GitHub does not redirect the former project Pages path when the repository is renamed. Preserve old `/aisimulate/` links through the organization site's hosting layer, preserving nested paths and query strings; do not recreate a repository with the old name. The [repository rename checklist](../docs/ci/README.md#repository-rename-to-aisim) covers GitHub settings, Pages redeployment, redirects, runners, and external integrations.

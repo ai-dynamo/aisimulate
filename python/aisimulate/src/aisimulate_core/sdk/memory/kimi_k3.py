@@ -14,7 +14,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Modified: CPU-only sizing, strict support checks and AISimulate diagnostics.
+# Modified: CPU-only sizing, strict support checks and AISim diagnostics.
 # Adapted from https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
 # Original paths: vllm/model_executor/layers/mamba/mamba_utils.py,
 # vllm/model_executor/models/kimi_linear.py, vllm/model_executor/layers/kda.py,

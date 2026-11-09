@@ -533,7 +533,7 @@ def test_result_outputs_are_deterministic_while_run_metrics_remain_separate(tmp_
     for name in ("json", "csv", "markdown"):
         assert first[name].read_bytes() == second[name].read_bytes()
     assert first["metrics"].read_bytes() != second["metrics"].read_bytes()
-    assert "does not certify the AISimulate" in first["markdown"].read_text()
+    assert "does not certify the AISim" in first["markdown"].read_text()
 
 
 def test_probe_workload_rejects_invalid_prefix():

@@ -14,8 +14,8 @@ from the community!
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/ai-dynamo/aisimulate
-cd aisimulate
+git clone https://github.com/ai-dynamo/aisim
+cd aisim
 ```
 
 Current performance profiles are checked-in Parquet files. Git LFS is only
@@ -63,7 +63,7 @@ The development environment includes:
 
 Keep upstream AIC Python code/data in
 `python/aisimulate/src/aisimulate/` and
-`python/aisimulate/src/aisimulate_core/`. AISimulate-specific compatibility
+`python/aisimulate/src/aisimulate_core/`. AISim-specific compatibility
 glue belongs in `python/aisimulate/src/aisimulate_core/`, not in those mirrors.
 The corresponding Rust mirror is `crates/core/src/perfmodel/`. See the
 repository's [AIC synchronization guide](docs/ci/aic-sync.md) before applying an
@@ -174,7 +174,7 @@ Explore the automation helpers under `python/aisimulate/tools/automation/`.
 - **Documentation**: Check the root `docs/` directory and
   `python/aisimulate/docs/`
 - **Issues**: Open an issue on
-  [GitHub](https://github.com/ai-dynamo/aisimulate/issues)
+  [GitHub](https://github.com/ai-dynamo/aisim/issues)
 - **Examples**: Explore `python/aisimulate/tools/simple_sdk_demo/` for SDK usage
   examples
 
@@ -292,7 +292,7 @@ in `scripts/pyproject.toml`.
 
 ```bash
 # Read the editable configuration without printing it.
-export SLACK_REVIEW_ROTATION="$(gh variable get SLACK_REVIEW_ROTATION --repo ai-dynamo/aisimulate)"
+export SLACK_REVIEW_ROTATION="$(gh variable get SLACK_REVIEW_ROTATION --repo ai-dynamo/aisim)"
 GH_TOKEN="$(gh auth token)" python3 scripts/notifications/slack_review_digest.py --dry-run
 ```
 

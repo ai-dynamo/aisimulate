@@ -17,7 +17,7 @@ own row wins instead of the pair failing as ambiguous.
 
 Same real-data engine-query pattern as ``test_gdn_flashinfer_lane.py``
 (``Operation._engine_query`` — the sanctioned single-op plumbing — plus
-raw-table pins in the ``test_gdn_donor_fill_pins.py`` convention). AISimulate
+raw-table pins in the ``test_gdn_donor_fill_pins.py`` convention). AISim
 does not currently ship the old cross-backend logical donor lane assumed by
 the AIC source test; precedence over a competing donor is covered with an
 explicit synthetic table by the Rust unit tests in ``perf_database/state_space.rs``

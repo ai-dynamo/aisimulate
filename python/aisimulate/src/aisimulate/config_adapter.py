@@ -125,7 +125,7 @@ def validate_config_adapter(adapter: Any, *, requested_name: str) -> SimulationC
         raise ConfigAdapterResolutionError(
             f"config adapter {requested_name!r} uses config API version "
             f"{config_version!r}; "
-            f"AISimulate requires {CONFIG_ADAPTER_API_VERSION}"
+            f"AISim requires {CONFIG_ADAPTER_API_VERSION}"
         )
     missing = [
         method

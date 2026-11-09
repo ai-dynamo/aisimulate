@@ -2297,7 +2297,7 @@ _FPM_GENONLY_FROZEN = 4.5
 
 
 # Hybrid speculative fpm (verify-on-FPM): pinned when the config class
-# became reachable (AISimulate schema v18, FpmForwardOp.verify_width). The ngram scheme
+# became reachable (AISim schema v18, FpmForwardOp.verify_width). The ngram scheme
 # is the pure verify-width channel (no draft ops): the decode query maps the
 # widened batch to the equivalent-AR point (tokens = c*w, total KV
 # unchanged) on the same synthetic fixture. Values pinned from the compiled

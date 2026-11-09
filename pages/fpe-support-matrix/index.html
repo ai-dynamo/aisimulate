@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Strict-native op-level Forward Pass Engine support matrix for AISimulate">
-<title>AISimulate — FPE Support Matrix</title>
+<meta name="description" content="Strict-native op-level Forward Pass Engine support matrix for AISim">
+<title>AISim — FPE Support Matrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -51,7 +51,7 @@ tailwind.config = {
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ── Constants ───────────────────────────────────────────────────────
-const REPO = 'ai-dynamo/aisimulate';
+const REPO = 'ai-dynamo/aisim';
 const SUPPORT_MATRIX_PATH = 'python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix';
 const DEPLOYED_SUPPORT_MATRIX_PATH = '../data/fpe-support-matrix';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
@@ -717,7 +717,7 @@ function Header({ branches, branch, onBranchChange }) {
       <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center gap-3 flex-wrap">
         <a href="../"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
         <div className="min-w-0 mr-auto">
-          <h1 className="text-lg font-bold leading-tight"><a href="../">AISimulate</a>
+          <h1 className="text-lg font-bold leading-tight"><a href="../">AISim</a>
           <span className="text-sm text-slate-500 dark:text-slate-400"> - FPE Support Matrix</span></h1>
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
@@ -730,7 +730,7 @@ function Header({ branches, branch, onBranchChange }) {
             </option>)}
           </select>
         </div>
-        <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener"
+        <a href="https://github.com/ai-dynamo/aisim" target="_blank" rel="noopener"
            title="View on GitHub"
            className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors">
           <GitHubIcon />
@@ -1507,7 +1507,7 @@ function CliVersionNotice() {
 function Footer() {
   return (
     <div className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700 mt-8">
-      AISimulate FPE Support Matrix &middot; Data from <code className="text-xs">fpe_support_matrix/*.csv</code>
+      AISim FPE Support Matrix &middot; Data from <code className="text-xs">fpe_support_matrix/*.csv</code>
     </div>
   );
 }

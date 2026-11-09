@@ -108,7 +108,7 @@ fn default_host_offload_bandwidth_gbps() -> f64 {
     DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS
 }
 
-/// Scheduler semantics selected for an AISimulate rank.
+/// Scheduler semantics selected for an AISim rank.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {

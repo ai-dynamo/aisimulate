@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AISimulate memory estimation and AIC KV-capacity materialization.
+"""AISim memory estimation and AIC KV-capacity materialization.
 
 Both the engine-only and Dynamo replay compositions use this module so their
 rank-local KV capacity is derived from the same defaults and AIC argument set.

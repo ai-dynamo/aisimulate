@@ -11,7 +11,7 @@
 //   path hisim/src/hisim/time_predictor/aiconfigurator.py,
 //   https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/hisim/src/hisim/time_predictor/aiconfigurator.py,
 //   copyright Alibaba Group, Apache-2.0.
-// Modified: names, ordering and formulas adapted to AISimulate FPM fields.
+// Modified: names, ordering and formulas adapted to AISim FPM fields.
 // See THIRD_PARTY_NOTICES.md.
 
 //! Learned forward-pass model: an offline-trained tree ensemble over

@@ -76,10 +76,10 @@ def add_support_parser(subparsers: Any) -> None:
             "with guidance and writes nothing. onboard import-observations checks a cache geometry override for such "
             "a layout against the probe's measurement. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
-            "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
+            "topologies; other routes default to TP1. AISim launches benchmark workers when collection is "
             "executed; no separately launched HTTP server is required. An existing vLLM launch configuration is "
             "optional evidence for reviewing settings, not a required input or automatically imported file. "
-            "AISimulate sets runtime limits and optional capture overrides; Dynamo self-benchmark combines them "
+            "AISim sets runtime limits and optional capture overrides; Dynamo self-benchmark combines them "
             "with image sampling defaults and runtime "
             "feasibility checks to generate the exact grid. A complete grid does not establish query coverage. "
             "Synthetic workload and SLA options customize optional validation examples only. "
@@ -111,7 +111,7 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--sm", type=int, help="GPU SM version override.")
     init.add_argument("--tokenizer-revision")
     init.add_argument("--chat-template-revision")
-    init.add_argument("--aisimulate-revision", help="Optional pinned AISimulate source revision.")
+    init.add_argument("--aisimulate-revision", help="Optional pinned AISim source revision.")
     init.add_argument(
         "--tensor-parallel", type=int, help="Attention tensor-parallel size; bypasses model-config suggestions."
     )
@@ -400,7 +400,7 @@ _CORRECTION_PROMPTS = {
     "framework": ("Runtime (vllm)", str),
     "tokenizer_revision": ("Pinned tokenizer revision", str),
     "chat_template_revision": ("Pinned chat-template revision", str),
-    "aisimulate_revision": ("Pinned AISimulate revision", str),
+    "aisimulate_revision": ("Pinned AISim revision", str),
     "sm": ("GPU SM version", int),
     "request_count": ("Number of synthetic requests", int),
     "objective": ("Recommendation objective", str),
@@ -449,7 +449,7 @@ def _guided_request(args: argparse.Namespace, *, skip_topology: bool = False) ->
     print("Onboard a model for FPM simulation on a target hardware platform.")
     selection = "one or more" if getattr(args, "output_dir", None) is not None else "one"
     print(f"Select {selection} TP, DEP, or TEP worker configurations and review collection limits for vLLM.")
-    print("AISimulate launches benchmark workers during collection; you do not need to start an HTTP server.")
+    print("AISim launches benchmark workers during collection; you do not need to start an HTTP server.")
     print("An existing vLLM launch configuration is optional evidence for reviewing these settings.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
@@ -616,9 +616,9 @@ def _review_config_profile(
         settings = request.collection_settings()
         print(f"  Runtime context limit: {request.search.context_length} tokens per request.")
         print(f"  Collection: {json.dumps(settings, sort_keys=True)}")
-        print("  AISimulate launches and manages benchmark workers when collection is executed.")
+        print("  AISim launches and manages benchmark workers when collection is executed.")
         print("  vLLM loads the model and allocates caches; Dynamo self-benchmark generates and measures the grid.")
-        print("  AISimulate supplies runtime limits and collection policies; no HTTP server is needed beforehand.")
+        print("  AISim supplies runtime limits and collection policies; no HTTP server is needed beforehand.")
         print(
             "  Dynamo combines them with image sampling defaults and runtime feasibility checks to generate the grid."
         )

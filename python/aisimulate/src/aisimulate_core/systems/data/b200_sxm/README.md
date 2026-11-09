@@ -40,7 +40,7 @@ Local paths are relative to this directory. Each table is at
 Sixteen tables are byte-identical copies. The two attention tables are modified
 derivatives: all upstream identities, schemas, timings and power measurements
 are preserved, alongside 1,428 context and 1,334 generation identities already
-present in AISimulate. Those 2,762 local rows retain their timings and use the
+present in AISim. Those 2,762 local rows retain their timings and use the
 paired `0.0/0.0` unavailable-power sentinel. Another 43 upstream attention rows
 already use that sentinel (15 context and 28 generation).
 
@@ -59,7 +59,7 @@ the imported files and check both merges against these source copies. Existing
 Parquet review tooling and packaged-data tests check the shared power-field
 storage contract.
 
-The retained local identity/latency pairs are independently pinned from AISimulate
+The retained local identity/latency pairs are independently pinned from AISim
 commit `ffcb6576b3a60077ea1200788f1b784213f979cf`, immediately before import commit
 `717f973bea4ebc07673192475b3a0f743d82c168`. The test records their digests and the
 deterministic serialization used to reproduce them from that baseline.

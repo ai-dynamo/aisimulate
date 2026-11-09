@@ -26,7 +26,7 @@ async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/ma
   const compared = [];
   let lookups = 0;
   const sandbox = vm.createContext({
-    context: { eventName: event, ref, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+    context: { eventName: event, ref, sha, repo: { owner: "ai-dynamo", repo: "aisim" } },
     process: { env: { REQUESTED_SHA: requested } },
     core: { notice() {}, setOutput: (name, value) => { outputs[name] = value; }, setFailed: value => failures.push(value) },
     github: {
@@ -95,7 +95,7 @@ test("only successful scheduled nightlies can suppress another scheduled build",
       const outputs = {};
       let queries = 0;
       const sandbox = vm.createContext({
-        context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+        context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisim" } },
         core: { notice() {}, warning() {}, setOutput: (name, value) => { outputs[name] = value; } },
         github: { rest: { actions: { listWorkflowRuns: async args => {
           queries++;
@@ -117,8 +117,8 @@ const entry = (branch, revision, nightly = "") => ({ branch, sha: revision, nigh
 const run = {
   id: 123, head_sha: sha, head_branch: "main", event: "schedule",
   path: ".github/workflows/nightly-ci.yml", status: "waiting", conclusion: null,
-  repository: { full_name: "ai-dynamo/aisimulate" },
-  head_repository: { full_name: "ai-dynamo/aisimulate" },
+  repository: { full_name: "ai-dynamo/aisim" },
+  head_repository: { full_name: "ai-dynamo/aisim" },
 };
 
 async function resolve({ event = "schedule", ref = "refs/heads/main", pr, runs = [run], built = true, expired = false, inputs = {}, branches = [] } = {}) {
@@ -134,7 +134,7 @@ async function resolve({ event = "schedule", ref = "refs/heads/main", pr, runs =
   };
   const context = vm.createContext({
     require: createRequire(import.meta.url),
-    context: { eventName: event, ref, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+    context: { eventName: event, ref, sha, repo: { owner: "ai-dynamo", repo: "aisim" } },
     process: { env: inputs },
     core: { notice() {}, setOutput: (name, value) => { outputs[name] = value; } },
     github: { rest: { pulls: { get: async () => ({data: pr}) }, actions, repos: { listBranches: "branches" } }, paginate: async (method, args) => {
@@ -211,9 +211,9 @@ test("Pages accepts failed accuracy matrices while preserving other producer gat
   const expression = pages.match(/  build:\n    if: >-\n([\s\S]*?)    runs-on:/)[1].trim();
   for (const name of ["E2E Accuracy Matrix", "FPM Accuracy Matrix", "FPE Support Matrix", "Main branch nightly CI", "Release branch nightly CI", "Nightly CI"]) {
     for (const conclusion of ["success", "failure", "cancelled"]) {
-      for (const repository of ["ai-dynamo/aisimulate", "foreign/repo"]) {
+      for (const repository of ["ai-dynamo/aisim", "foreign/repo"]) {
         const github = {
-          event_name: "workflow_run", ref: "refs/heads/main", repository: "ai-dynamo/aisimulate",
+          event_name: "workflow_run", ref: "refs/heads/main", repository: "ai-dynamo/aisim",
           event: { workflow_run: { name, conclusion, head_repository: { full_name: repository } } },
         };
         assert.equal(vm.runInNewContext(expression, { github }), repository === github.repository &&
@@ -225,7 +225,7 @@ test("Pages accepts failed accuracy matrices while preserving other producer gat
 
 test("PR preview requires an exact trusted copy of the open same-repository PR", async () => {
   const branch = "simonec/preview";
-  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisimulate"}}};
+  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisim"}}};
   const args = {event: "workflow_dispatch", ref: "refs/heads/pull-request/372", pr,
     inputs: {PREVIEW: "true", EXPECTED_SHA: sha, EVALUATED_BRANCH: branch}};
   assert.deepEqual(await resolve(args), [{...entry(branch, sha), preview: true}]);
@@ -243,7 +243,7 @@ test("PR preview requires an exact trusted copy of the open same-repository PR",
 
 test("candidate and partial silicon inputs are restricted to pinned trusted previews", async () => {
   const branch = "simonec/preview";
-  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisimulate"}}};
+  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisim"}}};
   const inputs = {PREVIEW: "true", EXPECTED_SHA: sha, EVALUATED_BRANCH: branch,
     AGENTX_REVISION: "b".repeat(40), AGENTX_CAMPAIGN_CATALOG: "catalog/e2e/agentx/qualifications/campaign.json"};
   const args = {event: "workflow_dispatch", ref: "refs/heads/pull-request/686", pr, inputs};

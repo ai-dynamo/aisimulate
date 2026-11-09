@@ -1584,7 +1584,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
       ].filter((value) => typeof value === "string" && value.length);
       $("run-title").textContent = heading.length
         ? heading.join(" · ")
-        : metadata.title || "AISimulate replay";
+        : metadata.title || "AISim replay";
       $("run-meta").textContent =
         report.telemetry.completion_status || "Completion N/A";
       render();

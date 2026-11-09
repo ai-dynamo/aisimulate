@@ -32,4 +32,4 @@ repository ships no separate license or NOTICE file. The base model
 repository declares the same license, and its `LICENSE` at revision
 `8472618112abcbd45acbcdc58436aff4233c23f7` states "Copyright 2026 Alibaba
 Cloud". The text of the Apache License, Version 2.0 is in the `LICENSE` file
-that is distributed with AISimulate.
+that is distributed with AISim.

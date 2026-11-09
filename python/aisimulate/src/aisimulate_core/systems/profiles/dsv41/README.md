@@ -167,20 +167,20 @@ routing. CUDA graphs and fused all-reduce were disabled. Coverage is limited
 to the measured geometry and runtime; these tables do not qualify alternative
 topologies, offload, output equivalence, or general serving accuracy.
 
-All 18 GB300 database file contents are byte-identical copies from AISimulate commit
-[`24faa2e263c75c137c091b8e80b7c2d36740b864`](https://github.com/ai-dynamo/aisimulate/tree/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2/prefix-refinement),
+All 18 GB300 database file contents are byte-identical copies from AISim commit
+[`24faa2e263c75c137c091b8e80b7c2d36740b864`](https://github.com/ai-dynamo/aisim/tree/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2/prefix-refinement),
 under `data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2/`
 `prefix-refinement/{full,decoder_bounded}/systems/`. Only the SGLang version
 directory names changed from `0.0.0.dev0` to `dev-800cc9adea5b`; the NCCL
 `2.29.7` paths and all measurements and sidecars are unchanged. The archive preserves the
-[sampling and collection records](https://github.com/ai-dynamo/aisimulate/blob/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon/prefix-refinement-v1/README.md)
-and [original prediction input bindings](https://github.com/ai-dynamo/aisimulate/blob/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/prediction-refresh-20260914/silicon/original-input-bindings.json).
+[sampling and collection records](https://github.com/ai-dynamo/aisim/blob/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon/prefix-refinement-v1/README.md)
+and [original prediction input bindings](https://github.com/ai-dynamo/aisim/blob/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/prediction-refresh-20260914/silicon/original-input-bindings.json).
 
 The module geometry includes a documented metadata correction: indexer heads
 changed from 8 to 32 after auditing the captured runtime source. Latency bits
 and all other columns were preserved; this was not a new measurement of loaded
 module dimensions. The
-[derivation and source audit](https://github.com/ai-dynamo/aisimulate/blob/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2/README.md)
+[derivation and source audit](https://github.com/ai-dynamo/aisim/blob/24faa2e263c75c137c091b8e80b7c2d36740b864/data/experimental/deepseek-v41/gb300-silicon/indexer-identity-v2/README.md)
 bind original and derived table hashes. Collection sidecars retain the original
 producer identities, rather than attributing old measurements to the current
 collector.
@@ -190,6 +190,6 @@ The geometry follows SGLang's modified serving contracts at
 including `python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py` and the
 model, Engram and compressor paths identified in `THIRD_PARTY_NOTICES.md`.
 Copyright 2023-2024 SGLang Team and SGLang contributors, Apache-2.0. These
-tables contain AISimulate measurements and adapted geometry, not upstream
+tables contain AISim measurements and adapted geometry, not upstream
 model execution code. The distribution includes the applicable license and
 canonical third-party notices.

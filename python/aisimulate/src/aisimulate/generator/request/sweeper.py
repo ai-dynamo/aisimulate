@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Lower a ranked AISimulate Sweeper candidate into ``GeneratorRequest``.
+"""Lower a ranked AISim Sweeper candidate into ``GeneratorRequest``.
 
 The Sweeper owns search and ranking. The generator owns deterministic lowering
 and artifact rendering. This module is the deliberately small boundary between

@@ -64,7 +64,7 @@ of silently repairing it.
 
 ## Publication gate
 
-AISimulate uses AIC's fail-closed 90% coverage threshold. A numeric `power_w`
+AISim uses AIC's fail-closed 90% coverage threshold. A numeric `power_w`
 may be published only when every condition below is true:
 
 1. every replay role uses a timing provider that supplies operation-energy

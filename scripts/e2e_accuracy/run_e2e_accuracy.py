@@ -44,7 +44,7 @@ from scripts.e2e_accuracy.source.recipes.runtime_evidence import prepare_runtime
 from scripts.pages.build_pages_site import _accuracy_summary
 from scripts.release.package_identity import installed_distribution
 
-REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
+REPOSITORY = "https://github.com/ai-dynamo/aisim"
 
 
 def encoded(value) -> bytes:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISimulate Full CI gate.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISim Full CI gate.
 # Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 
 name: Prediction Regression Gate
@@ -65,7 +65,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - name: Checkout comparison revision
@@ -103,7 +103,7 @@ jobs:
           git show "${GITHUB_SHA}:scripts/ci/ci_install_build_tools.sh" | bash
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         if: steps.harness.outputs.present == 'true'
-      - name: Install AISimulate and development dependencies
+      - name: Install AISim and development dependencies
         if: steps.harness.outputs.present == 'true'
         run: python -m pip install './python/aisimulate[dev]'
       - name: Collect static, scheduling, and silicon snapshots

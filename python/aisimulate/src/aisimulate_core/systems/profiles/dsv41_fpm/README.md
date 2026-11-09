@@ -48,7 +48,7 @@ The [source replay instructions](../../../../../collector/fpm_forward/README.md)
 use replay recipes that pin their own immutable source revisions. The SDK
 manifest separately retains each profile's dataset/source provenance; its
 source revision can differ from the replay recipe's pin. These are HF artifact
-commits, not AISimulate producer Git revisions. Calibration self-queries check
+commits, not AISim producer Git revisions. Calibration self-queries check
 reader integrity, not accuracy.
 B200 bounded replay requires the separately hashed original-source supplement
 for two companion files omitted from its formal export. The original archives
@@ -293,7 +293,7 @@ data integrity; accuracy is measured on separate held-out observations.
 
 ## Upstream attribution
 
-The execution identity and geometry are modified AISimulate adaptations of
+The execution identity and geometry are modified AISim adaptations of
 SGLang's serving contracts at
 [`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`](https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc),
 including `python/sglang/srt/models/deepseek_v4.py`, `deepseek_v2.py`,
@@ -304,7 +304,7 @@ and SGLang contributors; Apache-2.0.
 The checkpoint configuration and architecture derive from `config.json`,
 `inference/model.py`, and `DeepSeek_V41_Tech_Report.pdf` in
 [`deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d).
-Copyright (c) 2023 DeepSeek; MIT. The latencies are new AISimulate measurements;
+Copyright (c) 2023 DeepSeek; MIT. The latencies are new AISim measurements;
 the tables contain adapted execution identity and geometry, with no upstream
 model execution code. The distribution includes the applicable licenses and
 canonical third-party notices. The SGLang reference revision identifies the

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Feature Support Matrix: serving techniques AISimulate simulates for each engine.
+# Feature Support Matrix: serving techniques AISim simulates for each engine.
 #
 # Update a cell in the pull request that changes the feature, and keep the
 # composition boundaries in docs/replay/features.md in step. A cell reflects

@@ -3,7 +3,7 @@
 
 """Independent native sweep repetitions with auditable measurement evidence.
 
-AISimulate selects coordinates already measured by the source campaign. Dynamo
+AISim selects coordinates already measured by the source campaign. Dynamo
 owns their admission and execution through its existing explicit-point API:
 https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/benchmark_points.py
 No runtime scheduler implementation is copied or replaced here.

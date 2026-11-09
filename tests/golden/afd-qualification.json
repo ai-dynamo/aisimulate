@@ -90,7 +90,7 @@
   },
   "qualification": {
     "execution": "analytical_foreground",
-    "native_deployment_reason": "AISimulate does not provide a physical AFD serving adapter or launch renderer",
+    "native_deployment_reason": "AISim does not provide a physical AFD serving adapter or launch renderer",
     "native_deployment_supported": false,
     "status": "qualified_for_analytical_replay"
   },

@@ -17,7 +17,7 @@ TRT-LLM. The three backends share one group taxonomy. Backend flag support
 remains separate in
 `aisimulate/generator/config/backend_config_mapping.yaml`.
 
-The YAML also lists knobs that the current AISimulate replay API cannot carry.
+The YAML also lists knobs that the current AISim replay API cannot carry.
 Dashboard consumers must show those knobs as unavailable instead of inventing
 an `auto` default.
 
@@ -84,7 +84,7 @@ Helm, expand templates, or execute recipe shell. An unrendered
 
 ### 2. Generate and inspect the adaptation report
 
-Run this command from the AISimulate repository root:
+Run this command from the AISim repository root:
 
 ```bash
 uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \

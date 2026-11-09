@@ -53,7 +53,7 @@ def _coordinates(point: dict[str, Any]) -> dict[str, Any]:
 
 def _content_key(point: dict[str, Any]) -> str:
     # These fields are the producer's schema-1 content identity, distinct from
-    # AISimulate's phase-cell-local coordinate key used by repeatability.
+    # AISim's phase-cell-local coordinate key used by repeatability.
     identity = {key: point[key] for key in ("point_type", "batch_size")}
     identity.update({key: point.get(key, 0) for key in ("total_prefill_tokens", "total_kv_read_tokens")})
     identity.update({key: point.get(key) for key in ("partition", "rows")})

@@ -36,4 +36,4 @@ tables:
 # Mixed v1 directory: six existing DSV4 legacy entries/runtime remain unchanged.
 # Replacement DSA runtime: vLLM ee0da84ab9e04ac7610e28580af62c365e898389,
 # Torch 2.11.0+cu130, CUDA 13.0, FlashInfer 0.6.12; B200 campaign 4778966.
-# Collection results and limitations: https://github.com/ai-dynamo/aisimulate/pull/404
+# Collection results and limitations: https://github.com/ai-dynamo/aisim/pull/404

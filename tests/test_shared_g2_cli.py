@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip(
     "aisimulate.runner",
-    reason="standalone AISimulate runtime is not installed",
+    reason="standalone AISim runtime is not installed",
     exc_type=ImportError,
 )
 

@@ -65,7 +65,7 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
         [
             "git",
             "-c",
-            "user.name=AISimulate Build Test",
+            "user.name=AISim Build Test",
             "-c",
             "user.email=aisimulate-build-test@example.invalid",
             "commit",
@@ -129,7 +129,7 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
 
     expected_version = tomllib.loads((APP_ROOT / "pyproject.toml").read_text())["project"]["version"]
     assert installed_version == expected_version
-    assert f"Verified installed AISimulate {installed_version} FPM workflow" in completed.stdout
+    assert f"Verified installed AISim {installed_version} FPM workflow" in completed.stdout
     assert f"installed:aisim=={installed_version}:record-sha256:" in completed.stdout
     assert unrelated_head not in completed.stdout
     assert str(unrelated_repository) not in completed.stdout

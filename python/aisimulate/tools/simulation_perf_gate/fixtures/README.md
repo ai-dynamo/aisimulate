@@ -26,4 +26,4 @@ some floating-point values compared with the raw JSONL. Its values are retained.
 The additional plays come directly from the pinned file. CI reads only the local
 fixture and manifest.
 The benchmark projects all source model labels onto the configured Qwen3.5
-model; it measures AISimulate host cost, not fidelity to the original service.
+model; it measures AISim host cost, not fidelity to the original service.

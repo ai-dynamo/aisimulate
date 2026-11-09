@@ -19,14 +19,14 @@ so migrating an AIC fixed-batch estimate is not a command-name substitution.
 | Import Dynamo recipes or InferenceX records into AIC estimates | [Configuration import](configuration-import.md) |
 | Interpret the legacy matrix and curated model roster | [AIC support matrix](support-matrix.md) |
 
-For AISimulate 0.13, install `aisimulate` instead of the standalone
+For AISim 0.13, install `aisimulate` instead of the standalone
 `aiconfigurator` and `aiconfigurator-core` distributions. Python imports use
 `aisimulate` and `aisimulate_core`; the old Python import namespaces are removed.
 The compatibility executable does not imply a retained legacy import hook.
 Follow the [installation guide](../getting-started/installation.md) in an
 isolated environment and retain matching wheel/crate versions.
 
-Deployment generation is also available as a current typed AISimulate API;
+Deployment generation is also available as a current typed AISim API;
 see [the candidate-to-artifact workflow](../sweeper/deployment-generation.md).
 It is not restricted to legacy CLI callers. AIC's external-recipe importer,
 the simulation config-adapter ABI and that deployment generator serve different

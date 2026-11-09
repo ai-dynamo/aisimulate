@@ -60,7 +60,7 @@ def main() -> None:
             from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
 
             if not callable(Glm53FlashConfig.from_text_config):
-                raise RuntimeError("GLM runtime lacks the shared AISimulate model contract")
+                raise RuntimeError("GLM runtime lacks the shared AISim model contract")
 
         if dsv41_adapter:
             from dsv41_scheduler import DeepseekV41RealKVScheduler
@@ -71,7 +71,7 @@ def main() -> None:
             from aisimulate_core.sdk.fpm_identity import execution_identity
 
             if not callable(execution_identity):
-                raise RuntimeError("V4.1 runtime lacks the shared AISimulate identity helper")
+                raise RuntimeError("V4.1 runtime lacks the shared AISim identity helper")
     except Exception as error:
         _write_audit(
             {

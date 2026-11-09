@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Adapted and modified for AISimulate from AIConfigurator's .coderabbit.yaml:
+# Adapted and modified for AISim from AIConfigurator's .coderabbit.yaml:
 # https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
 # Upstream license: Apache-2.0
 
@@ -181,14 +181,14 @@ reviews:
       instructions: |
         Treat these as public and release boundaries. Verify Python imports,
         Rust exports, versions, feature flags, bindings, documentation, and the
-        two-artifact contract stay synchronized. AISimulate must remain
+        two-artifact contract stay synchronized. AISim must remain
         standalone and must not acquire a hard Dynamo runtime dependency.
 
     - path: "**/Cargo.toml"
       instructions: |
         Treat these as public and release boundaries. Verify Python imports,
         Rust exports, versions, feature flags, bindings, documentation, and the
-        two-artifact contract stay synchronized. AISimulate must remain
+        two-artifact contract stay synchronized. AISim must remain
         standalone and must not acquire a hard Dynamo runtime dependency.
 
     - path: "crates/core/src/*.rs"
@@ -291,7 +291,7 @@ reviews:
         mode: warning
         instructions: |
           Pass when Python and Rust public surfaces, schemas, versions, bindings,
-          and documented defaults remain synchronized; AISimulate stays
+          and documented defaults remain synchronized; AISim stays
           standalone from Dynamo; and the one-wheel plus one-crate artifact
           contract remains intact or is deliberately updated with evidence.
       - name: "Review evidence"

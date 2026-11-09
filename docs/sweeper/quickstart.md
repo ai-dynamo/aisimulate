@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Run a recommendation search
 
-[Install AISimulate](../getting-started/installation.md) and activate the
+[Install AISim](../getting-started/installation.md) and activate the
 matching environment. This example uses the built-in offline engine on your
 CPU. The H200 is the target being modeled.
 
@@ -68,7 +68,7 @@ aisimulate recommend \
 Example output (illustrative values, four selected configurations):
 
 ```text
-AISimulate recommendations
+AISim recommendations
 1: score=400 used_gpus=4 config=recommendation-output/recommendations/0001.yaml
 2: score=360 used_gpus=1 config=recommendation-output/recommendations/0002.yaml
 3: score=320 used_gpus=4 config=recommendation-output/recommendations/0003.yaml
@@ -103,7 +103,7 @@ text and saved-path line; the output files stay the same.
 
 A four-trial search is a small starting example. Increase `optimizer.max_trials` to explore more
 candidates; the trial budget does not guarantee an exhaustive search or a globally optimal result.
-Use `parallelism: {preset: default}` to let AISimulate generate the parallelism search space.
+Use `parallelism: {preset: default}` to let AISim generate the parallelism search space.
 
 <a id="choose-a-goal-and-add-latency-limits"></a>
 

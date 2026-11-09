@@ -25,7 +25,7 @@ def _git(repo: Path, *args: str) -> str:
 def test_upstream_docs_require_manual_adaptation(tmp_path: Path) -> None:
     """An upstream doc change must not recreate the retired documentation tree."""
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.name", "AISim test")
     _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
     config = tomllib.loads(SYNC.LEDGER.read_text())
     for mapping in config["mirror"]:
@@ -52,7 +52,7 @@ def test_upstream_docs_require_manual_adaptation(tmp_path: Path) -> None:
 
 def test_sync_source_validation_rejects_missing_mapped_path(tmp_path: Path) -> None:
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.name", "AISim test")
     _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
     source = tmp_path / "aic-core" / "src" / "aiconfigurator_core"
     source.mkdir(parents=True)
@@ -68,7 +68,7 @@ def test_sync_source_validation_rejects_missing_mapped_path(tmp_path: Path) -> N
 
 def test_manual_changes_require_and_populate_a_report(tmp_path: Path, monkeypatch) -> None:
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.name", "AISim test")
     _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
     mirror = tmp_path / "mirror"
     mirror.mkdir()
@@ -116,7 +116,7 @@ reason = "adapt the combined wheel manifest"
 
 def test_render_prefixes_rename_metadata_with_the_mirror_target(tmp_path: Path, monkeypatch) -> None:
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.name", "AISim test")
     _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
     mirror = tmp_path / "mirror"
     mirror.mkdir()
@@ -164,7 +164,7 @@ def test_repository_ledger_maps_original_packages_without_restoring_old_names(tm
     import tomllib
 
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
+    _git(tmp_path, "config", "user.name", "AISim test")
     _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
     ledger = tomllib.loads(SYNC.LEDGER.read_text())
     for mapping in ledger["mirror"]:

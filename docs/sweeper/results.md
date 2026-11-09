@@ -93,7 +93,7 @@ candidate metrics, power provenance, and `SweepResult.to_json()`. Publication
 validation rejects numeric watts below the coverage gate. Null values never
 become zero or enter objective arithmetic.
 
-This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
+This contract applies to AISim `ReplayReport` and `SweepResult` outputs.
 Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
 their legacy schema and sentinels; the [AIC mapping](../aic-backward-compatibility/migration.md#legacy-aic-result-mapping) describes conversion targets,
 not an automatic converter. They do not satisfy this power contract as-is. A

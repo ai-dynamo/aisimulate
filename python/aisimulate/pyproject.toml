@@ -7,7 +7,7 @@ version = "0.14.0"
 authors = [
     { name = "NVIDIA Inc.", email = "sw-dl-dynamo@nvidia.com" },
 ]
-description = "AISimulate: GPU-free inference simulation and deployment configuration"
+description = "AISim: GPU-free inference simulation and deployment configuration"
 
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -99,15 +99,15 @@ service = [
 ]
 
 [project.urls]
-GitHub = "https://github.com/ai-dynamo/aisimulate"
-Repository = "https://github.com/ai-dynamo/aisimulate.git"
+GitHub = "https://github.com/ai-dynamo/aisim"
+Repository = "https://github.com/ai-dynamo/aisim.git"
 
 [build-system]
 requires = ["maturin>=1.12,<2"]
 build-backend = "maturin"
 
 [project.scripts]
-# Retain the legacy executable; all Python implementation lives under AISimulate.
+# Retain the legacy executable; all Python implementation lives under AISim.
 aisim = "aisimulate.supervision:main"
 aisimulate = "aisimulate.supervision:main"
 aiconfigurator = "aisimulate.legacy_cli.entrypoint:main"

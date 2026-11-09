@@ -292,7 +292,7 @@ def _assess(
             )
         except (ImportError, AttributeError) as exc:
             raise ValueError(
-                "grouped cache planning requires this checkout's compiled AISimulate extension; install or rebuild it"
+                "grouped cache planning requires this checkout's compiled AISim extension; install or rebuild it"
             ) from exc
         known += estimate["request_peak_cache_bytes"]
     elif "kv_bytes_per_token" in resolved:

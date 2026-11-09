@@ -322,7 +322,7 @@ helper warms up requests; a fresh replay's startup/cache history can differ.
 Record the difference or align the measurement windows before attributing
 error to the performance model.
 
-Save the input YAML, concrete recommended YAML, AISimulate version/source SHA,
+Save the input YAML, concrete recommended YAML, AISim version/source SHA,
 wheel identity when applicable, `prediction.json`, per-request records, and
 the benchmark command/results. For recommendations also retain
 `recommendation.json`: it records failed attempts and the candidate IDs behind

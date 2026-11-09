@@ -166,7 +166,7 @@ for unsalted requests. It models the namespace behavior of
 without reproducing SGLang's SHA256 event encoding. Placement adapters hashing
 a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
 
-This is a simulator contract pinned to SGLang v0.5.22. AISimulate does not check
+This is a simulator contract pinned to SGLang v0.5.22. AISim does not check
 the installed serving runtime's support for `cache_salt` or the decode radix
 flag; verify both capabilities when deploying an older SGLang version.
 

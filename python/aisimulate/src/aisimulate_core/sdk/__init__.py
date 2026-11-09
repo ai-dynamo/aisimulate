@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public Python API for the AISimulate estimator core.
+"""Public Python API for the AISim estimator core.
 
 The unified :mod:`aisimulate` distribution owns these implementations.
 Application orchestration lives in ``aisimulate.sdk``.

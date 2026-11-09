@@ -34,7 +34,7 @@ measured serving accuracy separate, as required by the guide.
 
 ## Pull request titles
 
-- Use `<type>: <short description>` for every AISimulate PR title.
+- Use `<type>: <short description>` for every AISim PR title.
 - Allowed types: `feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`.
 - Check the title before creating or updating a PR.
 
@@ -141,7 +141,7 @@ not optional documentation.
 
 ### Project overview
 
-AISimulate is a Python and Rust CLI/SDK for predicting LLM serving behavior and
+AISim is a Python and Rust CLI/SDK for predicting LLM serving behavior and
 optimizing inference deployment configurations. See `README.md` for details.
 
 ### Environment setup

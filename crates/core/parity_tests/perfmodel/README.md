@@ -303,7 +303,7 @@ The power import from AIConfigurator commit
 `915f590680d8a79fe9c39f6f3a9ff13bc267fcce` adds measured B200 TensorRT-LLM
 1.3.0rc20 power columns while preserving timing identities. The per-op goldens
 for GPT-OSS-20B and Nemotron-Super-49B were regenerated with the repository
-`pin_goldens.py --refresh` workflow at AISimulate commit
+`pin_goldens.py --refresh` workflow at AISim commit
 `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74`, using that checkout's rebuilt native
 extension. All 29 changed numeric fields are energy values moving from zero
 to positive W-ms. Every latency and source tag is unchanged. For example,
@@ -335,7 +335,7 @@ as `574c0d9ce64438c4a1c4e0fbbe58c5a9d4cd4de8`. An engine-step suite result was
 not recorded with that historical refresh.
 
 Both suites subsequently passed in the
-[Engine Golden Regression job](https://github.com/ai-dynamo/aisimulate/actions/runs/35043503755/job/104628335804)
+[Engine Golden Regression job](https://github.com/ai-dynamo/aisim/actions/runs/35043503755/job/104628335804)
 at `a83ad4f162669b318786cc279f320650ec09d5b1`, using a release native build:
 **298 engine-step tests passed** and **67 compile-engine tests passed**. The
 job ran these exact commands from the repository root:

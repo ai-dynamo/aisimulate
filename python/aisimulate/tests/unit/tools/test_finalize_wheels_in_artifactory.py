@@ -31,7 +31,7 @@ def test_finalize_writes_manifest_before_completion_marker() -> None:
     manifest = finalize(
         artifacts,
         subpath="post-merge/sha/42/2",
-        repository="ai-dynamo/aisimulate",
+        repository="ai-dynamo/aisim",
         commit_sha="sha",
         run_id=42,
         run_attempt=2,
@@ -52,7 +52,7 @@ def test_manifest_requires_an_aisimulate_wheel() -> None:
     with pytest.raises(FinalizeError, match="at least one aisimulate wheel"):
         build_manifest(
             [],
-            repository="ai-dynamo/aisimulate",
+            repository="ai-dynamo/aisim",
             commit_sha="sha",
             run_id=1,
             run_attempt=1,
@@ -61,7 +61,7 @@ def test_manifest_requires_an_aisimulate_wheel() -> None:
     with pytest.raises(FinalizeError, match="non-aisimulate wheels"):
         build_manifest(
             [{"filename": "aiconfigurator-2.0.0-py3-none-any.whl", "sha256": "a" * 64, "size": 1}],
-            repository="ai-dynamo/aisimulate",
+            repository="ai-dynamo/aisim",
             commit_sha="sha",
             run_id=1,
             run_attempt=1,
@@ -84,7 +84,7 @@ def test_manifest_accepts_one_unified_wheel_per_platform() -> None:
 
     manifest = build_manifest(
         wheels,
-        repository="ai-dynamo/aisimulate",
+        repository="ai-dynamo/aisim",
         commit_sha="sha",
         run_id=1,
         run_attempt=1,

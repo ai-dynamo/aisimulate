@@ -807,7 +807,7 @@ def validate_observations(
 ) -> dict[str, dict[str, Any]]:
     """Validate every requested configuration while preserving independent success.
 
-    Only AISimulate code runs. No observer verdict is authoritative, no timing
+    Only AISim code runs. No observer verdict is authoritative, no timing
     rows are required, and historical attempts never substitute for the active
     attempt. Returned resources remain drafts for the existing review workflow.
     """

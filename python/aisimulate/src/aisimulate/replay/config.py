@@ -25,7 +25,7 @@ class ReplayOutputConfig:
 
 @dataclass(frozen=True)
 class ReplayCliConfig:
-    """Canonical base configuration shared by AISimulate and Dynamo CLIs."""
+    """Canonical base configuration shared by AISim and Dynamo CLIs."""
 
     trace_files: tuple[str, ...]
     extra_engine_args: dict[str, JSONValue] | None
@@ -55,7 +55,7 @@ class ReplayCliConfig:
         workload = dict(self.workload)
         if self.uses_trace:
             if len(self.trace_files) != 1:
-                raise ValueError("AISimulate Runner replay requires exactly one trace file")
+                raise ValueError("AISim Runner replay requires exactly one trace file")
             workload["trace_path"] = self.trace_files[0]
         concurrency = workload.get("replay_concurrency")
         return ReplaySpec(

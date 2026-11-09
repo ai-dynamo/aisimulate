@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed CLI configuration owned by AISimulate core."""
+"""Typed CLI configuration owned by AISim core."""
 
 from .cli import CorePredictionConfig, CoreRecommendationConfig
 from .common import ExecutionConfig, ResourceConfig

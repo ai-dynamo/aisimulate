@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Predict and recommend a deployment
 
-AISimulate runs on the host CPU; the selected GPU is the hardware being modeled.
+AISim runs on the host CPU; the selected GPU is the hardware being modeled.
 Follow [installation](installation.md) first. The examples below match the
 [executable repository README](../../README.md), which Full CI checks against
 source and pinned Dynamo profiles. Source documentation can require a newer

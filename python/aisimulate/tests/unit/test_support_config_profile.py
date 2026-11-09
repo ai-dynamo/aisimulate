@@ -88,7 +88,7 @@ def _runtime(**updates):
 
 
 def _glm_request(**topology):
-    # The deployment from ai-dynamo/aisimulate#475.
+    # The deployment from ai-dynamo/aisim#475.
     return SupportRequest.model_validate(
         {
             "identity": {

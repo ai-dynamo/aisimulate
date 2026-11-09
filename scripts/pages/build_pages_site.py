@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build the explicitly allowlisted public AISimulate GitHub Pages artifact."""
+"""Build the explicitly allowlisted public AISim GitHub Pages artifact."""
 
 from __future__ import annotations
 
@@ -379,7 +379,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             snapshot.get("measurement_source_url") == measurement_source_url(snapshot["release_tag"]),
             "measurement source URL",
         )
-        require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
+        require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISim packages")
         for date in ("measurement_date_through", "aisimulate_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
@@ -396,7 +396,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             aic_source = snapshot.get("aic_source")
             require(
                 isinstance(aic_source, dict)
-                and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"
+                and aic_source.get("repository")
+                in {"https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"}
                 and isinstance(aic_source.get("branch"), str)
                 and isinstance(aic_source.get("commit_sha"), str)
                 and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))

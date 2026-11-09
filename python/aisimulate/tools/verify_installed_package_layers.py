@@ -294,11 +294,11 @@ def _verify_fpm_workflow() -> str:
     def exact_distribution_path(relative_path: str) -> Path:
         record_path = distribution_files.get(relative_path)
         if record_path is None:
-            raise RuntimeError(f"AISimulate RECORD does not own required FPM path: {relative_path}")
+            raise RuntimeError(f"AISim RECORD does not own required FPM path: {relative_path}")
         located = Path(os.fspath(distribution.locate_file(record_path))).resolve()
         expected = (distribution_root / Path(*relative_path.split("/"))).resolve()
         if located != expected or not located.is_relative_to(distribution_root):
-            raise RuntimeError(f"AISimulate RECORD resolves FPM path outside the distribution: {relative_path}")
+            raise RuntimeError(f"AISim RECORD resolves FPM path outside the distribution: {relative_path}")
         return located
 
     for module, relative_path in (
@@ -365,7 +365,7 @@ def _verify_fpm_workflow() -> str:
     if plans[0] != plans[1]:
         raise RuntimeError("installed FPM plan identity is not stable across outside-checkout working directories")
     print(
-        f"Verified installed AISimulate {app_version} FPM workflow and runtime assets "
+        f"Verified installed AISim {app_version} FPM workflow and runtime assets "
         f"with revision {plans[0]['aic_revision']}"
     )
     return app_version

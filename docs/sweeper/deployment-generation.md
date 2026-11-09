@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Use this workflow to select a configuration, predict it, generate serving
 artifacts, and compare with a real benchmark. Run the simulation and generator
-steps from an AISimulate source checkout using the
+steps from an AISim source checkout using the
 [installation guide](../getting-started/installation.md#use-current-source).
 The GPU deployment steps run on a separate serving host.
 
@@ -25,7 +25,7 @@ the workflow; it does not establish the best possible deployment.
 
 | Version/identity | Choice |
 |---|---|
-| AISimulate | Your source checkout; retain `git rev-parse HEAD` and `uv.lock`. |
+| AISim | Your source checkout; retain `git rev-parse HEAD` and `uv.lock`. |
 | Prediction backend/data version | vLLM `0.24.0`. |
 | Generated backend configuration | vLLM `0.24.0`, taken from the selected candidate. |
 | Dynamo deployment target | `dynamo-j2`, Dynamo `1.3.0`. |
@@ -43,7 +43,7 @@ version override makes a different runtime compatible.
 
 ## 2. Recommend and predict
 
-From the AISimulate repository root with its virtual environment active:
+From the AISim repository root with its virtual environment active:
 
 ```bash
 mkdir -p deployment-study
@@ -557,7 +557,7 @@ The same `SlurmConfig` section is accepted through `--generator-config`, dotted
 Dynamo Kubernetes, llm-d, FPM and sflow outputs are unaffected by choosing those
 targets. Slurm does not emit Kubernetes resources or require nv-sflow.
 
-The AISimulate package also exposes generation through its compatibility CLI:
+The AISim package also exposes generation through its compatibility CLI:
 
 ```bash
 aiconfigurator cli generate \

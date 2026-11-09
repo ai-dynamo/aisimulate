@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Release artifacts and qualification
 
-AISimulate 0.14.0 has one product version and exactly two release artifacts:
+AISim 0.14.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
@@ -82,7 +82,7 @@ The combined artifacts deliberately retain stable source subtrees:
 - `python/aisimulate/src/aisimulate/` and
   `python/aisimulate/src/aisimulate_core/` mirror AIC Python code and data;
 - `crates/core/src/perfmodel/` mirrors the AIC Rust estimator;
-- AISimulate-owned facades and native integration stay outside those mirrors.
+- AISim-owned facades and native integration stay outside those mirrors.
 
 Keeping those folders separate makes an upstream AIC code, data, or test diff
 mechanically path-rewritable while AIC remains active. It does not create a
@@ -241,8 +241,8 @@ that policy. Inspect the effective branch rules before relying on enforcement. C
 the ruleset JSON does not activate it.
 
 ```bash
-gh api repos/ai-dynamo/aisimulate/rules/branches/main
-gh api repos/ai-dynamo/aisimulate/rulesets
+gh api repos/ai-dynamo/aisim/rules/branches/main
+gh api repos/ai-dynamo/aisim/rulesets
 ```
 
 After validating the workflow on `main`, a repository administrator can apply
@@ -251,9 +251,9 @@ instead of creating duplicates, and preserve the existing review/CODEOWNER
 rules. If the CI rule does not exist, create it with:
 
 ```bash
-gh api repos/ai-dynamo/aisimulate/rulesets --method POST \
+gh api repos/ai-dynamo/aisim/rulesets --method POST \
   --input .github/required-main-checks.json
-gh api repos/ai-dynamo/aisimulate/rules/branches/main
+gh api repos/ai-dynamo/aisim/rules/branches/main
 ```
 
 Confirm all three status contexts and strict branch currency in the effective

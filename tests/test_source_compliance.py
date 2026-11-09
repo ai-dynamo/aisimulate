@@ -118,7 +118,7 @@ def test_wheel_local_legal_file_matches_root(name):
 def test_packaged_readme_links_root_governance_to_github(name):
     readme = (PACKAGE_ROOT / "README.md").read_text()
 
-    assert f"https://github.com/ai-dynamo/aisimulate/blob/main/{name}" in readme
+    assert f"https://github.com/ai-dynamo/aisim/blob/main/{name}" in readme
 
 
 def test_pinned_vendor_files_keep_upstream_license(checker):

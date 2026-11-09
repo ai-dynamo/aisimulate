@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Extend performance models
 
-AISimulate owns the application, model definitions, performance data, and native
+AISim owns the application, model definitions, performance data, and native
 estimator. Start from the [development environment](../../DEVELOPMENT.md).
 All paths below are relative to the repository root unless linked otherwise.
 The `aisimulate_core` source namespace is retained inside the `aisimulate`

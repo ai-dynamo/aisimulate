@@ -74,7 +74,7 @@ def build(output: Path) -> Path:
             str(raw_output),
             cwd=PYTHON_PROJECT,
         )
-        raw_wheel = _single_wheel(raw_output, "unrepaired AISimulate wheel")
+        raw_wheel = _single_wheel(raw_output, "unrepaired AISim wheel")
         _run(
             "auditwheel",
             "repair",
@@ -85,7 +85,7 @@ def build(output: Path) -> Path:
             str(raw_wheel),
         )
 
-    repaired_wheel = _single_wheel(output, "repaired AISimulate wheel")
+    repaired_wheel = _single_wheel(output, "repaired AISim wheel")
     if policy not in repaired_wheel.name:
         raise SystemExit(f"repaired wheel does not carry required tag {policy}: {repaired_wheel.name}")
     _run("auditwheel", "show", str(repaired_wheel))

@@ -52,12 +52,12 @@ def test_each_legacy_cli_mode_warns_without_renaming_the_command(monkeypatch, mo
     assert f"`aiconfigurator cli {mode}`" in str(warning.message)
     assert f"`aiconfigurator cli {mode} ...`" in str(warning.message)
     assert "`aisimulate cli" not in str(warning.message)
-    assert "AISimulate 0.13.0" in str(warning.message)
-    assert "removal is targeted for AISimulate 0.14.0" in str(warning.message)
+    assert "AISim 0.13.0" in str(warning.message)
+    assert "removal is targeted for AISim 0.14.0" in str(warning.message)
     assert "deprecated compatibility command" in str(warning.message)
     assert "aisimulate==0.12.0" not in str(warning.message)
     assert "preserves the established command name" in str(warning.message)
-    assert "https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/migration.md" in str(
+    assert "https://github.com/ai-dynamo/aisim/blob/main/docs/aic-backward-compatibility/migration.md" in str(
         warning.message
     )
     assert warning.filename == __file__

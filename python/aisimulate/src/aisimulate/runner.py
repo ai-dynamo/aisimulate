@@ -433,7 +433,7 @@ class EngineReplayRunnerFactory:
 
 @dataclass
 class EngineReplayRunner:
-    """Execute one candidate with the AISimulate Engine/Replayer composition."""
+    """Execute one candidate with the AISim Engine/Replayer composition."""
 
     worker_id: int
     capabilities: RunnerCapabilities
@@ -453,12 +453,12 @@ class EngineReplayRunner:
             if exc.name != "aisimulate._runtime":
                 raise
             raise RunnerUnavailableError(
-                "AISimulate engine replay runtime is not installed. Install a "
+                "AISim engine replay runtime is not installed. Install a "
                 "binary aisimulate package or build its native extension."
             ) from exc
         except ImportError as exc:
             raise RunnerUnavailableError(
-                "AISimulate engine replay runtime could not be loaded. Reinstall "
+                "AISim engine replay runtime could not be loaded. Reinstall "
                 "the binary aisimulate package or rebuild its native extension."
             ) from exc
 
@@ -640,18 +640,18 @@ class EngineReplayRunner:
                 failure.fpm_query_coverage = error.fpm_query_coverage
             raise failure from error
         if not isinstance(report_json, str):
-            raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
+            raise InvalidRunnerError("AISim engine replay runtime report must be a JSON string")
         try:
             report = json.loads(report_json)
         except json.JSONDecodeError as exc:
-            raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
+            raise InvalidRunnerError("AISim engine replay runtime returned invalid report JSON") from exc
         # The parsed report replaces the transport string, which can be as large as
         # the per-request records it carries.
         del report_json
         if not isinstance(report, Mapping):
-            raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
+            raise InvalidRunnerError("AISim engine replay runtime report must be a JSON object")
         if output_requirements.capture_telemetry and not isinstance(report.get("telemetry"), Mapping):
-            raise InvalidRunnerError("AISimulate engine replay runtime did not provide requested telemetry")
+            raise InvalidRunnerError("AISim engine replay runtime did not provide requested telemetry")
         resolved_basis = report.get("weka_nested_timestamp_basis")
         if isinstance(resolved_basis, str):
             logger.info(

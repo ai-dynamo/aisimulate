@@ -30,7 +30,7 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
     if root.exists() and not root.is_dir():
         raise ValueError(f"output path {root} exists and is not a directory")
     if root.exists() and any(root.iterdir()) and not overwrite:
-        raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
+        raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISim outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
         for name in (
@@ -197,7 +197,7 @@ def format_prediction_stdout(
     if summary.get("prediction_status") == "invalid":
         invalid_banner = f"INVALID prediction ({summary['stop_reason']}): {summary['diagnostic']}\n"
     if summary.get("metric_semantics") == "analytical_epd_overlay":
-        lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
+        lines = ["AISim analytical EPD (aggregate estimates; no encoder queue simulation)"]
         for name in (
             "mean_ttft_ms",
             "mean_tpot_ms",
@@ -298,7 +298,7 @@ def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str)
         return json.dumps(rows, sort_keys=True, separators=(",", ":"))
     if not rows:
         return "No feasible candidate found."
-    lines = ["AISimulate recommendations"]
+    lines = ["AISim recommendations"]
     for row in rows:
         objective = row.get("objectives") or {"score": row.get("score")}
         metrics = ", ".join(f"{key}={value:.4g}" for key, value in objective.items())

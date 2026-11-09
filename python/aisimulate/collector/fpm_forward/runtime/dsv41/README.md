@@ -2,12 +2,12 @@
 
 Status: the historical producer completed **126 GB200 calibration points**
 (100 prefill, 26 real decode) in eager TP4/DP1 mode. The retained
-[collection receipt](https://github.com/ai-dynamo/aisimulate/blob/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41/gb200-fpm/calibration-v1/collection-receipt.json)
+[collection receipt](https://github.com/ai-dynamo/aisim/blob/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41/gb200-fpm/calibration-v1/collection-receipt.json)
 binds producer SHA256 `771d2591eb5893f636a4208d60eb10daf51192eb4062bfec22da2f981cbe8ec0`
 and runtime-source manifest `a201055338b2e185db52b44744b0033aca850452580279bde4d3a4d8f8dceaef`.
 The earlier allocation-timeout and eager warmup failures remain failed evidence;
 they are not the completed calibration run. Subsequent ordinary-serving
-[validation](https://github.com/ai-dynamo/aisimulate/blob/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41/gb200-fpm/ordinary-serving-retention128-v1/README.md)
+[validation](https://github.com/ai-dynamo/aisim/blob/dd1fa97add17d3d74f580f4c3e0566c1b5f11827/data/experimental/deepseek-v41/gb200-fpm/ordinary-serving-retention128-v1/README.md)
 exposed a large latency mismatch, so completed collection does not establish
 serving prediction accuracy or general scheduler qualification. Current changes
 to activation, startup configuration and explicit identity attestation have CPU
@@ -87,7 +87,7 @@ frontend help, worker help, native runtime initialization/shutdown and the
 source-checked scheduler import. Generator 1.3/0.24 metadata selects a supported
 launch template; it does not describe the deployed backend versions.
 
-Install the matching AISimulate
+Install the matching AISim
 wheel, including its native extension, so the shared execution_identity helper
 can import. A source-only Python path is insufficient. The image must provide
 the pinned vLLM source and native GPU dependencies.
@@ -114,7 +114,7 @@ speculation/DSpark, no ubatching/DBO or context parallelism, no KV or encoder co
 The last requirement matters: the preview defaults to CPU UVA offload. All requests
 are text-only; no vision inputs or decoder replay are injected.
 
-The [original GB200 TP4 startup report](https://github.com/ai-dynamo/aisimulate/blob/2718db360b3d832062d63e28c2a3fae58a21874c/python/aisimulate/collector/fpm_forward/runtime/dsv41/README.md#L3-L8)
+The [original GB200 TP4 startup report](https://github.com/ai-dynamo/aisim/blob/2718db360b3d832062d63e28c2a3fae58a21874c/python/aisimulate/collector/fpm_forward/runtime/dsv41/README.md#L3-L8)
 records successful model loading followed by allocation-timeout termination
 during graph compilation. That change introduced this eager-only contract;
 the recorded failure is a startup timeout, not a diagnosed compiler crash.
@@ -215,10 +215,10 @@ from the calibration grid and its published curves.
 The pinned Linux ARM64 image is
 `vllm/vllm-openai@sha256:d84a123255b822fc22508635218000187221794f59c0694c33b0650d1e377d58`.
 Mount the verified composite Dynamo tree at `/opt/dsv41-dynamo` read-only.
-Install the matching AISimulate wheel, including its native extension, in the
+Install the matching AISim wheel, including its native extension, in the
 runtime image. Importing its shared SDK identity through a source-only Python
 path is insufficient: the package loads the native extension at import time.
 Stage the adapter, source manifest, and fixture through the Collector. The adapter,
-Dynamo source and AISimulate wheel must be available during runtime preflight.
+Dynamo source and AISim wheel must be available during runtime preflight.
 The installed native `ai-dynamo-runtime` is separately pinned and import-tested;
 the Python package version alone does not establish scheduler compatibility.

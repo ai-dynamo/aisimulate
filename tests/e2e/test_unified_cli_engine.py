@@ -310,9 +310,7 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
         assert replay_spec["backend_deployment"]["deployment_mode"] == "afd"
         assert qualification["qualification"] == {
             "execution": "analytical_foreground",
-            "native_deployment_reason": (
-                "AISimulate does not provide a physical AFD serving adapter or launch renderer"
-            ),
+            "native_deployment_reason": ("AISim does not provide a physical AFD serving adapter or launch renderer"),
             "native_deployment_supported": False,
             "status": "qualified_for_analytical_replay",
         }

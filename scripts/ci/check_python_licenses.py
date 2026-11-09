@@ -37,7 +37,7 @@ def check_licenses(python: str, inventory: Path | None = None, pyproject: Path |
         )
 
     # pip-licenses otherwise excludes prettytable and wcwidth even though
-    # both are also AISimulate runtime dependencies.
+    # both are also AISim runtime dependencies.
     # Audit the installed environment, including tooling; blanket exclusions
     # must not silently exempt a future runtime dependency with the same name.
     command = [python, "-m", "piplicenses", "--with-system"]

@@ -1201,7 +1201,7 @@ fn lower_trace(
                 session_id: stream.session_id.clone(),
                 model: request.request.model.clone(),
                 input_length: Some(request.request.input_length),
-                // Preserve an authored zero: AISimulate's native replay treats
+                // Preserve an authored zero: AISim's native replay treats
                 // it as a prefill-only/KV-cache-warmup request. HTTP adapters
                 // may need a non-zero wire value, but that endpoint limitation
                 // must not change the canonical graph.

@@ -117,7 +117,7 @@ learned model through the canonical constructor, which reads its source and
 rejects a role whose forest lacks a store the role needs. See the
 [learned configuration](../perf-model/fpm_ml/configuration.md).
 
-An explicit positive `context_length` is passed as AISimulate's internal
+An explicit positive `context_length` is passed as AISim's internal
 `max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
 prefill/decode deployments. Prompts at or above the limit are rejected, and
 generation stops when prompt plus output reaches the limit. A role-specific

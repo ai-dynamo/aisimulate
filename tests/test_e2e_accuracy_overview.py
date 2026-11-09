@@ -206,7 +206,7 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     run = {
         "status": "complete",
         "runtime": {
-            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisimulate"},
+            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisim"},
             "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
         },
     }
@@ -606,9 +606,14 @@ def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
     assert all(len(item["points"]) == 1 for item in topologies)
 
 
+@pytest.mark.parametrize(
+    "repository", ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]
+)
 @pytest.mark.parametrize("branch", ["main", "release/a", "release/0.12.0", "release/0.13.0/rc1"])
-def test_branch_publication_records_evaluated_revision(branch: str) -> None:
+def test_branch_publication_records_evaluated_revision(branch: str, repository: str) -> None:
     predictions, metadata, coverage = _qualified_inputs(branch)
+    for document in (predictions, metadata, coverage):
+        document["aic_run"]["runtime"]["source_checkout"]["repository"] = repository
     result = OVERVIEW.build_summary(
         predictions,
         metadata,
@@ -619,7 +624,7 @@ def test_branch_publication_records_evaluated_revision(branch: str) -> None:
     )
     assert result["snapshot"]["evaluated_revision"] == {"branch": branch, "commit_sha": "d" * 40}
     assert result["snapshot"]["aic_source"] == {
-        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "repository": repository,
         "branch": branch,
         "commit_sha": "d" * 40,
     }
@@ -755,7 +760,7 @@ def test_branch_publication_rejects_invalid_prediction_run_shape(prediction_run:
 def test_successful_replay_rejects_zero_latency() -> None:
     predictions, metadata, coverage = _inputs()
     predictions["rows"][0]["dynamo_ttft_ms"] = 0
-    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISimulate latencies must be positive"):
+    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISim latencies must be positive"):
         OVERVIEW.build_summary(
             predictions,
             metadata,

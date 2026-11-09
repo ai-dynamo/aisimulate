@@ -35,7 +35,7 @@ FPE_SPEC.loader.exec_module(FPE)
 
 NEW_SHA = "a" * 40
 OLD_SHA = "b" * 40
-REPOSITORY = "ai-dynamo/aisimulate"
+REPOSITORY = "ai-dynamo/aisim"
 LEGACY_FPE_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 
 
@@ -1018,7 +1018,7 @@ class PagesSiteTest(unittest.TestCase):
                     continue
                 text = (output_dir / path).read_text()
                 self.assertNotIn("raw.githubusercontent.com", text)
-                self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", text)
+                self.assertNotIn("api.github.com/repos/ai-dynamo/aisim", text)
 
     def test_deployed_matrices_use_packaged_public_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1033,7 +1033,7 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn("../data/fpe-support-matrix", fpe_page)
             self.assertIn('href="../"', fpe_page)
             self.assertNotIn("raw.githubusercontent.com", fpe_page)
-            self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", fpe_page)
+            self.assertNotIn("api.github.com/repos/ai-dynamo/aisim", fpe_page)
 
     def test_public_artifact_rejects_symlinked_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1072,7 +1072,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
     release_summary["snapshot"]["aic_commit_sha"] = "a" * 40
     release_summary["snapshot"]["aic_source"] = {
-        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "repository": "https://github.com/ai-dynamo/aisim",
         **release_summary["snapshot"]["evaluated_revision"],
     }
     source.write_text(json.dumps(release_summary))
@@ -1191,14 +1191,17 @@ def test_generated_topology_summary_satisfies_publication_contract() -> None:
         PAGES._accuracy_summary(json.dumps(summary))
 
 
-def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
+@pytest.mark.parametrize(
+    "repository", ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]
+)
+def test_publication_rejects_invalid_legacy_cli_provenance(repository: str) -> None:
     from copy import deepcopy
 
     summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     summary["snapshot"].update(
         evaluated_revision={"branch": "main", "commit_sha": "d" * 40},
         aic_commit_sha="d" * 40,
-        aic_source={"repository": "https://github.com/ai-dynamo/aisimulate", "branch": "main", "commit_sha": "d" * 40},
+        aic_source={"repository": repository, "branch": "main", "commit_sha": "d" * 40},
     )
     assert PAGES._accuracy_summary(json.dumps(summary)) == summary
     for change in (

@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.pages.build_pages_site import _accuracy_summary, committed_accuracy
 
-REPO = "ai-dynamo/aisimulate"
+REPO = "ai-dynamo/aisim"
 WORKFLOW = ".github/workflows/e2e-accuracy.yml"
 CAMPAIGN_KEYS = {
     "schema_version",

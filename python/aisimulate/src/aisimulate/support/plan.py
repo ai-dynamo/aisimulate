@@ -353,7 +353,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
     }
     if "prefill_cudagraph_policy" in request.collection.model_fields_set:
         plan["fpm"]["launch"] = (
-            "AISimulate launches and manages benchmark workers when collection is executed; no separately "
+            "AISim launches and manages benchmark workers when collection is executed; no separately "
             "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
             "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
         )

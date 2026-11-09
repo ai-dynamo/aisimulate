@@ -1,6 +1,6 @@
 ---
 name: aisimulate-agentx-gap-debug
-description: Diagnoses AgentX GPU-versus-AISimulate replay gaps in TTFT, per-request TPOT, throughput, and latency distributions. Use to investigate workload, FPM, frontend, scheduler, or KV-cache fidelity and validate scoped corrections. Not for optimizing simulator host execution speed alone.
+description: Diagnoses AgentX GPU-versus-AISim replay gaps in TTFT, per-request TPOT, throughput, and latency distributions. Use to investigate workload, FPM, frontend, scheduler, or KV-cache fidelity and validate scoped corrections. Not for optimizing simulator host execution speed alone.
 license: Apache-2.0
 metadata:
   author: NVIDIA

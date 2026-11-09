@@ -942,7 +942,7 @@ def test_agentx_replay_default_python_result_retains_qualification_without_dynam
         class RejectDynamo(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
                 if fullname == "dynamo" or fullname.startswith("dynamo."):
-                    raise AssertionError("public AISimulate Weka replay must not import Dynamo")
+                    raise AssertionError("public AISim Weka replay must not import Dynamo")
 
         sys.meta_path.insert(0, RejectDynamo())
 

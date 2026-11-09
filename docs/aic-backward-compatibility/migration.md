@@ -3,14 +3,14 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Migrate from AIC to AISimulate
+# Migrate from AIC to AISim
 
 This guide maps existing AIConfigurator commands and Python/Rust APIs to implemented
-AISimulate interfaces. A mapping does not imply identical estimation or search
+AISim interfaces. A mapping does not imply identical estimation or search
 semantics. Workflows without a unified replacement use the bundled compatibility
 CLI or SDK.
 
-The guide describes AISimulate 0.13.0. Published AIC and AISimulate 0.12.0 artifacts
+The guide describes AISim 0.13.0. Published AIC and AISim 0.12.0 artifacts
 retain their original behavior. For upstream source provenance and synchronization, see
 [AIC synchronization](../ci/aic-sync.md).
 
@@ -34,7 +34,7 @@ before installing the `aisimulate` wheel. Both console commands, `aisimulate` an
 `aiconfigurator`, come from that wheel. There is no separate core wheel.
 See the [installation guide](../getting-started/installation.md).
 
-| AIConfigurator 0.12.0 surface | AISimulate 0.13.0 surface | Compatibility |
+| AIConfigurator 0.12.0 surface | AISim 0.13.0 surface | Compatibility |
 | --- | --- | --- |
 | Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command remains; the Python import namespace is removed in 0.13.0 |
 | CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See [command mapping](#command-mapping); this is not a flag-compatible rename |
@@ -53,7 +53,7 @@ Pure Rust performance-model types do not require Python.
 
 ## Command mapping
 
-All six `aiconfigurator cli` commands remain in the AISimulate wheel. Keep their
+All six `aiconfigurator cli` commands remain in the AISim wheel. Keep their
 original arguments when using compatibility workflows. There is no automatic
 converter for AIC experiment files or a flag-compatible CLI rename.
 
@@ -162,7 +162,7 @@ before replaying a selected candidate.
 
 Use these mappings when translating a workflow; choose traffic and search objectives explicitly.
 
-| AIC input | AISimulate input | Translation note |
+| AIC input | AISim input | Translation note |
 |---|---|---|
 | `--model-path`, `--system`, `--backend` | `engine.model`, `engine.hardware`, `engine.backend` | Concrete model, hardware, and backend; optional `engine.backend_version` pins the version. |
 | `--isl`, `--osl` | `traffic.source.input_tokens`, `traffic.source.output_tokens` | Synthetic request lengths. |
@@ -173,7 +173,7 @@ Use these mappings when translating a workflow; choose traffic and search object
 | `--request-latency` | `evaluation.sla.e2e_ms` | Use instead of TTFT/ITL bounds. |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject aggregate-mean latency violations before ranking. |
 
-See the [AISimulate input reference](../reference/configuration.md#configuration-model) for full schemas and
+See the [AISim input reference](../reference/configuration.md#configuration-model) for full schemas and
 [result reference](../reference/cli.md#outputs) for files and metric units. Analytical EPD uses
 aggregate-only SLA semantics, described in its feature guide.
 

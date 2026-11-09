@@ -10,7 +10,7 @@ Scheme modules register themselves via ``@register_spec_scheme("<kind>")``;
 (the model-registry idiom), so **adding a scheme file is enough** — no edits
 here.
 
-Historical source-reported accuracy (not remeasured for this AISimulate
+Historical source-reported accuracy (not remeasured for this AISim
 migration): Qwen3-8B x H100 x vLLM static-batch pure-decode rounds, with
 the source's zero-calibration contract:
 

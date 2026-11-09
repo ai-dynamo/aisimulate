@@ -184,7 +184,7 @@ def test_explicit_untrained_regression_keeps_training_message(vllm_slots):
 
 def test_missing_perf_table_row_is_explained():
     error = RuntimeError(
-        "AISimulate replay failed: engine error: generalized engine worker 0 is now poisoned because a rank may "
+        "AISim replay failed: engine error: generalized engine worker 0 is now poisoned because a rank may "
         "have been partially mutated: executing attention-DP rank 0: external prefill prediction failed: AIC "
         "static_ctx evidence prediction failed: PerfDataNotAvailableError: perf database error: MoE data missing "
         'for MoeKey { quant: "bfloat16", topk: 22 } at /data/b200_sxm/vllm/0.24.0'
@@ -213,7 +213,7 @@ def test_unrelated_replay_error_keeps_original_message():
     ],
 )
 def test_other_perf_database_errors_keep_original_message(detail):
-    error = RuntimeError(f"AISimulate replay failed: PerfDataNotAvailableError: perf database error: {detail}")
+    error = RuntimeError(f"AISim replay failed: PerfDataNotAvailableError: perf database error: {detail}")
 
     assert perf_data_missing_message(error) is None
 

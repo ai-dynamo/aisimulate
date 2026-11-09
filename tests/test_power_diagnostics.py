@@ -156,7 +156,7 @@ def test_compatibility_diagnostics_remain_visible_with_other_details() -> None:
             details={"schema_version": "1.0", "sections": sections, "skipped": {}},
             power_diagnostics=diagnostics,
         )
-        assert rendered.count("AISimulate active forward-pass energy diagnostics (per GPU)") == 1
+        assert rendered.count("AISim active forward-pass energy diagnostics (per GPU)") == 1
 
 
 def _energy_detail_payload():

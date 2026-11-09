@@ -5,11 +5,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # Synchronizing AIConfigurator
 
-AISimulate records an immutable AIConfigurator synchronization boundary and
+AISim records an immutable AIConfigurator synchronization boundary and
 explicit mappings from the pinned upstream layout into the
 two canonical Python packages:
 
-| Upstream AIConfigurator path | Stable AISimulate mirror |
+| Upstream AIConfigurator path | Stable AISim mirror |
 | --- | --- |
 | `src/aiconfigurator/sdk/` | `python/aisimulate/src/aisimulate/sdk/` |
 | `src/aiconfigurator/generator/` | `python/aisimulate/src/aisimulate/generator/` |
@@ -77,6 +77,6 @@ not evidence that manifests, workflows, or ownership policy were synchronized.
 
 Packaging and repository policy are intentionally manual. Adapt upstream
 changes to `pyproject.toml`, Cargo manifests and lockfiles, release workflows,
-or CODEOWNERS into the combined AISimulate equivalents; never copy an upstream
+or CODEOWNERS into the combined AISim equivalents; never copy an upstream
 publishable manifest or active workflow into the repository. The ledger lists
 these manual paths and the reason for each exception.

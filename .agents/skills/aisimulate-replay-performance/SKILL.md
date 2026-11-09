@@ -1,15 +1,15 @@
 ---
 name: aisimulate-replay-performance
-description: Design, implement, and review efficient AISimulate engine-only simulation execution. Use for replay features, correctness fixes, and refactors that affect scheduling, state transitions, event processing, or costs that scale with requests, tokens, workers, or resident state. Resolve substantial avoidable overhead before completion. Excludes Dynamo Router, Planner, KVBM, and live event-plane behavior.
+description: Design, implement, and review efficient AISim engine-only simulation execution. Use for replay features, correctness fixes, and refactors that affect scheduling, state transitions, event processing, or costs that scale with requests, tokens, workers, or resident state. Resolve substantial avoidable overhead before completion. Excludes Dynamo Router, Planner, KVBM, and live event-plane behavior.
 ---
 
-# AISimulate replay performance
+# AISim replay performance
 
 Design new and changed code for efficient execution. Functional correctness and
 efficient execution are both completion requirements. Resolve substantial, avoidable
 overhead in the same PR before marking the implementation ready for merge.
 Assess simulator host cost separately from simulated serving latency. Apply this guide
-to AISimulate-owned engine replay; route Dynamo-owned runtime work to its own workflow.
+to AISim-owned engine replay; route Dynamo-owned runtime work to its own workflow.
 
 ## Design
 
@@ -89,9 +89,9 @@ builds, profiles, or benchmarks outside the task's permissions.
 
 ## Examples
 
-- [#321](https://github.com/ai-dynamo/aisimulate/pull/321): a correctness change copied
+- [#321](https://github.com/ai-dynamo/aisim/pull/321): a correctness change copied
   broad resident state during frequent transitions, increasing CPU cost as state grew.
-- [#295](https://github.com/ai-dynamo/aisimulate/pull/295): auxiliary processing around
+- [#295](https://github.com/ai-dynamo/aisim/pull/295): auxiliary processing around
   predictions added replay cost that a numerical-kernel benchmark would not cover.
 
 These illustrate failure patterns and consequences; their solutions are not requirements.

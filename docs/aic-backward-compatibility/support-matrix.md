@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # AIC support matrix and model roster
 
 The generation roster for the published
-[Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
-is curated separately from the model configurations bundled with AISimulate.
+[Legacy AIC Support Matrix](https://ai-dynamo.org/aisim/support-matrix/)
+is curated separately from the model configurations bundled with AISim.
 
 A bundled model remains available for explicit SDK and CLI use even after it
 is retired from default matrix generation. This keeps historical workflows and

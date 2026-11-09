@@ -28,8 +28,8 @@ output directories and preserve each campaign's evidence.
 
 ## Example A: onboard the collected Kimi K3 TP8+DCP8 profile
 
-This example needs an AISimulate build containing the DCP profile-consumer
-changes from [#284](https://github.com/ai-dynamo/aisimulate/pull/284)
+This example needs an AISim build containing the DCP profile-consumer
+changes from [#284](https://github.com/ai-dynamo/aisim/pull/284)
 (merged commit `982c18f4e8e33c124b5195945db269b83168ed3f`), including `dcp`,
 `text_only`, `unrecorded_quant_modes`, and engine-stack `decode_context`. Verify
 that build separately if your guided-onboarding checkout lacks these options.
@@ -50,7 +50,7 @@ It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
 
 ### A1. Import the measured pair
 
-Choose a new output directory and an AISimulate build with the
+Choose a new output directory and an AISim build with the
 [`kimi_k3_fpm` pin manifest and materializer](README.md#reuse-a-published-profile).
 The materializer verifies the pinned files and reuses a verified cache on later
 calls. This historical profile is marked `development`: the explicit
@@ -428,7 +428,7 @@ guided preview; it must retain `--plan-only`. Preserve all generated model,
 profile, runtime and output arguments. The collector plan is authoritative for
 admitted cells: for this one-topology aggregated request, expect prefill and
 decode cells, or investigate omissions. The exact grid and point count remain
-runtime-determined. AISimulate bounds context and scheduled new tokens
+runtime-determined. AISim bounds context and scheduled new tokens
 separately; Dynamo generates feasible points from those limits and the initialized
 engine's capture configuration. Runtime graph policy does not force a prefill
 capture limit of 2,048 or assume prefill and decode execute the same graph.

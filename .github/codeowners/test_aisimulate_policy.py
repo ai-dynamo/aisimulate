@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Repository-specific routing contract for AISimulate's generated CODEOWNERS."""
+"""Repository-specific routing contract for AISim's generated CODEOWNERS."""
 
 import json
 import os
@@ -465,7 +465,7 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
     base_sha = "b" * 40
     matching = {
         "GITHUB_REF": "refs/heads/pull-request/135",
-        "REPOSITORY": "ai-dynamo/aisimulate",
+        "REPOSITORY": "ai-dynamo/aisim",
         "RUN_SHA": target_sha,
         "FAKE_PR_HEAD": target_sha,
         "FAKE_PR_BASE": base_sha,

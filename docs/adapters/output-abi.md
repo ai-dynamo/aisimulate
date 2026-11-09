@@ -13,7 +13,7 @@ it does not change replay, candidate scores or saved prediction inputs.
 ## Identity and required writer
 
 The entry-point group is `aisimulate.output_adapters`. A selected `--output`
-name also identifies its top-level configuration section. AISimulate extracts
+name also identifies its top-level configuration section. AISim extracts
 explicitly selected output sections before simulation-schema validation.
 An adapter declares the same `name`, integer `api_version = 1`, and:
 

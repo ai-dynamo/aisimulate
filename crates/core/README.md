@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate Core
+# AISim Core
 
 `aisim-core` is the single public Rust package for engine-neutral inference
 simulation. Its Rust library namespace remains `aisimulate_core`. It preserves

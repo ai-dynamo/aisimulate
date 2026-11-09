@@ -176,7 +176,7 @@ Fast CI has three substantive jobs, followed by an aggregate result:
 | Job | Checks |
 | --- | --- |
 | Repository Policy | Copyright and packaged legal files; CODEOWNERS policy tests, ownership coverage, and generated artifacts; workflow/selection and qualification contract tests |
-| Python Static Checks | Ruff lint and formatting on the configured AISimulate/test paths, Python syntax compilation, and changed-line whitespace |
+| Python Static Checks | Ruff lint and formatting on the configured AISim/test paths, Python syntax compilation, and changed-line whitespace |
 | Rust Format | `cargo fmt --all -- --check` |
 | Fast CI Success | Requires the three jobs to succeed for every PR, branch push, or manual run |
 
@@ -256,7 +256,7 @@ records a full baseline commit that must resolve in the checkout. Fast CI and
 the numerical-check job explicitly fetch that SHA from `origin` if missing;
 full branch history alone can omit a baseline from a squashed PR. Fetch or
 commit-validation failures remain errors. Fetch-only mode does not load the
-AISimulate runtime; the subsequent checks validate the complete manifest.
+AISim runtime; the subsequent checks validate the complete manifest.
 To prepare a checkout locally, run:
 
 ```sh
@@ -371,7 +371,7 @@ that a test executed or passed.
 
 Nightly does not automatically execute the manual suites or fill optional
 dependency gaps. Downstream Dynamo runtime qualification also needs separate
-evidence; the AISimulate wheel remains standalone.
+evidence; the AISim wheel remains standalone.
 
 After installing and activating the [development environment](../../DEVELOPMENT.md),
 run this from the repository root for extended CLI coverage:
@@ -414,8 +414,8 @@ access. For local setup and focused tests, use [DEVELOPMENT.md](../../DEVELOPMEN
 Inspect runs and the job results inside a run:
 
 ```bash
-gh run list --repo ai-dynamo/aisimulate --workflow ci.yml --branch main --limit 10
-gh run view --repo ai-dynamo/aisimulate
+gh run list --repo ai-dynamo/aisim --workflow ci.yml --branch main --limit 10
+gh run view --repo ai-dynamo/aisim
 ```
 
 For a maintainer-admitted manual Full CI run, first ensure the checked-out
@@ -426,9 +426,9 @@ commit. Full CI waits for the Fast result:
 ```bash
 ci_branch="$(git branch --show-current)"
 ci_sha="$(git rev-parse HEAD)"
-gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
+gh workflow run fast-ci.yml --repo ai-dynamo/aisim \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
-gh workflow run ci.yml --repo ai-dynamo/aisimulate \
+gh workflow run ci.yml --repo ai-dynamo/aisim \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
 
@@ -441,8 +441,8 @@ Fast and Full CI runs:
 
 ```bash
 ci_pr=123  # Replace with the reviewed PR to validate.
-ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
-gh pr comment "${ci_pr}" --repo ai-dynamo/aisimulate \
+ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisim --json headRefOid --jq .headRefOid)"
+gh pr comment "${ci_pr}" --repo ai-dynamo/aisim \
   --body "/ok to test ${ci_sha}"
 ```
 
@@ -482,8 +482,8 @@ To qualify FPE independently at the current `main`, without waiting for a
 nightly run:
 
 ```bash
-ci_sha="$(gh api repos/ai-dynamo/aisimulate/commits/main --jq .sha)"
-gh workflow run fpe-support-matrix.yml --repo ai-dynamo/aisimulate \
+ci_sha="$(gh api repos/ai-dynamo/aisim/commits/main --jq .sha)"
+gh workflow run fpe-support-matrix.yml --repo ai-dynamo/aisim \
   --ref main -f expected_sha="${ci_sha}"
 ```
 
@@ -614,3 +614,25 @@ Deploy the dashboard/CI changes after promoting the initial dataset candidate;
 until that catalog exists, AgentX input fetching fails explicitly while the
 independent InfX jobs retain their existing behavior. See the
 [AgentX dashboard contract](../../pages/e2e-accuracy/README.md#agentx-beta).
+
+
+## Repository rename to AISim
+
+The repository's canonical name is `ai-dynamo/aisim`, the product name is AISim, and the project Pages URL is `https://ai-dynamo.org/aisim/`. The published Python distribution and Rust crate are already named `aisim` and `aisim-core`. This rename preserves `aisimulate` and `aisimulate_core` Python imports, source paths, CLI compatibility, plugin namespaces, environment variables, data schemas, historical measurements, Hugging Face dataset identifiers, Artifactory repositories, GitHub team slugs, and runner labels. Those identifiers have independent consumers and do not change when GitHub renames a repository. Retained accuracy snapshots may record either repository URL; publication validates both while retaining their original provenance.
+
+### Prepare the cutover
+
+1. Confirm that `ai-dynamo/aisim` is available and record the repository ID, existing Pages settings, and current runner registration. Prepare the AISim rename PR and the [companion Velonix runner PR](https://github.com/ai-dynamo/velonix/pull/882) together. Keep both as drafts until the cutover is scheduled; the new repository guards and runner registration targets are intended for the new name.
+2. Review the Velonix changes to both dedicated ARC scale sets' `githubConfigUrl` and `velonix.nvidia.com/approved-repository`, the shared organization runner's repository allowlist, and the job hook's `HOME` path. Preserve existing scale-set labels, Kubernetes resource names, service accounts, IAM trust, and capacity. No Terraform change is required for a repository target change with those identities preserved. Drain running jobs and avoid dispatching new jobs during the transition; do not depend on redirects for ARC registration or admission checks.
+3. Inventory external consumers: workflows calling reusable workflows or actions through `uses: ai-dynamo/aisimulate/...`, Dynamo dependency/source URLs, GitHub Apps including ARC and copy-pr-bot, repository-specific webhook filters, organization rulesets, runner-group access, cloud OIDC trust subjects, PyPI trusted publishers, and GitLab/security handoffs. Update configured repository names where present. Secrets, environments, and branch rules belong to the same repository, but external name-based matches need verification. Historical release branches retain their committed workflows; audit and backport repository guards, provenance checks, URLs, and workspace fixes needed by active release automation.
+4. Arrange the old Pages path redirect with the owner of the organization site or HTTP edge. The Pages API currently reports workflow publication with no repository-specific custom domain; the `ai-dynamo.org` domain is inherited from the organization site. A custom organization domain does not preserve a renamed project path.
+
+### Rename and validate
+
+1. In the repository's **Settings → General → Repository name**, enter `aisim` and choose **Rename**. Rename the existing repository rather than making a replacement repository. Merge the prepared rename PR and the Velonix runner PR in the coordinated maintenance window, then verify Flux reconciliation and ARC registration at the new target. Coordinate any controller-specific scale-set recreation through the runner operator if retargeting an existing set cannot complete in place; do not delete active runners during jobs.
+2. Change the GitHub repository website field to `https://ai-dynamo.org/aisim/`. Keep **Settings → Pages → Build and deployment → Source** set to **GitHub Actions**, verify the `github-pages` environment rules, and run the Pages workflow from updated `main`. Verify its deployment URL, all dashboard sections, assets, branch switching, query parameters, and links to source and workflow runs. A PR preview build alone does not prove a deployed site works.
+3. Configure an HTTP 301 or 308 redirect from `/aisimulate` and `/aisimulate/<path>` to `/aisim/` and `/aisim/<path>`, preserving the suffix and query string. Browser fragments never reach the server, so check representative anchored links as well. GitHub Pages supplies no automatic redirect for renamed project sites and cannot implement server redirects using a repository `_redirects` file. If no HTTP edge is available, the organization site can publish client-side landing and 404 redirects for the old prefix, but those are not HTTP redirects and need separate testing. Do not create a replacement `ai-dynamo/aisimulate` repository to host redirects: reusing the name breaks GitHub's repository redirects.
+4. Update local clones with `git remote set-url origin git@github.com:ai-dynamo/aisim.git`. GitHub redirects ordinary repository web and Git traffic, including existing issue/PR/commit links, but action references in workflow `uses:` entries must be updated explicitly. Do not reuse the old repository name.
+5. Run one containerized canary on each dedicated architecture and a shared-runner canary. Verify checkout, writable `HOME`, `/scratch`, and accepted canonical push/manual events; verify direct public pull-request events and unapproved repositories remain rejected by admission. Check copy-pr-bot and required checks on a harmless approved PR, Pages deployment, and the next applicable nightly/release pipeline. Record exact workflow SHAs and results before resuming normal dispatch.
+
+See GitHub's [repository rename behavior](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) for the Git redirect, Pages, and action-reference exceptions. The source PRs prepare this cutover; opening or merging the AISim PR does not itself rename the GitHub repository or configure the organization site's redirects.

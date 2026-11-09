@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: Build and verify a platform wheel
-description: Build and verify one unified AISimulate platform wheel
+description: Build and verify one unified AISim platform wheel
 
 inputs:
   build_method:

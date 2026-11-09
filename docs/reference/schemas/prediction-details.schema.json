@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-dynamo.github.io/aisimulate/cli/prediction-details.schema.json",
-  "title": "AISimulate prediction details v1",
+  "title": "AISim prediction details v1",
   "type": "object",
   "properties": {
     "schema_version": {

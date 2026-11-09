@@ -14,7 +14,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Modified: CPU-only sizing of DeepSeek V4 cache groups for AISimulate's state cache.
+# Modified: CPU-only sizing of DeepSeek V4 cache groups for AISim's state cache.
 # Adapted from https://github.com/vllm-project/vllm/tree/c5c116138267ac738bc262495326d28ffff834a2
 # Original paths: vllm/models/deepseek_v4/attention.py, vllm/models/deepseek_v4/compressor.py,
 # vllm/v1/attention/backends/mla/sparse_swa.py, vllm/v1/kv_cache_interface.py,
@@ -25,7 +25,7 @@
 vLLM gives every DeepSeek V4 cache group the same pool row: the bytes per
 block of the widest group. A request holds one row per 256 tokens for the
 compressed KV and indexer K, plus the rows its sliding-window groups (SWA KV
-and compressor states) keep resident. AISimulate's state cache represents
+and compressor states) keep resident. AISim's state cache represents
 the first part as token bytes and the second as one fixed per-request state.
 """
 

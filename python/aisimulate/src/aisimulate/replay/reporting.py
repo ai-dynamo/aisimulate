@@ -15,7 +15,7 @@ from ..power import normalize_power_summary, power_unavailable_reason
 
 TITLE = "NVIDIA AIPerf | LLM Metrics"
 STAT_COLUMNS = ("avg", "min", "max", "p99", "p90", "p75", "std")
-POWER_DIAGNOSTICS_TITLE = "AISimulate active forward-pass energy diagnostics (per GPU)"
+POWER_DIAGNOSTICS_TITLE = "AISim active forward-pass energy diagnostics (per GPU)"
 
 
 def default_report_path(prefix: str = "aisimulate_replay_report") -> Path:

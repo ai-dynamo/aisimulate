@@ -1,9 +1,9 @@
 ---
 name: aisimulate-fpe-performance
-description: Design, implement, and review efficient AISimulate numerical prediction and data lookup. Use for FPE features, correctness fixes, and refactors that affect prediction algorithms, preparation, data representation, caches, or caller cost. Resolve substantial avoidable overhead before completion, even when performance is not the stated task.
+description: Design, implement, and review efficient AISim numerical prediction and data lookup. Use for FPE features, correctness fixes, and refactors that affect prediction algorithms, preparation, data representation, caches, or caller cost. Resolve substantial avoidable overhead before completion, even when performance is not the stated task.
 ---
 
-# AISimulate FPE performance
+# AISim FPE performance
 
 Design new and changed code for efficient execution. Functional correctness and
 efficient execution are both completion requirements. Resolve substantial, avoidable
@@ -87,9 +87,9 @@ builds, profiles, or benchmarks outside the task's permissions.
 
 ## Examples
 
-- [#239](https://github.com/ai-dynamo/aisimulate/pull/239): repeated searches over prepared
+- [#239](https://github.com/ai-dynamo/aisim/pull/239): repeated searches over prepared
   data made query cost grow with the full dataset and increased replay CPU time.
-- [#295](https://github.com/ai-dynamo/aisimulate/pull/295): auxiliary result processing
+- [#295](https://github.com/ai-dynamo/aisim/pull/295): auxiliary result processing
   added copying, validation, and conversion costs outside the numerical calculation.
 
 These illustrate failure patterns and consequences; their solutions are not requirements.

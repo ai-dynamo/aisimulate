@@ -4,7 +4,7 @@
 schema_version: server-knob-groups/1.1.0
 mapping_version: 1.1.0
 
-# Keys are normalized AISimulate config names, not backend CLI flag names.
+# Keys are normalized AISim config names, not backend CLI flag names.
 # Membership categorizes a knob; backend CLI/override support is separate.
 # Group order and knob order are presentation-significant.
 backends:
@@ -47,7 +47,7 @@ groups:
     - comm_dtype
 
 # These normalized knobs are useful comparison targets, but the current
-# AISimulate ReplaySpec cannot carry them into AIC timing configuration.
+# AISim ReplaySpec cannot carry them into AIC timing configuration.
 aisimulate_replay:
   not_represented:
     - attention_backend

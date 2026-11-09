@@ -2705,7 +2705,7 @@ def test_invalid_analytical_epd_table_includes_banner():
     }
     output = format_prediction_stdout(summary, "table")
     assert output.startswith("INVALID prediction (no_completed_requests): No requests completed.\n")
-    assert "AISimulate analytical EPD" in output
+    assert "AISim analytical EPD" in output
 
 
 def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):

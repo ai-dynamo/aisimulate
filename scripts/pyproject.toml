@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Repository tooling only. Install the exact AISimulate wheel separately.
+# Repository tooling only. Install the exact AISim wheel separately.
 [dependency-groups]
 ci = ["uv==0.12.6", "PyYAML==6.0.3", "pytest==9.0.3", "markdown-it-py==4.2.0", "pip-licenses==5.5.5"]
 e2e-accuracy = ["requests>=2.32,<3", "PyYAML==6.0.3", "huggingface-hub==1.32.0", "pyarrow==25.0.1", "cryptography>=46,<49"]

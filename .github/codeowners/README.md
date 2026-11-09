@@ -34,7 +34,7 @@ review visibility without requiring one approval from every listed team.
 | `emit_codeowners.py` | Generates root `CODEOWNERS` and `CONTRIBUTORS.md` from policy inputs. |
 | `who_owns.py` | Reports the owners for paths or a branch diff. |
 | `test_codeowners.py` | Generic matcher, resolver, emitter, and validation tests. |
-| `test_aisimulate_policy.py` | AISimulate-specific routing contract. |
+| `test_aisimulate_policy.py` | AISim-specific routing contract. |
 
 ## Change Ownership
 
@@ -70,7 +70,7 @@ The full AIC source import preserves `python/aisimulate/.github/codeowners/` as
 inactive provenance, but its generated `CODEOWNERS` file is not retained.
 GitHub only discovers CODEOWNERS at the repository root, `.github/`, or `docs/`,
 so the generated root file is the only active repository policy. The root
-policy routes changes to the preserved ownership tooling to AISimulate Infra
+policy routes changes to the preserved ownership tooling to AISim Infra
 plus maintainers to keep the active and historical policies from being
 confused. The DevOps team is not listed in the active policy and is never a
 required code-owner approver.

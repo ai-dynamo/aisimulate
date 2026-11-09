@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AISimulate — Legacy AIC Support Matrix</title>
+<title>AISim — Legacy AIC Support Matrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -50,7 +50,7 @@ tailwind.config = {
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ── Constants ───────────────────────────────────────────────────────
-const REPO = 'ai-dynamo/aisimulate';
+const REPO = 'ai-dynamo/aisim';
 const SUPPORT_MATRIX_PATH = 'python/aisimulate/src/aisimulate_core/systems/support_matrix';
 const DEPLOYED_SUPPORT_MATRIX_PATH = '../data/support-matrix';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
@@ -744,14 +744,14 @@ function Header() {
       <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center gap-3 flex-wrap">
         <a href="../"><img src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" className="rounded-full" /></a>
         <div className="min-w-0 mr-auto">
-          <h1 className="text-lg font-bold leading-tight"><a href="../">AISimulate</a>
+          <h1 className="text-lg font-bold leading-tight"><a href="../">AISim</a>
           <span className="text-sm text-slate-500 dark:text-slate-400"> - Legacy AIC Support Matrix</span></h1>
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
           <span className="font-semibold">Branch:</span>
           <code className="px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200">main</code>
         </div>
-        <a href="https://github.com/ai-dynamo/aisimulate" target="_blank" rel="noopener"
+        <a href="https://github.com/ai-dynamo/aisim" target="_blank" rel="noopener"
            title="View on GitHub"
            className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors">
           <GitHubIcon />
@@ -842,13 +842,13 @@ function LegacySnapshot({ snapshot }) {
         <span className="font-semibold">Historical snapshot</span>{' · '}
         {hasDate ? <>
           Latest data change:{' '}
-          <a href={`https://github.com/ai-dynamo/aisimulate/commit/${snapshot.data_commit}`}
+          <a href={`https://github.com/ai-dynamo/aisim/commit/${snapshot.data_commit}`}
              target="_blank" rel="noopener noreferrer" className="underline">
             <time dateTime={snapshot.data_updated_at} title={snapshot.data_updated_at}>
               {new Date(snapshot.data_updated_at).toLocaleString(undefined, { timeZoneName: 'short' })}
             </time>
           </a>{' · '}Data commit{' '}
-          <a href={`https://github.com/ai-dynamo/aisimulate/commit/${snapshot.data_commit}`}
+          <a href={`https://github.com/ai-dynamo/aisim/commit/${snapshot.data_commit}`}
              target="_blank" rel="noopener noreferrer" className="underline">
             <code>{snapshot.data_commit.slice(0, 12)}</code>
           </a>

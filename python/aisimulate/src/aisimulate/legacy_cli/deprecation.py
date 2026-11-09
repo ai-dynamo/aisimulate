@@ -13,7 +13,7 @@ from typing import ParamSpec, TypeVar
 
 logger = logging.getLogger(__name__)
 
-_MIGRATION_GUIDE = "https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/migration.md"
+_MIGRATION_GUIDE = "https://github.com/ai-dynamo/aisim/blob/main/docs/aic-backward-compatibility/migration.md"
 _warned_entry_points: set[str] = set()
 
 _P = ParamSpec("_P")
@@ -29,10 +29,10 @@ def warn_legacy_cli(mode: str | None) -> None:
         return
     _warned_entry_points.add(key)
     message = (
-        f"`{command}` is a deprecated compatibility command shipped by AISimulate 0.13.0. "
-        "Command removal is targeted for AISimulate 0.14.0 after every remaining "
+        f"`{command}` is a deprecated compatibility command shipped by AISim 0.13.0. "
+        "Command removal is targeted for AISim 0.14.0 after every remaining "
         "workflow has a verified unified-CLI replacement. "
-        f"Until then, keep running `{command} ...`; AISimulate preserves the "
+        f"Until then, keep running `{command} ...`; AISim preserves the "
         "established command name and arguments. "
         f"Migration guide: {_MIGRATION_GUIDE}"
     )

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Command identity contract for the application shipped by AISimulate."""
+"""Command identity contract for the application shipped by AISim."""
 
 from __future__ import annotations
 

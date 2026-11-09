@@ -654,8 +654,8 @@ def test_publisher_requires_successful_trusted_job_and_exact_driver(tmp_path, mo
         "head_sha": "a" * 40,
         "path": ".github/workflows/e2e-accuracy.yml",
         "conclusion": "success",
-        "repository": {"full_name": "ai-dynamo/aisimulate"},
-        "head_repository": {"full_name": "ai-dynamo/aisimulate"},
+        "repository": {"full_name": "ai-dynamo/aisim"},
+        "head_repository": {"full_name": "ai-dynamo/aisim"},
     }
     key = publisher.artifact_key("main")
     job = {

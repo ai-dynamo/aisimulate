@@ -195,8 +195,8 @@ The campaign explicitly passes `model_path` before deduplication and enables
 required. Shared sweep defaults belong in
 `cases/base_ops/mla_module.yaml`; this campaign file only selects the groups.
 
-The SGLang 0.5.21 collection used AISimulate commit
-[`0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04`](https://github.com/ai-dynamo/aisimulate/commit/0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04),
+The SGLang 0.5.21 collection used AISim commit
+[`0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04`](https://github.com/ai-dynamo/aisim/commit/0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04),
 with 250 shapes per group, through past-KV length 720,896. Reproduction must
 pin that collector revision, the runtime image digest recorded in the data
 sidecar, and the campaign's B300 capacity. Current defaults may generate a

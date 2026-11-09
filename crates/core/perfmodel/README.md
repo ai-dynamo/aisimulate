@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Performance-model implementation
 
-AISimulate's performance model lives under
+AISim's performance model lives under
 [`src/perfmodel`](../src/perfmodel/). Python lowers registered model descriptions
 to a versioned operation plan; Rust evaluates that plan with measured or
 analytical operations. The canonical forward-pass estimator additionally owns

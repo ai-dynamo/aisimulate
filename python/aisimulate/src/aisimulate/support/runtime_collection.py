@@ -194,7 +194,7 @@ def _plan(request: SupportRequest, binding: dict[str, Any], source: dict[str, An
     expected, actual = deepcopy(original), deepcopy(launch)
     for value in (expected, actual):
         value.pop("deployment")
-        # AISimulate source provenance is reviewed below, separately from the checkpoint.
+        # AISim source provenance is reviewed below, separately from the checkpoint.
         value["identity"].pop("aisimulate_revision", None)
         value["model_config"].pop("path")
         value["model_config"].setdefault("source_files", {})

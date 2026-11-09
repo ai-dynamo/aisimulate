@@ -78,7 +78,7 @@ def validate_output_adapter(adapter: Any, *, requested_name: str) -> Recommendat
     if type(api_version) is not int or api_version != OUTPUT_ADAPTER_API_VERSION:
         raise OutputAdapterResolutionError(
             f"output adapter {requested_name!r} uses API version {api_version!r}; "
-            f"AISimulate requires {OUTPUT_ADAPTER_API_VERSION}"
+            f"AISim requires {OUTPUT_ADAPTER_API_VERSION}"
         )
     if not callable(getattr(adapter, "write", None)):
         raise OutputAdapterResolutionError(f"output adapter {requested_name!r} is missing callable: write")

@@ -66,7 +66,7 @@ function withEvaluation() {
   const data = structuredClone(historical);
   data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.aic_commit_sha = "d".repeat(40);
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisim", ...data.snapshot.evaluated_revision };
   return data;
 }
 
@@ -276,10 +276,16 @@ test("branch switching keeps multi-node scope in provenance", async () => {
 test("bundled AIC (legacy CLI) provenance links to AISim and rejects another repository or revision", async () => {
   const data = withEvaluation();
   const app = setup(async () => response(data));
+  for (const repository of ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]) {
+    const retained = structuredClone(data);
+    retained.snapshot.aic_source.repository = repository;
+    app.set("retained", retained);
+    app.run("validateSummary(retained)");
+  }
   app.set("revisionFixture", data.snapshot.evaluated_revision);
   app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
   await app.run('loadBranch("main")');
-  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisimulate\/commit\/d{40}/);
+  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisim\/commit\/d{40}/);
   assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
   for (const change of [
     { repository: "https://github.com/ai-dynamo/aiconfigurator" },
@@ -839,7 +845,7 @@ test(`configuration assumptions stay labeled and count mismatches fail (${policy
   const revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.evaluated_revision = revision;
   data.snapshot.aic_commit_sha = revision.commit_sha;
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...revision };
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisim", ...revision };
   const counts = {};
   for (const model of data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
     for (const topology of gpu.topologies) for (const [index, point] of topology.points.entries()) {

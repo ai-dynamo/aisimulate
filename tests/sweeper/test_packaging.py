@@ -32,7 +32,7 @@ def _source_checkout_roots() -> tuple[Path, Path]:
         repo_root / "Cargo.toml",
     )
     if not all(path.is_file() for path in source_tree_markers):
-        pytest.skip("requires the AISimulate source checkout, not only the wheel")
+        pytest.skip("requires the AISim source checkout, not only the wheel")
     return aisimulate_root, repo_root
 
 

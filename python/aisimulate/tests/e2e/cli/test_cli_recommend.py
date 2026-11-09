@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for the unified AISimulate package.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for the unified AISim package.
 
 """End-to-end tests for recommendation GPU-budget escalation."""
 

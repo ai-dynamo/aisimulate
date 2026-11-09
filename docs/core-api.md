@@ -22,7 +22,7 @@ Use `aisimulate.predict.run_prediction` to compile and execute one public
 runner, and returns a `PredictionResult` with the same summary the CLI renders.
 
 Use `prediction.yaml` from the [README prediction example](../README.md#predict-one-deployment).
-In the activated AISimulate environment, save the following as
+In the activated AISim environment, save the following as
 `predict_example.py` and run `python predict_example.py` from the directory
 containing the YAML file.
 
@@ -92,7 +92,7 @@ the public configuration into the [Sweeper SDK](sweeper/sdk.md); it does not
 accept a `SmartSearchConfig` in place of `CoreRecommendationConfig`.
 
 Use `recommendation.yaml` from the [README recommendation example](../README.md#recommend-a-deployment).
-In the activated AISimulate environment, save the following as
+In the activated AISim environment, save the following as
 `recommend_example.py` and run `python recommend_example.py` from the directory
 containing the YAML file.
 

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Recursive regression in the forward-pass performance model
 
-AISimulate updates centered sufficient statistics when a retained observation
+AISim updates centered sufficient statistics when a retained observation
 is inserted or evicted. By default it also solves the standardized, nonnegative
 linear regression after each accepted update transaction. Opt-in lazy updates
 defer coefficient publication while retaining every accepted statistical update.

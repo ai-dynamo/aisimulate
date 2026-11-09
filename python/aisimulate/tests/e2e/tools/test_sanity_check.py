@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 # no perf data at all.
 SENTINEL_COMBO = ("h200_sxm", "trtllm")
 
-# Active AISimulate CI can scope this suite to the PR's diff via
+# Active AISim CI can scope this suite to the PR's diff via
 # AIC_SANITY_TARGETS once AIC-1706 wires the selector into the root workflow:
 #   unset -> full matrix (local/manual runs keep the historical behavior)
 #   "all" -> full matrix (sanity-check tooling or the DB loader changed)

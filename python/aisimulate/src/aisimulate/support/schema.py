@@ -129,7 +129,7 @@ class SearchProfile(StrictModel):
 
 
 class CollectionSpec(StrictModel):
-    """AISimulate runtime and capture limits for Dynamo's native grid generation."""
+    """AISim runtime and capture limits for Dynamo's native grid generation."""
 
     max_num_tokens: PositiveStrictInt | None = None
     max_batch_size: PositiveStrictInt | None = None

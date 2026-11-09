@@ -169,12 +169,12 @@ function renderSnapshot() {
       )}
     </p>
     <p>Evaluated revision: ${snapshot.evaluated_revision
-      ? `<a href="https://github.com/ai-dynamo/aisimulate/commit/${escapeHtml(snapshot.evaluated_revision.commit_sha)}">${escapeHtml(snapshot.evaluated_revision.branch)} @ ${escapeHtml(snapshot.evaluated_revision.commit_sha.slice(0, 12))}</a>`
+      ? `<a href="https://github.com/ai-dynamo/aisim/commit/${escapeHtml(snapshot.evaluated_revision.commit_sha)}">${escapeHtml(snapshot.evaluated_revision.branch)} @ ${escapeHtml(snapshot.evaluated_revision.commit_sha.slice(0, 12))}</a>`
       : "Not recorded in this historical snapshot"}</p>
     <p>AIC (legacy CLI) source: ${snapshot.aic_source
       ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISim ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (${escapeHtml(snapshot.aic_source.cli_entry_point ?? "bundled aiconfigurator CLI")})`
       : "Repository provenance was not recorded in this historical snapshot"}</p>
-    ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
+    ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisim/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
       ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
@@ -183,7 +183,7 @@ function renderSnapshot() {
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
-      ? `<a href="https://github.com/ai-dynamo/aisimulate/blob/${state.branch.published_from_commit}/${state.branch.published_source_path || "python/aisimulate/docs/e2e-accuracy/summary.json"}">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
+      ? `<a href="https://github.com/ai-dynamo/aisim/blob/${state.branch.published_from_commit}/${state.branch.published_source_path || "python/aisimulate/docs/e2e-accuracy/summary.json"}">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
       : snapshot.campaign
         ? "Qualified e2e-accuracy-web artifact from the campaign above"
         : "Local preview; publication commit not recorded"}</p>
@@ -575,7 +575,7 @@ function validateSummary(data) {
   }
   const aicSource = data.snapshot.aic_source;
   if ((revision != null || aicSource !== undefined) && (!object(aicSource) ||
-    aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
+    !["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"].includes(aicSource.repository) ||
     typeof aicSource.commit_sha !== "string" || !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
     (Object.hasOwn(aicSource, "cli_entry_point") &&

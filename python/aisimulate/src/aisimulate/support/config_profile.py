@@ -1215,7 +1215,7 @@ def _activation_estimate(
     if "num_attention_heads" not in geometry or "head_dim" not in geometry:
         return None, "attention width missing; memory remains pending runtime observation"
     tp = request.search.tensor_parallel
-    # AISimulate's local vLLM backend shares the TRT-LLM activation estimate.
+    # AISim's local vLLM backend shares the TRT-LLM activation estimate.
     # Keep this narrow subset independent of backend/model imports and do not
     # extrapolate the coefficient table to other TP sizes or DSA workspaces.
     coefficients = {1: 22, 2: 13, 4: 10, 8: 10} if architecture not in _DENSE else {1: 11, 2: 6.5, 4: 5, 8: 5}

@@ -3,7 +3,7 @@
 
 name: Main branch nightly CI
 
-# Nightly build of the approved AISimulate release artifacts — the
+# Nightly build of the approved AISim release artifacts — the
 # `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
 # FPE support-matrix refresh at the same source SHA. The GitLab publish
 # trigger waits for the matrix refresh, and a failed refresh fails the run,
@@ -248,10 +248,10 @@ jobs:
             --arg run_url "${RUN_URL}" \
             '{
               channel: $channel,
-              text: ("AISimulate Nightly build started — " + $date),
+              text: ("AISim Nightly build started — " + $date),
               blocks: [
                 { type: "header",
-                  text: { type: "plain_text", text: (":crescent_moon: AISimulate Nightly build started — " + $date) } },
+                  text: { type: "plain_text", text: (":crescent_moon: AISim Nightly build started — " + $date) } },
                 { type: "section",
                   fields: [
                     { type: "mrkdwn", text: ("*Commit:*\n`" + $sha + "`") },
@@ -297,7 +297,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       # Keep the license policy/tooling at the workflow revision. Older
@@ -380,7 +380,7 @@ jobs:
       # for the runner's node24-based actions.
       image: ${{ matrix.container_image }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
     defaults:
       run:
         shell: bash
@@ -1266,7 +1266,7 @@ jobs:
               - type: "section"
                 text:
                   type: mrkdwn
-                  text: ":alert: *AISimulate Nightly CI Failure*"
+                  text: ":alert: *AISim Nightly CI Failure*"
               - type: "section"
                 text:
                   type: mrkdwn

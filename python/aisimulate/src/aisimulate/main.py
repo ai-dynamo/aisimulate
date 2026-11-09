@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The single public AISimulate command-line application."""
+"""The single public AISim command-line application."""
 
 from __future__ import annotations
 

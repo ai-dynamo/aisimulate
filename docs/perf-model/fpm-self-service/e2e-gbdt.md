@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 This chapter implements the end-to-end offline profiling route in
 [FPM self-service onboarding](README.md#choose-a-profiling-route). Collect native
 forward-pass metrics (FPM) on your cluster, train a gradient-boosted decision tree
-(GBDT) model, and use it in AISimulate Replay. These metrics describe the
+(GBDT) model, and use it in AISim Replay. These metrics describe the
 scheduled batch work and its measured duration.
 
 Start with **end-to-end offline profiling**: run a workload, collect its native
@@ -34,7 +34,7 @@ worker traces, and a client that can run your workload. Use your own cluster and
 deployment tools. An existing completed capture can start at step 2 after
 reviewing its identity and provenance through onboarding stages 1–3.
 
-In an AISimulate source checkout, prepare Python 3.11–3.13 and the training extra:
+In an AISim source checkout, prepare Python 3.11–3.13 and the training extra:
 
 ```bash
 uv sync --project python/aisimulate --extra learned
@@ -232,7 +232,7 @@ python3 "$AIS_REPO/scripts/fpm_accuracy/validate_native_capture.py" \
 The last argument to `--expect` is the attention-DP rank. Repeat that option for
 each expected stream. Validate P/D roles separately and keep worker restarts in
 separate inputs. The helper reads full `dynamo.fpm.trace.v1` envelopes; it is a
-source-checkout utility, not an installed AISimulate command.
+source-checkout utility, not an installed AISim command.
 
 **Proceed when** the report is `valid`, every expected worker has busy rows, and
 your client completion checks passed. Inspect counts and warnings. Exit 1 means
@@ -284,7 +284,7 @@ input and split options.
 Use the deployment identity reviewed before collection. Confirm it still
 matches the selected native files and role; resolve mismatches before fitting.
 
-Train one AISimulate-compatible GBDT per role. These CLI commands support
+Train one AISim-compatible GBDT per role. These CLI commands support
 attention DP=1: `--join-ranks none` treats each record independently, while
 `--join-ranks counter` refuses cross-rank joins. For higher attention DP, the
 Python `train` and `evaluate` APIs accept complete iteration groups established
@@ -351,7 +351,7 @@ coverage, and error meets your chosen threshold. A successful exit alone is
 insufficient. Report error, prediction coverage, train/test counts and excluded
 rows together; missing stores need more representative data and another fit.
 
-Use the [FPM Gym](https://ai-dynamo.org/aisimulate/fpm-accuracy/scenario-comparison.html)
+Use the [FPM Gym](https://ai-dynamo.org/aisim/fpm-accuracy/scenario-comparison.html)
 as the accuracy qualification reference: select a GBDT trained through end-to-end
 offline profiling and evaluated with online updates disabled. It evaluates
 frozen predictions on held-out observations; MAPE covers successful predictions

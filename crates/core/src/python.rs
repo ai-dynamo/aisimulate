@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
+//! JSON-only PyO3 boundary for one materialized AISim replay execution.
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -3046,7 +3046,7 @@ fn resolve_encoder_timing(
     ensure!(
         provider == "aic",
         "native timing provider {provider:?} is not installed; only \"aic\" is \
-         available in the AISimulate runtime"
+         available in the AISim runtime"
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid encoder AIC timing configuration")?;
@@ -3149,7 +3149,7 @@ fn resolve_role_timing(
     ensure!(
         provider == "aic",
         "native timing provider {provider:?} is not installed; only \"aic\" is \
-         available in the AISimulate runtime"
+         available in the AISim runtime"
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
@@ -4253,7 +4253,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         determinism,
         serving_path,
         telemetry_sample_interval_ms,
-    ) = match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
+    ) = match serde_json::from_str(payload).context("invalid AISim execution ReplaySpec")? {
         ExecutionPayload::Configured {
             spec,
             traffic,
@@ -4578,7 +4578,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         }
         .map_err(Into::into)
     })()
-    .context("AISimulate replay failed");
+    .context("AISim replay failed");
     let (mut report, artifacts, resolved_weka_timestamp_basis) = match replay_result {
         Ok(result) => result,
         Err(error) => {
@@ -4612,7 +4612,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     // Keep large capture arrays out of the intermediate summary Value tree.
     let telemetry = report.telemetry.take();
     let mut report_json =
-        serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+        serde_json::to_value(&report).context("serializing AISim replay report summary")?;
     if telemetry.is_some() {
         report_json["telemetry"] = serde_json::Value::Null;
     }
@@ -4644,7 +4644,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("agentic execution did not declare its configured target model")?;
         let object = report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
+            .context("AISim replay report did not serialize as an object")?;
         object.insert(
             "agentic_qualification".to_string(),
             serde_json::Value::String("functional_only".to_string()),
@@ -4678,7 +4678,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         // serialization, one `Value` at a time.
         report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?
+            .context("AISim replay report did not serialize as an object")?
             .insert("per_request".to_string(), serde_json::Value::Null);
     }
     let report_json = ReportWithRecords {
@@ -4691,9 +4691,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             "report": report_json,
             "artifacts": artifacts,
         });
-        return serde_json::to_string(&output).context("serializing AISimulate replay output");
+        return serde_json::to_string(&output).context("serializing AISim replay output");
     }
-    serde_json::to_string(&report_json).context("serializing AISimulate replay output")
+    serde_json::to_string(&report_json).context("serializing AISim replay output")
 }
 
 /// The report object with its `per_request` placeholder serialized as the
@@ -4861,7 +4861,7 @@ fn scan_weka_requests(
     scanned.map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
-/// AISimulate native runtime module.
+/// AISim native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(
@@ -4888,16 +4888,16 @@ mod tests {
 
     #[test]
     fn replay_coverage_errors_preserve_the_original_chain() {
-        let original = || anyhow::anyhow!("original failure").context("AISimulate replay failed");
+        let original = || anyhow::anyhow!("original failure").context("AISim replay failed");
         let wrapped = replay_failure(original(), Ok(Some(serde_json::json!({}))));
         assert_eq!(
             format!("{wrapped:#}"),
-            "AISimulate replay failed: original failure"
+            "AISim replay failed: original failure"
         );
         let missing = replay_failure(original(), Err(anyhow::anyhow!("coverage unavailable")));
         assert_eq!(
             format!("{missing:#}"),
-            "FPM coverage diagnostics failed: coverage unavailable: AISimulate replay failed: original failure"
+            "FPM coverage diagnostics failed: coverage unavailable: AISim replay failed: original failure"
         );
     }
 
@@ -4908,7 +4908,7 @@ mod tests {
             "create exact report sample file: No space left on device".to_string(),
         ))
         .context("collecting replay report")
-        .context("AISimulate replay failed");
+        .context("AISim replay failed");
         let expected_message = format!("{error:#}");
 
         Python::with_gil(|py| {
@@ -4921,7 +4921,7 @@ mod tests {
     #[test]
     fn replay_python_error_keeps_other_failures_as_runtime_errors() {
         pyo3::prepare_freethreaded_python();
-        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let error = anyhow::anyhow!("invalid replay input").context("AISim replay failed");
         let expected_message = format!("{error:#}");
 
         Python::with_gil(|py| {

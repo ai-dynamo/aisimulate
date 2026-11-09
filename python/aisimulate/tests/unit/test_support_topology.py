@@ -196,7 +196,7 @@ def test_grouped_topology_needs_current_extension_with_actionable_failure(tmp_pa
         raise AttributeError("old extension")
 
     monkeypatch.setattr(RustForwardPassPerfModel, "estimate_cache_budget", missing)
-    with pytest.raises(ValueError, match="compiled AISimulate extension"):
+    with pytest.raises(ValueError, match="compiled AISim extension"):
         suggest_topologies(
             _config(tmp_path, sliding_window=128),
             _request(),

@@ -309,7 +309,7 @@ def _dashboard_data(
     return {
         "schema": "aisimulate.replay.dashboard.v1",
         "metadata": {
-            "title": "AISimulate replay",
+            "title": "AISim replay",
             "model": engine.get("model", prediction.get("model")),
             "hardware": engine.get("hardware", prediction.get("hardware")),
             "framework": engine.get("backend", prediction.get("backend")),

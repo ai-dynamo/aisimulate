@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Public package surface for the unified AISimulate wheel."""
+"""Public package surface for the unified AISim wheel."""
 
 from __future__ import annotations
 

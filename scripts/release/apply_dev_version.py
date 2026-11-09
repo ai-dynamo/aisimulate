@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Apply a dev-version suffix to every AISimulate version site, in place.
+"""Apply a dev-version suffix to every AISim version site, in place.
 
 Invoked by nightly CI before `scripts/release/build_release_artifacts.py`. Takes one
 argument -- a PEP 440 suffix like '.dev202609170000001234' -- and rewrites:

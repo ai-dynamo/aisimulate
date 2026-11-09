@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # AIC compatibility CLI
 
 This guide documents the legacy `aiconfigurator cli` compatibility commands that still ship
-with AISimulate. For the unified `aisimulate` CLI, see the
-[AISimulate CLI User Guide](../reference/cli.md) and
+with AISim. For the unified `aisimulate` CLI, see the
+[AISim CLI User Guide](../reference/cli.md) and
 [AIC migration guide](migration.md).
 
 ## Basic Command
@@ -1393,7 +1393,7 @@ the partition. Backend and Dynamo version options retain their normal meaning.
 For generation without an SLA search, use `aiconfigurator cli generate
 --model-path MODEL --system SYSTEM --backend vllm --total-gpus N
 --deployment-target slurm --generator-config slurm.yaml --save-dir ./results`.
-This compatibility CLI is included in AISimulate. Put `rule: benchmark` in the
+This compatibility CLI is included in AISim. Put `rule: benchmark` in the
 input YAML when using the benchmark sizing rules.
 
 The target produces `deploy.sbatch` for persistent serving and `benchmark.sbatch`

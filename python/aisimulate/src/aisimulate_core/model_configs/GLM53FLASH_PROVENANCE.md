@@ -7,7 +7,7 @@ https://huggingface.co/zai-org/GLM-5.3-Flash/blob/eb9eb208eb0d988989d07a6a12d0fd
 are unmodified copies of `config.json` and `hf_quant_config.json` at
 https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/09b04e5e74bca08ca8549fc736d4cdd8624bfde3
 The NVIDIA derivative identifies MIT as its license and Z.AI as its upstream author.
-The configs describe the full checkpoint; AISimulate's initial graph covers text AR only.
+The configs describe the full checkpoint; AISim's initial graph covers text AR only.
 
 MIT License
 

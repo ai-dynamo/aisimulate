@@ -38,7 +38,7 @@ illustrate the output format. Captured detail examples are simulation results, n
 | `--stack NAME` | string | `engine` | Built-in or discovered execution stack. This selection is CLI-only and is never written into YAML. |
 | `--set PATH=YAML_VALUE` | repeatable assignment | None | Set a supported configuration path after loading YAML. |
 | `--output-dir PATH` | path | `./aisimulate-output` | Directory for durable results. |
-| `--overwrite` | flag | `false` | Replace known AISimulate output files in an existing output directory. |
+| `--overwrite` | flag | `false` | Replace known AISim output files in an existing output directory. |
 | `--format table\|json` | enum | `table` | Standard-output presentation. It does not change durable output files. |
 
 `predict` also accepts:
@@ -379,8 +379,8 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 
 | Symptom | What to check | Example fix |
 |---|---|---|
-| `aisimulate: command not found` | The environment containing AISimulate must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisimulate`. |
-| Installation reports an unsupported Python version | AISimulate requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
+| `aisimulate: command not found` | The environment containing AISim must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisimulate`. |
+| Installation reports an unsupported Python version | AISim requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
 | Configuration or trace file cannot be found | Check the path and the directory where you ran the command. | Run from the directory containing `prediction.yaml`, or use absolute paths. |
 | Output directory is not empty | Each run needs an empty directory or explicit overwrite. | Add `--output-dir ./another-prediction`, or `--overwrite` to replace known outputs. |
 | Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install a matched pair from the [installation guide](../getting-started/installation.md#optional-dynamo-integration) and use `--stack dynamo`. |
