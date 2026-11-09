@@ -32,7 +32,8 @@ from pathlib import Path
 GENERATOR = "sha256_counter_rejection"
 GENERATOR_VERSION = 1
 SEED = 53
-DOMAIN = b"aisim/glm53flash_attention/input_tokens\x00"
+# Compatibility identifier: changing it changes the frozen synthetic token stream.
+DOMAIN = b"aisimulate/glm53flash_attention/input_tokens\x00"
 # zai-org/GLM-5.3-Flash@eb9eb208 and nvidia/GLM-5.3-Flash-NVFP4@09b04e5e.
 TOKENIZER_JSON_SHA256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
 VOCAB_LOW = 0
