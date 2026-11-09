@@ -606,6 +606,7 @@ fn telemetry_heartbeats_do_not_advance_agg_through_a_capped_idle_gap() {
 }
 
 struct GeneralRoundRobinComposition {
+    session_affinity: bool,
     scaling: Option<Box<dyn ReplayScalingPolicy>>,
     scaling_construction_error: Option<&'static str>,
 }
@@ -615,6 +616,7 @@ impl GeneralRoundRobinComposition {
         Self {
             scaling: None,
             scaling_construction_error: None,
+            session_affinity: false,
         }
     }
 
@@ -622,6 +624,7 @@ impl GeneralRoundRobinComposition {
         Self {
             scaling: Some(Box::new(scaling)),
             scaling_construction_error: None,
+            session_affinity: false,
         }
     }
 
@@ -629,6 +632,7 @@ impl GeneralRoundRobinComposition {
         Self {
             scaling: None,
             scaling_construction_error: Some(message),
+            session_affinity: false,
         }
     }
 }
@@ -644,7 +648,8 @@ impl ReplayComposition for GeneralRoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> anyhow::Result<Self::AggregatedPlacement> {
-        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology))
+        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
+            .with_session_affinity(self.session_affinity))
     }
 
     fn create_disaggregated_placements(
@@ -655,8 +660,10 @@ impl ReplayComposition for GeneralRoundRobinComposition {
         decode_topology: Vec<WorkerTopology>,
     ) -> anyhow::Result<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
         Ok((
-            PoolRoundRobinPlacement::new(prefill_topology),
-            PoolRoundRobinPlacement::new(decode_topology),
+            PoolRoundRobinPlacement::new(prefill_topology)
+                .with_session_affinity(self.session_affinity),
+            PoolRoundRobinPlacement::new(decode_topology)
+                .with_session_affinity(self.session_affinity),
         ))
     }
 
@@ -1710,6 +1717,118 @@ fn round_robin_session_affinity_routes_turns_through_the_public_replayer() {
             .map(|record| record.decode_worker_idx)
             .collect();
         assert_eq!(workers, expected);
+    }
+}
+
+#[rstest::rstest]
+fn session_affinity_survives_pool_retirement_and_growth(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+    #[values(WorkerPool::Agg, WorkerPool::Prefill, WorkerPool::Decode)] pool: WorkerPool,
+    #[values(false, true)] busy: bool,
+) {
+    struct RetireThenGrow {
+        pool: WorkerPool,
+        retirement_at_ms: f64,
+        retired: bool,
+    }
+
+    impl ReplayScalingPolicy for RetireThenGrow {
+        fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+            Ok(self.retirement_at_ms)
+        }
+
+        fn on_tick(
+            &mut self,
+            _snapshot: ReplayScalingSnapshot,
+        ) -> anyhow::Result<ReplayScalingDecision> {
+            let target = if self.retired { 2 } else { 1 };
+            let decision = ReplayScalingDecision {
+                target_prefill: (self.pool == WorkerPool::Prefill).then_some(target),
+                target_decode: (self.pool != WorkerPool::Prefill).then_some(target),
+                next_tick_ms: (!self.retired).then_some(600.0),
+            };
+            self.retired = true;
+            Ok(decision)
+        }
+    }
+
+    let retirement_at_ms = if !busy {
+        300.0
+    } else if pool == WorkerPool::Decode {
+        112.0
+    } else {
+        105.0
+    };
+    let requests = [
+        ("a", 0.0),
+        ("b", 100.0),
+        ("b", 400.0),
+        ("a", 500.0),
+        ("b", 700.0),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (session, arrival))| {
+        let mut req = request(&format!("turn-{i}"), arrival, 12, 3);
+        req.session_id = Some(session.into());
+        req.prefill_dp_rank = (pool != WorkerPool::Agg).then_some(1);
+        req.dp_rank = Some(1);
+        req
+    })
+    .collect();
+    let mut spec = aggregated_spec(backend, 2, 0.0, requests);
+    spec.engine["dp_size"] = 2.into();
+    if pool != WorkerPool::Agg {
+        spec.topology = ReplayTopology::Disaggregated {
+            prefill: WorkerPoolSpec {
+                initial_workers: 2,
+                startup_delay_ms: 0.0,
+            },
+            decode: WorkerPoolSpec {
+                initial_workers: 2,
+                startup_delay_ms: 0.0,
+            },
+            handoff_latency_ms: 1.0,
+        };
+        let rank = spec.engine["rank"].clone();
+        spec.engine["prefill"] = serde_json::json!({"dp_size": 2, "rank": rank});
+        spec.engine["decode"] = serde_json::json!({"dp_size": 3, "rank": rank});
+    }
+    let mut composition = GeneralRoundRobinComposition::with_scaling(RetireThenGrow {
+        pool,
+        retirement_at_ms,
+        retired: false,
+    });
+    composition.session_affinity = true;
+    let report = Replayer::with_composition(spec, ReplayEngineFactory::new(), composition)
+        .unwrap()
+        .run()
+        .unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 5);
+    assert_eq!(report.request_counts.total_output_tokens, 15);
+    assert_eq!(report.per_request.len(), 5);
+    for (i, record) in report.per_request.iter().enumerate() {
+        assert_eq!(
+            record.routing_history.len(),
+            if pool == WorkerPool::Agg { 1 } else { 2 }
+        );
+        for placement in &record.routing_history {
+            let affected_pool = match placement.pool {
+                ReplayRequestPool::Agg => WorkerPool::Agg,
+                ReplayRequestPool::Prefill => WorkerPool::Prefill,
+                ReplayRequestPool::Decode => WorkerPool::Decode,
+            } == pool;
+            // Only B's retired pool must repin; surviving pins remain stable,
+            // including after a fresh worker joins at 600 ms.
+            let expected_worker = if affected_pool {
+                [0, 1, 0, 0, 0][i]
+            } else {
+                [0, 1, 1, 0, 1][i]
+            };
+            assert_eq!(placement.logical_worker_id, Some(expected_worker));
+            assert_eq!(placement.dp_rank, Some(1));
+        }
     }
 }
 
