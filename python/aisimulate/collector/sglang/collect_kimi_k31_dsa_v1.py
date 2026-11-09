@@ -346,13 +346,24 @@ def validate_forward_batch(batch, case: ModuleCase, phase: str) -> dict:
     return receipt
 
 
-def _rank_main(rank, server_args, port_args, case_values, phase, output, first_gpu):
+def local_tp_size(tp: int, nnodes: int, node_rank: int) -> int:
+    """Match native one_batch.main's contiguous, equal per-node TP groups."""
+    if nnodes < 1 or tp % nnodes or not 0 <= node_rank < nnodes:
+        raise ValueError("native TP must divide evenly across valid node ranks")
+    return tp // nnodes
+
+
+def _rank_main(local_rank, server_args, port_args, case_values, phase, output, first_gpu):
     import torch
     from sglang.benchmark.one_batch import _init_process_global_configs, load_model
     from sglang.srt.runtime_context import SpawnRanks, publish, spawn_world_rank
 
     case = ModuleCase(*case_values)
-    gpu = first_gpu + rank
+    # Pinned one_batch.main maps each node's local GPU ordinal separately from
+    # its global TP rank. NVL systems expose four GPUs per physical host.
+    local_size = local_tp_size(validate_case(case), server_args.nnodes, server_args.node_rank)
+    rank = server_args.node_rank * local_size + local_rank
+    gpu = first_gpu + local_rank
     torch.cuda.set_device(gpu)
     publish(
         server_args,
@@ -449,9 +460,15 @@ def main() -> None:
     parser.add_argument("--phase", choices=("context", "generation"), required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--nnodes", type=int, default=1)
+    parser.add_argument("--node-rank", type=int, default=0)
+    parser.add_argument("--dist-init-addr")
     args = parser.parse_args()
     case = ModuleCase(*json.loads(args.case))
     tp = validate_case(case)
+    local_size = local_tp_size(tp, args.nnodes, args.node_rank)
+    if args.nnodes > 1 and not args.dist_init_addr:
+        raise ValueError("multi-node collection requires the same --dist-init-addr on every node")
     _assert_runtime()
     import torch
     from huggingface_hub import hf_hub_download, snapshot_download
@@ -459,8 +476,11 @@ def main() -> None:
     from sglang.srt.server_args import PortArgs, ServerArgs
 
     first_gpu = int(args.device.rsplit(":", 1)[-1])
-    if first_gpu + tp > torch.cuda.device_count():
-        raise RuntimeError(f"FIXME(kernel-limit): does not fit: native TP{tp} requires {tp} available GPUs")
+    if first_gpu < 0 or first_gpu + local_size > torch.cuda.device_count():
+        raise RuntimeError(
+            f"FIXME(kernel-limit): does not fit: native TP{tp} across {args.nnodes} nodes "
+            f"requires {local_size} available GPUs per node"
+        )
     config_path = hf_hub_download(MODEL, "config.json", revision=MODEL_REVISION)
     config = single_layer_config(json.loads(Path(config_path).read_text()))
     tokenizer_path = snapshot_download(
@@ -482,6 +502,9 @@ def main() -> None:
             load_format="dummy",
             dtype="bfloat16",
             tp_size=tp,
+            nnodes=args.nnodes,
+            node_rank=args.node_rank,
+            dist_init_addr=args.dist_init_addr,
             trust_remote_code=True,
             disable_radix_cache=True,
             disable_cuda_graph=True,
@@ -502,7 +525,7 @@ def main() -> None:
         torch.multiprocessing.spawn(
             _rank_main,
             args=(server_args, ports, list(case), args.phase, args.output, first_gpu),
-            nprocs=tp,
+            nprocs=local_size,
             join=True,
         )
 
