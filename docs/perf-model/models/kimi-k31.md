@@ -89,7 +89,7 @@ TP1/2/4, with BF16 projections and FP8 packed FlashMLA KV. Context includes
 128–16384 new tokens and cached-prefix extensions; generation includes
 2048–131072 total history. The selected batch/length combinations, original
 12 preparation failures and their successful follow-up are documented in the
-[dataset README](../../../python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/README.md).
+[dataset README](../../../benchmarks/evidence/collector/kimi-k31-dsa-b300-20261109/README.md).
 All 72 published rows passed strict provenance and exact native Rust `silicon`
 lookup. This checks data integrity; it does not measure end-to-end prediction
 error against SemiAnalysis or qualify a trained full model.
