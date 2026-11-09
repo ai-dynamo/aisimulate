@@ -825,7 +825,7 @@ def _build_dataset(
         raise ValueError(f"unknown features {unknown}; valid names: {list(FEATURE_NAMES)}")
     dataset: dict[str, tuple[list[list[float]], list[float]]] = defaultdict(lambda: ([], []))
     needs_lists = any(name.startswith(("req_", "slot")) for name in features)
-    skipped_role = skipped_lists = 0
+    skipped_role = skipped_lists = skipped_refused = 0
     for index, metrics_by_rank in enumerate(iterations):
         for fpm in metrics_by_rank:
             _validate_metrics(fpm, index)
@@ -845,6 +845,7 @@ def _build_dataset(
             continue
         if any(fpm.get("launch_refused") for fpm in metrics_by_rank):
             # charge_own_launch could not tell this record's launch from its own work
+            skipped_refused += 1
             if refused is not None:
                 refused[kind] = refused.get(kind, 0) + 1
             continue
@@ -866,6 +867,11 @@ def _build_dataset(
         logger.warning(
             "skipped %d iterations without usable per-request lists (features need extend_lengths/past_kv_lengths)",
             skipped_lists,
+        )
+    if skipped_refused:
+        logger.warning(
+            "skipped %d iterations whose launch charge_own_launch could not separate (launch_refused)",
+            skipped_refused,
         )
     return dict(dataset)
 
