@@ -4,6 +4,7 @@
 """Coverage for the current NVIDIA NVFP4 support-matrix checkpoints."""
 
 import contextlib
+import copy
 import dataclasses
 import hashlib
 from pathlib import Path
@@ -608,6 +609,34 @@ def test_qwen35_gdn_ba_pair_listed_at_one_precision_takes_that_lane(shards, expe
     )
     assert modes[3] == expected
     assert modes[0] == common.GEMMQuantMode.fp8_static
+
+
+@pytest.mark.parametrize(
+    ("shards", "expected"),
+    [
+        ({"in_proj_a": "NVFP4", "in_proj_b": "NVFP4"}, common.GEMMQuantMode.nvfp4),
+        ({"in_proj_ba": "NVFP4"}, common.GEMMQuantMode.nvfp4),
+    ],
+    ids=["both_shards_one_precision", "fused_module_listed"],
+)
+def test_qwen35_gdn_ba_pair_listed_precision_reaches_both_gemm_ops(shards, expected, monkeypatch):
+    # The same two layouts, through model construction: the bundled Qwen3.6 export lists in_proj_qkv but not
+    # the a/b pair, so adding the pair at NVFP4 must move both in_proj_ba GEMM ops off the BF16 inference.
+    import aisimulate_core.sdk.models as core_models
+
+    model_name = "nvidia/Qwen3.6-27B-NVFP4"
+    with _offline_bundle(monkeypatch):
+        model_info = copy.deepcopy(core_models._get_model_info(model_name))
+        layers = model_info["raw_config"]["quantization_config"]["quantized_layers"]
+        qkv = next(key for key in layers if key.endswith(".linear_attn.in_proj_qkv"))
+        for shard, algo in shards.items():
+            layers[qkv.replace("in_proj_qkv", shard)] = {"quant_algo": algo}
+        monkeypatch.setattr(core_models, "_get_model_info", lambda _model_path: model_info)
+        model = get_model(model_name, _model_config(), backend_name="trtllm")
+
+    by_name = {op._name: op for op in _flatten_ops(model.context_ops + model.generation_ops)}
+    for name in ("context_gdn_in_proj_ba_gemm", "generation_gdn_in_proj_ba_gemm"):
+        assert by_name[name]._quant_mode == expected, name
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
