@@ -2043,3 +2043,22 @@ counts in performance keys while staging sentinel slots for native graph
 buckets. The evidence harness calls the installed native runner; it does not
 vendor its implementation. This source attribution does not assert separate
 OSRB approval.
+
+## AIPerf request metric compatibility
+
+- Derived files: the request metric populations in
+  `crates/core/src/replay/report.rs` and `crates/core/src/replay/report/bounded.rs`,
+  the selector names in `python/aisimulate/src/aisimulate/aiperf_metrics.py`, and
+  `tests/fixtures/aiperf_0.13.0_request_metrics.json`.
+- Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/v0.13.0),
+  release `v0.13.0` (commit `794f8bb75f8582f22e412d7e650fc71ca2a3d21a`).
+- Original paths: `src/aiperf/metrics/types/ttft_metric.py`,
+  `request_latency_metric.py`, `inter_token_latency_metric.py`,
+  `output_token_throughput_metrics.py`, and `src/aiperf/metrics/accumulator.py`.
+- Copyright: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+- License: Apache-2.0 (the repository's `LICENSE` includes the license text).
+- Modifications: independent implementation of the pinned request metric
+  definitions in native replay reporting, with nearest-rank percentiles.
+  The fixture holds values computed by the pinned AIPerf metric classes with
+  `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
+  No AIPerf runtime dependency or source files are bundled.

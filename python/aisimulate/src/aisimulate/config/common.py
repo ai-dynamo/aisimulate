@@ -13,6 +13,8 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -156,6 +158,7 @@ class ExecutionConfig(StrictModel):
 
 
 class CandidateConstraints(StrictModel):
+    metrics: list[MetricConstraint] = Field(default_factory=list)
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
     min_goodput_rps: PositiveFiniteFloat | None = None
@@ -168,17 +171,20 @@ class CandidateConstraints(StrictModel):
 
 
 class OptimizationConfig(StrictModel):
-    target: Literal[
-        "throughput",
-        "throughput_per_gpu",
-        "throughput_per_user",
-        "goodput",
-        "goodput_per_gpu",
-        "min_gpus",
-        "ttft",
-        "e2e_latency",
-        "pareto",
-    ] = "throughput"
+    target: (
+        Literal[
+            "throughput",
+            "throughput_per_gpu",
+            "throughput_per_user",
+            "goodput",
+            "goodput_per_gpu",
+            "min_gpus",
+            "ttft",
+            "e2e_latency",
+            "pareto",
+        ]
+        | AIPerfMetric
+    ) = "throughput"
     hardware: str | None = None
     strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)

@@ -3452,3 +3452,19 @@ def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeyp
         engine["mode"] = "disaggregated"
     with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
+
+
+def test_native_summary_supplies_every_aiperf_selector():
+    from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
+
+    report = EngineReplayRunnerFactory().create(0).run(_spec(goal={"target": "output_token_throughput_per_user.p50"}))
+    # Fixed timing: 2 ms prefill, one 1 ms decode, one completed request.
+    expected = {
+        "time_to_first_token": 2,
+        "request_latency": 3,
+        "inter_token_latency": 1,
+        "output_token_throughput_per_user": 1000,
+    }
+    for metric in AIPerfMetric:
+        assert metric_value(report.metrics, metric) == expected[metric.value.rsplit(".", 1)[0]], metric
+    assert "native_report" not in report.metadata
