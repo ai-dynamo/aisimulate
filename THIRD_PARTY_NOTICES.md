@@ -2100,7 +2100,7 @@ OSRB approval.
 ## vLLM Kimi K3.1 FPM runtime evidence mapping
 
 The Kimi K3.1 native backend, cache precision and MXFP4 evidence mappings in
-`python/aisimulate/collector/fpm_forward/{model_capability,planner,runtime_memory,runtime_observations}.py`,
+`python/aisimulate/collector/fpm_forward/{model_capability,planner,runner,runtime_probe,runtime_memory,runtime_observations}.py`,
 the configuration observations in `runtime/instrumentation/observer.py`,
 `runtime_k31.py`, the `runtime/instrumentation/{kimi_k31,vllm_kimi_k31}.py`
 adapters, `runtime/vllm-kimi-k31.example.json`, and associated collector tests
@@ -2136,3 +2136,8 @@ https://github.com/ai-dynamo/dynamo/blob/17628144dc33c9d5916b08789f9d317924217da
 (Apache-2.0; Copyright NVIDIA Corporation & Affiliates). No upstream
 implementation is copied into these adapters; native scheduling and timing
 continue to execute the upstream runtime unchanged.
+
+The K3.1 launch and zero-history prefill integration in `runner.py`,
+`runtime_probe.py`, and `docs/perf-model/fpm-self-service/implementation.md`
+also uses this pinned Dynamo scheduler interface. It does not copy or modify
+the native sampling or forward implementation.
