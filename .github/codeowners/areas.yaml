@@ -80,6 +80,7 @@ areas:
       - tests/test_runner.py
       - tests/test_aiperf_metrics.py
       - tests/fixtures/aiperf_0.13.0_request_metrics.json
+      - tests/test_sglang_pd_replay.py
       - tests/test_traffic.py
       - tests/e2e/
   - label: mocker
@@ -319,6 +320,8 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/fixtures/aiperf_0.13.0_request_metrics.json
     owners: [replay, sweeper, maintainers]
+  - glob: tests/test_sglang_pd_replay.py
+    owners: [replay, maintainers]
   - glob: tests/test_traffic.py
     owners: [replay, maintainers]
   - glob: tests/e2e/
