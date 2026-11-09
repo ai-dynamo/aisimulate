@@ -1057,6 +1057,24 @@ impl GroupedPrefixCoordinator {
             })
     }
 
+    /// The tokens of the hit blocks that `hit` keeps in every full-attention
+    /// group. A group that is not prefix-cacheable keeps none, so the count
+    /// is 0 with such a group, even when a state hit gives `hit.tokens`. It
+    /// is also 0 without a full-attention group.
+    pub(crate) fn kept_full_attention_tokens(&self, hit: &GroupedHit) -> usize {
+        self.rules
+            .groups
+            .iter()
+            .zip(&hit.per_group)
+            .filter(|(rule, _)| rule.kind == GroupRuleKind::FullAttention)
+            .map(|(rule, blocks)| match blocks {
+                GroupHitBlocks::Attention(keys) => keys.iter().flatten().count() * rule.block,
+                _ => 0,
+            })
+            .min()
+            .unwrap_or(0)
+    }
+
     /// The blocks a new request needs for the whole prompt, counting inactive
     /// hit blocks again (`single:216-268`, `single:1716-1816`, `mgr:519-536`).
     pub(crate) fn admission_blocks(

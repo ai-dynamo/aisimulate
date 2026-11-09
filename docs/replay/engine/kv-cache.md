@@ -736,26 +736,27 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
   before it hands the block table to its connector. Then the worker releases
   the rest.
 
-  Each worker can run prefix caching under the conditions above. A decode
-  worker with prefix caching picks its local prefix as vLLM's NIXL connector
-  does. For a model with recurrent state layers and a full-attention group,
-  that is the full-attention hit. In three cases it is the hit that every
-  group agrees on: the model has no such layers, the profile has no
-  full-attention group, or another group's own hit is deeper. The hit stops
-  before the last prompt token. With a full-attention group, it also ends on
-  a full-attention block boundary. If that hit covers all transferred tokens
-  but not their state, vLLM computes the prompt again from the hit that every
-  group agrees on. Replay computes one token. The decode worker keeps the
-  cached full-attention blocks of that hit and takes new blocks for the rest.
-  While no request holds the cached hit block of a state group, both tests
-  also count it, as in vLLM. The decode worker does not hold that block: the
-  state and the blocks of the other groups arrive with the transfer. If the
-  hit covers all transferred tokens, the two tests count no state hit block.
-  Otherwise, the decode worker drops a state hit block that ends past the hit
-  and does not count it. vLLM drops it too where it truncates the hit, but it
-  truncates at a multiple of the scheduler block. So vLLM can drop more where
-  that block exceeds the full-attention block or, without a full-attention
-  group, a state block.
+  Each worker can run prefix caching under the conditions above. In this
+  paragraph and in the list after it, a full-attention group means a
+  prefix-cacheable one. A decode worker with prefix caching picks its local
+  prefix as vLLM's NIXL connector does. For a model with recurrent state
+  layers and a full-attention group, that is the full-attention hit. In three
+  cases it is the hit that every group agrees on: the model has no such
+  layers, the profile has no full-attention group, or another group's own hit
+  is deeper. The hit stops before the last prompt token. With a full-attention
+  group, it also ends on a full-attention block boundary. If that hit covers
+  all transferred tokens but not their state, vLLM computes the prompt again
+  from the hit that every group agrees on. Replay computes one token. The
+  decode worker keeps the cached full-attention blocks of that hit and takes
+  new blocks for the rest. While no request holds the cached hit block of a
+  state group, both tests also count it, as in vLLM. The decode worker does
+  not hold that block: the state and the blocks of the other groups arrive
+  with the transfer. If the hit covers all transferred tokens, the two tests
+  count no state hit block. Otherwise, the decode worker drops a state hit
+  block that ends past the hit and does not count it. vLLM drops it too where
+  it truncates the hit, but it truncates at a multiple of the scheduler block.
+  So vLLM can drop more where that block exceeds the full-attention block or,
+  without a full-attention group, a state block.
 
   The known differences above also apply to prefill and decode workers with
   prefix caching. A decode worker also differs from vLLM in these ways:

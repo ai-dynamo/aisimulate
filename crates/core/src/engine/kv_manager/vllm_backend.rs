@@ -1478,8 +1478,14 @@ impl VllmKvManager {
                     return VllmAcquire::CapacityExhausted;
                 }
                 // The decode rank pulls only the full-attention blocks that
-                // it lacks (`nixl/pull_scheduler.py:149-156`).
-                let hit_blocks = rules.unit_block().map_or(0, |block| hit.tokens / block);
+                // it lacks (`nixl/pull_scheduler.py:149-156`). A transfer unit
+                // is one block of every full-attention group, so the transfer
+                // leaves a unit out only where every such group keeps its hit
+                // block. A group that is not prefix-cacheable keeps none,
+                // though a state hit can still give `hit.tokens`.
+                let hit_blocks = rules.unit_block().map_or(0, |block| {
+                    coordinator.kept_full_attention_tokens(&hit) / block
+                });
                 let mut grouped_lease = GroupedLease::default();
                 // What the load still needs for its whole prompt, as vLLM's
                 // `_request_remaining_blocks` counts it (V31

@@ -66,10 +66,12 @@ group's own `block_size_tokens`. The bytes of one block come from the profile's
 `transfer_bytes_per_block`. `bytes_per_full_block` adds them up over the
 full-attention groups. With `destination_missing`, a decode worker that already
 caches a prefix of the prompt does not receive the full-attention blocks of
-that prefix again. The state moves with every transfer that moves at least one
-token. These are the bytes that vLLM reads for the request, not the bytes on
-the wire. On vLLM 0.31.0 the tail ring of GLM-5.3-Flash can read a whole
-attention row, and no version's wire overhead is modeled.
+that prefix again. If a full-attention group is not prefix-cacheable, the
+decode worker receives every full-attention block, as one transfer unit holds
+a block of each full-attention group. The state moves with every transfer that
+moves at least one token. These are the bytes that vLLM reads for the request,
+not the bytes on the wire. On vLLM 0.31.0 the tail ring of GLM-5.3-Flash can
+read a whole attention row, and no version's wire overhead is modeled.
 
 Replay differs from vLLM in these known ways for a grouped profile:
 
