@@ -367,10 +367,10 @@ def test_preview_source_digest_checks_actual_files_and_wheel_commit(monkeypatch,
         observer._runtime(payload, manifest, runtime_k31.VERSION)
 
 
-def _complete_fixture(tmp_path, monkeypatch):
+def _complete_fixture(tmp_path, monkeypatch, *, workload_kind="decode"):
     path, launches = observation_fixture(tmp_path, version=runtime_k31.VERSION)
     launch = launches["tp2"]
-    launch["worker_type"] = "decode"
+    launch["worker_type"] = workload_kind
     launch["precision"].update(
         gemm_quant_mode="bfloat16",
         moe_quant_mode="w4a8_mxfp4_mxfp8_trtllm",
@@ -390,8 +390,8 @@ def _complete_fixture(tmp_path, monkeypatch):
     index = json.loads(path.read_text())
     attempt = index["configurations"]["tp2"]["attempts"][0]
     attempt["bundle"]["sha256"] = bundle.sha256
-    del attempt["phases"]["prefill"]
-    phase = attempt["phases"]["decode"]
+    attempt["phases"] = {workload_kind: attempt["phases"][workload_kind]}
+    phase = attempt["phases"][workload_kind]
     context_path = tmp_path / phase["launch_manifest"]["path"]
     context = json.loads(context_path.read_text())
     context["bundle_sha256"] = bundle.sha256
@@ -419,14 +419,16 @@ def _complete_fixture(tmp_path, monkeypatch):
     return path, launches
 
 
-def test_complete_rank_import_preserves_native_grouping_state_and_precision(tmp_path, monkeypatch):
-    path, launches = _complete_fixture(tmp_path, monkeypatch)
+@pytest.mark.parametrize("workload_kind", ["prefill", "decode"])
+def test_complete_rank_import_preserves_native_grouping_state_and_precision(tmp_path, monkeypatch, workload_kind):
+    path, launches = _complete_fixture(tmp_path, monkeypatch, workload_kind=workload_kind)
     result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "complete", result["diagnostics"]
     assert len(result["resources"]["cache_groups"]) == 2
     assert result["resources"]["cache_groups"][-1]["blocks_per_request"] == 1
     assert result["resources"]["runtime_memory"]["kv_cache_bytes"] == 9 * 512
     assert len(result["provenance"]["rank_capacities"]) == 4
+    assert {capacity["phase"] for capacity in result["provenance"]["rank_capacities"]} == {workload_kind}
     for artifact in result["provenance"]["artifacts"]:
         evidence = artifact["evidence"]
         if evidence["kind"] == "worker":

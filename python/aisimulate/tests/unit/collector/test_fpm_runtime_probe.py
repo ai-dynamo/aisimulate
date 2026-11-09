@@ -1283,22 +1283,108 @@ def test_probe_deployment_environment_reaches_startup_and_engine(tmp_path):
         assert f"export {item['name']}={item['value']}" in startup
 
 
-@pytest.mark.parametrize("worker_type", ["prefill", "aggregated", None])
-def test_k31_private_state_probe_does_not_claim_cached_prefill(tmp_path, worker_type):
+@pytest.mark.parametrize("worker_type", ["aggregated", None])
+def test_k31_private_state_probe_requires_an_independent_role(tmp_path, worker_type):
     from collector.fpm_forward import runtime_probe
     from collector.fpm_forward.runtime_instrumentation import load_instrumentation
 
     launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
     launch["worker_type"] = worker_type
-    with pytest.raises(ValueError, match="decode-only"):
+    with pytest.raises(ValueError, match="independent prefill or decode"):
         runtime_probe.build_runtime_probe_plan("k31", launch, load_instrumentation(manifest))
 
 
-def test_k31_activation_candidate_requires_exact_source_map(tmp_path):
+def test_k31_prefill_probe_preserves_native_sampling_with_prefix_caching_disabled(tmp_path):
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    launch["worker_type"] = "prefill"
+    plan = runtime_probe.build_runtime_probe_plan("k31-prefill", launch, load_instrumentation(manifest))
+    assert [cell.workload_kind for cell in plan.cells] == ["prefill"]
+    overrides = runner._cell_generator_overrides(plan, plan.cells[0], {})
+    args = overrides["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--benchmark-mode") + 1] == "prefill"
+    assert args[args.index("--mamba-cache-mode") + 1] == "none"
+    assert args[args.index("--mamba-ssm-cache-dtype") + 1] == "float32"
+    assert args.count("--no-enable-prefix-caching") == 1
+    assert args.count("--no-async-scheduling") == 1
+    assert "--enable-prefix-caching" not in args
+    assert "--benchmark-points-file" not in args
+    for flag in (
+        "--prefill-max-new-token-samples",
+        "--prefill-max-kv-read-token-samples",
+        "--prefix-max-batch-size-samples",
+    ):
+        assert args[args.index(flag) + 1] == "2"
+    environment = {entry["name"]: entry["value"] for entry in overrides["K8sConfig"]["extra_env"]}
+    assert environment["DYN_BENCH_PREFILL_REAL_SEED"] == "on"
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+@pytest.mark.parametrize("historical_kv", [0, 128])
+def test_k31_explicit_points_require_zero_historical_kv_for_every_prefill(tmp_path, worker_type, historical_kv):
+    from dataclasses import replace
+
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.config import _freeze_benchmark_points
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    launch["worker_type"] = worker_type
+    plan = runtime_probe.build_runtime_probe_plan("k31", launch, load_instrumentation(manifest))
+    points = {
+        "schema_version": 1,
+        "prefill": [
+            {"batch_size": 1, "total_prefill_tokens": 128, "total_kv_read_tokens": 0},
+            {"batch_size": 2, "total_prefill_tokens": 512, "total_kv_read_tokens": historical_kv},
+        ],
+        "decode": [{"batch_size": 1, "total_kv_read_tokens": 128}],
+    }
+    points_path = tmp_path / "points.json"
+    points_path.write_text(json.dumps(points))
+    canonical, digest = _freeze_benchmark_points(str(points_path))
+    plan = replace(
+        plan,
+        options=replace(plan.options, benchmark_points_json=canonical, benchmark_points_sha256=digest),
+    )
+    if historical_kv:
+        with pytest.raises(ValueError, match="total_kv_read_tokens=0 in every explicit point"):
+            runner._cell_generator_overrides(plan, plan.cells[0], {})
+    else:
+        overrides = runner._cell_generator_overrides(plan, plan.cells[0], {})
+        args = overrides["params"]["agg"]["extra_cli_args"]
+        assert args.count("--benchmark-points-file") == 1
+        assert args[args.index("--benchmark-points-file") + 1].endswith("/benchmark-points.json")
+        assert runner._frozen_points(plan) == canonical
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+@pytest.mark.parametrize("flag", ["--enable-prefix-caching", "--enable-prefix-caching=true"])
+def test_k31_native_state_policy_cannot_reenable_prefix_caching(tmp_path, worker_type, flag):
+    from dataclasses import replace
+
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.planner import BackendPolicy
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    launch["worker_type"] = worker_type
+    plan = runtime_probe.build_runtime_probe_plan("k31", launch, load_instrumentation(manifest))
+    cell = replace(
+        plan.cells[0], backend_policy=BackendPolicy("test", {"params": {"agg": {"extra_cli_args": [flag]}}}, {})
+    )
+    with pytest.raises(ValueError, match="cannot change K3.1 observed private state, prefix caching"):
+        runner._cell_generator_overrides(plan, cell, {})
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+def test_k31_activation_candidate_requires_exact_source_map(tmp_path, worker_type):
     from collector.fpm_forward import runtime_probe
     from collector.fpm_forward.runtime_instrumentation import freeze_instrumentation, load_instrumentation
 
     launch, manifest, _ = _k31_native_probe_inputs(tmp_path)
+    launch["worker_type"] = worker_type
     frozen = freeze_instrumentation(load_instrumentation(manifest), tmp_path / "changed-runtime")
     changed = frozen.manifest
     changed["runtime"]["source_files"][next(iter(changed["runtime"]["source_files"]))] = "f" * 64

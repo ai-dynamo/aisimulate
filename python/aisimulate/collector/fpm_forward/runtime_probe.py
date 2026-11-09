@@ -282,8 +282,8 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
 
     k31_native = architecture == "KimiK31ForConditionalGeneration" and is_audited_runtime(bundle.manifest["runtime"])
     if k31_native:
-        if launch.get("worker_type") != "decode":
-            raise ValueError("K3.1 native state probing currently requires a decode-only worker")
+        if launch.get("worker_type") not in {"prefill", "decode"}:
+            raise ValueError("K3.1 native state probing requires an independent prefill or decode worker")
         if precision["moe_quant_mode"] != "w4a8_mxfp4_mxfp8_trtllm":
             raise ValueError("K3.1 native probe requires the initialized TRTLLM MXFP4/MXFP8 candidate")
         if precision["kvcache_quant_mode"] != "fp8" or precision["attention_backend"] not in {
