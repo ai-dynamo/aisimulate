@@ -1194,6 +1194,16 @@ fn lower_trace(
                     hashes: &mut stream_hashes,
                 }),
             )?;
+            let dependencies = dependencies.remove(&request.source_id).unwrap_or_default();
+            // The AgentX client sends only a play's root at its recorded offset;
+            // every other request is timed by its dependency edges, so an
+            // authored floor would hold it to the recorded wall clock after the
+            // replay ran faster or an idle cap compressed a gap.
+            let not_before_ms = if agentx && !dependencies.is_empty() {
+                0.0
+            } else {
+                seconds_to_milliseconds(request.request.t - root_time)
+            };
             rows.push(AgenticMooncakeRow {
                 request_id,
                 play_id: play_id.clone(),
@@ -1208,12 +1218,12 @@ fn lower_trace(
                 output_length: Some(request.request.output_length),
                 output_token_ids: None,
                 hash_ids: Some(hash_ids),
-                not_before_ms: seconds_to_milliseconds(request.request.t - root_time),
+                not_before_ms,
                 recorded_api_time_ms: request.request.api_time.map(seconds_to_milliseconds),
                 priority: None,
                 strict_priority: None,
                 policy_class: None,
-                dependencies: dependencies.remove(&request.source_id).unwrap_or_default(),
+                dependencies,
             });
         }
     }
@@ -3613,6 +3623,56 @@ mod tests {
             error
                 .to_string()
                 .contains("must use a .json or .jsonl extension")
+        );
+    }
+
+    #[test]
+    fn agentx_client_times_only_play_roots_from_the_recorded_clock() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.5},
+                {"t":0.9,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":300,"status":"completed","requests":[
+                    {"t":0.9,"type":"s","model":"model","in":8,"out":1,"hash_ids":[3,4],"api_time":0.2}
+                ],"models":["model"]},
+                {"t":1.2,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,6]}
+            ]),
+        );
+
+        // Recorded keeps every request's authored offset.
+        let (_, recorded) = load_weka_agentic_rows(&path).unwrap();
+        assert_eq!(row(&recorded, "outer:1:inner:0").not_before_ms, 900.0);
+        assert_eq!(row(&recorded, "outer:2").not_before_ms, 1_200.0);
+
+        // AgentX keeps it only on the root; the rest follow their edges.
+        let rows = agentx_rows(&path);
+        assert_eq!(row(&rows, "outer:0").not_before_ms, 0.0);
+        assert!(row(&rows, "outer:0").dependencies.is_empty());
+        assert_eq!(row(&rows, "outer:1:inner:0").not_before_ms, 0.0);
+        assert_eq!(row(&rows, "outer:2").not_before_ms, 0.0);
+
+        let options = WekaImportOptions {
+            client: WekaClient::Agentx,
+            ..Default::default()
+        };
+        let (graph, _, _) = load_weka_agentic_graph_cached(&path, Some(4), options, false).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace(graph, 4).unwrap();
+        let root = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(root.len(), 1);
+        // The replayed root returns at 100 ms, well before the recorded 900 ms
+        // subagent marker; the group starts as the turn returns.
+        driver.on_complete(root[0].request_uuid, 100.0).unwrap();
+        let child = driver.pop_ready(100.0, usize::MAX);
+        assert_eq!(child.len(), 1);
+        assert!(
+            child[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:1:inner:0")
         );
     }
 

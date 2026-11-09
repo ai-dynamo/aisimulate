@@ -280,6 +280,10 @@ follows the AgentX client, the AIPerf fork in the
   offset from the turn's start.
 - The joining turn waits for every child with no added gap, and for its own
   recorded delay after the previous main turn.
+- Only a play's root is held to its recorded offset. Every other request is
+  timed by its dependency edges alone, so a replay that runs faster than the
+  recording, or whose idle gaps are capped, does not wait for recorded
+  timestamps.
 - A subagent that no main turn precedes is dropped. A flattened chain that no
   main turn precedes is spawned by the first one.
 - Each stream is its own chat conversation: its first request is one user
