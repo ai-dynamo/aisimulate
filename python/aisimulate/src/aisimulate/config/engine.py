@@ -287,6 +287,7 @@ class KvCachePredictionConfig(StrictModel):
     prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
     decode_radix_cache: bool = False
+    swa_prefix_tails: PositiveInt | Literal["auto"] | None = "auto"
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None

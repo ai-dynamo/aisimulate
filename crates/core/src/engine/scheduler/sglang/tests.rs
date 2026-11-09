@@ -1244,6 +1244,60 @@ fn destination_rejects_prompt_at_or_above_max_model_len(#[values(8, 9)] prompt_l
 }
 
 #[test]
+fn dsv4_swa_reuse_ends_at_a_cached_window_and_learns_the_fork() {
+    // DeepSeek-V4 on SGLang keeps a cached sequence's SWA window only at its tail. A request
+    // forking inside that sequence recomputes from scratch; the recompute leaves a window at
+    // the fork point, so the next request forking there reuses it.
+    let reused = |swa_prefix_tails| {
+        let mut args = test_args(64, 4, 64);
+        args.sglang.as_mut().unwrap().swa_prefix_tails = swa_prefix_tails;
+        let mut core = SglangCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now = 0.0;
+        let mut fork = |tail: std::ops::Range<u32>, prefix: u32| {
+            let mut tokens = (0..prefix).collect::<Vec<_>>();
+            tokens.extend(tail);
+            core.receive(direct_request(tokens, 0));
+            let pass = core.execute_pass(&mut collector, now);
+            now = pass.end_ms;
+            assert!(core.is_empty());
+            pass.admissions[0].reused_input_tokens
+        };
+        [
+            fork(0..0, 16),
+            fork(100..104, 16),
+            fork(200..208, 8),
+            fork(300..308, 8),
+        ]
+    };
+    assert_eq!(reused(Some(8)), [0, 16, 0, 8]);
+    assert_eq!(
+        reused(None),
+        [0, 16, 8, 8],
+        "full attention reuses any cached page"
+    );
+}
+
+#[test]
+fn dsv4_swa_continuation_after_generated_output_reuses_the_prompt() {
+    // Replay's generated tokens are not the next prompt's, so the next turn diverges where
+    // the previous output began; the window replay keeps at the prompt end lets it reuse
+    // the prompt, as SGLang reuses it through the real output.
+    let mut args = test_args(64, 4, 64);
+    args.sglang.as_mut().unwrap().swa_prefix_tails = Some(8);
+    let mut core = SglangCore::new(args);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.receive(direct_request((0..16).collect(), 6));
+    let mut now = 0.0;
+    while !core.is_empty() {
+        now = core.execute_pass(&mut collector, now).end_ms;
+    }
+    core.receive(direct_request((0..16).chain(500..508).collect(), 0));
+    let pass = core.execute_pass(&mut collector, now);
+    assert_eq!(pass.admissions[0].reused_input_tokens, 16);
+}
+
+#[test]
 fn belady_retires_whole_prompt_once_on_first_chunk_and_includes_full_hits() {
     let tokens = (0..8).collect::<Vec<_>>();
     let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));

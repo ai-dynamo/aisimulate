@@ -488,7 +488,8 @@ pub(super) fn cleanup_completed_request(
     if !request.kv_lease.is_active() {
         return;
     }
-    let lease = std::mem::take(&mut request.kv_lease);
+    let mut lease = std::mem::take(&mut request.kv_lease);
+    lease.set_prompt_tokens(request.prompt_len());
     kv_manager.finish(request.sequence_prefix(tokens_to_cache), lease);
 }
 

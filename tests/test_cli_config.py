@@ -1832,6 +1832,34 @@ def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -
     assert enabled["sglang"] == {"disaggregation_decode_enable_radix_cache": True}
 
 
+def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture() -> None:
+    from aisimulate.compiler import _deployment, _swa_prefix_tails
+
+    def engine(model="deepseek-ai/DeepSeek-V4-Flash", backend="sglang", **kv_cache):
+        prefill = {"kv_cache": kv_cache, "scheduler": {"max_sequences": 8}}
+        return CorePredictionConfig.model_validate(
+            {"engine": _disaggregated_engine(backend, {}, prefill, model=model)}
+        ).engine
+
+    def tails(role="prefill", **kwargs):
+        config = engine(**kwargs)
+        return _swa_prefix_tails(config, getattr(config.workers, role), role)
+
+    assert tails() == 32
+    assert tails(role="decode") is None
+    assert tails(model="example/model") is None
+    assert tails(model="example/model", swa_prefix_tails=100) == 100
+    assert tails(swa_prefix_tails=None) is None
+    assert tails(prefix_caching=False) is None
+    assert tails(backend="vllm") is None
+    with pytest.raises(ValueError, match="only for backend=sglang"):
+        tails(backend="vllm", swa_prefix_tails=100)
+
+    spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={}, afd_performance_model=None)
+    assert spec.prefill_engine_args["sglang"]["swa_prefix_tails"] == 100
+    assert "sglang" not in spec.decode_engine_args
+
+
 @pytest.mark.parametrize(
     ("backend", "decode", "prefill", "engine", "needle"),
     [

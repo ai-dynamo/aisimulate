@@ -267,6 +267,7 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
             "disaggregation_decode_enable_radix_cache": ((True, "bool"), "false"),
             "num_reserved_decode_tokens": ((True, "usize"), "SglangConfig::default().num_reserved_decode_tokens"),
             "disaggregation_decode_extra_slots": ((True, "Option<usize>"), "None"),
+            "swa_prefix_tails": ((True, "Option<usize>"), "None"),
         },
     }.get(site.struct)
     if defaults is not None:

@@ -178,6 +178,7 @@ pub(crate) struct SglangArgs {
     pub disaggregation_decode_enable_radix_cache: bool,
     pub num_reserved_decode_tokens: Option<usize>,
     pub disaggregation_decode_extra_slots: Option<usize>,
+    pub swa_prefix_tails: Option<usize>,
     pub frontend: Option<FrontendConfig>,
 }
 

@@ -267,6 +267,12 @@ pub struct SglangConfig {
     /// Extra request rows for in-transfer PD decode requests. Unset uses
     /// twice the requested batch size for explicit limits at or below 32.
     pub disaggregation_decode_extra_slots: Option<usize>,
+    /// DeepSeek-V4 sliding-window prefix reuse: how many cached sequence tails keep their SWA
+    /// window (SGLang `swa_prefix_tails`). A prefix hit then ends where a whole window is still
+    /// cached: a finished sequence's tail, or a fork point an earlier request recomputed. Unset
+    /// reuses cached KV up to any page, as for full attention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swa_prefix_tails: Option<usize>,
 }
 
 const fn default_reserved_decode_tokens() -> usize {
@@ -291,6 +297,7 @@ impl Default for SglangConfig {
             disaggregation_decode_enable_radix_cache: false,
             num_reserved_decode_tokens: default_reserved_decode_tokens(),
             disaggregation_decode_extra_slots: None,
+            swa_prefix_tails: None,
         }
     }
 }
@@ -1260,6 +1267,14 @@ impl EngineConfig {
         ensure!(
             !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
             "sglang.host_loop is not modeled on a decode rank; the decode rank runs the text P/D decode loop"
+        );
+        ensure!(
+            self.sglang.swa_prefix_tails.is_none() || self.backend == Backend::Sglang,
+            "sglang.swa_prefix_tails is supported only for backend=sglang"
+        );
+        ensure!(
+            self.sglang.swa_prefix_tails != Some(0),
+            "sglang.swa_prefix_tails must be positive"
         );
         if self.sglang.disaggregation_decode_enable_radix_cache {
             ensure!(
