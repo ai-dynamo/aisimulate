@@ -269,8 +269,13 @@ def test_mean_own_work_ms_measures_records_before_a_decode_pass() -> None:
     # one prefill record is too few for a mean, and a record that needs it is refused
     assert table["prefill"]["n"] == [[0, 1]] and table["prefill"]["ms"] == [[None, None]]
     assert fpm_learned.charge_own_launch(records, table, 4096)[20][0]["wall_time"] == pytest.approx(0.020)
+    thin = [[_prefill_pass(8192, 0.250, 0)], [_prefill_pass(1024, 0.040, 1)], [_decode_fpm(4, 2000, 0.020, counter=2)]]
     with pytest.raises(ValueError, match="sum_prefill_tokens>=2048 has 1 records .* too few for a mean"):
-        fpm_learned.charge_own_launch([[_prefill_pass(8192, 0.250, 0)], [_prefill_pass(1024, 0.040, 1)]], table, 4096)
+        fpm_learned.charge_own_launch(thin, table, 4096)
+    # evaluation records keep their time, and the pair whose launch is unknown is refused
+    refused = [ranks[0] for ranks in fpm_learned.charge_own_launch(thin, table, 4096, refuse_thin_buckets=True)]
+    assert [fpm["wall_time"] for fpm in refused] == [0.250, 0.040, 0.020]
+    assert [fpm.get("launch_refused", False) for fpm in refused] == [True, True, False]
 
 
 def test_charge_own_launch_leaves_records_without_a_launch_to_move() -> None:
@@ -843,9 +848,10 @@ def test_evaluate_counts_refused_and_unpredicted_iterations() -> None:
             raise ValueError("per-request features")
         return 7.0
 
-    report = fpm_learned.evaluate(artifact, [[with_lists], [without]], predict=predict)
+    launch_refused = {**with_lists, "launch_refused": True}
+    report = fpm_learned.evaluate(artifact, [[with_lists], [without], [launch_refused]], predict=predict)
     assert report["pure_decode"]["n"] == 1 and report["pure_decode"]["mape_pct"] == 0.0
-    assert report["_refused"]["n"] == 1
+    assert report["_refused"]["n"] == 2
     assert "_refused" in fpm_learned._format_report(report)
 
 

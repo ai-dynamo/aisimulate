@@ -103,24 +103,29 @@ illustration.
 
 `w` is the mean `wall_time` of the carrier's records in the bucket whose next
 step is decode, since a decode launch hides under the step before it.
-`mean_own_work_ms` measures it on all `--fpm` records, and `train` prints each
-bucket's count, mean and standard deviation σ. A bucket with fewer than
+`mean_own_work_ms` measures it on all `--fpm` records, before the random
+`--holdout-frac` split, so those holdout records help set `w`. `train` prints
+each bucket's count, mean and standard deviation σ. A bucket with fewer than
 `--min-store-rows` records gets no mean, and a record before a piecewise or
 eager step that falls in such a bucket stops `train`, so widen the buckets
-until every such record has one. The artifact keeps the table under `metadata.launch_stall`; `train`
-charges `--holdout-fpm` records and `evaluate` charges its records with it, so
-records used only for evaluation never set `w`.
+until every such record has one. The artifact keeps the table under
+`metadata.launch_stall`; `train` charges `--holdout-fpm` records and `evaluate`
+charges its records with it, so those records never set `w`. There, a record
+before a piecewise or eager step in a bucket without a mean does not stop the
+run: it and the record after it are reported as `_refused`.
 
 A record that gives time only bounds its own work from above, so
 `charge_own_launch` sets it to `w` and flags it `launch_censored`. Training and
 evaluation keep these rows; the artifact's `launch_censored` metadata counts
-them per store, and `evaluate` reports them as `_launch_censored`. Two errors
+them per store, and `evaluate` reports them as `_launch_censored`. Three errors
 remain. Because `w` is a mean, a record whose launch hides under its own work
 still gives whatever its own work runs above `w`, about 0.4σ on average for
 normal noise (σ/√(2π)), and the next record takes it. The prefill axes count
 new tokens, not cached context, so a long prompt that reuses a cached prefix
 attends over more context than `w` reflects and gives part of its own work to
-the next record.
+the next record. An eager prefill step launched during a short step runs part
+of its own work during that launch, so its record is short when a decode step
+follows, and the prefill `w` runs low.
 
 Records follow each other when they share `worker_id` and their `counter_id`
 values differ by one, and only records loaded together pair up: all `--fpm`

@@ -721,6 +721,8 @@ def charge_own_launch(
     iterations: Sequence[Sequence[dict[str, Any]]],
     own_work_ms: dict[str, dict[str, Any]],
     max_cudagraph_capture_size: int,
+    *,
+    refuse_thin_buckets: bool = False,
 ) -> list[list[dict[str, Any]]]:
     """Move the next pass's launch out of each vLLM record, for one-GPU workers.
 
@@ -741,17 +743,23 @@ def charge_own_launch(
     ``wall_time`` is unchanged, and a record that gives and takes nothing is
     returned as it was.
 
+    A record before a piecewise or eager pass whose bucket has no mean stops
+    the charge, unless ``refuse_thin_buckets``: then it moves nothing, and it
+    and the next record are flagged ``launch_refused``, which :func:`evaluate`
+    counts as ``_refused``. Use it for evaluation records.
+
     Raises ``ValueError`` unless every iteration has one rank, every record
     has ``counter_id`` and a non-empty ``worker_id`` that no other record
     shares with the same ``counter_id``, ``own_work_ms`` has the shape
-    :func:`mean_own_work_ms` returns, and every record that gives time falls in
-    a bucket with a mean.
+    :func:`mean_own_work_ms` returns, and, without ``refuse_thin_buckets``,
+    every record that gives time falls in a bucket with a mean.
     """
     _check_own_work_buckets(own_work_ms, max_cudagraph_capture_size, _OWN_WORK_CELLS)
     fpms, keys, position = _launch_chain(iterations, "charge_own_launch")
     wall_ms = [1000.0 * float(fpm["wall_time"]) for fpm in fpms]
     moved = []
-    for fpm, (worker, counter), raw_ms in zip(fpms, keys, wall_ms, strict=True):
+    refused: set[int] = set()
+    for i, (fpm, (worker, counter), raw_ms) in enumerate(zip(fpms, keys, wall_ms, strict=True)):
         nxt = position.get((worker, counter + 1))
         if nxt is None or _launch_kind(fpms[nxt], max_cudagraph_capture_size) == "decode":
             moved.append(0.0)
@@ -761,6 +769,10 @@ def charge_own_launch(
         row, col = _own_work_bucket(table, carrier, fpm)
         own_ms = table["ms"][row][col]
         if own_ms is None:
+            if refuse_thin_buckets:
+                refused.update((i, nxt))
+                moved.append(0.0)
+                continue
             first, second = _OWN_WORK_AXES[carrier]
             raise ValueError(
                 f"the {carrier} own-work bucket {first}>={table[first][row]}, {second}>={table[second][col]} has "
@@ -768,15 +780,17 @@ def charge_own_launch(
             )
         moved.append(max(raw_ms - own_ms, 0.0))
     out = []
-    for fpm, (worker, counter), raw_ms, given in zip(fpms, keys, wall_ms, moved, strict=True):
+    for i, (fpm, (worker, counter), raw_ms, given) in enumerate(zip(fpms, keys, wall_ms, moved, strict=True)):
         prev = position.get((worker, counter - 1))
         taken = moved[prev] if prev is not None else 0.0
-        if not given and not taken:
+        if not given and not taken and i not in refused:
             out.append([fpm])
             continue
-        record = {**fpm, "wall_time": (raw_ms - given + taken) / 1000.0}
+        record = {**fpm, "wall_time": (raw_ms - given + taken) / 1000.0} if given or taken else dict(fpm)
         if given:
             record["launch_censored"] = True
+        if i in refused:
+            record["launch_refused"] = True
         out.append([record])
     return out
 
@@ -1387,6 +1401,10 @@ def evaluate(
         truth = iteration_wall_ms(metrics_by_rank)
         if truth is None:
             continue
+        if any(fpm.get("launch_refused") for fpm in metrics_by_rank):
+            # charge_own_launch could not tell this record's launch from its own work
+            apes["_refused"].append(0.0)
+            continue
         if any(fpm.get("launch_censored") for fpm in metrics_by_rank):
             apes["_launch_censored"].append(0.0)
         try:
@@ -1473,10 +1491,14 @@ def _read_launch_stall(path: str | None) -> dict[str, Any] | None:
 def _load_iterations(
     paths: Sequence[str], join_ranks: str, launch_stall: dict[str, Any] | None
 ) -> list[list[dict[str, Any]]]:
+    """Load evaluation records, charged with a trained own-work table when given."""
     iterations = group_iterations(iter_fpm_records(paths), join_ranks)
     if launch_stall is not None:
         iterations = charge_own_launch(
-            iterations, launch_stall["own_work_ms"], launch_stall["max_cudagraph_capture_size"]
+            iterations,
+            launch_stall["own_work_ms"],
+            launch_stall["max_cudagraph_capture_size"],
+            refuse_thin_buckets=True,
         )
     return iterations
 
@@ -1498,7 +1520,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         raise ValueError("--online-checkpoint-dir requires --identity with the canonical FPM configuration JSON")
     identity = json.loads(Path(args.identity).read_text(encoding="utf-8")) if args.identity else None
     spec = _read_launch_stall(args.launch_stall)
-    iterations = _load_iterations(args.fpm, args.join_ranks, None)
+    iterations = group_iterations(iter_fpm_records(args.fpm), args.join_ranks)
     if not iterations:
         print("no FPM iterations with positive wall_time found", file=sys.stderr)
         return 2
