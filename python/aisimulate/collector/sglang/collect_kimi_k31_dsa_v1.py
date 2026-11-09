@@ -471,6 +471,7 @@ def main() -> None:
         raise ValueError("multi-node collection requires the same --dist-init-addr on every node")
     _assert_runtime()
     import torch
+    from huggingface_hub import constants as hf_constants
     from huggingface_hub import hf_hub_download, snapshot_download
     from sglang.srt.entrypoints.engine import _set_envs_and_config
     from sglang.srt.server_args import PortArgs, ServerArgs
@@ -486,6 +487,9 @@ def main() -> None:
     tokenizer_path = snapshot_download(
         MODEL,
         revision=MODEL_REVISION,
+        # Explicit cache-only lookup avoids repository-tree enumeration in
+        # offline campaigns with a preverified immutable checkpoint snapshot.
+        local_files_only=hf_constants.HF_HUB_OFFLINE,
         # Native one_batch loads this checkpoint's TikTokenTokenizer even
         # for synthetic token IDs. Its only local Python dependency is
         # encoding_k3.py; both were inspected at this immutable revision.
