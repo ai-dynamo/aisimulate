@@ -44,6 +44,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 |---|---|---|---|
 | `block_size` | vLLM `64`, SGLang `1`, TensorRT-LLM `32` | Searchable; fixed by default | Tokens per block. vLLM and TensorRT-LLM require at least 2. |
 | `prefix_caching` | `true` | fixed | Keep completed prompt blocks for reuse by later requests. |
+| `swa_prefix_tails` | `auto` | fixed | SGLang only. Sequence tails per attention-DP rank that keep their DeepSeek-V4 sliding-window KV; `null` turns it off. `auto` uses four per running request for a DeepSeek-V4 checkpoint and is off for other models. See [DeepSeek-V4 SWA prefix reuse](#deepseek-v4-swa-prefix-reuse). |
 | `decode_radix_cache` | `false` | fixed | SGLang `decode` only. Enables the decode worker's radix cache (`--disaggregation-decode-enable-radix-cache`); requires `prefix_caching: true` and no speculative decoding. See [SGLang decode radix cache](#sglang-decode-radix-cache). |
 | `bytes_per_token` | `auto` | fixed | KV bytes per token on one TP shard. `auto` derives it from the model, KV precision and this role's parallelism. |
 | `capacity.type` | `default` | fixed | `default` sizes G1 from GPU memory; `fixed` uses `blocks` or `bytes`. |
@@ -169,6 +170,37 @@ a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
 This is a simulator contract pinned to SGLang v0.5.22. AISimulate does not check
 the installed serving runtime's support for `cache_salt` or the decode radix
 flag; verify both capabilities when deploying an older SGLang version.
+
+<a id="deepseek-v4-swa-prefix-reuse"></a>
+
+## DeepSeek-V4 SWA prefix reuse
+
+DeepSeek-V4 layers keep a sliding window of KV next to their compressed KV.
+SGLang frees a running request's window slots as the request moves past them,
+so a cached sequence holds SWA KV only at its tail. A prefix hit must end where
+a whole window is cached (`create_match_validator` in SGLang v0.5.21
+`mem_cache/unified_cache/components/swa.py`). A request that forks inside
+another cached sequence, such as a subagent's first turn, therefore recomputes
+from the last cached window even though full KV covers more. Its recompute
+leaves a window at the fork point, so the next request forking there reuses it
+(`finalize_match_result_in_tree_core`).
+
+`kv_cache.swa_prefix_tails` turns this on for SGLang `aggregated` and `prefill`
+workers. Each finished sequence's tail and each recomputed fork point holds a
+window. Replay's generated output tokens differ from the next prompt in a trace,
+so a continuation diverges where the previous output began instead of matching
+through it to the tail. Replay therefore keeps a finished request's window at
+the end of its prompt. At most `swa_prefix_tails` windows stay cached per attention-DP rank,
+least recently used first; evicting a sequence's tail also drops its window.
+With HiCache, a window stays valid while its node is host-resident.
+
+`auto` sizes the windows as SGLang's `cap` mode does: four per running request
+(`max_sequences`). It applies to a checkpoint whose bundled or local config has
+architecture `DeepseekV4ForCausalLM` or `DeepseekV41ForCausalLM`. Set a number
+to match a server that sized its SWA pool another way, or `null` to match full
+KV at any page. These are modeling assumptions: a window is tracked per radix
+node rather than per SWA page, and its pool shares no capacity with full KV.
+A decode worker's radix cache matches full KV as before.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

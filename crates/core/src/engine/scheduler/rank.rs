@@ -569,6 +569,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
                 .disaggregation_decode_enable_radix_cache,
             num_reserved_decode_tokens: Some(config.sglang.num_reserved_decode_tokens),
             disaggregation_decode_extra_slots: config.sglang.disaggregation_decode_extra_slots,
+            swa_prefix_tails: config.sglang.swa_prefix_tails,
             frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,

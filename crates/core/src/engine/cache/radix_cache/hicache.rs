@@ -470,6 +470,7 @@ impl RadixCache {
         self.forget_host_duplicate(id);
         self.hicache.as_mut().unwrap().nodes.remove(&id);
         let node = self.nodes.remove(id).unwrap();
+        self.forget_swa_boundary(id);
         let parent = node.parent.unwrap();
         self.nodes[parent].children.remove(&node.key[0]);
         self.insert_host_candidate(parent);
@@ -527,6 +528,7 @@ impl RadixCache {
             None => {
                 self.forget_host_duplicate(victim);
                 let node = self.nodes.remove(victim).unwrap();
+                self.forget_swa_boundary(victim);
                 assert!(
                     node.children.is_empty(),
                     "unbacked device leaf has host descendants"

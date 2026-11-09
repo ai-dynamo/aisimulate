@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from typing import Any
 
+from aisimulate_core.sdk.common import DefaultHFModels
 from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
 from .capacity import (
     estimate_kv_bytes_per_token,
@@ -774,6 +777,11 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    swa_prefix_tails = _swa_prefix_tails(engine, worker, role)
+    if swa_prefix_tails is not None:
+        sglang = payload.setdefault("sglang", {})
+        assert isinstance(sglang, dict)
+        sglang["swa_prefix_tails"] = swa_prefix_tails
     if backend == "sglang" and role == "decode" and cache.decode_radix_cache:
         payload["sglang"] = {"disaggregation_decode_enable_radix_cache": True}
     if worker.scheduler.async_scheduling is not None:
@@ -989,6 +997,32 @@ def _worker_engine_args(
         assert isinstance(sglang, dict)
         sglang.setdefault("chunked_prefill_size", worker.scheduler.max_batched_tokens)
     return payload
+
+
+_SWA_PREFIX_ARCHITECTURES = frozenset({"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"})
+
+
+def _swa_prefix_tails(engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str) -> int | None:
+    """SGLang keeps a DeepSeek-V4 sequence's sliding-window KV only at its tail, so a prefix hit ends
+    where a whole window is still cached. `auto` turns this on for a DeepSeek-V4 checkpoint whose
+    config is available offline, with SGLang's default of four tails per running request."""
+    configured = worker.kv_cache.swa_prefix_tails
+    if configured is None:
+        return None
+    if engine.backend != "sglang":
+        if configured == "auto":
+            return None
+        raise ValueError(f"workers.{role}.kv_cache.swa_prefix_tails is supported only for backend=sglang")
+    if role == "decode" or not worker.kv_cache.prefix_caching:
+        return None
+    if configured != "auto":
+        return configured
+    # Bundled or local configs only: resolving any other model path would download it.
+    if engine.model not in DefaultHFModels and not os.path.isdir(engine.model):
+        return None
+    if get_model_config_from_model_path(engine.model)["architecture"] not in _SWA_PREFIX_ARCHITECTURES:
+        return None
+    return 4 * worker.scheduler.max_sequences
 
 
 def _resolve_kv_bytes_per_token(

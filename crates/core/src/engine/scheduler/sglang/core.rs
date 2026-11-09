@@ -283,6 +283,14 @@ impl SglangCore {
                     .expect("HiCache has KV byte geometry");
             kv_manager.enable_hicache(hicache, block_bytes);
         }
+        if enable_prefix_caching
+            && let Some(tails) = args
+                .sglang
+                .as_ref()
+                .and_then(|sglang| sglang.swa_prefix_tails)
+        {
+            kv_manager.enable_swa_prefix(tails);
+        }
 
         Self {
             config,
