@@ -259,7 +259,7 @@ def _run_process(
     env.update(dict.fromkeys(_THREAD_VARIABLES, "1"))
     env["TOKENIZERS_PARALLELISM"] = "false"
     # Workers start from a private module; keep their parser errors under the invoked name.
-    env.setdefault(PROGRAM_ENVIRONMENT, program_name())
+    env[PROGRAM_ENVIRONMENT] = program_name()
     events_path = directory / "events.jsonl"
     ready_path = directory / "ready"
     env[_CONTEXT] = json.dumps(

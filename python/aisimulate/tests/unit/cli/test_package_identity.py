@@ -50,6 +50,23 @@ AISIMULATE = _Distribution("aisimulate", "0.13.0", LEGACY_RECORD)
 
 
 @pytest.mark.parametrize(
+    ("record", "owns"),
+    [
+        ("./aisimulate/__init__.py,sha256=x,1\n", True),
+        ("aisimulate\\__init__.py,sha256=x,1\n", True),
+        ('"aisimulate_core/a,b.py",sha256=x,1\n', True),
+        ("aisimulate-0.13.0.dist-info/RECORD,,\n", False),
+        ("aisimulate_extra/__init__.py,sha256=x,1\n", False),
+        ("aisimulate,sha256=x,1\n", False),
+    ],
+    ids=["dot-prefix", "backslash", "quoted-comma", "dist-info", "similar-name", "bare-name"],
+)
+def test_shared_package_ownership_normalizes_record_paths(record, owns) -> None:
+    legacy = _Distribution("aisimulate", "0.13.0", record)
+    assert package_identity._owns_shared_packages(legacy) is owns
+
+
+@pytest.mark.parametrize(
     "installed",
     [(), (AISIM,), (AISIMULATE,)],
     ids=["none", "aisim-only", "aisimulate-only"],
@@ -166,8 +183,12 @@ def test_worker_processes_inherit_the_invoked_command(monkeypatch) -> None:
     assert package_identity.program_name(worker) == "aisimulate"
 
 
-def test_supervisor_passes_the_command_name_to_its_worker(monkeypatch, tmp_path) -> None:
-    monkeypatch.delenv(package_identity.PROGRAM_ENVIRONMENT, raising=False)
+@pytest.mark.parametrize("inherited", [None, "aisimulate"], ids=["unset", "stale"])
+def test_supervisor_passes_the_command_name_to_its_worker(monkeypatch, tmp_path, inherited) -> None:
+    if inherited is None:
+        monkeypatch.delenv(package_identity.PROGRAM_ENVIRONMENT, raising=False)
+    else:
+        monkeypatch.setenv(package_identity.PROGRAM_ENVIRONMENT, inherited)
     monkeypatch.setattr(sys, "argv", ["/venv/bin/aisim"])
     monkeypatch.setattr(supervision, "discover_host", lambda: SimpleNamespace(process_memory_bytes=0))
     monkeypatch.setattr(supervision, "resolve_budget", lambda _policy, _host: {"memory_limit_bytes": 1})

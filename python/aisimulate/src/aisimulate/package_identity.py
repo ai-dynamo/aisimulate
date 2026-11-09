@@ -15,6 +15,7 @@ lack this module; keep the two lead sentences identical.
 
 from __future__ import annotations
 
+import csv
 import importlib.metadata
 import os
 import sys
@@ -26,7 +27,7 @@ COMMANDS = ("aisim", "aisimulate")
 # is the private worker module rather than the console script.
 PROGRAM_ENVIRONMENT = "_AISIMULATE_PROG"
 _DEFAULT_PROGRAM = "aisimulate"
-_SHARED_PACKAGES = ("aisimulate/", "aisimulate_core/")
+_SHARED_PACKAGES = ("aisimulate", "aisimulate_core")
 
 
 def program_name(argv0: str | None = None) -> str:
@@ -63,7 +64,13 @@ def _owns_shared_packages(distribution: importlib.metadata.Distribution) -> bool
     record = distribution.read_text("RECORD")
     if record is None:
         return True
-    return any(line.startswith(_SHARED_PACKAGES) for line in record.splitlines())
+    return any(row and _is_shared_package_file(row[0]) for row in csv.reader(record.splitlines()))
+
+
+def _is_shared_package_file(path: str) -> bool:
+    # RECORD is CSV; installers may write ``./`` prefixes or backslash separators.
+    parts = [part for part in path.replace("\\", "/").split("/") if part not in ("", ".")]
+    return len(parts) > 1 and parts[0] in _SHARED_PACKAGES
 
 
 def overlap_message() -> str | None:
