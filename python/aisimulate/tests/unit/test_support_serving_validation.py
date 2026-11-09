@@ -26,6 +26,37 @@ def _save(path, value):
     path.write_text(json.dumps(value))
 
 
+@pytest.mark.parametrize("hicache", [None, {"num_host_blocks": 32}])
+def test_serving_scope_rejects_hicache_before_hbm_only_qualification(tmp_path, hicache):
+    trace = tmp_path / "trace.json"
+    prediction = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            "workers": {
+                "aggregated": {
+                    "kv_cache": {"hicache": hicache},
+                    "timing": {
+                        "estimation_mode": "fpm_interpolation",
+                        "fallback_policy": "deny",
+                        "estimator_config": {"fpm_interpolation": {"method": "direct"}},
+                    },
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+    }
+    if hicache is not None:
+        with pytest.raises(ValueError, match="HBM-only cache"):
+            serving._scope(prediction, trace)
+        return
+    assert serving._scope(prediction, trace)["cache_storage"] == "hbm_only"
+
+
 @pytest.fixture
 def materialized_workload(monkeypatch):
     """Author only the isolated tokenizer boundary; native derived replay still runs."""

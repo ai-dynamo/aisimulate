@@ -166,6 +166,16 @@ class KvCapacityPredictionConfig(StrictModel):
         return self
 
 
+class HiCacheConfig(StrictModel):
+    """Private SGLang host KV capacity and transfer links per attention-DP rank."""
+
+    num_host_blocks: PositiveInt
+    write_policy: Literal["write_through", "write_through_selective", "write_back"] = "write_through"
+    d2h_bandwidth_gbps: NonNegativeFloat = 32.0
+    h2d_bandwidth_gbps: NonNegativeFloat = 32.0
+    latency_to_first_byte_ms: NonNegativeFloat = 0.0
+
+
 class HostOffloadConfig(StrictModel):
     """Native G2. ``dp_rank_local`` gives each DP rank its own cache; ``cluster_shared``
     is one deployment-wide pool whose ``num_host_blocks`` is the pool total."""
@@ -276,9 +286,11 @@ class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
+    decode_radix_cache: bool = False
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
+    hicache: HiCacheConfig | None = None
     g3_offload: G3OffloadConfig | None = None
     kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
@@ -950,7 +962,13 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
                 workers=self.workers,
                 has_transfer=self.kv_transfer is not None,
             )
+        _validate_decode_radix_cache(
+            backends={self.backend},
+            workers=self.workers,
+            speculative=bool(self.nextn) or self.speculation is not None,
+        )
         _validate_prediction_host_offload(self)
+        _validate_prediction_hicache(self)
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
@@ -1057,6 +1075,7 @@ class KvCapacityRecommendationConfig(StrictModel):
 class KvCacheRecommendationConfig(StrictModel):
     block_size: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     prefix_caching: bool = True
+    decode_radix_cache: bool = False
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityRecommendationConfig = Field(default_factory=KvCapacityRecommendationConfig)
     host_offload: HostOffloadConfig | None = None
@@ -1064,6 +1083,8 @@ class KvCacheRecommendationConfig(StrictModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_state_cache_recommendation(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("hicache") is not None:
+            raise ValueError("hicache currently supports prediction only; recommendation is not supported")
         if isinstance(value, dict) and value.get("state_cache") is not None:
             raise ValueError("state_cache currently supports prediction only; recommendation is not supported")
         return value
@@ -1204,6 +1225,11 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         _validate_recommendation_host(self, modes=modes, backends=backends)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
+        _validate_decode_radix_cache(
+            backends=backends,
+            workers=self.workers,
+            speculative=bool(self.nextn) or self.speculation is not None,
+        )
         return self
 
 
@@ -1335,6 +1361,26 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
 
 
+def _validate_decode_radix_cache(*, backends: set[str], workers, speculative: bool) -> None:
+    """Validate SGLang's `--disaggregation-decode-enable-radix-cache`.
+
+    Mixed backend domains may keep it; concrete predictions reject it outside SGLang.
+    """
+    for role in ("aggregated", "prefill"):
+        worker = getattr(workers, role)
+        if worker is not None and worker.kv_cache.decode_radix_cache:
+            raise ValueError(f"workers.{role}.kv_cache.decode_radix_cache applies only to the decode role")
+    decode = workers.decode
+    if decode is None or not decode.kv_cache.decode_radix_cache:
+        return
+    if "sglang" not in backends:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache is supported only for backend=sglang")
+    if not decode.kv_cache.prefix_caching:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache requires prefix_caching=true")
+    if speculative:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache is incompatible with speculative decoding")
+
+
 def require_native_vl_parallelism(
     worker: HostWorkerPredictionConfig | HostWorkerRecommendationConfig,
 ) -> None:
@@ -1429,6 +1475,19 @@ def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
             raise ValueError("pure AFD recommendation requires phase='both'; use combined_with_pd=true for one phase")
         if configured:
             raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
+
+
+def _validate_prediction_hicache(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.hicache is None:
+            continue
+        if engine.backend != "sglang" or engine.mode != "aggregated" or role != "aggregated":
+            raise ValueError("hicache requires backend=sglang and mode=aggregated")
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("hicache requires prefix_caching=true")
+        if worker.kv_cache.host_offload is not None:
+            raise ValueError("hicache cannot be combined with host_offload")
 
 
 def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:

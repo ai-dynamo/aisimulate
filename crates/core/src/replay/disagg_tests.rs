@@ -376,6 +376,13 @@ fn transfer_timing_config(
     config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
     config.prefill_args.kv_transfer_timing_mode = mode;
     config.decode_args.kv_transfer_timing_mode = mode;
+    // Destination-missing timing needs a decode cache to hold the prefix.
+    if engine_type == EngineType::Sglang {
+        config
+            .decode_args
+            .sglang
+            .disaggregation_decode_enable_radix_cache = true;
+    }
     config
 }
 
@@ -3957,8 +3964,12 @@ mod agentic_pd_qualification {
                 })
                 .collect();
             let prepared = prepared(agentic_trace(64, rows), 2);
+            let mut config = config(backend, false);
+            // The short request must retain its source row while the long
+            // prefill runs, so its client terminal can precede source cleanup.
+            config.prefill_args.max_num_seqs = 2;
             let mut replay = runtime(
-                &config(backend, false),
+                &config,
                 prepared,
                 true,
                 1.0,

@@ -493,6 +493,15 @@ class EngineReplayRunner:
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
+        from .sweeper.config import OptimizationGoal
+
+        metric_goal = OptimizationGoal.model_validate(spec.goal)
+        if metric_goal.uses_aiperf_metrics and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or (spec.backend_deployment.encoder is not None and spec.backend_deployment.encoder.mode == "analytical")
+        ):
+            raise InvalidRunnerError("AIPerf metric selectors require native offline request replay")
         encoder = spec.backend_deployment.encoder
         if (
             encoder is None
@@ -991,6 +1000,8 @@ def _run_afd_replay(
     mean_ttft = sum(float(record["ttft_ms"]) for record in request_records) / completed
     mean_tpot = sum(float(record["tpot_ms"]) for record in request_records) / completed
     mean_e2e = sum(float(record["e2e_latency_ms"]) for record in request_records) / completed
+    # Request-weighted, as in AIPerf: one reciprocal of each request's ITL.
+    user_tps = [1_000.0 / float(record["tpot_ms"]) for record in request_records if float(record["tpot_ms"]) > 0.0]
     input_tokens = completed * input_length
     duration_s = duration_ms / 1_000.0
     metrics = {
@@ -1009,7 +1020,7 @@ def _run_afd_replay(
         "mean_ttft_ms": mean_ttft,
         "mean_tpot_ms": mean_tpot,
         "mean_e2e_latency_ms": mean_e2e,
-        "mean_output_token_throughput_per_user": 1_000.0 / mean_tpot if mean_tpot > 0.0 else 0.0,
+        "mean_output_token_throughput_per_user": float(np.mean(user_tps)) if user_tps else 0.0,
         "completed_requests": float(completed),
         "error_rate": 0.0,
         "num_total_gpus": float(total_gpus),

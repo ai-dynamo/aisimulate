@@ -1,0 +1,22 @@
+{
+  "schema": "sglang-native-five-fields-patch-v1",
+  "upstream_repository": "https://github.com/sgl-project/sglang",
+  "upstream_revision": "e087e662ba1ac4ef7747537e2a9141085efd4561",
+  "upstream_path": "python/sglang/srt/managers/scheduler_components/metrics_reporter.py",
+  "upstream_source_url": "https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py",
+  "license": "Apache-2.0",
+  "license_path": "licenses/sglang-e087e662-LICENSE",
+  "license_sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747",
+  "upstream_file_sha256": "6ef4618862bd1e0f7c7527353fd2bc77ec365646aae9273ed023f5cce4f85a98",
+  "patched_file_sha256": "80ca324b60beb470b4ea6057fde7ee9553dd32e851e9741831459614e40bee63",
+  "patch_sha256": "a8d7a3de2ce6a4b7740d510326752fe4a9cf4c768562db0ae1305ee28934051a",
+  "fixture_sha256": "9c88932e3cba60050d60a87d8fc47021dc265a1f37552333abffcd710ff81eb0",
+  "fixture_original_lines": [
+    311,
+    354
+  ],
+  "modified": true,
+  "scope": "Native SGLang prefill scheduled metrics only. Decode branches and timing code unchanged.",
+  "tested_configuration_scope": "Text true P/D, no speculative decoding, encoder/decoder SWA bounded replay disabled; tests also protect existing mixed-batch decode logic and positional prefill indexing.",
+  "stock_capture_policy": "Preserve stock captures unchanged; never relabel them as patched captures."
+}
