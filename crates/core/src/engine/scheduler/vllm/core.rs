@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
-// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts, of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue and of the v0.29.0
+// (98dff2a81d747d1dba01a47f939f48c3526d4206) align-mode prefill split;
+// immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
