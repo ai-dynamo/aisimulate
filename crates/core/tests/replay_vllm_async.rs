@@ -1,0 +1,265 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! vLLM async scheduling in offline replay.
+
+use std::collections::VecDeque;
+
+use aisimulate_core::engine::{EngineConfig, PassLaunchConfig, TimingModelConfig};
+use aisimulate_core::replay::{
+    CURRENT_REPLAY_SPEC_VERSION, DirectRequest, PerRequestRecord, ReplayEngineConfig,
+    ReplayEngineFactory, ReplayReport, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer,
+    WorkerPoolSpec,
+};
+use uuid::Uuid;
+
+/// One vLLM worker with `num_gpu_blocks` 4-token blocks. A pass with prefill
+/// takes 100 ms and a decode pass 10 ms.
+fn engine(num_gpu_blocks: usize) -> EngineConfig {
+    EngineConfig {
+        block_size: 4,
+        num_gpu_blocks,
+        max_num_batched_tokens: 64,
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 100.0,
+            decode_ms: 10.0,
+        },
+        ..EngineConfig::default()
+    }
+}
+
+/// `engine` with `launch`: launching a pass takes `ms` without prefill, with up
+/// to 16 scheduled tokens and above.
+fn launch(engine: EngineConfig, ms: [f64; 3], eager_queue_fraction: f64) -> EngineConfig {
+    let [decode_ms, piecewise_ms, eager_ms] = ms;
+    EngineConfig {
+        launch: Some(PassLaunchConfig {
+            decode_ms,
+            piecewise_ms,
+            eager_ms,
+            max_cudagraph_capture_size: 16,
+            eager_queue_fraction,
+        }),
+        ..engine
+    }
+}
+
+fn spec(engine: ReplayEngineConfig) -> ReplaySpec {
+    ReplaySpec {
+        version: CURRENT_REPLAY_SPEC_VERSION,
+        encoder: None,
+        topology: ReplayTopology::Aggregated {
+            workers: WorkerPoolSpec {
+                initial_workers: 1,
+                ..WorkerPoolSpec::default()
+            },
+        },
+        engine: serde_json::to_value(engine).unwrap(),
+        adapters: Default::default(),
+        max_sim_time_ms: None,
+        max_in_flight: None,
+        record_per_request: true,
+        sla: Default::default(),
+        requests: Vec::new(),
+    }
+}
+
+/// A request with `(id, prompt tokens, outputs, arrival)`.
+fn request(&(id, prompt, outputs, arrival_ms): &(u128, u32, usize, f64)) -> DirectRequest {
+    DirectRequest {
+        tokens: (0..prompt).map(|token| token + id as u32 * 1000).collect(),
+        max_output_tokens: outputs,
+        uuid: Some(Uuid::from_u128(id)),
+        arrival_timestamp_ms: Some(arrival_ms),
+        ..Default::default()
+    }
+}
+
+fn replay_requests(engine: ReplayEngineConfig, requests: VecDeque<DirectRequest>) -> Replayer {
+    Replayer::new(spec(engine), ReplayEngineFactory::new())
+        .unwrap()
+        .with_runtime_input(ReplayRuntimeInput::Requests(requests))
+}
+
+/// A replayer of `(id, prompt tokens, outputs, arrival)` requests.
+fn replayer(engine: EngineConfig, requests: &[(u128, u32, usize, f64)]) -> Replayer {
+    replay_requests(
+        ReplayEngineConfig {
+            rank: engine,
+            ..Default::default()
+        },
+        requests.iter().map(request).collect(),
+    )
+}
+
+fn run(engine: EngineConfig, requests: &[(u128, u32, usize, f64)]) -> ReplayReport {
+    replayer(engine, requests).run().unwrap()
+}
+
+fn record(report: &ReplayReport, id: u128) -> &PerRequestRecord {
+    let uuid = Uuid::from_u128(id).to_string();
+    report
+        .per_request
+        .iter()
+        .find(|record| record.uuid == uuid)
+        .unwrap()
+}
+
+#[test]
+fn arrivals_after_the_last_running_request_get_its_blocks_at_once() {
+    // R (24 tokens) prefills until 100 and finishes in its decode pass at 110.
+    // Requests 2 and 3 arrive during that pass, so vLLM had already decided
+    // the pass at 110, which has nothing to run. That empty step frees R's
+    // blocks, and vLLM then admits both at 110, though request 3 (16 tokens)
+    // fits only in R's blocks.
+    let report = run(
+        engine(10),
+        &[(1, 24, 2, 0.0), (2, 4, 2, 105.0), (3, 16, 2, 106.0)],
+    );
+    assert_eq!(
+        [2, 3].map(|id| record(&report, id).first_admit_ms),
+        [Some(110.0); 2]
+    );
+}
+
+#[test]
+fn every_attention_dp_rank_frees_finished_blocks_after_the_next_decision() {
+    // On rank 0, X and R prefill until 100, and W (16 tokens), arriving at 50,
+    // fits only in R's blocks. R finishes in its decode pass, which ends at
+    // 110, but rank 1's prefill of Y holds the group pass until 200. Rank 0
+    // decides its pass at 200 before it frees R's blocks, as a single rank
+    // would, so that pass decodes only X and W is admitted at 210.
+    let requests = [
+        ((1, 8, 4, 0.0), 0),
+        ((2, 24, 2, 0.0), 0),
+        ((3, 16, 2, 50.0), 0),
+        ((4, 8, 1, 50.0), 1),
+    ]
+    .iter()
+    .map(|(fields, rank)| DirectRequest {
+        preferred_dp_rank: Some(*rank),
+        ..request(fields)
+    })
+    .collect();
+    let two_ranks = ReplayEngineConfig {
+        dp_size: 2,
+        rank: engine(10),
+        ..Default::default()
+    };
+    let report = replay_requests(two_ranks, requests).run().unwrap();
+    assert_eq!(record(&report, 3).first_admit_ms, Some(210.0));
+}
+
+/// A prefills from 0 to 100 and decodes until 110 and 120; B (32 tokens)
+/// arrives while the first decode runs, so the pass from 120 is eager.
+const EAGER_AFTER_DECODE: [(u128, u32, usize, f64); 2] = [(1, 8, 3, 0.0), (2, 32, 1, 105.0)];
+
+#[test]
+fn a_pass_outputs_leave_once_the_next_pass_is_launched() {
+    // vLLM decided the eager pass at 110, once the decode before it had
+    // launched and the pass before that had ended, so it launches it until
+    // 110 + 50. A's last token and its completion leave then, instead of at
+    // 120. If the launch waits until the GPU has run 0.8 of that 100 ms pass,
+    // they leave at 200. Passes do not move: B runs from 120 to 220.
+    let plain = run(engine(64), &EAGER_AFTER_DECODE);
+    let a = record(&plain, 1);
+    assert_eq!(
+        (a.first_token_ms, a.last_token_ms),
+        (Some(100.0), Some(120.0))
+    );
+    for (fraction, returned_ms) in [(0.0, 160.0), (0.8, 200.0)] {
+        let report = run(
+            launch(engine(64), [2.0, 20.0, 50.0], fraction),
+            &EAGER_AFTER_DECODE,
+        );
+        let a = record(&report, 1);
+        assert_eq!(a.first_token_ms, Some(100.0));
+        assert_eq!(a.last_token_ms, Some(returned_ms));
+        assert_eq!(a.terminal_time_ms, returned_ms);
+        let b = record(&report, 2);
+        assert_eq!(
+            (b.first_admit_ms, b.first_token_ms),
+            (Some(120.0), Some(220.0))
+        );
+    }
+}
+
+#[test]
+fn held_outputs_leave_before_those_of_the_pass_that_releases_them() {
+    // A decodes until 120, and its last token comes from the pass that also
+    // prefills B, from 120 to 230. vLLM decided that eager pass at 110, and
+    // its 150 ms launch lasts until the pass ends, so A's third token, held
+    // since 120, and its last token both leave at 230, in that order.
+    let report = run(
+        launch(engine(64), [2.0, 20.0, 150.0], 0.0),
+        &[(1, 8, 4, 0.0), (2, 32, 1, 105.0)],
+    );
+    assert_eq!(record(&report, 1).last_token_ms, Some(230.0));
+}
+
+#[test]
+fn a_decode_pass_above_the_graph_limit_launches_eager() {
+    // A, B and C prefill until 100, and A's last token comes from the decode
+    // pass that ends at 110. With a one-token graph limit the two-token decode
+    // pass after it runs eager: vLLM decided it at 100 and launches it for
+    // 50 ms, so A's last token leaves when that pass ends at 120, not at 110.
+    let mut config = launch(engine(64), [2.0, 20.0, 50.0], 0.0);
+    config.launch.as_mut().unwrap().max_cudagraph_capture_size = 1;
+    let report = run(config, &[(1, 3, 2, 0.0), (2, 3, 3, 0.0), (3, 3, 3, 0.0)]);
+    assert_eq!(record(&report, 1).last_token_ms, Some(120.0));
+}
+
+#[test]
+fn detokenization_starts_when_vllm_returns_the_outputs() {
+    // A 1 ms detokenizer takes A's last token when vLLM returns it at 160.
+    let launched = replayer(
+        launch(engine(64), [2.0, 20.0, 50.0], 0.0),
+        &EAGER_AFTER_DECODE,
+    )
+    .with_detokenization(1, 1.0, 0.0)
+    .unwrap()
+    .run()
+    .unwrap();
+    assert_eq!(record(&launched, 1).last_token_ms, Some(161.0));
+}
+
+#[test]
+fn an_arrival_joins_the_first_pass_decided_after_it() {
+    // A's prefill runs from 0 to 100 and vLLM decides the next pass once it
+    // has launched it, at 20. B arrives before that and joins the next pass,
+    // which prefills B and decodes A until 210; C arrives after it and waits
+    // for the pass after. Counting passes, both would skip the pass vLLM had
+    // already queued and join the one from 110.
+    let requests = [(1, 8, 2, 0.0), (2, 8, 1, 10.0), (3, 8, 1, 30.0)];
+    let admitted =
+        |report: &ReplayReport| [2, 3].map(|id| record(report, id).first_admit_ms.unwrap());
+    assert_eq!(admitted(&run(engine(64), &requests)), [110.0, 110.0]);
+    assert_eq!(
+        admitted(&run(launch(engine(64), [2.0, 20.0, 50.0], 0.0), &requests)),
+        [100.0, 210.0]
+    );
+    // With no launch cost vLLM decides each pass when the one before it
+    // starts, so the rule counts passes as before: B, arriving mid-pass at
+    // 105, skips one pass; C, arriving as a pass ends at 110, skips two.
+    let requests = [(1, 8, 10, 0.0), (2, 8, 1, 105.0), (3, 8, 1, 110.0)];
+    assert_eq!(
+        admitted(&run(launch(engine(64), [0.0; 3], 0.0), &requests)),
+        admitted(&run(engine(64), &requests))
+    );
+}
+
+#[test]
+fn launch_needs_a_one_gpu_engine() {
+    // With more GPUs vLLM's multiprocess executor returns a pass's outputs
+    // independently of the next launch.
+    let two_gpus = ReplayEngineConfig {
+        tensor_parallel_size: 2,
+        rank: launch(engine(64), [2.0, 20.0, 50.0], 0.0),
+        ..Default::default()
+    };
+    let error = Replayer::new(spec(two_gpus), ReplayEngineFactory::new())
+        .unwrap()
+        .run()
+        .unwrap_err();
+    assert!(error.to_string().contains("uniprocess executor"), "{error}");
+}

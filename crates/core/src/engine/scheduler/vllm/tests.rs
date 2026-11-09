@@ -1242,18 +1242,31 @@ mod mixed_pass_timing {
 
 mod async_scheduling_admission {
     use super::*;
+    use crate::engine::NativeHostOffloadConfig;
+    use crate::engine::generalized::SameTimestampRetry;
 
     fn core(max_concurrent_batches: usize) -> VllmCore {
+        core_with_cache(max_concurrent_batches, 64, false)
+    }
+
+    /// `num_gpu_blocks` 4-token blocks, with or without a CPU tier.
+    fn core_with_cache(
+        max_concurrent_batches: usize,
+        num_gpu_blocks: usize,
+        cpu_tier: bool,
+    ) -> VllmCore {
         VllmCore::new(
             MockEngineArgs::builder()
                 .block_size(4)
-                .num_gpu_blocks(64)
+                .num_gpu_blocks(num_gpu_blocks)
                 .max_num_batched_tokens(Some(64))
                 .max_num_seqs(Some(8))
                 .enable_chunked_prefill(true)
-                .enable_prefix_caching(false)
+                .enable_prefix_caching(cpu_tier)
                 .speedup_ratio(0.0)
                 .max_concurrent_batches(max_concurrent_batches)
+                .kv_cache_bytes_per_token(Some(16))
+                .native_host_offload(cpu_tier.then(|| NativeHostOffloadConfig::new(64)))
                 .build()
                 .unwrap(),
         )
@@ -1262,8 +1275,18 @@ mod async_scheduling_admission {
     /// Submit as replay does: mid-pass while a pass is in flight, otherwise at
     /// a pass boundary, before the next pass starts.
     fn arrive(core: &mut VllmCore, id: u128, output: usize, pass_in_flight: bool) -> Uuid {
+        arrive_with_prompt(core, id, 8, output, pass_in_flight)
+    }
+
+    fn arrive_with_prompt(
+        core: &mut VllmCore,
+        id: u128,
+        prompt: usize,
+        output: usize,
+        pass_in_flight: bool,
+    ) -> Uuid {
         let request = DirectRequest {
-            tokens: vec![id as u32; 8],
+            tokens: vec![id as u32; prompt],
             max_output_tokens: output,
             uuid: Some(Uuid::from_u128(id)),
             ..Default::default()
@@ -1377,6 +1400,101 @@ mod async_scheduling_admission {
         assert!(core.state.running.is_empty());
         let arrivals = [arrive(&mut core, 2, 4, true), arrive(&mut core, 3, 4, true)];
         assert_eq!(passes_before_admission(&mut core, &arrivals), [0, 0]);
+    }
+
+    /// Run one pass at `now_ms` and its completion, and move `now_ms` to its end.
+    fn step(core: &mut VllmCore, now_ms: &mut f64) -> crate::engine::scheduler::EnginePassResult {
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let result = core.execute_pass(&mut collector, *now_ms);
+        core.complete_engine_boundary(result.end_ms);
+        *now_ms = result.end_ms;
+        result
+    }
+
+    /// The pass that admits W (16 tokens), which arrives while pass 0 runs and
+    /// fits only in the 7 blocks of R (24 tokens). R finishes in pass 1, and X
+    /// keeps the engine busy.
+    fn pass_admitting_w(max_concurrent_batches: usize) -> usize {
+        let mut core = core_with_cache(max_concurrent_batches, 10, false);
+        let mut now = 0.0;
+        arrive_with_prompt(&mut core, 1, 8, 40, false);
+        let r = arrive_with_prompt(&mut core, 2, 24, 2, false);
+        step(&mut core, &mut now);
+        let w = arrive_with_prompt(&mut core, 3, 16, 2, true);
+        let finished = step(&mut core, &mut now);
+        assert!(
+            finished
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == r && signal.completed)
+        );
+        (2..8)
+            .find(|_| {
+                step(&mut core, &mut now)
+                    .admissions
+                    .iter()
+                    .any(|admission| admission.uuid == w)
+            })
+            .expect("W is admitted")
+    }
+
+    #[test]
+    fn blocks_a_request_frees_in_pass_k_first_serve_pass_k_plus_2() {
+        // vLLM frees a finished request's blocks when it processes the pass's
+        // outputs, which with async scheduling follows committing the next pass.
+        assert_eq!(pass_admitting_w(1), 2);
+        assert_eq!(pass_admitting_w(2), 3);
+    }
+
+    #[test]
+    fn an_empty_decision_frees_the_pass_in_flight_and_decides_again() {
+        // Without X nothing runs in pass 2: vLLM's step is empty, so it
+        // processes pass 1 at once and admits W in the next step. The empty
+        // step runs no forward, so it carries no forward-pass snapshot.
+        let mut core = core_with_cache(2, 10, false);
+        let mut now = 0.0;
+        arrive_with_prompt(&mut core, 2, 24, 2, false);
+        step(&mut core, &mut now);
+        let w = arrive_with_prompt(&mut core, 3, 16, 2, true);
+        step(&mut core, &mut now);
+        let empty = step(&mut core, &mut now);
+        assert!(empty.admissions.is_empty());
+        assert_eq!(empty.same_timestamp_retry, SameTimestampRetry::Retry);
+        assert!(empty.fpm.is_none());
+        let admitting = step(&mut core, &mut now);
+        assert_eq!(admitting.admissions[0].uuid, w);
+        assert!(admitting.fpm.is_some());
+    }
+
+    #[test]
+    fn a_request_the_pass_in_flight_runs_is_not_preempted_with_a_cpu_tier() {
+        // A (8 tokens) and B (4 tokens) fill the 3 blocks in pass 0. In pass 1
+        // A's next token needs a block that only preempting B, the newest
+        // request, frees. With a CPU tier vLLM defers freeing B's blocks until
+        // pass 0 ends, so it does not preempt B: A waits, and that empty step
+        // lets vLLM process pass 0 and preempt B in the next.
+        let mut core = core_with_cache(2, 3, true);
+        let mut now = 0.0;
+        let a = arrive_with_prompt(&mut core, 1, 8, 4, false);
+        arrive_with_prompt(&mut core, 2, 4, 4, false);
+        step(&mut core, &mut now);
+        let blocked = step(&mut core, &mut now);
+        assert!(blocked.output_signals.is_empty());
+        assert_eq!(blocked.same_timestamp_retry, SameTimestampRetry::Retry);
+        assert_eq!(core.state.preemptions_total, 0);
+        let resumed = step(&mut core, &mut now);
+        assert_eq!(core.state.preemptions_total, 1);
+        assert!(resumed.output_signals.iter().any(|signal| signal.uuid == a));
+
+        // Without a CPU tier vLLM frees B's blocks at once and preempts it.
+        let mut core = core_with_cache(2, 3, false);
+        let mut now = 0.0;
+        let a = arrive_with_prompt(&mut core, 1, 8, 4, false);
+        arrive_with_prompt(&mut core, 2, 4, 4, false);
+        step(&mut core, &mut now);
+        let decoded = step(&mut core, &mut now);
+        assert_eq!(core.state.preemptions_total, 1);
+        assert!(decoded.output_signals.iter().any(|signal| signal.uuid == a));
     }
 }
 

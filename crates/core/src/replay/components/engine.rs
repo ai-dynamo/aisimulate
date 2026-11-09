@@ -1169,7 +1169,7 @@ where
                 completion.worker_id,
                 scheduler_id,
                 rank.dp_rank,
-                &pending,
+                pending.started_at_ms,
                 self.capture_artifact_kv_events,
                 rank.effects,
             ));
@@ -1180,6 +1180,79 @@ where
 
     pub(crate) fn in_flight(&self) -> usize {
         self.total_in_flight
+    }
+
+    /// Earliest instant at which a worker releases outputs it held past their
+    /// pass (vLLM `launch`). Not masked by a pass in flight.
+    pub(crate) fn next_emission_ms(&self) -> Option<f64> {
+        if !self.factory.can_hold_outputs() {
+            return None;
+        }
+        self.workers
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter_map(|worker| worker.engine.next_emission_ms())
+            .min_by(f64::total_cmp)
+    }
+
+    /// Release every worker's outputs due at `now_ms` as completion payloads
+    /// that carry only outputs. Request ownership ends when a completed
+    /// output is released, as at a pass completion.
+    pub(crate) fn take_due_emissions(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<Vec<WorkerCompletionPayload<Observation::Batch>>> {
+        let mut payloads = Vec::new();
+        for worker_id in 0..self.workers.len() {
+            let due = self.workers[worker_id]
+                .as_ref()
+                .and_then(|worker| worker.engine.next_emission_ms())
+                .is_some_and(|at_ms| at_ms <= now_ms);
+            if !due {
+                continue;
+            }
+            let released = self
+                .required_worker_mut(worker_id)?
+                .engine
+                .take_due_emissions(now_ms)
+                .map_err(crate::replay::error::engine_boundary)?;
+            for rank in released.into_by_rank() {
+                let scheduler_id = self
+                    .required_worker(worker_id)?
+                    .scheduler_ids
+                    .get(rank.dp_rank as usize)
+                    .copied()
+                    .context("native emission returned an out-of-range DP rank")?;
+                let completed_request_ids = rank
+                    .effects
+                    .outputs
+                    .iter()
+                    .filter_map(|output| output.completed.then_some(output.request_id))
+                    .collect::<Vec<_>>();
+                self.apply_request_accounting(
+                    SchedulerOwner {
+                        worker_id,
+                        dp_rank: rank.dp_rank,
+                    },
+                    None,
+                    &completed_request_ids,
+                )?;
+                // Returned outputs belong to no pass: no forward-pass sample.
+                let mut payload = lower_completion::<Observation>(
+                    self.stage,
+                    worker_id,
+                    scheduler_id,
+                    rank.dp_rank,
+                    now_ms,
+                    self.capture_artifact_kv_events,
+                    rank.effects,
+                );
+                payload.fpm = None;
+                payloads.push(payload);
+            }
+            self.refresh_worker(worker_id);
+        }
+        Ok(payloads)
     }
 
     /// Earliest independently modeled deadline across every logical worker.
@@ -1328,7 +1401,7 @@ fn lower_completion<Observation: ReplayEngineObservation>(
     worker_id: usize,
     scheduler_id: usize,
     dp_rank: u32,
-    pass: &PendingPass,
+    pass_started_at_ms: f64,
     capture_artifact_kv_events: bool,
     effects: PassCompletionEffects,
 ) -> WorkerCompletionPayload<Observation::Batch> {
@@ -1371,7 +1444,7 @@ fn lower_completion<Observation: ReplayEngineObservation>(
             .collect(),
         lifecycle_events: effects.lifecycle_events,
         engine_events,
-        pass_started_at_ms: pass.started_at_ms,
+        pass_started_at_ms,
         artifact_pass_end_kv_events,
         progress: EngineProgress {
             made_progress,

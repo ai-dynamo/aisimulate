@@ -69,8 +69,72 @@ capture list, and max batched tokens all change `wall_time` and belong to the
 model's identity.
 
 `wall_time` means different things per backend. The vLLM producer
-(`InstrumentedScheduler`) measures each step from `schedule()` to
-`update_from_output()` on the host clock, one value per step. The SGLang
+(`InstrumentedScheduler`) ends each step when its model output arrives and
+starts it when the previous step's output arrived, or at `schedule()` after an
+idle step, on the host clock, one value per step. With async scheduling on a
+one-GPU worker, vLLM launches the next step before it processes the current
+step's output
+([`EngineCore.step_with_batch_queue`](https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/vllm/v1/engine/core.py)).
+An eager next step (more scheduled tokens than `max_cudagraph_capture_size`)
+takes far longer to launch than a decode step takes to run, so the decode
+record carries the rest of that launch and the eager record looks short. A
+model fitted on such records learns how often each kind of step follows
+another, which changes with the workload. `charge_own_launch(iterations,
+own_work_ms, max_cudagraph_capture_size)` moves each launch back to its own
+step; `train` applies it with `--launch-stall FILE`:
+
+```json
+{"max_cudagraph_capture_size": 4096,
+ "own_work_buckets": {
+   "decode":  {"num_decode_requests": [0, 64], "decode_kv_per_request": [0, 16384]},
+   "prefill": {"num_decode_requests": [0, 64], "sum_prefill_tokens": [0, 1024]}}}
+```
+
+A record lasts about the longer of its own work and the next step's launch.
+When the next step is piecewise (with prefill, at most
+`max_cudagraph_capture_size` tokens) or eager, the record keeps at most its
+own-work reference `w` and gives the rest to the next record; a decode next
+step takes nothing. Each worker's total time is unchanged. `carrier` is
+`prefill` for a record with prefill tokens, else `decode`, and
+`own_work_buckets[carrier]` lists bucket lower edges from 0 on two axes:
+`num_decode_requests`, then `decode_kv_per_request` (`sum_decode_kv_tokens`
+per decode request) or `sum_prefill_tokens`. The edges above are an
+illustration.
+
+`w` is the mean `wall_time` of the carrier's records in the bucket whose next
+step is decode, since a decode launch hides under the step before it.
+`mean_own_work_ms` measures it on all `--fpm` records, before the random
+`--holdout-frac` split, so those holdout records help set `w`. `train` prints
+each bucket's count, mean and standard deviation σ. A bucket with fewer than
+`--min-store-rows` records gets no mean, and a record before a piecewise or
+eager step that falls in such a bucket stops `train`, so widen the buckets
+until every such record has one. The artifact keeps the table under
+`metadata.launch_stall`; `train` charges `--holdout-fpm` records and `evaluate`
+charges its records with it, so those records never set `w`. There, a record
+before a piecewise or eager step in a bucket without a mean does not stop the
+run: it and the record after it are reported as `_refused`.
+
+A record that gives time only bounds its own work from above, so
+`charge_own_launch` sets it to `w` and flags it `launch_censored`. Training and
+evaluation keep these rows; the artifact's `launch_censored` metadata counts
+them per store, and `evaluate` reports them as `_launch_censored`. Three errors
+remain. Because `w` is a mean, a record whose launch hides under its own work
+still gives whatever its own work runs above `w`, about 0.4σ on average for
+normal noise (σ/√(2π)), and the next record takes it. The prefill axes count
+new tokens, not cached context, so a long prompt that reuses a cached prefix
+attends over more context than `w` reflects and gives part of its own work to
+the next record. An eager prefill step launched during a short step runs part
+of its own work during that launch, so its record is short when a decode step
+follows, and the prefill `w` runs low.
+
+Records follow each other when they share `worker_id` and their `counter_id`
+values differ by one, and only records loaded together pair up: all `--fpm`
+paths form one set, and `--holdout-fpm` paths another. A record whose next step
+is not in its set keeps its launch, so give
+every record of a run to `--fpm`, for example both halves of
+`scripts/fpm_accuracy/prepare_native_training.py`'s alternating split. The
+output is ordinary iterations, so a regression's `tune_with_fpms` takes it too.
+The SGLang
 producer reads a CUDA-event `DeviceTimer` around the forward, but it
 accumulates every *finished* interval at emission time and drops the record
 when nothing finished. With the overlap scheduler on, a step whose result

@@ -2419,6 +2419,49 @@ mod tests {
     }
 
     #[test]
+    fn simple_cpu_stores_a_finished_request_s_blocks_after_the_next_decision() {
+        // vLLM calls the connector's `request_finished` from
+        // `update_from_output`, which async scheduling runs after it has
+        // decided the next pass (core.py `step_with_batch_queue`). SimpleCPU's
+        // finish store then goes out with the step after that.
+        // A's last block fills in its last pass, pass 9, and is stored at
+        // its finish. B keeps the engine busy and stores in passes 4 and 8.
+        let stores = |max_concurrent_batches| {
+            let mut args = connector_args(G2Connector::SimpleCpuV032);
+            args.max_concurrent_batches = max_concurrent_batches;
+            let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, true, None).unwrap();
+            for (id, tokens, output) in [(1, 1..=8, 9), (2, 101..=102, 20)] {
+                core.receive(DirectRequest {
+                    tokens: tokens.collect(),
+                    max_output_tokens: output,
+                    uuid: Some(Uuid::from_u128(id)),
+                    arrival_timestamp_ms: Some(0.0),
+                    ..Default::default()
+                });
+            }
+            let mut now_ms = 0.0;
+            let mut stores = Vec::new();
+            for _ in 0..10 {
+                let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+                now_ms = pass.end_ms;
+                core.complete_engine_boundary(now_ms);
+                stores.push(host_stored(
+                    pass.kv_events.into_iter().chain(core.drain_kv_events()),
+                ));
+            }
+            stores
+        };
+        let (sync, async_) = (stores(1), stores(2));
+        assert_eq!(
+            sync.iter().map(Vec::len).collect::<Vec<_>>(),
+            [0, 2, 0, 1, 0, 1, 0, 1, 1, 0]
+        );
+        assert_eq!(async_[9], sync[8]);
+        assert!(async_[8].is_empty());
+        assert_eq!(async_[..8], sync[..8]);
+    }
+
+    #[test]
     fn a_hit_whose_store_is_in_flight_misses_for_simple_cpu_and_defers_offloading() {
         // SimpleCPU registers a block in its CPU pool only when the copy
         // completes; the offloading connector reports `HIT_PENDING` and defers

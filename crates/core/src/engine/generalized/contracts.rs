@@ -413,4 +413,18 @@ pub trait RankEngine: Sized {
 
     /// Whether this rank owns no request, pass, or internal work.
     fn is_drained(&self) -> bool;
+
+    /// Earliest time at which outputs held past their pass's completion leave
+    /// the rank. Unlike internal deadlines it is not masked by a pass in flight:
+    /// vLLM returns a pass's outputs while the next pass runs. The default
+    /// holds none.
+    fn next_emission_ms(&self) -> Option<f64> {
+        None
+    }
+
+    /// Release the held outputs due at `now_ms` as completion effects that
+    /// carry only outputs.
+    fn take_due_emissions(&mut self, _now_ms: f64) -> Result<Option<Self::PassCompletionEffects>> {
+        Ok(None)
+    }
 }

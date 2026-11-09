@@ -416,6 +416,18 @@ def test_prediction_accepts_neutral_backend_scheduler_defaults(backend: str) -> 
         ("trtllm", "prefill_schedule_interval", 2, "vllm"),
         ("sglang", "async_scheduling", True, "vllm"),
         ("trtllm", "async_scheduling", False, "vllm"),
+        (
+            "sglang",
+            "launch",
+            {
+                "decode_ms": 5,
+                "piecewise_ms": 50,
+                "eager_ms": 150,
+                "max_cudagraph_capture_size": 512,
+                "eager_queue_fraction": 0.4,
+            },
+            "vllm",
+        ),
     ],
 )
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
@@ -431,6 +443,35 @@ def test_prediction_rejects_wrong_backend_scheduler_interval(backend, field, val
         ValidationError,
         match=rf"workers.{role}.scheduler.{field}.*backend={required_backend}",
     ):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize(
+    ("role", "worker"),
+    [
+        ("aggregated", {"parallelism": {"tensor": 2}}),
+        ("aggregated", {"parallelism": {"attention_data": 2}}),
+        ("aggregated", {"scheduler": {"async_scheduling": False}}),
+        ("decode", {}),
+    ],
+)
+def test_prediction_rejects_launch_outside_a_one_gpu_async_aggregated_worker(role, worker) -> None:
+    engine = _engine()
+    engine["backend"] = "vllm"
+    if role != "aggregated":
+        engine["mode"] = "disaggregated"
+        engine["workers"] = {"prefill": {}, "decode": {}}
+    launch = {
+        "decode_ms": 5,
+        "piecewise_ms": 50,
+        "eager_ms": 150,
+        "max_cudagraph_capture_size": 512,
+        "eager_queue_fraction": 0.4,
+    }
+    worker.setdefault("scheduler", {})["launch"] = launch
+    engine["workers"][role] = worker
+
+    with pytest.raises(ValidationError, match=rf"workers.{role}.scheduler.launch"):
         CorePredictionConfig.model_validate({"engine": engine})
 
 

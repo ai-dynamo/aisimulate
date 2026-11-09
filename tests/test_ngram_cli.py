@@ -5,6 +5,7 @@
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -198,6 +199,28 @@ def test_ngram_turns_vllm_async_scheduling_off_for_every_timing_model(mode, timi
     config = CorePredictionConfig.model_validate(raw)
     with pytest.raises(ValueError, match="does not support async scheduling with ngram"):
         EngineReplayRunnerFactory(runtime=_RecordingRuntime()).create(0).run(prediction_to_replay_spec(config))
+
+
+def test_ngram_rejects_launch_before_turning_async_scheduling_off():
+    launch = {
+        "decode_ms": 5.0,
+        "piecewise_ms": 50.0,
+        "eager_ms": 150.0,
+        "max_cudagraph_capture_size": 512,
+        "eager_queue_fraction": 0.4,
+    }
+    raw = _prediction()
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    deployment = spec.backend_deployment
+    deployment = replace(deployment, agg_engine_args={**deployment.agg_engine_args, "launch": launch})
+    with pytest.raises(ValueError, match="launch requires async scheduling, which vLLM turns off with ngram"):
+        EngineReplayRunnerFactory(runtime=_RecordingRuntime()).create(0).run(
+            replace(spec, backend_deployment=deployment)
+        )
+
+    raw["engine"]["workers"]["aggregated"]["scheduler"]["launch"] = launch
+    with pytest.raises(ValidationError, match="scheduler.launch requires async scheduling, which vLLM turns off"):
+        CorePredictionConfig.model_validate(raw)
 
 
 def _busy_arrival(tmp_path, *, speculation=True, async_scheduling=None):

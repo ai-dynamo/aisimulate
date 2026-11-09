@@ -117,6 +117,13 @@ doc = "replay/engine/README.md#detokenization"
 cells = ["supported", "supported", "supported"]
 note = "Each emitting worker's detokenizer servers add a fixed plus per-output-token delay before the client sees tokens."
 
+[[sections.rows]]
+name = "Engine-loop launch cost"
+doc = "replay/engine/workers.md#vllm-pass-launch"
+# SGLang's host loop leaves the scheduler thread's batch-level CPU work uncharged.
+cells = ["limited", "not_supported", "not_supported"]
+note = "User-measured launch costs set when vLLM returns a pass's outputs; one-GPU aggregated workers with async scheduling, offline replay only."
+
 [[sections]]
 id = "speculation"
 title = "Speculative decoding"
