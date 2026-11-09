@@ -244,6 +244,10 @@ def _validate_record(
     kind = record.get("kind")
     if kind not in {"worker", "scheduler"}:
         raise ValueError("runtime observation requires worker or scheduler role")
+    from .runtime_k31 import LAYOUT, is_audited_runtime
+
+    if record.get("cache", {}).get("allocation_layout") == LAYOUT and not is_audited_runtime(record.get("runtime")):
+        raise ValueError("K3.1 native cache mapping requires the exact audited runtime source map")
     lifecycle = record.get("lifecycle", {})
     if lifecycle.get("cache_initialized") is not True:
         raise ValueError("cache initialization lifecycle evidence is missing")
@@ -270,6 +274,14 @@ def _validate_record(
         sequences=collection["max_num_seqs"],
         fraction=float(collection["gpu_memory_utilization"]),
     )
+    if config.get("model_config", {}).get("architectures") == ["KimiK31ForConditionalGeneration"]:
+        if not is_audited_runtime(record.get("runtime")) or record["cache"].get("allocation_layout") != LAYOUT:
+            raise ValueError("K3.1 initialization requires the exact audited runtime and native cache mapping")
+        if (
+            config["cache_config"].get("enable_prefix_caching") is not False
+            or config["cache_config"].get("mamba_cache_mode") != "none"
+        ):
+            raise ValueError("K3.1 initialization requires native mamba none and prefix caching disabled")
     if launch["identity"]["model_kind"] == "moe":
         parallel = config["parallel_config"]
         enabled = parallel["enable_expert_parallel"]
@@ -477,7 +489,10 @@ def _validate_alias_ownership(views: list[tuple[dict[str, Any], int]], count: in
 def _physical_views(
     cache: dict[str, Any], scheduled: dict[str, Any], precision: str
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    _same(cache.get("semantics"), _SEMANTICS, "supported allocation semantics")
+    from .runtime_k31 import LAYOUT
+
+    semantics = {**_SEMANTICS, "retention": "full_or_state"} if cache.get("allocation_layout") == LAYOUT else _SEMANTICS
+    _same(cache.get("semantics"), semantics, "supported allocation semantics")
     accounting = runtime_memory.validate_shared_pool_accounting(cache, scheduled)
     count, page = accounting["num_blocks"], accounting["page_size_bytes"]
     pool = _text(cache.get("pool_id"), "pool identity")
@@ -493,6 +508,18 @@ def _physical_views(
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
     groups = runtime_memory._normalized_groups(cache, scheduled, page)
+    from .runtime_k31 import LAYOUT, validate_views
+
+    if cache.get("allocation_layout") == LAYOUT:
+        for group in cache["groups"]:
+            if (
+                group.get("pool_id") != pool
+                or group.get("extra_retained_tokens") != 0
+                or group.get("attention_chunk_size") is not None
+            ):
+                raise ValueError("K3.1 cache group pool or retention is unsupported")
+        validate_views(cache, precision, count, page)
+        return groups, accounting
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
         if group.get("pool_id") != pool:

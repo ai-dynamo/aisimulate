@@ -57,7 +57,18 @@ def _runtime(payload: dict, manifest: dict, version: str) -> None:
         errors.append(f"adapter requires vLLM {version}; installed={actual_version}, manifest={pinned['version']}")
     # Wheels may omit a VCS identifier. The exact inspected source files remain
     # mandatory; when a wheel supplies an identifier, it must also agree.
-    if commit is not None:
+    if len(pinned["source_revision"]) == 64:
+        # Preview wheels need not publish a full Git commit. Bind their complete
+        # inspected source map by SHA-256 instead of inventing a Git revision.
+        source_digest = hashlib.sha256(
+            json.dumps(pinned["source_files"], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if source_digest != pinned["source_revision"]:
+            errors.append("source-map SHA-256 contradicts source revision")
+        payload["source_identity"]["source_revision_basis"] = "SHA-256 of canonical source file hash map"
+        if commit is not None and str(commit) not in actual_version:
+            errors.append("installed VCS identifier contradicts exact wheel version")
+    elif commit is not None:
         short = str(commit).removeprefix("g")
         if len(short) < 7 or not pinned["source_revision"].startswith(short):
             errors.append(f"installed vLLM commit {commit!r} contradicts source revision")
@@ -140,6 +151,9 @@ def _resolved(owner: Any) -> dict:
             for key in ("backend", "indexer_kv_dtype")
             if hasattr(attention, key)
         }
+    for key in ("mamba_cache_mode", "mamba_cache_dtype", "mamba_ssm_cache_dtype", "mamba_block_size"):
+        if hasattr(config.cache_config, key):
+            value["cache_config"][key] = _json(getattr(config.cache_config, key))
     return value
 
 
@@ -156,6 +170,13 @@ def _raw_cache(config: Any) -> dict:
         "num_kv_heads",
         "head_size",
         "kv_quant_mode",
+        "shapes",
+        "dtypes",
+        "state_content_size_bytes",
+        "mamba_cache_mode",
+        "num_speculative_blocks",
+        "num_prefill_checkpoint_blocks",
+        "prefill_checkpoint_alignment",
     )
     return {
         "num_blocks": config.num_blocks,
@@ -172,7 +193,7 @@ def _raw_cache(config: Any) -> dict:
         "tensor_allocations": [
             {
                 key: _json(getattr(tensor, key))
-                for key in ("size", "shared_by", "block_stride", "offset")
+                for key in ("size", "shared_by", "layers", "layer_stride", "block_stride", "offset", "host_resident")
                 if hasattr(tensor, key)
             }
             for tensor in config.kv_cache_tensors
@@ -310,7 +331,9 @@ def _semantics(owner: Any, payload: dict) -> None:
     semantics = payload["cache"]["semantics"] = {
         "allocation": "shared_block_pool",
         "storage": "hbm",
-        "retention": "full_or_window",
+        "retention": "full_or_state"
+        if payload["cache"].get("allocation_layout") == "kimi-k31-block-outer/v1"
+        else "full_or_window",
         "prefix_reuse": False,
         "offload": (
             offload["offload_backend"] != "auto"
@@ -400,16 +423,23 @@ def observe(
     capture("model_config_sha256", lambda: _loaded_config(owner, payload))
     capture("resolved_config", lambda: payload.update(resolved_config=_resolved(owner)))
     pool_id = f"dp{dp_rank}-shared-pool"
+    native_k31 = version == "0.1.dev24216+g266e88c05"
+    if native_k31:
+        from . import kimi_k31
     if kind == "worker":
         capture("hardware", lambda: payload.update(hardware=_hardware(owner, payload["identity"]["gpu"])))
         capture("effective_offloader", lambda: payload.update(effective_offloader=legacy._offloader_type()))
         if hasattr(owner, "_fpm_initial_compilation_config"):
             payload["initial_compilation_config"] = owner._fpm_initial_compilation_config
-        capture("cache", lambda: payload.update(cache=legacy.worker_memory(owner)))
+        memory_reader = kimi_k31.worker_memory if native_k31 else legacy.worker_memory
+        capture("cache", lambda: payload.update(cache=memory_reader(owner)))
+        if native_k31:
+            capture("initialized_moe", lambda: payload.update(initialized_moe=kimi_k31.initialized_moe(owner)))
         config = getattr(getattr(owner, "model_runner", None), "kv_cache_config", None)
     else:
         config = cache_config
-        capture("cache", lambda: payload.update(cache=legacy.scheduler_memory(owner, config)))
+        memory_reader = kimi_k31.scheduler_memory if native_k31 else legacy.scheduler_memory
+        capture("cache", lambda: payload.update(cache=memory_reader(owner, config)))
     capture("raw_cache_config", lambda: payload.update(raw_cache_config=_raw_cache(config)))
     if "cache" in payload:
         cache = payload["cache"]
@@ -417,7 +447,8 @@ def observe(
         capture("cache.groups", lambda: _groups(cache, config, version, pool_id))
         if kind == "worker":
             capture("cache.semantics", lambda: _semantics(owner, payload))
-            capture("cache.layer_tensors", lambda: _layer_views(owner, cache, manifest["runtime"]["source_files"]))
+            view_reader = kimi_k31.attention_groups if native_k31 else _layer_views
+            capture("cache.layer_tensors", lambda: view_reader(owner, cache, manifest["runtime"]["source_files"]))
             if "attention_groups" in cache:
                 payload["attention_groups"] = cache.pop("attention_groups")
                 names = cache.pop("attention_backends")
@@ -431,7 +462,13 @@ def observe(
             legacy.RESULTS_DIR = directory
             capture(
                 "execution_evidence",
-                lambda: legacy.observe_execution(owner, dp_rank=dp_rank, tp_rank=tp_rank, pp_rank=pp_rank),
+                lambda: legacy.observe_execution(
+                    owner,
+                    dp_rank=dp_rank,
+                    tp_rank=tp_rank,
+                    pp_rank=pp_rank,
+                    audited_version=version if native_k31 else None,
+                ),
             )
         finally:
             legacy.RESULTS_DIR = previous

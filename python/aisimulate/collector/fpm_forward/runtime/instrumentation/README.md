@@ -9,6 +9,13 @@ These are original AISimulate adapters written against inspected runtime interfa
 
 `vllm-0.27.0.json` is the bundled selection. `vllm-0.28.0.example.json` is an explicit campaign-local example for its inspected runtime build. Freeze the latter with `load_instrumentation` and `freeze_instrumentation` into a fresh campaign directory, as shown in the [user guide](../../../../../../docs/perf-model/fpm-self-service/implementation.md#resolve-cache-geometry-with-a-runtime-probe). Other runtime pins need their own source audit, manifest and adapter changes; changing the version string alone is insufficient. An example bundle is implementation evidence, not qualification of every model, backend, GPU or topology on that version.
 
+`vllm-kimi-k31.example.json` is the explicit Kimi K3.1 preview-image adapter.
+Its [source contract](vllm-kimi-k31.md) covers native block-outer groups,
+mixed BF16/FP32 KDA state and initialized MXFP4/MXFP8 expert precision. Its
+64-character source revision hashes the complete declared source-file map,
+because the wheel exposes only a short Git identifier. The first candidate is
+decode-only with Mamba `none`; source inspection does not qualify a live run.
+
 ## Runtime interface
 
 The collector stages the frozen bundle and a collector-owned import entrypoint, and supplies these environment variables:

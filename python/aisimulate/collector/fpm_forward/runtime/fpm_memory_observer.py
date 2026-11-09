@@ -267,7 +267,9 @@ def _execution_destination() -> tuple[Path, dict[str, Any]]:
     return directory, binding
 
 
-def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) -> None:
+def observe_execution(
+    worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int, audited_version: str | None = None
+) -> None:
     """Record selected backend objects after initialization, outside timed forwards.
 
     This original adapter reads AttentionGroup.backend/layer_names populated by
@@ -296,7 +298,8 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         "per_point_dispatch": "unreported",
     }
     try:
-        if payload["backend_version"] not in EXECUTION_SUPPORTED_VERSIONS:
+        native_k31 = audited_version == payload["backend_version"] == "0.1.dev24216+g266e88c05"
+        if payload["backend_version"] not in EXECUTION_SUPPORTED_VERSIONS and not native_k31:
             raise ValueError(f"execution observation requires audited vLLM {EXECUTION_SUPPORTED_VERSIONS}")
         groups = []
         for cache_groups in worker.model_runner.attn_groups:
