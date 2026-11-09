@@ -21,6 +21,8 @@ from collector.version_resolver import _check_compat
 SGLANG_FULLNODE_OPS = {
     "deepep_ll": "DEEPEP_LL_SHAPE_INDEX",
     "deepep_normal": "DEEPEP_NORMAL_SHAPE_INDEX",
+    "kimi_k31_dsa_context_module": None,
+    "kimi_k31_dsa_generation_module": None,
 }
 
 
@@ -49,7 +51,7 @@ def _resume_errors(module_name, resume_tracker, resume_options, logger) -> list[
 def select_cases(op: str, cases: list, limit: int | None) -> list:
     """Apply the explicit job-array shape selector or the common case limit."""
     shape_index_env = SGLANG_FULLNODE_OPS[op]
-    shape_index = os.environ.get(shape_index_env)
+    shape_index = os.environ.get(shape_index_env) if shape_index_env else None
     if shape_index is not None and shape_index != "":
         idx = int(shape_index)
         if idx < 0 or idx >= len(cases):
@@ -84,6 +86,24 @@ def collect_sglang_fullnode_op(
     if case_plan is not None and not case_plan.has_op(op):
         logger.info(f"Skipping {full_name} — not in collector v2 case plan")
         return []
+
+    # Full-node routes obey the same registry maturity contract as pool ops.
+    # In particular, moving a native TP module here must not enable an
+    # unqualified backend/SM merely because it owns its GPU group exclusively.
+    unverified_here = collection.get("unverified") or (
+        sm_version is not None and sm_version in (collection.get("unverified_sms") or ())
+    )
+    if unverified_here:
+        scope = "this backend" if collection.get("unverified") else f"SM{sm_version}"
+        logger.warning(f"Skipping {full_name} — registry marks it unverified on {scope}")
+        return [
+            {
+                "module": full_name,
+                "error_type": "UnverifiedCollector",
+                "error_message": f"registry marks this op unverified on {scope}; collection skipped",
+                "classification": "unverified_skipped",
+            }
+        ]
 
     module_name = collection["module"]
     get_module = __import__(module_name, fromlist=[collection["get_func"]])

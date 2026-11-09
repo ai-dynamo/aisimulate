@@ -19,7 +19,8 @@ Deviation: this initial lane explicitly configures eager serving. Its rows
 carry an ``_eager`` kernel_source suffix. Native graph replay/overlap can change
 latency in either direction; qualification must compare graph serving before
 removing this note or claiming default-serving prediction accuracy. The
-registry remains unverified until a real GPU campaign qualifies this boundary.
+registry admits SM103 after native B300 TP1/2/4 boundary validation; other
+targeted SMs remain unverified.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import argparse
 import copy
 import importlib.metadata
 import json
+import logging
 import statistics
 import subprocess
 import sys
@@ -165,6 +167,36 @@ def run_kimi_k31_dsa_worker(*args, device="cuda:0", perf_filename=None):
             "native K31 TP>1 needs exclusive ownership of its GPU group; "
             "use the standalone module on a dedicated allocation, not the per-GPU collector worker"
         )
+    _run_native_case(case, device, perf_filename)
+
+
+def run_kimi_k31_dsa_fullnode(*, perf_filename, limit=None, cases=None):
+    """Own the visible TP group and report every selected case to fullnode.py.
+
+    Cases execute sequentially in fresh subprocesses. The common full-node
+    orchestrator owns case selection, checkpoint identity and finalization;
+    this adapter neither drops cases nor alters native timing boundaries.
+    """
+    if cases is None:
+        getter = (
+            get_kimi_k31_dsa_context_test_cases
+            if "context" in str(perf_filename)
+            else get_kimi_k31_dsa_generation_test_cases
+        )
+        cases = getter()
+    selected = list(cases)[:limit] if limit is not None else list(cases)
+    failed = []
+    for case in selected:
+        try:
+            _run_native_case(case, "cuda:0", perf_filename)
+        except Exception:
+            logging.getLogger(__name__).exception("Native Kimi K3.1 full-node case failed: %s", case)
+            failed.append(case)
+    return {"succeeded": len(selected) - len(failed), "failed": failed}
+
+
+def _run_native_case(case, device, perf_filename):
+    validate_case(case)
     if perf_filename is None:
         raise ValueError("native Kimi K3.1 collection requires an output filename")
     phase = "context" if "context" in str(perf_filename) else "generation"

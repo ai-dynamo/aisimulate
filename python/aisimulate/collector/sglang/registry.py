@@ -14,17 +14,19 @@ REGISTRY: list[OpEntry] = [
         op="kimi_k31_dsa_context_module",
         versions=(VersionRoute("0.0.0.dev1+g41208373c.d20261104", "collector.sglang.collect_kimi_k31_dsa_v1"),),
         get_func="get_kimi_k31_dsa_context_test_cases",
-        run_func="run_kimi_k31_dsa_worker",
+        run_func="run_kimi_k31_dsa_fullnode",
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
-        unverified=True,
+        # Native TP1/2/4 eager boundary verified on B300 (SM103). Other
+        # targeted architectures still require their own native GPU campaign.
+        unverified_sms=(80, 86, 89, 90, 100, 120),
     ),
     OpEntry(
         op="kimi_k31_dsa_generation_module",
         versions=(VersionRoute("0.0.0.dev1+g41208373c.d20261104", "collector.sglang.collect_kimi_k31_dsa_v1"),),
         get_func="get_kimi_k31_dsa_generation_test_cases",
-        run_func="run_kimi_k31_dsa_worker",
+        run_func="run_kimi_k31_dsa_fullnode",
         perf_filename=PerfFile.DSA_GENERATION_MODULE,
-        unverified=True,
+        unverified_sms=(80, 86, 89, 90, 100, 120),
     ),
     OpEntry(
         op="dsv41_module",
