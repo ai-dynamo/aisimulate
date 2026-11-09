@@ -130,7 +130,8 @@ impl G1Manager {
         self.inner.requires_write_preparation()
     }
 
-    /// Blocks one recurrent state occupies; zero without a state cache.
+    /// Blocks one request's state reservation takes, including speculative
+    /// scratch; zero without a state cache.
     pub(crate) fn state_blocks_per_request(&self) -> usize {
         self.inner.state_cache_blocks()
     }

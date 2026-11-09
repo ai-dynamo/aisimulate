@@ -2125,12 +2125,20 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if raw is None:
         return None
     state_cache = StateCacheConfig.model_validate(raw)
-    if state_cache.num_speculative_states is not None and state_cache.num_speculative_states != rank.get("aic_nextn"):
+    # Generic speculation is lowered to aic_nextn later; read its depth here.
+    depth = rank.get("aic_nextn")
+    if depth is None and rank.get("speculation") is not None:
+        from pydantic import TypeAdapter
+
+        from .config.engine import SpeculationConfig
+
+        depth = TypeAdapter(SpeculationConfig).validate_python(rank["speculation"]).num_speculative_tokens
+    if state_cache.num_speculative_states is not None and state_cache.num_speculative_states != depth:
         raise ValueError("state_cache.num_speculative_states must match positive aic_nextn")
     if (
         rank.get("prefix_match_unit") is not None
         and rank["prefix_match_unit"] != rank.get("block_size")
-        and rank.get("aic_nextn") is not None
+        and depth is not None
         and state_cache.num_speculative_states is None
     ):
         raise ValueError("sub-block prefix_match_unit does not support speculative decoding")

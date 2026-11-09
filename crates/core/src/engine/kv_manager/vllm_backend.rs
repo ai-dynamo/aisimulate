@@ -574,10 +574,11 @@ impl VllmKvManager {
         }
     }
 
+    /// Blocks one request's state reservation takes: working state plus speculative scratch.
     pub(crate) fn state_cache_blocks(&self) -> usize {
         self.state_cache
             .as_ref()
-            .map_or(0, |state| state.blocks_per_state)
+            .map_or(0, |state| state.blocks_per_state + state.speculative_blocks)
     }
 
     fn state_write_blocks(&self, lease: &BlockRequestLease, target: usize) -> usize {
@@ -1176,9 +1177,7 @@ impl VllmKvManager {
             .min(lease.entries.len());
         // Token reuse is unchanged. The transferred state always takes fresh
         // blocks: vLLM's NIXL path sends it even after a local token hit.
-        let state_blocks = self.state_cache.as_ref().map_or(0, |manager| {
-            manager.blocks_per_state + manager.speculative_blocks
-        });
+        let state_blocks = self.state_cache_blocks();
         let outcome = match mode {
             super::DestinationReservationMode::ReuseResidentPrefix => {
                 let prefix_candidates = lease.entries[..prompt_blocks]

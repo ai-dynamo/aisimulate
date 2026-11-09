@@ -720,6 +720,18 @@ def test_speculative_state_reservations_reach_native_rank(forbid_estimators, dep
     assert runtime.execution_spec["spec"]["engine"]["rank"]["state_cache"] == state
 
 
+def test_generic_speculation_scratch_states_reach_native_rank(forbid_estimators):
+    state = {"bytes_per_request": 1500, "num_speculative_states": 2}
+    raw = _public(timing="default", state_cache=state, capacity={"type": "fixed", "blocks": 32})
+    raw["engine"]["speculation"] = {"kind": "ngram", "num_speculative_tokens": 2, "acceptance_rates": [1.0, 1.0]}
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["state_cache"] == state
+    assert rank["aic_nextn"] == 2
+
+
 def test_speculative_states_require_capacity_and_matching_depth():
     with pytest.raises(ValidationError, match="must fit"):
         KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "num_speculative_states": 3}})

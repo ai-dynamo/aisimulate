@@ -4827,6 +4827,34 @@ mod state_cache_tests {
     }
 
     #[test]
+    fn pd_destination_capacity_counts_speculative_scratch() {
+        // Two prompt blocks plus one state fit four blocks; the two scratch
+        // states do not, so the handoff is impossible rather than pending.
+        let mut config = pd_args(4, WorkerType::Decode);
+        config.aic_nextn = Some(2);
+        config.state_cache = Some(StateCacheConfig {
+            bytes_per_request: 64,
+            num_speculative_states: Some(2),
+        });
+        let mut destination = VllmCore::new(config);
+        let error = destination
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(94_111)),
+                    request: pd_request(94_110, 8, 3),
+                },
+                true,
+            )
+            .expect_err("prompt, state and scratch exceed the pool");
+        assert!(
+            error
+                .to_string()
+                .contains("destination prompt and state exceed the KV pool capacity")
+        );
+        assert!(destination.pending_destinations.is_empty());
+    }
+
+    #[test]
     fn pd_destination_reuses_resident_tokens_but_still_takes_a_state() {
         // As in vLLM's NIXL path, a same-prompt destination reuses resident
         // token blocks; only its own state is reserved (and transferred).
