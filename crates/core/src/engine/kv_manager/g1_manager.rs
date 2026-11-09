@@ -98,8 +98,12 @@ impl G1Manager {
         self.inner.grouped_prefix_rules()
     }
 
-    pub(crate) fn set_grouped_transfer_rules(&mut self, rules: GroupedTransferRules) {
-        self.inner.set_grouped_transfer_rules(rules);
+    pub(crate) fn set_grouped_transfer_rules(
+        &mut self,
+        rules: GroupedTransferRules,
+        limits: AdmissionLimits,
+    ) {
+        self.inner.set_grouped_transfer_rules(rules, limits);
     }
 
     /// The transfer rules of a grouped cache on a prefill or decode rank.

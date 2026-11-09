@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::AllocationRequirement;
 use super::grouped::{GroupedKvPool, GroupedLease};
 use super::grouped_prefix::{
-    AdmissionLimits, GroupedHit, GroupedPrefixCoordinator, GroupedPrefixRules,
+    AdmissionLimits, GroupedHit, GroupedPrefixCoordinator, GroupedPrefixRules, remaining_bytes,
 };
 use super::grouped_transfer::GroupedTransferRules;
 use super::state_cache_manager::{StateCacheManager, StateRequest};
@@ -455,6 +455,9 @@ pub(crate) struct VllmKvManager {
     grouped_prefix: Option<GroupedPrefixCoordinator>,
     /// The P/D transfer rules of a grouped cache on a prefill or decode rank.
     grouped_transfer: Option<GroupedTransferRules>,
+    /// The limits of the sliding-window admission cap, set with the transfer
+    /// rules. Byte mode counts the need of a load with them.
+    grouped_limits: Option<AdmissionLimits>,
     state_cache: Option<StateCacheManager>,
     prefix_match_unit: Option<usize>,
     /// Scheduler steps begun, for the one-step block lifetimes of the
@@ -490,13 +493,19 @@ impl VllmKvManager {
         self.grouped_prefix = Some(GroupedPrefixCoordinator::new(rules, limits));
     }
 
-    /// Set the P/D transfer rules of the grouped cache.
-    pub(crate) fn set_grouped_transfer_rules(&mut self, rules: GroupedTransferRules) {
+    /// Set the P/D transfer rules of the grouped cache, with the limits of
+    /// the sliding-window admission cap.
+    pub(crate) fn set_grouped_transfer_rules(
+        &mut self,
+        rules: GroupedTransferRules,
+        limits: AdmissionLimits,
+    ) {
         assert!(
             self.grouped.is_some(),
             "grouped transfer rules need a grouped cache"
         );
         self.grouped_transfer = Some(rules);
+        self.grouped_limits = Some(limits);
     }
 
     pub(crate) fn grouped(&self) -> Option<&GroupedKvPool> {
@@ -549,6 +558,7 @@ impl VllmKvManager {
             grouped: None,
             grouped_prefix: None,
             grouped_transfer: None,
+            grouped_limits: None,
             state_cache: None,
             prefix_match_unit: None,
             step: 0,
@@ -1386,10 +1396,12 @@ impl VllmKvManager {
     /// load (V32 `vllm/v1/core/kv_cache_manager.py:522-539`, `:561-579`, V31
     /// `:519-536`, `:558-576`). The whole prompt, with the loaded tokens
     /// computed, must fit the free capacity. The loaded tokens must fit the
-    /// free capacity less what the first passes of the other loads in flight
-    /// take. Without the second test, two loads can take the blocks that
-    /// each first pass needs, and neither request computes its last prompt
-    /// token.
+    /// free capacity less what the other loads in flight still need, as vLLM
+    /// counts it (`first_pass_need`). That count caps a window group at its
+    /// admission blocks, so it can leave out the window block that a first
+    /// pass opens (V32 `vllm/v1/core/single_type_kv_cache_manager.py:213-235`,
+    /// V31 `:216-238`). So, as in vLLM, a load admitted past the cap can wait
+    /// for its first pass, and with no request running the rank stops.
     /// Byte mode charges the projected bytes. Block mode pins the hit blocks
     /// of the local prefix that vLLM's connector path takes, when the mode
     /// reuses the resident prefix (`find_destination_hit`). Only the
@@ -1454,24 +1466,13 @@ impl VllmKvManager {
                 // it lacks (`nixl/pull_scheduler.py:149-156`).
                 let hit_blocks = rules.unit_block().map_or(0, |block| hit.tokens / block);
                 let mut grouped_lease = GroupedLease::default();
-                // The first pass computes `transfer..prompt`. Its count equals
-                // vLLM's `_request_remaining_blocks` (V32 `sched:3060-3076`,
-                // V31 `:3003-3017`) for full attention, for a ring (0, V32
-                // `single:1190-1201`, V31 `:1214-1225`) and for a Mamba-type
-                // state: 1 block when the last prompt token starts a block,
-                // else 0 (V32 `single:1724-1731`, `:1768-1773`, V31
-                // `:1762-1769`, `:1806-1811`). Neither counts the previous
-                // state block, which both hold through that pass. vLLM caps a
-                // window group at its admission blocks (V32 `single:213-226`,
-                // V31 `:216-229`), so replay can count more there. Grouped
-                // replay has no speculative tokens.
-                grouped_lease.first_pass_need = coordinator.allocation_blocks(
-                    &block_lease,
-                    prompt,
-                    transfer,
-                    prompt,
-                    self.step,
-                ) as u64;
+                // What the load still needs for its whole prompt, as vLLM's
+                // `_request_remaining_blocks` counts it (V31
+                // `sched:3003-3017`, V32 `sched:3060-3076`), with the
+                // admission cap of a window group (V31 `single:216-229`, V32
+                // `single:213-226`). Grouped replay has no speculative tokens.
+                grouped_lease.first_pass_need =
+                    coordinator.remaining_blocks(&block_lease, prompt, transfer, prompt) as u64;
                 grouped_lease.block_lease = Some(block_lease);
                 (
                     grouped_lease,
@@ -1498,9 +1499,13 @@ impl VllmKvManager {
                 }
                 let mut grouped_lease =
                     grouped_lease.expect("a successful allocation sets the lease");
-                // The first pass charges the projection of the whole prompt
-                // less the one of the load, as `GroupedKvPool::allocate` does.
-                grouped_lease.first_pass_need = prompt_bytes - load_bytes;
+                // The same count in bytes, where a state group holds its
+                // fixed blocks already.
+                let limits = self
+                    .grouped_limits
+                    .expect("the limits come with the transfer rules");
+                grouped_lease.first_pass_need =
+                    remaining_bytes(grouped.groups(), transfer, prompt, limits);
                 (grouped_lease, None, full_blocks)
             }
         };

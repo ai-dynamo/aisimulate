@@ -794,6 +794,66 @@ fn sliding_window_admission_reserves_the_window_plus_the_in_flight_tokens() {
 }
 
 #[test]
+fn remaining_blocks_follow_vllm_for_every_group_kind() {
+    // GLM at 4,352 of 10,000 tokens: full attention 5 - 2 = 3, the ring 0,
+    // and each KDA group 1, or 2 with a valid checkpoint at 8,704.
+    // The checkpoint passes the five conditions of V32 `iface:1125-1146`
+    // for the query 4,352..10,000 at 9,999 / 2,176 * 2,176 = 8,704, and
+    // vLLM counts min(5 - 2, 1 + 1) = 2 per KDA group (V32
+    // `single:1724-1773`).
+    for (version, checkpoint, expected) in [
+        (VllmRuleVersion::V0_31_0, false, 7),
+        (VllmRuleVersion::V0_32_0, false, 7),
+        (VllmRuleVersion::V0_32_0, true, 11),
+    ] {
+        let groups = groups_glm(checkpoint);
+        let coordinator = with_limits(rules_glm(version, checkpoint));
+        let mut kv = kv_pool(&groups, 64);
+        let pool = kv.block_pool_mut().unwrap();
+        let mut lease = coordinator.new_lease();
+        assert!(coordinator.allocate(pool, &mut lease, 10_000, 0, 4_352, 1));
+        assert_eq!(
+            coordinator.remaining_blocks(&lease, 10_000, 4_352, 10_000),
+            expected
+        );
+    }
+    // A 16-token window at 64 of 65 tokens: 5 blocks. One batch of 32 tokens
+    // caps it at cdiv(15 + 32, 16) + 1 = 4, equal to the 4 held, so 0.
+    // One batch of 8,192 tokens caps it at 514, so 5 - 4 = 1 (V31
+    // `single:216-238`, `iface:859-866`).
+    let groups = [attention("window", 16, Some(16))];
+    let limits = AdmissionLimits {
+        max_in_flight_tokens: 32,
+        max_model_len: usize::MAX,
+    };
+    for (coordinator, expected) in [
+        (GroupedPrefixCoordinator::new(rules(&groups, 16), limits), 0),
+        (with_limits(rules(&groups, 16)), 1),
+    ] {
+        let mut kv = kv_pool(&groups, 16);
+        let pool = kv.block_pool_mut().unwrap();
+        let mut lease = coordinator.new_lease();
+        assert!(coordinator.allocate(pool, &mut lease, 65, 0, 64, 1));
+        assert_eq!(coordinator.remaining_blocks(&lease, 65, 64, 65), expected);
+    }
+}
+
+#[test]
+fn remaining_bytes_saturate_without_limits() {
+    // A window of 1-token blocks with no model length and no budget: the cap
+    // saturates at usize::MAX and does not bind, so 12 - 10 = 2 blocks.
+    let window = FpmCacheGroup {
+        page_size_bytes: 10,
+        ..attention("w", 1, Some(4))
+    };
+    let limits = AdmissionLimits {
+        max_in_flight_tokens: usize::MAX,
+        max_model_len: usize::MAX,
+    };
+    assert_eq!(remaining_bytes(&[window], 10, 12, limits), 20);
+}
+
+#[test]
 fn state_group_hits_only_at_a_kept_boundary() {
     // single:1487-1564 scans aligned ends right to left for one cached
     // state block. pool:198-224: every group of the spec group must hold

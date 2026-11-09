@@ -988,6 +988,19 @@ impl VllmCore {
             let capacity_bytes = args
                 .kv_cache_capacity_bytes
                 .expect("validated grouped cache capacity");
+            // The limits of the sliding-window admission cap. The block-mode
+            // gate requires `max_model_len`, and a byte-mode rank can run
+            // without it. A missing limit counts as `usize::MAX`.
+            debug_assert!(
+                !args.enable_prefix_caching || args.max_model_len.is_some(),
+                "validated max_model_len"
+            );
+            let limits = AdmissionLimits {
+                max_in_flight_tokens: args
+                    .max_concurrent_batches
+                    .saturating_mul(args.max_num_batched_tokens.unwrap_or(usize::MAX)),
+                max_model_len: args.max_model_len.unwrap_or(usize::MAX),
+            };
             if args.enable_prefix_caching {
                 let unit = args
                     .prefix_match_unit
@@ -1004,15 +1017,7 @@ impl VllmCore {
                     capacity_bytes,
                     args.kv_cache_groups[0].page_size_bytes,
                 ));
-                kv_manager.set_grouped_prefix_rules(
-                    rules,
-                    AdmissionLimits {
-                        max_in_flight_tokens: args
-                            .max_concurrent_batches
-                            .saturating_mul(args.max_num_batched_tokens.unwrap_or(usize::MAX)),
-                        max_model_len: args.max_model_len.expect("validated max_model_len"),
-                    },
-                );
+                kv_manager.set_grouped_prefix_rules(rules, limits);
             } else {
                 kv_manager.set_grouped_cache(GroupedKvPool::new(
                     args.kv_cache_groups.clone(),
@@ -1023,6 +1028,7 @@ impl VllmCore {
                 kv_manager.set_grouped_transfer_rules(
                     GroupedTransferRules::new(&args.kv_cache_groups)
                         .expect("validated grouped transfer rules"),
+                    limits,
                 );
             }
         }

@@ -14,7 +14,7 @@ use crate::engine::trace::TraceCollector;
 use crate::engine::{HandoffId, HandoffTransferTiming};
 use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
 
-use super::core::VllmCore;
+use super::core::{RequestStatus, VllmCore};
 
 /// Decode queries `(active_tokens, mean_context, token_bound)` and prefill
 /// queries `(batch, new_tokens, prefix_tokens)`.
@@ -1566,6 +1566,63 @@ fn grouped_destination_keeps_the_first_pass_need_of_each_load() {
     assert_eq!(block_pool(&core).active_blocks(), 5);
     drain_pd(&mut core, &mut trace, &mut step, 5);
     assert!(core.is_drained());
+}
+
+#[test]
+fn grouped_destination_caps_the_first_pass_need_of_a_window_group() {
+    // Five pages and one batch of 32 tokens, so the window cap is
+    // cdiv(15 + 32, 16) + 1 = 4 blocks in both modes (V31
+    // `vllm/v1/kv_cache_interface.py:859-866`). A load of 65 tokens loads 64,
+    // and its window holds cdiv(64, 16) = 4 blocks, null blocks included. So
+    // vLLM counts min(5, 4) - 4 = 0 window blocks for the rest of the prompt
+    // (V31 `vllm/v1/core/single_type_kv_cache_manager.py:216-238`), though
+    // the first pass opens window block 4. The state counts 1 block in block
+    // mode, as token 65 opens a new state block, and 0 bytes in byte mode,
+    // which holds its state block already. So a distinct second load passes
+    // the load test at once: 2 + 1 <= 3 free blocks in block mode, and
+    // 300 + 0 <= 300 free bytes for a prompt of 66 tokens in byte mode.
+    let block = {
+        let mut args = prefix_core(window_transfer_groups(), 500, 32, 16, "0.31.0").args;
+        args.worker_type = WorkerType::Decode;
+        VllmCore::new(args)
+    };
+    let byte = pd_core(window_transfer_groups(), 500, 32, WorkerType::Decode, None);
+    for (mut core, need, second_prompt, held) in [(block, 1, 65, 4), (byte, 0, 66, 5)] {
+        let first = HandoffId::new(Uuid::from_u128(1781));
+        assert_eq!(
+            reserve_grouped(&mut core, first, pd_request(1780, 65, 2)),
+            Some(0)
+        );
+        assert_eq!(core.kv_manager.grouped_inflight_need(), need);
+        let second = HandoffId::new(Uuid::from_u128(1783));
+        let request = DirectRequest {
+            tokens: (1_000..1_000 + second_prompt).collect(),
+            ..pd_request(1782, 0, 2)
+        };
+        assert_eq!(reserve_grouped(&mut core, second, request), Some(0));
+        // Then the first load cannot run its first pass, as in vLLM. In block
+        // mode each first pass needs a window block and a state block, and 1
+        // block is free. In byte mode the first load needs a window page, and
+        // no byte is free. A waiting request does not preempt, and the
+        // waiting loop stops at the first request that does not fit (V31
+        // `vllm/v1/core/sched/scheduler.py:1223-1230`). So neither load runs,
+        // and with no request running the rank stops.
+        activate(&mut core, first);
+        activate(&mut core, second);
+        let mut trace = TraceCollector::default();
+        let mut step = 0;
+        for _ in 0..3 {
+            assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+        }
+        assert!(core.state.running.is_empty());
+        for id in [1780, 1782] {
+            assert_eq!(
+                core.state.requests[&Uuid::from_u128(id)].status,
+                RequestStatus::Waiting
+            );
+        }
+        assert_eq!(grouped_pool(&core).active_blocks(), held);
+    }
 }
 
 #[test]

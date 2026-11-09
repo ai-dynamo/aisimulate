@@ -20,9 +20,10 @@ pub(crate) struct GroupedLease {
     bytes: u64,
     /// The copies of every group in block mode.
     pub(crate) block_lease: Option<GroupedBlockLease>,
-    /// What the first pass of a destination load still takes: blocks in
-    /// block mode, bytes in byte mode. 0 once that pass has allocated, and
-    /// on every other lease.
+    /// What a destination load still needs for its whole prompt, as vLLM's
+    /// `_request_remaining_blocks` counts it: blocks in block mode, bytes in
+    /// byte mode. 0 once its first pass has allocated, and on every other
+    /// lease.
     pub(crate) first_pass_need: u64,
 }
 
@@ -448,6 +449,10 @@ impl GroupedKvPool {
             GroupedMode::Bytes => 0,
             GroupedMode::Blocks(blocks) => blocks.bytes(blocks.inactive_cached_blocks()),
         }
+    }
+
+    pub(crate) fn groups(&self) -> &[FpmCacheGroup] {
+        &self.groups
     }
 
     pub(crate) fn block_pool(&self) -> Option<&GroupedBlockPool> {

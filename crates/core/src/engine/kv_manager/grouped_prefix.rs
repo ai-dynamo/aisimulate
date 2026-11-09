@@ -510,7 +510,9 @@ pub(crate) struct AdmissionLimits {
 
 /// `SlidingWindowSpec.max_admission_blocks_per_request` (v0.31
 /// `iface:859-866`, v0.32 `iface:878-885`), without multi-module speculative
-/// decoding.
+/// decoding. Without `max_model_len` and a step budget, both limits are
+/// `usize::MAX`. The cap is then at least `usize::MAX / B`, so it does not
+/// bind.
 fn window_admission_blocks(
     window: usize,
     block: usize,
@@ -521,7 +523,45 @@ fn window_admission_blocks(
         .saturating_add(max_in_flight_tokens)
         .min(max_model_len)
         .div_ceil(block)
-        + 1
+        .saturating_add(1)
+}
+
+/// `GroupedPrefixCoordinator::remaining_blocks` in byte mode, which keeps no
+/// blocks: the bytes that a request still needs to hold its `tokens` tokens
+/// after `computed` tokens, as vLLM's `_request_remaining_blocks` counts them
+/// (V31 `sched:3003-3017`, V32 `sched:3060-3076`). Each group that is not a
+/// state group holds `cdiv(computed, B)` blocks, null blocks included, and
+/// counts `page_size_bytes` for each block up to `cdiv(tokens, B)` (V31
+/// `single:232-238`, V32 `single:229-235`). A group with a sliding window
+/// counts up to the admission cap (V31 `single:216-229`, V32
+/// `single:213-226`). That is a sliding-window attention group, or a
+/// convolution group, which always has a window. Byte-mode P/D accepts such
+/// a group, and `FpmCacheGroup::block_range` counts it as a window. A state
+/// group counts 0, as it holds its fixed blocks for the whole request.
+pub(crate) fn remaining_bytes(
+    groups: &[FpmCacheGroup],
+    computed: usize,
+    tokens: usize,
+    limits: AdmissionLimits,
+) -> u64 {
+    groups
+        .iter()
+        .filter(|group| group.kind != FpmCacheKind::State)
+        .map(|group| {
+            let block = group.block_size_tokens as usize;
+            let mut required = tokens.div_ceil(block);
+            if let Some(window) = group.sliding_window {
+                required = required.min(window_admission_blocks(
+                    window as usize,
+                    block,
+                    limits.max_in_flight_tokens,
+                    limits.max_model_len,
+                ));
+            }
+            (required.saturating_sub(computed.div_ceil(block)) as u64)
+                .saturating_mul(group.page_size_bytes)
+        })
+        .fold(0, u64::saturating_add)
 }
 
 /// The first end, a multiple of `step` at most `max`, with `needed`
@@ -1427,18 +1467,82 @@ impl GroupedPrefixCoordinator {
         (plan, fresh, releases)
     }
 
-    /// The fresh blocks that `allocate` takes for `computed_before..target`,
-    /// planned on a copy of the lease.
-    pub(crate) fn allocation_blocks(
+    /// vLLM's `_request_remaining_blocks`: the blocks that a request with
+    /// `lease` still needs to hold its `tokens` tokens after `computed` tokens
+    /// (V31 `sched:3003-3017`, V32 `sched:3060-3076`). When vLLM admits an
+    /// async load, it keeps the sum over its prefills in flight free (V31
+    /// `sched:1194-1204`, `:3032-3036`, `mgr:570-576`, V32 `sched:1241-1251`,
+    /// `:3088-3092`, `mgr:573-579`). vLLM counts at most `max_model_len`
+    /// tokens, and no replay request has more. Grouped replay has no
+    /// speculative tokens, so the speculative terms are 0 (V31 `sched:3017`,
+    /// V32 `sched:3064-3065`). Per group, with `len` the blocks that the
+    /// request holds, null blocks included:
+    ///
+    /// - Full attention: `max(cdiv(tokens, B) - len, 0)` (V31
+    ///   `single:232-238`, V32 `single:229-235`).
+    /// - Sliding window: the same, with `cdiv(tokens, B)` capped at the
+    ///   admission blocks (V31 `single:216-229`, V32 `single:213-226`).
+    /// - State: `len` is `cdiv(computed, B)`. With `n = cdiv(tokens, B) -
+    ///   len`, the count is 0 for `n = 0`, 1 for `n = 1`, and 1 plus a valid
+    ///   checkpoint block for `n >= 2` (V31 `single:1762-1811`, V32
+    ///   `single:1724-1773`). `prompt` is the prefill end, which the query
+    ///   must reach for a checkpoint (V32 `single:1643-1674`). vLLM adds one
+    ///   block while a partial state block waits for its copy (V31
+    ///   `single:1770-1777`, V32 `single:1732-1739`). After the first
+    ///   allocation, such a block is by default a state cached at the
+    ///   prompt's partial tail, with a hash block below the state block (V31
+    ///   `single:2094-2138`, V32 `single:2067-2103`). Replay takes no copy of
+    ///   such a block, so this count adds none.
+    /// - Ring: 0 while the request holds its block, else 1 (V31
+    ///   `single:1214-1225`, V32 `single:1190-1201`).
+    pub(crate) fn remaining_blocks(
         &self,
         lease: &GroupedBlockLease,
         prompt: usize,
-        computed_before: usize,
-        target: usize,
-        step: u64,
+        computed: usize,
+        tokens: usize,
     ) -> usize {
-        self.plan_allocation(&mut lease.clone(), prompt, computed_before, target, step)
-            .1
+        let rules = &self.rules;
+        rules
+            .groups
+            .iter()
+            .zip(&lease.groups)
+            .map(|(rule, group)| {
+                let block = rule.block;
+                match (rule.kind, group) {
+                    (
+                        GroupRuleKind::FullAttention | GroupRuleKind::SlidingWindow { .. },
+                        GroupLease::Attention { copies, .. },
+                    ) => {
+                        let mut required = tokens.div_ceil(block);
+                        if let GroupRuleKind::SlidingWindow { window } = rule.kind {
+                            required = required.min(window_admission_blocks(
+                                window,
+                                block,
+                                self.limits.max_in_flight_tokens,
+                                self.limits.max_model_len,
+                            ));
+                        }
+                        required.saturating_sub(copies.len())
+                    }
+                    (GroupRuleKind::State, GroupLease::State(_)) => {
+                        let n = tokens
+                            .div_ceil(block)
+                            .saturating_sub(computed.div_ceil(block));
+                        let checkpoint = n >= 2
+                            && tokens >= prompt
+                            && rules.checkpoint_valid(
+                                computed,
+                                tokens,
+                                rules.checkpoint_position(tokens),
+                            );
+                        n.min(1) + usize::from(checkpoint)
+                    }
+                    (GroupRuleKind::Ring, GroupLease::Ring { copy }) => usize::from(copy.is_none()),
+                    (kind, group) => unreachable!("rule {kind:?} with lease {group:?}"),
+                }
+            })
+            .sum()
     }
 
     /// Publish the blocks that `computed_after` completes and apply the
