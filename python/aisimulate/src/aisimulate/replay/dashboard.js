@@ -833,7 +833,12 @@ window.AISimReplay = { mount(root, report, options = {}) {
                     finite(pool?.kv_cache_capacity_bytes) &&
                     pool.kv_cache_capacity_bytes > 0
                       ? percent(
-                          pool.kv_cache_used_bytes,
+                          finite(pool.kv_cache_used_bytes)
+                            ? pool.kv_cache_used_bytes +
+                                (finite(pool.kv_cache_cached_bytes)
+                                  ? pool.kv_cache_cached_bytes
+                                  : 0)
+                            : null,
                           pool.kv_cache_capacity_bytes,
                         )
                       : finite(pool?.physical_cache_usage)

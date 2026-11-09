@@ -184,6 +184,12 @@ def test_byte_capacities_and_unknown_metrics_are_preserved(capture):
     assert data["samples"][0]["cache_pct"] == 30
     assert data["samples"][0]["workers"][0]["total_blocks"] is None
     assert data["samples"][0]["workers"][0]["kv_cache_capacity_bytes"] == 800
+    # A grouped prefix-cached rank keeps cached blocks that no request holds. They stay resident, and an
+    # absent field counts as none.
+    row["decode_scheduler_metrics"][1]["kv_cache_cached_bytes"] = 100
+    data = build_replay_dashboard_data({}, capture)
+    assert data["samples"][0]["cache_pct"] == 40
+    assert data["samples"][0]["workers"][1]["kv_cache_cached_bytes"] == 100
     row["decode_scheduler_metrics"].append(
         {"worker_id": 1, "dp_rank": 0, "total_blocks": 4, "physical_cache_usage": 0.5}
     )

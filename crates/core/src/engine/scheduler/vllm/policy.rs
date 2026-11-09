@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts and of the v0.31.0
+// (db9527a46873454610df6dbedf79a36d6bf1a7f6) and v0.32.0
+// (5df63a7203cdb9328d824a27b682e77c7b9928be) grouped KV rules;
+// immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 //! Engine-specific policy for the shared vLLM/TRT-LLM scheduler core.
 //!
@@ -84,17 +87,54 @@ pub(super) enum AdmissionDecision {
     Reject,
 }
 
-/// Grouped cold-cache admission uses the pending forward's physical bytes.
-/// Logical prompt length remains independent of bounded cache residency.
+/// Grouped admission. In byte mode (prefix caching off) the pending
+/// forward's physical bytes decide, and logical prompt length remains
+/// independent of bounded cache residency. With `whole_prompt` (prefix
+/// caching on) the blocks of the whole prompt decide, as vLLM's
+/// `allocate_slots` does by default (`mgr:519-536`). Only a prompt whose
+/// blocks do not fit the empty pool is rejected.
 pub(super) fn decide_grouped_waiting_admission<S: PolicySequence>(
     sequence: &S,
     kv_manager: &G1Manager,
     token_budget: usize,
     enable_chunked_prefill: bool,
     prefill_cost: &PrefillCost,
+    whole_prompt: bool,
 ) -> Option<AdmissionDecision> {
     let pool = kv_manager.grouped()?;
     let required_tokens = sequence.len();
+    if whole_prompt {
+        let blocks = pool.block_pool().expect("block mode");
+        let capacity = blocks.capacity_blocks();
+        // A prompt whose blocks never fit the pool is never admitted. The test
+        // leaves the hit out: the copy and inactive blocks of a hit depend on
+        // the cache, which changes while the request waits.
+        if kv_manager.grouped_cold_admission_blocks(required_tokens) > capacity {
+            return Some(AdmissionDecision::Reject);
+        }
+        // Without chunked prefill, vLLM compares the tokens after the prefix
+        // hit with the budget (v0.31 `sched:1084`, `:1115-1121`, v0.32
+        // `sched:1129`, `:1160-1167`).
+        if token_budget == 0 || (!enable_chunked_prefill && prefill_cost.new_tokens > token_budget)
+        {
+            return Some(AdmissionDecision::Wait);
+        }
+        // Inactive cached blocks are evictable, so only active blocks count
+        // against the request. Contention keeps FIFO and never preempts. A
+        // hit that needs more blocks than the pool waits too. vLLM searches
+        // the hit again at the next step (v0.31 `sched:930-937`,
+        // `:1223-1230`, v0.32 `sched:960-967`, `:1275-1282`), and running
+        // requests can evict the hit blocks in between.
+        return Some(
+            if prefill_cost.new_blocks > capacity - blocks.active_blocks() {
+                AdmissionDecision::Wait
+            } else {
+                AdmissionDecision::Admit {
+                    prefill_cost: prefill_cost.clone(),
+                }
+            },
+        );
+    }
     // A known context whose smallest possible final forward cannot fit will
     // never be admitted, regardless of chunking or competing requests.
     let minimum = pool.required_bytes(required_tokens.saturating_sub(1), required_tokens);
@@ -118,6 +158,16 @@ pub(super) fn decide_grouped_waiting_admission<S: PolicySequence>(
             prefill_cost: prefill_cost.clone(),
         })
     }
+}
+
+/// Whether a waiting request whose allocation fails may preempt running
+/// work. With grouped prefix caching it may not: admission tests the blocks
+/// of the whole prompt, and the allocation then tests the blocks of the
+/// chunk, as vLLM's `allocate_slots` does (`mgr:519-576`). A waiting request
+/// that fails either test stays queued, because vLLM stops its waiting loop
+/// there (v0.31 `sched:1223-1230`, v0.32 `sched:1275-1282`).
+pub(super) fn waiting_allocation_may_preempt(kv_manager: &G1Manager) -> bool {
+    kv_manager.grouped_prefix_rules().is_none()
 }
 
 #[derive(Debug, Clone, Copy)]

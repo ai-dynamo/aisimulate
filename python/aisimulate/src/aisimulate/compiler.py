@@ -25,6 +25,7 @@ from .config.engine import (
     HostWorkerPredictionConfig,
     VisionPredictionConfig,
     WorkerPredictionConfig,
+    fpm_worker_deployment,
     resolve_block_size,
 )
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
@@ -818,6 +819,13 @@ def _worker_engine_args(
         payload["max_model_len"] = effective_context_length
     if cache.prefix_match_unit is not None:
         payload["prefix_match_unit"] = cache.prefix_match_unit
+    deployment = fpm_worker_deployment(engine, worker, role) if cache.prefix_caching else None
+    if deployment is not None and deployment.resources.cache_layout == "grouped":
+        # The rank hashes at the probe's hash block and follows the grouped rules of its vLLM version.
+        payload["prefix_match_unit"] = (
+            cache.prefix_match_unit or deployment.resources.runtime_memory.hash_block_size_tokens
+        )
+        payload["vllm_version"] = engine.backend_version
     if cache.state_cache is not None:
         payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token

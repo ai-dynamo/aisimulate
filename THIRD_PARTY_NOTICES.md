@@ -457,10 +457,11 @@ The identified upstream revision has no root NOTICE file. The repository's
 Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
 
 
-The repository-root file `crates/core/src/engine/kv_manager/grouped_prefix.rs`
-adapts rules of vLLM v0.31.0, immutable commit
-`db9527a46873454610df6dbedf79a36d6bf1a7f6`, and of vLLM v0.32.0, immutable
-commit `5df63a7203cdb9328d824a27b682e77c7b9928be`.
+The repository-root files `crates/core/src/engine/kv_manager/grouped_prefix.rs`
+and `crates/core/src/engine/kv_manager/grouped_prefix_tests.rs` (its test
+module, with cases ported from the upstream tests) adapt rules of vLLM v0.31.0,
+immutable commit `db9527a46873454610df6dbedf79a36d6bf1a7f6`, and of vLLM
+v0.32.0, immutable commit `5df63a7203cdb9328d824a27b682e77c7b9928be`.
 One rule table keyed by the vLLM version holds both rows. From
 `kv_cache_coordinator.py`, `grouped_prefix.rs` adapts the hybrid cache-hit
 lookup over the spec groups, the hit alignment, the scheduler block, the pinning
@@ -482,6 +483,21 @@ it adapts the block of the align split, which is the smallest block of the
 prefix-cacheable groups. From `config/vllm.py`, it adapts the bound on in-flight
 tokens that the admission cap uses. The test module ports cases from the
 upstream tests listed below.
+From the same two revisions, `crates/core/src/engine/kv_manager/vllm_backend.rs`
+adapts, from `kv_cache_manager.py`, the whole-prompt admission cost of
+`allocate_slots` and its test of the first chunk before the hit blocks are
+pinned, and `grouped_prefix.rs` counts the blocks of that first chunk.
+`crates/core/src/engine/scheduler/vllm/policy.rs` adapts the whole-prompt test
+of `allocate_slots` and, from `sched/scheduler.py`, the token budget of a prompt
+without chunked prefill and the stop of the waiting loop at a request that does
+not fit, whose hit is searched again at the next step.
+`crates/core/src/engine/config.rs` and `grouped_prefix.rs` adapt the startup
+check of `kv_cache_utils.py` that the pool holds one request of `max_model_len`
+tokens, with the size of each group from `kv_cache_interface.py`, summed per
+group.
+From `sched/scheduler.py` and `kv_cache_interface.py`, `grouped_prefix.rs` also
+adapts the rule that only a rank with a Mamba layer in align mode splits its
+prefill.
 
 - https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py
 - https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py

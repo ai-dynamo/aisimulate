@@ -235,6 +235,10 @@ pub(crate) struct MockEngineArgs {
     pub kv_cache_groups: Vec<crate::perfmodel::FpmCacheGroup>,
     #[builder(default = "None")]
     pub kv_cache_capacity_bytes: Option<u64>,
+    /// The vLLM release whose grouped-cache rules apply; see
+    /// `EngineConfig::vllm_version`.
+    #[builder(default = "None")]
+    pub vllm_version: Option<String>,
     #[builder(default = "None")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
     #[builder(default = "None")]

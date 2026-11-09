@@ -327,11 +327,14 @@ class KvCachePredictionConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_manual_geometry(self) -> KvCachePredictionConfig:
         infer_state = self.state_cache is not None and self.state_cache.bytes_per_request is None
-        if self.prefix_match_unit is not None:
-            if self.state_cache is None:
-                raise ValueError("prefix_match_unit currently requires state_cache")
-            if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
-                raise ValueError("prefix_match_unit must be a positive divisor of block_size")
+        # Without state_cache, the engine validation checks the unit, because only it sees a grouped FPM profile.
+        if (
+            self.prefix_match_unit is not None
+            and self.state_cache is not None
+            and not infer_state
+            and (self.block_size is None or self.block_size % self.prefix_match_unit)
+        ):
+            raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
@@ -930,6 +933,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
         _validate_fpm_profile(self, {self.mode}, {self.backend})
+        _validate_prediction_prefix_match_unit(self)
         if self.decoder_replay:
             # Keep the pre-supervision configuration path lightweight. Import
             # the canonical model identity only when this runtime feature is
@@ -1264,19 +1268,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         if worker.timing.type != "default":
             raise ValueError("engine.fpm_profile requires default timing for every worker")
         if isinstance(worker, WorkerPredictionConfig):
-            parallel = worker.parallelism
-            deployment = profile.select(
-                model=engine.model,
-                system=worker.hardware or engine.hardware,
-                backend=engine.backend,
-                backend_version=backend_version,
-                worker_type=role,
-                tp_size=parallel.tensor,
-                pp_size=parallel.pipeline,
-                attention_dp_size=parallel.attention_data,
-                moe_tp_size=parallel.moe_tensor,
-                moe_ep_size=parallel.moe_expert,
-            )
+            deployment = fpm_worker_deployment(engine, worker, role)
             deployment.resources.validate_envelope(
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,
@@ -1286,7 +1278,13 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                     raise ValueError("grouped FPM cache supports only aggregated vLLM without speculative decoding")
                 cache = worker.kv_cache
                 if cache.prefix_caching:
-                    raise ValueError("grouped FPM cache requires kv_cache.prefix_caching=false for cold replay")
+                    grouped_prefix_caching_requirements(
+                        deployment,
+                        backend_version=backend_version,
+                        architecture=profile.architecture,
+                        prefix_match_unit=cache.prefix_match_unit,
+                        max_batched_tokens=worker.scheduler.max_batched_tokens,
+                    )
                 if cache.host_offload is not None or cache.g3_offload is not None:
                     raise ValueError("grouped FPM cache supports only HBM; host and G3 offload are unsupported")
                 if cache.capacity.type == "fixed" or cache.bytes_per_token != "auto":
@@ -1295,6 +1293,88 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
                     )
         # Recommendation topology domains and the GPU budget are resolved by
         # lowering to SearchSpace, which validates reachable grouped workers.
+
+
+def fpm_worker_deployment(engine, worker, role: str):
+    """The FPM profile deployment that a prediction worker runs, or None without a profile."""
+    if engine.fpm_profile is None:
+        return None
+    parallel = worker.parallelism
+    return engine.fpm_profile.select(
+        model=engine.model,
+        system=worker.hardware or engine.hardware,
+        backend=engine.backend,
+        backend_version=requested_backend_version(engine.backend_version, "vllm"),
+        worker_type=role,
+        tp_size=parallel.tensor,
+        pp_size=parallel.pipeline,
+        attention_dp_size=parallel.attention_data,
+        moe_tp_size=parallel.moe_tensor,
+        moe_ep_size=parallel.moe_expert,
+    )
+
+
+def grouped_prefix_caching_requirements(
+    deployment,
+    *,
+    backend_version: str | None,
+    architecture: str,
+    prefix_match_unit: int | None,
+    max_batched_tokens: int,
+    field: str = "kv_cache.prefix_caching",
+) -> int:
+    """Check one grouped FPM deployment for prefix caching and return the hash block of its rank.
+
+    The prediction and the sweeper share this rule, and planning turns prefix caching on only when it passes.
+    ``field`` names the setting that turns prefix caching off. The Rust gate also checks the cache group geometry
+    and the pool capacity.
+    """
+    memory = deployment.resources.runtime_memory
+    # The evidence: a runtime probe ran with prefix caching and recorded the hash block that replay must follow.
+    if memory is None or memory.enable_prefix_caching is not True or memory.hash_block_size_tokens is None:
+        raise ValueError(f"grouped FPM cache requires {field}=false for cold replay")
+    groups = deployment.resources.cache_groups
+    if any(group.prefix_cacheable is None for group in groups):
+        raise ValueError(
+            "grouped FPM cache prefix caching requires every cache group to declare prefix_cacheable; "
+            "re-import the runtime probe"
+        )
+    # The Rust rule table has no rule for a convolution group.
+    if any(group.kind == "convolution" for group in groups):
+        raise ValueError(
+            "grouped prefix caching does not support convolution cache groups; turn prefix caching off to replay "
+            "them cold"
+        )
+    if memory.mamba_cache_mode != "align" and any(group.kind == "state" and group.prefix_cacheable for group in groups):
+        raise ValueError(
+            "grouped FPM cache prefix caching requires mamba_cache_mode=align for a prefix-cacheable state group"
+        )
+    if backend_version not in ("0.31.0", "0.32.0"):
+        raise ValueError("grouped FPM cache prefix caching is modeled for vLLM 0.31.0 and 0.32.0 only")
+    if len({group.page_size_bytes for group in groups}) > 1:
+        raise ValueError("grouped FPM cache prefix caching requires equal page_size_bytes across cache groups")
+    hash_block = memory.hash_block_size_tokens
+    if prefix_match_unit is not None and prefix_match_unit != hash_block:
+        raise ValueError(
+            "kv_cache.prefix_match_unit must equal the profile's hash_block_size_tokens for a grouped FPM cache"
+        )
+    # The GLM indexer keeps one state for every 4 tokens, so hits and chunk starts stay on that grid.
+    if architecture == "Glm5NextForConditionalGeneration" and (hash_block % 4 or max_batched_tokens % 4):
+        raise ValueError(
+            "GLM-5.3-Flash prefix caching requires prefix_match_unit and max_batched_tokens that are multiples of 4"
+        )
+    return hash_block
+
+
+def _validate_prediction_prefix_match_unit(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.prefix_match_unit is None or worker.kv_cache.state_cache is not None:
+            continue
+        # A grouped FPM cache with prefix caching hashes at the unit without state_cache.
+        deployment = fpm_worker_deployment(engine, worker, role) if worker.kv_cache.prefix_caching else None
+        if deployment is None or deployment.resources.cache_layout != "grouped":
+            raise ValueError("prefix_match_unit currently requires state_cache")
 
 
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:

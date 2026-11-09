@@ -1108,6 +1108,8 @@ async function main() {
               dp_rank: 0,
               kv_cache_capacity_bytes: 4 * 2 ** 30,
               kv_cache_used_bytes: (index ? 3 : 1) * 2 ** 30,
+              // Retained prefixes stay resident. The first sample has none.
+              ...(index ? { kv_cache_cached_bytes: 2 ** 29 } : {}),
             },
           ];
           sample.host_pools = [
@@ -1192,8 +1194,8 @@ async function main() {
         );
         close(
           (await traces("cache"))[0].y.at(-1),
-          65,
-          "grouped byte utilization",
+          75,
+          "grouped byte utilization with retained prefixes",
         );
         await mode("queue", "preemptions");
         assert.deepEqual(
