@@ -2432,17 +2432,20 @@ def _run_support_mode(args):
     except Exception:
         architecture = None
 
-    # If no version specified, find the latest model-relevant version in the support matrix
+    # Match prediction's current slot even when it has no certification rows.
+    # Trees without slot policy retain their matrix-based compatibility default.
     if not version:
-        matrix = common.get_support_matrix()
-        version = _latest_support_matrix_version(
-            matrix,
-            system,
-            backend,
-            model=model,
-            architecture=architecture,
-            queryable_versions=_queryable_versions(system, backend),
-        )
+        slots = perf_database.get_version_slots(system.lower(), backend.lower())
+        if slots:
+            version = slots["current"]
+        else:
+            version = _latest_support_matrix_version(
+                common.get_support_matrix(),
+                system,
+                backend,
+                model=model,
+                architecture=architecture,
+            )
         if version is None:
             logger.info(
                 "No valid support-matrix backend version found for model=%s system=%s backend=%s",

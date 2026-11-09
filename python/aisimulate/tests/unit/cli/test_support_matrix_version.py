@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from aisimulate.legacy_cli.main import _latest_support_matrix_version, _run_support_mode
+from aisimulate.sdk import perf_database
 
 pytestmark = pytest.mark.unit
 
@@ -162,6 +163,7 @@ def test_latest_support_matrix_version_filters_queryable_versions_before_model_p
 
 
 def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, capsys):
+    monkeypatch.setattr("aisimulate.legacy_cli.main.perf_database.get_version_slots", lambda *_args: None)
     monkeypatch.setattr(
         "aisimulate.legacy_cli.main.get_model_config_from_model_path",
         lambda _model: {"architecture": "UnknownArchitecture"},
@@ -188,42 +190,38 @@ def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, ca
     assert "No valid support-matrix backend version found" in capsys.readouterr().out
 
 
-def test_run_support_mode_ignores_versions_prediction_rejects(monkeypatch, capsys):
-    # A regenerated `next` slot leaves stale support-matrix rows behind; the
-    # default version must be one that prediction accepts.
+@pytest.mark.parametrize(
+    ("system", "backend"),
+    [("h200_sxm", "sglang"), ("a100_sxm", "sglang"), ("h200_sxm", "vllm"), ("h200_sxm", "trtllm")],
+)
+@pytest.mark.parametrize("current_model", [None, "model", "same-architecture-model"])
+def test_run_support_mode_defaults_to_current_certification(monkeypatch, capsys, system, backend, current_model):
+    slots = perf_database.get_version_slots(system, backend)
+    assert slots is not None
+    matrix = [
+        dict(_row(system=system, backend=backend, version=version), Mode="agg", Status="PASS")
+        for version in {"0.0.1", slots.get("previous", "0.0.1")}
+    ]
+    if current_model:
+        matrix.append(
+            dict(
+                _row(model=current_model, system=system, backend=backend, version=slots["current"]),
+                Mode="agg",
+                Status="PASS",
+            )
+        )
     monkeypatch.setattr(
         "aisimulate.legacy_cli.main.get_model_config_from_model_path",
-        lambda _model: {"architecture": "Qwen3ForCausalLM"},
+        lambda _model: {"architecture": "Arch"},
     )
-    monkeypatch.setattr(
-        "aisimulate.legacy_cli.main.common.get_support_matrix",
-        lambda: [
-            _row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.14"),
-            _row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.16"),
-        ],
-    )
-    monkeypatch.setattr(
-        "aisimulate.legacy_cli.main.perf_database.get_version_slots",
-        lambda system, backend: {"current": "0.5.14", "next": "0.5.17"},
-    )
-    checked = []
+    monkeypatch.setattr("aisimulate.legacy_cli.main.common.get_support_matrix", lambda: matrix)
 
-    def check_support(**kwargs):
-        checked.append(kwargs["version"])
-        return SimpleNamespace(
-            agg_supported=True,
-            disagg_supported=True,
-            exact_match=True,
-            architecture=None,
-            agg_total_count=1,
-            disagg_total_count=1,
-        )
-
-    monkeypatch.setattr("aisimulate.legacy_cli.main.common.check_support", check_support)
-
-    _run_support_mode(
-        SimpleNamespace(backend="sglang", backend_version=None, model_path="Qwen/Qwen3-32B", system="b200_sxm")
-    )
-
-    assert checked == ["0.5.14"]
-    assert "Version:         0.5.14" in capsys.readouterr().out
+    versions = [None, "current", slots["current"]]
+    if "previous" in slots:
+        versions.extend(["previous", slots["previous"]])
+    for version in versions:
+        _run_support_mode(SimpleNamespace(backend=backend, backend_version=version, model_path="model", system=system))
+        output = capsys.readouterr().out
+        supported = current_model is not None or version in {"previous", slots.get("previous", "")}
+        assert f"Aggregated Support:    {'YES' if supported else 'NO'}" in output
+        assert f"Version:         {version or slots['current']}" in output
