@@ -5,6 +5,10 @@
 
 Prints the SOURCE_MANIFESTS constant of fpm_memory_observer.py. With --check, compares the hashes
 of the pinned commits with that constant and returns 1 on a difference.
+
+The list of files is the set of keys of the committed constant, which comes from the observer audit.
+The script recomputes the hashes of those files at the pinned tags and checks them. It does not
+discover files: a new file must be added to the list by hand at an audit.
 """
 
 from __future__ import annotations
@@ -23,14 +27,24 @@ VLLM_TAGS: dict[str, tuple[str, str]] = {
 }
 
 
+def _run(vllm_source: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["git", "-C", str(vllm_source), *args], capture_output=True)
+
+
 def _git(vllm_source: Path, *args: str) -> bytes:
-    return subprocess.run(["git", "-C", str(vllm_source), *args], check=True, capture_output=True).stdout
+    result = _run(vllm_source, *args)
+    if result.returncode:
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.decode().strip()}")
+    return result.stdout
 
 
 def build_manifests(vllm_source: Path) -> dict[str, dict[str, str]]:
     manifests: dict[str, dict[str, str]] = {}
     for release, (tag, commit) in VLLM_TAGS.items():
-        if _git(vllm_source, "rev-parse", f"{tag}^{{commit}}").decode().strip() != commit:
+        resolved = _run(vllm_source, "rev-parse", f"{tag}^{{commit}}")
+        if resolved.returncode:
+            raise ValueError(f"{tag} does not resolve to {commit}: {resolved.stderr.decode().strip()}")
+        if resolved.stdout.decode().strip() != commit:
             raise ValueError(f"{tag} does not resolve to {commit}")
         manifests[release] = {
             path: hashlib.sha256(_git(vllm_source, "show", f"{commit}:{path}")).hexdigest()

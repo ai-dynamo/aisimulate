@@ -278,6 +278,9 @@ def test_manifest_script_hashes_the_pinned_commit(tmp_path, monkeypatch):
     assert vllm_source_manifest.main(["--vllm-source", str(repo), "--check"]) == 1
     monkeypatch.setattr(observer, "SOURCE_MANIFESTS", {"9.9.0": {"vllm/a.py": digest}})
     assert vllm_source_manifest.main(["--vllm-source", str(repo), "--check"]) == 0
+    monkeypatch.setattr(vllm_source_manifest, "VLLM_TAGS", {"9.9.0": ("v0.0.0-missing", commit)})
+    with pytest.raises(ValueError, match="does not resolve to"):
+        vllm_source_manifest.build_manifests(repo)
     monkeypatch.setattr(vllm_source_manifest, "VLLM_TAGS", {"9.9.0": ("v9.9.0", "0" * 40)})
     with pytest.raises(ValueError, match="does not resolve to"):
         vllm_source_manifest.build_manifests(repo)
