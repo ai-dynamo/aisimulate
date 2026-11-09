@@ -302,6 +302,8 @@ should start with `aisimulate predict` and `aisimulate recommend`.
 Support queries default to the backend's current version slot. The example
 below currently reports `NO` for both modes because that slot lacks certification
 for this model; generating a starting configuration does not certify support.
+The displayed result and the expected output in `scripts/readme/readme_commands.json`
+track the current slot and certification data; update them together when that data changes.
 
 <!-- readme-check: legacy-cli -->
 ```bash

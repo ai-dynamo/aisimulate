@@ -170,6 +170,10 @@ def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, ca
         lambda _model: {"architecture": "UnknownArchitecture"},
     )
     monkeypatch.setattr(
+        "aisimulate.sdk.utils.get_model_config_from_model_path",
+        lambda _model: {"architecture": "UnknownArchitecture"},
+    )
+    monkeypatch.setattr(
         "aisimulate.legacy_cli.main.common.get_support_matrix",
         lambda: [_row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.10")],
     )
@@ -189,14 +193,51 @@ def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, ca
     )
 
     assert "No valid support-matrix backend version found" in capsys.readouterr().out
+    result = cli_support("local-unknown-model", "b200_sxm", backend="sglang")
+    assert tuple(result) == (False, False)
+    assert not result.exact_match
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_version", "supported"), [(None, "2.0", False), ("", "2.0", False), ("1.0", "1.0", True)]
+)
+def test_support_without_slots_uses_latest_model_version(monkeypatch, capsys, version, expected_version, supported):
+    monkeypatch.setattr("aisimulate.legacy_cli.main.perf_database.get_version_slots", lambda *_args, **_kwargs: None)
+    for path in ("aisimulate.legacy_cli.main", "aisimulate.sdk.utils"):
+        monkeypatch.setattr(f"{path}.get_model_config_from_model_path", lambda _model: {"architecture": "Arch"})
+    matrix = [
+        dict(_row(system="external", version=v), Mode=mode, Status=status)
+        for v, status in [("1.0", "PASS"), ("2.0", "FAIL")]
+        for mode in ("agg", "disagg")
+    ]
+    matrix.append(dict(_row(model="other-model", system="external", version="9.0"), Mode="agg", Status="PASS"))
+    monkeypatch.setattr("aisimulate.legacy_cli.main.common.get_support_matrix", lambda: matrix)
+
+    _run_support_mode(SimpleNamespace(backend="sglang", backend_version=version, model_path="model", system="external"))
+    output = capsys.readouterr().out
+    assert f"Version:         {expected_version}" in output
+    assert f"Aggregated Support:    {'YES' if supported else 'NO'}" in output
+    assert f"Disaggregated Support: {'YES' if supported else 'NO'}" in output
+    assert tuple(cli_support("model", "external", backend="sglang", backend_version=version)) == (supported, supported)
 
 
 @pytest.mark.parametrize(
     ("system", "backend"),
     [("h200_sxm", "sglang"), ("a100_sxm", "sglang"), ("h200_sxm", "vllm"), ("h200_sxm", "trtllm")],
 )
-@pytest.mark.parametrize("current_model", [None, "model", "same-architecture-model"])
-def test_run_support_mode_defaults_to_current_certification(monkeypatch, capsys, system, backend, current_model):
+@pytest.mark.parametrize(
+    ("current_model", "current_status"),
+    [
+        (None, "PASS"),
+        ("model", "PASS"),
+        ("same-architecture-model", "PASS"),
+        ("model", "FAIL"),
+        ("same-architecture-model", "FAIL"),
+    ],
+)
+def test_run_support_mode_defaults_to_current_certification(
+    monkeypatch, capsys, system, backend, current_model, current_status
+):
     slots = perf_database.get_version_slots(system, backend)
     assert slots is not None
     matrix = [
@@ -208,7 +249,7 @@ def test_run_support_mode_defaults_to_current_certification(monkeypatch, capsys,
             dict(
                 _row(model=current_model, system=system, backend=backend, version=slots["current"]),
                 Mode="agg",
-                Status="PASS",
+                Status=current_status,
             )
         )
     monkeypatch.setattr(
@@ -221,13 +262,17 @@ def test_run_support_mode_defaults_to_current_certification(monkeypatch, capsys,
     )
     monkeypatch.setattr("aisimulate.legacy_cli.main.common.get_support_matrix", lambda: matrix)
 
-    versions = [None, "current", slots["current"]]
+    versions = [None, "", "current", slots["current"]]
     if "previous" in slots:
         versions.extend(["previous", slots["previous"]])
     for version in versions:
         _run_support_mode(SimpleNamespace(backend=backend, backend_version=version, model_path="model", system=system))
         output = capsys.readouterr().out
-        supported = current_model is not None or version in {"previous", slots.get("previous", "")}
+        previous = "previous" in slots and version in {"previous", slots["previous"]}
+        supported = (current_model is not None and current_status == "PASS") or previous
         assert f"Aggregated Support:    {'YES' if supported else 'NO'}" in output
         assert f"Version:         {version or slots['current']}" in output
+        assert ("No matching model or eligible architecture certification rows" in output) == (
+            current_model is None and not previous
+        )
         assert cli_support("model", system, backend=backend, backend_version=version).agg_supported == supported
