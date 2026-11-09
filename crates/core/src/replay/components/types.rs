@@ -29,7 +29,7 @@ impl RequestIdentity for DirectRequest {
     }
 
     fn load_tokens(&self) -> usize {
-        self.tokens.len() + self.max_output_tokens
+        self.tokens.len() + self.effective_max_output_tokens()
     }
 }
 
@@ -47,7 +47,7 @@ impl RequestIdentity for ReplayRequestPayload {
     }
 
     fn load_tokens(&self) -> usize {
-        self.input_length() + self.metadata().max_output_tokens
+        self.input_length() + self.metadata().effective_max_output_tokens()
     }
 }
 

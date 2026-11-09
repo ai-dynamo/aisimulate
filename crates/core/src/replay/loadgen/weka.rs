@@ -3676,6 +3676,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn agentx_client_dispatches_an_overlapping_group_at_its_offset() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":1.0},
+                {"t":0.3,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":200,"status":"completed","requests":[
+                    {"t":0.3,"type":"s","model":"model","in":8,"out":1,"hash_ids":[3,4],"api_time":0.1}
+                ],"models":["model"]},
+                {"t":1.2,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,6]}
+            ]),
+        );
+        let rows = agentx_rows(&path);
+        assert_eq!(row(&rows, "outer:1:inner:0").not_before_ms, 0.0);
+
+        let options = WekaImportOptions {
+            client: WekaClient::Agentx,
+            ..Default::default()
+        };
+        let (graph, _, _) = load_weka_agentic_graph_cached(&path, Some(4), options, false).unwrap();
+        let mut driver =
+            crate::replay::loadgen::WorkloadDriver::new_agentic_trace(graph, 4).unwrap();
+        assert_eq!(driver.pop_ready(0.0, usize::MAX).len(), 1);
+        // The group starts with its spawning turn, the child at its 300 ms offset.
+        assert!(driver.pop_ready(299.0, usize::MAX).is_empty());
+        let child = driver.pop_ready(300.0, usize::MAX);
+        assert_eq!(child.len(), 1);
+        assert!(
+            child[0]
+                .authored_request_id
+                .as_deref()
+                .unwrap()
+                .ends_with("outer:1:inner:0")
+        );
+    }
+
     fn agentx_rows(path: &Path) -> Vec<AgenticMooncakeRow> {
         let options = WekaImportOptions {
             client: WekaClient::Agentx,

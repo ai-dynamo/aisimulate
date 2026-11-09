@@ -787,7 +787,9 @@ impl SglangCore {
         request
     }
 
-    fn complete_source(&mut self, mut request: SglangRequest) {
+    /// `pipeline_fill_ms` is the time the request's last forward still spends in later PP stages;
+    /// a pass-completed request gets it in `resolve_pass`, once that forward is priced.
+    fn complete_source(&mut self, mut request: SglangRequest, pipeline_fill_ms: f64) {
         self.batch_is_full = false;
         let uuid = request.uuid;
         self.active_request_ids.remove(&uuid);
@@ -799,13 +801,14 @@ impl SglangCore {
             cache_materialized_prefix(&mut request, &mut self.kv_manager, &self.config);
         }
         let published = request.cached_tokens() > cached_before;
-        let transfer_timing = prefill_handoff_transfer_timing(
+        let mut transfer_timing = prefill_handoff_transfer_timing(
             request.prompt_len(),
             self.config.kv_transfer_bandwidth,
             self.config.kv_transfer_bytes_per_token,
             0,
             self.config.kv_transfer_timing_mode,
         );
+        transfer_timing.pipeline_fill_ms = pipeline_fill_ms;
         let payload = HeldSglangPrefill { request };
         let released = match self.source_holds.complete_source(uuid, payload) {
             SourceCompletion::Release(payload) => {
@@ -1603,8 +1606,11 @@ impl SglangCore {
             Vec::new()
         };
         for request in decode.completed_requests.drain(..) {
-            self.complete_source(request);
+            self.complete_source(request, 0.0);
         }
+        // Under the host loop, this pass observes the forward the previous one launched.
+        let observed_fill_ms =
+            self.config.pipeline_fill_passes * self.last_forward_ms.unwrap_or(0.0);
         self.last_forward_ms = None;
         let (end_ms, mut output_signals, observed_forward, launch) = match &mut self.host {
             Some(host) => {
@@ -1686,7 +1692,7 @@ impl SglangCore {
                 );
                 terminals.append(&mut finishing_inflight);
                 for request in terminals {
-                    self.complete_source(request);
+                    self.complete_source(request, observed_fill_ms);
                 }
                 (
                     Some(end_ms),

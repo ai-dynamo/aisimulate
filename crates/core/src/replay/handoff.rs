@@ -466,7 +466,9 @@ impl HandoffCoordinatorCore {
                     handoff_id: self.handoff_id,
                     delay_ms: transfer_timing
                         .delay_ms(transferable_prompt_tokens)
-                        .unwrap_or(self.fallback_transfer_delay_ms),
+                        .unwrap_or(
+                            self.fallback_transfer_delay_ms + transfer_timing.pipeline_fill_ms,
+                        ),
                 }),
             ]);
         }

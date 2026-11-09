@@ -1386,6 +1386,12 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+        if worker.scheduler.load_balance_method != "round_robin" and (
+            role != "decode" or engine.mode != "disaggregated"
+        ):
+            raise ValueError(
+                f"workers.{role}.scheduler.load_balance_method is supported only for the disaggregated decode role"
+            )
 
 
 def _validate_decode_radix_cache(*, backends: set[str], workers, speculative: bool) -> None:

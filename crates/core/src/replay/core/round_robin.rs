@@ -299,6 +299,14 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
         self
     }
 
+    fn release_load(&mut self, request_id: Uuid) {
+        if let Some((scheduler_id, tokens)) = self.assigned.remove(&request_id)
+            && let Some(load) = self.loads.get_mut(&scheduler_id)
+        {
+            *load = load.saturating_sub(tokens);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new_starting_at(workers: Vec<WorkerTopology>, next: usize) -> Self {
         let mut placement = Self::new(workers);
@@ -353,10 +361,14 @@ where
             let index = self.next % active_count;
             let balanced = (self.token_balance && preferred_dp_rank.is_none())
                 .then(|| {
-                    let all: Vec<usize> = self.workers.values().flatten().copied().collect();
                     // Least-loaded scheduler; ties fall to the next in turn.
-                    (0..all.len())
-                        .map(|offset| all[(index + offset) % all.len()])
+                    self.workers
+                        .values()
+                        .flatten()
+                        .copied()
+                        .cycle()
+                        .skip(index)
+                        .take(active_count)
                         .min_by_key(|id| self.loads.get(id).copied().unwrap_or(0))
                 })
                 .flatten();
@@ -378,14 +390,16 @@ where
             }
             .expect("active round-robin pool must contain a scheduler");
             self.next = index + 1;
-            if self.token_balance {
-                let tokens = request.load_tokens();
-                *self.loads.entry(scheduler_id).or_default() += tokens;
-                self.assigned.insert(request_id, (scheduler_id, tokens));
-            }
             self.session_pins.insert(session_id, scheduler_id);
             scheduler_id
         };
+        if self.token_balance {
+            // A session-pinned request loads its scheduler too; a re-placed ID drops its old load.
+            self.release_load(request_id);
+            let tokens = request.load_tokens();
+            *self.loads.entry(scheduler_id).or_default() += tokens;
+            self.assigned.insert(request_id, (scheduler_id, tokens));
+        }
         let kv_hints = self
             .hints
             .resolve(&self.workers, request.authored_kv_hints());
@@ -411,11 +425,7 @@ where
     }
 
     fn request_terminal(&mut self, request_id: Uuid, _now_ms: f64) -> Result<Vec<Placement>> {
-        if let Some((scheduler_id, tokens)) = self.assigned.remove(&request_id) {
-            if let Some(load) = self.loads.get_mut(&scheduler_id) {
-                *load = load.saturating_sub(tokens);
-            }
-        }
+        self.release_load(request_id);
         Ok(Vec::new())
     }
 
@@ -684,13 +694,54 @@ mod tests {
                 .collect();
             assert_eq!(placed, expected);
         }
-        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker]).with_token_balance(true);
+        let mut policy =
+            PoolRoundRobinPlacement::<()>::new(vec![worker.clone()]).with_token_balance(true);
         for (ordinal, &prompt) in prompts.iter().enumerate() {
             place(&mut policy, &request(ordinal as u128, prompt));
         }
         PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(0), 0.0)
             .unwrap();
         assert_eq!(place(&mut policy, &request(9, 10)), 0);
+
+        // A session-pinned request loads its scheduler, and the load leaves when it terminates.
+        let place_in = |policy: &mut PoolRoundRobinPlacement<()>, request: &DirectRequest| {
+            immediate(
+                PlacementPolicy::<DirectRequest>::place(
+                    policy,
+                    request,
+                    (),
+                    Some("session".into()),
+                    0.0,
+                )
+                .unwrap(),
+            )
+            .scheduler_id
+        };
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker.clone()])
+            .with_session_affinity(true)
+            .with_token_balance(true);
+        assert_eq!(place_in(&mut policy, &request(20, 10)), 0);
+        assert_eq!(place_in(&mut policy, &request(21, 1_000)), 0);
+        assert_eq!(place(&mut policy, &request(22, 10)), 1);
+        assert_eq!(place(&mut policy, &request(23, 10)), 2);
+        assert_eq!(place(&mut policy, &request(24, 10)), 3);
+        assert_eq!(
+            place(&mut policy, &request(25, 10)),
+            1,
+            "the pinned prompt keeps scheduler 0 the most loaded"
+        );
+        PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(21), 0.0)
+            .unwrap();
+        assert_eq!(policy.loads[&0], 20);
+
+        // Placing an ID again moves its load instead of counting it twice.
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker]).with_token_balance(true);
+        place(&mut policy, &request(30, 1_000));
+        place(&mut policy, &request(30, 1_000));
+        assert_eq!(policy.loads.values().sum::<usize>(), 1_010);
+        PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(30), 0.0)
+            .unwrap();
+        assert_eq!(policy.loads.values().sum::<usize>(), 0);
     }
 
     #[test]

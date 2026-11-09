@@ -692,7 +692,10 @@ class NaiveKVCacheEstimator:
             moe_ep_size=moe_ep_size,
             moe_tp_size=moe_tp_size,
         )
-        estimator.architecture = next(iter(hf_config.get("architectures") or []), None)
+        architectures = hf_config.get("architectures") or []
+        if not isinstance(architectures, list) or not all(isinstance(name, str) for name in architectures):
+            raise ValueError(f"HF config architectures must be a list of strings, got {architectures!r}")
+        estimator.architecture = next(iter(architectures), None)
         return estimator
 
     # ----------------------------- config -> geometry ----------------------------- #

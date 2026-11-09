@@ -1356,6 +1356,10 @@ impl EngineConfig {
             self.decode_speedup_ratio.is_finite() && self.decode_speedup_ratio >= 0.0,
             "decode_speedup_ratio must be finite and non-negative"
         );
+        ensure!(
+            self.pipeline_fill_passes.is_finite() && self.pipeline_fill_passes >= 0.0,
+            "pipeline_fill_passes must be finite and non-negative"
+        );
         if let Some(nextn) = self.aic_nextn {
             normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
             ensure!(

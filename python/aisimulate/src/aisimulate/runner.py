@@ -1704,7 +1704,9 @@ def _materialize_engine_role(
             )
     role_config.pop("worker_type", None)
     role_config.pop("startup_time", None)
-    role_config.pop("load_balance_method", None)
+    load_balance_method = role_config.pop("load_balance_method", None)
+    if load_balance_method not in (None, "round_robin") and role != "decode":
+        raise ValueError(f"{role} load_balance_method={load_balance_method!r} applies only to the decode role")
     model = role_config.pop("aic_model_path", None)
     system = role_config.pop("aic_system", None)
     # Capacity-only input. It has already been consumed by the Python AIC

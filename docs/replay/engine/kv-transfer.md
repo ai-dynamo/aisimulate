@@ -28,7 +28,7 @@ YAML above always resolves the bytes.
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape; DeepSeek V4 uses its FP8 compressed KV and indexer bytes per token, not the dense per-layer formula. It can differ from either worker's `kv_cache.bytes_per_token`. With `state_cache`, `auto` uses the prefill role's resolved `kv_cache.bytes_per_token`. |
+| `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. For DeepSeek V4 it is the per-token share of vLLM's padded `fp8_ds_mla` pool row, which holds the compressed KV and indexer keys, not the dense per-layer formula; without `state_cache` the transfer leaves out V4's sliding-window KV and compressor state (about 26 MB per request for V4 Flash at TP8). It can differ from either worker's `kv_cache.bytes_per_token`. With `state_cache`, `auto` uses the prefill role's resolved `kv_cache.bytes_per_token`. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | fixed | Positive, in decimal GB/s. Bandwidth of each prefill rank's sending link and each decode rank's receiving link; concurrent transfers [share them](#link-sharing). `null` means no transfer delay, not a zero-bandwidth link. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | fixed | `destination_missing` charges only the prompt KV the chosen decode worker does not already hold in its cache. `full_prompt` charges the whole prompt. |
 

@@ -78,10 +78,26 @@ def test_round_robin_decode_keeps_the_default_placement():
     assert runtime.execution_spec["spec"]["adapters"]["placement"]["config"] is None
 
 
-def test_load_balance_method_is_a_decode_setting():
-    config = CorePredictionConfig.model_validate(_public(prefill={"load_balance_method": "total_tokens"}))
-    with pytest.raises(ValueError, match="load_balance_method is supported only for the decode role"):
-        prediction_to_replay_spec(config)
+def test_load_balance_method_is_a_disaggregated_decode_setting():
+    with pytest.raises(ValueError, match="only for the disaggregated decode role"):
+        CorePredictionConfig.model_validate(_public(prefill={"load_balance_method": "total_tokens"}))
+    aggregated = _public()
+    aggregated["engine"]["mode"] = "aggregated"
+    aggregated["engine"]["workers"] = {"aggregated": _worker(load_balance_method="total_tokens")}
+    with pytest.raises(ValueError, match="only for the disaggregated decode role"):
+        CorePredictionConfig.model_validate(aggregated)
+
+
+def test_replay_spec_rejects_load_balance_method_outside_decode():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public()))
+    spec.backend_deployment.prefill_engine_args["load_balance_method"] = "total_tokens"
+    with pytest.raises(ValueError, match="applies only to the decode role"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
+
+
+def test_unaligned_token_budget_chunks_whole_pages():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill={"max_batched_tokens": 2049})))
+    assert spec.backend_deployment.prefill_engine_args["sglang"]["chunked_prefill_size"] == 2048
 
 
 def test_sglang_pd_prefill_accepts_pipeline_stages():
@@ -115,3 +131,10 @@ def test_deepseek_v4_transfer_bytes_follow_its_compressed_cache():
     assert bytes_per_token < 43 * 1024 * 2 // 10
     with pytest.raises(ValueError, match="fp8_ds_mla"):
         estimate_kv_bytes_per_token(FLASH, tp_size=1, pp_size=1, kvcache_quant_mode="bfloat16")
+
+
+def test_malformed_architectures_fail_loudly():
+    from aisimulate_core.sdk.memory.kv_cache import NaiveKVCacheEstimator
+
+    with pytest.raises(ValueError, match="architectures must be a list of strings"):
+        NaiveKVCacheEstimator.from_hf_config({"architectures": "DeepseekV4ForCausalLM"}, tp_size=1, pp_size=1)

@@ -86,20 +86,19 @@ impl HandoffTransferTiming {
     ///
     /// Returns `None` when the source did not provide a complete timing model
     /// or when bandwidth is non-positive. In that case the Replayer may apply
-    /// its configured fallback delay.
+    /// its configured fallback delay, plus `pipeline_fill_ms`.
     pub fn delay_ms(self, destination_missing_tokens: usize) -> Option<f64> {
         let tokens = match self.mode {
             TransferTimingMode::FullPrompt => self.full_prompt_tokens,
             TransferTimingMode::DestinationMissing => destination_missing_tokens,
         };
-        let fill = (self.pipeline_fill_ms > 0.0).then_some(self.pipeline_fill_ms);
         let (Some(bytes_per_token), Some(bandwidth_gb_s)) =
             (self.kv_bytes_per_token, self.bandwidth_gb_s)
         else {
-            return fill;
+            return None;
         };
         if bandwidth_gb_s <= 0.0 {
-            return fill;
+            return None;
         }
 
         Some(
@@ -212,6 +211,15 @@ mod tests {
             ..timing
         };
         assert_eq!(timing.delay_ms(0), None);
+        let filled = HandoffTransferTiming {
+            pipeline_fill_ms: 5.0,
+            ..timing
+        };
+        assert_eq!(
+            filled.delay_ms(0),
+            None,
+            "the fallback delay applies, plus the fill"
+        );
     }
 
     #[test]

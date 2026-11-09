@@ -2138,10 +2138,10 @@ mod source_holds {
         // A PP4 prefill worker retires passes at the per-stage rate; the
         // prompt's last forward still crosses three more stages before its KV
         // can leave, so the handoff waits three of that pass's forwards.
-        let mut args = args();
-        args.speedup_ratio = 1.0;
-        args.pipeline_fill_passes = 3.0;
-        let mut core = SglangCore::new(args);
+        let mut filled = args();
+        filled.speedup_ratio = 1.0;
+        filled.pipeline_fill_passes = 3.0;
+        let mut core = SglangCore::new(filled);
         let request_id = Uuid::from_u128(311);
         let handoff_id = HandoffId::from(Uuid::from_u128(411));
         core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
@@ -2151,6 +2151,10 @@ mod source_holds {
         .unwrap();
 
         let first = execute(&mut core, 0.0);
+        assert!(
+            first.lifecycle_events.is_empty(),
+            "an unfinished prompt holds no source"
+        );
         let terminal = execute(&mut core, first.end_ms);
         let forward_ms = terminal.end_ms - first.end_ms;
         assert!(forward_ms > 0.0);
@@ -2163,6 +2167,81 @@ mod source_holds {
             panic!("expected one held source: {:?}", terminal.lifecycle_events);
         };
         assert!((transfer_timing.pipeline_fill_ms - 3.0 * forward_ms).abs() < 1e-9);
+
+        // Without later stages the handoff carries no fill.
+        let mut core = SglangCore::new(MockEngineArgs {
+            speedup_ratio: 1.0,
+            ..args()
+        });
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: request(request_id),
+        })
+        .unwrap();
+        let first = execute(&mut core, 0.0);
+        let terminal = execute(&mut core, first.end_ms);
+        let [
+            SchedulerLifecycleEvent::SourceHeld {
+                transfer_timing, ..
+            },
+        ] = terminal.lifecycle_events.as_slice()
+        else {
+            panic!("expected one held source: {:?}", terminal.lifecycle_events);
+        };
+        assert_eq!(transfer_timing.pipeline_fill_ms, 0.0);
+    }
+
+    #[test]
+    fn host_loop_pp_prefill_handoff_waits_for_the_observed_forward() {
+        // Under the host loop the hold follows the observation one iteration later;
+        // its fill is counted in the forward that finished the prompt, not the
+        // forward running when it is observed.
+        let mut core = SglangCore::new(
+            MockEngineArgs::builder()
+                .engine_type(EngineType::Sglang)
+                .num_gpu_blocks(16)
+                .block_size(4)
+                .max_num_seqs(Some(2))
+                .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                .speedup_ratio(1.0)
+                .pipeline_fill_passes(3.0)
+                .sglang(Some(SglangArgs {
+                    page_size: Some(4),
+                    chunked_prefill_size: Some(16),
+                    host_loop: true,
+                    ..Default::default()
+                }))
+                .build()
+                .unwrap(),
+        );
+        let request_id = Uuid::from_u128(312);
+        let handoff_id = HandoffId::from(Uuid::from_u128(412));
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: DirectRequest {
+                max_output_tokens: 1,
+                ..request(request_id)
+            },
+        })
+        .unwrap();
+
+        let launched = execute(&mut core, 0.0);
+        let forward_ms = core.last_forward_ms().unwrap();
+        assert!(forward_ms > 0.0);
+        let observed = execute(&mut core, launched.end_ms);
+        let held = observed
+            .lifecycle_events
+            .iter()
+            .find_map(|event| match event {
+                SchedulerLifecycleEvent::SourceHeld {
+                    request_id: held,
+                    transfer_timing,
+                    ..
+                } if *held == request_id => Some(transfer_timing),
+                _ => None,
+            })
+            .expect("the observed extend holds its source");
+        assert!((held.pipeline_fill_ms - 3.0 * forward_ms).abs() < 1e-9);
     }
 
     #[test]

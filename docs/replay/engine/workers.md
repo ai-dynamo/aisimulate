@@ -162,6 +162,7 @@ you raise it.
 > SGLang's 8192-token default.
 
 <a id="pipeline-parallel-sglang-prefill"></a>
+
 ### Pipeline-parallel SGLang prefill
 
 An SGLang disaggregated `prefill` worker accepts `parallelism.pipeline` above

@@ -503,6 +503,10 @@ impl ReplayEngineFactory {
             ));
         }
         if pipeline_size > 1 {
+            // A zero ratio means unscaled; normalize it before dividing by the stages.
+            if role.rank.speedup_ratio == 0.0 {
+                role.rank.speedup_ratio = 1.0;
+            }
             role.rank.speedup_ratio *= pipeline_size as f64;
             role.rank.pipeline_fill_passes = (pipeline_size - 1) as f64;
         }
@@ -1111,6 +1115,15 @@ mod kvcr_tests {
             .role_factory(&config(Backend::Sglang), WorkerStage::Prefill, false)
             .unwrap();
         assert_eq!(prefill.gpus_per_worker().unwrap(), 4);
+        let rank = prefill.factory.config();
+        assert_eq!((rank.speedup_ratio, rank.pipeline_fill_passes), (4.0, 3.0));
+        // Zero means unscaled, so it is one before the stages divide it.
+        let mut unscaled = config(Backend::Sglang);
+        unscaled.rank.speedup_ratio = 0.0;
+        let prefill = ReplayEngineFactory::with_timing_model(Arc::new(Unit))
+            .role_factory(&unscaled, WorkerStage::Prefill, false)
+            .unwrap();
+        assert_eq!(prefill.factory.config().speedup_ratio, 4.0);
         for (backend, stage) in [
             (Backend::Vllm, WorkerStage::Prefill),
             (Backend::Sglang, WorkerStage::Decode),

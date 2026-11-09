@@ -992,10 +992,12 @@ def _worker_engine_args(
     if backend == "sglang" and role != "decode":
         # SGLang chunks a prefill at `--chunked-prefill-size`, the public `max_batched_tokens`. Without it
         # the scheduler keeps its 8192 default, and a PD prefill or aggregate worker launched with a smaller
-        # chunk is priced on passes several times larger than any it runs.
+        # chunk is priced on passes several times larger than any it runs. Replay chunks whole pages,
+        # so an unaligned budget rounds down to one.
         sglang = payload.setdefault("sglang", {})
         assert isinstance(sglang, dict)
-        sglang.setdefault("chunked_prefill_size", worker.scheduler.max_batched_tokens)
+        chunk = max(block_size, worker.scheduler.max_batched_tokens // block_size * block_size)
+        sglang.setdefault("chunked_prefill_size", chunk)
     return payload
 
 
