@@ -1427,10 +1427,12 @@ impl AgenticGraphBuilder {
     }
 
     pub fn finish(self) -> Result<AgenticTrace> {
-        if self.inner.is_empty() {
-            bail!("agentic Mooncake rows did not contain any requests");
-        }
         self.inner.finish()
+    }
+
+    /// Runs `finish`'s checks without compiling the graph.
+    pub(crate) fn validate(mut self) -> Result<()> {
+        self.inner.validate().map(drop)
     }
 }
 
@@ -1612,6 +1614,30 @@ impl AgenticTraceBuilder {
     }
 
     fn finish(mut self) -> Result<AgenticTrace> {
+        let plays = self.validate()?;
+        let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
+        let graph_digest =
+            canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
+        let conversation_lineage = super::lineage::conversation_lineage(&self.nodes);
+
+        Ok(AgenticTrace {
+            block_size: self.header.block_size,
+            source: self.header.source,
+            graph_digest,
+            nodes: self.nodes,
+            plays,
+            conversation_lineage,
+            hash_values,
+        })
+    }
+
+    /// Sorts nodes into graph order and checks the graph contract: at least one
+    /// request, dependency targets, acyclicity, roots and source play ordinals.
+    /// Returns the plays in replay order.
+    fn validate(&mut self) -> Result<Vec<AgenticPlay>> {
+        if self.is_empty() {
+            bail!("agentic Mooncake rows did not contain any requests");
+        }
         self.nodes
             .sort_by(|left, right| left.request_id.cmp(&right.request_id));
         let index_by_id: HashMap<&str, usize> = self
@@ -1716,20 +1742,7 @@ impl AgenticTraceBuilder {
         } else {
             plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         }
-        let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
-        let graph_digest =
-            canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
-        let conversation_lineage = super::lineage::conversation_lineage(&self.nodes);
-
-        Ok(AgenticTrace {
-            block_size: self.header.block_size,
-            source: self.header.source,
-            graph_digest,
-            nodes: self.nodes,
-            plays,
-            conversation_lineage,
-            hash_values,
-        })
+        Ok(plays)
     }
 }
 
@@ -1817,9 +1830,6 @@ impl AgenticTrace {
         let mut builder = AgenticTraceBuilder::new(header)?;
         for (line_idx, row) in rows.into_iter().enumerate() {
             builder.push(line_idx + 1, row)?;
-        }
-        if builder.is_empty() {
-            bail!("agentic Mooncake rows did not contain any requests");
         }
         builder.finish()
     }

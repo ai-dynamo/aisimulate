@@ -978,10 +978,14 @@ mod admission_v0522 {
         assert!(second.admissions.is_empty());
     }
 
-    #[test]
-    fn lpm_keeps_the_owned_continuation_ahead_of_a_longer_hit() {
+    /// LPM orders the continuation first itself; under FIFO it stays queued
+    /// behind a fresh request with a longer cache hit, and admission finds it.
+    #[rstest::rstest]
+    fn admission_runs_the_owned_continuation_first(#[values(false, true)] lpm: bool) {
         let mut args = test_args(64, 4, 8);
-        args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        if lpm {
+            args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        }
         let config = SglangConfig::from_args(&args);
         let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
         let hot = vec![99; 32];
@@ -999,10 +1003,11 @@ mod admission_v0522 {
         waiting.push_back(SglangRequest::new(direct_request(hot, 1), 4, 0));
         waiting.push_back(continuation);
         apply_schedule_policy(&mut waiting, &manager, &config);
-        assert_eq!(waiting.front().unwrap().uuid, id);
+        assert_eq!(waiting.front().unwrap().uuid == id, lpm);
         let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert_eq!(next.can_run[0].uuid, id);
         assert!(next.admissions.is_empty());
+        assert!(!waiting.has_continuation());
     }
 
     #[test]
@@ -3948,6 +3953,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(fpm_args());
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
+        let r3 = Uuid::from_u128(3);
         core.receive(DirectRequest {
             cache_salt: None,
             tokens: (0..4).collect(),
@@ -3983,18 +3989,26 @@ mod forward_pass_metrics {
             images: Vec::new(),
             kv_hint: None,
         });
+        // r3 finishes on the token its prefill forward samples.
+        core.receive(DirectRequest {
+            uuid: Some(r3),
+            ..direct_request((200..204).collect(), 1)
+        });
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
         assert_eq!(
             pass2
                 .output_signals
                 .iter()
-                .map(|s| s.uuid)
+                .map(|s| (s.uuid, s.completed))
                 .collect::<Vec<_>>(),
-            vec![r2],
-            "only the freshly prefilled request emits a token; r1 stalls"
+            vec![(r2, false), (r3, true)],
+            "only the freshly prefilled requests emit a token; r1 stalls"
         );
-        assert_eq!(core.running.len(), 2);
-        assert_eq!(core.running[0].uuid, r1, "FIFO order: r1 stays ahead of r2");
+        assert_eq!(
+            core.running.iter().map(|r| r.uuid).collect::<Vec<_>>(),
+            vec![r1, r2],
+            "FIFO order: r1 stays ahead of r2, and the finished r3 leaves the batch"
+        );
         assert_eq!(core.running[0].output_len(), 1, "r1 did not decode");
         assert_eq!(core.running[1].output_len(), 1);
         let fpm2 = pass2.fpm.as_ref().expect("FPM should be present");
