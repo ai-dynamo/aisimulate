@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -12,7 +13,14 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import execution_evidence, repeatability, runner, runtime_memory, vllm_source_manifest
+from collector.fpm_forward import (
+    execution_evidence,
+    planner,
+    repeatability,
+    runner,
+    runtime_memory,
+    vllm_source_manifest,
+)
 from collector.fpm_forward.native_artifact import validate_native_collection
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 
@@ -344,6 +352,49 @@ def test_patch_release_plan_reloads_exactly(tmp_path):
     source = tmp_path / "source"
     _write_campaign(source, tmp_path / "source-checkpoint.json", plan)
     assert repeatability.load_repeatability_source(source).to_dict() == plan.to_dict()
+
+
+@contextlib.contextmanager
+def _pre_patch_support_plan():
+    """Yield the 0.33.1 plan as the planner made it before patch-release support.
+
+    The memory policy is computed when the plan is serialized, so callers must use the plan inside the block.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(planner, "audited_release", lambda version, audited: version if version in audited else None)
+        legacy = _pending_plan("0.33.1")
+        assert legacy.to_dict()["runtime_memory_policy"] == {
+            "source": "vllm_initialization",
+            "supported_vllm_version": "0.27.0",
+            "selected_vllm_version": "0.33.1",
+            "observation": "unavailable_for_runtime",
+            "evidence_schema_version": 1,
+            "async_scheduling": None,
+        }
+        yield legacy
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_saved_pre_patch_support_collection_plan_is_not_reconstructed(tmp_path):
+    source = tmp_path / "source"
+    with _pre_patch_support_plan() as legacy:
+        legacy_sha256 = legacy.sha256
+        _write_campaign(source, tmp_path / "source-checkpoint.json", legacy)
+    assert legacy_sha256 != _pending_plan("0.33.1").sha256
+    with pytest.raises(ValueError, match="cannot be reconstructed exactly"):
+        repeatability.load_repeatability_source(source)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_saved_pre_patch_support_checkpoint_does_not_resume(tmp_path):
+    with _pre_patch_support_plan() as legacy:
+        legacy_sha256 = legacy.sha256
+    current = _pending_plan("0.33.1")
+    assert legacy_sha256 != current.sha256
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": legacy_sha256, "cells": {}}))
+    with pytest.raises(ValueError, match="FPM checkpoint does not match the current frozen plan"):
+        runner._load_checkpoint(path, current, True)
 
 
 def test_patch_release_memory_finalizes_with_the_audited_release(fake_vllm, tmp_path, monkeypatch):

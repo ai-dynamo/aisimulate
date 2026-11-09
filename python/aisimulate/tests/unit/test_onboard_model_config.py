@@ -1195,6 +1195,20 @@ def test_patch_release_plan_names_its_version_and_the_audited_release(tmp_path, 
     check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
 
 
+def test_saved_pre_patch_support_plan_is_refused(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "aisimulate.support.plan.audited_memory_release",
+            lambda version: version if version in MEMORY_OBSERVATION_VERSIONS else None,
+        )
+        plan = _pending_support_plan(tmp_path, "0.33.1")
+        saved = json.loads((plan / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == _NATIVE_TIMING_POLICY
+    assert saved["prerequisites"][0]["detail"] == _SAVED_PENDING_MEMORY_DETAIL
+    with pytest.raises(ValueError, match="was modified; choose a new output directory"):
+        check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
 @pytest.mark.parametrize("version", ["0.27.1", "0.33.1rc0"])
 def test_refused_patch_versions_keep_the_saved_texts(tmp_path, version):
     saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
