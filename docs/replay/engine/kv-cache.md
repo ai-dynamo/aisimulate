@@ -710,12 +710,18 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 
   As in vLLM, a decode worker makes two tests to reserve a transferred
   request. Its whole prompt must fit the free capacity. Its transferred blocks
-  must also leave free what the first steps of the other transferred requests
-  in flight still take. A request is in flight from its reservation until its
-  first step allocates. vLLM also keeps free what a local prefill in progress
-  still needs, such as the recompute of a preempted request, but replay does
-  not. For a sliding-window group, vLLM applies its admission cap to what a
-  first step takes, and replay counts every block of that step.
+  must also leave free what the prefills in flight still take to hold their
+  known tokens. They include the other transferred requests, from their
+  reservation until their first step allocates. They also include the local
+  prefills in progress, such as the recompute of a preempted request. The
+  count of a sliding-window or `convolution` group stops at its admission
+  cap, as in vLLM. So a transferred request admitted past that cap can wait
+  for its first step. If no other request runs, the decode worker then stops,
+  as in vLLM, and replay ends with an error such as
+  `replay invariant violated: offline disagg replay encountered an effect-free zero-duration pass with 2 in-flight requests remaining`.
+  This needs a prefix-cacheable `state` group, which makes the prefill stop
+  one token short. It also needs a prompt above the cap of a sliding-window
+  or `convolution` group.
 
   A decode worker prices a recompute after a preemption at 0 ms, with or
   without prefix caching. So a request can preempt itself twice at one time,
@@ -724,38 +730,57 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
   of cached keys. If all of them are the same, replay waits for the next
   event. vLLM repeats that recompute until a transfer finishes.
 
+  When a request ends on a prefill or decode worker, the worker first
+  releases the blocks that the request's next step does not need. Examples
+  are the blocks below a window and the previous state block. vLLM does this
+  before it hands the block table to its connector. Then the worker releases
+  the rest.
+
   Each worker can run prefix caching under the conditions above. A decode
-  worker with prefix caching takes its full-attention hit as the local prefix.
-  vLLM's NIXL connector does the same for a model with recurrent state layers.
-  For a profile without such layers vLLM takes the hit that every group agrees
-  on, and replay still takes the full-attention hit.
-  The hit stops before the last prompt token and ends on a full-attention block
-  boundary. If that hit covers all transferred tokens but not their state, vLLM
-  computes the prompt again from the hit that every group agrees on. Replay
-  computes one token. The decode worker keeps the cached blocks of that hit and
-  takes new blocks for the rest. The other groups get no hit, and their blocks
-  arrive with the transfer.
+  worker with prefix caching picks its local prefix as vLLM's NIXL connector
+  does. For a model with recurrent state layers and a full-attention group,
+  that is the full-attention hit. In three cases it is the hit that every
+  group agrees on: the model has no such layers, the profile has no
+  full-attention group, or another group's own hit is deeper. The hit stops
+  before the last prompt token. With a full-attention group, it also ends on
+  a full-attention block boundary. If that hit covers all transferred tokens
+  but not their state, vLLM computes the prompt again from the hit that every
+  group agrees on. Replay computes one token. The decode worker keeps the
+  cached full-attention blocks of that hit and takes new blocks for the rest.
+  While no request holds the cached hit block of a state group, both tests
+  also count it, as in vLLM. The decode worker does not hold that block: the
+  state and the blocks of the other groups arrive with the transfer. If the
+  hit covers all transferred tokens, the two tests count no state hit block.
+  Otherwise, the decode worker drops a state hit block that ends past the hit
+  and does not count it. vLLM drops it too where it truncates the hit, but it
+  truncates at a multiple of the scheduler block. So vLLM can drop more where
+  that block exceeds the full-attention block or, without a full-attention
+  group, a state block.
 
   The known differences above also apply to prefill and decode workers with
   prefix caching. A decode worker also differs from vLLM in these ways:
 
-  - Replay caches no output-token blocks, so in a multi-turn run a decode
-    worker's hit can be shorter than in vLLM. This also holds with a state
-    group, because the decode worker's hit reads only the full-attention
-    groups.
-  - vLLM also looks up each other group's own hit. If a state group's own
-    hit is shorter than the full-attention hit and no request holds its
-    cached block, vLLM's admission check counts that block. For
-    GLM-5.3-Flash, vLLM then drops the block without holding it. Replay gives
-    the group no hit and does not count the block. So replay's admission
-    check can need one block less for each such state group. vLLM keeps a
-    sliding-window group's cached hit blocks inside the window. Replay takes
-    new blocks there, so its block count there is equal or higher.
-  - When another group's hit is deeper than the full-attention hit, vLLM
-    falls back to the hit that every group agrees on. That needs a
-    full-attention block that was evicted while the other group's block
-    stayed cached. Replay keeps the full-attention hit, so it can transfer
-    fewer full-attention blocks than vLLM.
+  - Replay caches no output-token blocks. So in a multi-turn run, a decode
+    worker whose local prefix is the full-attention hit can hit fewer tokens
+    than in vLLM. This also holds with a state group.
+  - vLLM keeps a sliding-window group's cached hit blocks inside the window.
+    Replay takes new blocks there, so its block count there is equal or
+    higher.
+  - vLLM rounds the local prefix down to a multiple of the scheduler block,
+    the least common multiple of the group blocks. When the prefix covers
+    every transferred token, vLLM does not round it down. Replay rounds it
+    down to a multiple of the full-attention block, and does not round it
+    without a full-attention group. The two differ only with hits inside a
+    block. Then the full-attention blocks that a decode worker keeps and
+    transfers can differ from vLLM. So can the state blocks that its two tests
+    count.
+  - When the hash block is smaller than the state block, the transferred
+    tokens can end at the prompt's partial tail, inside a state block. The
+    partial tail is the prompt's last hash boundary. On vLLM 0.32.0, it
+    always lies before the prompt's end. vLLM caches the state there and
+    counts one copy block in what the request still takes. Its first step
+    takes that copy. Replay neither counts nor takes it, so it can count and
+    take one block less per state group.
 
 - **Belady eviction.** The native ReplaySpec field
   `engine.kv_eviction_policy: belady` evicts the block whose next use in the
