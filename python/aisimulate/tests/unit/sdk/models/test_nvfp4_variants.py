@@ -91,6 +91,7 @@ def test_lightning_nvfp4_loads_bundled_quant_config_offline(monkeypatch):
         assert model.model_family == "NEMOTRONH"
         assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
         assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
+        # Auto cache-dtype path preserves checkpoint-inferred FP8 KV.
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
     finally:
         sdk_utils.get_model_config_from_model_path.cache_clear()

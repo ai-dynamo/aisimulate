@@ -19,6 +19,7 @@ checkable parity assertion for the port.
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -1406,6 +1407,200 @@ def test_tolerance_zero_is_noop_margin(monkeypatch):
     adj = out["tolerance_adjusted"]
     assert adj is not None
     assert adj["total_kv_size_bytes"] == out["total_kv_size_bytes"]
+
+
+# --------------------------------------------------------------------------- #
+# context_length -> max_model_len plumbing
+# --------------------------------------------------------------------------- #
+
+
+def test_context_length_forwarded_as_max_model_len(monkeypatch):
+    """estimate_kv_cache forwards context_length to from_request as max_model_len."""
+    received = {}
+
+    def _spy(*args, **kwargs):
+        received.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_spy))
+    with pytest.raises(ValueError, match="unsupported model/backend/GPU"):
+        memory.estimate_kv_cache(
+            "Qwen/Qwen3-32B",
+            "h200_sxm",
+            "trtllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_free",
+            memory_fraction_value=0.9,
+            context_length=4096,
+            allow_naive_fallback=False,
+        )
+    assert received["max_model_len"] == 4096
+
+
+def test_context_length_none_forwards_none(monkeypatch):
+    """When context_length is omitted, max_model_len defaults to None."""
+    received = {}
+
+    def _spy(*args, **kwargs):
+        received.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_spy))
+    with pytest.raises(ValueError, match="unsupported model/backend/GPU"):
+        memory.estimate_kv_cache(
+            "Qwen/Qwen3-32B",
+            "h200_sxm",
+            "trtllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_free",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=False,
+        )
+    assert received["max_model_len"] is None
+
+
+def test_non_swa_capacity_invariant_to_context_length(monkeypatch):
+    """For non-SWA models, capacity is identical with and without context_length.
+
+    Routes through ``estimate_kv_cache`` (the real entry point) so the
+    ``context_length`` parameter is forwarded as ``max_model_len`` to
+    ``from_request``. A synthetic breakdown with a linear
+    ``tokens_from_kv_bytes`` inverse (the default for standard GQA/MHA
+    models) verifies that the budget math is unaffected.
+    """
+    capacity, non_kv, kv_per_token = 141.0 * _GIB, 60.0 * _GIB, 327_680.0
+    bd = _breakdown(non_kv, kv_per_token, capacity)
+
+    monkeypatch.setattr(
+        memory.KVCacheEstimator,
+        "from_request",
+        classmethod(lambda cls, *a, **k: cls(bd)),
+    )
+
+    common = dict(
+        system="h200_sxm",
+        backend="trtllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_free",
+        memory_fraction_value=0.9,
+    )
+    without = memory.estimate_kv_cache("Qwen/Qwen3-32B", **common)
+    with_ctx = memory.estimate_kv_cache("Qwen/Qwen3-32B", context_length=4096, **common)
+
+    assert without["total_kv_size_tokens"] == with_ctx["total_kv_size_tokens"]
+    assert without["total_kv_size_bytes"] == with_ctx["total_kv_size_bytes"]
+
+
+def test_vllm_swa_capacity_uses_context_length_through_native_build(monkeypatch):
+    """Native vLLM SWA capacity must honor deployment context_length.
+
+    Builds a real gpt-oss hybrid model through ``from_request`` (only the
+    backend memory/DB are stubbed) and checks token capacity against an
+    independent ``calc_vllm_swa_batch_cap`` evaluation that uses the same
+    ``context_length``. A second context length and the no-context fallback
+    must disagree, so ignoring ``max_model_len`` in the SWA path fails the test.
+    """
+    from aisimulate_core.sdk.models.helpers import calc_vllm_swa_batch_cap
+
+    built = {}
+    real_get_model = memory.get_model
+
+    def _capture_get_model(*args, **kwargs):
+        model = real_get_model(*args, **kwargs)
+        built["model"] = model
+        return model
+
+    class _StubBackend:
+        def _get_memory_usage(self, *a, **k):
+            return {"weights": 10.0, "activations": 1.0, "others": 1.0, "nccl": 1.0, "kvcache": 0.0}
+
+    class _StubDB:
+        def __init__(self):
+            self.version = "0.19.0"
+            self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
+
+    monkeypatch.setattr(memory, "get_model", _capture_get_model)
+    monkeypatch.setattr(memory, "get_backend", lambda backend: _StubBackend())
+    monkeypatch.setattr(memory.perf_database, "get_database", lambda *a, **k: _StubDB())
+
+    common = dict(
+        model_path="openai/gpt-oss-120b",
+        system="h200_sxm",
+        backend="vllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=1.0,
+    )
+    context_length = 4096
+    out = memory.estimate_kv_cache(**common, context_length=context_length)
+
+    model = built["model"]
+    assert model.config.max_model_len == context_length
+    assert getattr(model, "_backend_name", None) == "vllm"
+
+    bytes_per_elem = model.config.kvcache_quant_mode.value.memory
+    num_kv_heads_per_gpu = (model._num_kv_heads + model.config.tp_size - 1) // model.config.tp_size
+    per_layer = num_kv_heads_per_gpu * model._head_size * 2 * bytes_per_elem
+    num_swa = model._num_layers // model._GPTOSS_ATTN_SCALE_FACTOR
+    num_global = model._num_layers - num_swa
+    block_size = getattr(model.config, "kv_block_size", None) or 16
+    max_batched = getattr(model.config, "max_num_batched_tokens", None) or context_length
+
+    expected = calc_vllm_swa_batch_cap(
+        model._GPTOSS_WINDOW_SIZE,
+        max_batched,
+        context_length,
+        num_global * per_layer,
+        num_swa * per_layer,
+        block_size,
+        float(out["total_kv_size_bytes"]),
+    )
+    assert out["total_kv_size_tokens"] == expected
+    assert expected != model.get_kvcache_max_tokens(float(out["total_kv_size_bytes"]))
+
+    longer = memory.estimate_kv_cache(**common, context_length=context_length * 2)
+    assert longer["total_kv_size_bytes"] == out["total_kv_size_bytes"]
+    assert longer["total_kv_size_tokens"] != out["total_kv_size_tokens"]
+
+    without = memory.estimate_kv_cache(**common)
+    assert without["total_kv_size_bytes"] == out["total_kv_size_bytes"]
+    assert without["total_kv_size_tokens"] == model.get_kvcache_max_tokens(float(without["total_kv_size_bytes"]))
+    assert without["total_kv_size_tokens"] != out["total_kv_size_tokens"]
+
+    # Uncapped SWA reservation: window-1+max_batched < context_length, with a
+    # non-default block size. Expected tokens are computed from the SlidingWindowSpec
+    # formula directly (not via calc_vllm_swa_batch_cap / model helpers).
+    uncapped_ctx = 16384
+    block_size = 64
+    uncapped = memory.estimate_kv_cache(
+        **common, context_length=uncapped_ctx, kv_block_size=block_size
+    )
+    uncapped_model = built["model"]
+    assert uncapped_model.config.max_model_len == uncapped_ctx
+    assert uncapped_model.config.kv_block_size == block_size
+
+    bytes_per_elem = uncapped_model.config.kvcache_quant_mode.value.memory
+    num_kv_heads_per_gpu = (
+        uncapped_model._num_kv_heads + uncapped_model.config.tp_size - 1
+    ) // uncapped_model.config.tp_size
+    per_layer = num_kv_heads_per_gpu * uncapped_model._head_size * 2 * bytes_per_elem
+    num_swa = uncapped_model._num_layers // uncapped_model._GPTOSS_ATTN_SCALE_FACTOR
+    num_global = uncapped_model._num_layers - num_swa
+    max_batched = uncapped_model.config.max_num_batched_tokens
+    assert max_batched == common["max_num_tokens"]
+
+    window = uncapped_model._GPTOSS_WINDOW_SIZE
+    swa_seq_tokens = min(window - 1 + max_batched, uncapped_ctx)
+    assert swa_seq_tokens == window - 1 + max_batched  # uncapped by max_model_len
+    swa_reservation = (math.ceil(swa_seq_tokens / block_size) + 1) * block_size
+    effective_per_token = num_global * per_layer + num_swa * per_layer * swa_reservation / uncapped_ctx
+    expected_uncapped = int(float(uncapped["total_kv_size_bytes"]) / effective_per_token)
+    assert uncapped["total_kv_size_tokens"] == expected_uncapped
+    assert uncapped["total_kv_size_tokens"] != out["total_kv_size_tokens"]
 
 
 def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
