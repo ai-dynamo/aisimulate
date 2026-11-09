@@ -365,11 +365,12 @@ fn full_attention_hit_is_capped_below_the_prompt() {
 }
 
 #[test]
-fn decode_side_hit_takes_full_attention_alone_floored_to_its_block() {
+fn decode_side_hit_of_a_state_model_is_its_full_attention_hit_floored_to_its_block() {
     // A state group above the hash block turns fine-grained hits on, so the
-    // alignment is 4 while the attention block is 16. The decode side keeps
-    // whole attention blocks only (V32 `sched:973-981`) and ignores the state
-    // group's key.
+    // alignment is 4 while the attention block is 16. The state key at 36 is
+    // an own hit of 36, no deeper than the full-attention hit (mgr:360-364),
+    // so the local prefix is that hit, floored to whole attention blocks
+    // (V32 `sched:971-982`).
     let groups = [attention("a", 16, None), state("s", 16, true, false)];
     let coordinator = with_limits(rules(&groups, 4));
     assert_eq!(coordinator.rules.alignment, 4);
@@ -382,7 +383,7 @@ fn decode_side_hit_takes_full_attention_alone_floored_to_its_block() {
     let (ends, tokens) =
         coordinator.full_attention_hit(pool, &request, &coordinator.rules.specs[0], 60);
     assert_eq!((ends, tokens), (vec![16, 32, 36], 36));
-    let hit = coordinator.find_full_attention_hit(pool, &request, 64);
+    let hit = coordinator.find_destination_hit(pool, &request, 64);
     assert_eq!(hit.tokens, 32);
     assert_eq!(hit.junction_tokens, 0);
     assert!(matches!(&hit.per_group[0], GroupHitBlocks::Attention(keys) if keys.len() == 2));
@@ -390,16 +391,133 @@ fn decode_side_hit_takes_full_attention_alone_floored_to_its_block() {
     // The cap at `num_tokens - 1` applies before the floor.
     assert_eq!(
         coordinator
-            .find_full_attention_hit(pool, &lease(33, 4), 33)
+            .find_destination_hit(pool, &lease(33, 4), 33)
             .tokens,
         32
     );
     assert_eq!(
         coordinator
-            .find_full_attention_hit(pool, &lease(32, 4), 32)
+            .find_destination_hit(pool, &lease(32, 4), 32)
             .tokens,
         16
     );
+}
+
+#[test]
+fn decode_side_hit_without_state_layers_is_the_hit_every_group_agrees_on() {
+    // mgr:346-351: without Mamba layers the local prefix is the fixed point.
+    // The window needs one cached block before an aligned end and has one
+    // only at 16, so the hit is 16 with a junction of 48 - 16 = 32.
+    let groups = [
+        attention("full", 16, None),
+        attention("window", 16, Some(17)),
+    ];
+    let coordinator = with_limits(rules(&groups, 16));
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed_many(pool, 0, 16, &[16, 32, 48]);
+    seed(pool, key(1, 16, 16));
+    let hit = coordinator.find_destination_hit(pool, &lease(64, 16), 64);
+    assert_eq!(hit.tokens, 16);
+    assert_eq!(hit.junction_tokens, 32);
+    assert_eq!(
+        hit.per_group[0],
+        GroupHitBlocks::Attention(vec![Some(key(0, 16, 16))])
+    );
+    assert_eq!(hit.per_group[1], GroupHitBlocks::None);
+}
+
+#[test]
+fn decode_side_hit_falls_back_when_another_group_hits_deeper() {
+    // mgr:360-364: a deeper own hit of another group means the fixed point.
+    // The own hits are 32 and 48, and the fixed point finds no state at 32 or
+    // 16, so the local prefix is 0.
+    let groups = [attention("full", 16, None), state("s", 16, true, false)];
+    let coordinator = with_limits(rules(&groups, 16));
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed_many(pool, 0, 16, &[16, 32]);
+    seed(pool, key(1, 16, 48));
+    assert_eq!(
+        coordinator
+            .find_destination_hit(pool, &lease(64, 16), 64)
+            .tokens,
+        0
+    );
+    // A state at 32 is not deeper, so the local prefix is the full-attention
+    // hit of 32 (mgr:366-369).
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed_many(pool, 0, 16, &[16, 32]);
+    seed(pool, key(1, 16, 32));
+    let hit = coordinator.find_destination_hit(pool, &lease(64, 16), 64);
+    assert_eq!(hit.tokens, 32);
+    assert_eq!(hit.junction_tokens, 0);
+}
+
+#[test]
+fn decode_side_hit_that_falls_back_keeps_the_agreed_hit_and_its_junction() {
+    // The own hits are 32 and 48, so the finder falls back (mgr:360-364). The
+    // fixed point is 16 and the longest lookup 32, so the junction is 16, at
+    // vLLM's boundary 16 + 16 = 32 (mgr:312-321). Only full attention keeps
+    // hit blocks.
+    let groups = [attention("full", 16, None), state("s", 16, true, false)];
+    let coordinator = with_limits(rules(&groups, 16));
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed_many(pool, 0, 16, &[16, 32]);
+    seed_many(pool, 1, 16, &[16, 48]);
+    let hit = coordinator.find_destination_hit(pool, &lease(64, 16), 64);
+    assert_eq!(hit.tokens, 16);
+    assert_eq!(hit.junction_tokens, 16);
+    assert_eq!(
+        hit.per_group[0],
+        GroupHitBlocks::Attention(vec![Some(key(0, 16, 16))])
+    );
+    assert_eq!(hit.per_group[1], GroupHitBlocks::None);
+}
+
+#[test]
+fn decode_side_hit_floors_a_fallback_inside_a_block_and_keeps_the_junction_position() {
+    // Fine-grained hits at hash 4 with 16-token blocks. The own hits are 32
+    // and 48, so the finder falls back (mgr:360-364). The fixed point is 20
+    // and the longest lookup 32, so vLLM's boundary is 32 (mgr:312-321). A
+    // load past 20 truncates the hit to the floor 16 (V32 `sched:1007-1018`),
+    // and the junction grows from 12 to 16 to keep the boundary at 32.
+    let groups = [attention("a", 16, None), state("s", 16, true, false)];
+    let coordinator = with_limits(rules(&groups, 4));
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed_many(pool, 0, 4, &[16, 32]);
+    seed_many(pool, 1, 4, &[20, 48]);
+    let hit = coordinator.find_destination_hit(pool, &lease(64, 4), 64);
+    assert_eq!(hit.tokens, 16);
+    assert_eq!(hit.junction_tokens, 16);
+    assert_eq!(
+        hit.per_group[0],
+        GroupHitBlocks::Attention(vec![Some(key(0, 4, 16))])
+    );
+    assert_eq!(hit.per_group[1], GroupHitBlocks::None);
+}
+
+#[test]
+fn decode_side_hit_without_a_full_attention_group_is_the_hit_every_group_agrees_on() {
+    // mgr:346-351: without a full-attention group there is no per-group path.
+    // The window and the state both hit at 16, the fixed point below the cap
+    // of 32, and neither group gets a hit block.
+    let groups = [
+        attention("window", 16, Some(17)),
+        state("s", 16, true, false),
+    ];
+    let coordinator = with_limits(rules(&groups, 16));
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed(pool, key(0, 16, 16));
+    seed(pool, key(1, 16, 16));
+    let hit = coordinator.find_destination_hit(pool, &lease(33, 16), 33);
+    assert_eq!(hit.tokens, 16);
+    assert_eq!(hit.per_group[0], GroupHitBlocks::None);
+    assert_eq!(hit.per_group[1], GroupHitBlocks::None);
 }
 
 #[test]

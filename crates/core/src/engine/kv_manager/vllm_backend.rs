@@ -1390,12 +1390,14 @@ impl VllmKvManager {
     /// take. Without the second test, two loads can take the blocks that
     /// each first pass needs, and neither request computes its last prompt
     /// token.
-    /// Byte mode charges the projected bytes. Block mode pins the local
-    /// full-attention hit, when the mode reuses the resident prefix, and takes
-    /// fresh blocks for the rest. The state groups take fresh running blocks
-    /// in both modes, as the transferred state moves with the blocks. The
-    /// request's prompt is `N` and the loaded tokens end at `T`, so no
-    /// checkpoint block is taken: only a chunk that reaches the prompt does.
+    /// Byte mode charges the projected bytes. Block mode pins the hit blocks
+    /// of the local prefix that vLLM's connector path takes, when the mode
+    /// reuses the resident prefix (`find_destination_hit`). Only the
+    /// full-attention groups have such blocks. Block mode takes fresh blocks
+    /// for the rest. The state groups take fresh running blocks in both
+    /// modes, as the transferred state moves with the blocks. The request's
+    /// prompt is `N` and the loaded tokens end at `T`, so no checkpoint block
+    /// is taken: only a chunk that reaches the prompt does.
     /// A failed reservation leaves the pool as it was.
     fn reserve_grouped_destination(
         &mut self,
@@ -1419,7 +1421,7 @@ impl VllmKvManager {
                     && self.enable_prefix_caching
                     && sequence.enable_prefix_caching();
                 let hit = if reuse {
-                    coordinator.find_full_attention_hit(pool, lease, prompt)
+                    coordinator.find_destination_hit(pool, lease, prompt)
                 } else {
                     coordinator.empty_hit()
                 };

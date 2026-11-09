@@ -702,61 +702,140 @@ impl GroupedPrefixCoordinator {
     }
 
     /// The local prefix of a decode rank that loads a P/D handoff. The NIXL
-    /// connector supports divergent hits (V32 `nixl/connector.py:83-85`). For
-    /// a model with Mamba-type state layers the scheduler then takes the
-    /// full-attention hit alone as the local prefix and lets the connector
-    /// supply the lagging groups (V32 `sched:558-568`, `mgr:345-366`,
-    /// `has_mamba_layers` at `vllm/v1/kv_cache_interface.py:1564-1569`). For
-    /// any other model it takes the hit that every group agrees on. This
-    /// finder takes the full-attention hit for every grouped profile. The hit
-    /// is that of the first full-attention spec group, capped at
-    /// `num_tokens - 1` and floored to that group's block: the scheduler
-    /// presents a block-aligned local hit to the connector, and the sub-block
-    /// tail of a fine-grained hit is loaded again (V32 `sched:973-981`).
-    /// Every other group gets `GroupHitBlocks::None`, and the junction is 0.
-    /// Without a full-attention group the hit is empty.
+    /// connector supports divergent hits (V31 `nixl/connector.py:80-82`, V32
+    /// `nixl/connector.py:83-85`), so the scheduler takes the local prefix
+    /// from `get_computed_blocks_for_connector` (V31 `sched:529-539`, V32
+    /// `sched:558-568`, `mgr:323-369`). Its rules, in order:
     ///
-    /// On a decode rank vLLM drops each group's hit blocks below its skipped
-    /// tokens before it touches them (V32 `single:292-313`). A Mamba group
-    /// skips all but the last computed token (`single:1954-1959`), so vLLM
-    /// never holds a lagging state hit block. Its admission count still adds
-    /// such a cached block when no request holds it (`single:1775-1778`). A
-    /// window group keeps its hit blocks inside the window, where this finder
-    /// takes new blocks. vLLM also falls back to the hit that every group
-    /// agrees on when a lagging hit is deeper than the full-attention hit
-    /// (V32 `mgr:360-364`). This finder leaves that out: a lagging group's
-    /// blocks arrive with the transfer.
-    pub(crate) fn find_full_attention_hit(
+    /// 1. Without Mamba layers or without a full-attention group, the local
+    ///    prefix is the hit that every group agrees on, which
+    ///    `find_longest_hit` finds (`mgr:346-351`). The Mamba layers are the
+    ///    prefix-cacheable state groups (`has_mamba_layers`, V31
+    ///    `iface:1568-1574`, V32 `iface:1563-1569`). The full-attention group
+    ///    is the first spec group (V31 `coord:781-788`, V32 `coord:752-759`).
+    /// 2. Otherwise each spec group is looked up alone, capped at
+    ///    `num_tokens - 1` (`mgr:356-359`, V31 `coord:979-1011`, V32
+    ///    `coord:933-977`).
+    /// 3. If another group hits deeper than the full-attention group, the
+    ///    local prefix is again the hit that every group agrees on
+    ///    (`mgr:360-364`).
+    /// 4. Otherwise the local prefix is the full-attention hit, with a
+    ///    junction of 0 (`mgr:366-369`).
+    /// 5. The scheduler floors the local prefix to the scheduler block before
+    ///    it asks the connector (V31 `sched:941-952`, V32 `sched:971-982`). A
+    ///    load that reaches past the local prefix truncates the hit blocks of
+    ///    every group to the floor (V31 `sched:974-985`, V32
+    ///    `sched:1007-1018`). Otherwise the scheduler keeps the sub-block tail
+    ///    and loads nothing (V31 `sched:986-992`, V32 `sched:1019-1025`). A
+    ///    Mamba list keeps `min(floor / B, len)` blocks (V31 `mgr:852-853`,
+    ///    V32 `mgr:826-827`).
+    ///
+    /// With a full-attention group this finder always floors, so the decode
+    /// rank loads the sub-block tail of a fine-grained hit again, also where
+    /// vLLM keeps it. It floors to the block of the full-attention group, not
+    /// to the scheduler block, the LCM of every group block. The two differ
+    /// only for a fine-grained profile whose full-attention block is below the
+    /// scheduler block. A nonzero junction keeps its position. Without a
+    /// full-attention group nothing is floored.
+    ///
+    /// Only the full-attention groups get hit blocks. On a decode rank vLLM
+    /// drops each group's hit blocks below its skipped tokens before it
+    /// touches them (V31 `single:295-316`, V32 `single:292-313`). A Mamba
+    /// group skips all but the last computed token (V31 `single:1990-1995`,
+    /// V32 `single:1954-1959`), so vLLM never holds a lagging state hit block.
+    /// Its admission count still adds such a cached block when no request
+    /// holds it (V31 `single:1813-1816`, V32 `single:1775-1778`). This finder
+    /// does not count it. A window group keeps its hit blocks inside the
+    /// window, where this finder takes new blocks.
+    pub(crate) fn find_destination_hit(
         &self,
         pool: &GroupedBlockPool,
         lease: &BlockRequestLease,
         num_tokens: usize,
     ) -> GroupedHit {
         let rules = &self.rules;
-        let mut hit = self.empty_hit();
-        let Some(spec) = rules
-            .specs
-            .iter()
-            .find(|spec| spec.kind == GroupRuleKind::FullAttention)
-        else {
-            return hit;
-        };
         if num_tokens == 0 {
-            return hit;
+            return self.empty_hit();
         }
         let max = (num_tokens - 1) / rules.alignment * rules.alignment;
-        let (ends, tokens) = self.full_attention_hit(pool, lease, spec, max);
-        let tokens = tokens / spec.block * spec.block;
-        for &g in &spec.groups {
-            hit.per_group[g] = GroupHitBlocks::Attention(
-                ends.iter()
-                    .take(tokens / spec.block)
-                    .map(|&end| grouped_key(g, lease.prefix_hash_at(end)))
-                    .collect(),
-            );
+        let full = rules
+            .specs
+            .iter()
+            .find(|spec| spec.kind == GroupRuleKind::FullAttention);
+        let mamba = rules
+            .groups
+            .iter()
+            .any(|rule| rule.kind == GroupRuleKind::State);
+        // Rules 2 to 4: the per-group path of a model with Mamba layers.
+        let local = full.filter(|_| mamba).and_then(|spec| {
+            let (ends, tokens) = self.full_attention_hit(pool, lease, spec, max);
+            let deeper = rules
+                .specs
+                .iter()
+                .any(|other| self.own_hit(pool, lease, other, max) > tokens);
+            (!deeper).then_some((spec, ends, tokens))
+        });
+        let mut hit = match local {
+            // The keys of every group of `spec`, no other hit block and no
+            // junction.
+            Some((spec, ends, tokens)) => {
+                let mut hit = self.empty_hit();
+                for &g in &spec.groups {
+                    hit.per_group[g] = GroupHitBlocks::Attention(
+                        ends.iter()
+                            .map(|&end| grouped_key(g, lease.prefix_hash_at(end)))
+                            .collect(),
+                    );
+                }
+                hit.tokens = tokens;
+                hit
+            }
+            // Rules 1 and 3: the fixed point, with no hit block outside full
+            // attention.
+            None => {
+                let mut hit = self.find_longest_hit(pool, lease, num_tokens);
+                for (blocks, rule) in hit.per_group.iter_mut().zip(&rules.groups) {
+                    if rule.kind != GroupRuleKind::FullAttention {
+                        *blocks = GroupHitBlocks::None;
+                    }
+                }
+                hit
+            }
+        };
+        // Rule 5, floored to the full-attention block: only full-attention
+        // groups hold keys here, and each keeps the keys below the floor.
+        if let Some(spec) = full {
+            let floor = hit.tokens / spec.block * spec.block;
+            if hit.junction_tokens > 0 {
+                hit.junction_tokens += hit.tokens - floor;
+            }
+            hit.tokens = floor;
+            for (blocks, rule) in hit.per_group.iter_mut().zip(&rules.groups) {
+                if let GroupHitBlocks::Attention(keys) = blocks {
+                    keys.truncate(floor / rule.block);
+                }
+            }
         }
-        hit.tokens = tokens;
         hit
+    }
+
+    /// The hit of `spec` looked up alone at `max`, as vLLM's per-group lookup
+    /// finds it (V31 `coord:979-1011`, V32 `coord:933-977`).
+    fn own_hit(
+        &self,
+        pool: &GroupedBlockPool,
+        lease: &BlockRequestLease,
+        spec: &SpecGroup,
+        max: usize,
+    ) -> usize {
+        match spec.kind {
+            GroupRuleKind::FullAttention => self.full_attention_hit(pool, lease, spec, max).1,
+            GroupRuleKind::SlidingWindow { window } => {
+                self.window_hit(pool, lease, spec, window, max).0
+            }
+            GroupRuleKind::State => self.state_hit(pool, lease, spec, max),
+            GroupRuleKind::Ring => 0,
+        }
     }
 
     /// Whether every group of `spec` holds a block keyed at `tokens`, as

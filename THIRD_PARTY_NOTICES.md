@@ -471,7 +471,12 @@ group type, the copy of a hit that ends inside a block, the cached partial-tail
 entry, the state retention and the block lifetimes of an allocation, with the
 checkpoint block of v0.32.0. From `kv_cache_manager.py`, it adapts the hit cap,
 the junction of a hit, the whole-prompt block count of an admission and the
-release of the skipped blocks before an allocation. From `sched/scheduler.py`,
+release of the skipped blocks before an allocation.
+From `kv_cache_manager.py`, `kv_cache_coordinator.py` and `sched/scheduler.py`,
+it also adapts the local prefix that a decode rank takes for a KV load: the
+full-attention hit of a model with Mamba layers unless another group hits
+deeper, and otherwise the hit that every group agrees on.
+From `sched/scheduler.py`,
 it adapts the align-mode prefill split, with the checkpoint branch of v0.32.0,
 and the release of a copied hit block at the end of its step. From
 `kv_cache_interface.py`, it adapts the admission cap of a sliding-window group

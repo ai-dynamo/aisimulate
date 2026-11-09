@@ -1666,6 +1666,55 @@ fn grouped_destination_on_vllm_0_32_counts_no_checkpoint_block_for_its_load() {
     assert!(core.is_drained());
 }
 
+/// A full-attention group and a 17-token sliding window, both of 16-token
+/// blocks at 100 bytes a page, with the transfer fields set.
+fn full_and_window_transfer_groups() -> Vec<FpmCacheGroup> {
+    let mut full = group("full", 16, 100, None);
+    full.prefix_cacheable = Some(true);
+    full.transfer_bytes_per_block = Some(100);
+    let mut window = group("window", 16, 100, Some(17));
+    window.prefix_cacheable = Some(true);
+    window.transfer_bytes_per_block = Some(100);
+    vec![full, window]
+}
+
+#[test]
+fn grouped_destination_without_state_layers_loads_past_the_hit_every_group_agrees_on() {
+    let mut args = prefix_core(full_and_window_transfer_groups(), 4_000, 8192, 16, "0.31.0").args;
+    args.worker_type = WorkerType::Decode;
+    let mut core = VllmCore::new(args);
+    let mut trace = TraceCollector::default();
+    let mut step = 0;
+    // Without a state group the load is the whole prompt: cdiv(100, 16) = 7 units.
+    let first = HandoffId::new(Uuid::from_u128(1761));
+    assert_eq!(
+        reserve_grouped(&mut core, first, pd_request(1760, 100, 2)),
+        Some(7)
+    );
+    activate(&mut core, first);
+    // 7 full-attention blocks and the 2 window blocks inside the window of 100.
+    drain_pd(&mut core, &mut trace, &mut step, 9);
+    // The first request cached one window block, the one that ends at its
+    // replay boundary 96, and the full-attention block that ends at 64.
+    let mut shared = BlockRequestLease::new(Uuid::nil(), Vec::new());
+    shared.configure_prefix_hashes(&(0..64).collect::<Vec<u32>>(), 16);
+    assert!(
+        block_pool(&core)
+            .key_hit(0, shared.prefix_hash_at(64).unwrap())
+            .is_some()
+    );
+    // The second prompt shares 64 tokens. Its full-attention hit is 64, but
+    // the window has no cached block before 64, so the hit that every group
+    // agrees on is 0 (`vllm/v1/core/kv_cache_manager.py:346-351`) and all 7
+    // units move.
+    let second = HandoffId::new(Uuid::from_u128(1763));
+    let request = DirectRequest {
+        tokens: (0..64).chain(1_000..1_036).collect(),
+        ..pd_request(1762, 0, 2)
+    };
+    assert_eq!(reserve_grouped(&mut core, second, request), Some(7));
+}
+
 #[test]
 fn grouped_aggregated_rank_builds_no_transfer_rules() {
     // Groups that carry every transfer field, in byte and in block mode.
