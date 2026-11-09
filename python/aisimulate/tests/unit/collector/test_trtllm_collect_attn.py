@@ -28,8 +28,11 @@ def test_every_row_runs_on_the_default_trtllm_backend(op, monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     rows = plan(op, "trtllm", 90).rows
     assert {row[9] for row in rows} == {"TRTLLM"}
-    # Gemma 4's head_dim 512 global layers run there too, as serving runs them.
-    assert any(row[4] == 512 for row in rows)
+    # Gemma 4's head_dim 512 global layers run only on the SM100 family, where
+    # FlashInfer's trtllm-gen FMHA takes them. Elsewhere serving falls back to
+    # AttentionOp, which rejects the head size when it is initialized (skips.py).
+    assert not any(row[4] == 512 for row in rows)
+    assert any(row[4] == 512 for row in plan(op, "trtllm", 100).rows)
 
 
 def test_the_run_function_builds_only_the_trtllm_backend():
