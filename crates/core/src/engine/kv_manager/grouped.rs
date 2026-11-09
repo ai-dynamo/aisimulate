@@ -134,6 +134,7 @@ mod tests {
             block_size_tokens: block,
             page_size_bytes: page,
             sliding_window: window,
+            blocks_per_request: None,
         }
     }
 
