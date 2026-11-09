@@ -37,8 +37,10 @@ from ..config.common import (
     requested_backend_version,
 )
 from ..config.engine import (
+    KvTransferConfig,
     NgramSpeculationConfig,
     ReplayEstimationMode,
+    grouped_pd_requirements,
     grouped_prefix_caching_requirements,
 )
 
@@ -1254,44 +1256,82 @@ class SearchSpace(BaseModel):
         profile = load_fpm_profile(self.fpm_profile)
         if not any(deployment.resources.cache_layout == "grouped" for deployment in profile.deployments):
             return self
-        from .search_space import _fpm_parallel_configs, _parallel_role, _role_runtime
+        from .model_hw import NoViableParallelConfig
+        from .search_space import _fpm_parallel_configs, _parallel_role, _parse_parallel_entry, _role_runtime
+
+        backend_version = self.requested_backend_version("vllm")
+
+        def select(role, shape):
+            return profile.select(
+                model=self.model_name,
+                worker_type="aggregated" if role == "agg" else role,
+                system=self.hardware_sku_for(role),
+                backend="vllm",
+                backend_version=backend_version,
+                tp_size=shape.tp,
+                pp_size=shape.pp,
+                attention_dp_size=shape.dp,
+                moe_tp_size=shape.moe_tp,
+                moe_ep_size=shape.moe_ep,
+            )
+
+        def pinned_pairs():
+            # A pin names its pair, so a pinned pair that fails the rule is a configuration error. The enumeration
+            # drops only the pairs that it builds, and it refuses a pin without a deployment.
+            for entry in self.parallel_configs_by_mode.get("disagg", self.parallel_configs):
+                pin = _parse_parallel_entry(entry, "disagg")
+                try:
+                    pair = select("prefill", pin.prefill.shape), select("decode", pin.decode.shape)
+                except ValueError:
+                    continue
+                yield pair
 
         for mode in self.deployment_mode:
-            configs = _fpm_parallel_configs(self, mode)
+            try:
+                configs = _fpm_parallel_configs(self, mode)
+            except NoViableParallelConfig:
+                # No pair can hand off, and the enumeration skips the mode with that reason.
+                configs = []
             for role in ("agg",) if mode == "agg" else ("prefill", "decode"):
                 for shape in {_parallel_role(config, role).shape for config in configs}:
-                    deployment = profile.select(
-                        model=self.model_name,
-                        worker_type="aggregated" if role == "agg" else role,
-                        system=self.hardware_sku_for(role),
-                        backend="vllm",
-                        backend_version=self.requested_backend_version("vllm"),
-                        tp_size=shape.tp,
-                        pp_size=shape.pp,
-                        attention_dp_size=shape.dp,
-                        moe_tp_size=shape.moe_tp,
-                        moe_ep_size=shape.moe_ep,
-                    )
+                    deployment = select(role, shape)
                     if deployment.resources.cache_layout != "grouped":
                         continue
-                    if role != "agg" or self.aic_nextn or self.speculation is not None:
-                        raise ValueError("grouped FPM cache requires aggregated vLLM without speculative decoding")
-                    if self.agg_enable_prefix_caching:
+                    if self.aic_nextn or self.speculation is not None:
+                        raise ValueError("grouped FPM cache requires vLLM without speculative decoding")
+                    if getattr(self, f"{role}_enable_prefix_caching"):
                         # The search has no prefix_match_unit. Each candidate is checked again with its own budget.
                         grouped_prefix_caching_requirements(
                             deployment,
-                            backend_version=self.requested_backend_version("vllm"),
+                            backend_version=backend_version,
                             architecture=profile.architecture,
                             prefix_match_unit=None,
-                            max_batched_tokens=_role_runtime(self, "vllm", "agg")[0],
-                            field="agg_enable_prefix_caching",
+                            max_batched_tokens=_role_runtime(self, "vllm", role)[0],
+                            field=f"{role}_enable_prefix_caching",
                         )
-                    if self.agg_native_host_offload is not None:
+                    if getattr(self, f"{role}_native_host_offload") is not None:
                         raise ValueError("grouped FPM cache supports only HBM without host offload")
-                    if self.agg_num_gpu_blocks is not None or self.agg_kv_bytes_per_token != "auto":
+                    if (
+                        getattr(self, f"{role}_num_gpu_blocks") is not None
+                        or getattr(self, f"{role}_kv_bytes_per_token") != "auto"
+                    ):
                         raise ValueError(
                             "grouped FPM cache requires profile groups and a byte budget, not scalar capacity"
                         )
+            if mode == "disagg":
+                transfer = (
+                    KvTransferConfig.model_construct(bytes_per_token=self.kv_transfer_bytes_per_token)
+                    if self.kv_transfer_bytes_per_token is not None
+                    else None
+                )
+                # The enumeration keeps only the pairs that grouped_pd_pairable accepts. The other checks hold for
+                # every pair of the search.
+                pairs = list(pinned_pairs())
+                for prefill_shape, decode_shape in dict.fromkeys((c.prefill.shape, c.decode.shape) for c in configs):
+                    pairs.append((select("prefill", prefill_shape), select("decode", decode_shape)))
+                for prefill, decode in pairs:
+                    if "grouped" in (prefill.resources.cache_layout, decode.resources.cache_layout):
+                        grouped_pd_requirements(prefill, decode, backend_version=backend_version, kv_transfer=transfer)
         return self
 
 

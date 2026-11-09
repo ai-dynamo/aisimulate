@@ -274,8 +274,8 @@ def parallel_configs_for(
         if grouped_shapes:
             from .kv_estimate import estimate_grouped_cache_budget
 
-            if deployment_mode != "agg" or nextn:
-                raise ValueError("grouped FPM cache requires aggregated replay without speculation")
+            if nextn:
+                raise ValueError("grouped FPM cache requires replay without speculation")
             if fixed_tokens is not None:
                 raise ValueError("grouped FPM cache cannot use a fixed scalar token capacity")
             for shape in grouped_shapes:
@@ -353,6 +353,7 @@ def _profile_parallel_configs(
     worker_type: str = "aggregated",
 ):
     """Enumerate only declared deployment shapes; replicas do not change a cell."""
+    from aisimulate.config.engine import grouped_pd_pairable
 
     def replicas_for(system, role):
         deployments = [
@@ -373,22 +374,29 @@ def _profile_parallel_configs(
                 moe_ep=deployment.moe_ep,
             )
             replicas.extend(
-                ReplicaParallelConfig(shape=shape, replicas=count)
+                (deployment, ReplicaParallelConfig(shape=shape, replicas=count))
                 for count in range(1, gpu_budget // shape.gpus_per_worker + 1)
             )
         return replicas
 
     replicas = replicas_for(hardware_sku, worker_type if deployment_mode == "agg" else "prefill")
     if deployment_mode == "agg":
-        configs = replicas
+        configs = [replica for _deployment, replica in replicas]
     elif deployment_mode == "disagg":
         decode_replicas = replicas_for(decode_hardware_sku or hardware_sku, "decode")
-        configs = [
-            DisaggParallelConfig(prefill=prefill, decode=decode)
-            for prefill in replicas
-            for decode in decode_replicas
+        pairs = [
+            (prefill_deployment, decode_deployment, DisaggParallelConfig(prefill=prefill, decode=decode))
+            for prefill_deployment, prefill in replicas
+            for decode_deployment, decode in decode_replicas
             if prefill.total_gpus + decode.total_gpus <= gpu_budget
         ]
+        # A pair with a grouped deployment runs only with equal tensor parallelism and identical cache groups. The
+        # search gate checks the rest of the rule for every pair that stays.
+        configs = [config for prefill, decode, config in pairs if grouped_pd_pairable(prefill, decode)]
+        if pairs and not configs:
+            raise NoViableParallelConfig(
+                "no prefill/decode deployment pair with equal tensor parallelism and identical cache groups"
+            )
     else:
         raise ValueError("FPM profiles support only agg or disagg deployment modes")
     return [config for config in configs if min_gpu_budget is None or config.total_gpus >= min_gpu_budget]

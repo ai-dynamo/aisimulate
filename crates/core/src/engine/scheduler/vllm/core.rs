@@ -29,8 +29,8 @@ use crate::engine::common::utils::{
 use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::kv_manager::AllocationRequirement;
 use crate::engine::kv_manager::{
-    AdmissionLimits, G1Manager, GroupedKvPool, GroupedPrefixRules, GroupedTransferRules,
-    VllmRuleVersion,
+    AdmissionLimits, G1Manager, GroupedKvPool, GroupedPoolState, GroupedPrefixRules,
+    GroupedTransferRules, VllmRuleVersion,
 };
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
@@ -76,6 +76,10 @@ pub(crate) struct VllmRequestState {
     admissible_from_pass: u64,
     is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
+    /// Prompt tokens that a decode handoff computes after its load: the
+    /// backoff tokens that the prefill rank left out. The prompt counts as
+    /// prebuilt with them, and the first pass computes them.
+    pub(crate) recompute_tokens: usize,
     /// Cleared on preemption: recomputation has no draft IDs to verify.
     drafts_ready: bool,
     pub(crate) num_preemptions: usize,
@@ -89,6 +93,18 @@ pub(crate) struct VllmRequestState {
     // contains transfer ownership and a destination reservation, so embedding
     // its enum inline would charge every request even when the profile is off.
     host_offload: Option<Box<VllmHostRequestState>>,
+    /// See `VllmCore::defers_readmission`.
+    self_preemption: Option<Box<SelfPreemption>>,
+}
+
+/// A request's last self-preemption on a grouped decode rank.
+struct SelfPreemption {
+    /// The bits of the virtual time and the pool state after the preemption.
+    point: (u64, GroupedPoolState),
+    /// The sequence length and the computed tokens at the preemption.
+    progress: (usize, usize),
+    /// Whether the self-preemption before it had the same point and progress.
+    repeated: bool,
 }
 
 impl VllmRequestState {
@@ -102,9 +118,12 @@ impl VllmRequestState {
         }
     }
 
+    /// Whether the prompt needs no prefill: a decode handoff holds its loaded
+    /// tokens and computes only the backoff tokens in its first pass.
     fn prompt_is_prebuilt(&self) -> bool {
-        self.num_computed_tokens >= self.sequence.num_input_tokens()
-            && self.sequence.num_allocated_tokens() >= self.sequence.num_input_tokens()
+        let prompt = self.sequence.num_input_tokens();
+        self.num_computed_tokens + self.recompute_tokens >= prompt
+            && self.sequence.num_allocated_tokens() + self.recompute_tokens >= prompt
     }
 
     fn debug_assert_invariants(&self, _uuid: Uuid) {
@@ -207,7 +226,10 @@ enum ScheduleOutcome {
     Blocked,
     /// This request cannot use the remaining budget; later running requests may.
     SkippedForAlignment,
-    CurrentPreempted,
+    /// The request preempted itself with this many computed tokens.
+    CurrentPreempted {
+        computed_tokens: usize,
+    },
 }
 
 /// Revisit owned capacity for transfer fences or write preparation requested
@@ -570,6 +592,9 @@ impl SchedulerState {
         let request = self.requests.get_mut(&uuid)?;
         request.status = RequestStatus::Preempted;
         request.num_computed_tokens = 0;
+        // The prompt is recomputed from 0, so no handoff token is left to
+        // recompute and the prompt is no longer prebuilt.
+        request.recompute_tokens = 0;
         request.drafts_ready = false;
         request.num_preemptions += 1;
         self.preemptions_total += 1;
@@ -671,6 +696,8 @@ pub(crate) struct VllmCore {
     active_destination_handoffs: ActiveHandoffRequests,
     next_waiting_order: u64,
     capacity_generation: u64,
+    /// The grouped pool's `retry_epoch` after the last destination retry.
+    grouped_retry_epoch: Option<u64>,
     #[cfg(test)]
     destination_reservation_attempts: usize,
     lifecycle_events: Vec<SchedulerLifecycleEvent>,
@@ -766,7 +793,15 @@ impl ReservedVllmDecode {
             &mut request.sequence.lease,
             kv,
         );
-        request.num_computed_tokens = prompt_len;
+        // A grouped decode rank loads N - backoff tokens and computes the
+        // rest in its first pass (V31 `sched:3052-3096`). The linear path has
+        // no backoff.
+        let backoff = kv_manager
+            .grouped_transfer()
+            .map_or(0, |rules| rules.backoff_tokens())
+            .min(prompt_len);
+        request.num_computed_tokens = prompt_len - backoff;
+        request.recompute_tokens = backoff;
         request.status = RequestStatus::Waiting;
         request.is_decode_handoff = true;
         request
@@ -992,6 +1027,7 @@ impl VllmCore {
             }
         }
         let kv_manager = kv_manager.with_prefix_match_unit(args.prefix_match_unit);
+        let grouped_retry_epoch = kv_manager.grouped().map(GroupedKvPool::retry_epoch);
         Ok(Self {
             kv_manager,
             belady_oracle: None,
@@ -1006,6 +1042,7 @@ impl VllmCore {
             active_destination_handoffs: ActiveHandoffRequests::default(),
             next_waiting_order: 0,
             capacity_generation: 0,
+            grouped_retry_epoch,
             #[cfg(test)]
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
@@ -1110,20 +1147,8 @@ impl VllmCore {
             }
             _ => {}
         }
-        anyhow::ensure!(
-            self.kv_manager.grouped().is_none()
-                || matches!(
-                    &command,
-                    SchedulerCommand::Submit(_)
-                        | SchedulerCommand::CancelRequest { .. }
-                        | SchedulerCommand::SubmitHandoffPrefill { .. }
-                        | SchedulerCommand::ReleaseSource { .. }
-                        | SchedulerCommand::CancelSource { .. }
-                ),
-            "grouped KV caches do not support destination handoff commands"
-        );
-        // An aggregated grouped rank builds no transfer rules, so it can
-        // neither truncate nor price a source.
+        // A grouped rank takes KV handoff commands by its transfer rules,
+        // which only a prefill or decode rank builds.
         anyhow::ensure!(
             self.kv_manager.grouped().is_none()
                 || self.kv_manager.grouped_transfer().is_some()
@@ -1246,6 +1271,9 @@ impl VllmCore {
                     &request.sequence,
                     self.args.num_gpu_blocks,
                     self.kv_manager.state_blocks_per_request(),
+                    self.kv_manager
+                        .grouped_destination_required_bytes(request.sequence.num_input_tokens()),
+                    self.kv_manager.grouped().map(GroupedKvPool::capacity_bytes),
                 ) {
                     anyhow::bail!(message);
                 }
@@ -1328,6 +1356,23 @@ impl VllmCore {
     }
 
     pub(super) fn retry_pending_destinations_at(
+        &mut self,
+        mutation_now_ms: Option<f64>,
+    ) -> Vec<SchedulerLifecycleEvent> {
+        // A grouped pool frees blocks inside a pass and publishes the blocks
+        // of an activation without a generation bump. Either can let the
+        // head reserve, so a change since the last retry makes it due.
+        let epoch = self.kv_manager.grouped().map(GroupedKvPool::retry_epoch);
+        if epoch != self.grouped_retry_epoch {
+            self.bump_capacity_generation();
+        }
+        let events = self.retry_front_destination(mutation_now_ms);
+        // The changes of the attempt itself do not make the next retry due.
+        self.grouped_retry_epoch = self.kv_manager.grouped().map(GroupedKvPool::retry_epoch);
+        events
+    }
+
+    fn retry_front_destination(
         &mut self,
         mutation_now_ms: Option<f64>,
     ) -> Vec<SchedulerLifecycleEvent> {
@@ -1605,11 +1650,13 @@ impl VllmCore {
             admissible_from_pass: 0,
             is_decode_handoff: false,
             num_computed_tokens: 0,
+            recompute_tokens: 0,
             drafts_ready: false,
             num_preemptions: 0,
             cached_prefix_tokens: None,
             cached_tokens_signaled: false,
             host_offload,
+            self_preemption: None,
         }
     }
 
@@ -2202,7 +2249,22 @@ impl VllmCore {
                 }
                 ScheduleOutcome::Blocked => break,
                 ScheduleOutcome::SkippedForAlignment => req_index += 1,
-                ScheduleOutcome::CurrentPreempted => {}
+                ScheduleOutcome::CurrentPreempted { computed_tokens } => {
+                    if let Some(point) = self.grouped_decode_point(now_ms)
+                        && let Some(request) = self.state.requests.get_mut(&uuid)
+                    {
+                        let progress = (request.sequence.len(), computed_tokens);
+                        let repeated = request
+                            .self_preemption
+                            .as_deref()
+                            .is_some_and(|last| last.point == point && last.progress == progress);
+                        request.self_preemption = Some(Box::new(SelfPreemption {
+                            point,
+                            progress,
+                            repeated,
+                        }));
+                    }
+                }
             }
         }
 
@@ -2231,8 +2293,11 @@ impl VllmCore {
             // restore that is waiting for capacity must not starve them. This
             // is modeled on native FCFS `_select_waiting_queue_for_scheduling`,
             // which serves `skipped_waiting` (received remote KV) before
-            // `waiting`, and applies only to decode ranks with G2, in either
-            // scope.
+            // `waiting`, and applies to decode ranks with G2, in either scope.
+            // A grouped decode rank serves them first too, as vLLM drains the
+            // requests that hold KV blocks before the others (v0.31
+            // `sched:886-887`, v0.32 `sched:913-917`). A preempted request
+            // holds none, so it cannot block a loaded handoff there.
             // Native PRIORITY instead compares the two queue heads by
             // (priority, arrival); this engine models only FCFS and never
             // reads request `priority`, so it has no PRIORITY branch.
@@ -2240,7 +2305,7 @@ impl VllmCore {
                 admission.stage_for(false),
                 AdmissionStage::PendingDestinationHead
             ) || (self.args.worker_type == WorkerType::Decode
-                && self.native_host_offload.is_some()
+                && (self.native_host_offload.is_some() || self.kv_manager.grouped().is_some())
                 && self.state.has_materialized_waiting());
             let prioritize_connector_waiting = self.native_host_offload.is_some();
             // A G3 or KVCR restore can wake a connector waiter ahead of one
@@ -2365,12 +2430,14 @@ impl VllmCore {
                     AdmissionDecision::Reject
                 } else {
                     match admission_stage {
+                        // The loaded tokens count as cached. A linear
+                        // handoff loads the whole prompt.
                         AdmissionStage::Materialized => AdmissionDecision::Admit {
                             prefill_cost: PrefillCost {
                                 new_blocks: 0,
                                 new_tokens: 0,
-                                cached_tokens: request.sequence.num_input_tokens(),
-                                active_cached_tokens: request.sequence.num_input_tokens(),
+                                cached_tokens: request.num_computed_tokens,
+                                active_cached_tokens: request.num_computed_tokens,
                             },
                         },
                         AdmissionStage::PendingDestinationHead => {
@@ -2423,7 +2490,18 @@ impl VllmCore {
                 }
             };
             let prefill_cost = match decision {
-                AdmissionDecision::Admit { prefill_cost } => prefill_cost,
+                AdmissionDecision::Admit { .. } if self.defers_readmission(uuid, now_ms) => break,
+                AdmissionDecision::Admit { prefill_cost } => {
+                    if let Some(last) = self
+                        .state
+                        .requests
+                        .get_mut(&uuid)
+                        .and_then(|request| request.self_preemption.as_deref_mut())
+                    {
+                        last.repeated = false;
+                    }
+                    prefill_cost
+                }
                 AdmissionDecision::Wait => {
                     break;
                 }
@@ -2556,7 +2634,7 @@ impl VllmCore {
                 }
                 ScheduleOutcome::Blocked
                 | ScheduleOutcome::SkippedForAlignment
-                | ScheduleOutcome::CurrentPreempted => break,
+                | ScheduleOutcome::CurrentPreempted { .. } => break,
             }
         }
 
@@ -2797,6 +2875,32 @@ impl VllmCore {
         if capacity_improved {
             self.bump_capacity_generation();
         }
+    }
+
+    /// The bits of the virtual time and the pool state of a grouped decode
+    /// rank.
+    fn grouped_decode_point(&self, now_ms: f64) -> Option<(u64, GroupedPoolState)> {
+        if self.args.worker_type != WorkerType::Decode {
+            return None;
+        }
+        let pool = self.kv_manager.grouped()?;
+        Some((now_ms.to_bits(), pool.state()))
+    }
+
+    /// A grouped decode rank prices the recompute after a preemption at 0 ms,
+    /// so a turn that ends in the same self-preemption can repeat at one time
+    /// without end. A request that preempted itself twice at this time, with
+    /// the same sequence length and computed tokens and the same pool state,
+    /// waits until the time or the pool state changes. vLLM repeats the turn
+    /// until a transfer finishes.
+    fn defers_readmission(&self, uuid: Uuid, now_ms: f64) -> bool {
+        self.state
+            .requests
+            .get(&uuid)
+            .and_then(|request| request.self_preemption.as_deref())
+            .is_some_and(|last| {
+                last.repeated && Some(last.point) == self.grouped_decode_point(now_ms)
+            })
     }
 
     /// Preempt a running request under the active scheduling policy.
@@ -3053,6 +3157,7 @@ impl VllmCore {
             0
         };
         let request = &self.state.requests[&uuid];
+        let computed_before_step = request.num_computed_tokens;
         let effective_computed_before = request.num_computed_tokens + cached_prefix_tokens;
         let prompt_len = request.sequence.num_input_tokens();
         let prompt_before = effective_computed_before.min(prompt_len);
@@ -3224,7 +3329,9 @@ impl VllmCore {
                 }
             }
             if preempted.uuid == uuid {
-                return Ok(ScheduleOutcome::CurrentPreempted);
+                return Ok(ScheduleOutcome::CurrentPreempted {
+                    computed_tokens: computed_before_step,
+                });
             }
         }
 

@@ -175,15 +175,14 @@ impl GroupedTransferRules {
     /// The trailing prompt tokens that the prefill rank does not compute and
     /// the decode rank recomputes: 1 with a Mamba state, else 0 (V31
     /// `nixl/base_scheduler.py:385-398`, V32 `:379-394`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ReservedVllmDecode::activate reads it when a decode rank activates a grouped handoff"
-        )
-    )]
     pub(crate) fn backoff_tokens(&self) -> usize {
         self.backoff_tokens
+    }
+
+    /// The `block_size_tokens` of the full-attention groups, the transfer
+    /// unit. `None` without a full-attention group.
+    pub(crate) fn unit_block(&self) -> Option<usize> {
+        self.unit_block.map(|block| block as usize)
     }
 
     /// The prompt tokens that the prefill rank computes and the decode rank

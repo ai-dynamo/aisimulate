@@ -334,7 +334,11 @@ def _deployment(
     prefill, prefill_state = _resolve_state_cache(engine, prefill)
     decode, decode_state = _resolve_state_cache(engine, engine.workers.decode)
     transfer_bytes_per_token = None
-    if engine.kv_transfer is not None:
+    prefill_deployment = fpm_worker_deployment(engine, prefill, "prefill")
+    # A grouped prefill rank derives its transfer payload from its cache groups.
+    if engine.kv_transfer is not None and (
+        prefill_deployment is None or prefill_deployment.resources.cache_layout != "grouped"
+    ):
         configured = engine.kv_transfer.bytes_per_token
         if configured == "auto" and prefill_state is not None:
             # The state estimate already resolved this role's token KV bytes.
@@ -819,12 +823,15 @@ def _worker_engine_args(
         payload["max_model_len"] = effective_context_length
     if cache.prefix_match_unit is not None:
         payload["prefix_match_unit"] = cache.prefix_match_unit
-    deployment = fpm_worker_deployment(engine, worker, role) if cache.prefix_caching else None
+    deployment = fpm_worker_deployment(engine, worker, role) if cache.prefix_caching or role != "aggregated" else None
     if deployment is not None and deployment.resources.cache_layout == "grouped":
-        # The rank hashes at the probe's hash block and follows the grouped rules of its vLLM version.
-        payload["prefix_match_unit"] = (
-            cache.prefix_match_unit or deployment.resources.runtime_memory.hash_block_size_tokens
-        )
+        if cache.prefix_caching:
+            # The rank hashes at the probe's hash block.
+            payload["prefix_match_unit"] = (
+                cache.prefix_match_unit or deployment.resources.runtime_memory.hash_block_size_tokens
+            )
+        # The rank follows the grouped rules of its vLLM version: the prefix-caching rules, and on a prefill or
+        # decode rank also the transfer rules.
         payload["vllm_version"] = engine.backend_version
     if cache.state_cache is not None:
         payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}

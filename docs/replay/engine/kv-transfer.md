@@ -22,13 +22,17 @@ engine:
 Omitting `kv_transfer` is the same as `{}`: the transfer happens with no delay.
 A native ReplaySpec or Sweeper search space whose prefill rank sets a positive
 `kv_transfer_bandwidth` without `kv_transfer_bytes_per_token` is rejected; the
-YAML above always resolves the bytes.
+YAML above always resolves the bytes. A rank with `kv_cache_groups` is the
+exception. It takes the bytes from its groups, and it refuses
+`kv_transfer_bytes_per_token`. The YAML leaves that field out for such a rank.
+A native ReplaySpec needs identical `kv_cache_groups` on its prefill and decode
+roles.
 
 ## Transfer fields
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. It can differ from either worker's `kv_cache.bytes_per_token`. With `state_cache`, `auto` uses the prefill role's resolved `kv_cache.bytes_per_token`. |
+| `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. It can differ from either worker's `kv_cache.bytes_per_token`. With `state_cache`, `auto` uses the prefill role's resolved `kv_cache.bytes_per_token`. A grouped FPM profile ignores this field and must leave it at `auto`. The transfer then moves what vLLM moves for each cache group. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | fixed | Positive, in decimal GB/s. Bandwidth of each prefill rank's sending link and each decode rank's receiving link; concurrent transfers [share them](#link-sharing). `null` means no transfer delay, not a zero-bandwidth link. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | fixed | `destination_missing` charges only the prompt KV the chosen decode worker does not already hold in its cache. `full_prompt` charges the whole prompt. |
 
@@ -47,6 +51,43 @@ receives the request sooner, so prefix reuse on the decode side can lower TTFT
 even when compute time does not change. `state_bytes` is the prefill role's
 `state_cache.bytes_per_request` for
 [hybrid-KV models](kv-cache.md#state-cache), and 0 otherwise.
+
+For a [grouped profile](kv-cache.md#other-cache-modes) the transferred bytes
+are `full_blocks × bytes_per_full_block + fixed_bytes`. `full_blocks` is the
+number of full-attention blocks of the transferred prompt, a partly filled last
+block included. When the prefill stops one token short, the transferred prompt
+leaves out the last prompt token, as the [request flow](#handoff) shows.
+`fixed_bytes` holds one block of each state group and the window blocks of
+each group with a `sliding_window`. Such a group moves only the blocks of the
+transferred prompt inside the window of the next token. The decode worker
+allocates only these blocks. With `T` transferred tokens, that is
+`cdiv(T, block) - floor(max(0, T - window + 1) / block)` blocks. `block` is the
+group's own `block_size_tokens`. The bytes of one block come from the profile's
+`transfer_bytes_per_block`. `bytes_per_full_block` adds them up over the
+full-attention groups. With `destination_missing`, a decode worker that already
+caches a prefix of the prompt does not receive the full-attention blocks of
+that prefix again. The state moves with every transfer that moves at least one
+token. These are the bytes that vLLM reads for the request, not the bytes on
+the wire. On vLLM 0.31.0 the tail ring of GLM-5.3-Flash can read a whole
+attention row, and no version's wire overhead is modeled.
+
+Replay differs from vLLM in these known ways for a grouped profile:
+
+- When the decode worker already caches every full-attention block of the
+  transferred prompt, vLLM moves nothing, but replay still charges
+  `fixed_bytes`. Only a prefill that stops one token short can reach this case.
+  It needs a prompt of `N` tokens whose first `N - 1` tokens fill whole
+  full-attention blocks, all cached on the decode worker. If the decode worker
+  lacks the state of those tokens, vLLM computes the prompt again from the hit
+  that every group agrees on. Replay computes one token.
+- `fixed_bytes` charges every block of a sliding-window group inside the
+  window, whatever the decode worker caches. vLLM moves only the window blocks
+  that the decode worker does not cache. GLM-5.3-Flash has no sliding-window
+  group.
+
+The decode-side differences under
+[grouped caches](kv-cache.md#other-cache-modes) can also change the
+transferred blocks.
 
 <a id="link-sharing"></a>
 
@@ -76,14 +117,19 @@ unlimited, so only the prefill ranks' sending links are shared.
 
 ## Request flow
 
-1. The prefill worker runs the prompt and produces the first token.
+1. The prefill worker runs the prompt. A grouped profile with recurrent state
+   layers stops the prefill one token short, as vLLM does. The prefill of a
+   one-token prompt computes that token, and the decode worker computes it
+   again.
 2. The request is handed to a decode worker at the same virtual time. KV
    transfer starts, and the prefill worker's copy stays reserved until the
    transfer finishes.
-3. After the transfer completes, the decode worker admits the request and
-   generates the remaining tokens.
+3. After the transfer completes, the decode worker admits the request. Its
+   first step produces the first token. On vLLM, that step computes the last
+   prompt token. Later steps generate the remaining tokens.
 
-The reported TTFT includes prefill queueing, prefill compute and the transfer.
+The reported TTFT includes prefill queueing, prefill compute, the transfer, the
+decode worker's queue and its first step.
 Transfer events share one virtual clock with compute and arrivals.
 
 Backends order the handoff differently:

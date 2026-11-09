@@ -428,6 +428,8 @@ def _heterogeneous_disagg_configs(
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
         per_role[role] = configs
 
+    # The roles pair again only as the candidates do: a profile drops grouped pairs that cannot hand off.
+    candidates = set(candidate_configs) if candidate_configs is not None else None
     configs = [
         DisaggParallelConfig(prefill=prefill, decode=decode)
         for prefill in per_role["prefill"]
@@ -436,6 +438,7 @@ def _heterogeneous_disagg_configs(
         and (
             search_space.min_gpu_budget is None or prefill.total_gpus + decode.total_gpus >= search_space.min_gpu_budget
         )
+        and (candidates is None or DisaggParallelConfig(prefill=prefill, decode=decode) in candidates)
     ]
     if not configs:
         raise NoViableParallelConfig(
@@ -759,7 +762,15 @@ def enumerate_branches(
         custom_by_role = {
             role: tuple(_replica_from_dict(entry) for entry in entries) for role, entries in raw_custom.items()
         }
-        profile_configs = _fpm_parallel_configs(ss, deployment_mode) if ss.fpm_profile is not None else None
+        try:
+            profile_configs = _fpm_parallel_configs(ss, deployment_mode) if ss.fpm_profile is not None else None
+        except NoViableParallelConfig as exc:
+            # No prefill deployment of the profile can hand off to a decode deployment.
+            if pinned is not None or custom_by_role:
+                raise NoViableParallelConfig(f"deployment_mode={deployment_mode!r}: {exc}") from exc
+            skip_warnings.append(f"smart-sweep: deployment_mode={deployment_mode!r} skipped — {exc}")
+            skipped.append(deployment_mode)
+            continue
         candidate_configs = profile_configs if profile_configs is not None else pinned
 
         def matches_custom(config: _ParallelConfig) -> bool:

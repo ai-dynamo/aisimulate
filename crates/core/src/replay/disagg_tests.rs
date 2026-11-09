@@ -2394,6 +2394,135 @@ fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
     assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
 }
 
+/// One grouped prefill and one grouped decode worker for vLLM `version`, with
+/// the six GLM-5.3-Flash groups at TP 4 and an fp8 cache: the attention
+/// group, the tail ring and four KDA states. Each group carries the transfer
+/// bytes of its own layers. Every page is 13,045,120 bytes, and the pool
+/// holds 128 pages. Prefix caching is off.
+fn grouped_glm_disagg_config(version: &str, checkpoint: bool) -> TestDisaggConfig {
+    use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
+    const GLM_PAGE: u64 = 13_045_120;
+    // Name, kind, layers, block, transfer bytes, prefix_cacheable.
+    let groups = [
+        ("mla", FpmCacheKind::Attention, 22, 2176, 13_045_120, true),
+        ("kpool_tail", FpmCacheKind::State, 11, 4, 22_528, false),
+        ("kda_0", FpmCacheKind::State, 9, 2176, 9_768_960, true),
+        ("kda_1", FpmCacheKind::State, 9, 2176, 9_768_960, true),
+        ("kda_2", FpmCacheKind::State, 8, 2176, 8_683_520, true),
+        ("kda_3", FpmCacheKind::State, 8, 2176, 8_683_520, true),
+    ]
+    .map(|(name, kind, num_layers, block, bytes, cacheable)| {
+        let state = kind == FpmCacheKind::State;
+        FpmCacheGroup {
+            name: name.into(),
+            kind,
+            num_layers,
+            block_size_tokens: block,
+            page_size_bytes: GLM_PAGE,
+            sliding_window: None,
+            blocks_per_request: state.then_some(1),
+            prefix_cacheable: Some(cacheable),
+            transfer_bytes_per_block: Some(bytes),
+            // Prefix caching on vLLM 0.32.0 needs the count. The count is the
+            // fixture's choice: with `checkpoint`, each KDA group has one
+            // FlashKDA checkpoint block at alignment 16, and without it none.
+            prefill_checkpoint_blocks: (state && cacheable).then_some(u32::from(checkpoint)),
+            prefill_checkpoint_alignment: (state && cacheable && checkpoint).then_some(16),
+        }
+    });
+    let mut config = disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    for args in [&mut config.prefill_args, &mut config.decode_args] {
+        args.enable_prefix_caching = false;
+        args.vllm_version = Some(version.into());
+        args.kv_cache_groups = groups.to_vec();
+        args.kv_cache_capacity_bytes = Some(128 * GLM_PAGE);
+        args.max_num_batched_tokens = 8192;
+        args.max_model_len = Some(200_000);
+    }
+    config
+}
+
+#[test]
+fn grouped_glm_shaped_handoff_moves_whole_blocks_and_fixed_state_bytes() {
+    let handoff_ms = |prompt: usize, bandwidth: Option<f64>| {
+        let mut config = grouped_glm_disagg_config("0.31.0", false);
+        config.prefill_args.kv_transfer_bandwidth = bandwidth;
+        config.prefill_args.kv_transfer_timing_mode = KvTransferTimingMode::FullPrompt;
+        let (_, stats) = run_trace_collect(&config, vec![request(1, prompt, 2, 0.0)], None, 1.0);
+        stats.handoff_ms[&Uuid::from_u128(1)]
+    };
+    // The vLLM payload per rank of an N-token prompt is
+    // 13,045,120 x ceil((N - 1) / 2,176) + 36,927,488 bytes. The prefill rank
+    // computes N - 1 tokens, and every attention block of them moves whole:
+    // 11 x 1,114,112 + 11 x 71,808 bytes. Each state group moves one block:
+    // 22,528 + 2 x 9,768,960 + 2 x 8,683,520 bytes.
+    // N, then the transfer time at 1 GB/s.
+    for (prompt, expected_ms) in [
+        (1_000, 49.972608),
+        (2_177, 49.972608),
+        (8_192, 89.107968),
+        (131_072, 832.679808),
+    ] {
+        let delta = handoff_ms(prompt, Some(1.0)) - handoff_ms(prompt, None);
+        assert!(
+            (delta - expected_ms).abs() < 1e-6,
+            "N {prompt}: delta={delta}"
+        );
+    }
+}
+
+#[test]
+fn grouped_destination_missing_mode_moves_the_missing_blocks_and_the_state() {
+    // The second prompt shares the first 2,177 tokens of the first. The third
+    // repeats the first. Each arrives after the one before it completes.
+    let requests = vec![
+        request(1, 2_177, 2, 0.0),
+        request(2, 2_178, 2, 1_000.0),
+        request(3, 2_177, 2, 2_000.0),
+    ];
+    // vLLM 0.31.0, then vLLM 0.32.0 without and with FlashKDA checkpoint
+    // blocks. The payload counts one block per state group, and the decode
+    // rank reserves no checkpoint block, so every row expects the same times.
+    for (version, checkpoint) in [("0.31.0", false), ("0.32.0", false), ("0.32.0", true)] {
+        let handoff_ms = |bandwidth: Option<f64>| {
+            let mut config = grouped_glm_disagg_config(version, checkpoint);
+            for args in [&mut config.prefill_args, &mut config.decode_args] {
+                args.enable_prefix_caching = true;
+                args.prefix_match_unit = Some(2176);
+                args.kv_transfer_timing_mode = KvTransferTimingMode::DestinationMissing;
+            }
+            config.prefill_args.kv_transfer_bandwidth = bandwidth;
+            let (_, stats) = run_trace_collect(&config, requests.clone(), None, 1.0);
+            [1, 2, 3].map(|uuid| stats.handoff_ms[&Uuid::from_u128(uuid)])
+        };
+        let (timed, untimed) = (handoff_ms(Some(1.0)), handoff_ms(None));
+        let [first_ms, second_ms, known_difference_full_hit_ms] =
+            [0, 1, 2].map(|i| timed[i] - untimed[i]);
+        // The cold decode rank lacks the one attention block of the 2,176
+        // transferred tokens: one block and the fixed state bytes.
+        assert!(
+            (first_ms - 49.972608).abs() < 1e-6,
+            "{version} checkpoint={checkpoint}: first={first_ms}"
+        );
+        // The decode rank holds the first block of the 2,177 transferred
+        // tokens. The partly filled second block moves with the state.
+        assert!(
+            (second_ms - 49.972608).abs() < 1e-6,
+            "{version} checkpoint={checkpoint}: second={second_ms}"
+        );
+        // A known difference: the decode rank holds every transferred token,
+        // so vLLM moves nothing (`nixl/pull_scheduler.py:59-65`, `:145-153`,
+        // the same in vLLM 0.31.0 and 0.32.0). Replay still charges the fixed
+        // state bytes.
+        assert!(
+            (known_difference_full_hit_ms - 36.927488).abs() < 1e-6,
+            "{version} checkpoint={checkpoint}: known difference, full hit={known_difference_full_hit_ms}"
+        );
+    }
+}
+
 #[test]
 fn same_instant_transfers_compute_rates_once() {
     let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();

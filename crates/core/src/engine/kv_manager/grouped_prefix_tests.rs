@@ -365,6 +365,44 @@ fn full_attention_hit_is_capped_below_the_prompt() {
 }
 
 #[test]
+fn decode_side_hit_takes_full_attention_alone_floored_to_its_block() {
+    // A state group above the hash block turns fine-grained hits on, so the
+    // alignment is 4 while the attention block is 16. The decode side keeps
+    // whole attention blocks only (V32 `sched:973-981`) and ignores the state
+    // group's key.
+    let groups = [attention("a", 16, None), state("s", 16, true, false)];
+    let coordinator = with_limits(rules(&groups, 4));
+    assert_eq!(coordinator.rules.alignment, 4);
+    let mut kv = kv_pool(&groups, 16);
+    let pool = kv.block_pool_mut().unwrap();
+    seed_many(pool, 0, 4, &[16, 32, 36]);
+    seed(pool, key(1, 4, 36));
+    let request = lease(64, 4);
+    // The fine-grained lookup reaches the sub-block tail at 36.
+    let (ends, tokens) =
+        coordinator.full_attention_hit(pool, &request, &coordinator.rules.specs[0], 60);
+    assert_eq!((ends, tokens), (vec![16, 32, 36], 36));
+    let hit = coordinator.find_full_attention_hit(pool, &request, 64);
+    assert_eq!(hit.tokens, 32);
+    assert_eq!(hit.junction_tokens, 0);
+    assert!(matches!(&hit.per_group[0], GroupHitBlocks::Attention(keys) if keys.len() == 2));
+    assert_eq!(hit.per_group[1], GroupHitBlocks::None);
+    // The cap at `num_tokens - 1` applies before the floor.
+    assert_eq!(
+        coordinator
+            .find_full_attention_hit(pool, &lease(33, 4), 33)
+            .tokens,
+        32
+    );
+    assert_eq!(
+        coordinator
+            .find_full_attention_hit(pool, &lease(32, 4), 32)
+            .tokens,
+        16
+    );
+}
+
+#[test]
 fn sliding_window_hits_need_a_contiguous_run_before_an_aligned_end() {
     // single:960-1069: `cdiv(32, 16) == 2` contiguous blocks before an
     // aligned end, or a run from block 0.

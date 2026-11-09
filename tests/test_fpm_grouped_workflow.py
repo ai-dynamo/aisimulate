@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from copy import deepcopy
 from pathlib import Path
 
@@ -307,6 +308,61 @@ def _prefix_caching_prediction(profile, root, version):
     return raw
 
 
+_PD_PAIRING = (
+    "grouped FPM cache P/D requires prefill and decode deployments with equal tensor parallelism and identical "
+    "cache groups"
+)
+_PD_MARKERS = (
+    "grouped FPM cache P/D requires every cache group to declare prefix_cacheable and transfer_bytes_per_block; "
+    "re-import the runtime probe"
+)
+_PD_VERSION = "grouped FPM cache P/D is modeled for vLLM 0.31.0 and 0.32.0 only"
+_PD_TRANSFER = "grouped FPM cache derives kv_transfer.bytes_per_token from its cache groups; set it to auto"
+
+
+def _with_transfer_markers(profile, *, version="0.31.0"):
+    """The P/D markers of a probe import on every grouped deployment, with the page as the transfer bytes."""
+    profile = deepcopy(profile)
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+        for group in deployment["resources"].get("cache_groups", []):
+            group.setdefault("prefix_cacheable", True)
+            group["transfer_bytes_per_block"] = group["page_size_bytes"]
+    return profile
+
+
+def _pd_prediction(profile, root, *, bandwidth=None):
+    """A prefill and a decode worker of tensor 2 on the profile's vLLM version, with a KV transfer at a bandwidth."""
+    raw = _prediction(profile, root)
+    engine = raw["engine"]
+    engine["mode"] = "disaggregated"
+    engine["backend_version"] = profile["deployments"][0]["backend_version"]
+    worker = engine["workers"].pop("aggregated")
+    engine["workers"] = {"prefill": deepcopy(worker), "decode": worker}
+    if bandwidth is not None:
+        engine["kv_transfer"] = {"bytes_per_token": "auto", "bandwidth_gb_per_second": bandwidth}
+    return raw
+
+
+def _pd_search(profile, root):
+    """The search of _pd_prediction: disaggregated workers without prefix caching."""
+    return {
+        "deployment_mode": ["disagg"],
+        "backend": ["vllm"],
+        "backend_version": profile["deployments"][0]["backend_version"],
+        "model_name": profile["model"],
+        "hardware_sku": "h200_sxm",
+        "fpm_profile": profile,
+        "systems_paths": [str(root)],
+        "gpu_budget": 4,
+        "prefill_max_num_batched_tokens": [128],
+        "prefill_max_num_seqs": [4],
+        "prefill_enable_prefix_caching": False,
+        "decode_max_num_batched_tokens": [128],
+        "decode_max_num_seqs": [4],
+    }
+
+
 @pytest.mark.parametrize("unrelated", ["topology", "hardware", "version"])
 def test_mixed_profile_predict_preserves_selected_linear_prefix_cache(grouped_case, tmp_path, unrelated):
     profile, root = grouped_case
@@ -459,7 +515,33 @@ def test_mixed_search_keeps_both_layouts_when_grouped_settings_are_supported(gro
         ({"agg_enable_prefix_caching": False, "agg_native_host_offload": {"num_host_blocks": 64}}, "only HBM"),
         ({"agg_enable_prefix_caching": False, "agg_num_gpu_blocks": 64}, "not scalar capacity"),
         ({"agg_enable_prefix_caching": False, "agg_kv_bytes_per_token": 1}, "not scalar capacity"),
-        ({"deployment_mode": ["disagg"], "gpu_budget": 4}, "without speculative decoding"),
+        (
+            {
+                "agg_enable_prefix_caching": False,
+                "speculation": {"kind": "ngram", "num_speculative_tokens": 1, "acceptance_rates": [0.5]},
+            },
+            "grouped FPM cache requires vLLM without speculative decoding",
+        ),
+        ({"deployment_mode": ["disagg"], "gpu_budget": 4}, "grouped FPM cache requires prefill_enable_prefix_caching"),
+        (
+            {
+                "deployment_mode": ["disagg"],
+                "gpu_budget": 4,
+                "prefill_enable_prefix_caching": False,
+                "decode_native_host_offload": {"num_host_blocks": 64},
+            },
+            "only HBM",
+        ),
+        (
+            {
+                "deployment_mode": ["disagg"],
+                "gpu_budget": 4,
+                "prefill_enable_prefix_caching": False,
+                "decode_num_gpu_blocks": 64,
+            },
+            "not scalar capacity",
+        ),
+        ({"deployment_mode": ["disagg"], "gpu_budget": 4, "prefill_enable_prefix_caching": False}, _PD_MARKERS),
     ],
 )
 def test_mixed_search_rejects_reachable_grouped_unsupported_settings(grouped_case, update, error):
@@ -755,6 +837,136 @@ def test_grouped_kv_load_uses_bytes_without_inventing_token_capacity(grouped_cas
         assert result.role_capacity_tokens == {}
 
 
+def test_grouped_kv_load_sizes_each_pd_role_by_its_bytes(grouped_case):
+    profile, root = grouped_case
+    profile = _with_transfer_markers(profile)
+    search = {
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "deployment_mode": "disagg",
+        "gpu_budget": 4,
+        "max_num_tokens": 128,
+        "max_batch_size": 4,
+        "fpm_profile": profile,
+        "systems_paths": [str(root)],
+    }
+    candidates = parallel_configs_for(profile["model"], "h200_sxm", **search)
+    # The shared deployments pair only with their own shape.
+    assert {(candidate.prefill.shape.tp, candidate.decode.shape.tp) for candidate in candidates} == {(2, 2), (1, 1)}
+    sample = {
+        "model_name": profile["model"],
+        "hardware_sku": "h200_sxm",
+        "backend": "vllm",
+        "fpm_profile": profile,
+        "systems_paths": [str(root)],
+        **{
+            f"{role}_{name}": value
+            for role in ("prefill", "decode")
+            for name, value in (
+                ("block_size", 64),
+                ("max_num_batched_tokens", 128),
+                ("max_num_seqs", 4),
+                ("gpu_memory_utilization", 0.9),
+            )
+        },
+    }
+    workload = Workload(isl=1152, osl=4, kv_load_ratio=1.0, request_count=2)
+    for candidate in candidates:
+        result = resolve_kv_load(
+            sample, workload=workload, parallel_config=candidate, ratio=1.0, backend_version="0.31.0"
+        )
+        # Each role holds the 1,760 bytes per request of the aggregated rank, and the decode role sets the load.
+        assert result.role_request_cache_bytes == {"prefill": 1760, "decode": 1760}
+        assert result.role_capacity_bytes == {
+            "prefill": 3486 * candidate.prefill.shape.dp,
+            "decode": 3486 * candidate.decode.shape.dp,
+        }
+        assert result.concurrency_capacity == candidate.decode.shape.dp
+        assert result.role_capacity_tokens == {}
+    # A P/D role refuses its own fixed blocks, and the topology budget refuses speculation.
+    with pytest.raises(ValueError, match="^grouped FPM cache requires replay without fixed scalar blocks$"):
+        resolve_kv_load(
+            {**sample, "decode_num_gpu_blocks": 64},
+            workload=workload,
+            parallel_config=candidates[0],
+            ratio=1.0,
+            backend_version="0.31.0",
+        )
+    with pytest.raises(ValueError, match="^grouped FPM cache requires replay without speculation$"):
+        parallel_configs_for(profile["model"], "h200_sxm", nextn=1, **search)
+
+
+def test_grouped_kv_load_sizes_each_pd_role_with_its_own_context_length(grouped_case, monkeypatch):
+    profile, root = grouped_case
+    profile = _with_transfer_markers(profile)
+    for deployment in profile["deployments"]:
+        resources = deployment["resources"]
+        for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            resources.pop(name)
+        resources["max_batch_size"] = 4
+        resources["runtime_memory"] = {
+            "kv_cache_bytes": 3486,
+            "max_model_len": 1024,
+            "gpu_memory_utilization": 0.9,
+            "provenance": "Synthetic initialized cache pool; no GPU qualification.",
+        }
+    role_context = {"prefill": 1024, "decode": 512}
+    candidates = parallel_configs_for(
+        profile["model"],
+        "h200_sxm",
+        backend="vllm",
+        backend_version="0.31.0",
+        deployment_mode="disagg",
+        gpu_budget=4,
+        max_num_tokens=128,
+        max_batch_size=4,
+        fpm_profile=profile,
+        systems_paths=[str(root)],
+        max_seq_len=2048,
+        role_max_seq_len=role_context,
+    )
+    # The global context is above the probe's max_model_len, and each role sets its own context within it, as a
+    # role deployment reads it. The two roles differ, so one role's context cannot size both.
+    sample = {
+        "model_name": profile["model"],
+        "hardware_sku": "h200_sxm",
+        "backend": "vllm",
+        "fpm_profile": profile,
+        "systems_paths": [str(root)],
+        "context_length": 2048,
+        **{
+            f"{role}_{name}": value
+            for role in ("prefill", "decode")
+            for name, value in (
+                ("block_size", 64),
+                ("max_num_batched_tokens", 128),
+                ("max_num_seqs", 4),
+                ("gpu_memory_utilization", 0.9),
+                ("context_length", role_context[role]),
+            )
+        },
+    }
+    from aisimulate.sweeper import kv_load
+
+    sized = {}
+    estimate = kv_load.estimate_grouped_cache_budget
+
+    def record(*args, **kwargs):
+        sized[kwargs["worker_type"]] = kwargs["context_length"]
+        return estimate(*args, **kwargs)
+
+    monkeypatch.setattr(kv_load, "estimate_grouped_cache_budget", record)
+    result = resolve_kv_load(
+        sample,
+        workload=Workload(isl=256, osl=4, kv_load_ratio=1.0, request_count=2),
+        parallel_config=candidates[0],
+        ratio=1.0,
+        backend_version="0.31.0",
+    )
+    assert sized == {"prefill": 1024, "decode": 512}
+    assert set(result.role_request_cache_bytes) == {"prefill", "decode"}
+
+
 def test_grouped_state_group_adds_fixed_bytes_per_request(grouped_case):
     profile, root = grouped_case
     profile = _with_state_group(profile)
@@ -817,7 +1029,6 @@ def test_grouped_incompatible_cache_settings_fail_before_replay(grouped_case, up
 @pytest.mark.parametrize(
     "changes",
     [
-        {"mode": "disaggregated"},
         {"nextn": 1, "nextn_accepted": 1.0},
         {"speculation": {"kind": "ngram", "num_speculative_tokens": 1, "acceptance_rates": [0.5]}},
     ],
@@ -826,11 +1037,186 @@ def test_grouped_unsupported_execution_modes_fail_before_replay(grouped_case, ch
     profile, root = grouped_case
     raw = _prediction(profile, root)
     raw["engine"].update(changes)
-    if changes.get("mode") == "disaggregated":
-        worker = raw["engine"]["workers"].pop("aggregated")
-        raw["engine"]["workers"] = {"prefill": deepcopy(worker), "decode": worker}
-    with pytest.raises(ValidationError, match="grouped FPM cache supports only aggregated vLLM"):
+    with pytest.raises(ValidationError, match="grouped FPM cache supports only vLLM without speculative decoding"):
         CorePredictionConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "case,error",
+    [
+        ("vllm_0310", None),
+        ("vllm_0320", None),
+        ("no_markers", _PD_MARKERS),
+        ("vllm_0300", _PD_VERSION),
+        ("unequal_tp", _PD_PAIRING),
+        ("other_groups", _PD_PAIRING),
+        ("linear_decode", _PD_PAIRING),
+        ("transfer_bytes", _PD_TRANSFER),
+    ],
+)
+def test_grouped_pd_requires_equal_tp_identical_groups_and_markers(grouped_case, case, error):
+    from aisimulate.sweeper.config import SearchSpace
+
+    profile, root = grouped_case
+    version = {"vllm_0320": "0.32.0", "vllm_0300": "0.30.0"}.get(case, "0.31.0")
+    if case == "linear_decode":
+        profile = _mixed_profile(profile)
+    profile = _with_transfer_markers(profile, version=version)
+    dep = {"tensor": 1, "attention_data": 2, "moe_tensor": 1, "moe_expert": 2}
+    if case == "no_markers":
+        for deployment in profile["deployments"]:
+            for group in deployment["resources"]["cache_groups"]:
+                del group["prefix_cacheable"], group["transfer_bytes_per_block"]
+    elif case == "other_groups":
+        # Role-tagged deployments of one shape: the decode deployment lacks the convolution group.
+        prefill = profile["deployments"][0]
+        decode = {**deepcopy(prefill), "worker_type": "decode"}
+        decode["resources"]["cache_groups"] = decode["resources"]["cache_groups"][:-1]
+        profile["deployments"][:1] = [{**prefill, "worker_type": "prefill"}, decode]
+    raw = _pd_prediction(profile, root)
+    search = _pd_search(profile, root)
+    workers = raw["engine"]["workers"]
+    # A search drops the enumerated pairs that fail the pairing rule, so it names such a pair with a pin.
+    tensor_pin, dep_pin = {"tp": 2, "moe_tp": 2}, {"tp": 1, "attention_dp": 2, "moe_ep": 2}
+    if case == "unequal_tp":
+        workers["decode"]["parallelism"] = dep
+        search["parallel_configs_by_mode"] = {"disagg": [{"prefill": tensor_pin, "decode": dep_pin}]}
+    elif case == "other_groups":
+        search["parallel_configs_by_mode"] = {"disagg": [{"prefill": tensor_pin, "decode": tensor_pin}]}
+    elif case == "linear_decode":
+        # The mixed profile groups the DEP deployment and keeps the tensor-parallel one linear.
+        workers["prefill"]["parallelism"] = dep
+        search["parallel_configs_by_mode"] = {"disagg": [{"prefill": dep_pin, "decode": tensor_pin}]}
+    elif case == "transfer_bytes":
+        raw["engine"]["kv_transfer"] = {"bytes_per_token": 7}
+        search["kv_transfer_bytes_per_token"] = 7
+    if error is None:
+        CorePredictionConfig.model_validate(raw)
+        SearchSpace.model_validate(search)
+        return
+    with pytest.raises(ValidationError, match=re.escape(error)):
+        CorePredictionConfig.model_validate(raw)
+    with pytest.raises(ValidationError, match=re.escape(error)):
+        SearchSpace.model_validate(search)
+
+
+def test_grouped_pd_recommendation_with_fixed_unequal_tp_gives_the_pairing_text(grouped_case):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    profile, root = grouped_case
+    raw = _pd_prediction(_with_transfer_markers(profile), root)
+    workers = raw["engine"]["workers"]
+    workers["decode"]["parallelism"] = {"tensor": 1, "attention_data": 2, "moe_tensor": 1, "moe_expert": 2}
+    # A preset list for each role lowers to the pinned pairs of the two lists.
+    for worker in workers.values():
+        worker["parallelism"] = {"preset": [{**worker["parallelism"], "replicas": 1, "pipeline": 1}]}
+    raw["optimization"] = {"constraints": {"max_candidate_gpus": 4}}
+    config = CoreRecommendationConfig.model_validate(raw)
+    with pytest.raises(ValidationError, match=re.escape(_PD_PAIRING)):
+        recommendation_to_sweeper(config)
+
+
+def test_disaggregated_prediction_with_a_grouped_aggregated_worker_keeps_the_role_error(grouped_case):
+    # Only the prefill and the decode deployment decide the P/D rule. Here both are linear, so the grouped aggregated
+    # worker fails on its role, not on a P/D text.
+    profile, root = grouped_case
+    raw = _pd_prediction(_mixed_profile(profile), root)
+    workers = raw["engine"]["workers"]
+    workers["aggregated"] = deepcopy(workers["prefill"])
+    workers["aggregated"]["parallelism"] = {"tensor": 1, "attention_data": 2, "moe_tensor": 1, "moe_expert": 2}
+    with pytest.raises(ValidationError, match="disaggregated mode rejects aggregated workers"):
+        CorePredictionConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.32.0"])
+def test_grouped_pd_prediction_replays_one_p_one_d(grouped_case, tmp_path, version):
+    profile, root = grouped_case
+    profile = _with_transfer_markers(_with_state_group(profile), version=version)
+    _write_timings(root, profile, version=version)
+    raw = _pd_prediction(profile, root, bandwidth=1.0)
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    prefill, decode = deployment.prefill_engine_args, deployment.decode_engine_args
+    for args in (prefill, decode):
+        # A grouped rank derives the transfer payload from its groups, so it has no scalar bytes per token.
+        assert "kv_transfer_bytes_per_token" not in args
+        assert (args["kv_transfer_bandwidth"], args["kv_transfer_timing_mode"]) == (1.0, "destination_missing")
+        # The Rust gate refuses a grouped prefill or decode rank without vLLM 0.31.0 or 0.32.0, also with prefix
+        # caching off.
+        assert (args["enable_prefix_caching"], args["vllm_version"]) == (False, version)
+        assert "prefix_match_unit" not in args
+    groups = materialize_aic_num_gpu_blocks(prefill)["kv_cache_groups"]
+    assert [group["name"] for group in groups] == ["full", "window", "conv", "state"]
+    assert materialize_aic_num_gpu_blocks(decode)["kv_cache_groups"] == groups
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "prediction"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 0
+    assert json.loads((output / "prediction.json").read_text())["completed_requests"] == 2
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.32.0"])
+def test_grouped_pd_prediction_with_prefix_caching_on_both_ranks(grouped_case, tmp_path, version):
+    # Planning writes prefix_caching: true into an accepted role's worker.yaml, so a composed P/D prediction of two
+    # planned roles runs both ranks in block mode.
+    profile, root = grouped_case
+    profile = _with_prefix_evidence(_with_state_group(profile), version=version)
+    profile = _with_transfer_markers(profile, version=version)
+    _write_timings(root, profile, version=version)
+    raw = _pd_prediction(profile, root, bandwidth=1.0)
+    aggregated = _prefix_caching_prediction(profile, root, version)
+    raw["engine"]["context_length"] = aggregated["engine"]["context_length"]
+    raw["traffic"] = aggregated["traffic"]
+    for worker in raw["engine"]["workers"].values():
+        worker["kv_cache"]["prefix_caching"] = True
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    for args in (deployment.prefill_engine_args, deployment.decode_engine_args):
+        assert (args["enable_prefix_caching"], args["prefix_match_unit"], args["vllm_version"]) == (True, 64, version)
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "prediction"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output), "--capture-per-request"]) == 0
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["completed_requests"] == 2
+    rows = report["per_request"]
+    # The prefill rank computes 519 tokens and keeps the state at 512, so the identical second request reuses 512.
+    assert [row["reused_input_tokens"] for row in rows] == [0, 512]
+    # The first transfer moves 9 full-attention blocks, 9 window blocks and 1 state block, 64 bytes each: 1,216
+    # bytes. The 512-token window skips 519 - 512 + 1 = 8 of the 519 tokens, less than a block, so all 9 window
+    # blocks lie inside it. The decode rank keeps the 8 full blocks that the first load cached, so the second moves
+    # 1 full block and the same fixed bytes: 704 bytes. At 1 GB/s a byte takes 1e-6 ms.
+    delays = [row["destination_activated_ms"] - row["destination_reserved_ms"] for row in rows]
+    assert delays == [pytest.approx(1216e-6, abs=1e-9), pytest.approx(704e-6, abs=1e-9)]
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.32.0"])
+def test_grouped_pd_prediction_with_prefix_caching_on_the_prefill_rank_only(grouped_case, tmp_path, version):
+    # A search with prefix evidence defaults to prefix caching on prefill workers and off on decode workers.
+    profile, root = grouped_case
+    profile = _with_prefix_evidence(_with_state_group(profile), version=version)
+    profile = _with_transfer_markers(profile, version=version)
+    _write_timings(root, profile, version=version)
+    raw = _pd_prediction(profile, root, bandwidth=1.0)
+    aggregated = _prefix_caching_prediction(profile, root, version)
+    raw["engine"]["context_length"] = aggregated["engine"]["context_length"]
+    raw["traffic"] = aggregated["traffic"]
+    raw["engine"]["workers"]["prefill"]["kv_cache"]["prefix_caching"] = True
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    prefill, decode = deployment.prefill_engine_args, deployment.decode_engine_args
+    assert (prefill["enable_prefix_caching"], prefill["prefix_match_unit"]) == (True, 64)
+    assert (decode["enable_prefix_caching"], "prefix_match_unit" in decode) == (False, False)
+    assert prefill["vllm_version"] == decode["vllm_version"] == version
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "prediction"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output), "--capture-per-request"]) == 0
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["completed_requests"] == 2
+    rows = report["per_request"]
+    # The prefill rank reuses 512 tokens as with prefix caching on both ranks. The cold decode rank keeps no blocks,
+    # so both transfers move the full 1,216 bytes.
+    assert [row["reused_input_tokens"] for row in rows] == [0, 512]
+    delays = [row["destination_activated_ms"] - row["destination_reserved_ms"] for row in rows]
+    assert delays == [pytest.approx(1216e-6, abs=1e-9), pytest.approx(1216e-6, abs=1e-9)]
 
 
 def test_grouped_onboarding_profile_reaches_real_collector_preview_and_render(
@@ -1075,6 +1461,162 @@ def test_aggregated_only_grouped_profile_skips_unavailable_disagg(grouped_case):
     with pytest.warns(UserWarning, match="disagg.*skipped"):
         branches = enumerate_branches(config, max_seq_len=2048)
     assert [branch.deployment_mode for branch in branches] == ["agg"]
+
+
+def test_grouped_profile_without_a_valid_pair_skips_disagg(grouped_case):
+    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisimulate.sweeper.search_space import enumerate_branches
+
+    profile, root = grouped_case
+    profile = _with_transfer_markers(profile)
+    tensor, dep = profile["deployments"]
+    # Prefill workers run only at tensor 2 and decode workers only at DEP, so no pair has equal tensor parallelism.
+    profile["deployments"] = [
+        {**deepcopy(tensor), "worker_type": "aggregated"},
+        {**tensor, "worker_type": "prefill"},
+        {**dep, "worker_type": "decode"},
+    ]
+    raw = {
+        **_pd_search(profile, root),
+        "deployment_mode": ["disagg", "agg"],
+        "agg_max_num_batched_tokens": [128],
+        "agg_max_num_seqs": [4],
+        "agg_enable_prefix_caching": False,
+    }
+    # Validation warns about nothing. The root configuration turns any warning outside pytest.warns into an error.
+    config = SmartSearchConfig(search_space=raw, workload=Workload(isl=1152, osl=4, concurrency=1, request_count=2))
+    reason = "no prefill/decode deployment pair with equal tensor parallelism and identical cache groups"
+    # One skip warning carries the reason. pytest.warns raises any other warning again, so a second one fails.
+    with pytest.warns(UserWarning, match=f"^smart-sweep: deployment_mode='disagg' skipped — {reason}$"):
+        branches = enumerate_branches(config, max_seq_len=2048)
+    assert [branch.deployment_mode for branch in branches] == ["agg"]
+
+
+def test_grouped_pd_recommendation_enumerates_equal_tp_pairs(grouped_case):
+    from aisimulate.recommend import recommendation_to_sweeper
+    from aisimulate.sweeper.search_space import enumerate_branches
+
+    profile, root = grouped_case
+    profile = _with_transfer_markers(profile)
+    tensor, dep = profile["deployments"]
+    # The role-tagged deployments at tensor 2 pair. The DEP deployment serves only decode workers and pairs with none.
+    profile["deployments"] = [
+        {**deepcopy(tensor), "worker_type": "prefill"},
+        {**tensor, "worker_type": "decode"},
+        {**dep, "worker_type": "decode"},
+    ]
+    raw = _pd_prediction(profile, root, bandwidth=1.0)
+    for worker in raw["engine"]["workers"].values():
+        worker["parallelism"] = {"preset": "default"}
+    raw["optimization"] = {"constraints": {"max_candidate_gpus": 4}}
+    branches = enumerate_branches(recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)))
+    assert [branch.deployment_mode for branch in branches] == ["disagg"]
+    candidates = branches[0].parallel_configs
+    assert candidates
+    assert all(candidate.prefill.shape.tp == candidate.decode.shape.tp == 2 for candidate in candidates)
+
+
+def test_grouped_heterogeneous_pd_search_keeps_only_valid_pairs(grouped_case):
+    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisimulate.sweeper.search_space import enumerate_branches
+
+    profile, root = grouped_case
+    profile = _with_transfer_markers(profile)
+    profile["deployments"] += [{**deepcopy(deployment), "system": "h100_sxm"} for deployment in profile["deployments"]]
+    (root / "h100_sxm.yaml").write_bytes((root / "h200_sxm.yaml").read_bytes())
+    raw = {**_pd_search(profile, root), "decode_hardware_sku": "h100_sxm"}
+    config = SmartSearchConfig(search_space=raw, workload=Workload(isl=1152, osl=4, concurrency=1, request_count=2))
+    (branch,) = enumerate_branches(config, max_seq_len=2048)
+    # Each role is enumerated on its own hardware, and the pairs keep equal tensor parallelism.
+    assert {(candidate.prefill.shape, candidate.decode.shape) for candidate in branch.parallel_configs} == {
+        (shape, shape) for shape in {candidate.prefill.shape for candidate in branch.parallel_configs}
+    }
+    assert {candidate.prefill.shape.tp for candidate in branch.parallel_configs} == {1, 2}
+
+
+@pytest.mark.parametrize(
+    "prefix_caching",
+    [{"prefill": False, "decode": False}, {"prefill": True, "decode": True}, {}],
+    ids=["off", "on", "defaults"],
+)
+def test_grouped_sweeper_pd_candidate_ranks_take_the_vllm_version(grouped_case, prefix_caching):
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.deploy import build_backend_deployment
+    from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+    from aisimulate.sweeper.sample import unroll_sample
+
+    profile, root = grouped_case
+    profile = _with_transfer_markers(_with_prefix_evidence(_with_state_group(profile)))
+    raw = {
+        **_pd_search(profile, root),
+        # A recommendation with a KV transfer lowers bytes_per_token "auto" into the search.
+        "kv_transfer_bytes_per_token": "auto",
+        "kv_transfer_bandwidth": 1.0,
+    }
+    # Without settings, the search keeps its defaults: prefix caching on prefill workers and off on decode workers.
+    raw.pop("prefill_enable_prefix_caching")
+    raw.update({f"{role}_enable_prefix_caching": value for role, value in prefix_caching.items()})
+    worker = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=2, moe_ep=1), replicas=1)
+    sample = unroll_sample(
+        search_space=SearchSpace.model_validate(raw),
+        selection={
+            "deployment_mode": "disagg",
+            "backend": "vllm",
+            "prefill_max_num_batched_tokens": 128,
+            "prefill_max_num_seqs": 4,
+            "decode_max_num_batched_tokens": 128,
+            "decode_max_num_seqs": 4,
+        },
+        parallel_config=DisaggParallelConfig(prefill=worker, decode=worker),
+    )
+    deployment = build_backend_deployment(sample, backend_version="0.31.0")
+    defaults = {"prefill": True, "decode": False}
+    for role, args in (("prefill", deployment.prefill_engine_args), ("decode", deployment.decode_engine_args)):
+        # Each grouped rank reads the transfer rules of its version and derives the payload from its groups.
+        assert (args["vllm_version"], args["kv_transfer_bandwidth"]) == ("0.31.0", 1.0)
+        assert "kv_transfer_bytes_per_token" not in args
+        assert args["kv_transfer_timing_mode"] == "destination_missing"
+        assert args["enable_prefix_caching"] is prefix_caching.get(role, defaults[role])
+        if args["enable_prefix_caching"]:
+            # Without a search context length, the rank takes the profile's.
+            assert (args["prefix_match_unit"], args["max_model_len"]) == (64, 2048)
+        else:
+            assert not {"prefix_match_unit", "max_model_len"} & args.keys()
+
+
+@pytest.mark.parametrize("prefix_caching", [False, True])
+def test_grouped_pd_recommendation_replays_every_candidate(grouped_case, tmp_path, monkeypatch, prefix_caching):
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper import SweepResult
+    from aisimulate.sweeper.result import CandidateStatus
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    profile, root = grouped_case
+    if prefix_caching:
+        profile = _with_prefix_evidence(_with_state_group(profile))
+    profile = _with_transfer_markers(profile)
+    _write_timings(root, profile, version="0.31.0")
+    raw = _pd_prediction(profile, root, bandwidth=1.0)
+    if prefix_caching:
+        aggregated = _prefix_caching_prediction(profile, root, "0.31.0")
+        raw["engine"]["context_length"] = aggregated["engine"]["context_length"]
+        raw["traffic"] = aggregated["traffic"]
+    for worker in raw["engine"]["workers"].values():
+        worker["parallelism"] = {"preset": "default"}
+        worker["kv_cache"]["prefix_caching"] = prefix_caching
+    raw["optimization"] = {"constraints": {"max_candidate_gpus": 4}}
+    raw["optimizer"] = {"algorithm": "random", "max_trials": 2, "parallelism": 1}
+    path = tmp_path / "recommend.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "recommendation"
+    assert cli.main(["recommend", "-c", str(path), "--output-dir", str(output)]) == 0
+    result = SweepResult.from_json((output / "recommendation.json").read_text())
+    # Both equal-TP pairs replay. A candidate that failed its build or the Rust gate would not be feasible.
+    assert len(result.candidates) == 2
+    assert all(candidate.status is CandidateStatus.FEASIBLE for candidate in result.candidates)
+    exported = CorePredictionConfig.from_yaml(output / "recommendations/0001.yaml")
+    assert exported.engine.kv_transfer.bandwidth_gb_per_second == 1.0
+    assert exported.engine.workers.prefill.kv_cache.prefix_caching is prefix_caching
 
 
 def _prefix_search(profile, root, version):
@@ -1497,3 +2039,57 @@ def test_glm_shaped_grouped_profile_replays_a_multi_turn_trace_with_hits(grouped
     # kept at 6,528 or below, so the grouped path reuses nothing.
     assert [row["reused_input_tokens"] for row in report["per_request"]] == [0, 8704, 10880, 0]
     assert report["prefix_cache_reused_ratio"] == pytest.approx((8704 + 10880) / (9000 + 13000 + 13100 + 8704))
+
+
+# The payload of one block of each GLM-5.3-Flash group at TP 4 with an fp8 cache, without the page padding:
+# 11 x 1,114,112 + 11 x 71,808 bytes of attention, 11 x 2,048 bytes of ring, and 9 or 8 x 1,085,440 bytes of KDA state.
+_GLM_TRANSFER_BYTES = {
+    "runtime_group_0": 13_045_120,
+    "runtime_group_1": 22_528,
+    "runtime_group_2": 9_768_960,
+    "runtime_group_3": 9_768_960,
+    "runtime_group_4": 8_683_520,
+    "runtime_group_5": 8_683_520,
+}
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.32.0"])
+def test_glm_shaped_grouped_pd_transfer_time_matches_the_oracle(grouped_case, tmp_path, version):
+    profile, root = grouped_case
+    profile = _glm_shaped_profile(profile, version)
+    for deployment in profile["deployments"]:
+        for group in deployment["resources"]["cache_groups"]:
+            group["transfer_bytes_per_block"] = _GLM_TRANSFER_BYTES[group["name"]]
+    (Path(profile["model"]) / "config.json").write_text(json.dumps({"architectures": [profile["architecture"]]}))
+    import aisimulate_core
+
+    # The real H200 memory holds the 64 GLM pages that the tiny fake GPU of grouped_case cannot.
+    system = (Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml").read_text()
+    (root / "h200_sxm.yaml").write_text(system)
+    _write_timings(
+        root,
+        profile,
+        decode_ceiling=16384,
+        version=version,
+        prefill_tokens=(2048, 4096, 8192),
+        prefill_kvs=(0, 1, 8192, 16384),
+    )
+    mean_ttft = {}
+    for bandwidth in (None, 1.0):
+        raw = _pd_prediction(profile, root, bandwidth=bandwidth)
+        raw["engine"]["context_length"] = 32768
+        for worker in raw["engine"]["workers"].values():
+            worker["scheduler"] = {"max_batched_tokens": 8192, "max_sequences": 4}
+        raw["traffic"] = {
+            "source": {"type": "synthetic", "input_tokens": 1000, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        }
+        path = tmp_path / f"predict-{bandwidth}.yaml"
+        path.write_text(yaml.safe_dump(raw))
+        output = tmp_path / f"prediction-{bandwidth}"
+        assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 0
+        mean_ttft[bandwidth] = json.loads((output / "prediction.json").read_text())["mean_ttft_ms"]
+    # The prefill computes 999 tokens, so one 2,176-token attention block of 13,045,120 bytes moves with one block
+    # of each state group, 36,927,488 bytes: 49,972,608 bytes take 49.972608 ms at 1 GB/s.
+    assert mean_ttft[1.0] - mean_ttft[None] == pytest.approx(49.972608, abs=1e-3)

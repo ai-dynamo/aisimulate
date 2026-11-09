@@ -193,8 +193,8 @@ def _role_grouped_capacity(
     )
     if deployment.resources.cache_layout != "grouped":
         return None
-    if role != "agg" or sample.get(f"{role}_num_gpu_blocks") is not None:
-        raise ValueError("grouped FPM cache requires aggregated replay without fixed scalar blocks")
+    if sample.get(f"{role}_num_gpu_blocks") is not None:
+        raise ValueError("grouped FPM cache requires replay without fixed scalar blocks")
     roots = resolved.get("systems_paths")
     if not roots and resolved.get("systems_path"):
         roots = [resolved["systems_path"]]
@@ -213,7 +213,8 @@ def _role_grouped_capacity(
             backend_version=identity["backend_version"],
             fpm_profile=profile,
             worker_type="aggregated" if role == "agg" else role,
-            context_length=sample.get("context_length"),
+            # The role's own context first, then the global one, as its deployment resolves max_model_len.
+            context_length=sample.get(f"{role}_context_length") or sample.get("context_length"),
             request_occupancy_tokens=request_occupancy_tokens,
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),

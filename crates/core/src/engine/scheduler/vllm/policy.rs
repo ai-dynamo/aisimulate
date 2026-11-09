@@ -161,13 +161,12 @@ pub(super) fn decide_grouped_waiting_admission<S: PolicySequence>(
 }
 
 /// Whether a waiting request whose allocation fails may preempt running
-/// work. With grouped prefix caching it may not: admission tests the blocks
-/// of the whole prompt, and the allocation then tests the blocks of the
-/// chunk, as vLLM's `allocate_slots` does (`mgr:519-576`). A waiting request
-/// that fails either test stays queued, because vLLM stops its waiting loop
-/// there (v0.31 `sched:1223-1230`, v0.32 `sched:1275-1282`).
+/// work. On a grouped pool it may not, in byte mode or in block mode. The
+/// request stays queued, because vLLM stops its waiting loop at a request
+/// that `allocate_slots` refuses (`mgr:519-576`, v0.31 `sched:1223-1230`,
+/// v0.32 `sched:1275-1282`).
 pub(super) fn waiting_allocation_may_preempt(kv_manager: &G1Manager) -> bool {
-    kv_manager.grouped_prefix_rules().is_none()
+    kv_manager.grouped().is_none()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -192,14 +191,23 @@ pub(super) enum DestinationAdmissionDecision {
 }
 
 /// `state_blocks` is the transferred recurrent state reserved with the prompt.
+/// A grouped cache passes the bytes of every group for the loaded tokens as
+/// `grouped_required_bytes` and its pool as `grouped_capacity_bytes`. Groups
+/// require vLLM, so the TRT-LLM arm does not read them.
 pub(super) fn destination_capacity_error<S: PolicySequence>(
     policy: SchedulingPolicy,
     sequence: &S,
     num_gpu_blocks: usize,
     state_blocks: usize,
+    grouped_required_bytes: Option<u64>,
+    grouped_capacity_bytes: Option<u64>,
 ) -> Option<&'static str> {
-    let (exceeds, message) = match policy {
-        SchedulingPolicy::Vllm => (
+    let (exceeds, message) = match (policy, grouped_required_bytes, grouped_capacity_bytes) {
+        (SchedulingPolicy::Vllm, Some(required), Some(capacity)) => (
+            required > capacity,
+            "destination prompt and state exceed the grouped KV pool capacity",
+        ),
+        (SchedulingPolicy::Vllm, _, _) => (
             sequence.current_known_blocks().saturating_add(state_blocks) > num_gpu_blocks,
             if state_blocks == 0 {
                 "destination prompt exceeds the KV pool capacity"
@@ -207,7 +215,7 @@ pub(super) fn destination_capacity_error<S: PolicySequence>(
                 "destination prompt and state exceed the KV pool capacity"
             },
         ),
-        SchedulingPolicy::TrtllmGuaranteedNoEvict => (
+        (SchedulingPolicy::TrtllmGuaranteedNoEvict, _, _) => (
             sequence.to_completion_blocks().saturating_add(state_blocks) > num_gpu_blocks,
             "TRT-LLM destination request exceeds the to-completion KV pool capacity",
         ),

@@ -343,9 +343,8 @@ fn grouped_prefix_hit_above_the_pool_is_a_livelock() {
 fn grouped_prefill_rank_holds_its_source_and_reports_block_unit_timing() {
     // Both roles pass the configuration gate, so the replay runs. The prefill
     // rank holds its source after 999 of the 1,000 prompt tokens, because
-    // vLLM leaves the last one to the decode rank. The decode rank does not
-    // take grouped destinations yet. It refuses the reservation, and replay
-    // fails the request without keeping the reason.
+    // vLLM leaves the last one to the decode rank, which computes it in its
+    // first pass. The prompt is committed once, split across the two ranks.
     let spec = disaggregated_grouped_spec(vec![request("grouped", 0.0, 1000, 4)]);
     let rank = serde_json::from_value::<ReplayEngineConfig>(spec.engine.clone())
         .unwrap()
@@ -354,19 +353,37 @@ fn grouped_prefill_rank_holds_its_source_and_reports_block_unit_timing() {
         .unwrap()
         .run()
         .unwrap();
-    assert_eq!(report.committed_prefill_tokens, 999);
-    assert_eq!(report.request_counts.completed_requests, 0);
+    assert_eq!(report.committed_prefill_tokens, 1000);
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.request_counts.total_output_tokens, 4);
+    // A handoff is complete when its request carries every lifecycle
+    // timestamp, as the replay parity runner counts it.
+    let handoffs_complete = report
+        .per_request
+        .iter()
+        .filter(|record| {
+            [
+                record.prefill_admit_ms,
+                record.source_held_ms,
+                record.destination_reserved_ms,
+                record.destination_activated_ms,
+                record.decode_admit_ms,
+                record.source_released_ms,
+            ]
+            .iter()
+            .all(Option::is_some)
+        })
+        .count();
+    assert_eq!(handoffs_complete, 1);
     let record = &report.per_request[0];
     assert_eq!(record.source_held_ms, Some(10.0));
-    // Replay sets the decode worker only after the decode rank accepts.
-    assert_eq!(record.decode_worker_idx, None);
-    assert_eq!(record.destination_reserved_ms, None);
+    assert_eq!(record.decode_worker_idx, Some(0));
     assert_eq!(
         record.terminal_status,
-        aisimulate_core::replay::ReplayTerminalStatus::Failed
+        aisimulate_core::replay::ReplayTerminalStatus::Completed
     );
 
-    // The report keeps neither the held timing nor the refusal reason, so
+    // The report keeps neither the held timing nor the transfer units, so
     // the same rank shows both through the engine API.
     let engine = |worker_type| {
         let config = EngineConfig {
@@ -418,18 +435,27 @@ fn grouped_prefill_rank_holds_its_source_and_reports_block_unit_timing() {
     assert_eq!(timing.full_prompt_tokens, 1);
     assert_eq!(timing.kv_bytes_per_token, Some(13_045_120));
     assert_eq!(timing.state_bytes, 36_927_488);
+    // The decode rank reserves every group for the 999 loaded tokens and
+    // reports the one full-attention block it lacks in the same unit.
     let destination = Command::ReserveDestination {
         handoff_id,
         request,
     };
-    let error = engine(WorkerType::Decode)
+    let effects = engine(WorkerType::Decode)
         .apply_command_effects(SchedulerCommand::new(0, destination), 0.0)
-        .unwrap_err();
-    assert!(
-        format!("{error:#}")
-            .contains("grouped KV caches do not support destination handoff commands"),
-        "{error:#}"
-    );
+        .unwrap();
+    let units = effects.by_rank[0]
+        .effects
+        .lifecycle_events
+        .iter()
+        .find_map(|event| match event {
+            LifecycleEvent::DestinationReserved {
+                transferable_prompt_tokens,
+                ..
+            } => Some(*transferable_prompt_tokens),
+            _ => None,
+        });
+    assert_eq!(units, Some(1));
 }
 
 #[test]
@@ -466,6 +492,560 @@ fn grouped_and_linear_roles_cannot_pair_in_one_handoff() {
             "linear {role} rank"
         );
     }
+}
+
+/// `disaggregated_grouped_spec` with a full-attention group and a Mamba-type
+/// state group of 16-token blocks and 100-byte pages, a pool of `pages` pages
+/// and no transfer delay. With `max_model_len`, the rank caches prefixes at a
+/// 16-token hash block, so it runs in block mode.
+fn small_grouped_pd_spec(
+    requests: Vec<ReplayRequest>,
+    pages: u64,
+    max_model_len: Option<usize>,
+) -> ReplaySpec {
+    let mut spec = disaggregated_grouped_spec(requests);
+    let rank = &mut spec.engine["rank"];
+    rank["kv_cache_groups"] = serde_json::json!([
+        {"name":"full", "kind":"attention", "num_layers":1, "block_size_tokens":16, "page_size_bytes":100, "prefix_cacheable":true, "transfer_bytes_per_block":100},
+        {"name":"state", "kind":"state", "num_layers":1, "block_size_tokens":16, "page_size_bytes":100, "blocks_per_request":1, "prefix_cacheable":true, "transfer_bytes_per_block":100},
+    ]);
+    rank["kv_cache_capacity_bytes"] = (pages * 100).into();
+    rank["kv_transfer_bandwidth"] = serde_json::Value::Null;
+    if let Some(max_model_len) = max_model_len {
+        rank["enable_prefix_caching"] = true.into();
+        rank["prefix_match_unit"] = 16.into();
+        rank["max_model_len"] = max_model_len.into();
+    }
+    spec
+}
+
+fn record<'a>(
+    report: &'a aisimulate_core::replay::ReplayReport,
+    id: &str,
+) -> &'a aisimulate_core::replay::PerRequestRecord {
+    report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some(id))
+        .unwrap()
+}
+
+/// Runs `spec` on its own thread, so that a livelock fails the caller after
+/// 60 s instead of hanging it.
+fn run_within_60_s(spec: ReplaySpec) -> aisimulate_core::replay::ReplayReport {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        sender.send(report).unwrap();
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the replay ends within 60 s")
+}
+
+/// The times at which the decode rank admitted a request, readmissions
+/// included.
+fn decode_admissions(record: &aisimulate_core::replay::PerRequestRecord) -> Vec<f64> {
+    record
+        .admission_history
+        .iter()
+        .filter(|admission| admission.pool == ReplayRequestPool::Decode)
+        .map(|admission| admission.at_ms)
+        .collect()
+}
+
+#[test]
+fn grouped_destination_waits_for_room_for_its_whole_prompt() {
+    // Two distinct prompts of 33 tokens on a pool of 6 pages, in byte mode
+    // and in block mode. Each load of 32 tokens takes 2 attention blocks and
+    // 1 state block, and the whole prompt needs a third attention block.
+    // vLLM admits a load only when the whole prompt fits, with the loaded
+    // tokens computed (V32 `vllm/v1/core/kv_cache_manager.py:522-539`): 4
+    // pages. Two loads of 3 pages would fill the pool, and neither request
+    // could compute its last prompt token. Both prefills end at 10 ms. The
+    // first load is reserved then and activated after the 1 ms handoff, and
+    // its two decode passes of 2 ms end at 15 ms. Until then at most 3 pages
+    // are free, so the second load is reserved at 15 ms.
+    for max_model_len in [None, Some(64)] {
+        let mut first = request("first", 0.0, 33, 2);
+        first.input_token_ids = Some((0..33).collect());
+        let mut second = request("second", 0.0, 33, 2);
+        second.input_token_ids = Some((1000..1033).collect());
+        let spec = small_grouped_pd_spec(vec![first, second], 6, max_model_len);
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(
+            report.request_counts.completed_requests, 2,
+            "{max_model_len:?}"
+        );
+        let (first, second) = (record(&report, "first"), record(&report, "second"));
+        assert_eq!(
+            first.destination_reserved_ms,
+            Some(10.0),
+            "{max_model_len:?}"
+        );
+        assert_eq!(first.terminal_time_ms, 15.0, "{max_model_len:?}");
+        assert_eq!(
+            second.destination_reserved_ms,
+            Some(15.0),
+            "{max_model_len:?}"
+        );
+    }
+}
+
+#[test]
+fn grouped_destination_retries_when_an_activation_publishes_its_hit() {
+    // Two identical prompts of 81 tokens on a decode pool of 11 pages in
+    // block mode. A prefill rank without prefix caching and with room for
+    // both ends both prefills at 10 ms, so both loads arrive then. The first
+    // load takes 5 attention blocks and 1 state block. The second needs 7
+    // free pages for its whole prompt without a hit and finds 5, so it
+    // waits. The first load activates after the 1 ms handoff, at 11 ms, and
+    // publishes its 5 attention blocks. The second prompt then hits them and
+    // needs 1 attention block and 1 state block, so it is reserved at 11 ms,
+    // not when the first request finishes at 27 ms (11 ms and 8 decode passes
+    // of 2 ms).
+    let prompt: Vec<u32> = (0..81).collect();
+    let requests = ["first", "second"].map(|id| {
+        let mut request = request(id, 0.0, 81, 8);
+        request.input_token_ids = Some(prompt.clone());
+        request
+    });
+    let mut spec = small_grouped_pd_spec(requests.to_vec(), 11, Some(144));
+    let mut prefill = spec.engine["rank"].clone();
+    prefill["enable_prefix_caching"] = false.into();
+    prefill["prefix_match_unit"] = serde_json::Value::Null;
+    prefill["kv_cache_capacity_bytes"] = (64 * 100).into();
+    spec.engine["prefill"] = serde_json::json!({ "rank": prefill });
+    let report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .run()
+        .unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let (first, second) = (record(&report, "first"), record(&report, "second"));
+    assert_eq!(second.source_held_ms, Some(10.0));
+    assert_eq!(first.destination_activated_ms, Some(11.0));
+    assert_eq!(first.terminal_time_ms, 27.0);
+    assert_eq!(second.destination_reserved_ms, Some(11.0));
+}
+
+#[test]
+fn grouped_destination_keeps_room_for_the_first_pass_of_each_load() {
+    // The two prompts of 33 tokens on a pool of 7 pages. Both prefills end at
+    // 10 ms, and the first load of 3 pages is reserved then. Its first pass
+    // takes a third attention block. In block mode it also takes a new state
+    // block, as token 33 crosses a state block boundary. vLLM admits a load
+    // only when its blocks fit the free blocks minus what the other loads in
+    // flight still need (V32 `vllm/v1/core/kv_cache_manager.py:561-579`). In
+    // byte mode the second load of 3 pages and the 1 page of the first pass
+    // fit the 4 free pages, so the second load is reserved at 10 ms. In block
+    // mode the first pass needs 2, so the second load waits. The first load
+    // activates at 11 ms, and its first pass leaves 2 free pages. The next
+    // pass frees the previous state block, so 3 are free, less than the 4 of
+    // the whole prompt. The first request ends at 15 ms, and the second load
+    // is reserved then. In byte mode both loads activate at 11 ms. The first
+    // pass of the first request takes the last free page, so the first pass
+    // of the second request waits, as vLLM's waiting loop stops there
+    // (V32 `vllm/v1/core/sched/scheduler.py:1275-1282`). That pass runs when
+    // the first request ends at 15 ms, and the second request ends after two
+    // decode passes of 2 ms, at 19 ms. In block mode the second load
+    // activates at 16 ms and ends at 20 ms. No request computes its prompt
+    // again.
+    for (max_model_len, second_reserved_ms, second_end_ms) in
+        [(None, 10.0, 19.0), (Some(64), 15.0, 20.0)]
+    {
+        let mut first = request("first", 0.0, 33, 2);
+        first.input_token_ids = Some((0..33).collect());
+        let mut second = request("second", 0.0, 33, 2);
+        second.input_token_ids = Some((1000..1033).collect());
+        let spec = small_grouped_pd_spec(vec![first, second], 7, max_model_len);
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(
+            report.request_counts.completed_requests, 2,
+            "{max_model_len:?}"
+        );
+        let (first, second) = (record(&report, "first"), record(&report, "second"));
+        assert_eq!(
+            first.destination_reserved_ms,
+            Some(10.0),
+            "{max_model_len:?}"
+        );
+        assert_eq!(
+            second.destination_reserved_ms,
+            Some(second_reserved_ms),
+            "{max_model_len:?}"
+        );
+        assert_eq!(first.terminal_time_ms, 15.0, "{max_model_len:?}");
+        assert_eq!(second.terminal_time_ms, second_end_ms, "{max_model_len:?}");
+        assert_eq!(
+            (first.readmission_count, second.readmission_count),
+            (0, 0),
+            "{max_model_len:?}"
+        );
+    }
+}
+
+#[test]
+fn grouped_destination_keeps_room_for_a_first_pass_in_byte_mode_too() {
+    // A first prompt of 33 tokens and a distinct second prompt of 34 tokens on
+    // a decode pool of 7 pages. A prefill rank without prefix caching and with
+    // room for both ends both prefills at 10 ms. The first load holds 3 pages,
+    // and its first pass takes 1 more, 2 in block mode. The second load holds
+    // 4 pages for its 33 tokens, and its first pass takes none. So its whole
+    // prompt fits the 4 free pages, but the load would leave none for the
+    // first pass. It waits in both modes until the first request ends at
+    // 15 ms. If it took them, the first pass of the first request would never
+    // fit, and the second request would wait behind it.
+    for max_model_len in [None, Some(64)] {
+        let mut first = request("first", 0.0, 33, 2);
+        first.input_token_ids = Some((0..33).collect());
+        let mut second = request("second", 0.0, 34, 2);
+        second.input_token_ids = Some((1000..1034).collect());
+        let mut spec = small_grouped_pd_spec(vec![first, second], 7, max_model_len);
+        let mut prefill = spec.engine["rank"].clone();
+        prefill["enable_prefix_caching"] = false.into();
+        prefill["prefix_match_unit"] = serde_json::Value::Null;
+        prefill["kv_cache_capacity_bytes"] = (64 * 100).into();
+        spec.engine["prefill"] = serde_json::json!({ "rank": prefill });
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(
+            report.request_counts.completed_requests, 2,
+            "{max_model_len:?}"
+        );
+        let (first, second) = (record(&report, "first"), record(&report, "second"));
+        assert_eq!(second.source_held_ms, Some(10.0), "{max_model_len:?}");
+        assert_eq!(first.terminal_time_ms, 15.0, "{max_model_len:?}");
+        assert_eq!(
+            second.destination_reserved_ms,
+            Some(15.0),
+            "{max_model_len:?}"
+        );
+    }
+}
+
+#[test]
+fn grouped_destination_burst_completes_without_readmission() {
+    // Four distinct prompts of 2,177 tokens on a GLM-5.3-Flash decode pool of
+    // 16 pages, in byte mode and in block mode. A load holds 6 blocks for its
+    // 2,176 tokens. In block mode its first pass takes 5 more: an attention
+    // block and a new block of each KDA group. Two loads would leave 4 free
+    // blocks, and neither first pass would fit. In byte mode a first pass
+    // takes only the attention block.
+    for prefix_caching in [false, true] {
+        let requests = (0..4)
+            .map(|i| {
+                let mut request = request(&format!("r{i}"), 0.0, 2177, 2);
+                request.input_token_ids = Some((i * 10_000..i * 10_000 + 2177).collect());
+                request
+            })
+            .collect();
+        let mut spec = disaggregated_grouped_spec(requests);
+        spec.engine["prefill"] = serde_json::json!({ "rank": spec.engine["rank"].clone() });
+        let rank = &mut spec.engine["rank"];
+        let page = rank["kv_cache_groups"][0]["page_size_bytes"]
+            .as_u64()
+            .unwrap();
+        if prefix_caching {
+            rank["enable_prefix_caching"] = true.into();
+            rank["prefix_match_unit"] = 2176.into();
+        }
+        rank["max_model_len"] = 4352.into();
+        rank["kv_cache_capacity_bytes"] = (16 * page).into();
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(
+            report.request_counts.completed_requests, 4,
+            "{prefix_caching}"
+        );
+        assert!(
+            report
+                .per_request
+                .iter()
+                .all(|record| record.readmission_count == 0),
+            "{prefix_caching}"
+        );
+    }
+}
+
+#[test]
+fn grouped_decode_rank_serves_a_loaded_handoff_before_a_preempted_request() {
+    // Two distinct prompts of 33 tokens with long outputs: 17 tokens each in
+    // byte mode on 7 pages, and 20 tokens each in block mode on 8 pages. The
+    // first request outgrows the pool while the first pass of the second
+    // request waits, so it preempts itself. A preempted request goes to the
+    // front of the waiting queue without its blocks, and vLLM serves the
+    // requests that hold KV blocks first (V32
+    // `vllm/v1/core/sched/scheduler.py:913-917`). So the second request runs,
+    // and the first request computes its prompt again.
+    for (max_model_len, pages, output) in [(None, 7, 17), (Some(80), 8, 20)] {
+        let mut first = request("first", 0.0, 33, output);
+        first.input_token_ids = Some((0..33).collect());
+        let mut second = request("second", 0.0, 33, output);
+        second.input_token_ids = Some((1000..1033).collect());
+        let spec = small_grouped_pd_spec(vec![first, second], pages, max_model_len);
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(
+            report.request_counts.completed_requests, 2,
+            "{max_model_len:?}"
+        );
+        let (first, second) = (record(&report, "first"), record(&report, "second"));
+        assert_eq!(
+            (first.readmission_count, second.readmission_count),
+            (1, 0),
+            "{max_model_len:?}"
+        );
+    }
+}
+
+#[test]
+fn grouped_decode_rank_serves_a_loaded_glm_handoff_before_a_preempted_request() {
+    // Two distinct GLM-5.3-Flash prompts of 2,177 tokens with 2,200 output
+    // tokens each, in byte mode as the P/D compiler sets it, on a decode pool
+    // of 13 pages. Each load holds 6 pages, and each first pass takes the
+    // second attention page. Both loads fit, the first pass of the second
+    // request waits for the last page, and the first request needs a third
+    // attention page at 4,352 tokens. It preempts itself, and the loaded
+    // second request runs before it.
+    let requests = (0..2)
+        .map(|i| {
+            let mut request = request(&format!("r{i}"), 0.0, 2177, 2200);
+            request.input_token_ids = Some((i * 10_000..i * 10_000 + 2177).collect());
+            request
+        })
+        .collect();
+    let mut spec = disaggregated_grouped_spec(requests);
+    spec.engine["prefill"] = serde_json::json!({ "rank": spec.engine["rank"].clone() });
+    let rank = &mut spec.engine["rank"];
+    let page = rank["kv_cache_groups"][0]["page_size_bytes"]
+        .as_u64()
+        .unwrap();
+    rank["max_model_len"] = 8704.into();
+    rank["kv_cache_capacity_bytes"] = (13 * page).into();
+    let report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .run()
+        .unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    assert_eq!(
+        (
+            record(&report, "r0").readmission_count,
+            record(&report, "r1").readmission_count
+        ),
+        (1, 0)
+    );
+}
+
+#[test]
+fn grouped_decode_rank_waits_for_an_event_after_a_repeated_self_preemption() {
+    // Prompts of 84, 90 and 14 tokens with 8 output tokens each, on pools of
+    // 17 pages in block mode, with handoffs at 1e-5 GB/s, 10 bytes per ms.
+    // The prefill rank computes 13, 83 and 89 tokens. It holds h14 at 10 ms
+    // and h84 at 20 ms. At 10 ms h90 does not fit beside h84 and preempts
+    // itself. It is readmitted at 20 ms with its 80 cached tokens and held
+    // at 30 ms. The transfers of 200, 700 and 700 bytes share the links
+    // fairly. h14 sends 100 bytes alone, 50 beside h84 and its last 50
+    // beside both loads, by 45 ms. h84 sends its last 600 bytes at 5 bytes
+    // per ms by 165 ms, and h90 its last 50 bytes by 170 ms. h90 activates
+    // when the decode pass that runs at 170 ms ends, at 171 ms.
+    //
+    // h14 holds 2 blocks and the loads in flight hold 14, so 1 block is
+    // free. h14 emits outputs at 47, 49 and 51 ms. Token 17 then needs an
+    // attention block and a new state block, so h14 preempts itself. Its
+    // readmission needs 3 blocks and finds 3. Its 16-token chunk takes 2 at
+    // 0 ms, as a decode rank prices no prefill, and the next pass preempts
+    // it again with the same pool. vLLM repeats that turn until a transfer
+    // ends. Replay lets h14 wait for the next event, the activation of h84
+    // at 165 ms. Then h84 decodes every 2 ms, and h14 is readmitted in every
+    // other pass until h84 ends at 181 ms. The pass at 171 ms preempts h14
+    // and admits nothing, so h90 runs from 173 ms and ends at 189 ms. h14
+    // emits its last five outputs from 185 to 193 ms.
+    let requests = [84u32, 90, 14]
+        .iter()
+        .enumerate()
+        .map(|(i, &prompt)| {
+            let mut request = request(&format!("h{prompt}"), 0.0, prompt as usize, 8);
+            let first = 10_000 * (i as u32 + 1);
+            request.input_token_ids = Some((first..first + prompt).collect());
+            request
+        })
+        .collect();
+    let mut spec = small_grouped_pd_spec(requests, 17, Some(128));
+    spec.engine["rank"]["kv_transfer_bandwidth"] = 1e-5.into();
+    let report = run_within_60_s(spec);
+    assert_eq!(report.request_counts.completed_requests, 3);
+    let (h84, h90, h14) = (
+        record(&report, "h84"),
+        record(&report, "h90"),
+        record(&report, "h14"),
+    );
+    assert_eq!(
+        [h14, h84, h90].map(|record| record.destination_activated_ms),
+        [Some(45.0), Some(165.0), Some(171.0)]
+    );
+    assert_eq!(
+        decode_admissions(h14),
+        [45.0, 51.0, 165.0, 169.0, 173.0, 177.0, 181.0]
+    );
+    assert_eq!((h14.terminal_time_ms, h14.readmission_count), (193.0, 6));
+    assert_eq!(
+        [h84, h90].map(|record| (record.terminal_time_ms, record.readmission_count)),
+        [(181.0, 0), (189.0, 1)]
+    );
+}
+
+/// Distinct prompts of the given (prompt, output, arrival) shapes, with the
+/// token IDs of request i starting at 1,000 * (i + 1).
+fn distinct_requests(shapes: &[(usize, usize, f64)]) -> Vec<ReplayRequest> {
+    shapes
+        .iter()
+        .enumerate()
+        .map(|(i, &(prompt, output, at))| {
+            let mut request = request(&format!("q{i}"), at, prompt, output);
+            let first = 1000 * (i as u32 + 1);
+            request.input_token_ids = Some((first..first + prompt as u32).collect());
+            request
+        })
+        .collect()
+}
+
+#[test]
+fn grouped_decode_rank_waits_when_a_turn_evicts_and_publishes_the_same_key() {
+    // Three distinct prompts of 31, 30 and 34 tokens with 40, 31 and 20
+    // outputs, arriving at 0, 3 and 6 ms, on pools of 13 pages in block mode,
+    // with a 32-token budget, 0.5 ms decode passes and handoffs at
+    // 3e-7 GB/s. At 2,992 ms q0 has computed 64 of its 65 tokens and needs 2
+    // more blocks, while two loads in flight hold 7. It preempts itself and
+    // recomputes its tokens in 0 ms chunks with no hit. Each turn publishes
+    // one key and loses one, so q0 preempts itself again with 7 blocks in
+    // use, 1 cached block and the same visible key, while a count of
+    // publications grows by one per turn. q0 waits for the next event, and
+    // the three requests complete in both timing modes.
+    for timing_mode in ["full_prompt", "destination_missing"] {
+        let requests = distinct_requests(&[(31, 40, 0.0), (30, 31, 3.0), (34, 20, 6.0)]);
+        let mut spec = small_grouped_pd_spec(requests, 13, Some(128));
+        let rank = &mut spec.engine["rank"];
+        rank["kv_transfer_bandwidth"] = 3e-7.into();
+        rank["timing_model"] =
+            serde_json::json!({"type": "fixed", "prefill_ms": 10.0, "decode_ms": 0.5});
+        rank["max_num_batched_tokens"] = 32.into();
+        rank["kv_transfer_timing_mode"] = timing_mode.into();
+        let report = run_within_60_s(spec);
+        assert_eq!(report.request_counts.completed_requests, 3, "{timing_mode}");
+    }
+}
+
+#[test]
+fn grouped_decode_rank_readmits_a_request_whose_pool_lost_a_visible_key() {
+    // Four distinct GLM-5.3-Flash prompts of 2,178, 6,000, 1,000 and 4,354
+    // tokens, with decode prefix caching on 16 decode pages, a 128-page
+    // prefill pool, a 2,176-token budget, handoffs at 0.01 GB/s and 5 ms
+    // decode passes. When g0 ends, g3 is readmitted and preempts itself three
+    // times at that time, always with 6 blocks in use. The second and the
+    // third time also have 5 cached blocks each, but one of the 3 visible
+    // keys left the pool between them. So g3 makes a fourth turn, as vLLM
+    // does, and that turn caches 4 more blocks. When g2 ends, the
+    // readmission of g3 then hits 2,176 tokens.
+    let requests = [
+        (2178, 2500, 126.0),
+        (6000, 50, 8.0),
+        (1000, 1, 155.0),
+        (4354, 2200, 130.0),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (prompt, output, at))| {
+        let mut request = request(&format!("g{i}"), at, prompt, output);
+        let first = i as u32 * 100_000;
+        request.input_token_ids = Some((first..first + prompt as u32).collect());
+        request
+    })
+    .collect();
+    let mut spec = disaggregated_grouped_spec(requests);
+    let rank = &mut spec.engine["rank"];
+    let page = rank["kv_cache_groups"][0]["page_size_bytes"]
+        .as_u64()
+        .unwrap();
+    rank["max_model_len"] = 8704.into();
+    rank["enable_prefix_caching"] = true.into();
+    rank["prefix_match_unit"] = 2176.into();
+    rank["max_num_batched_tokens"] = 2176.into();
+    rank["kv_transfer_bandwidth"] = 0.01.into();
+    rank["timing_model"] =
+        serde_json::json!({"type": "fixed", "prefill_ms": 10.0, "decode_ms": 5.0});
+    let mut prefill = spec.engine["rank"].clone();
+    prefill["kv_cache_capacity_bytes"] = (128 * page).into();
+    spec.engine["prefill"] = serde_json::json!({ "rank": prefill });
+    spec.engine["rank"]["kv_cache_capacity_bytes"] = (16 * page).into();
+    let report = run_within_60_s(spec);
+    assert_eq!(report.request_counts.completed_requests, 4);
+    let (g0, g2, g3) = (
+        record(&report, "g0"),
+        record(&report, "g2"),
+        record(&report, "g3"),
+    );
+    let admissions = decode_admissions(g3);
+    assert_eq!(
+        admissions
+            .iter()
+            .filter(|&&at| at == g0.terminal_time_ms)
+            .count(),
+        4
+    );
+    assert_eq!(admissions.last(), Some(&g2.terminal_time_ms));
+    assert_eq!(g3.decode_reused_input_tokens, Some(2176));
+}
+
+#[test]
+fn grouped_decode_rank_readmits_a_request_that_made_progress_at_one_time() {
+    // Five distinct prompts on a decode pool of 14 pages in block mode, with
+    // decode passes priced at 0 ms, a 32-token budget, a 160-page prefill
+    // pool and handoffs at 3e-6 GB/s. q1 and q2 activate at 283.33 ms, and
+    // every step at that time costs 0 ms. q2 preempts itself after 2 outputs,
+    // with 11 blocks in use and no cached block. Readmitted, it emits 14 more
+    // outputs before q1 preempts it, and after its next readmission it
+    // preempts itself again after 16 outputs, with the same pool. It made
+    // progress in between, so it is readmitted. Only its third
+    // self-preemption repeats the second, and q2 waits until q1 ends at the
+    // same time. So q2 has 4 readmissions, all at its activation time.
+    let requests = distinct_requests(&[
+        (14, 33, 0.0),
+        (15, 40, 3.0),
+        (15, 40, 6.0),
+        (33, 3, 9.0),
+        (34, 20, 12.0),
+    ]);
+    let mut spec = small_grouped_pd_spec(requests, 14, Some(96));
+    let rank = &mut spec.engine["rank"];
+    rank["kv_transfer_bandwidth"] = 3e-6.into();
+    rank["timing_model"] =
+        serde_json::json!({"type": "fixed", "prefill_ms": 10.0, "decode_ms": 0.0});
+    rank["max_num_batched_tokens"] = 32.into();
+    rank["kv_transfer_timing_mode"] = "destination_missing".into();
+    let mut prefill = spec.engine["rank"].clone();
+    prefill["kv_cache_capacity_bytes"] = (160 * 100).into();
+    spec.engine["prefill"] = serde_json::json!({ "rank": prefill });
+    let report = run_within_60_s(spec);
+    assert_eq!(report.request_counts.completed_requests, 5);
+    let (q1, q2) = (record(&report, "q1"), record(&report, "q2"));
+    let activated = q2.destination_activated_ms.unwrap();
+    assert_eq!(decode_admissions(q2), [activated; 5]);
+    assert_eq!(q1.terminal_time_ms, activated);
 }
 
 #[test]
