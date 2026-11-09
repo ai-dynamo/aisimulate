@@ -618,14 +618,14 @@ class NaiveKVCacheEstimator:
         self,
         geometry: dict,
         *,
-        dtype_bytes: int,
+        dtype_bytes: float,
         tp_size: int,
         pp_size: int,
         moe_ep_size: int = 1,
         moe_tp_size: int = 1,
     ):
         self.geometry = geometry
-        self.dtype_bytes = int(dtype_bytes)
+        self.dtype_bytes = dtype_bytes  # fractional for NVFP4
         self.tp_size = int(tp_size)
         self.pp_size = int(pp_size)
         self.moe_ep_size = max(int(moe_ep_size), 1)
@@ -862,7 +862,7 @@ class NaiveKVCacheEstimator:
 
     # --------------------------- geometry -> byte sizes --------------------------- #
 
-    def kv_bytes_per_token(self) -> int | None:
+    def kv_bytes_per_token(self) -> float | None:
         """Per-token KV byte size (the ``seq_len=1`` rate), MLA-aware, or ``None``.
 
         Standard K/V and MLA/compressed-latent attention are handled separately

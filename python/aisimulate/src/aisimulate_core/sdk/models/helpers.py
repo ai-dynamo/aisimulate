@@ -959,9 +959,10 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         overrides["moe_quant_mode"] = common.MoEQuantMode.w4a8_mxfp4_mxfp8
 
     # KVCache quant mode
-    # TODO: support fp4 kv cache
     if kv_cache_algo == "fp8":
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
+    elif kv_cache_algo == "nvfp4":
+        overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.nvfp4
     elif kv_cache_algo in ("bfloat16", "none"):
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.bfloat16
     elif kv_cache_algo is not None:
@@ -981,7 +982,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         overrides["fmha_quant_mode"] = common.FMHAQuantMode.bfloat16
     elif quant_algo is not None and (quant_algo in ("fp8", "fp8_block", "nvfp4") or kv_cache_algo in ("fp8",)):
         overrides["fmha_quant_mode"] = common.FMHAQuantMode.fp8
-        if kv_cache_algo is None or kv_cache_algo != "fp8":
+        if kv_cache_algo not in ("fp8", "nvfp4"):
             overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 
     return overrides

@@ -1055,7 +1055,7 @@ These additional public YAML fields are concrete controls:
 | Field | Meaning |
 | --- | --- |
 | `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. AFD resolves GEMM/MoE execution independently against each pool hardware while preserving requested overrides. |
-| `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
+| `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, `int8`, or `nvfp4`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
 | `engine.attention_backend` | Attention kernel selector, including AFD per-pool construction; subject to canonical model/backend validation. |
 | `engine.moe_kernel_source` | Exact collected fused-MoE compute source, including AFD per-pool construction; unsupported with a large-EP MoE graph. |
 | `engine.moe_backend` | Runtime graph/backend selector, subject to canonical validation; nondefault overrides remain unsupported for AFD. |
@@ -1101,9 +1101,10 @@ recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 
 | Checkpoint metadata | Inferred KV precision |
 |---|---|
-| `kv_cache_quant_algo` is not missing/null, `fp8`, `bfloat16`, or `"none"` (for example, `int8`) | Rejected during checkpoint normalization |
+| `kv_cache_quant_algo` is not missing/null, `fp8`, `nvfp4`, `bfloat16`, or `"none"` (for example, `int8`) | Rejected during checkpoint normalization |
 | DeepSeek V4/V4.1 architecture | FP8 |
-| `kv_cache_quant_algo: fp8` | FP8 |
+| `kv_cache_quant_algo: fp8`, or ModelOpt `kv_cache_scheme: FP8` | FP8 |
+| `kv_cache_quant_algo: nvfp4`, or ModelOpt `kv_cache_scheme: NVFP4` or a 4-bit float scheme (`quant_method: modelopt`) | NVFP4 |
 | `kv_cache_quant_algo: "none"` | BF16 |
 | KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
 | Other supported configurations | BF16 |
@@ -1126,6 +1127,14 @@ at compile time and do not report the resolved precision through this path.
 
 FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
 FP8 KV holds twice as many tokens. This does not imply twice the throughput.
+
+NVFP4 uses 9/16 byte per element: 4-bit values plus one FP8 scale per 16, as
+vLLM's `--kv-cache-dtype nvfp4` and TRT-LLM's `kv_cache_config.dtype: nvfp4`
+store K and V. No attention data is collected at NVFP4 KV yet, so op-level
+timing refuses it at construction in `SILICON`, `HYBRID` and `EMPIRICAL` modes,
+and `estimation_mode: auto` moves on to measured FPM data. `SOL` evaluates the
+speed-of-light bound at the NVFP4 width. vLLM does not accept `nvfp4` for MLA
+latent caches; AISimulate does not check this and applies the same width.
 
 AFD preserves supported controls, including explicit `attention_backend` and
 `moe_kernel_source`, through prediction, recommendation, saved replay specifications,

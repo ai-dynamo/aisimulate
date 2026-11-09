@@ -2270,7 +2270,7 @@ def test_detail_schema_rejects_incomplete_or_unsupported_sections(section):
         validate({"schema_version": "1.0", "sections": section, "skipped": {}}, _detail_schema())
 
 
-@pytest.mark.parametrize("kv_mode", ["fp8", "bfloat16"])
+@pytest.mark.parametrize("kv_mode", ["fp8", "bfloat16", "nvfp4"])
 def test_detail_partial_memory_preserves_unavailable_role_reason(kv_mode):
     from jsonschema import ValidationError, validate
 

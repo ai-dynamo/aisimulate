@@ -92,6 +92,19 @@ fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result
     Ok(())
 }
 
+/// No collected attention table has NVFP4 KV rows. Failing here, at
+/// construction, lets `auto` fall through to measured FPM data. `SOL` returns
+/// before this check and evaluates the bound at the NVFP4 width.
+fn no_nvfp4_kv_data(op: &str, kv: KvCacheQuantMode) -> Result<(), AicError> {
+    if kv == KvCacheQuantMode::Nvfp4 {
+        return Err(AicError::PerfDatabase(format!(
+            "{op}: no op-level attention data for an NVFP4 KV cache; time it with measured \
+             FPM data or database mode SOL"
+        )));
+    }
+    Ok(())
+}
+
 /// Hopper FP8 KV requires a runtime that implements the GLM IndexPool path.
 /// vLLM 0.32.0 fixes the SM90 FlashInfer plan dtype (#55222, c37f86e5721f),
 /// and SGLang 0.5.22 enables CUDA TileLang FP8 KV (#42957, 9336681310c7).
@@ -562,8 +575,14 @@ impl Availability<'_> {
                 }
                 Ok(())
             }
-            ContextAttention(_) => self.any(&["context_attention_perf.parquet"]),
-            GenerationAttention(_) => self.any(&["generation_attention_perf.parquet"]),
+            ContextAttention(attention) => {
+                no_nvfp4_kv_data(&attention.name, attention.kv_cache_dtype)?;
+                self.any(&["context_attention_perf.parquet"])
+            }
+            GenerationAttention(attention) => {
+                no_nvfp4_kv_data(&attention.name, attention.kv_cache_dtype)?;
+                self.any(&["generation_attention_perf.parquet"])
+            }
             EncoderAttention(_) => self.any(&["encoder_attention_perf.parquet"]),
             ContextMla(_) => self.any(&["context_mla_perf.parquet"]),
             GenerationMla(_) => self.any(&["generation_mla_perf.parquet"]),
@@ -783,6 +802,45 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn nvfp4_kv_attention_has_no_op_level_data_outside_sol() {
+        use crate::operators::GenerationAttentionOp;
+        let root = systems();
+        table(
+            &root
+                .path()
+                .join("data/b200_sxm/vllm/0.24.0/generation_attention_perf.parquet"),
+        );
+        let op = |kv| {
+            Op::GenerationAttention(GenerationAttentionOp::new(
+                "generation_attention",
+                8,
+                1,
+                128,
+                kv,
+            ))
+        };
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+        ] {
+            let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                .unwrap()
+                .with_mode(mode, TransferPolicy::ALL);
+            validate(&db, [&op(KvCacheQuantMode::Fp8)].into_iter()).unwrap();
+            match validate(&db, [&op(KvCacheQuantMode::Nvfp4)].into_iter()) {
+                Ok(()) => assert_eq!(mode, DatabaseMode::Sol),
+                // A missing-data error lets `auto` fall through to FPM data.
+                Err(error) => assert!(
+                    mode != DatabaseMode::Sol && error.is_missing_perf_data(),
+                    "{mode:?}: {error}"
+                ),
+            }
+        }
     }
 
     #[test]

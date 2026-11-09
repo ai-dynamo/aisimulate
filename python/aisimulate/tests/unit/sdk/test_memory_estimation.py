@@ -195,7 +195,12 @@ def test_native_zero_per_token_raises():
 
 @pytest.mark.parametrize(
     "override, resolved, token_capacity",
-    [(None, "fp8", 2097152), ("fp8", "fp8", 2097152), ("bfloat16", "bfloat16", 1048576)],
+    [
+        (None, "fp8", 2097152),
+        ("fp8", "fp8", 2097152),
+        ("bfloat16", "bfloat16", 1048576),
+        ("nvfp4", "nvfp4", 3728270),
+    ],
 )
 def test_native_capacity_discloses_resolved_kv_precision(monkeypatch, override, resolved, token_capacity):
     def get_model(_path, config, backend):
@@ -234,7 +239,7 @@ def test_native_capacity_discloses_resolved_kv_precision(monkeypatch, override, 
         kvcache_quant_mode=override,
         diagnostics=diagnostics,
     )
-    # Identical 4 GiB cache budgets: FP8 uses 2048 bytes/token, BF16 uses 4096.
+    # Identical 4 GiB cache budgets: FP8 uses 2048 bytes/token, BF16 4096, NVFP4 1152.
     assert diagnostics["total_kv_size_bytes"] == 4 * _GIB
     assert diagnostics["total_kv_size_tokens"] == token_capacity
     assert blocks == token_capacity // 64
