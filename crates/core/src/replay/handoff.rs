@@ -669,6 +669,12 @@ mod tests {
         };
         validate_transfer_timing(zero_bandwidth).unwrap();
         assert_eq!(start_transfer_delay(zero_bandwidth, 7.5), 7.5);
+
+        let filled = HandoffTransferTiming {
+            pipeline_fill_ms: 2.0,
+            ..missing
+        };
+        assert_eq!(start_transfer_delay(filled, 7.5), 9.5);
     }
 
     #[test]

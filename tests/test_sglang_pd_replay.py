@@ -103,6 +103,14 @@ def test_unaligned_token_budget_chunks_whole_pages():
 def test_sglang_pd_prefill_accepts_pipeline_stages():
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill_pipeline=4)))
     assert spec.backend_deployment.parallel_config["prefill_pp"] == 4
+    assert spec.backend_deployment.prefill_engine_args["aic_pp_size"] == 4
+
+
+def test_pipeline_stages_need_an_aic_timing_model():
+    # Fixed and polynomial timing price one stage, so a PP width would be dropped.
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill_pipeline=4)))
+    with pytest.raises(ValueError, match="requires an AIC timing model, not .fixed. timing"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
 
 
 @pytest.mark.parametrize(

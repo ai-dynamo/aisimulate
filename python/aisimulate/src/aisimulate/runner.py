@@ -1568,6 +1568,19 @@ def _reject_role_pipeline_parallelism(
         ),
         backend=backend,
     )
+    # Only AIC timing reads a pipeline width; any other model would replay the
+    # stages as one.
+    if timing is not None and not (
+        isinstance(timing, Mapping) and timing.get("type") == "external" and timing.get("provider") in ("aic", "ais")
+    ):
+        widths = (
+            parallel_config.get("pp" if role == "aggregated" else f"{role}_pp", 1),
+            role_config.get("aic_pp_size", 1),
+            rank.get("aic_pp_size", 1),
+        )
+        if any(width not in (None, 1) for width in widths):
+            kind = timing.get("type") if isinstance(timing, Mapping) else timing
+            raise ValueError(f"pipeline parallelism on {role} requires an AIC timing model, not {kind!r} timing")
 
 
 def _materialize_engine_role(

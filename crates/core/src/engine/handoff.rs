@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(
             filled.delay_ms(0),
             None,
-            "the fallback delay applies, plus the fill"
+            "unpriced timing leaves the fill to the coordinator fallback"
         );
     }
 
