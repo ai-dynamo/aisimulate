@@ -815,6 +815,66 @@ mod tests {
         assert_eq!(analytic.source, Source::Sol);
     }
 
+    /// A per-shard op (8 heads, 2 groups) over a table that holds only the
+    /// full layer (16 heads, 4 groups) prices at the analytic estimate in
+    /// SILICON and HYBRID instead of reading the full-layer row. Hand-derived
+    /// SOL for the shard: conv_dim = 8*64 + 2*2*64 = 768 channels; x = b*s =
+    /// 1024; bytes = x*conv_dim*(d_conv+1)*2 + x*conv_dim*2 = 9_437_184 over
+    /// the fixture's 7.7e12 B/s memory bandwidth, times `scale_factor` 2.0.
+    #[test]
+    fn mamba2_per_shard_shape_miss_prices_at_sol_in_silicon_and_hybrid() {
+        use crate::common::enums::{DatabaseMode, TransferPolicy};
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let root = tempfile::tempdir().expect("tmpdir");
+        write_energy_systems_root(root.path());
+        let data = root.path().join("data/test/1.0");
+        std::fs::create_dir_all(&data).expect("mkdir data");
+        write_parquet(
+            &data.join("mamba2_perf.parquet"),
+            &[
+                Col::Str("kernel_source", vec!["causal_conv1d_fn"]),
+                Col::Str("phase", vec!["context"]),
+                Col::I64("batch_size", vec![2]),
+                Col::I64("seq_len", vec![512]),
+                Col::I64("d_model", vec![1024]),
+                Col::I64("d_state", vec![64]),
+                Col::I64("d_conv", vec![4]),
+                Col::I64("nheads", vec![16]),
+                Col::I64("head_dim", vec![64]),
+                Col::I64("n_groups", vec![4]),
+                Col::I64("chunk_size", vec![128]),
+                Col::F64("latency", vec![0.5]),
+            ],
+        );
+        let shard = Mamba2Op {
+            name: "context_mamba".into(),
+            scale_factor: 2.0,
+            kernel_source: "causal_conv1d_fn".into(),
+            phase: "context".into(),
+            d_model: 1024,
+            d_state: 64,
+            d_conv: 4,
+            nheads: 8,
+            head_dim: 64,
+            n_groups: 2,
+            chunk_size: 128,
+        };
+        let expected = 9_437_184.0 / 7.7e12 * 1000.0 * 2.0;
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let db = PerfDatabase::load(root.path(), "testsys", "test", "1.0")
+                .expect("load")
+                .with_mode(mode, TransferPolicy::ALL);
+            let result = shard.query(&db, 2, 512).unwrap();
+            assert_eq!(result.source, Source::Sol, "{mode:?}");
+            assert!(
+                (result.latency_ms - expected).abs() <= 1e-12 * expected,
+                "{mode:?}"
+            );
+        }
+    }
+
     /// Mamba2 follows the database-mode semantics of the other table-backed
     /// operators: SILICON and HYBRID read measured rows, while SOL, the
     /// retired SOL_FULL alias and EMPIRICAL never read them. Mamba2 has no

@@ -300,38 +300,27 @@ impl StateSpaceTable {
             n_groups,
             chunk_size,
         };
-        // Mirror Python `_query_mamba2_table`: on exact-shape miss, fall back
-        // to the first table entry sharing the same `d_model` (insertion order
-        // in Python; sorted order here — which agrees whenever the per-d_model
-        // bucket has a single entry, as in all current matrices). If no entry
-        // shares d_model, surface as `PerfDatabase` so the operator layer's
-        // SOL fallback applies.
+        // Exact per-shard geometry only, the same rule as `query_gdn`: a row
+        // with the same `d_model` but another head, group, state or chunk
+        // geometry is a different kernel launch, so it is reported in the
+        // miss, never substituted. Any miss surfaces as `PerfDatabase` so the
+        // operator degrades to SOL.
         //
         // The backend's own persisted physical label (TRT-LLM rc29 renamed
         // the context convolution `causal_conv1d_fn_token_major`) takes
         // precedence over the logical lane, which after the shared-layer
         // merge can hold an earlier version's or another backend's rows.
-        let own_physical = self
+        let aliases = self
             .gdn_alias_profile
-            .mamba2_aliases(key.kernel_source.as_str(), key.phase.as_str())
-            .iter()
-            .find_map(|alias| {
-                let mut alias_key = key.clone();
-                alias_key.kernel_source = (*alias).to_string();
-                grids.by_keys.get(&alias_key)
-            });
+            .mamba2_aliases(key.kernel_source.as_str(), key.phase.as_str());
+        let own_physical = aliases.iter().find_map(|alias| {
+            let mut alias_key = key.clone();
+            alias_key.kernel_source = (*alias).to_string();
+            grids.by_keys.get(&alias_key)
+        });
         let node = match own_physical.or_else(|| grids.by_keys.get(&key)) {
             Some(node) => node,
-            None => grids
-                .by_keys
-                .iter()
-                .find(|(k, _)| {
-                    k.kernel_source == key.kernel_source
-                        && k.phase == key.phase
-                        && k.d_model == key.d_model
-                })
-                .map(|(_, node)| node)
-                .ok_or_else(|| missing("Mamba2", &self.data_root, format!("{key:?}")))?,
+            None => return Err(mamba2_shape_miss(&self.data_root, grids, &key, aliases)),
         };
         engine_query(node, phase, batch_size, seq_len, sol)
     }
@@ -993,6 +982,42 @@ fn missing(table: &str, data_root: &Path, descriptor: String) -> AicError {
     AicError::PerfDatabase(format!(
         "{table} data missing for {descriptor} at {}",
         data_root.display()
+    ))
+}
+
+/// The typed Mamba2 miss. Rows that share `(kernel_source, phase, d_model)`
+/// with the query (under the logical label or the backend's own physical
+/// `aliases`) are named as the shardings that were not substituted.
+fn mamba2_shape_miss(
+    data_root: &Path,
+    grids: &Mamba2Grids,
+    key: &Mamba2Key,
+    aliases: &[&str],
+) -> AicError {
+    let candidates: Vec<String> = grids
+        .by_keys
+        .keys()
+        .filter(|k| {
+            (k.kernel_source == key.kernel_source || aliases.contains(&k.kernel_source.as_str()))
+                && k.phase == key.phase
+                && k.d_model == key.d_model
+        })
+        .map(|k| {
+            format!(
+                "nheads={},n_groups={},d_state={},chunk_size={}",
+                k.nheads, k.n_groups, k.d_state, k.chunk_size
+            )
+        })
+        .collect();
+    if candidates.is_empty() {
+        return missing("Mamba2", data_root, format!("{key:?}"));
+    }
+    AicError::PerfDatabase(format!(
+        "Mamba2 data missing for {key:?} at {}: no exact per-shard row; {} same-d_model row(s) \
+         with another sharding were not substituted: {}",
+        data_root.display(),
+        candidates.len(),
+        candidates.join("; ")
     ))
 }
 
@@ -2315,6 +2340,116 @@ mod tests {
             query("causal_conv1d_update", "generation", 1024).unwrap(),
             0.25
         );
+    }
+
+    fn query_mamba2_conv_shape(
+        table: &StateSpaceTable,
+        d_model: u32,
+        nheads: u32,
+        n_groups: u32,
+    ) -> Result<f64, AicError> {
+        let dummy_sol = |_: f64, _: f64| 1.0;
+        table
+            .query_mamba2(
+                "causal_conv1d_fn",
+                "context",
+                1,
+                1024,
+                d_model,
+                128,
+                4,
+                nheads,
+                64,
+                n_groups,
+                256,
+                &dummy_sol,
+            )
+            .map(|v| v.latency)
+    }
+
+    /// The in-memory table holds one full-layer row (d_model 8192, 128 heads,
+    /// 8 groups). A TP 2 shard of that layer (64 heads, 4 groups) has no row and
+    /// must not be priced with the full-layer row.
+    #[test]
+    fn mamba2_same_d_model_row_is_not_substituted_for_a_per_shard_shape() {
+        let table = in_memory_mamba2_table("trtllm", "1.3.0rc20", &[("causal_conv1d_fn", 1.0)]);
+        assert_eq!(query_mamba2_conv_shape(&table, 8192, 128, 8).unwrap(), 1.0);
+        match query_mamba2_conv_shape(&table, 8192, 64, 4) {
+            Err(err @ AicError::PerfDatabase(_)) => {
+                assert!(err.is_missing_perf_data());
+                let message = err.to_string();
+                assert!(message.contains("no exact per-shard row"), "{message}");
+                assert!(
+                    message.contains(
+                        "not substituted: nheads=128,n_groups=8,d_state=128,chunk_size=256"
+                    ),
+                    "{message}"
+                );
+            }
+            other => panic!("expected a typed miss, got {other:?}"),
+        }
+        // No same-d_model row: the plain missing-data message, no candidate list.
+        let message = query_mamba2_conv_shape(&table, 4096, 64, 4)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.starts_with("perf database error: Mamba2 data missing for"),
+            "{message}"
+        );
+        assert!(!message.contains("not substituted"), "{message}");
+    }
+
+    #[test]
+    fn mamba2_rc29_alias_rows_are_not_substituted_for_a_per_shard_shape() {
+        let table = in_memory_mamba2_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[
+                ("causal_conv1d_fn", 1.0),
+                ("causal_conv1d_fn_token_major", 2.0),
+            ],
+        );
+        assert_eq!(query_mamba2_conv_shape(&table, 8192, 128, 8).unwrap(), 2.0);
+        // The miss lists both the logical and the alias-label row.
+        match query_mamba2_conv_shape(&table, 8192, 64, 4) {
+            Err(err @ AicError::PerfDatabase(_)) => {
+                let message = err.to_string();
+                assert!(message.contains("2 same-d_model row(s)"), "{message}");
+                assert!(message.contains("not substituted"), "{message}");
+            }
+            other => panic!("expected a typed miss, got {other:?}"),
+        }
+    }
+
+    /// Packaged TRT-LLM rows hold the TP 1 geometry of each model. The TP 1
+    /// query of nvidia/Nemotron-H-56B-Base-8K hits; its TP 8 shard misses.
+    #[test]
+    fn mamba2_packaged_table_hits_tp1_shape_and_rejects_per_shard_shape() {
+        let table = StateSpaceTable::new(
+            data_root("b200_sxm/linear_attention/trtllm/1.3.0rc29"),
+            "trtllm",
+            "1.3.0rc29",
+        );
+        let dummy_sol = |_: f64, _: f64| 1.0;
+        let query = |nheads: u32, n_groups: u32| {
+            table.query_mamba2(
+                "causal_conv1d_fn",
+                "context",
+                1,
+                1024,
+                8192,
+                256,
+                4,
+                nheads,
+                64,
+                n_groups,
+                128,
+                &dummy_sol,
+            )
+        };
+        assert!(query(256, 8).unwrap().latency > 0.0);
+        let message = query(32, 1).unwrap_err().to_string();
+        assert!(message.contains("not substituted"), "{message}");
     }
 
     #[test]
