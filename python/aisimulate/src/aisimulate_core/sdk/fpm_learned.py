@@ -57,6 +57,7 @@ import logging
 import math
 import os
 import random
+import statistics
 import sys
 import tempfile
 from collections import defaultdict
@@ -92,7 +93,6 @@ _TRAINING_METADATA_FIELDS = frozenset(
 WORKER_TYPES = ("prefill", "decode", "aggregated")
 WORKLOAD_KINDS = ("pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill")
 TARGETS = ("log_ms", "ms")
-LAUNCH_CENSORED_POLICIES = ("keep", "exclude")
 
 # Must stay byte-identical (names and order) with the tables in
 # ``crates/core/src/perfmodel/fpm/learned.rs``.
@@ -578,25 +578,26 @@ _OWN_WORK_AXES = {
     "decode": ("num_decode_requests", "decode_kv_per_request"),
     "prefill": ("num_decode_requests", "sum_prefill_tokens"),
 }
+_OWN_WORK_CELLS = ("n", "ms", "sd_ms")
 
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _check_launch_stall(own_work_ms: Any, max_cudagraph_capture_size: Any) -> None:
+def _check_own_work_buckets(buckets: Any, max_cudagraph_capture_size: Any, cells: tuple[str, ...] = ()) -> None:
     if (
         not isinstance(max_cudagraph_capture_size, int)
         or isinstance(max_cudagraph_capture_size, bool)
         or max_cudagraph_capture_size <= 0
     ):
         raise ValueError(f"max_cudagraph_capture_size must be a positive integer, got {max_cudagraph_capture_size!r}")
-    if not isinstance(own_work_ms, dict) or set(own_work_ms) != set(_OWN_WORK_AXES):
-        raise ValueError(f"own_work_ms needs exactly the carriers {sorted(_OWN_WORK_AXES)}, got {own_work_ms!r}")
+    if not isinstance(buckets, dict) or set(buckets) != set(_OWN_WORK_AXES):
+        raise ValueError(f"own-work buckets need exactly the carriers {sorted(_OWN_WORK_AXES)}, got {buckets!r}")
     for carrier, axes in _OWN_WORK_AXES.items():
-        table = own_work_ms[carrier]
-        if not isinstance(table, dict) or set(table) != {*axes, "ms"}:
-            raise ValueError(f"own_work_ms[{carrier!r}] needs exactly {sorted({*axes, 'ms'})}, got {table!r}")
+        table = buckets[carrier]
+        if not isinstance(table, dict) or set(table) != {*axes, *cells}:
+            raise ValueError(f"own-work buckets[{carrier!r}] need exactly {sorted({*axes, *cells})}, got {table!r}")
         for axis in axes:
             edges = table[axis]
             if (
@@ -607,32 +608,113 @@ def _check_launch_stall(own_work_ms: Any, max_cudagraph_capture_size: Any) -> No
                 or any(low >= high for low, high in pairwise(edges))
             ):
                 raise ValueError(
-                    f"own_work_ms[{carrier!r}][{axis!r}] must list increasing bucket lower edges from 0, got {edges!r}"
+                    f"own-work buckets[{carrier!r}][{axis!r}] must list increasing bucket lower edges from 0, "
+                    f"got {edges!r}"
                 )
         rows, cols = (len(table[axis]) for axis in axes)
-        ms = table["ms"]
-        if (
-            not isinstance(ms, list)
-            or len(ms) != rows
-            or not all(isinstance(row, list) and len(row) == cols for row in ms)
-            or not all(_is_number(value) and value > 0 for row in ms for value in row)
-        ):
-            raise ValueError(
-                f"own_work_ms[{carrier!r}]['ms'] must be {rows} rows of {cols} positive numbers, got {ms!r}"
-            )
+        for cell in cells:
+            grid = table[cell]
+            if (
+                not isinstance(grid, list)
+                or len(grid) != rows
+                or not all(isinstance(row, list) and len(row) == cols for row in grid)
+            ):
+                raise ValueError(f"own-work buckets[{carrier!r}][{cell!r}] must be {rows} rows of {cols}, got {grid!r}")
+        if cells and not all(ms is None or (_is_number(ms) and ms > 0) for row in table["ms"] for ms in row):
+            raise ValueError(f"own-work buckets[{carrier!r}]['ms'] must hold positive numbers or null")
 
 
-def _own_work_ms(own_work_ms: dict[str, Any], carrier: str, fpm: dict[str, Any]) -> float:
+def _carrier(fpm: dict[str, Any]) -> str:
+    return "prefill" if int(_sched(fpm).get("sum_prefill_tokens", 0)) > 0 else "decode"
+
+
+def _own_work_bucket(table: dict[str, Any], carrier: str, fpm: dict[str, Any]) -> tuple[int, int]:
     s = _sched(fpm)
     decodes = int(s.get("num_decode_requests", 0))
     if carrier == "prefill":
         second = float(s.get("sum_prefill_tokens", 0))
     else:
         second = int(s.get("sum_decode_kv_tokens", 0)) / decodes if decodes else 0.0
-    table = own_work_ms[carrier]
     first_axis, second_axis = _OWN_WORK_AXES[carrier]
-    row = bisect.bisect_right(table[first_axis], decodes) - 1
-    return float(table["ms"][row][bisect.bisect_right(table[second_axis], second) - 1])
+    return (
+        bisect.bisect_right(table[first_axis], decodes) - 1,
+        bisect.bisect_right(table[second_axis], second) - 1,
+    )
+
+
+def _launch_chain(
+    iterations: Sequence[Sequence[dict[str, Any]]], caller: str
+) -> tuple[list[dict[str, Any]], list[tuple[str, int]], dict[tuple[str, int], int]]:
+    """Return the records, each one's ``(worker_id, counter_id)`` and the index of each key."""
+    if any(len(ranks) != 1 for ranks in iterations):
+        raise ValueError(
+            f"{caller} needs one rank per iteration; only a one-GPU vLLM worker launches in its engine loop"
+        )
+    fpms = [ranks[0] for ranks in iterations]
+    position: dict[tuple[str, int], int] = {}
+    for i, fpm in enumerate(fpms):
+        worker = str(fpm.get("worker_id") or "")
+        if not worker or "counter_id" not in fpm:
+            raise ValueError(
+                f"{caller} needs counter_id and a non-empty worker_id on every record to find the pass after it"
+            )
+        key = (worker, int(fpm["counter_id"]))
+        if key in position:
+            raise ValueError(
+                f"duplicate FPM record for worker_id={key[0]!r} counter_id={key[1]}; counter_id repeats (worker "
+                "restart or concatenated runs) make the pass after it ambiguous"
+            )
+        position[key] = i
+    return fpms, list(position), position
+
+
+def mean_own_work_ms(
+    iterations: Sequence[Sequence[dict[str, Any]]],
+    buckets: dict[str, dict[str, Any]],
+    max_cudagraph_capture_size: int,
+    *,
+    min_rows: int = 20,
+) -> dict[str, dict[str, Any]]:
+    """Measure the own-work reference that :func:`charge_own_launch` keeps, per bucket.
+
+    A record whose next pass is decode measures its own work, since a decode
+    launch hides under it. Those records are grouped by carrier and bucket:
+    the carrier is ``"prefill"`` for a record with prefill tokens, else
+    ``"decode"``, and ``buckets[carrier]`` lists bucket lower edges from 0 on
+    two axes: ``num_decode_requests``, then ``decode_kv_per_request``
+    (``sum_decode_kv_tokens`` per decode request) for a decode carrier or
+    ``sum_prefill_tokens`` for a prefill carrier.
+
+    Returns ``buckets`` with ``n``, ``ms`` and ``sd_ms`` added per carrier:
+    each bucket's record count and the mean and standard deviation of their
+    ``wall_time`` in milliseconds. A bucket with fewer than ``min_rows``
+    records gets no mean (``None``), and :func:`charge_own_launch` refuses a
+    record that needs one. Raises ``ValueError`` on the inputs
+    :func:`charge_own_launch` refuses, or when ``buckets`` or
+    ``max_cudagraph_capture_size`` is malformed.
+    """
+    _check_own_work_buckets(buckets, max_cudagraph_capture_size)
+    fpms, keys, position = _launch_chain(iterations, "mean_own_work_ms")
+    samples: dict[tuple[str, int, int], list[float]] = defaultdict(list)
+    for fpm, (worker, counter) in zip(fpms, keys, strict=True):
+        nxt = position.get((worker, counter + 1))
+        if nxt is not None and _launch_kind(fpms[nxt], max_cudagraph_capture_size) == "decode":
+            carrier = _carrier(fpm)
+            row, col = _own_work_bucket(buckets[carrier], carrier, fpm)
+            samples[(carrier, row, col)].append(1000.0 * float(fpm["wall_time"]))
+    table: dict[str, dict[str, Any]] = {}
+    for carrier, (first, second) in _OWN_WORK_AXES.items():
+        edges = buckets[carrier]
+        cells = [[samples[(carrier, i, j)] for j in range(len(edges[second]))] for i in range(len(edges[first]))]
+        kept = [[ms if ms and len(ms) >= min_rows else None for ms in row] for row in cells]
+        table[carrier] = {
+            first: list(edges[first]),
+            second: list(edges[second]),
+            "n": [[len(ms) for ms in row] for row in cells],
+            "ms": [[None if ms is None else statistics.fmean(ms) for ms in row] for row in kept],
+            "sd_ms": [[None if ms is None else statistics.pstdev(ms) for ms in row] for row in kept],
+        }
+    return table
 
 
 def charge_own_launch(
@@ -650,58 +732,41 @@ def charge_own_launch(
     pass k's record keeps at most its own-work reference ``w`` and moves the
     rest to the next record; a decode next pass takes nothing. A record that
     gives time is set to ``w`` and flagged ``launch_censored``, since its own
-    work is then unknown; the next record gets ``launch_ms``, the giving
-    record's ``wall_time`` in milliseconds, which is the launch it measured.
+    work is then unknown.
 
-    ``w`` is ``own_work_ms[carrier]["ms"][i][j]``: ``carrier`` is ``"prefill"``
-    for a record with prefill tokens, else ``"decode"``, and ``i`` and ``j``
-    are the record's buckets on the table's two axes, each a list of bucket
-    lower edges from 0: ``num_decode_requests``, then
-    ``decode_kv_per_request`` (``sum_decode_kv_tokens`` per decode request)
-    for a decode carrier or ``sum_prefill_tokens`` for a prefill carrier.
+    ``w`` is the mean of the record's bucket in ``own_work_ms``, the table
+    :func:`mean_own_work_ms` returns. Two records are consecutive when they
+    share ``worker_id`` and their ``counter_id`` values differ by one, so a
+    pass after an idle heartbeat keeps its own launch. Each worker's total
+    ``wall_time`` is unchanged, and a record that gives and takes nothing is
+    returned as it was.
 
-    Two records are consecutive when they share ``worker_id`` and their
-    ``counter_id`` values differ by one, so a pass after an idle heartbeat
-    keeps its own launch. Each worker's total ``wall_time`` is unchanged, and a
-    record that gives and takes nothing is returned as it was.
-
-    Raises ``ValueError`` unless every iteration has one rank,
-    ``max_cudagraph_capture_size`` is positive, each table has increasing
-    lower edges from 0 and a positive value per bucket, and every record has
-    ``counter_id`` and a non-empty ``worker_id`` that no other record shares
-    with the same ``counter_id``.
+    Raises ``ValueError`` unless every iteration has one rank, every record
+    has ``counter_id`` and a non-empty ``worker_id`` that no other record
+    shares with the same ``counter_id``, ``own_work_ms`` has the shape
+    :func:`mean_own_work_ms` returns, and every record that gives time falls in
+    a bucket with a mean.
     """
-    if any(len(ranks) != 1 for ranks in iterations):
-        raise ValueError(
-            "charge_own_launch needs one rank per iteration; only a one-GPU vLLM worker launches in its engine loop"
-        )
-    _check_launch_stall(own_work_ms, max_cudagraph_capture_size)
-    fpms = [ranks[0] for ranks in iterations]
-    position: dict[tuple[str, int], int] = {}
-    for i, fpm in enumerate(fpms):
-        worker = str(fpm.get("worker_id") or "")
-        if not worker or "counter_id" not in fpm:
-            raise ValueError(
-                "charge_own_launch needs counter_id and a non-empty worker_id on every record to find the pass after it"
-            )
-        key = (worker, int(fpm["counter_id"]))
-        if key in position:
-            raise ValueError(
-                f"duplicate FPM record for worker_id={key[0]!r} counter_id={key[1]}; counter_id repeats (worker "
-                "restart or concatenated runs) make the pass after it ambiguous"
-            )
-        position[key] = i
-    keys = list(position)
-    kinds = [_launch_kind(fpm, max_cudagraph_capture_size) for fpm in fpms]
+    _check_own_work_buckets(own_work_ms, max_cudagraph_capture_size, _OWN_WORK_CELLS)
+    fpms, keys, position = _launch_chain(iterations, "charge_own_launch")
     wall_ms = [1000.0 * float(fpm["wall_time"]) for fpm in fpms]
     moved = []
     for fpm, (worker, counter), raw_ms in zip(fpms, keys, wall_ms, strict=True):
         nxt = position.get((worker, counter + 1))
-        if nxt is None or kinds[nxt] == "decode":
+        if nxt is None or _launch_kind(fpms[nxt], max_cudagraph_capture_size) == "decode":
             moved.append(0.0)
             continue
-        carrier = "prefill" if int(_sched(fpm).get("sum_prefill_tokens", 0)) > 0 else "decode"
-        moved.append(max(raw_ms - _own_work_ms(own_work_ms, carrier, fpm), 0.0))
+        carrier = _carrier(fpm)
+        table = own_work_ms[carrier]
+        row, col = _own_work_bucket(table, carrier, fpm)
+        own_ms = table["ms"][row][col]
+        if own_ms is None:
+            first, second = _OWN_WORK_AXES[carrier]
+            raise ValueError(
+                f"the {carrier} own-work bucket {first}>={table[first][row]}, {second}>={table[second][col]} has "
+                f"{table['n'][row][col]} records whose next pass is decode, too few for a mean; use wider buckets"
+            )
+        moved.append(max(raw_ms - own_ms, 0.0))
     out = []
     for fpm, (worker, counter), raw_ms, given in zip(fpms, keys, wall_ms, moved, strict=True):
         prev = position.get((worker, counter - 1))
@@ -712,19 +777,8 @@ def charge_own_launch(
         record = {**fpm, "wall_time": (raw_ms - given + taken) / 1000.0}
         if given:
             record["launch_censored"] = True
-        if taken:
-            record["launch_ms"] = wall_ms[prev]
         out.append([record])
     return out
-
-
-def _mean_launch_ms(iterations: Sequence[Sequence[dict[str, Any]]], max_cudagraph_capture_size: int) -> dict:
-    launches: dict[str, list[float]] = defaultdict(list)
-    for metrics_by_rank in iterations:
-        for fpm in metrics_by_rank:
-            if "launch_ms" in fpm:
-                launches[_launch_kind(fpm, max_cudagraph_capture_size)].append(fpm["launch_ms"])
-    return {kind: {"n": len(ms), "mean_ms": sum(ms) / len(ms)} for kind, ms in sorted(launches.items())}
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +801,6 @@ def _build_dataset(
     features: Sequence[str],
     *,
     provenance: dict[str, list[tuple[int, str]]] | None = None,
-    launch_censored: str = "keep",
     censored: dict[str, int] | None = None,
 ) -> dict[str, tuple[list[list[float]], list[float]]]:
     unknown = [name for name in features if name not in FEATURE_NAMES]
@@ -773,11 +826,8 @@ def _build_dataset(
             # the Rust model refuses these at inference; do not teach the trees a NaN route
             skipped_lists += 1
             continue
-        if any(fpm.get("launch_censored") for fpm in metrics_by_rank):
-            if censored is not None:
-                censored[kind] = censored.get(kind, 0) + 1
-            if launch_censored == "exclude":
-                continue
+        if censored is not None and any(fpm.get("launch_censored") for fpm in metrics_by_rank):
+            censored[kind] = censored.get(kind, 0) + 1
         named = compute_features(metrics_by_rank)
         rows, y = dataset[kind]
         rows.append([named[name] for name in features])
@@ -1117,7 +1167,6 @@ def train(
     metadata: dict[str, Any] | None = None,
     online_checkpoint_dir: str | os.PathLike[str] | None = None,
     identity: dict[str, Any] | None = None,
-    launch_censored: str = "keep",
 ) -> dict[str, Any]:
     """Fit each workload store and return the prediction artifact unchanged.
 
@@ -1126,9 +1175,9 @@ def train(
     configuration, supported sklearn, and ``early_stopping=False``. Existing
     checkpoint directories are never overwritten.
 
-    ``launch_censored`` keeps (``"keep"``) or drops (``"exclude"``) rows that
-    :func:`charge_own_launch` flagged ``launch_censored``; the metadata counts
-    them per store either way.
+    The metadata's ``launch_censored`` counts, per store, the rows that
+    :func:`charge_own_launch` set to their own-work reference; they are fitted
+    like the others.
     """
     import sklearn
     from sklearn.ensemble import HistGradientBoostingRegressor
@@ -1137,8 +1186,6 @@ def train(
         raise ValueError(f"invalid worker_type {worker_type!r}")
     if target not in TARGETS:
         raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
-    if launch_censored not in LAUNCH_CENSORED_POLICIES:
-        raise ValueError(f"launch_censored must be one of {LAUNCH_CENSORED_POLICIES}, got {launch_censored!r}")
     checkpoint_identity = _checkpoint_identity(identity, worker_type) if identity is not None else None
     if (
         checkpoint_identity is not None
@@ -1176,7 +1223,6 @@ def train(
         worker_type,
         features,
         provenance=provenance if online_checkpoint_dir is not None else None,
-        launch_censored=launch_censored,
         censored=censored,
     )
     if not dataset:
@@ -1227,7 +1273,7 @@ def train(
                 "early_stopping": early_stopping,
             },
             "train_rows": counts,
-            **({"launch_censored": {"policy": launch_censored, "rows": censored}} if censored else {}),
+            **({"launch_censored": censored} if censored else {}),
             "trees_fitted": trees,
             **(metadata or {}),
             **({"identity": checkpoint_identity} if checkpoint_identity is not None else {}),
@@ -1318,20 +1364,16 @@ def evaluate(
     artifact: dict[str, Any],
     iterations: Sequence[Sequence[dict[str, Any]]],
     predict=None,
-    *,
-    launch_censored: str = "keep",
 ) -> dict[str, dict[str, float]]:
     """Per-store and overall APE statistics against observed wall time.
 
     Predictions come from the compiled Rust model (the single inference
     oracle). ``predict`` exists for the parity tests, which score the
     pure-Python mirror against it; it is not exposed on the CLI.
-    ``_launch_censored`` counts the rows :func:`charge_own_launch` flagged,
-    which ``launch_censored`` scores (``"keep"``) or skips (``"exclude"``).
+    ``_launch_censored`` counts the rows :func:`charge_own_launch` set to
+    their own-work reference; they are scored like the others.
     """
     validate_artifact(artifact)
-    if launch_censored not in LAUNCH_CENSORED_POLICIES:
-        raise ValueError(f"launch_censored must be one of {LAUNCH_CENSORED_POLICIES}, got {launch_censored!r}")
     if predict is None:
         predict = rust_predictor(artifact)
     apes: dict[str, list[float]] = defaultdict(list)
@@ -1347,8 +1389,6 @@ def evaluate(
             continue
         if any(fpm.get("launch_censored") for fpm in metrics_by_rank):
             apes["_launch_censored"].append(0.0)
-            if launch_censored == "exclude":
-                continue
         try:
             pred = predict(metrics_by_rank)
         except (ValueError, RuntimeError):
@@ -1424,9 +1464,9 @@ def _read_launch_stall(path: str | None) -> dict[str, Any] | None:
     if not path:
         return None
     spec = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(spec, dict) or set(spec) != {"max_cudagraph_capture_size", "own_work_ms"}:
-        raise ValueError(f"--launch-stall needs exactly max_cudagraph_capture_size and own_work_ms, got {spec!r}")
-    _check_launch_stall(spec["own_work_ms"], spec["max_cudagraph_capture_size"])
+    if not isinstance(spec, dict) or set(spec) != {"max_cudagraph_capture_size", "own_work_buckets"}:
+        raise ValueError(f"--launch-stall needs exactly max_cudagraph_capture_size and own_work_buckets, got {spec!r}")
+    _check_own_work_buckets(spec["own_work_buckets"], spec["max_cudagraph_capture_size"])
     return spec
 
 
@@ -1441,22 +1481,41 @@ def _load_iterations(
     return iterations
 
 
+def _format_own_work(own_work_ms: dict[str, dict[str, Any]]) -> str:
+    lines = []
+    for carrier, (first, second) in _OWN_WORK_AXES.items():
+        table = own_work_ms[carrier]
+        for i, low in enumerate(table[first]):
+            for j, low2 in enumerate(table[second]):
+                n, ms, sd = (table[cell][i][j] for cell in _OWN_WORK_CELLS)
+                stats = "too few for a mean" if ms is None else f"mean {ms:.2f} ms, sd {sd:.2f} ms"
+                lines.append(f"{carrier} own work, {first}>={low}, {second}>={low2}: n={n}, {stats}")
+    return "\n".join(lines)
+
+
 def _cmd_train(args: argparse.Namespace) -> int:
     if args.online_checkpoint_dir and not args.identity:
         raise ValueError("--online-checkpoint-dir requires --identity with the canonical FPM configuration JSON")
     identity = json.loads(Path(args.identity).read_text(encoding="utf-8")) if args.identity else None
-    launch_stall = _read_launch_stall(args.launch_stall)
-    iterations = _load_iterations(args.fpm, args.join_ranks, launch_stall)
+    spec = _read_launch_stall(args.launch_stall)
+    iterations = _load_iterations(args.fpm, args.join_ranks, None)
     if not iterations:
         print("no FPM iterations with positive wall_time found", file=sys.stderr)
         return 2
+    launch_stall = None
+    if spec is not None:
+        # measured on --fpm only; evaluation records are charged with this table, never their own
+        size = spec["max_cudagraph_capture_size"]
+        own_work = mean_own_work_ms(iterations, spec["own_work_buckets"], size, min_rows=args.min_store_rows)
+        print(_format_own_work(own_work))
+        launch_stall = {"max_cudagraph_capture_size": size, "own_work_ms": own_work}
+        iterations = charge_own_launch(iterations, own_work, size)
     train_set, holdout = _split_holdout(iterations, args.holdout_frac, args.seed)
     if args.holdout_fpm:
         holdout = holdout + _load_iterations(args.holdout_fpm, args.join_ranks, launch_stall)
     features = None
     if args.features:
         features = list(FEATURE_PRESETS.get(args.features, ())) or [f.strip() for f in args.features.split(",")]
-    launch_ms = _mean_launch_ms(train_set, launch_stall["max_cudagraph_capture_size"]) if launch_stall else {}
     artifact = train(
         train_set,
         args.worker_type,
@@ -1471,7 +1530,6 @@ def _cmd_train(args: argparse.Namespace) -> int:
         early_stopping=args.early_stopping,
         online_checkpoint_dir=args.online_checkpoint_dir,
         identity=identity,
-        launch_censored=args.launch_censored,
         metadata={
             "sources": [os.fspath(p) for p in args.fpm],
             "join_ranks": args.join_ranks,
@@ -1479,28 +1537,26 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "holdout_iterations": len(holdout),
             "features_preset": args.features or DEFAULT_FEATURE_PRESET[args.worker_type],
             **({"launch_stall": launch_stall} if launch_stall is not None else {}),
-            **({"launch_ms": launch_ms} if launch_ms else {}),
         },
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(artifact, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KiB); stores={sorted(artifact['stores'])}")
-    for kind, launch in launch_ms.items():
-        print(f"mean {kind} launch over {launch['n']} passes: {launch['mean_ms']:.2f} ms")
     print("train-set fit:")
-    print(_format_report(evaluate(artifact, train_set, launch_censored=args.launch_censored)))
+    print(_format_report(evaluate(artifact, train_set)))
     if holdout:
         print(f"random holdout ({len(holdout)} iterations; consecutive steps are correlated, treat as a smoke check):")
-        print(_format_report(evaluate(artifact, holdout, launch_censored=args.launch_censored)))
+        print(_format_report(evaluate(artifact, holdout)))
     return 0
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     artifact = json.loads(Path(args.model).read_text(encoding="utf-8"))
     validate_artifact(artifact)
-    iterations = _load_iterations(args.fpm, args.join_ranks, _read_launch_stall(args.launch_stall))
-    print(_format_report(evaluate(artifact, iterations, launch_censored=args.launch_censored)))
+    # a model trained with --launch-stall charges these records with its own table
+    launch_stall = artifact.get("metadata", {}).get("launch_stall")
+    print(_format_report(evaluate(artifact, _load_iterations(args.fpm, args.join_ranks, launch_stall))))
     return 0
 
 
@@ -1519,19 +1575,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default="none",
         help="'counter' keys records by (worker_id, counter_id) and rejects repeats; cross-rank joins are refused",
     )
-    common.add_argument(
-        "--launch-stall",
-        default=None,
-        help="JSON file {max_cudagraph_capture_size, own_work_ms}: charge each vLLM pass its own launch "
-        "(see charge_own_launch)",
-    )
-    common.add_argument(
-        "--launch-censored",
-        choices=LAUNCH_CENSORED_POLICIES,
-        default="keep",
-        help="rows whose own work a launch hid (flagged by --launch-stall): keep them at their own-work reference "
-        "or exclude them; both count them as _launch_censored",
-    )
 
     tr = sub.add_parser("train", parents=[common], help="fit and export an artifact")
     tr.add_argument("--worker-type", choices=WORKER_TYPES, required=True)
@@ -1547,7 +1590,18 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--learning-rate", type=float, default=0.05)
     tr.add_argument("--max-leaf-nodes", type=int, default=31)
     tr.add_argument("--min-samples-leaf", type=int, default=5)
-    tr.add_argument("--min-store-rows", type=int, default=20)
+    tr.add_argument(
+        "--min-store-rows",
+        type=int,
+        default=20,
+        help="fewest rows a store needs to be fitted, and an own-work bucket (--launch-stall) to get a mean",
+    )
+    tr.add_argument(
+        "--launch-stall",
+        default=None,
+        help="JSON file {max_cudagraph_capture_size, own_work_buckets}: measure each bucket's own work on --fpm and "
+        "move each vLLM launch to the pass it starts (see charge_own_launch); evaluate reuses the artifact's table",
+    )
     tr.add_argument(
         "--online-checkpoint-dir",
         help="also export fitted rows and bins to a new directory for Rust online fitting (early stopping must be off)",
