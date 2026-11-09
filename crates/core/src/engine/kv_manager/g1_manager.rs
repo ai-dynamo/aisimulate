@@ -297,7 +297,8 @@ impl G1Manager {
         self.inner.preempt_lease(owner, lease);
     }
 
-    /// Free the grouped blocks that a completed source no longer needs.
+    /// Free the grouped blocks that an ending request of a prefill or decode
+    /// rank no longer needs, before its other blocks.
     pub(crate) fn release_skipped_blocks(
         &mut self,
         owner: Uuid,

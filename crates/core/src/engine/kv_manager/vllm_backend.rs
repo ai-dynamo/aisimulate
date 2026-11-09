@@ -1869,14 +1869,19 @@ impl VllmKvManager {
         lease.grouped_hit = None;
     }
 
-    /// Free the grouped blocks of a completed source that a next query of
-    /// its `computed` tokens would skip, before the source is held for its
-    /// transfer. vLLM frees them on the processed-token basis before it hands
-    /// the block table to the connector (V32 `sched:3023-3031`, V31
-    /// `:2966-2974`). A window group keeps its blocks inside the window, a
-    /// Mamba-type state group the block of the last computed token, and full
-    /// attention and a ring keep every block. The release is the one of a
-    /// pass, with its publish and LRU rules.
+    /// Free the grouped blocks that a next query of the `computed` tokens
+    /// would skip, for an ending request on a prefill or decode rank, before
+    /// the other blocks of the request. vLLM's `_free_request` runs
+    /// `_connector_finished` before it frees the blocks (V32
+    /// `sched:2714-2723`, V31 `:2650-2658`). `_connector_finished` frees the
+    /// skipped blocks on the processed-token basis before it hands the block
+    /// table to the connector (V32 `sched:3023-3031`, V31 `:2966-2974`). So
+    /// the skipped blocks reach the LRU first, and a prefill rank frees them
+    /// before it holds a completed source for its transfer. A window group
+    /// keeps its blocks inside the window, a Mamba-type state group the block
+    /// of the last computed token, and full attention and a ring keep every
+    /// block. The release is the one of a pass, with its publish and LRU
+    /// rules.
     pub(crate) fn release_skipped_blocks(
         &mut self,
         owner: Uuid,
@@ -1889,10 +1894,15 @@ impl VllmKvManager {
         };
         match &self.grouped_prefix {
             Some(coordinator) => {
+                // A block lease that never allocated holds no block, and
+                // vLLM frees only the blocks that a request holds (V31
+                // `single:718-725`, V32 `single:703-710`). An allocation here
+                // would take the blocks of a first pass.
                 if let Some(block_lease) = lease
                     .grouped
                     .as_mut()
                     .and_then(|grouped| grouped.block_lease.as_mut())
+                    .filter(|block_lease| block_lease.allocated)
                 {
                     // A finished request runs no next pass, so the previous
                     // state block that a pass keeps one more step goes too.
@@ -1908,8 +1918,21 @@ impl VllmKvManager {
                 }
             }
             None if lease.grouped.is_some() => {
+                // `allocate` replaces the lease with one that has no
+                // first-pass need. A load that ends before its first pass
+                // still has that need, and its free takes it off the loads in
+                // flight, so the release keeps it.
+                let first_pass_need = lease
+                    .grouped
+                    .as_ref()
+                    .map_or(0, |grouped| grouped.first_pass_need);
                 let released = grouped.allocate(&mut lease.grouped, computed, computed);
                 debug_assert!(released, "a release takes no fresh bytes");
+                lease
+                    .grouped
+                    .as_mut()
+                    .expect("a release keeps the grouped lease")
+                    .first_pass_need = first_pass_need;
             }
             None => {}
         }

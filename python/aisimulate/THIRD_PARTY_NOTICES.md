@@ -507,7 +507,8 @@ From `sched/scheduler.py` and `kv_cache_interface.py`, `grouped_prefix.rs` also
 adapts the rule that only a rank with a Mamba layer in align mode splits its
 prefill.
 `crates/core/src/engine/scheduler/vllm/core.rs` and `vllm_backend.rs` adapt the
-release of the skipped blocks of a completed source.
+release of the skipped blocks of an ending request on a prefill or decode rank,
+before the release of its other blocks.
 `vllm_backend.rs` also adapts the two admission tests of an async KV load and
 the reservation of the blocks that the loads in flight still need, which
 `grouped_prefix.rs` counts by `_request_remaining_blocks` of

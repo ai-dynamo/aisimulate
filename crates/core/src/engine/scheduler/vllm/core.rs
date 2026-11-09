@@ -1753,12 +1753,13 @@ impl VllmCore {
         // vLLM drops a finished request from its prefills in flight (V31
         // `sched:2657`, V32 `sched:2721`).
         self.grouped_local_prefills.remove(&uuid);
-        if self.args.worker_type == WorkerType::Prefill
-            && self.kv_manager.grouped_transfer().is_some()
-        {
-            // A grouped prefill rank frees the skipped blocks of a source
-            // before it holds it, as vLLM frees them before it hands the
-            // block table to the connector.
+        if self.kv_manager.grouped_transfer().is_some() {
+            // A grouped prefill or decode rank frees the skipped blocks of an
+            // ending request first. vLLM's `_free_request` runs
+            // `_connector_finished`, which frees them, before it frees the
+            // other blocks (V31 `sched:2650-2658` and `:2966-2974`, V32
+            // `sched:2714-2723` and `:3023-3031`). So a prefill rank frees
+            // them before it holds the source for its transfer.
             self.kv_manager.release_skipped_blocks(
                 uuid,
                 &mut request.sequence.lease,
@@ -2907,6 +2908,17 @@ impl VllmCore {
         // A dropped request leaves the prefills in flight, as a finished one
         // does (V31 `sched:2657`, V32 `sched:2721`).
         self.grouped_local_prefills.remove(&uuid);
+        if self.kv_manager.grouped_transfer().is_some() {
+            // A grouped prefill or decode rank frees the skipped blocks of a
+            // dropped request first, as it does for a finished one. vLLM
+            // frees both in `_free_request` (V31 `sched:2650-2658`, V32
+            // `sched:2714-2723`).
+            self.kv_manager.release_skipped_blocks(
+                uuid,
+                &mut request.sequence.lease,
+                request.num_computed_tokens,
+            );
+        }
         self.finish_host_request(uuid, &mut request);
         self.kv_manager.finish_native(uuid, request.sequence.lease);
         if capacity_improved {
