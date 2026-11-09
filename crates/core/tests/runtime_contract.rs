@@ -3,11 +3,14 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
 use aisimulate_core::engine::{
-    Backend, EngineConfig, SglangConfig, TimingModel, TimingModelConfig,
+    Backend, Command, EngineConfig, EngineFactory, HandoffId, LifecycleEvent, Request,
+    SglangConfig, TimingModel, TimingModelConfig, WorkerType,
 };
 use aisimulate_core::replay::loadgen::ReplayRequestPayload;
 use aisimulate_core::replay::{
@@ -89,6 +92,55 @@ fn aggregated_spec(
         sla: Default::default(),
         requests,
     }
+}
+
+/// One prefill and one decode worker that share one cold vLLM 0.31.0 rank: the
+/// six GLM-5.3-Flash groups at TP 4 with an fp8 cache and the transfer bytes of
+/// each group's own layers, a pool of 128 pages, and a handoff priced at
+/// 1 GB/s over the full prompt.
+fn disaggregated_grouped_spec(requests: Vec<ReplayRequest>) -> ReplaySpec {
+    const GLM_PAGE: u64 = 13_045_120;
+    let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, requests);
+    spec.topology = ReplayTopology::Disaggregated {
+        prefill: WorkerPoolSpec {
+            initial_workers: 1,
+            startup_delay_ms: 0.0,
+        },
+        decode: WorkerPoolSpec {
+            initial_workers: 1,
+            startup_delay_ms: 0.0,
+        },
+        handoff_latency_ms: 1.0,
+    };
+    // Name, kind, layers, block, transfer bytes, prefix_cacheable.
+    let groups = [
+        ("mla", "attention", 22, 2176, 13_045_120, true),
+        ("kpool_tail", "state", 11, 4, 22_528, false),
+        ("kda_0", "state", 9, 2176, 9_768_960, true),
+        ("kda_1", "state", 9, 2176, 9_768_960, true),
+        ("kda_2", "state", 8, 2176, 8_683_520, true),
+        ("kda_3", "state", 8, 2176, 8_683_520, true),
+    ]
+    .map(|(name, kind, layers, block, bytes, cacheable)| {
+        let mut group = serde_json::json!({
+            "name": name, "kind": kind, "num_layers": layers, "block_size_tokens": block,
+            "page_size_bytes": GLM_PAGE, "prefix_cacheable": cacheable,
+            "transfer_bytes_per_block": bytes
+        });
+        if kind == "state" {
+            group["blocks_per_request"] = 1.into();
+        }
+        group
+    });
+    let rank = &mut spec.engine["rank"];
+    rank["enable_prefix_caching"] = false.into();
+    rank["vllm_version"] = "0.31.0".into();
+    rank["max_num_batched_tokens"] = 8192.into();
+    rank["kv_cache_capacity_bytes"] = (128 * GLM_PAGE).into();
+    rank["kv_cache_groups"] = groups.to_vec().into();
+    rank["kv_transfer_bandwidth"] = 1.0.into();
+    rank["kv_transfer_timing_mode"] = "full_prompt".into();
+    spec
 }
 
 struct RecordingTelemetryObserver {
@@ -283,6 +335,135 @@ fn grouped_prefix_hit_above_the_pool_is_a_livelock() {
             error.to_string(),
             "replay invariant violated: offline replay detected an effect-free zero-duration pass with 1 in-flight requests remaining",
             "{version}"
+        );
+    }
+}
+
+#[test]
+fn grouped_prefill_rank_holds_its_source_and_reports_block_unit_timing() {
+    // Both roles pass the configuration gate, so the replay runs. The prefill
+    // rank holds its source after 999 of the 1,000 prompt tokens, because
+    // vLLM leaves the last one to the decode rank. The decode rank does not
+    // take grouped destinations yet. It refuses the reservation, and replay
+    // fails the request without keeping the reason.
+    let spec = disaggregated_grouped_spec(vec![request("grouped", 0.0, 1000, 4)]);
+    let rank = serde_json::from_value::<ReplayEngineConfig>(spec.engine.clone())
+        .unwrap()
+        .rank;
+    let report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .run()
+        .unwrap();
+    assert_eq!(report.committed_prefill_tokens, 999);
+    assert_eq!(report.request_counts.completed_requests, 0);
+    let record = &report.per_request[0];
+    assert_eq!(record.source_held_ms, Some(10.0));
+    // Replay sets the decode worker only after the decode rank accepts.
+    assert_eq!(record.decode_worker_idx, None);
+    assert_eq!(record.destination_reserved_ms, None);
+    assert_eq!(
+        record.terminal_status,
+        aisimulate_core::replay::ReplayTerminalStatus::Failed
+    );
+
+    // The report keeps neither the held timing nor the refusal reason, so
+    // the same rank shows both through the engine API.
+    let engine = |worker_type| {
+        let config = EngineConfig {
+            worker_type,
+            ..rank.clone()
+        };
+        EngineFactory::new(config)
+            .unwrap()
+            .build(EngineIdentity::new(0), NonZeroU32::MIN)
+            .unwrap()
+    };
+    let handoff_id = HandoffId::new(Uuid::from_u128(2));
+    let request = Request {
+        request_id: Uuid::from_u128(1),
+        tokens: vec![7; 1000],
+        max_output_tokens: 4,
+        output_token_ids: None,
+        session_id: None,
+        cache_salt: None,
+        images: Vec::new(),
+        kv_hint: None,
+    };
+    let mut prefill = engine(WorkerType::Prefill);
+    let source = Command::SubmitHandoffPrefill {
+        handoff_id,
+        request: Request {
+            max_output_tokens: 1,
+            ..request.clone()
+        },
+    };
+    prefill
+        .apply_command_effects(SchedulerCommand::new(0, source), 0.0)
+        .unwrap();
+    let pass = prefill.execute_pass(0.0).unwrap().unwrap();
+    let completed = prefill.complete_pass(pass.pass_id, pass.end_ms).unwrap();
+    let timing = completed.effects.by_rank[0]
+        .effects
+        .lifecycle_events
+        .iter()
+        .find_map(|event| match event {
+            LifecycleEvent::SourceHeld {
+                transfer_timing, ..
+            } => Some(*transfer_timing),
+            _ => None,
+        })
+        .expect("the prefill rank holds its source");
+    // The 999 tokens fill one full-attention block of 13,045,120 bytes. The
+    // state bytes are one block of each state group.
+    assert_eq!(timing.full_prompt_tokens, 1);
+    assert_eq!(timing.kv_bytes_per_token, Some(13_045_120));
+    assert_eq!(timing.state_bytes, 36_927_488);
+    let destination = Command::ReserveDestination {
+        handoff_id,
+        request,
+    };
+    let error = engine(WorkerType::Decode)
+        .apply_command_effects(SchedulerCommand::new(0, destination), 0.0)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}")
+            .contains("grouped KV caches do not support destination handoff commands"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn grouped_and_linear_roles_cannot_pair_in_one_handoff() {
+    // A grouped rank counts the handoff in full-attention blocks and a linear
+    // rank in tokens, so a grouped prefill rank with a linear decode rank, or
+    // the reverse, would price the transfer in mixed units.
+    let linear = serde_json::to_value(EngineConfig {
+        num_gpu_blocks: 1024,
+        block_size: 4,
+        max_num_seqs: 4,
+        max_num_batched_tokens: 64,
+        kv_transfer_bytes_per_token: Some(16),
+        kv_transfer_bandwidth: Some(1.0),
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 10.0,
+            decode_ms: 2.0,
+        },
+        ..EngineConfig::for_backend(Backend::Vllm)
+    })
+    .unwrap();
+    for role in ["prefill", "decode"] {
+        let mut spec = disaggregated_grouped_spec(vec![request("mixed", 0.0, 1000, 4)]);
+        spec.engine[role] = serde_json::json!({ "rank": linear });
+        let Err(error) = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+        else {
+            panic!("a linear {role} rank next to a grouped rank must be refused");
+        };
+        assert_eq!(
+            error.to_string(),
+            "invalid replay spec: kv_cache_groups must be identical on the prefill and decode roles",
+            "linear {role} rank"
         );
     }
 }

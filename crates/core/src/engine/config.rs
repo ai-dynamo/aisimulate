@@ -19,7 +19,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::engine::common::speculative::normalize_conditional_accept_rates;
 use crate::engine::handoff::TransferTimingMode;
 use crate::engine::host_offload::HostPolicy;
-use crate::engine::kv_manager::{GroupedPrefixRules, SourceReleaseOrder, VllmRuleVersion};
+use crate::engine::kv_manager::{
+    GroupedPrefixRules, GroupedTransferRules, SourceReleaseOrder, VllmRuleVersion,
+};
 use crate::engine::timing::{TimingModel, TimingModelConfig, built_in_timing_model};
 use crate::perfmodel::FpmCacheGroup;
 
@@ -922,8 +924,9 @@ pub struct EngineConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kv_cache_capacity_bytes: Option<u64>,
     /// vLLM release whose grouped-cache rules this rank follows. A rank with
-    /// `kv_cache_groups` and `enable_prefix_caching` must set it. Accepted
-    /// values: `0.31.0` and `0.32.0`.
+    /// `kv_cache_groups` and `enable_prefix_caching` must set it. A grouped
+    /// prefill or decode rank must set it too. Accepted values: `0.31.0` and
+    /// `0.32.0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vllm_version: Option<String>,
     /// Optional framework-native host-offload simulation.
@@ -1183,6 +1186,34 @@ impl EngineConfig {
         }
     }
 
+    /// The gate of a grouped prefill or decode rank. `VllmCore` construction
+    /// builds `GroupedTransferRules` for such a rank to price its handoff. The
+    /// rules follow vLLM 0.31.0 and 0.32.0, read the marker and the transfer
+    /// bytes of every group, and count the handoff in full-attention blocks of
+    /// one size.
+    fn validate_grouped_transfer(&self) -> Result<()> {
+        ensure!(
+            self.vllm_version
+                .as_deref()
+                .and_then(VllmRuleVersion::parse)
+                .is_some(),
+            "kv_cache_groups with worker_type=prefill or decode require vllm_version 0.31.0 or 0.32.0"
+        );
+        ensure!(
+            self.kv_cache_groups.iter().all(|group| {
+                group.prefix_cacheable.is_some() && group.transfer_bytes_per_block.is_some()
+            }),
+            "kv_cache_groups with worker_type=prefill or decode require every group to declare prefix_cacheable and transfer_bytes_per_block; re-import the runtime probe"
+        );
+        // The groups passed `validate` and declare both fields, so the rules
+        // can fail only on two different full-attention blocks.
+        ensure!(
+            GroupedTransferRules::new(&self.kv_cache_groups).is_ok(),
+            "kv_cache_groups with worker_type=prefill or decode require one block_size_tokens across full-attention groups"
+        );
+        Ok(())
+    }
+
     /// The grouped prefix-caching gate. Every group declares whether it
     /// caches, the pool has one page size, the hash unit and the vLLM
     /// version are set, the rule table accepts the groups, and the pool
@@ -1430,8 +1461,8 @@ impl EngineConfig {
             );
         } else {
             ensure!(
-                self.backend == Backend::Vllm && self.worker_type == WorkerType::Aggregated,
-                "kv_cache_groups currently require backend=vllm and worker_type=aggregated"
+                self.backend == Backend::Vllm,
+                "kv_cache_groups currently require backend=vllm"
             );
             ensure!(
                 self.native_host_offload.is_none() && self.g3_offload.is_none(),
@@ -1447,8 +1478,7 @@ impl EngineConfig {
             );
             ensure!(
                 self.kv_cache_bytes_per_token.is_none()
-                    && self.kv_transfer_bytes_per_token.is_none()
-                    && self.kv_transfer_bandwidth.is_none(),
+                    && self.kv_transfer_bytes_per_token.is_none(),
                 "kv_cache_groups cannot use linear cache or KV transfer byte geometry"
             );
             ensure!(
@@ -1460,6 +1490,9 @@ impl EngineConfig {
             for group in &self.kv_cache_groups {
                 group.validate()?;
                 ensure!(names.insert(&group.name), "duplicate KV cache group name");
+            }
+            if self.worker_type != WorkerType::Aggregated {
+                self.validate_grouped_transfer()?;
             }
             if self.enable_prefix_caching {
                 self.validate_grouped_prefix_caching()?;
@@ -1570,12 +1603,14 @@ impl EngineConfig {
         );
         // Only the prefill source prices the handoff, so a positive bandwidth
         // needs payload bytes rather than the topology's fallback latency.
+        // Cache groups carry their own transfer bytes.
         ensure!(
             self.worker_type != WorkerType::Prefill
                 || self
                     .kv_transfer_bandwidth
                     .is_none_or(|bandwidth| bandwidth <= 0.0)
-                || self.kv_transfer_bytes_per_token.is_some(),
+                || self.kv_transfer_bytes_per_token.is_some()
+                || !self.kv_cache_groups.is_empty(),
             "kv_transfer_bandwidth requires kv_transfer_bytes_per_token on prefill workers"
         );
         match &self.timing_model {
@@ -1974,7 +2009,7 @@ mod tests {
             (
                 "worker_type",
                 serde_json::json!("decode"),
-                "worker_type=aggregated",
+                "kv_cache_groups with worker_type=prefill or decode require vllm_version 0.31.0 or 0.32.0",
             ),
             (
                 "enable_prefix_caching",
@@ -2310,6 +2345,139 @@ mod tests {
             }
         }
         validates(wire(false, "", 8));
+    }
+
+    /// `glm_groups_wire` with the GLM-5.3-Flash TP 4 transfer bytes:
+    /// `11 * 1_114_112 + 11 * 71_808` for the MLA latent and the indexer keys,
+    /// `11 * 2_048` for the tail ring, and `9 * 1_085_440` or `8 * 1_085_440`
+    /// for a KDA state. The bytes count the layers of the model, not the
+    /// `num_layers` of this wire, which the gate does not read.
+    fn glm_transfer_groups_wire() -> serde_json::Value {
+        let mut groups = glm_groups_wire(None);
+        let bytes = [
+            13_045_120, 22_528, 9_768_960, 9_768_960, 8_683_520, 8_683_520,
+        ];
+        for (group, bytes) in groups.as_array_mut().unwrap().iter_mut().zip(bytes) {
+            group["transfer_bytes_per_block"] = bytes.into();
+        }
+        groups
+    }
+
+    /// A GLM-shaped rank of `role` with prefix caching off. The groups give
+    /// the handoff payload, so it sets a bandwidth and no
+    /// `kv_transfer_bytes_per_token`.
+    fn glm_pd_wire(role: &str) -> serde_json::Value {
+        serde_json::json!({
+            "backend": "vllm",
+            "worker_type": role,
+            "enable_prefix_caching": false,
+            "vllm_version": "0.31.0",
+            "kv_cache_capacity_bytes": 128 * GLM_PAGE,
+            "kv_cache_groups": glm_transfer_groups_wire(),
+            "kv_transfer_bandwidth": 50.0,
+        })
+    }
+
+    #[test]
+    fn grouped_pd_configuration_validates_its_transfer_geometry() {
+        let version = "kv_cache_groups with worker_type=prefill or decode require vllm_version 0.31.0 or 0.32.0";
+        let declare = "kv_cache_groups with worker_type=prefill or decode require every group to declare prefix_cacheable and transfer_bytes_per_block; re-import the runtime probe";
+        let one_block = "kv_cache_groups with worker_type=prefill or decode require one block_size_tokens across full-attention groups";
+        let byte_geometry = "kv_cache_groups cannot use linear cache or KV transfer byte geometry";
+        type Refusal = (fn(&mut serde_json::Value), &'static str);
+        let refusals: [Refusal; 10] = [
+            (
+                |wire| {
+                    wire.as_object_mut().unwrap().remove("vllm_version");
+                },
+                version,
+            ),
+            (|wire| wire["vllm_version"] = "0.30.0".into(), version),
+            // With prefix caching on, the rule of the role fires before the
+            // version rule of prefix caching.
+            (
+                |wire| {
+                    wire["enable_prefix_caching"] = true.into();
+                    wire["prefix_match_unit"] = 2176.into();
+                    wire["max_model_len"] = 131_072.into();
+                    wire.as_object_mut().unwrap().remove("vllm_version");
+                },
+                version,
+            ),
+            // The per-group check runs first, so a malformed group keeps its
+            // own text.
+            (
+                |wire| {
+                    wire["kv_cache_groups"][0]["transfer_bytes_per_block"] = (GLM_PAGE + 1).into()
+                },
+                "invalid engine config: transfer_bytes_per_block must be positive and at most page_size_bytes",
+            ),
+            (
+                |wire| {
+                    wire["kv_cache_groups"][1]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("transfer_bytes_per_block");
+                },
+                declare,
+            ),
+            (
+                |wire| {
+                    wire["kv_cache_groups"][2]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("prefix_cacheable");
+                },
+                declare,
+            ),
+            // The handoff timing counts in one full-attention block.
+            (
+                |wire| {
+                    wire["kv_cache_groups"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::json!({
+                            "name": "mla_64", "kind": "attention", "num_layers": 1,
+                            "block_size_tokens": 64, "page_size_bytes": GLM_PAGE,
+                            "prefix_cacheable": true, "transfer_bytes_per_block": GLM_PAGE
+                        }));
+                },
+                one_block,
+            ),
+            (
+                |wire| wire["kv_transfer_bytes_per_token"] = 5995.into(),
+                byte_geometry,
+            ),
+            (
+                |wire| wire["kv_cache_bytes_per_token"] = 1.into(),
+                byte_geometry,
+            ),
+            (
+                |wire| wire["backend"] = "sglang".into(),
+                "kv_cache_groups currently require backend=vllm",
+            ),
+        ];
+        for role in ["prefill", "decode"] {
+            // A positive bandwidth needs no kv_transfer_bytes_per_token.
+            validates(glm_pd_wire(role));
+            let mut v32 = glm_pd_wire(role);
+            v32["vllm_version"] = "0.32.0".into();
+            validates(v32);
+            let mut prefix_caching = glm_pd_wire(role);
+            prefix_caching["enable_prefix_caching"] = true.into();
+            prefix_caching["prefix_match_unit"] = 2176.into();
+            prefix_caching["max_model_len"] = 131_072.into();
+            validates(prefix_caching);
+            for (index, (mutate, expected)) in refusals.iter().enumerate() {
+                let mut wire = glm_pd_wire(role);
+                mutate(&mut wire);
+                assert_eq!(validation_error(wire), *expected, "{role} case {index}");
+            }
+        }
+        // A bandwidth is harmless without a prefill or decode role.
+        let mut aggregated = glm_pd_wire("aggregated");
+        aggregated["kv_transfer_bandwidth"] = 1.0.into();
+        validates(aggregated);
     }
 
     #[test]
