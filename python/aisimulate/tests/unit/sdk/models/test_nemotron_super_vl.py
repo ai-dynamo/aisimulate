@@ -190,7 +190,7 @@ def test_mamba2_kernels_ask_for_the_per_shard_shape(tp, nheads, n_groups):
         assert shape == (4096, nheads, 64, n_groups, 128, 4, 128), name
 
 
-def _trtllm_silicon_56b(tp):
+def _trtllm_hybrid_56b(tp):
     return ForwardPassPerfModelConfig(
         model="nvidia/Nemotron-H-56B-Base-8K",
         system="b200_sxm",
@@ -200,7 +200,7 @@ def _trtllm_silicon_56b(tp):
         tp=tp,
         moe_tp_size=1,
         moe_ep_size=tp,
-        database_mode="SILICON",
+        database_mode="HYBRID",
         estimation_mode="op_level",
         fallback_policy="deny",
         enable_shared_layer=False,
@@ -208,18 +208,22 @@ def _trtllm_silicon_56b(tp):
 
 
 @pytest.mark.parametrize(("tp", "conv_source"), [(1, "silicon"), (8, "sol")])
-def test_trtllm_silicon_prices_the_mamba2_conv_kernels_at_the_per_shard_shape(tp, conv_source):
+def test_trtllm_hybrid_prices_the_mamba2_conv_kernels_at_the_per_shard_shape(tp, conv_source):
     # The packaged TRT-LLM rc20 table holds the TP 1 geometry (256 heads, 8 groups) of the conv kernels only:
     # it has no scan or state-update rows, so the SSM kernels report sol at every TP and do not discriminate.
     # The conv kernels hit their measured row at TP 1 and miss the per-shard shape (32 heads, 1 group) at TP 8,
-    # where they report the analytic estimate instead of the full-layer row.
-    model = RustForwardPassPerfModel.best_available(_trtllm_silicon_56b(tp))
+    # where they report the analytic estimate instead of the full-layer row. HYBRID, because SILICON readiness
+    # refuses the rc20 table for its missing scan and state-update kernels before any shape is looked up, and
+    # the rc29 data cannot build the TP 8 model (no custom all-reduce rows); SILICON and HYBRID read the same
+    # rows and answer a shape miss alike.
+    model = RustForwardPassPerfModel.best_available(_trtllm_hybrid_56b(tp))
     try:
         prefill, decode = _sources(model, prefill=True), _sources(model, prefill=False)
     finally:
         model.close()
     assert prefill["context_mamba_conv1d"] == conv_source
     assert decode["generation_mamba_conv1d"] == conv_source
+    assert prefill["context_mamba_ssm"] == decode["generation_mamba_ssm"] == "sol"
     # The in_proj GEMM of the same shard still reads measured rows: only the Mamba2 lookup lacks per-shard data.
     assert prefill["context_mamba_in_proj_gemm"] in {"silicon", "estimated"}
 
