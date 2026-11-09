@@ -976,6 +976,13 @@ def _worker_engine_args(
         )
     if cache.hicache is not None:
         payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
+    if backend == "sglang" and role != "decode":
+        # SGLang chunks a prefill at `--chunked-prefill-size`, the public `max_batched_tokens`. Without it
+        # the scheduler keeps its 8192 default, and a PD prefill or aggregate worker launched with a smaller
+        # chunk is priced on passes several times larger than any it runs.
+        sglang = payload.setdefault("sglang", {})
+        assert isinstance(sglang, dict)
+        sglang.setdefault("chunked_prefill_size", worker.scheduler.max_batched_tokens)
     return payload
 
 
