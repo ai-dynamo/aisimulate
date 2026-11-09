@@ -36,7 +36,7 @@ from .config_profile import (
     validate_overrides,
 )
 from .fpm import run_fpm
-from .plan import MEMORY_OBSERVATION_VERSIONS, create_plan, request_id
+from .plan import MEMORY_OBSERVATION_VERSIONS, audited_memory_release, create_plan, request_id
 from .schema import (
     AGENTX_REFERENCE_CONTEXT,
     CUDAGRAPH_MODES,
@@ -650,8 +650,16 @@ def _review_config_profile(
         if not memory.memory_ready:
             print("  No activation or non-KV byte estimate is required.")
             print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
-            if request.identity.framework_version in MEMORY_OBSERVATION_VERSIONS:
-                print(f"  Memory is observed during initialized vLLM {request.identity.framework_version} collection.")
+            version = request.identity.framework_version
+            release = audited_memory_release(version)
+            if release is not None:
+                if release == version:
+                    print(f"  Memory is observed during initialized vLLM {version} collection.")
+                else:
+                    print(
+                        f"  Memory is observed during initialized vLLM {version} collection if the vLLM files "
+                        f"that the observers read match audited vLLM {release}."
+                    )
                 print(
                     "  Collection policy: synchronous scheduling in both phases, "
                     "matching supported prefill benchmarking."

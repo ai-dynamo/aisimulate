@@ -228,6 +228,37 @@ def test_memory_observation_versions_mirror_the_collector_observer():
     assert MEMORY_OBSERVATION_VERSIONS == MEMORY_SUPPORTED_VERSIONS
 
 
+def test_patch_release_rule_mirrors_the_collector_observer():
+    from collector.fpm_forward.runtime.fpm_memory_observer import (
+        MEMORY_SUPPORTED_VERSIONS,
+        SOURCE_MANIFESTS,
+        audited_release,
+    )
+
+    from aisimulate.support.plan import SOURCE_MANIFEST_RELEASES, audited_memory_release
+
+    assert set(SOURCE_MANIFEST_RELEASES) == set(SOURCE_MANIFESTS)
+    for version in (
+        "0.27.0",
+        "0.27.1",
+        "0.28.0",
+        "0.32.0",
+        "0.32.2",
+        "0.33.0",
+        "0.33.1",
+        "0.33.10",
+        "0.33.0.1",
+        "0.33.1rc0",
+        "0.33.1+cu130",
+        "0.33.0.post1",
+        "0.34.0",
+        "v0.33.1",
+        "0.33",
+        None,
+    ):
+        assert audited_memory_release(version) == audited_release(version, MEMORY_SUPPORTED_VERSIONS)
+
+
 @pytest.mark.parametrize("limit", [None, 512])
 def test_legacy_collection_policy_round_trip_retains_identity_and_launch_arguments(tmp_path, limit):
     request = _request(collection={} if limit is None else {"max_prefill_cudagraph_size": limit})

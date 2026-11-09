@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Iterator
@@ -27,8 +28,27 @@ from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
 _LOCK_NAME = ".support.lock"
-# Mirrors collector.fpm_forward.runtime.fpm_memory_observer.MEMORY_SUPPORTED_VERSIONS; onboard init must not import it.
+# Mirror collector.fpm_forward.runtime.fpm_memory_observer.MEMORY_SUPPORTED_VERSIONS, the keys of SOURCE_MANIFESTS
+# and audited_release; onboard init must not import the observer. A test keeps the copies equal.
 MEMORY_OBSERVATION_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
+SOURCE_MANIFEST_RELEASES = ("0.32.0", "0.33.0")
+
+
+def audited_memory_release(version: str | None) -> str | None:
+    """Return the audited release whose source a version stands for, or None."""
+    if not isinstance(version, str):
+        return None
+    if version in MEMORY_OBSERVATION_VERSIONS:
+        return version
+    if not re.fullmatch(r"\d+(?:\.\d+){2,}", version):
+        return None
+    line = version.split(".")[:2]
+    candidates = [
+        release
+        for release in MEMORY_OBSERVATION_VERSIONS
+        if release in SOURCE_MANIFEST_RELEASES and release.split(".")[:2] == line
+    ]
+    return max(candidates, key=lambda release: tuple(int(part) for part in release.split(".")), default=None)
 
 
 def request_id(request: SupportRequest) -> str:
@@ -390,7 +410,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             plan["fpm"]["scheduling_policy"] = (
                 "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
                 "This is a collection policy, not the default for arbitrary vLLM serving."
-                if request.identity.framework_version in MEMORY_OBSERVATION_VERSIONS
+                if audited_memory_release(request.identity.framework_version) is not None
                 else "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
             )
         elif deployment.resources.cache_layout == "grouped":
@@ -438,8 +458,12 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             # compares saved plans byte for byte. The text therefore names only the plan's own version, and
             # 0.27.0 and every version without memory observation keep the legacy text.
             version = request.identity.framework_version
+            release = audited_memory_release(version)
             layouts = (
-                f"supported vLLM {version} layouts."
+                f"vLLM {version} layouts if the vLLM files that the observers read match audited vLLM {release}. "
+                "Otherwise memory stays unresolved."
+                if release is not None and release != version
+                else f"supported vLLM {version} layouts."
                 if version in MEMORY_OBSERVATION_VERSIONS and version != "0.27.0"
                 else "supported vLLM 0.27.0 layouts; other versions can collect timings but leave memory unresolved."
             )
