@@ -2479,19 +2479,19 @@
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "3bbed66a8857116a8256e3f0a02ac1fd0e0f4917"
+      "git_head": "042f6eb17d4aa4e0ef397215a3d20e5c396567df"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "3bbed66a8857116a8256e3f0a02ac1fd0e0f4917"
+      "git_head": "042f6eb17d4aa4e0ef397215a3d20e5c396567df"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "3bbed66a8857116a8256e3f0a02ac1fd0e0f4917"
+      "git_head": "042f6eb17d4aa4e0ef397215a3d20e5c396567df"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "3bbed66a8857116a8256e3f0a02ac1fd0e0f4917"
+      "git_head": "042f6eb17d4aa4e0ef397215a3d20e5c396567df"
     },
     "nemotron-h-56b-b200-vllm-empirical::agg": {
       "engine": "rust",
