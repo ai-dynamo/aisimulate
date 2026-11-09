@@ -12,11 +12,18 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import vllm_source_manifest
+from collector.fpm_forward import repeatability, runner, runtime_memory, vllm_source_manifest
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 
+from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
+from .test_fpm_repeatability import _write_campaign
 from .test_fpm_runner import _write_provenance
-from .test_fpm_runtime_memory import _initialized_layer_strided, _vllm_config, fake_runtime_offloader  # noqa: F401
+from .test_fpm_runtime_memory import (  # noqa: F401
+    _initialized_layer_strided,
+    _pending_plan,
+    _vllm_config,
+    fake_runtime_offloader,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -269,3 +276,62 @@ def test_manifest_script_hashes_the_pinned_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(vllm_source_manifest, "VLLM_TAGS", {"9.9.0": ("v9.9.0", "0" * 40)})
     with pytest.raises(ValueError, match="does not resolve to"):
         vllm_source_manifest.build_manifests(repo)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_patch_release_plans_observation_against_the_audited_release(tmp_path):
+    plan = _pending_plan("0.33.1")
+    assert plan.to_dict()["runtime_memory_policy"] == {
+        "source": "vllm_initialization",
+        "supported_vllm_version": "0.33.1",
+        "selected_vllm_version": "0.33.1",
+        "audited_vllm_version": "0.33.0",
+        "observation": "enabled",
+        "evidence_schema_version": 1,
+        "async_scheduling": False,
+    }
+    for cell in plan.cells:
+        output = tmp_path / cell.cell_id
+        output.mkdir()
+        runner._render_cell(plan, cell, output, {})
+        script = (output / "run.sh").read_text()
+        assert "--worker-cls fpm_memory_worker.FpmResourceWorker" in script
+        assert "--scheduler-cls fpm_memory_scheduler.FpmResourceInstrumentedScheduler" in script
+        assert script.count("--no-async-scheduling") == 1
+    assert all(runner._observe_runtime_execution(plan, cell) for cell in plan.cells)
+
+
+@pytest.mark.parametrize("version", ["0.27.1", "0.28.1", "0.31.2", "0.33.1rc0", "0.33.1+cu130"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_refused_patch_versions_keep_the_legacy_policy(version):
+    plan = _pending_plan(version)
+    assert plan.to_dict()["runtime_memory_policy"] == {
+        "source": "vllm_initialization",
+        "supported_vllm_version": "0.27.0",
+        "selected_vllm_version": version,
+        "observation": "unavailable_for_runtime",
+        "evidence_schema_version": 1,
+        "async_scheduling": None,
+    }
+    assert not any(runner._observe_runtime_memory(plan, cell) for cell in plan.cells)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_patch_of_an_unmanifested_line_is_not_observed():
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = "0.28.1"
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.28.1"})
+    for cell in plan.cells:
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        assert runner._observe_runtime_execution(plan, cell) is False
+        assert "--worker-cls" not in args
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_patch_release_plan_reloads_exactly(tmp_path):
+    plan = _pending_plan("0.33.1")
+    runtime_memory.validate_saved_plan(plan.to_dict())
+    source = tmp_path / "source"
+    _write_campaign(source, tmp_path / "source-checkpoint.json", plan)
+    assert repeatability.load_repeatability_source(source).to_dict() == plan.to_dict()
