@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""TRT-LLM MoE backend on Blackwell: WIDEEP only for releases whose MoeConfig accepts it
-(through 1.3.0rc24); from rc29 an unset backend renders the framework default AUTO."""
+"""TRT-LLM MoE backend: WIDEEP on Blackwell only for releases whose MoeConfig accepts it
+(through 1.3.0rc24); from rc29 an unset backend renders the framework default AUTO, on Hopper too."""
 
 from __future__ import annotations
 
@@ -66,5 +66,7 @@ def test_blackwell_render_keeps_wideep_before_rc25_and_auto_from_rc29(version, e
     assert _moe_backend(version, "b200_sxm") == expected
 
 
-def test_rc29_hopper_render_keeps_the_hardware_fact():
-    assert _moe_backend("1.3.0rc29", "h200_sxm") == "CUTLASS"
+@pytest.mark.parametrize(("version", "expected"), [("1.3.0rc23", "CUTLASS"), ("1.3.0rc29", "AUTO")])
+def test_hopper_render_follows_the_trtllm_default(version, expected):
+    """No Hopper moe_backend fact: the template default applies (CUTLASS before rc29, AUTO from rc29)."""
+    assert _moe_backend(version, "h200_sxm") == expected

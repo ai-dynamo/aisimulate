@@ -9,7 +9,7 @@
 #     and collector/sglang/dsv4_megamoe/README.md (verified GPU product label pattern).
 #   - nccl_env: derived from platform hardware configs (§9 hardware-level silicon facts).
 #   - shared_memory: standard values from k8s deployment baseline tests and guard rails.
-#   - moe_backend: per design doc §9.3 (CUTLASS on Hopper sm90; WIDEEP on Blackwell sm100/GB200;
+#   - moe_backend: per design doc §9.3 (Hopper sm90: TRT-LLM's own default; WIDEEP on Blackwell sm100/GB200;
 #     sglang deepep_moe is a Blackwell/wide-EP selection only — see cli/main.py
 #     _sglang_moe_backend_override and cli/exps/deepseek_disagg_sglang.yaml).
 #
@@ -34,12 +34,13 @@ profiles:
     # Provenance: qwen3-235b-a22b-fp8/trtllm/agg/hopper/deploy.yaml explicitly shows
     # tolerations: [] for Hopper x86 nodes; no H100-specific recipe contradicts this.
     tolerations: []
-    moe_backend:
-      # Hopper (sm90): CUTLASS is the recommended TRT-LLM MoE kernel.
-      # Source: extra_engine_args templates default to CUTLASS; no WIDEEP data collected for H100.
-      trtllm: CUTLASS
-      # SGLang: deepep_moe is a Blackwell/wide-EP selection (enable_wideep+sglang path).
-      # Not set on Hopper — deepep_moe requires sm100+ wide-EP fabric.
+    # moe_backend: no trtllm entry. TRT-LLM's own MoeConfig default applies: templates before
+    # 1.3.0rc29 render CUTLASS, from rc29 AUTO, which TRT-LLM resolves per model and quant
+    # (_torch/model_config.py resolve_moe_backend; e.g. GPT-OSS -> TRITON on SM90). An explicit
+    # CUTLASS here made GPT-OSS, Kimi-K3 and W4A16-NVFP4 serve another backend than the framework
+    # default and than the collector times (opharness gate moe_mxfp4_gpt-oss-120b, H200,
+    # TRT-LLM 1.4.0rc2).
+    # SGLang: deepep_moe is a Blackwell/wide-EP selection; not set on Hopper.
 
   # ---------------------------------------------------------------------------
   # H200 SXM  —  Hopper  sm90
@@ -64,15 +65,13 @@ profiles:
         operator: Equal
         value: "true"
         effect: NoSchedule
-    moe_backend:
-      # Hopper (sm90): CUTLASS is the recommended TRT-LLM MoE kernel.
-      # WIDEEP requires sm100+ (Blackwell FP4 tensor core path);
-      # wideep_moe_perf data for H200 is present under
-      # src/aisimulate_core/systems/data/h200_sxm/moe/trtllm/,
-      # but CUTLASS is the correct default selection for this silicon generation.
-      trtllm: CUTLASS
-      # SGLang: deepep_moe is a Blackwell/wide-EP selection (enable_wideep+sglang path).
-      # Not set on Hopper — deepep_moe requires sm100+ wide-EP fabric.
+    # moe_backend: no trtllm entry. TRT-LLM's own MoeConfig default applies: templates before
+    # 1.3.0rc29 render CUTLASS, from rc29 AUTO, which TRT-LLM resolves per model and quant
+    # (_torch/model_config.py resolve_moe_backend; e.g. GPT-OSS -> TRITON on SM90). An explicit
+    # CUTLASS here made GPT-OSS, Kimi-K3 and W4A16-NVFP4 serve another backend than the framework
+    # default and than the collector times (opharness gate moe_mxfp4_gpt-oss-120b, H200,
+    # TRT-LLM 1.4.0rc2).
+    # SGLang: deepep_moe is a Blackwell/wide-EP selection; not set on Hopper.
 
   # ---------------------------------------------------------------------------
   # B200 SXM  —  Blackwell  sm100
@@ -202,8 +201,12 @@ profiles:
         operator: Equal
         value: "true"
         effect: NoSchedule
-    moe_backend:
-      trtllm: CUTLASS
+    # moe_backend: no trtllm entry. TRT-LLM's own MoeConfig default applies: templates before
+    # 1.3.0rc29 render CUTLASS, from rc29 AUTO, which TRT-LLM resolves per model and quant
+    # (_torch/model_config.py resolve_moe_backend; e.g. GPT-OSS -> TRITON on SM90). An explicit
+    # CUTLASS here made GPT-OSS, Kimi-K3 and W4A16-NVFP4 serve another backend than the framework
+    # default and than the collector times (opharness gate moe_mxfp4_gpt-oss-120b, H200,
+    # TRT-LLM 1.4.0rc2).
 
   # ---------------------------------------------------------------------------
   # RTX PRO Blackwell (PCIe, 8-GPU hosts)  —  sm120
