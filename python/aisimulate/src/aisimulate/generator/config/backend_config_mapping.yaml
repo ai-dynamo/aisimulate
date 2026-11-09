@@ -183,6 +183,11 @@ parameters:
     value: "((max_num_tokens + 63) // 64) * 64 if max_num_tokens else -1"
   trtllm: enable_chunked_prefill
 
+- param_key: chunked_prefill_size
+  vllm: null
+  sglang: chunked-prefill-size
+  trtllm: null
+
 - param_key: max_prefill_tokens
   vllm: null
   sglang:

@@ -400,17 +400,21 @@ def from_sweeper_candidate(
         expected_gpus += count * int(sizing.extra["gpus_per_worker"])
 
     if backend == "sglang":
-        # Sweeper's backend-neutral scheduler limit is the SGLang prefill
-        # ceiling. Keep max_num_tokens for the evaluated candidate contract,
-        # and also lower it to the generator field that renders the SGLang
-        # --max-prefill-tokens flag without mutating frozen RoleSizing values.
-        roles = {
-            role: replace(
-                sizing,
-                extra={**sizing.extra, "max_prefill_tokens": sizing.extra["max_num_tokens"]},
-            )
-            for role, sizing in roles.items()
-        }
+        # Keep the prefill ceiling separate from an explicitly evaluated chunk.
+        for role, sizing in roles.items():
+            extra = {**sizing.extra, "max_prefill_tokens": sizing.extra["max_num_tokens"]}
+            chunk = config.get(f"{role}_chunked_prefill_size")
+            if chunk is not None:
+                chunk = _positive_int(chunk, path=f"candidate.config.{role}_chunked_prefill_size")
+                # Deployment budgets are rounded to 64 by the generator. Never
+                # silently deploy a different chunk than the evaluated candidate.
+                if chunk % 64:
+                    raise SweeperCandidateError(
+                        "deployment generation requires chunked_prefill_size to be a multiple of 64; "
+                        "use the saved prediction YAML to replay other chunk sizes"
+                    )
+                extra["chunked_prefill_size"] = chunk
+            roles[role] = replace(sizing, extra=extra)
 
     used_gpus = candidate_payload.get("used_gpus", config.get("used_gpus"))
     if used_gpus is not None:

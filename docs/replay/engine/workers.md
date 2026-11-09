@@ -43,6 +43,7 @@ engine:
 | `workers.<role>.parallelism.prefill_context` | Unset (1) | predict only | Prefill context parallelism (vLLM `-pcp`, SGLang `--attn-cp-size`). Adds GPUs. |
 | `workers.<role>.parallelism.decode_context` | Unset (1) | predict only | Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`). Must divide `tensor`; adds no GPUs. |
 | `workers.<role>.scheduler.max_batched_tokens` | `8192` | Prefill and aggregated: `{choices: [8192, 16384, 32768]}`; decode: fixed | Positive. Token budget for one scheduler pass on one attention-DP rank. See [SGLang note](#batch-limits). |
+| `workers.<role>.scheduler.chunked_prefill_size` | Unset (backend default) | Fixed, choices, or integer range | SGLang only. Positive worker-wide prefill chunk budget, divided by `attention_data` inside replay. See [Batch limits](#batch-limits). |
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
@@ -154,12 +155,35 @@ how vLLM and SGLang apply them inside each DP engine. A prefill role defaults
 to `max_sequences: 1`, so each prefill rank runs one request at a time unless
 you raise it.
 
-> **SGLang note.** The SGLang scheduler currently takes its per-pass prefill
-> budget from SGLang's default `chunked_prefill_size` (8192 tokens, divided by
-> `attention_data`), not from `max_batched_tokens`. Changing
-> `max_batched_tokens` does not change SGLang replay results, except when
-> `host_loop` is enabled or images are encoded on the worker (without a
-> separate encoder pool). In those cases it is the worker's `chunked_prefill_size`.
+> **SGLang note.** Set `scheduler.chunked_prefill_size` to control the prefill
+> chunk budget independently of `max_batched_tokens`. This is a **worker-wide**
+> budget: replay divides it by `attention_data` once. For example, 8192 with
+> two attention-DP ranks gives each rank a 4096-token chunk budget.
+> If omitted, existing behavior is unchanged: the budget defaults to 8192,
+> except with `host_loop` or worker-local image encoding, where it comes from
+> `max_batched_tokens`. An explicit chunk size overrides that fallback.
+
+Predict takes a positive integer. Recommend also accepts `choices` or an
+integer `range` (linear or logarithmic), independently for each worker role.
+For example, this recommendation fragment searches the prefill worker's chunk
+size while retaining the decode worker's default:
+
+```yaml
+engine:
+  backend: sglang
+  workers:
+    prefill:
+      scheduler:
+        chunked_prefill_size:
+          choices: [4096, 8192, 16384]
+```
+
+The saved candidate prediction config contains the selected integer, so
+replaying it uses the same chunk budget. Explicit chunk settings require
+`backend: sglang`; they cannot be combined with a search over other backends.
+Chunks must satisfy replay's KV block-size alignment. Deployment artifact
+generation additionally requires multiples of 64; it rejects other explicit
+chunks instead of silently rounding the evaluated budget.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a

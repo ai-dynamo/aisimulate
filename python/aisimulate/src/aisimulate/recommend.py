@@ -505,6 +505,15 @@ def _role_search_space(
             result["engine_integer_log_ranges"][tokens_name] = tokens_log_range
         if sequences_log_range is not None:
             result["engine_integer_log_ranges"][sequences_name] = sequences_log_range
+        chunk_value = scheduler.get("chunked_prefill_size")
+        chunk_name = f"{legacy_role}_chunked_prefill_size"
+        if isinstance(chunk_value, dict):
+            chunk_choices, chunk_log_range = _integer_domain(chunk_value, default=[])
+            result[chunk_name] = chunk_choices
+            if chunk_log_range is not None:
+                result["engine_integer_log_ranges"][chunk_name] = chunk_log_range
+        else:
+            result[chunk_name] = chunk_value
         cache = raw.get("kv_cache") or {}
         capacity = cache.get("capacity") or {}
         block_value = cache.get("block_size")
@@ -1163,6 +1172,9 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        chunk = sample.get(f"{role}_chunked_prefill_size")
+        if chunk is not None:
+            worker_config["scheduler"]["chunked_prefill_size"] = chunk
         if role != "agg" and sample.get(f"{role}_context_length") is not None:
             worker_config["context_length"] = sample[f"{role}_context_length"]
         engine["workers"][public_role] = worker_config

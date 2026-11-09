@@ -28,6 +28,7 @@ _DEPLOYMENT_PINNED = (
 # engine knobs per branch: searched batching + pinned scalars.
 _AGG_SEARCHED = ("agg_max_num_batched_tokens", "agg_max_num_seqs")
 _AGG_PINNED = (
+    "agg_chunked_prefill_size",
     "agg_block_size",
     "agg_gpu_memory_utilization",
     "agg_enable_prefix_caching",
@@ -45,6 +46,7 @@ _AGG_PINNED = (
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
 _PREFILL_PINNED = (
+    "prefill_chunked_prefill_size",
     "prefill_block_size",
     "prefill_gpu_memory_utilization",
     "prefill_enable_prefix_caching",
@@ -63,6 +65,7 @@ _PREFILL_PINNED = (
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
 _DECODE_PINNED = (
+    "decode_chunked_prefill_size",
     "decode_block_size",
     "decode_gpu_memory_utilization",
     "decode_enable_prefix_caching",
