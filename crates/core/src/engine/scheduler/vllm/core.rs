@@ -2670,8 +2670,9 @@ impl VllmCore {
             adapter.note_rank_progress();
         }
 
-        // The wall time is the forward's duration, set when it is priced.
-        let fpm = self.compute_fpm(&scheduled, 0.0);
+        // The wall time is the forward's duration, set when it is priced. An
+        // empty step runs no forward, and Dynamo's vLLM recorder skips it.
+        let fpm = (!decide_again).then(|| self.compute_fpm(&scheduled, 0.0));
         // Speculative lookahead reservation may retract decode candidates after
         // scheduling. Keep already executed prefill, but only count surviving
         // decode work that actually produced an output token.
@@ -2761,7 +2762,7 @@ impl VllmCore {
                 .as_ref()
                 .map(CapturedKvEventBuffer::drain)
                 .unwrap_or_default(),
-            fpm: Some(fpm),
+            fpm,
             decode_acceptance,
             // Set when the pass is priced, with `launch`.
             previous_returned_ms: None,

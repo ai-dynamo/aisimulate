@@ -1449,7 +1449,8 @@ mod async_scheduling_admission {
     #[test]
     fn an_empty_decision_frees_the_pass_in_flight_and_decides_again() {
         // Without X nothing runs in pass 2: vLLM's step is empty, so it
-        // processes pass 1 at once and admits W in the next step.
+        // processes pass 1 at once and admits W in the next step. The empty
+        // step runs no forward, so it carries no forward-pass snapshot.
         let mut core = core_with_cache(2, 10, false);
         let mut now = 0.0;
         arrive_with_prompt(&mut core, 2, 24, 2, false);
@@ -1459,7 +1460,10 @@ mod async_scheduling_admission {
         let empty = step(&mut core, &mut now);
         assert!(empty.admissions.is_empty());
         assert_eq!(empty.same_timestamp_retry, SameTimestampRetry::Retry);
-        assert_eq!(step(&mut core, &mut now).admissions[0].uuid, w);
+        assert!(empty.fpm.is_none());
+        let admitting = step(&mut core, &mut now);
+        assert_eq!(admitting.admissions[0].uuid, w);
+        assert!(admitting.fpm.is_some());
     }
 
     #[test]

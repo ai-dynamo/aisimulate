@@ -329,7 +329,10 @@ which requests can be preempted:
   pass the request finished in, after it has committed the next pass. Blocks
   that a request frees in pass k therefore first serve pass k+2. A pass with no
   work lets vLLM process the previous pass at once, so replay then commits
-  another pass at the same instant.
+  another pass at the same instant. The empty pass runs no forward and carries
+  no forward-pass snapshot, as Dynamo's vLLM recorder skips empty batches. The
+  engine protocol still reports an all-zero `forward_pass_metrics` for it, which
+  a consumer that mirrors that recorder skips.
 - With a CPU tier (`kv_cache.host_offload`), vLLM does not free the blocks of a
   request that the pass in flight runs until that pass ends, so it does not
   preempt that request. A running request that needs its blocks waits for the
