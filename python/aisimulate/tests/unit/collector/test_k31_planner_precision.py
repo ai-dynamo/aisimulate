@@ -228,3 +228,21 @@ def test_unobserved_checkpoint_native_identity_is_not_promoted(inputs):
     inputs["profile"]["deployments"][0]["moe_quant_mode"] = "w4a16_mxfp4"
     inputs["runtime_instrumentation"] = inputs["runtime_launch"] = None
     assert bind(inputs) is inputs["capability"]
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda r: r.update(max_num_tokens=2048), "resource envelope"),
+        (lambda r: r.update(max_batch_size=32), "resource envelope"),
+        (lambda r: r["runtime_memory"].update(max_model_len=8192), "resource envelope"),
+        (lambda r: r["runtime_memory"].update(gpu_memory_utilization=0.8), "resource envelope"),
+        (lambda r: r["cache_groups"][0].update(page_size_bytes=1024), "profile cache groups"),
+        (lambda r: r["cache_groups"][-1].update(blocks_per_request=2), "profile cache groups"),
+        (lambda r: r["cache_groups"].pop(), "profile cache groups"),
+    ],
+)
+def test_resource_fields_cannot_be_relabelled_around_valid_precision_proof(inputs, mutation, match):
+    mutation(inputs["profile"]["deployments"][0]["resources"])
+    with pytest.raises(ValueError, match=match):
+        bind(inputs)

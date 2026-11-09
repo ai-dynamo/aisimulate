@@ -799,9 +799,18 @@ def _observed_k31_capability(
         raise ValueError("K3.1 observed MoE launch identity or topology differs from formal collection")
     modes = set()
     for deployment in deployments:
-        memory = deployment.resources.runtime_memory
+        resources = deployment.resources
+        memory = resources.runtime_memory
         if memory is None:
             raise ValueError("K3.1 observed MoE precision requires imported runtime memory provenance")
+        collection = launch["collection"]
+        if (
+            resources.max_num_tokens != collection["max_num_batched_tokens"]
+            or resources.max_batch_size != collection["max_num_seqs"]
+            or memory.max_model_len != collection["max_model_len"]
+            or memory.gpu_memory_utilization != collection["gpu_memory_utilization"]
+        ):
+            raise ValueError("K3.1 observed MoE resource envelope differs from the imported launch")
         try:
             proof = json.loads(memory.provenance)
         except (TypeError, ValueError) as error:
@@ -876,10 +885,17 @@ def _observed_k31_capability(
             capacity_by_rank[key] = capacity
         if set(capacity_by_rank) != expected:
             raise ValueError("K3.1 observed MoE rank capacity coverage is incomplete")
+        canonical_groups = None
         for key, worker in workers.items():
             scheduler = schedulers[key[:2]]
             observations.runtime_memory._validate_scheduler_config(worker, scheduler)
-            _, accounting = observations._physical_views(worker["cache"], scheduler["cache"], deployment.kv_cache_dtype)
+            groups, accounting = observations._physical_views(
+                worker["cache"], scheduler["cache"], deployment.kv_cache_dtype
+            )
+            if canonical_groups is None:
+                canonical_groups = groups
+            elif groups != canonical_groups:
+                raise ValueError("K3.1 observed MoE cache groups differ across native ranks")
             expected_capacity = {
                 "phase": key[0],
                 "dp_rank": key[1],
@@ -889,6 +905,11 @@ def _observed_k31_capability(
             }
             if capacity_by_rank[key] != expected_capacity:
                 raise ValueError("K3.1 observed MoE rank capacity differs from native allocation evidence")
+        if (
+            resources.cache_layout != "grouped"
+            or [group.model_dump(mode="json") for group in resources.cache_groups] != canonical_groups
+        ):
+            raise ValueError("K3.1 observed MoE profile cache groups differ from native allocation evidence")
         if memory.kv_cache_bytes != min(capacity["kv_cache_bytes"] for capacity in capacities):
             raise ValueError("K3.1 observed MoE profile capacity differs from the imported rank minimum")
     if len(modes) != 1 or any(deployment.moe_quant_mode not in modes for deployment in deployments):
