@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from aisimulate.legacy_cli import cli_support
 from aisimulate.legacy_cli.main import _latest_support_matrix_version, _run_support_mode
 from aisimulate.sdk import perf_database
 
@@ -214,6 +215,10 @@ def test_run_support_mode_defaults_to_current_certification(monkeypatch, capsys,
         "aisimulate.legacy_cli.main.get_model_config_from_model_path",
         lambda _model: {"architecture": "Arch"},
     )
+    monkeypatch.setattr(
+        "aisimulate.sdk.utils.get_model_config_from_model_path",
+        lambda _model: {"architecture": "Arch"},
+    )
     monkeypatch.setattr("aisimulate.legacy_cli.main.common.get_support_matrix", lambda: matrix)
 
     versions = [None, "current", slots["current"]]
@@ -225,3 +230,4 @@ def test_run_support_mode_defaults_to_current_certification(monkeypatch, capsys,
         supported = current_model is not None or version in {"previous", slots.get("previous", "")}
         assert f"Aggregated Support:    {'YES' if supported else 'NO'}" in output
         assert f"Version:         {version or slots['current']}" in output
+        assert cli_support("model", system, backend=backend, backend_version=version).agg_supported == supported

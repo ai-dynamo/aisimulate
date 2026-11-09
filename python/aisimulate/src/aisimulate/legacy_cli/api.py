@@ -75,11 +75,13 @@ def cli_support(
         model_path: HuggingFace model path (e.g., 'Qwen/Qwen3-32B') or local path.
         system: System name (GPU type), e.g., 'h200_sxm', 'b200_sxm'.
         backend: Optional backend name to filter by ('trtllm', 'sglang', 'vllm').
-        backend_version: Optional backend database version.
+        backend_version: Optional backend database version; defaults to the current
+            slot when the system/backend has slot policy.
 
     Returns:
         tuple[bool, bool]: (agg_supported, disagg_supported)
     """
+    from aisimulate.sdk import perf_database
     from aisimulate.sdk.common import check_support
     from aisimulate.sdk.utils import get_model_config_from_model_path
 
@@ -88,6 +90,11 @@ def cli_support(
         architecture = model_info["architecture"]
     except Exception:
         architecture = None
+
+    if backend_version is None:
+        slots = perf_database.get_version_slots(system.lower(), backend.lower())
+        if slots:
+            backend_version = slots["current"]
 
     return check_support(model_path, system, backend, backend_version, architecture=architecture)
 

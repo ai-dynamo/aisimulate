@@ -299,6 +299,10 @@ workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
+Support queries default to the backend's current version slot. The example
+below currently reports `NO` for both modes because that slot lacks certification
+for this model; generating a starting configuration does not certify support.
+
 <!-- readme-check: legacy-cli -->
 ```bash
 # Check whether a model/system combination is supported.
