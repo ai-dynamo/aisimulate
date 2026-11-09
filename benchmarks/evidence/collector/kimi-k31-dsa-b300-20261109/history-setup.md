@@ -38,3 +38,13 @@ history construction while keeping the measured decode module unchanged.
 That needs a source-backed state-equivalence test (KV slots, index-K history,
 per-request lengths and continuation) and separate collection provenance.
 It cannot be treated as a generic retry or silent change to this campaign.
+
+## Subsequent native continuation validation
+
+The independent follow-up recovered all 12 cases using the same native Req
+continuation semantics described above. It preserved requested batch/history,
+index-K and latent-KV writes, and the original timed decode boundary. The
+4096-token same-model control was bit-exact in cache slots, both cache buffers,
+decode input and decode logits. See `chunked-history/receipt.json` and the
+immutable raw follow-up table/sidecar. This original failure audit is retained;
+it is not a claim that serving decode cannot handle those histories.

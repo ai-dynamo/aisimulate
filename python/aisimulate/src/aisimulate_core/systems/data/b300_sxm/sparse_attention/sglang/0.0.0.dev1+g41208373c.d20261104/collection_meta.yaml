@@ -26,7 +26,7 @@ tables:
       rows: 38
       status: complete
   dsa_generation_module_perf:
-    rows: 21
+    rows: 33
     status: complete
     collections:
     - collector_ref: 9718c10c8cc74f7901b10fd4dd2922a66409915b
@@ -40,4 +40,16 @@ tables:
       case_plan_hash: sha256:19d206559b52e50397d90a4992e23e4cb9bec26251a1b24ea2dae7dca77ca924
       collected_at: '2026-11-09'
       rows: 20
+      status: complete
+    - collector_ref: b0bcf4e28f7c0d2937469a8fb08a331de7b9e1f2
+      collector_hash: sha256:45660e2327e37eb3231c00e1448d36cfa14cc92dacbb308e72cede5531d30ffc
+      case_plan_hash: sha256:ddc276a31ec865039749a5e0f066a5371f29a80fe18af671841db4703cfcfcd5
+      collected_at: '2026-11-09'
+      rows: 1
+      status: complete
+    - collector_ref: b0bcf4e28f7c0d2937469a8fb08a331de7b9e1f2
+      collector_hash: sha256:45660e2327e37eb3231c00e1448d36cfa14cc92dacbb308e72cede5531d30ffc
+      case_plan_hash: sha256:231cd268b3167a6dadeed563da21f99915a43116ed796c406acd6d01d460398c
+      collected_at: '2026-11-09'
+      rows: 11
       status: complete
