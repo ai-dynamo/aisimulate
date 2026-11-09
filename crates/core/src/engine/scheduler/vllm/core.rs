@@ -698,6 +698,8 @@ pub(crate) struct VllmCore {
     capacity_generation: u64,
     /// The grouped pool's `retry_epoch` after the last destination retry.
     grouped_retry_epoch: Option<u64>,
+    /// `grouped_local_prefill_need` at the last destination retry.
+    grouped_retry_local_prefill_need: u64,
     /// The local prefills in flight of a grouped decode rank: the requests
     /// whose last scheduled chunk ended before their known tokens, such as a
     /// local prompt or the recompute of a preempted request. A KV load keeps
@@ -1056,6 +1058,7 @@ impl VllmCore {
             next_waiting_order: 0,
             capacity_generation: 0,
             grouped_retry_epoch,
+            grouped_retry_local_prefill_need: 0,
             grouped_local_prefills: FxHashSet::default(),
             #[cfg(test)]
             destination_reservation_attempts: 0,
@@ -1376,19 +1379,57 @@ impl VllmCore {
         // A grouped pool frees blocks inside a pass and publishes the blocks
         // of an activation without a generation bump. Either can let the
         // head reserve, so a change since the last retry makes it due.
+        // A pass can also lower what the local prefills in flight need while
+        // the epoch stays. In byte mode, a window page that leaves the window
+        // frees its bytes with no epoch move, as the request's bytes still
+        // grow, and the need still counts that page as held. In block mode, a
+        // chunk inside one state block takes and frees no block, but a state
+        // group can stop counting a checkpoint block. vLLM stops its waiting
+        // loop at a load that does not fit (V31 `sched:1223-1230`, V32
+        // `sched:1275-1282`) and tests a waiting request again at the next
+        // step that preempted no request and has token budget left (V31
+        // `sched:873`, `:885`, V32 `sched:900`, `:912`). Replay runs this
+        // retry at each pass boundary and tests the head only when the
+        // generation moved. So a need below the one of the last retry makes
+        // the head due too. A higher need can only keep the head waiting.
         let epoch = self.kv_manager.grouped().map(GroupedKvPool::retry_epoch);
-        if epoch != self.grouped_retry_epoch {
+        let local_prefill_need = self.grouped_local_prefill_need();
+        if epoch != self.grouped_retry_epoch
+            || local_prefill_need < self.grouped_retry_local_prefill_need
+        {
             self.bump_capacity_generation();
         }
-        let events = self.retry_front_destination(mutation_now_ms);
+        let events = self.retry_front_destination(mutation_now_ms, local_prefill_need);
         // The changes of the attempt itself do not make the next retry due.
+        // The attempt leaves the local prefills as they were.
         self.grouped_retry_epoch = self.kv_manager.grouped().map(GroupedKvPool::retry_epoch);
+        self.grouped_retry_local_prefill_need = local_prefill_need;
         events
+    }
+
+    /// What the local prefills in flight still need. vLLM sums it with what
+    /// the loads in flight need (V31 `sched:3032-3036`, V32
+    /// `sched:3088-3092`), and counts at most `max_model_len` tokens of each
+    /// request (V31 `sched:3005`, V32 `sched:3062`). 0 on every rank but a
+    /// grouped decode rank, which alone fills `grouped_local_prefills`.
+    fn grouped_local_prefill_need(&self) -> u64 {
+        let max_model_len = self.args.max_model_len.unwrap_or(usize::MAX);
+        self.grouped_local_prefills
+            .iter()
+            .filter_map(|uuid| self.state.requests.get(uuid))
+            .map(|request| {
+                self.kv_manager.grouped_remaining_need(
+                    &request.sequence.lease,
+                    request.sequence.len().min(max_model_len),
+                )
+            })
+            .fold(0, u64::saturating_add)
     }
 
     fn retry_front_destination(
         &mut self,
         mutation_now_ms: Option<f64>,
+        local_prefill_need: u64,
     ) -> Vec<SchedulerLifecycleEvent> {
         self.destination_retry_ready = false;
         let generation = self.capacity_generation;
@@ -1428,22 +1469,6 @@ impl VllmCore {
             }
         };
 
-        // What the local prefills in flight still need. vLLM sums it with
-        // what the loads in flight need (V31 `sched:3032-3036`, V32
-        // `sched:3088-3092`), and counts at most `max_model_len` tokens of
-        // each request (V31 `sched:3005`, V32 `sched:3062`).
-        let max_model_len = self.args.max_model_len.unwrap_or(usize::MAX);
-        let local_prefill_need = self
-            .grouped_local_prefills
-            .iter()
-            .filter_map(|uuid| self.state.requests.get(uuid))
-            .map(|request| {
-                self.kv_manager.grouped_remaining_need(
-                    &request.sequence.lease,
-                    request.sequence.len().min(max_model_len),
-                )
-            })
-            .fold(0, u64::saturating_add);
         let Some((_, request_id, request)) = self.pending_destinations.front_due_mut(generation)
         else {
             return Vec::new();

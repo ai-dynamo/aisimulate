@@ -1959,6 +1959,118 @@ fn grouped_destination_counts_nothing_for_a_local_request_that_decodes() {
 }
 
 #[test]
+fn grouped_destination_retries_when_the_local_prefills_need_less() {
+    // Byte mode on 14 pages of 100 bytes, with one batch of 32 tokens. So the
+    // cap of the 17-token window is cdiv(16 + 32, 16) + 1 = 4 blocks (V31
+    // `vllm/v1/kv_cache_interface.py:859-866`).
+    let mut core = pd_core(
+        full_and_window_transfer_groups(),
+        1_400,
+        32,
+        WorkerType::Decode,
+        None,
+    );
+    let mut trace = TraceCollector::default();
+    let mut step = 0;
+    // A local prompt of 100 tokens. Its first chunk of 32 tokens holds 2
+    // full-attention pages and 2 window pages: 400 bytes. It still needs
+    // cdiv(100, 16) - 2 = 5 full-attention pages and min(7, 4) - 2 = 2 window
+    // pages: 700 bytes.
+    let local = submit_tokens(&mut core, 1880, (0..100).collect(), 1);
+    let need = |core: &VllmCore| {
+        let lease = &core.state.requests[&local].sequence.lease;
+        core.kv_manager.grouped_remaining_need(lease, 100)
+    };
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+    assert_eq!(grouped_pool(&core).used_bytes(), 400);
+    assert_eq!(need(&core), 700);
+    // Without a state group, a load of 48 tokens loads the whole prompt in
+    // cdiv(48, 16) = 3 units. It holds 3 full-attention pages and the window
+    // page of tokens 32 to 47: 400 bytes. It waits, as 400 + 700 > 1,000
+    // free bytes.
+    let handoff_id = HandoffId::new(Uuid::from_u128(1882));
+    let request = DirectRequest {
+        tokens: (1_000..1_048).collect(),
+        ..pd_request(1881, 0, 2)
+    };
+    assert_eq!(reserve_grouped(&mut core, handoff_id, request), None);
+    // The second chunk adds 2 full-attention pages, and the window moves
+    // from pages 0 and 1 to pages 1 to 3: 700 bytes. So the pool grows by
+    // 300 bytes, and the retry epoch stays, as the request's bytes grow.
+    // The need falls by 400 bytes, to 7 - 4 = 3 full-attention pages and
+    // min(7, 4) - 4 = 0 window pages. It counts cdiv(64, 16) = 4 window
+    // pages as held, page 0 included, though page 0 left the window and
+    // freed its 100 bytes. The cap sets the level of 300 bytes, so the load
+    // now fits, as 400 + 300 <= 700 free bytes. vLLM stops its waiting loop
+    // at a load that does not fit (V31 `sched:1223-1230`, V32
+    // `sched:1275-1282`) and tests the load again at the next step that
+    // preempted no request and has token budget left (V31 `sched:873`,
+    // `:885`, V32 `sched:900`, `:912`). Replay tests it again after this
+    // pass, because the need fell.
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+    assert_eq!(grouped_pool(&core).used_bytes(), 700);
+    assert_eq!(need(&core), 300);
+    assert_eq!(
+        reserved_units(&core.retry_pending_destinations(), handoff_id),
+        Some(3)
+    );
+}
+
+#[test]
+fn grouped_destination_in_block_mode_retries_when_the_local_prefills_need_less() {
+    // The GLM-5.3-Flash groups on vLLM 0.32.0 with checkpoint blocks, in
+    // block mode on 20 pages, with a hash block of 16 and one batch of 600
+    // tokens. A local prompt of 5,000 tokens runs chunks of 600 tokens. Below
+    // token 2,176 it holds 1 MLA block, the ring block and 1 block of each of
+    // the 4 KDA groups: 6 blocks, so 14 are free.
+    let mut args = prefix_core(glm_transfer_groups(true), 20 * GLM_PAGE, 600, 16, "0.32.0").args;
+    args.worker_type = WorkerType::Decode;
+    let mut core = VllmCore::new(args);
+    let mut trace = TraceCollector::default();
+    let mut step = 0;
+    // The prompt still needs cdiv(5,000, 2,176) - 1 = 2 MLA blocks. The ring
+    // holds its block and needs none. Each KDA group needs 1 block, plus a
+    // checkpoint block while the rest of the prompt can export one (V32
+    // `vllm/v1/core/single_type_kv_cache_manager.py:1724-1773`). The
+    // checkpoint sits at (5,000 - 1) / 16 * 16 = 4,992, and a query exports
+    // it only from a start on a hash block, among other conditions (V32
+    // `vllm/v1/kv_cache_interface.py:1110-1146`). 600 is not on one, so the
+    // need is 2 + 4 = 6 blocks.
+    let local = submit_tokens(&mut core, 1890, (0..5_000).collect(), 1);
+    let need = |core: &VllmCore| {
+        let lease = &core.state.requests[&local].sequence.lease;
+        core.kv_manager.grouped_remaining_need(lease, 5_000)
+    };
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+    assert_eq!(need(&core), 6);
+    // 1,200 is on a hash block, so the need is 2 + 4 * 2 = 10 blocks. A
+    // distinct load of 1,000 tokens loads 999. Both of its tests count 6
+    // blocks: 1 MLA block, the ring block and 1 block per KDA group. It
+    // waits, as 6 + 10 > 14.
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+    assert_eq!(block_pool(&core).active_blocks(), 6);
+    assert_eq!(need(&core), 10);
+    let handoff_id = HandoffId::new(Uuid::from_u128(1892));
+    let request = DirectRequest {
+        tokens: (100_000..101_000).collect(),
+        ..pd_request(1891, 0, 2)
+    };
+    assert_eq!(reserve_grouped(&mut core, handoff_id, request), None);
+    // The third chunk ends at 1,800, still inside the first MLA and KDA
+    // blocks. It takes and frees no block, so the pool's retry epoch is still
+    // 0. But 1,800 is not on a hash block, so the need falls to 6 blocks, and
+    // the load fits, as 6 + 6 <= 14.
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+    assert_eq!(block_pool(&core).active_blocks(), 6);
+    assert_eq!(grouped_pool(&core).retry_epoch(), 0);
+    assert_eq!(need(&core), 6);
+    assert_eq!(
+        reserved_units(&core.retry_pending_destinations(), handoff_id),
+        Some(1)
+    );
+}
+
+#[test]
 fn grouped_decode_rank_frees_the_skipped_blocks_of_an_ending_request_first() {
     let hash = prompt_hash(2_177, 2_176);
     for (version, checkpoint) in GLM_CORES {
