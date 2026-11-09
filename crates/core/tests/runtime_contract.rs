@@ -1802,12 +1802,33 @@ fn session_affinity_survives_pool_retirement_and_growth(
     composition.session_affinity = true;
     let report = Replayer::with_composition(spec, ReplayEngineFactory::new(), composition)
         .unwrap()
+        .with_capture_options(ReplayCaptureOptions {
+            capture_lifecycle_evidence: true,
+            ..ReplayCaptureOptions::default()
+        })
         .run()
         .unwrap();
 
     assert_eq!(report.request_counts.completed_requests, 5);
     assert_eq!(report.request_counts.total_output_tokens, 15);
     assert_eq!(report.per_request.len(), 5);
+    let retirement = report
+        .runtime_evidence
+        .lifecycle_operations
+        .iter()
+        .find(|operation| operation.pool == pool && operation.at_ms == retirement_at_ms)
+        .unwrap();
+    assert_eq!(
+        retirement.state_after_batch.draining,
+        if busy { vec![1] } else { vec![] }
+    );
+    if busy {
+        // B's first turn is the only request on worker 1 at scale-down.
+        let request = &report.per_request[1];
+        assert_eq!(request.request_id.as_deref(), Some("turn-1"));
+        assert!(request.first_admit_ms.unwrap() <= retirement_at_ms);
+        assert!(retirement_at_ms < request.terminal_time_ms);
+    }
     for (i, record) in report.per_request.iter().enumerate() {
         assert_eq!(
             record.routing_history.len(),
