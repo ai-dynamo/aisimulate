@@ -722,7 +722,7 @@ def charge_own_launch(
     own_work_ms: dict[str, dict[str, Any]],
     max_cudagraph_capture_size: int,
     *,
-    refuse_thin_buckets: bool = False,
+    flag_thin_buckets: bool = False,
 ) -> list[list[dict[str, Any]]]:
     """Move the next pass's launch out of each vLLM record, for one-GPU workers.
 
@@ -744,14 +744,15 @@ def charge_own_launch(
     returned as it was.
 
     A record before a piecewise or eager pass whose bucket has no mean stops
-    the charge, unless ``refuse_thin_buckets``: then it moves nothing, and it
+    the charge, unless ``flag_thin_buckets``: then it moves nothing, and it
     and the next record are flagged ``launch_refused``, which :func:`evaluate`
-    counts as ``_refused``. Use it for evaluation records.
+    counts as ``_refused`` and :func:`train` skips. Use it for evaluation
+    records.
 
     Raises ``ValueError`` unless every iteration has one rank, every record
     has ``counter_id`` and a non-empty ``worker_id`` that no other record
     shares with the same ``counter_id``, ``own_work_ms`` has the shape
-    :func:`mean_own_work_ms` returns, and, without ``refuse_thin_buckets``,
+    :func:`mean_own_work_ms` returns, and, without ``flag_thin_buckets``,
     every record that gives time falls in a bucket with a mean.
     """
     _check_own_work_buckets(own_work_ms, max_cudagraph_capture_size, _OWN_WORK_CELLS)
@@ -769,7 +770,7 @@ def charge_own_launch(
         row, col = _own_work_bucket(table, carrier, fpm)
         own_ms = table["ms"][row][col]
         if own_ms is None:
-            if refuse_thin_buckets:
+            if flag_thin_buckets:
                 refused.update((i, nxt))
                 moved.append(0.0)
                 continue
@@ -839,6 +840,9 @@ def _build_dataset(
         if needs_lists and not iteration_has_request_lists(metrics_by_rank):
             # the Rust model refuses these at inference; do not teach the trees a NaN route
             skipped_lists += 1
+            continue
+        if any(fpm.get("launch_refused") for fpm in metrics_by_rank):
+            # charge_own_launch could not tell this record's launch from its own work
             continue
         if censored is not None and any(fpm.get("launch_censored") for fpm in metrics_by_rank):
             censored[kind] = censored.get(kind, 0) + 1
@@ -1498,7 +1502,7 @@ def _load_iterations(
             iterations,
             launch_stall["own_work_ms"],
             launch_stall["max_cudagraph_capture_size"],
-            refuse_thin_buckets=True,
+            flag_thin_buckets=True,
         )
     return iterations
 

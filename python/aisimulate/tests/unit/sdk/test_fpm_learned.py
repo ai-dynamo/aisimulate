@@ -273,7 +273,7 @@ def test_mean_own_work_ms_measures_records_before_a_decode_pass() -> None:
     with pytest.raises(ValueError, match="sum_prefill_tokens>=2048 has 1 records .* too few for a mean"):
         fpm_learned.charge_own_launch(thin, table, 4096)
     # evaluation records keep their time, and the pair whose launch is unknown is refused
-    refused = [ranks[0] for ranks in fpm_learned.charge_own_launch(thin, table, 4096, refuse_thin_buckets=True)]
+    refused = [ranks[0] for ranks in fpm_learned.charge_own_launch(thin, table, 4096, flag_thin_buckets=True)]
     assert [fpm["wall_time"] for fpm in refused] == [0.250, 0.040, 0.020]
     assert [fpm.get("launch_refused", False) for fpm in refused] == [True, True, False]
 
