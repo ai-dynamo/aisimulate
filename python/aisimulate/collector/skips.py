@@ -248,6 +248,14 @@ SKIPS: list[dict] = [
     # the KV cache is FP8 (mFP8ContextMLA in thop/attentionOp.cpp); its FP8-KV rows
     # record that, so an FP8-compute case has no kernel of its own to time.
     {"backend": "trtllm", "op": "mla_context_module", "compute_dtype": "fp8"},
+    # TRT-LLM cannot run NVFP4 MLA modules on SM120: MLA._resolve_qa_fused_scale
+    # (_torch/attention/mla.py) folds q_b_proj's static NVFP4 input quantization
+    # into q_a_layernorm without the SM check RMSNorm applies when it is built
+    # (_torch/modules/rms_norm.py, SM 100-119 only), and the fused kernel then
+    # asserts "residualRmsNormFp4Quant requires SM 10.x" (kernels/
+    # rmsNormFp4QuantKernels.cu) in every forward, serving's included. Every case
+    # fails after a full module build.
+    {"backend": "trtllm", "op": ["mla_context_module", "mla_generation_module"], "gemm_type": "nvfp4", "sm": [120]},
     # vLLM: FP8-KV MLA modules on SM89 were not collected before, and this keeps
     # that coverage. Triton MLA would serve them there (its FP8 KV cache needs
     # SM89+, vllm/v1/attention/backends/mla/triton_mla.py).
