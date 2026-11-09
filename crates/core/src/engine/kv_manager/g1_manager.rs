@@ -329,6 +329,14 @@ impl G1Manager {
         self.inner.get_lease_prefill_cost(sequence, lease)
     }
 
+    /// What a request with `lease` still needs to hold its `tokens` tokens:
+    /// blocks in block mode, bytes in byte mode. 0 without grouped blocks.
+    pub(crate) fn grouped_remaining_need(&self, lease: &BlockRequestLease, tokens: usize) -> u64 {
+        self.inner.grouped_remaining_need(lease, tokens)
+    }
+
+    /// `local_prefill_need` is what the local prefills in flight still need.
+    /// A grouped destination keeps it free, and a linear one ignores it.
     pub(crate) fn reserve_native_destination_at(
         &mut self,
         owner: Uuid,
@@ -336,6 +344,7 @@ impl G1Manager {
         lease: &BlockRequestLease,
         mode: DestinationReservationMode,
         eviction_now_ms: Option<f64>,
+        local_prefill_need: u64,
     ) -> G1Acquire<DestinationReservation> {
         into_g1_acquire(self.inner.reserve_destination_lease(
             owner,
@@ -343,6 +352,7 @@ impl G1Manager {
             lease,
             mode,
             eviction_now_ms,
+            local_prefill_need,
         ))
         .map(|inner| DestinationReservation { inner })
     }

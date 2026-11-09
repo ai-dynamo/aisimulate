@@ -1807,6 +1807,108 @@ fn grouped_destination_waits_for_the_cached_block_of_a_lagging_state_hit() {
     assert_eq!(reserve_grouped(&mut core, c, request), None);
 }
 
+/// One full-attention group of 16-token blocks at 100 bytes a page, with
+/// the transfer fields set. No state group, so a load is the whole prompt.
+fn full_transfer_group() -> Vec<FpmCacheGroup> {
+    let mut full = group("full", 16, 100, None);
+    full.prefix_cacheable = Some(true);
+    full.transfer_bytes_per_block = Some(100);
+    vec![full]
+}
+
+#[test]
+fn grouped_destination_keeps_free_what_a_local_prefill_still_needs() {
+    let block = {
+        let mut args = prefix_core(full_transfer_group(), 1_000, 32, 16, "0.31.0").args;
+        args.worker_type = WorkerType::Decode;
+        VllmCore::new(args)
+    };
+    let byte = pd_core(full_transfer_group(), 1_000, 32, WorkerType::Decode, None);
+    for mut core in [block, byte] {
+        let mut trace = TraceCollector::default();
+        let mut step = 0;
+        // A local prompt of 100 tokens holds 2 blocks after its first chunk
+        // and still needs cdiv(100, 16) - 2 = 5 (V32
+        // `single_type_kv_cache_manager.py:229-235`).
+        submit_tokens(&mut core, 1811, (0..100).collect(), 1);
+        assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+        // A load of 64 tokens needs 4 blocks, and 4 > 8 free - 5.
+        let handoff_id = HandoffId::new(Uuid::from_u128(1813));
+        let request = DirectRequest {
+            tokens: (1_000..1_064).collect(),
+            ..pd_request(1812, 0, 2)
+        };
+        assert_eq!(reserve_grouped(&mut core, handoff_id, request), None);
+        assert_eq!(drain_pd(&mut core, &mut trace, &mut step, 7), 1);
+        assert_eq!(
+            reserved_units(&core.retry_pending_destinations(), handoff_id),
+            Some(4)
+        );
+    }
+}
+
+#[test]
+fn grouped_destination_keeps_free_what_a_preempted_recompute_still_needs() {
+    // Byte mode, the sweeper default. A load of 100 tokens activates, emits
+    // one token and is preempted. Its recompute of 101 tokens runs a first
+    // chunk of 32 and still needs cdiv(101, 16) - 2 = 5 pages.
+    let mut core = pd_core(full_transfer_group(), 1_000, 32, WorkerType::Decode, None);
+    let mut trace = TraceCollector::default();
+    let mut step = 0;
+    let first = HandoffId::new(Uuid::from_u128(1821));
+    assert_eq!(
+        reserve_grouped(&mut core, first, pd_request(1820, 100, 3)),
+        Some(7)
+    );
+    activate(&mut core, first);
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 1);
+    assert!(core.policy_preempt(0.0).is_some());
+    assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+    let second = HandoffId::new(Uuid::from_u128(1823));
+    let request = DirectRequest {
+        tokens: (1_000..1_064).collect(),
+        ..pd_request(1822, 0, 2)
+    };
+    assert_eq!(reserve_grouped(&mut core, second, request), None);
+    assert_eq!(drain_pd(&mut core, &mut trace, &mut step, 7), 2);
+    assert_eq!(
+        reserved_units(&core.retry_pending_destinations(), second),
+        Some(4)
+    );
+}
+
+#[test]
+fn grouped_destination_counts_nothing_for_a_local_request_that_decodes() {
+    // A local prompt of 48 tokens runs chunks of 32 and 16 tokens. The second
+    // chunk reaches its known tokens, so the request leaves the prefills in
+    // flight (V32 `sched:1640-1642`) and emits a token. Its next decode step
+    // opens a fourth block, which vLLM does not keep free for a load. So a
+    // load of 64 tokens takes the last 4 of 7 blocks.
+    let block = {
+        let mut args = prefix_core(full_transfer_group(), 700, 32, 16, "0.31.0").args;
+        args.worker_type = WorkerType::Decode;
+        VllmCore::new(args)
+    };
+    let byte = pd_core(full_transfer_group(), 700, 32, WorkerType::Decode, None);
+    for mut core in [block, byte] {
+        let mut trace = TraceCollector::default();
+        let mut step = 0;
+        submit_tokens(&mut core, 1831, (0..48).collect(), 4);
+        assert_eq!(step_pd(&mut core, &mut trace, &mut step), 0);
+        assert_eq!(step_pd(&mut core, &mut trace, &mut step), 1);
+        let handoff_id = HandoffId::new(Uuid::from_u128(1833));
+        let request = DirectRequest {
+            tokens: (1_000..1_064).collect(),
+            ..pd_request(1832, 0, 2)
+        };
+        assert_eq!(reserve_grouped(&mut core, handoff_id, request), Some(4));
+        core.apply_command(SchedulerCommand::CancelDestination { handoff_id })
+            .unwrap();
+        assert_eq!(drain_pd(&mut core, &mut trace, &mut step, 4), 3);
+        assert!(core.is_drained());
+    }
+}
+
 #[test]
 fn grouped_aggregated_rank_builds_no_transfer_rules() {
     // Groups that carry every transfer field, in byte and in block mode.

@@ -511,7 +511,9 @@ release of the skipped blocks of a completed source.
 `vllm_backend.rs` also adapts the two admission tests of an async KV load and
 the reservation of the blocks that the loads in flight still need, which
 `grouped_prefix.rs` counts by `_request_remaining_blocks` of
-`sched/scheduler.py` with the admission cap of a sliding-window group. `core.rs`
+`sched/scheduler.py` with the admission cap of a sliding-window group.
+`core.rs` also adapts the set of prefills in flight of `sched/scheduler.py`,
+so that a decode rank keeps free what its local prefills still need. `core.rs`
 also adapts the queue order that serves the requests that hold KV blocks first.
 
 - https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py
