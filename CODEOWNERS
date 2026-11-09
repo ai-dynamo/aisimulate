@@ -136,6 +136,7 @@
 
 # --- Shared ownership: multi-team (any one approves; wins via last-match) ---
 /pages/                                                  @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/.cursor/                                                @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/ci/                                                @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /scripts/                                                @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /AGENTS.md                                               @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
