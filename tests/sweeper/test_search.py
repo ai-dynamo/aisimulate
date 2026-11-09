@@ -1641,8 +1641,11 @@ def test_aiperf_objective_separates_missing_samples_from_invalid_values(monkeypa
     assert {(c.status.value, c.reason_category.value) for c in result.candidates} == {(outcome, category)}
     # Neither case is ranked: the optimizer only receives infeasible feedback.
     assert all(isinstance(item, tuple) and item[0] == "infeasible" for item in seen["sampler"].scored)
-    # Rejected candidates keep the reported values, including the invalid one.
-    assert all(c.metrics.get("p99_e2e_latency_ms") == metrics.get("p99_e2e_latency_ms") for c in result.candidates)
+    # Rejected candidates keep every reported value, including the invalid one.
+    for candidate in result.candidates:
+        assert candidate.metrics["gpu_hours"] == 1.0
+        assert {key: candidate.metrics.get(key) for key in metrics} == metrics
+        assert ("p99_e2e_latency_ms" in candidate.metrics) == ("p99_e2e_latency_ms" in metrics)
     if category == "invalid_metrics":
         assert all(
             c.reason.startswith("runner contract violation:") and "is invalid" in c.reason for c in result.candidates
