@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from aisimulate import capacity, compiler, runner
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.engine import KvCachePredictionConfig, StateCacheConfig
+from aisimulate.config.engine import KvCachePredictionConfig, StateCacheConfig, WorkerPredictionConfig
 from aisimulate.runner import EngineReplayRunnerFactory, _materialize_engine_role
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
@@ -606,11 +606,16 @@ def test_auto_pd_state_resolves_each_role_and_transfer_bytes(auto_k3_payload, fo
         assert deployment.performance_model_metadata[role]["state_cache"]["source"] == "inferred"
 
 
+@pytest.mark.parametrize("role", ["aggregated", "prefill"])
 @pytest.mark.parametrize("window", [{"lookahead_tokens": 1}, {"retention_interval": 128, "lookahead_tokens": 1}])
-def test_resolved_state_config_keeps_its_sliding_window(window):
-    resolved = StateCacheConfig(bytes_per_request=1500, sliding_window=window)
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(state_cache=resolved)))
-    args = spec.backend_deployment.agg_engine_args
+def test_resolved_state_config_keeps_its_sliding_window(window, role):
+    raw = _public() if role == "aggregated" else _public_pd()
+    # A typed worker is lifted to the host-aware role config.
+    workers = raw["engine"]["workers"]
+    workers[role]["kv_cache"]["state_cache"] = StateCacheConfig(bytes_per_request=1500, sliding_window=window)
+    workers[role] = WorkerPredictionConfig.model_validate(workers[role])
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    args = deployment.agg_engine_args if role == "aggregated" else deployment.prefill_engine_args
     assert args["state_cache"] == {"bytes_per_request": 1500, "sliding_window": window}
     with pytest.raises(ValidationError):
         StateCacheConfig(bytes_per_request=10, sliding_window={"lookahead_tokens": 1 << 64})
@@ -697,6 +702,7 @@ def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimat
         ({"capacity": {"type": "fixed", "bytes": 4 * 21233664 - 1}}, "capacity must fit"),
         ({"prefix_match_unit": 512}, "divisor"),
         ({"state_cache": {"retention_interval": 768}}, "requires inferred DeepSeek V4"),
+        ({"state_cache": {"sliding_window_lookahead_tokens": 64}}, "requires bytes_per_request"),
     ],
 )
 def test_auto_state_validates_capacity_and_prefix_after_resolution(auto_k3_payload, changes, error):

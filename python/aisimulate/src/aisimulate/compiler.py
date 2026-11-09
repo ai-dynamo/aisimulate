@@ -374,8 +374,12 @@ def _resolve_state_cache(
     if cache.state_cache is None:
         return worker, None
     size = resolve_state_size(engine, worker)
-    state = cache.state_cache.model_copy(update={"bytes_per_request": size["bytes_per_request"]})
-    state._sliding_window_lookahead = size.get("sliding_window_lookahead_tokens")
+    state = cache.state_cache.model_copy(
+        update={
+            "bytes_per_request": size["bytes_per_request"],
+            "sliding_window_lookahead_tokens": size.get("sliding_window_lookahead_tokens"),
+        }
+    )
     resolved = cache.model_copy(
         update={
             "state_cache": state,

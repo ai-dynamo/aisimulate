@@ -286,13 +286,13 @@ class StateCachePredictionConfig(StrictModel):
     indexer_cache_dtype: IndexerCacheDtype = "auto"
     # vLLM's VLLM_PREFIX_CACHE_RETENTION_INTERVAL; DeepSeek V4 only.
     retention_interval: NonNegativeU64 | None = None
-    # Resolved from inferred DeepSeek V4 geometry, never authored.
-    _sliding_window_lookahead: int | None = PrivateAttr(default=None)
+    # Sizing fills this for DeepSeek V4; authored only beside explicit bytes.
+    sliding_window_lookahead_tokens: NonNegativeU64 | None = None
 
     def resolved_sliding_window(self) -> dict[str, int] | None:
-        if self._sliding_window_lookahead is None:
+        if self.sliding_window_lookahead_tokens is None:
             return None
-        window = {"lookahead_tokens": self._sliding_window_lookahead}
+        window = {"lookahead_tokens": self.sliding_window_lookahead_tokens}
         if self.retention_interval is not None:
             window["retention_interval"] = self.retention_interval
         return window
@@ -322,12 +322,11 @@ class KvCachePredictionConfig(StrictModel):
         if isinstance(value, StateCacheConfig):
             # The resolved window round-trips through the sizing fields.
             window = value.sliding_window
-            config = StateCachePredictionConfig(
+            return StateCachePredictionConfig(
                 bytes_per_request=value.bytes_per_request,
                 retention_interval=window.retention_interval if window else None,
+                sliding_window_lookahead_tokens=window.lookahead_tokens if window else None,
             )
-            config._sliding_window_lookahead = window.lookahead_tokens if window else None
-            return config
         return value
 
     @model_validator(mode="after")

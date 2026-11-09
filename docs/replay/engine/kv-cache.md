@@ -540,6 +540,7 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
 | `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
 | `state_cache.retention_interval` | Unset (every block boundary) | DeepSeek V4 with inferred bytes only. vLLM's `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`: `0` or a multiple of the resolved `block_size`. DeepSeek V4 rejects `prefix_match_unit`. |
+| `state_cache.sliding_window_lookahead_tokens` | Inferred (DeepSeek V4: 64) | Tokens past the full-attention hit that the MTP layer's sliding-window group reads; sizing fills it. Set it only with explicit `bytes_per_request`, to replay a state resolved earlier. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
 
 `state_cache: {}` infers Kimi K3 geometry from the model. `block_size` is then
