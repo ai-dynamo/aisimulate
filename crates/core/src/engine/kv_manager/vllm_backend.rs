@@ -174,16 +174,21 @@ impl BlockRequestLease {
     }
 
     fn state_hash(&self, tokens: usize, block_size: usize) -> Option<SequenceHash> {
-        let (unit, hashes) = match &self.prefix_hashes {
-            Some(value) => value,
-            None => {
-                return tokens
-                    .checked_div(block_size)?
-                    .checked_sub(1)
-                    .and_then(|i| self.entries.get(i))
-                    .and_then(|e| e.identity.sequence_hash);
-            }
-        };
+        if self.prefix_hashes.is_some() {
+            return self.prefix_hash_at(tokens);
+        }
+        tokens
+            .checked_div(block_size)?
+            .checked_sub(1)
+            .and_then(|i| self.entries.get(i))
+            .and_then(|e| e.identity.sequence_hash)
+    }
+
+    /// The chained hash of the first `tokens` tokens, for a positive multiple
+    /// of the prefix hash unit. `None` otherwise, and without configured
+    /// prefix hashes.
+    pub(crate) fn prefix_hash_at(&self, tokens: usize) -> Option<SequenceHash> {
+        let (unit, hashes) = self.prefix_hashes.as_ref()?;
         if !tokens.is_multiple_of(*unit) {
             return None;
         }
