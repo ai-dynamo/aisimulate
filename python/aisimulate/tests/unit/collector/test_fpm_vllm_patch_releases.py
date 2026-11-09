@@ -138,6 +138,7 @@ def test_newest_audited_release_of_the_line_is_the_reference(monkeypatch):
     assert observer.audited_release("0.33.2", audited) == "0.33.1"
     assert observer.audited_release("0.33.1", audited) == "0.33.1"
     assert observer.audited_release("0.33.11", (*audited, "0.33.9", "0.33.10")) == "0.33.10"
+    assert observer.audited_release("0.33.11", (*audited, "0.33.10", "0.33.9")) == "0.33.10"
 
 
 def test_source_manifests_cover_the_audited_files():
@@ -370,6 +371,28 @@ def test_patch_release_finalize_requires_the_audited_release_in_every_record(fak
         _resolve(cell, tmp_path, expected_backend_version="0.33.1")
 
 
+def test_patch_release_finalize_rejects_a_wrong_audited_release(fake_vllm, tmp_path, monkeypatch):
+    cell = _evidence(tmp_path, monkeypatch, version="0.33.1", initialized=_initialized_layer_strided)
+    _edit_memory(tmp_path, lambda evidence: evidence.update(audited_backend_version="0.32.0"))
+    with pytest.raises(ValueError, match="runtime memory evidence was not checked against audited vLLM 0.33.0"):
+        _resolve(cell, tmp_path, expected_backend_version="0.33.1")
+
+
+def test_patch_release_finalize_checks_the_last_record(fake_vllm, tmp_path, monkeypatch):
+    cell = _evidence(tmp_path, monkeypatch, version="0.33.1", initialized=_initialized_layer_strided)
+    paths = sorted(tmp_path.glob("*/fpm-memory-*.json"))
+    assert len(paths) > 1
+    last = paths[-1]
+    record = json.loads(last.read_text())
+    del record["audited_backend_version"]
+    last.write_text(json.dumps(record))
+    with pytest.raises(
+        ValueError, match="runtime memory evidence was not checked against audited vLLM 0.33.0"
+    ) as raised:
+        _resolve(cell, tmp_path, expected_backend_version="0.33.1")
+    assert str(raised.value).endswith(str(last))
+
+
 def test_audited_release_provenance_has_no_audited_field(fake_vllm, tmp_path, monkeypatch):
     cell = _evidence(tmp_path, monkeypatch, version="0.33.0", initialized=_initialized_layer_strided)
     resolved = _resolve(cell, tmp_path, expected_backend_version="0.33.0")
@@ -411,6 +434,37 @@ def test_execution_gate_requires_the_audited_release_for_a_patch_release(tmp_pat
         item.startswith("runtime execution evidence was not checked against audited vLLM 0.33.0: ")
         for item in result["failures"]
     )
+
+
+def _not_checked(result):
+    prefix = "runtime execution evidence was not checked against audited vLLM 0.33.0: "
+    return [item for item in result["failures"] if item.startswith(prefix)]
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_gate_rejects_a_wrong_audited_release(tmp_path):
+    plan, cell, raw, collection = _execution_gate(tmp_path, "0.33.1")
+    paths = sorted(raw.glob("**/fpm-execution-worker-*.json"))
+    assert paths
+    for path in paths:
+        path.write_text(json.dumps({**json.loads(path.read_text()), "audited_backend_version": "0.32.0"}))
+    assert len(_not_checked(_gate(plan, cell, raw, collection))) == len(paths)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_gate_checks_the_last_record(tmp_path):
+    plan, cell, raw, collection = _execution_gate(tmp_path, "0.33.1")
+    paths = sorted(raw.glob("**/fpm-execution-worker-*.json"))
+    assert paths
+    for path in paths:
+        path.write_text(json.dumps({**json.loads(path.read_text()), "audited_backend_version": "0.33.0"}))
+    assert not _not_checked(_gate(plan, cell, raw, collection))
+    record = json.loads(paths[-1].read_text())
+    del record["audited_backend_version"]
+    paths[-1].write_text(json.dumps(record))
+    failures = _not_checked(_gate(plan, cell, raw, collection))
+    assert len(failures) == 1
+    assert failures[0].endswith(str(paths[-1]))
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")

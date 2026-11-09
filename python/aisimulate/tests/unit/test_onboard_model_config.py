@@ -1175,21 +1175,23 @@ def test_pending_plan_saved_with_its_observed_version_text_passes_check_plan(tmp
     check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
 
 
-_PATCH_RELEASE_DETAIL = (
-    "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
-    "initialization for vLLM 0.33.1 layouts if the vLLM files that the observers read match audited vLLM 0.33.0. "
-    "Otherwise memory stays unresolved. No activation or non-KV byte declaration is required. "
-    "Run onboard finalize after successful collection, then review the resolved profile."
-)
+def _patch_release_detail(version, audited):
+    return (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        f"initialization for vLLM {version} layouts if the vLLM files that the observers read match audited vLLM "
+        f"{audited}. Otherwise memory stays unresolved. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    )
 
 
-def test_patch_release_plan_names_its_version_and_the_audited_release(tmp_path):
-    plan = _pending_support_plan(tmp_path, "0.33.1")
+@pytest.mark.parametrize(("version", "audited"), [("0.33.1", "0.33.0"), ("0.32.2", "0.32.0")])
+def test_patch_release_plan_names_its_version_and_the_audited_release(tmp_path, version, audited):
+    plan = _pending_support_plan(tmp_path, version)
     saved = json.loads((plan / "support-plan.json").read_text())
     detail = saved["prerequisites"][0]["detail"]
     assert saved["fpm"]["scheduling_policy"] == _SYNCHRONOUS_POLICY
-    assert detail == _PATCH_RELEASE_DETAIL
-    assert re.findall(r"\d+\.\d+\.\d+", detail) == ["0.33.1", "0.33.0"]
+    assert detail == _patch_release_detail(version, audited)
+    assert re.findall(r"\d+\.\d+\.\d+", detail) == [version, audited]
     check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
 
 
@@ -1226,11 +1228,12 @@ def test_guided_review_states_that_supported_versions_observe_memory(tmp_path, m
     assert not any("this version can collect timings only" in line for line in lines)
 
 
-def test_guided_review_names_the_audited_release_for_a_patch_release(tmp_path, monkeypatch, capsys):
-    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.33.1")
+@pytest.mark.parametrize(("version", "audited"), [("0.33.1", "0.33.0"), ("0.32.2", "0.32.0")])
+def test_guided_review_names_the_audited_release_for_a_patch_release(tmp_path, monkeypatch, capsys, version, audited):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
     assert (
-        "  Memory is observed during initialized vLLM 0.33.1 collection if the vLLM files that the observers read "
-        "match audited vLLM 0.33.0." in lines
+        f"  Memory is observed during initialized vLLM {version} collection if the vLLM files that the observers read "
+        f"match audited vLLM {audited}." in lines
     )
     assert (
         "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
