@@ -41,10 +41,13 @@ def test_b200_sglang_gdn_conv_donor_fill_is_pinned():
     # budget, so batch=32 x seq=16384 exists ONLY via the cross-backend fill.
     # PR #219 added the vLLM 0.25.0 donor at this exact coordinate, replacing
     # 0.24.0's 6.3917822265624995 ms with its measured 6.34266845703125 ms;
-    # the 2026-10 campaign's vLLM 0.30.0 b200 table (causal_conv1d_fn,
-    # Qwen3.5-35B-A3B grid) now serves it with its measured 6.083416748046875 ms.
+    # the 2026-10 campaign's vLLM 0.30.0 b200 table then served it with
+    # 6.083416748046875 ms. The 2026-11 TRT-LLM 1.4.0rc2 b200 table convolves
+    # the packed q|k|v channels and extends its grid to 32768 tokens, so it now
+    # covers this coordinate and, as the first cross-backend donor (trtllm
+    # before vllm), serves it with its measured 4.576681518554688 ms.
     # The pin makes that donor revision and graft visible and frozen.
-    assert lane[32][16384]["latency"] == pytest.approx(6.083416748046875, rel=1e-9)
+    assert lane[32][16384]["latency"] == pytest.approx(4.576681518554688, rel=1e-9)
     # Own-row coordinate (sglang's own measurement): first-wins must keep
     # shielding it from every donor.
     assert lane[32][4096]["latency"] == pytest.approx(1.46670654296875, rel=1e-9)
