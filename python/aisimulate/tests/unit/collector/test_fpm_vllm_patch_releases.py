@@ -12,15 +12,19 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import repeatability, runner, runtime_memory, vllm_source_manifest
+from collector.fpm_forward import execution_evidence, repeatability, runner, runtime_memory, vllm_source_manifest
+from collector.fpm_forward.native_artifact import validate_native_collection
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_repeatability import _write_campaign
 from .test_fpm_runner import _write_provenance
 from .test_fpm_runtime_memory import (  # noqa: F401
+    _edit_memory,
+    _evidence,
     _initialized_layer_strided,
     _pending_plan,
+    _resolve,
     _vllm_config,
     fake_runtime_offloader,
 )
@@ -335,3 +339,78 @@ def test_patch_release_plan_reloads_exactly(tmp_path):
     source = tmp_path / "source"
     _write_campaign(source, tmp_path / "source-checkpoint.json", plan)
     assert repeatability.load_repeatability_source(source).to_dict() == plan.to_dict()
+
+
+def test_patch_release_memory_finalizes_with_the_audited_release(fake_vllm, tmp_path, monkeypatch):
+    cell = _evidence(tmp_path, monkeypatch, version="0.33.1", initialized=_initialized_layer_strided)
+    resolved = _resolve(cell, tmp_path, expected_backend_version="0.33.1")
+    provenance = json.loads(resolved["runtime_memory"]["provenance"])
+    assert provenance["backend_version"] == "0.33.1"
+    assert provenance["audited_backend_version"] == "0.33.0"
+    assert resolved["runtime_memory"]["kv_cache_bytes"] == 88 * 128
+
+
+def test_patch_release_finalize_reports_the_changed_file(fake_vllm, tmp_path, monkeypatch):
+    (fake_vllm / "config" / "cache.py").write_bytes(b"patched\n")
+    cell = _evidence(tmp_path, monkeypatch, version="0.33.1", initialized=_initialized_layer_strided)
+    with pytest.raises(ValueError) as raised:
+        _resolve(cell, tmp_path, expected_backend_version="0.33.1")
+    assert "runtime memory remains unresolved" in str(raised.value)
+    assert "installed vLLM 0.33.1 does not match audited vLLM 0.33.0: vllm/config/cache.py differs" in str(raised.value)
+
+
+def test_patch_release_finalize_requires_the_audited_release_in_every_record(fake_vllm, tmp_path, monkeypatch):
+    cell = _evidence(tmp_path, monkeypatch, version="0.33.1", initialized=_initialized_layer_strided)
+    _edit_memory(tmp_path, lambda evidence: evidence.pop("audited_backend_version"))
+    with pytest.raises(ValueError, match="runtime memory evidence was not checked against audited vLLM 0.33.0"):
+        _resolve(cell, tmp_path, expected_backend_version="0.33.1")
+
+
+def test_audited_release_provenance_has_no_audited_field(fake_vllm, tmp_path, monkeypatch):
+    cell = _evidence(tmp_path, monkeypatch, version="0.33.0", initialized=_initialized_layer_strided)
+    resolved = _resolve(cell, tmp_path, expected_backend_version="0.33.0")
+    assert "audited_backend_version" not in json.loads(resolved["runtime_memory"]["provenance"])
+
+
+def _execution_gate(tmp_path, version):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+    plan = _plan(profile, collector_config={"runtime_backend_version": version})
+    _write_campaign(tmp_path / "source", tmp_path / "source-checkpoint.json", plan)
+    cell = plan.cells[0]
+    raw = tmp_path / "source" / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    return plan, cell, raw, collection
+
+
+def _gate(plan, cell, raw, collection):
+    return execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_gate_requires_the_audited_release_for_a_patch_release(tmp_path):
+    plan, cell, raw, collection = _execution_gate(tmp_path, "0.33.1")
+    paths = sorted(raw.glob("**/fpm-execution-worker-*.json"))
+    assert paths
+    for path in paths:
+        path.write_text(json.dumps({**json.loads(path.read_text()), "audited_backend_version": "0.33.0"}))
+    result = _gate(plan, cell, raw, collection)
+    assert "execution configuration inspection is unaudited for 0.33.1" not in result["missing_evidence"]
+    assert not any(item.startswith("runtime execution evidence was not checked") for item in result["failures"])
+    for path in paths:
+        record = json.loads(path.read_text())
+        del record["audited_backend_version"]
+        path.write_text(json.dumps(record))
+    result = _gate(plan, cell, raw, collection)
+    assert any(
+        item.startswith("runtime execution evidence was not checked against audited vLLM 0.33.0: ")
+        for item in result["failures"]
+    )
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_gate_keeps_refusing_an_unmanifested_patch(tmp_path):
+    plan, cell, raw, collection = _execution_gate(tmp_path, "0.28.1")
+    result = _gate(plan, cell, raw, collection)
+    assert "execution configuration inspection is unaudited for 0.28.1" in result["missing_evidence"]
