@@ -447,7 +447,7 @@ not per prediction query or elapsed time.
 Construct regression through the same public API as other estimators:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -471,7 +471,7 @@ on a newly constructed model. JSON uses `null` rather than Python's `None`.
 In Rust, set the same typed field before construction:
 
 ```rust
-use aisimulate_core::{
+use aisim_core::{
     BackendKind, EstimationMode, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassWorkerType,
 };
@@ -642,7 +642,7 @@ the spline fit and retention axes remain `[attention, moe]`.
 
 `fit.linear.feature_set: fpm5` replaces the fitted coordinates with the 17
 named aggregates of the learned `fpm5` preset
-(`aisimulate_core.sdk.fpm_learned.FEATURE_PRESETS["fpm5"]`), in this order:
+(`aisim_core.sdk.fpm_learned.FEATURE_PRESETS["fpm5"]`), in this order:
 `num_active_ranks`, `num_prefill_requests`, `sum_prefill_tokens`,
 `sum_prefill_kv_tokens`, `num_decode_requests`, `sum_decode_kv_tokens`,
 `max_rank_prefill_tokens`, `max_rank_decode_kv_tokens`,
@@ -700,7 +700,7 @@ active-set solve, where $M$ is the retained-row count and $`k \le 17`$.
 ## Selecting linear or spline regression
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B", system="h200_sxm", backend="vllm",
@@ -732,7 +732,7 @@ parses successfully.
 
 The authoritative implementation is
 [`fpm/`](../../../crates/core/src/perfmodel/fpm/); the
-[Python wrapper](../../../python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py)
+[Python wrapper](../../../python/aisim/src/aisim_core/sdk/rust_engine_step.py)
 normalizes telemetry and calls the same native estimator. Queued requests do
 not supply scheduled work, and timing observations must belong to the same
 worker/deployment identity. Regression cannot discover a changed backend,

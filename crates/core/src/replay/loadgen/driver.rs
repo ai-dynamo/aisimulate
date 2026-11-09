@@ -45,6 +45,7 @@ use crate::replay::protocol::{
 };
 
 pub const AGENTIC_LIFECYCLE_SCHEMA_V1: &str = "aisimulate.agentic.lifecycle.v1";
+// Retain the legacy bytes: persisted identities are a compatibility contract.
 const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-agentic-lifecycle-v1\0";
 
 /// Output progress for one request inside a same-timestamp feedback batch.

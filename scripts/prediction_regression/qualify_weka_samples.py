@@ -81,7 +81,7 @@ def fetch_two_rows() -> list[dict[str, Any]]:
 
 
 def qualify(root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="aisimulate-weka-samples-") as directory:
+    with tempfile.TemporaryDirectory(prefix="aisim-weka-samples-") as directory:
         path = Path(directory) / "traces.jsonl"
         with path.open("w", encoding="utf-8") as destination:
             for row in rows:

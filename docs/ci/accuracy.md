@@ -44,7 +44,7 @@ Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
 snapshot manifest and observation Parquet files at the pinned commit. It verifies
 artifact sizes, hashes, schemas and identities before producing local tables.
 The evaluated wheel's baseline CLI and config adapter are selected from its own
-package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
+package layout: `aiconfigurator.*` on 0.12 releases or `aisim.*` after the
 namespace migration. Ambiguous wheels with both baseline APIs are rejected.
 Baseline provenance records the selected API, adapter, and actual console entry point;
 the public summary retains that entry point. Wheel byte checks and imports run before downloading measurements.
@@ -121,7 +121,7 @@ system. The command imports that installed native runtime; it must not prepend
 the source-only application package to Python's import path:
 
 ```bash
-python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
+python python/aisim/tools/support_matrix/generate_fpe_support_matrix.py \
   --output-dir fpe-support-matrix/b200_sxm \
   --system b200_sxm \
   --forward-model op_level \
@@ -132,15 +132,15 @@ After all system shards finish, build the split CSV files consumed by the
 interactive page:
 
 ```bash
-python python/aisimulate/tools/support_matrix/build_fpe_support_matrix.py \
+python python/aisim/tools/support_matrix/build_fpe_support_matrix.py \
   fpe-support-matrix \
-  --output-dir python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix
+  --output-dir python/aisim/src/aisim_core/systems/fpe_support_matrix
 ```
 
 Use filters and a deterministic topology cap for a focused smoke run:
 
 ```bash
-python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py \
+python python/aisim/tools/support_matrix/generate_fpe_support_matrix.py \
   --output-dir fpe-support-matrix-smoke \
   --model Qwen/Qwen3-8B \
   --system b200_sxm \
@@ -296,7 +296,7 @@ workspace root and the recorded release source under `release-source/`.
 Download the run's `fpe-release-wheel-<version>` artifact into the workspace (preserving
 its `fpe-release-wheel/` directory and `fpe-release-shards.json`), install the
 release's locked environment and exact wheel as in the workflow. The matrix's
-per-cell command uses `release-source/python/aisimulate/.venv/bin/python`
+per-cell command uses `release-source/python/aisim/.venv/bin/python`
 directly to run the verified release wrapper with the recorded source, tooling,
 and branch. Each invocation requires a fresh `release-probe-harness/` directory;
 remove only that generated directory between reproductions. Raw shard reports

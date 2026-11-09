@@ -115,9 +115,9 @@ Pages publication belong to [CI accuracy](../ci/accuracy.md).
 ## Versions the CLI accepts
 
 The matrix probes every backend version that has bundled performance data.
-`aisimulate predict` and `aisimulate recommend` accept only the queryable
+`aisim predict` and `aisim recommend` accept only the queryable
 versions of each GPU and backend, defined in
-[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+[`query_versions.yaml`](../../python/aisim/src/aisim_core/systems/query_versions.yaml):
 `current` (the newest completed full collection), `previous` (the full
 collection it replaced, when configured) and `next` (the in-development
 version: the highest version newer than `current` with any measurements

@@ -14,8 +14,8 @@ unified power unavailable even when its encoder has separate analytical power.
 
 The current producers and consumers are
 [Replay reports](../../crates/core/src/replay/report.rs),
-[power validation/presentation](../../python/aisimulate/src/aisimulate/power.py),
-and [Sweeper results](../../python/aisimulate/src/aisimulate/sweeper/result.py).
+[power validation/presentation](../../python/aisim/src/aisim/power.py),
+and [Sweeper results](../../python/aisim/src/aisim/sweeper/result.py).
 The [synthetic contract fixture](../../tests/fixtures/power-contract-v1.json)
 checks semantics, not measured accuracy.
 

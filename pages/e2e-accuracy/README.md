@@ -458,7 +458,7 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
 All three producer documents must also carry the same completed `aic_run`.
 Its `runtime.source_checkout` records the same branch, full commit SHA, and
 `clean: true`, plus `repository: "https://github.com/ai-dynamo/aisim"`.
-Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"` or
+Its `runtime.cli_entry_point` is `"aisim.legacy_cli.entrypoint:main"` or
 `"aiconfigurator.main:main"` for 0.12 wheels. New producer records include the
 matching `baseline_api` and `config_adapter`; the public `aic_source` retains
 `cli_entry_point`. Both the site builder and browser validate the supported
@@ -602,7 +602,7 @@ both row labels and numeric cells, including grouped serving rows.
 
 New campaigns declare `metric_contract: serving-metrics-v1` in both the summary
 and qualification record. Each operating point contains `measured`, `aic`, and
-`aisimulate` series with:
+`aisim` series with:
 
 - `ttft_ms`, `tpot_ms`, and `e2e_ms`: mean request latencies in milliseconds.
 - `interactivity_tok_s`: `1000 / tpot_ms`, in tokens/s/user.

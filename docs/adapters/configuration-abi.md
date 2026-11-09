@@ -12,10 +12,10 @@ is documented under [AIC configuration import](../aic-backward-compatibility/con
 
 ## SimulationConfigAdapter v3
 
-[`config_adapter.py`](../../python/aisimulate/src/aisimulate/config_adapter.py)
+[`config_adapter.py`](../../python/aisim/src/aisim/config_adapter.py)
 defines `CONFIG_ADAPTER_API_VERSION = 3`. A selected adapter declares `name`,
 `section`, and `config_adapter_api_version`. Discovery uses
-`aisimulate.config_adapters`; names are `<stack>.<section>`. `section` must equal
+`aisim.config_adapters`; names are `<stack>.<section>`. `section` must equal
 the final name segment, be nonempty and contain no dot. The version must be an
 actual integer equal to 3, not a boolean or a string.
 
@@ -80,7 +80,7 @@ That bridge does not make the two contracts interchangeable.
 
 ## SweepConfigProvider v1
 
-[`sweeper/provider.py`](../../python/aisimulate/src/aisimulate/sweeper/provider.py)
+[`sweeper/provider.py`](../../python/aisim/src/aisim/sweeper/provider.py)
 retains `API_VERSION = 1` for SDK integrations. Providers declare `name` and
 `api_version`, with two bound methods:
 
@@ -99,7 +99,7 @@ materialize_replay(
 `SweepContext` gives isolated `core_search_space`, `workload`, `goal` and progress
 preference. Providers run in the coordinator; spawned replay workers receive
 only serializable ReplaySpec values. Discovery uses
-`aisimulate.sweep_config_providers`, selected through SDK `adapters` keys;
+`aisim.sweep_config_providers`, selected through SDK `adapters` keys;
 direct constructor injection takes precedence. The name must match the selected
 key and the integer version must match exactly. Structural name/method errors
 are `TypeError`; an incompatible provider version raises `ValueError`.

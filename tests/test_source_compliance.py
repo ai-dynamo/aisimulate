@@ -11,7 +11,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = ROOT / "python" / "aisimulate"
+PACKAGE_ROOT = ROOT / "python" / "aisim"
 CHECK_COPYRIGHT = ROOT / "scripts/ci/check_copyright.py"
 
 ROOT_ONLY_GOVERNANCE_FILES = (

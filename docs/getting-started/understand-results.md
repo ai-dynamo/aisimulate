@@ -9,7 +9,7 @@ Start with the [CLI tutorial](quickstart.md#predict-one-deployment) and retain
 per-request output when investigating a result:
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml \
+aisim predict --stack engine --config prediction.yaml \
   --capture-per-request --output-dir prediction-output
 ```
 
@@ -133,7 +133,7 @@ Encoder pools are not supported by this capture path. It uses ordinary replay,
 not the DP1-only detailed-artifact path.
 
 ```bash
-aisimulate predict --stack engine --config examples/cli/agentic-profile.yaml \
+aisim predict --stack engine --config examples/cli/agentic-profile.yaml \
   --capture-telemetry --telemetry-sample-interval-ms 1000 \
   --output-dir ./agentic-telemetry
 ```
@@ -216,7 +216,7 @@ Use `--export-html` to write an interactive, simulation-only `report.html` next
 to the normal prediction output:
 
 ```bash
-aisimulate predict --config examples/cli/agentic-profile.yaml \
+aisim predict --config examples/cli/agentic-profile.yaml \
   --export-html --output-dir ./agentic-dashboard
 ```
 

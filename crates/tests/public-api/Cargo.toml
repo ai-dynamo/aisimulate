@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "aisimulate-core-public-api"
+name = "aisim-core-public-api"
 version = "0.0.0"
 edition = "2021"
 publish = false

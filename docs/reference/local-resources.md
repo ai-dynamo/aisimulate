@@ -3,7 +3,7 @@
 
 # Local execution resources
 
-`aisimulate predict`, `aisimulate recommend`, and the public
+`aisim predict`, `aisim recommend`, and the public
 `run_recommendation` Python API check host resources before preparing a run.
 
 **No manual resource configuration is required.** AISim automatically
@@ -112,7 +112,7 @@ configurable above; the optimizer's candidate timeout remains independent.
 ## Runner estimate contract and limitations
 
 An optional factory method `estimate_host_resources(workload, *, concurrency)`
-returns `aisimulate.resources.ResourceEstimate` with `api_version=1`:
+returns `aisim.resources.ResourceEstimate` with `api_version=1`:
 
 - `allocation_model`: versioned implementation name;
 - `request_count`: concrete count, or null when unresolved;
@@ -258,7 +258,7 @@ peak and runs alone under the supervisor.
 
 ### Allocation-model provenance
 
-The byte terms in [resources.py](../../python/aisimulate/src/aisimulate/resources.py)
+The byte terms in [resources.py](../../python/aisim/src/aisim/resources.py)
 are versioned admission policies. They do not change simulated operation latency,
 energy, or GPU capacity. Their provenance and qualification are:
 

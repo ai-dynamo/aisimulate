@@ -183,7 +183,7 @@ function renderSnapshot() {
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
-      ? `<a href="https://github.com/ai-dynamo/aisim/blob/${state.branch.published_from_commit}/${state.branch.published_source_path || "python/aisimulate/docs/e2e-accuracy/summary.json"}">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
+      ? `<a href="https://github.com/ai-dynamo/aisim/blob/${state.branch.published_from_commit}/${state.branch.published_source_path || "python/aisim/docs/e2e-accuracy/summary.json"}">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
       : snapshot.campaign
         ? "Qualified e2e-accuracy-web artifact from the campaign above"
         : "Local preview; publication commit not recorded"}</p>
@@ -199,15 +199,15 @@ function sortValue(model) {
   switch (state.sortKey) {
     case "aicPoints":
       return model.aic.points;
-    case "aisimulatePoints":
+    case "aisimPoints":
       return model.aisimulate.points;
     case "hardware":
       return model.gpu_skus.join(",");
     case "precisions":
       return model.precisions.join(",");
-    case "aisimulateTpot":
+    case "aisimTpot":
       return model.aisimulate.tpot_mape_pct;
-    case "aisimulateTtft":
+    case "aisimTtft":
       return model.aisimulate.ttft_mape_pct;
     case "aicTpot":
       return model.aic.tpot_mape_pct;
@@ -398,7 +398,7 @@ function errorBars(item) {
   ];
   const maximum = Math.max(1, ...series.map(([, value]) => value ?? 0));
   return `<div class="error-bars" aria-label="MAPE comparison">${series.map(([name, value, css]) => `
-    <div class="error-bar"><span>${escapeHtml(name)}</span><span class="bar-track"><span class="bar ${css}" style="width:${(value ?? 0) / maximum * 100}%"></span></span><strong>${formatPercent(value)}</strong></div>`).join("")}</div>`;
+    <div class="error-bar"><span>${escapeHtml(name)}</span><span class="bar-track"><span class="bar ${seriesClass(css)}" style="width:${(value ?? 0) / maximum * 100}%"></span></span><strong>${formatPercent(value)}</strong></div>`).join("")}</div>`;
 }
 
 function pointTable(topology) {
@@ -579,7 +579,7 @@ function validateSummary(data) {
     typeof aicSource.commit_sha !== "string" || !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
     (Object.hasOwn(aicSource, "cli_entry_point") &&
-      !["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
+      !["aiconfigurator.main:main", "aisim.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
     throw new Error("invalid AIC (legacy CLI) source");
   }
@@ -642,7 +642,7 @@ function validateCatalog(catalog) {
       if (entry.last_update && (!["success", "failed"].includes(entry.last_update.status) ||
         !/^[0-9]+$/.test(entry.last_update.run_id))) return true;
       const revision = entry.evaluated_revision;
-      if (entry.published_source_path != null && !["pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"].includes(entry.published_source_path)) return true;
+      if (entry.published_source_path != null && !["pages/e2e-accuracy/summary.json", "python/aisim/docs/e2e-accuracy/summary.json"].includes(entry.published_source_path)) return true;
       if (["evaluated", "inherited"].includes(entry.status)) {
         if (!validRevision(revision, preview) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
       } else if (revision != null) return true;
@@ -819,6 +819,7 @@ async function initialize() {
 
 // The public dashboard operates on qualified snapshots, including historical ones.
 let legendTimer;
+const seriesClass = name => name === "aisimulate" ? "aisim" : name;
 const SERIES_NAMES = {measured: "Measured silicon", aisimulate: "AISim", aic: "AIC (legacy CLI)"};
 const SERIES_COLORS = {measured: "#f59e0b", aisimulate: "#818cf8", aic: "#14b8a6"};
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
@@ -1000,7 +1001,7 @@ function topologyContent(topology) {
   return `<p>${escapeHtml(topologyLabel(topology))} · ${escapeHtml(topology.total_gpus ?? "unknown")} GPUs</p>
     <p class="coverage-text">${escapeHtml(coverageText({...stats, aisimulate: {...stats.aisimulate, points: stats.aisimulate.status_counts.success}}))}</p>
     <div class="detail-cards">${accuracyCard("AISim error", stats.aisimulate, "aisimulate")}${accuracyCard("AIC (legacy CLI) error", stats.aic, "aic")}</div>
-    <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${key}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
+    <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${seriesClass(key)}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
     <p class="detail-scope">Click a legend to hide a series; double-click or Shift+Enter to isolate it. Click a point for its configuration and values.</p>
     <div class="detail-charts">
       <section class="chart-panel" aria-label="Token latency"><h3>Token latency</h3>${metricChart(topology, "tpot")}</section>
@@ -1052,7 +1053,7 @@ function metricChart(topology, metric) {
       path += `${connected ? "L" : "M"}${x(p.x)},${y(p.y)} `; connected = true;
     }
     svg += `<path d="${path}" stroke="${SERIES_COLORS[name]}" fill="none" stroke-width="2"${name === "measured" ? "" : ' stroke-dasharray="1 6" stroke-linecap="round"'}/>`;
-    for (const p of values.filter(valid)) svg += `<circle class="point ${name}" cx="${x(p.x)}" cy="${y(p.y)}" r="4" fill="${p.outlier ? "#ec4899" : SERIES_COLORS[name]}" tabindex="0" role="button" data-point="${p.i}" aria-label="${SERIES_NAMES[name]}, concurrency ${topology.points[p.i].concurrency}, ${numeric(p.y)}"><title>${SERIES_NAMES[name]} · concurrency ${topology.points[p.i].concurrency} · ${numeric(p.x)}, ${numeric(p.y)}</title></circle>`;
+    for (const p of values.filter(valid)) svg += `<circle class="point ${seriesClass(name)}" cx="${x(p.x)}" cy="${y(p.y)}" r="4" fill="${p.outlier ? "#ec4899" : SERIES_COLORS[name]}" tabindex="0" role="button" data-point="${p.i}" aria-label="${SERIES_NAMES[name]}, concurrency ${topology.points[p.i].concurrency}, ${numeric(p.y)}"><title>${SERIES_NAMES[name]} · concurrency ${topology.points[p.i].concurrency} · ${numeric(p.x)}, ${numeric(p.y)}</title></circle>`;
   }
   return `<div class="metric-chart">${svg}<text x="290" y="282" text-anchor="middle" fill="currentColor">${escapeHtml(xLabel)}</text></svg></div>${availability}`;
 }

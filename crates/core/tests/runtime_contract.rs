@@ -6,11 +6,11 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use aisimulate_core::engine::{
+use aisim_core::engine::{
     Backend, EngineConfig, SglangConfig, TimingModel, TimingModelConfig,
 };
-use aisimulate_core::replay::loadgen::ReplayRequestPayload;
-use aisimulate_core::replay::{
+use aisim_core::replay::loadgen::ReplayRequestPayload;
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
     PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters,
     ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,
@@ -349,7 +349,7 @@ fn replay_accept_length_ignores_overlapping_prefill_and_rejection() {
             .per_request
             .iter()
             .filter(|request| request.terminal_status
-                == aisimulate_core::replay::ReplayTerminalStatus::Rejected)
+                == aisim_core::replay::ReplayTerminalStatus::Rejected)
             .count(),
         1
     );
@@ -705,10 +705,10 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
         };
         let decision = if self.selected && (!self.committed || self.queue_on_clock) {
             self.pending.push(placement);
-            aisimulate_core::replay::PlacementDecision::Queued
+            aisim_core::replay::PlacementDecision::Queued
         } else {
             self.selected = true;
-            aisimulate_core::replay::PlacementDecision::Immediate(placement)
+            aisim_core::replay::PlacementDecision::Immediate(placement)
         };
         Ok(PlacementEffects {
             decision,
@@ -1246,14 +1246,14 @@ impl PlacementPolicy<ReplayRequestPayload> for ReleaseOnTopologyCallbacks {
             .push_back(request.metadata().uuid.expect("test request UUID"));
         if self.place_immediately {
             return Ok(PlacementEffects {
-                decision: aisimulate_core::replay::PlacementDecision::Immediate(
+                decision: aisim_core::replay::PlacementDecision::Immediate(
                     self.release_next(self.stable_scheduler_id).pop().unwrap(),
                 ),
                 released: Vec::new(),
             });
         }
         Ok(PlacementEffects {
-            decision: aisimulate_core::replay::PlacementDecision::Queued,
+            decision: aisim_core::replay::PlacementDecision::Queued,
             released: Vec::new(),
         })
     }

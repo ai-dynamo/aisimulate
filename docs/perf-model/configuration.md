@@ -21,7 +21,7 @@ decode KV cache across the existing TP ranks and adds no GPUs). Both default to
 one and stay out of the serialized identity when unset.
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -96,7 +96,7 @@ Regression and learned models read no performance data, so their identity only
 records the deployment they were calibrated on. A producer such as the Dynamo
 planner, which may not know that deployment's hardware, versions, parallelism or
 precision, records `"unknown"` instead of a guess. In memory an unknown integer
-holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisimulate_core::UNKNOWN_SIZE`), which
+holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisim_core::UNKNOWN_SIZE`), which
 serializes back to `"unknown"`, so the configuration round-trips exactly;
 `unknown_identity_facts()` lists them. Unknown widths are not checked against
 each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
@@ -217,7 +217,7 @@ Rust callers now construct the public struct instead of the former
 `ForwardPassSpeculationConfig::Ngram` enum variant:
 
 ```rust
-use aisimulate_core::{
+use aisim_core::{
     BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModel,
     ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, ForwardPassWorkerType,
 };
@@ -594,7 +594,7 @@ Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
 and fails, without selecting another estimator, when:
 
 - the manifest digest, a pinned file's size or digest, or the snapshot format
-  differs: snapshots load only in the same `aisimulate-core` version with the
+  differs: snapshots load only in the same `aisim-core` version with the
   same state layout and engine-specification schema;
 - the configuration, compared field by field after normalization, differs
   from the saved identity (the error names the first differing field);
@@ -673,7 +673,7 @@ data as external data.
 The manifest schema version is 2. Version 1 manifests, written before
 snapshots were relocatable (for example by nightly
 `0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
-the save location. A snapshot restores only in the aisimulate-core version
+the save location. A snapshot restores only in the aisim-core version
 that wrote it, so a version 1 snapshot from a published nightly cannot be
 relocated: restore it in place with the build that wrote it, or tune and save
 a new snapshot with a current build, which rejects the old one with an error

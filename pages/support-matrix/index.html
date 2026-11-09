@@ -51,7 +51,7 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ── Constants ───────────────────────────────────────────────────────
 const REPO = 'ai-dynamo/aisim';
-const SUPPORT_MATRIX_PATH = 'python/aisimulate/src/aisimulate_core/systems/support_matrix';
+const SUPPORT_MATRIX_PATH = 'python/aisim/src/aisim_core/systems/support_matrix';
 const DEPLOYED_SUPPORT_MATRIX_PATH = '../data/support-matrix';
 const STATUS_HW_INCOMPATIBLE = 'HW_INCOMPATIBLE';
 const STATUS_FRAMEWORK_INCOMPATIBLE = 'FRAMEWORK_INCOMPATIBLE';
@@ -660,7 +660,7 @@ function isLocalPreview() {
 }
 
 function isSourceTreePreview() {
-  return isLocalPreview() && window.location.pathname.includes('/python/aisimulate/docs/');
+  return isLocalPreview() && window.location.pathname.includes('/python/aisim/docs/');
 }
 
 function rawUrl(path) {
@@ -1555,9 +1555,9 @@ function CliVersionNotice() {
     <div id="cli-versions" className="mb-4 p-3 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950 text-sm text-sky-900 dark:text-sky-200">
       <span className="font-semibold">Versions the CLI accepts.</span>{' '}
       These rows are historical aiconfigurator CLI results and include versions that are no longer queryable.{' '}
-      <code>aisimulate predict</code> and <code>aisimulate recommend</code> accept only the queryable
+      <code>aisim predict</code> and <code>aisim recommend</code> accept only the queryable
       versions of each GPU and backend: <code>current</code> and <code>previous</code> (set in{' '}
-      <a href={`https://github.com/${REPO}/blob/main/python/aisimulate/src/aisimulate_core/systems/query_versions.yaml`} target="_blank" rel="noopener noreferrer" className="underline">query_versions.yaml</a>)
+      <a href={`https://github.com/${REPO}/blob/main/python/aisim/src/aisim_core/systems/query_versions.yaml`} target="_blank" rel="noopener noreferrer" className="underline">query_versions.yaml</a>)
       and <code>next</code> (the newest version above <code>current</code> that has data). A PASS at any other
       version is not usable from the CLI: it exits with an error that names the accepted versions.
       Set <code>backend_version: current</code> (or a version that error names) to run that model, GPU and backend from the CLI.

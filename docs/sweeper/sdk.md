@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Use the public `Sweeper` execution interface with an explicit runner factory.
 `SmartSearchConfig` is the SDK schema. Do not pass its YAML directly to
-`aisimulate recommend`, which accepts the [public CLI schema](../reference/configuration.md).
+`aisim recommend`, which accepts the [public CLI schema](../reference/configuration.md).
 
 ## Execute a built-in engine sweep
 
@@ -16,8 +16,8 @@ analytical encoder integration, with the [limits](../replay/engine/analytical.md
 described by Replay. Run from the repository root:
 
 ```python
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper import SmartSearchConfig, Sweeper
 
 if __name__ == "__main__":
     config = SmartSearchConfig.from_yaml("examples/sweeper/epd.yaml")

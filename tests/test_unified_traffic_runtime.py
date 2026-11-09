@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig
-from aisimulate.replay.reporting import format_report_table
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.replay import ReplayOutputRequirements
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig
+from aisim.replay.reporting import format_report_table
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper.replay import ReplayOutputRequirements
 
 _TRACE_FIXTURES = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces"
 
@@ -302,7 +302,7 @@ def test_prediction_preserves_context_limit_for_all_backends(backend: str, mode:
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_prediction_max_context_preserves_backend_defaults(backend: str, mode: str, monkeypatch) -> None:
-    monkeypatch.setattr("aisimulate.compiler.resolve_model_context_length", lambda _: 4096)
+    monkeypatch.setattr("aisim.compiler.resolve_model_context_length", lambda _: 4096)
     engine = _engine()
     worker = engine["workers"]["aggregated"]
     roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
@@ -753,7 +753,7 @@ def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> Non
 
 @pytest.mark.parametrize("explicit_mode", [False, True])
 def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level(monkeypatch, explicit_mode: bool) -> None:
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
@@ -937,7 +937,7 @@ def test_agentx_replay_default_python_result_retains_qualification_without_dynam
         import json
         import sys
 
-        assert not any(name.split(".")[0] in {"aisimulate", "dynamo"} for name in sys.modules)
+        assert not any(name.split(".")[0] in {"aisim", "dynamo"} for name in sys.modules)
 
         class RejectDynamo(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
@@ -946,8 +946,8 @@ def test_agentx_replay_default_python_result_retains_qualification_without_dynam
 
         sys.meta_path.insert(0, RejectDynamo())
 
-        from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory
-        from aisimulate.compiler import prediction_to_replay_spec
+        from aisim import CorePredictionConfig, EngineReplayRunnerFactory
+        from aisim.compiler import prediction_to_replay_spec
 
         config = CorePredictionConfig.model_validate(json.load(sys.stdin))
         runner = EngineReplayRunnerFactory().create(0)
@@ -994,7 +994,7 @@ def test_agentx_replay_gate_config_preserves_local_source_block_size(backend: st
 def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     import yaml
 
-    from aisimulate.main import main
+    from aisim.main import main
 
     config = {
         "traffic": {

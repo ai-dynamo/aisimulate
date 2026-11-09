@@ -174,11 +174,11 @@ def test_reviewed_database_pin_overrides_current_slot_and_never_borrows_data(tmp
         ),
     )
     modules = {
-        "aisimulate": api,
-        "aisimulate.compiler": SimpleNamespace(prediction_to_replay_spec=lambda value: value),
+        "aisim": api,
+        "aisim.compiler": SimpleNamespace(prediction_to_replay_spec=lambda value: value),
         # No get_latest_database_version: the reviewed pin must take precedence.
-        "aisimulate.sdk.perf_database": SimpleNamespace(),
-        "aisimulate.replay.dashboard": SimpleNamespace(),
+        "aisim.sdk.perf_database": SimpleNamespace(),
+        "aisim.replay.dashboard": SimpleNamespace(),
     }
     monkeypatch.setattr(
         agentx_predict,

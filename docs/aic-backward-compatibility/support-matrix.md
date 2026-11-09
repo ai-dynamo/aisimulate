@@ -80,5 +80,5 @@ the default matrix:
   Nemotron-3 remains.
 
 The source of truth is `SupportMatrixHFModels` in
-`aisimulate_core.sdk.common`. `DefaultHFModels` remains the bundled config
+`aisim_core.sdk.common`. `DefaultHFModels` remains the bundled config
 inventory for compatibility and offline loading.

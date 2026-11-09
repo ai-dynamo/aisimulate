@@ -134,13 +134,13 @@ From the repository root, first install the current source as described in
 [Use current source](../../getting-started/installation.md#use-current-source):
 
 ```bash
-uv sync --project python/aisimulate --extra dev
+uv sync --project python/aisim --extra dev
 ```
 
 Then run:
 
 ```bash
-python/aisimulate/.venv/bin/aisimulate predict \
+python/aisim/.venv/bin/aisim predict \
   --config examples/cli/agentic-profile.yaml \
   --capture-per-request --capture-telemetry --format json --output-dir /tmp/agentic-profile
 ```

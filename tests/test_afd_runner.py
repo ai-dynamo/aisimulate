@@ -8,13 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from aisimulate.runner import (
+from aisim.runner import (
     AFDCompanionTiming,
     AICAFDCompanionPerformanceModel,
     EngineReplayRunnerFactory,
     InvalidRunnerError,
 )
-from aisimulate.sweeper import (
+from aisim.sweeper import (
     AFDForegroundEngine,
     AFDPhase,
     AFDTopology,
@@ -22,7 +22,7 @@ from aisimulate.sweeper import (
     ReplayOutputRequirements,
     ReplaySpec,
 )
-from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+from aisim_core.sdk.errors import PerfDataNotAvailableError
 
 
 def _metadata(*phases: str) -> dict:
@@ -568,7 +568,7 @@ def test_aic_companion_rejects_conflicting_identity_before_estimation(
     def unexpected_estimation(*args, **kwargs):
         pytest.fail("conflicting identity must not reach estimation or external engine compilation")
 
-    monkeypatch.setattr("aisimulate.runner.RustForwardPassPerfModel.best_available", unexpected_estimation)
+    monkeypatch.setattr("aisim.runner.RustForwardPassPerfModel.best_available", unexpected_estimation)
     with pytest.raises(
         ValueError, match=f"{companion_role} AFD companion {canonical_field}=.*conflicts with deployment"
     ):
@@ -655,7 +655,7 @@ def test_aic_companion_routes_packaged_fpm_selector_through_canonical_model(phas
         configs.append(config)
         return CanonicalModel()
 
-    monkeypatch.setattr("aisimulate.runner.RustForwardPassPerfModel.best_available", best_available)
+    monkeypatch.setattr("aisim.runner.RustForwardPassPerfModel.best_available", best_available)
 
     def unexpected_legacy_estimation(*args, **kwargs):
         pytest.fail("packaged FPM selector must not be dropped by the legacy estimator path")
@@ -735,7 +735,7 @@ def test_afd_runner_rejects_images_before_analytical_dispatch(combined_with_pd):
     ],
 )
 def test_direct_afd_replay_rejects_controls_before_analytical_dispatch(combined, nested, overrides, monkeypatch):
-    import aisimulate.runner as runner_module
+    import aisim.runner as runner_module
 
     spec = _spec(
         _topology(phase="prefill" if combined else "both", combined_with_pd=combined),

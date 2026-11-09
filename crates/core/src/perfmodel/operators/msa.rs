@@ -3,7 +3,7 @@
 
 //! MiniMax Sparse Attention (MSA) module ops for MiniMax-M3.
 //!
-//! Mirrors `aisimulate.sdk.operations.msa`. MSA is structurally a GQA
+//! Mirrors `aisim.sdk.operations.msa`. MSA is structurally a GQA
 //! version of DSA: an indexer scores KV *blocks* (block_size tokens each),
 //! the top-k blocks are selected, and full attention runs over only the
 //! selected tokens.
@@ -579,7 +579,7 @@ mod tests {
     fn db(backend: &str, version: &str) -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems");
+            .join("python/aisim/src/aisim_core/systems");
         let mut db =
             PerfDatabase::load(&systems_root, "b200_sxm", backend, version).expect("db must load");
         db.database_mode = DatabaseMode::Hybrid;

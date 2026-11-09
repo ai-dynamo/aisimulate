@@ -21,7 +21,7 @@
 //! deployment (Dynamo `DYN_FPM_TRACE`), so the model learns the deployed
 //! engine's actual step time as a function of the scheduled batch. The
 //! artifact is a plain JSON file written by
-//! `aisimulate_core.sdk.fpm_learned` (Python, scikit-learn); this module
+//! `aisim_core.sdk.fpm_learned` (Python, scikit-learn); this module
 //! is the pure-Rust inference half so the simulation hot path never re-enters
 //! Python.
 //!

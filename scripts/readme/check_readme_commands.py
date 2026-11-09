@@ -155,7 +155,7 @@ def run_profile(profile: str, workspace: Path, output: Path, blocks: dict, manif
     env["HF_TOKEN_PATH"] = str(workspace / ".huggingface/token")
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    env["AISIMULATE_REF"] = sha
+    env["AISIM_REF"] = sha
     # Clone exactly the checked-out tree, including commits on a not-yet-merged PR.
     # The README command itself remains unchanged; no network fetch of mutable main.
     env.update(

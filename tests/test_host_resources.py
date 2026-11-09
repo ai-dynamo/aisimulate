@@ -14,11 +14,11 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-import aisimulate.main as cli
-import aisimulate.resources as resources
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.common import ResourceConfig, split_config_sections
-from aisimulate.resources import (
+import aisim.main as cli
+import aisim.resources as resources
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.common import ResourceConfig, split_config_sections
+from aisim.resources import (
     GB,
     GuardedRunnerFactory,
     HostResources,
@@ -52,7 +52,7 @@ def _supervised(monkeypatch, memory_limit_bytes=8 * GB):
     monkeypatch.setattr(resources.psutil.Process, "memory_info", lambda self: SimpleNamespace(rss=64 * resources.MIB))
     monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
     monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
+        "_AISIM_SUPERVISED_BUDGET",
         json.dumps(
             {
                 "supervisor_pid": os.getpid(),
@@ -266,9 +266,9 @@ def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command)
 
 
 def test_recommendation_applies_slots_without_changing_suggestion_batches(monkeypatch):
-    import aisimulate.recommend as recommendation
-    import aisimulate.sweeper.search as search
-    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    import aisim.recommend as recommendation
+    import aisim.sweeper.search as search
+    from aisim.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
 
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
@@ -318,9 +318,9 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
 
 
 def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypatch):
-    import aisimulate.recommend as recommendation
-    import aisimulate.sweeper.search as search
-    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    import aisim.recommend as recommendation
+    import aisim.sweeper.search as search
+    from aisim.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
 
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
@@ -382,9 +382,9 @@ def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypa
 
 @pytest.mark.parametrize("failure", [False, True], ids=["success", "failure"])
 def test_recommendation_dispatches_terminal_output_callbacks(monkeypatch, failure):
-    import aisimulate.recommend as recommendation
-    import aisimulate.sweeper.search as search
-    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    import aisim.recommend as recommendation
+    import aisim.sweeper.search as search
+    from aisim.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
 
     config = CoreRecommendationConfig.model_validate(_config())
     monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
@@ -460,9 +460,9 @@ def test_recommendation_dispatches_terminal_output_callbacks(monkeypatch, failur
 
 @pytest.mark.parametrize("event", ["on_candidate", "on_round", "on_complete"])
 def test_recommendation_reports_progress_callback_failures_to_failure_hook(monkeypatch, event):
-    import aisimulate.recommend as recommendation
-    import aisimulate.sweeper.search as search
-    from aisimulate.output_adapter import (
+    import aisim.recommend as recommendation
+    import aisim.sweeper.search as search
+    from aisim.output_adapter import (
         OUTPUT_ADAPTER_API_VERSION,
         OutputAdapterExecutionError,
         RecommendationOutputCallbacks,
@@ -522,10 +522,10 @@ def test_recommendation_reports_progress_callback_failures_to_failure_hook(monke
 def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch):
     import threading
 
-    import aisimulate.recommend as recommendation
-    import aisimulate.sweeper.search as search
-    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
-    from aisimulate.resource_worker import _exception_message
+    import aisim.recommend as recommendation
+    import aisim.sweeper.search as search
+    from aisim.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    from aisim.resource_worker import _exception_message
 
     config = CoreRecommendationConfig.model_validate(_config())
     monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
@@ -627,9 +627,9 @@ def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypat
 
 
 def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
-    import aisimulate.recommend as recommendation
-    import aisimulate.sweeper.search as search
-    from aisimulate.runner import EngineReplayRunnerFactory
+    import aisim.recommend as recommendation
+    import aisim.sweeper.search as search
+    from aisim.runner import EngineReplayRunnerFactory
 
     raw = _config()
     raw["traffic"]["load"]["concurrency"] = 8
@@ -653,7 +653,7 @@ def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
 
 
 def test_resource_refusal_is_not_a_failed_replay_observation():
-    from aisimulate.sweeper.search import _run_replay_detailed
+    from aisim.sweeper.search import _run_replay_detailed
 
     class Refuse:
         def run(self, spec):
@@ -925,7 +925,7 @@ def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(
         documents = [header, *rows]
     trace.write_text("\n".join(json.dumps(row) for row in documents) + "\n")
     base = {"trace_path": str(trace), "trace_format": trace_format, "trace_block_size": 1048576}
-    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.delenv("_AISIM_SUPERVISED_BUDGET", raising=False)
     for lanes in (1, 32, 128, 512):
         plan = build_plan({**base, "agentic_lanes": lanes}, stack=stack, host=host)
         assert plan["estimate"]["estimated_peak_bytes"] is None
@@ -965,7 +965,7 @@ def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(
 def test_native_weka_keeps_qualified_parallel_admission(tmp_path, host, monkeypatch):
     trace = tmp_path / "play.json"
     trace.write_text(json.dumps({"block_size": 4, "requests": [{"t": 0, "type": "s", "in": 4, "out": 1}]}))
-    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.delenv("_AISIM_SUPERVISED_BUDGET", raising=False)
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
     factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
@@ -1079,7 +1079,7 @@ def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, ex
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
 def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, monkeypatch, host, warmup, trace_format):
-    from aisimulate.recommend import recommendation_to_sweeper
+    from aisim.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "agentic.jsonl"
     if trace_format == "weka":
@@ -1403,7 +1403,7 @@ def test_added_agentic_formats_reject_oversized_arrays(
 
 
 def test_unsupervised_refusal_keeps_the_estimate_reason(tmp_path, monkeypatch, host):
-    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.delenv("_AISIM_SUPERVISED_BUDGET", raising=False)
     path = tmp_path / "invalid.jsonl"
     path.write_text(json.dumps({"input_tokens": -1}))
     for workload, detail in [
@@ -1422,7 +1422,7 @@ def test_unsupervised_refusal_keeps_the_estimate_reason(tmp_path, monkeypatch, h
 
 @pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
 def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path, host, monkeypatch, profile):
-    from aisimulate.recommend import recommendation_to_sweeper
+    from aisim.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "play.json"
     trace.write_text(
@@ -1452,7 +1452,7 @@ def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path
     assert bounds["agentic_profile"]["duration_seconds"] == profile.get("duration_seconds", 3600)
     finite = {key: value for key, value in bounds.items() if key != "agentic_profile"}
     assert build_plan(finite, stack="engine", host=host, requested_parallelism=4)["effective_parallelism"] == 4
-    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.delenv("_AISIM_SUPERVISED_BUDGET", raising=False)
     unmonitored = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
     assert unmonitored["status"] == "resource_limited"
     assert unmonitored["estimate"]["estimated_peak_bytes"] is None

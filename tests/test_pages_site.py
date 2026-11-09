@@ -478,7 +478,7 @@ class FpePagesTest(unittest.TestCase):
                 )
 
     def test_probe_status_contract_matches_the_qualifier(self):
-        path = ROOT / "python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py"
+        path = ROOT / "python/aisim/tools/support_matrix/qualify_fpe_support_matrix.py"
         spec = importlib.util.spec_from_file_location("qualify_fpe", path)
         qualifier = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(qualifier)
@@ -873,7 +873,7 @@ class LegacySnapshotTest(unittest.TestCase):
             dataset.mkdir(parents=True)
             (dataset / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"]}))
             (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
-        replay = Path("python/aisimulate/src/aisimulate/replay")
+        replay = Path("python/aisim/src/aisim/replay")
         (self.repository / replay).mkdir(parents=True, exist_ok=True)
         for name in ("dashboard.html", "dashboard-body.html", "dashboard.js", "dashboard.css", "plotly-js-LICENSE.txt"):
             shutil.copyfile(ROOT / replay / name, self.repository / replay / name)
@@ -1076,7 +1076,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
         **release_summary["snapshot"]["evaluated_revision"],
     }
     source.write_text(json.dumps(release_summary))
-    legacy_source = repo / "python/aisimulate/docs/e2e-accuracy/summary.json"
+    legacy_source = repo / "python/aisim/docs/e2e-accuracy/summary.json"
     legacy_source.parent.mkdir(parents=True)
     source.rename(legacy_source)
     (source.parent / "app.js").write_text("untrusted release javascript")
@@ -1102,7 +1102,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     assert entries["release/0.13.0"]["summary_path"] is None
     assert entries["release/0.13.0"]["status"] == "unavailable"
     assert entries["release/0.12.0"]["published_from_commit"] == release_sha
-    assert entries["release/0.12.0"]["published_source_path"] == "python/aisimulate/docs/e2e-accuracy/summary.json"
+    assert entries["release/0.12.0"]["published_source_path"] == "python/aisim/docs/e2e-accuracy/summary.json"
     assert entries["main"]["published_source_path"] == "pages/e2e-accuracy/summary.json"
     assert not list(output.rglob("*.js"))
     assert len({entry["summary_path"] for entry in entries.values() if entry["summary_path"]}) == 3

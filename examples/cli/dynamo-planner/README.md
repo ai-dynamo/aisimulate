@@ -20,7 +20,7 @@ and `ai-dynamo-runtime` wheel artifacts in `./wheels/` (one of each):
 python3 -m venv .venv-planner
 source .venv-planner/bin/activate
 python3 -m pip install \
-  ./wheels/aisimulate-*.whl \
+  ./wheels/aisim-*.whl \
   ./wheels/ai_dynamo-*.whl \
   ./wheels/ai_dynamo_runtime-*.whl
 ```
@@ -61,7 +61,7 @@ From the AISim repository root, using the environment above:
 
 ```bash
 cd docs/cli/examples/dynamo-planner
-python3 -m aisimulate predict \
+python3 -m aisim predict \
   --stack dynamo \
   --config prediction.yaml \
   --output-dir ./planner-output \

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.release.package_identity import single_wheel
 
 ROOT = Path(__file__).resolve().parents[2]
-PYTHON_PROJECT = ROOT / "python" / "aisimulate"
+PYTHON_PROJECT = ROOT / "python" / "aisim"
 PLATFORM_BY_MACHINE = {
     "aarch64": "manylinux_2_28_aarch64",
     "arm64": "manylinux_2_28_aarch64",
@@ -60,7 +60,7 @@ def build(output: Path) -> Path:
     if any(output.iterdir()):
         raise SystemExit(f"output directory must be empty: {output}")
 
-    with tempfile.TemporaryDirectory(prefix="aisimulate-unrepaired-wheel-") as temp:
+    with tempfile.TemporaryDirectory(prefix="aisim-unrepaired-wheel-") as temp:
         raw_output = Path(temp)
         _run(
             sys.executable,

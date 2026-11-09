@@ -234,7 +234,7 @@ test("PR preview requires an exact trusted copy of the open same-repository PR",
   }
   await assert.rejects(resolve({...args, event: "schedule"}), /exact trusted/);
   await assert.rejects(resolve({...args, inputs: {...args.inputs, EXPECTED_SHA: "b".repeat(40)}}), /exact trusted/);
-  for (const change of [{sha: "b".repeat(40)}, {ref: "other"}, {repo: {full_name: "fork/aisimulate"}}]) {
+  for (const change of [{sha: "b".repeat(40)}, {ref: "other"}, {repo: {full_name: "fork/aisim"}}]) {
     await assert.rejects(resolve({...args, pr: {...pr, head: {...pr.head, ...change}}}), /does not match/);
   }
   await assert.rejects(resolve({...args, pr: {...pr, state: "closed"}}), /does not match/);

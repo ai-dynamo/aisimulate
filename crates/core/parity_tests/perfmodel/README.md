@@ -40,7 +40,7 @@ checks against the frozen references, and the per-op FFI anchor
 latency/energy/source dicts). Both suites run in the
 `rust-engine-step-parity` CI job (`build-test.yml`).
 
-Build the `aisimulate_core` extension first (the CI job does this with
+Build the `aisim_core` extension first (the CI job does this with
 `maturin develop --release`; from a clean checkout run
 `cd aic-core && ../.venv/bin/maturin develop --release`), then return to the
 repository root and run:
@@ -125,7 +125,7 @@ parity tests and `pin_goldens.py` both admit that version through
 `_surface_metrics`.
 
 ```bash
-python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+python/aisim/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
   --refresh kimi-k3-b300-sglang-next-nospec::static \
   kimi-k3-b300-sglang-next-nospec::disagg \
   kimi-k3-b300-sglang-next-dspark-nextn7::static \
@@ -140,7 +140,7 @@ built and with the pre-refresh `goldens/engine_step.json` from
 at a time and run:
 
 ```bash
-python/aisimulate/.venv/bin/python -m pytest -c python/aisimulate/pytest.ini -q -p no:timeout \
+python/aisim/.venv/bin/python -m pytest -c python/aisim/pytest.ini -q -p no:timeout \
   crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
   -k 'kimi-k3-b300-sglang-next-nospec and (TestRustEngineStepStaticParity or TestRustEngineStepDisaggParity)'
 ```
@@ -181,8 +181,8 @@ From a clean checkout of the source revision, with its native extension built
 and development dependencies installed, regenerate only these four records:
 
 ```bash
-PYTHONPATH=python/aisimulate/src:python/aisimulate \
-python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+PYTHONPATH=python/aisim/src:python/aisim \
+python/aisim/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
   --refresh qwen3-30b-a3b-b60-vllm-scan-coverage::static \
   qwen3-30b-a3b-b60-vllm-scan-coverage::mixed \
   qwen3-30b-a3b-b60-vllm-scan-coverage::agg \
@@ -241,7 +241,7 @@ The causal check kept Rust and the performance tables fixed and changed only den
 To reproduce the current calculations without modifying the references, build the matching native extension and run from the repository root:
 
 ```bash
-python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+python/aisim/.venv/bin/python -m pytest -q -p no:timeout \
   crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
   -k 'deepseek-v32-b200-sglang-isl1024-osl2 or glm5-b200-sglang-empirical or glm5-b200-sglang-isl16384-osl2 or glm52-b200-sglang-isl1024-osl2'
 ```
@@ -321,11 +321,11 @@ for that checkout. The pin script requires a clean input tree; reproduce a
 historical refresh in an isolated checkout of that revision.
 
 ```bash
-python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+python/aisim/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
   --refresh gpt-oss-20b-b200-trtllm-isl1024-osl2 \
   nemotron-nas-b200-trtllm-isl1024-osl2
 
-python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+python/aisim/.venv/bin/python -m pytest -q -p no:timeout \
   crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
 ```
 
@@ -341,10 +341,10 @@ at `a83ad4f162669b318786cc279f320650ec09d5b1`, using a release native build:
 job ran these exact commands from the repository root:
 
 ```bash
-python -m pytest -q -rx -n 4 -c python/aisimulate/pytest.ini \
+python -m pytest -q -rx -n 4 -c python/aisim/pytest.ini \
   crates/core/parity_tests/perfmodel/test_engine_step_parity.py
 
-python -m pytest -q -rx -n 4 -c python/aisimulate/pytest.ini \
+python -m pytest -q -rx -n 4 -c python/aisim/pytest.ini \
   crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
 ```
 
@@ -355,7 +355,7 @@ records the verified revision rather than certifying future changes.
 
 The two identity-merged B200 attention tables include pinned upstream artifacts
 in `power_upstream/*.parquet.source`. Focused tests in
-`python/aisimulate/tests/unit/tools/test_power_data.py` check their upstream
+`python/aisim/tests/unit/tools/test_power_data.py` check their upstream
 SHA-256, every imported schema, identity and measurement, and the paired-zero
 sentinel on local-only identities. These evidence files are excluded from
 `*.parquet` runtime-table discovery.

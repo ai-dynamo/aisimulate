@@ -4,7 +4,7 @@
 //! Default generalized-engine construction for offline replay.
 //!
 //! This module contains configuration and conversion helpers only. Scheduler
-//! state lives in `aisimulate_core::engine`; virtual time and worker lifecycle live
+//! state lives in `aisim_core::engine`; virtual time and worker lifecycle live
 //! in the moved aggregated/disaggregated replay runtimes.
 
 use std::num::NonZeroU32;

@@ -433,7 +433,8 @@ def _aic_source(
         or not isinstance(source.get("commit_sha"), str)
         or not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"])
         or source["commit_sha"] != predictions.get("aic_commit_sha")
-        or runtime.get("cli_entry_point") not in {"aisimulate.legacy_cli.entrypoint:main", "aiconfigurator.main:main"}
+        or runtime.get("cli_entry_point")
+        not in {"aisim.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.entrypoint:main", "aiconfigurator.main:main"}
     ):
         raise SnapshotError("AIC baseline must use the legacy CLI bundled in a clean AISim checkout")
     if revision and any(source[key] != revision[key] for key in ("branch", "commit_sha")):
@@ -443,7 +444,7 @@ def _aic_source(
         expected = (
             ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter")
             if runtime["cli_entry_point"] == "aiconfigurator.main:main"
-            else ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter")
+            else ("aisim.legacy_cli.api", "aisim.sdk.config_adapter")
         )
         if (runtime.get("baseline_api"), runtime.get("config_adapter")) != expected:
             raise SnapshotError("baseline entry point and predictor modules disagree")
@@ -582,7 +583,10 @@ def _validate_inputs(
             raise SnapshotError("successful AISim row is missing latency metrics")
         if status != "success" and has_ttft:
             raise SnapshotError("non-success AISim row contains latency metrics")
-        if status == "success" and row.get("aisimulate_runner") != "aisimulate.engine_replay":
+        if status == "success" and row.get("aisimulate_runner") not in {
+            "aisim.engine_replay",
+            "aisimulate.engine_replay",
+        }:
             raise SnapshotError("successful row does not identify the public AISim runner")
 
     aisimulate_run = metadata.get("aisimulate_run")

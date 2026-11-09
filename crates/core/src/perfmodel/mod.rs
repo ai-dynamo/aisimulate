@@ -121,7 +121,7 @@ pub(crate) fn repo_relative(rel: &str) -> Option<PathBuf> {
 }
 
 /// Register the compatibility AIConfigurator API on the unified native
-/// `aisimulate._runtime` extension module.
+/// `aisim._runtime` extension module.
 #[cfg(feature = "python")]
 pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     py::register(module)

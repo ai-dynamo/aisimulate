@@ -45,7 +45,7 @@ Online prediction and supported updates run through the Rust model. Inspect your
 installed trainer before preparing inputs:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_learned train --help
+python -m aisim_core.sdk.fpm_learned train --help
 ```
 
 Keep one model instance per worker/deployment identity when workers need
@@ -190,7 +190,7 @@ import math
 from copy import deepcopy
 from pathlib import Path
 
-from aisimulate_core.sdk import RustForwardPassPerfModel, fpm_learned
+from aisim_core.sdk import RustForwardPassPerfModel, fpm_learned
 
 identity = json.loads(Path("decode.identity.json").read_text())
 if identity["worker_type"] != "decode" or identity["attention_dp"] != 1:
@@ -374,7 +374,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from aisimulate_core.sdk import RustForwardPassPerfModel, fpm_learned
+from aisim_core.sdk import RustForwardPassPerfModel, fpm_learned
 
 identity = json.loads(Path("aggregated.identity.json").read_text())
 if identity["worker_type"] != "aggregated":

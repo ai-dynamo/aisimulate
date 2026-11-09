@@ -137,7 +137,7 @@ note = "Linear 1–5 token drafts with a supplied acceptance rate; no tree draft
 [[sections.rows]]
 name = "DFlash, draft model"
 doc = "replay/engine/speculation.md#registered-schemes"
-# aisimulate_core/sdk/speculation/{dflash,draft_model}.py: _SUPPORTED_BACKENDS = ("vllm",).
+# aisim_core/sdk/speculation/{dflash,draft_model}.py: _SUPPORTED_BACKENDS = ("vllm",).
 cells = ["limited", "not_supported", "not_supported"]
 note = "Linear 1–5 token drafts from a draft checkpoint; DFlash covers Llama and DeepSeek V4."
 

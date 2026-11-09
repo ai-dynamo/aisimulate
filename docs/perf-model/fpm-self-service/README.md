@@ -131,14 +131,14 @@ and [execution-route constraints](implementation.md#choose-the-model-execution-r
 ## Reuse a published profile
 
 Published FPM tables use checked-in pin manifests under
-[`aisimulate_core/systems/profiles/`](../../../python/aisimulate/src/aisimulate_core/systems/profiles/).
+[`aisim_core/systems/profiles/`](../../../python/aisim/src/aisim_core/systems/profiles/).
 Each model family has an `hf_dataset.json`; additional manifests can preserve
 separate historical campaigns, such as `dsv41_fpm/four_gpu_hf_dataset.json`.
 Discover the bundled manifests and their profile keys without downloading data:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_dataset --list
-python -m aisimulate_core.sdk.fpm_dataset --list kimi_k3_fpm
+python -m aisim_core.sdk.fpm_dataset --list
+python -m aisim_core.sdk.fpm_dataset --list kimi_k3_fpm
 ```
 
 Listing includes each profile's admission and, when recorded, `admission_reason`.
@@ -149,14 +149,14 @@ Materialize one key to obtain a verified systems root. This Kimi profile is
 development data, so reproducing it requires an explicit opt-in:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_dataset \
+python -m aisim_core.sdk.fpm_dataset \
   kimi_k3_fpm gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0 \
   --allow-unqualified
 ```
 
 The CLI prints the resulting root. The equivalent SDK call is
 `materialize_fpm_profile("kimi_k3_fpm", key, allow_unqualified=True)` from
-`aisimulate_core.sdk.fpm_dataset`. Both interfaces also accept an explicit
+`aisim_core.sdk.fpm_dataset`. Both interfaces also accept an explicit
 manifest file path. Supply the returned root in `systems_paths` when constructing
 the canonical performance model or in `engine.systems_paths` for prediction.
 See [Example A](examples.md#a1-import-the-measured-pair) for the complete Kimi
@@ -191,7 +191,7 @@ prepared for the currently installed hardware bytes as well as the dataset pin.
 | `files[].path` | Relative POSIX source path within the pinned dataset. |
 | `files[].sha256` | Full lowercase SHA-256 of the exact source bytes, also verified after materialization. |
 | `files[].target` | Relative POSIX destination within this profile's systems root. |
-| `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisimulate_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
+| `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisim_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
 | `profiles.<key>.system_config_source` | Provenance annotation. `packaged_reference_not_collection` identifies a reference YAML when the dataset lacks the collection-time YAML. |
 | `profiles.<key>.admission_reason` | Reason for the declared admission, including missing qualification evidence or native-consumer incompatibility. Exposed in profile listings and opt-in warnings when recorded. |
 | `profiles.<key>.identity` | Legacy descriptive metadata only. The downloader does not compare it with table rows or a requested deployment. |

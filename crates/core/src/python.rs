@@ -2777,7 +2777,7 @@ fn aic_capacity_kwargs<'py>(
 
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     Python::with_gil(|py| -> PyResult<usize> {
-        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisim_core.sdk.memory")?;
         let kwargs = aic_capacity_kwargs(py, config, role)?;
         memory
             .getattr("estimate_num_gpu_blocks")?
@@ -2799,7 +2799,7 @@ fn estimate_aic_grouped_budget(
     role: &ReplayRoleConfig,
 ) -> Result<crate::perfmodel::fpm::FpmCacheBudget> {
     let serialized = Python::with_gil(|py| -> PyResult<String> {
-        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisim_core.sdk.memory")?;
         let kwargs = aic_capacity_kwargs(py, config, role)?;
         kwargs.del_item("scheduler_block_size")?;
         kwargs.set_item("context_length", role.rank.max_model_len)?;
@@ -5964,18 +5964,18 @@ mod tests {
 
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
         if let Err(error) =
-            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
+            Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ()))
         {
             assert!(
                 !required,
                 "native_phase_evidence_matches_python_bridge: \
                  AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
-                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 `aisim_core.sdk.engine` is not importable: {error}. \
                  Install the Python SDK and set PYTHONPATH for the embedded interpreter."
             );
             eprintln!(
                 "native_phase_evidence_matches_python_bridge: SKIP — \
-                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 `aisim_core.sdk.engine` is not importable: {error}. \
                  Set AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 + PYTHONPATH to enforce."
             );
             return;
@@ -5991,7 +5991,7 @@ mod tests {
         config.moe_ep_size = Some(4);
         config.systems_paths = vec![
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
         ];
         let mut native =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
@@ -9030,14 +9030,14 @@ mod tests {
     fn packaged_op_level_timing(test: &str, power: bool) -> Option<AicTimingModel> {
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
         if let Err(error) =
-            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
+            Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ()))
         {
             assert!(
                 !required,
-                "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisimulate_core.sdk.engine` \
+                "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisim_core.sdk.engine` \
                  is not importable: {error}"
             );
-            eprintln!("{test}: SKIP — `aisimulate_core.sdk.engine` is not importable: {error}");
+            eprintln!("{test}: SKIP — `aisim_core.sdk.engine` is not importable: {error}");
             return None;
         }
         let mut config = aic_config();
@@ -9053,7 +9053,7 @@ mod tests {
         config.kv_block_size = Some(16);
         config.systems_paths = vec![
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
         ];
         let mut timing =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
@@ -9859,7 +9859,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let db = crate::perf_database::PerfDatabase::load(
             &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
             "h200_sxm",
             "sglang",
             "0.5.6.post2",

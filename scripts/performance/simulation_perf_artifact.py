@@ -34,7 +34,7 @@ def record(directory: Path, side: str, revision: str, source: Path) -> None:
     manifest = {
         "side": side,
         "source_sha": revision,
-        "model_data_tree": command("git", "-C", str(source), "rev-parse", "HEAD:python/aisimulate/src/aisimulate_core"),
+        "model_data_tree": command("git", "-C", str(source), "rev-parse", "HEAD:python/aisim/src/aisim_core"),
         "files": {p.name: sha256(p) for p in [wheels[0], directory / "requirements.txt"]},
         "build": {
             "container": os.environ["BUILD_CONTAINER"],

@@ -567,7 +567,7 @@ idle guards, cancellation and result details.
 is a small offline example with fixed timing:
 
 ```bash
-aisimulate predict --config examples/cli/agentic-profile.yaml \
+aisim predict --config examples/cli/agentic-profile.yaml \
   --capture-per-request --format json --output-dir ./agentic-profile
 ```
 

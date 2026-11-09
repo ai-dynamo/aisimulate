@@ -38,6 +38,7 @@ const NANOSECONDS_PER_MILLISECOND: f64 = 1_000_000.0;
 /// Changing these bytes intentionally changes every Weka source digest and,
 /// consequently, the persisted graph identity. Increment the algorithm
 /// version only when making an explicit provenance compatibility break.
+// Retain the legacy bytes: persisted identities are a compatibility contract.
 const WEKA_CORPUS_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-weka-corpus-v1\0";
 const WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2: &[u8] = b"aisimulate-weka-corpus-semantics-v2\0";
 

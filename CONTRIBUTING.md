@@ -9,7 +9,7 @@ Thank you for your interest in contributing to AISim!
 
 For the project overview, repository layout, setup, and development commands,
 see the [AISim README](README.md). For focused AIConfigurator development
-instructions, see the [application README](python/aisimulate/README.md).
+instructions, see the [application README](python/aisim/README.md).
 
 ## Quick Links
 

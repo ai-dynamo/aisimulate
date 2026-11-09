@@ -5,14 +5,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # Recommendation output ABI
 
-[`output_adapter.py`](../../python/aisimulate/src/aisimulate/output_adapter.py)
+[`output_adapter.py`](../../python/aisim/src/aisim/output_adapter.py)
 defines `RecommendationOutputAdapter` and `OUTPUT_ADAPTER_API_VERSION = 1`.
 An output adapter adds artifacts or live observations to a recommendation;
 it does not change replay, candidate scores or saved prediction inputs.
 
 ## Identity and required writer
 
-The entry-point group is `aisimulate.output_adapters`. A selected `--output`
+The entry-point group is `aisim.output_adapters`. A selected `--output`
 name also identifies its top-level configuration section. AISim extracts
 explicitly selected output sections before simulation-schema validation.
 An adapter declares the same `name`, integer `api_version = 1`, and:

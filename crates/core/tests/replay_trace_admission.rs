@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{Backend, EngineConfig, SglangConfig, TimingModelConfig};
-use aisimulate_core::replay::{
+use aisim_core::engine::{Backend, EngineConfig, SglangConfig, TimingModelConfig};
+use aisim_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, DirectRequest, ReplayEngineConfig, ReplayEngineFactory,
     ReplayError, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec,
     run_engine_handoff_conformance,

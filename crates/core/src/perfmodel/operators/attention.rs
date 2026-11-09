@@ -5,7 +5,7 @@
 
 //! Attention operators: context, generation, encoder.
 //!
-//! Mirrors `aisimulate.sdk.operations.attention.{ContextAttention,
+//! Mirrors `aisim.sdk.operations.attention.{ContextAttention,
 //! GenerationAttention, EncoderAttention}`. Each holds its config-time
 //! attention shape (n, n_kv, head_size, window_size, quant modes) and
 //! wraps the raw `AttentionTable` query with:
@@ -1481,7 +1481,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems");
+            .join("python/aisim/src/aisim_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 
@@ -1573,7 +1573,7 @@ mod tests {
     fn issue551_known_measurement_omits_rope_and_kv_extras() {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems");
+            .join("python/aisim/src/aisim_core/systems");
         let mut db = PerfDatabase::load(&systems_root, "h200_sxm", "trtllm", "1.3.0rc20")
             .expect("H200 TRT-LLM database");
         let mut op = ContextAttentionOp::new(
@@ -2528,7 +2528,7 @@ mod tests {
     fn b200_sglang_0514_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems");
+            .join("python/aisim/src/aisim_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.14").expect("db must load")
     }
 

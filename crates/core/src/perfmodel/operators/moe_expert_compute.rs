@@ -308,7 +308,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems")
+            .join("../../python/aisim/src/aisim_core/systems")
     }
 
     fn write_column<T: parquet::data_type::DataType>(

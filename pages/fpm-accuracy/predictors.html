@@ -14,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
     <title>AISim - FPM Predictors</title>
     <script>
       try {
-        const savedTheme = localStorage.getItem("sm-theme") || localStorage.getItem("aisimulate-accuracy-theme");
+        const savedTheme = localStorage.getItem("sm-theme") || localStorage.getItem("aisim-accuracy-theme");
         const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
         document.documentElement.dataset.theme =
           savedTheme === "light" || savedTheme === "dark"
@@ -154,14 +154,14 @@ latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details
         </div>
         <div class="predictor-reference-notes">
         <p><strong>KV warmup describes how the input library was collected.</strong> It is not a prediction-time Boolean.</p>
-        <p>Examples use <code>replace</code> from <code>dataclasses</code> and <code>RustForwardPassPerfModel</code> from <code>aisimulate_core.sdk</code>.
+        <p>Examples use <code>replace</code> from <code>dataclasses</code> and <code>RustForwardPassPerfModel</code> from <code>aisim_core.sdk</code>.
           Supply a <code>ForwardPassPerfModelConfig</code> as <code>base_config</code> with matching model, hardware, backend, topology, and worker role;
           use a separate regression model per worker.</p>
         <p>See the <a href="https://github.com/ai-dynamo/aisim/blob/main/docs/perf-model/configuration.md#choosing-a-forward-pass-api">configuration API</a> and
           <a href="https://github.com/ai-dynamo/aisim/blob/main/pages/fpm-accuracy/README.md#what-is-published">Gym regression settings</a>
           for the evaluated regression policy, which differs from SDK defaults.</p>
         <p>Summary cards average configuration MAPEs equally. Model table rows are weighted by successful prediction count.
-          Learned (fpm5) is scored on a different subset (alternate observations of each workload kind), so compare it with the other columns as an indication, not a ranking. The <code>fpm_learned</code> example imports from <code>aisimulate_core.sdk</code>.</p>
+          Learned (fpm5) is scored on a different subset (alternate observations of each workload kind), so compare it with the other columns as an indication, not a ranking. The <code>fpm_learned</code> example imports from <code>aisim_core.sdk</code>.</p>
         </div>
       </section>
 

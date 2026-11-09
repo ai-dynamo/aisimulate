@@ -36,7 +36,7 @@ and `ai-dynamo-runtime` wheel artifacts in `./wheels/` (one of each):
 python3 -m venv .venv-planner
 source .venv-planner/bin/activate
 python3 -m pip install \
-  ./wheels/aisimulate-*.whl \
+  ./wheels/aisim-*.whl \
   ./wheels/ai_dynamo-*.whl \
   ./wheels/ai_dynamo_runtime-*.whl
 ```
@@ -77,7 +77,7 @@ From the AISim repository root, using the environment above:
 
 ```bash
 cd examples/cli/dynamo-planner
-python3 -m aisimulate predict \
+python3 -m aisim predict \
   --stack dynamo \
   --config prediction.yaml \
   --output-dir ./planner-output \
@@ -152,7 +152,7 @@ this change. Installing that pair is not enough for this example.
 
 Validation used Dynamo source commit
 `147b78a8aa6ffc8d11baa06c1f589bbfa46b7523` with its pinned
-`aisimulate==0.13.0.dev202610290000000087`. Use matching artifacts containing
+`aisim==0.13.0.dev202610290000000087`. Use matching artifacts containing
 the change, or build Dynamo's Python package and runtime from that revision
 using its [source-build guide](https://github.com/ai-dynamo/dynamo/blob/147b78a8aa6ffc8d11baa06c1f589bbfa46b7523/docs/fern/pages/developer-guide/advanced-customizations/building-from-source.md).
 Include the `ais-forward-pass` feature when building the native Python bindings
@@ -173,10 +173,10 @@ fixture does not trigger peer pulls with this configuration.
 curl --fail --location --output mooncake_trace_1000.jsonl \
   https://raw.githubusercontent.com/ai-dynamo/dynamo/280df2a1e4166917a293f3c50d28e54b3ab348ab/lib/bench/testdata/mooncake_trace_1000.jsonl
 
-aisimulate predict --stack dynamo \
+aisim predict --stack dynamo \
   --config examples/cli/dynamo-kvcr-predict.yaml --output-dir kvcr-on
 
-aisimulate predict --stack dynamo \
+aisim predict --stack dynamo \
   --config examples/cli/dynamo-kvcr-predict.yaml --output-dir kvcr-off \
   --set engine.workers.aggregated.kv_cache.kvcr=null
 ```
@@ -384,7 +384,7 @@ evaluation:
 Run it with the Dynamo integration installed:
 
 ```bash
-aisimulate predict --stack dynamo --config dynamo-prediction.yaml --output-dir ./dynamo-full-prediction
+aisim predict --stack dynamo --config dynamo-prediction.yaml --output-dir ./dynamo-full-prediction
 ```
 
 The result is a metrics summary and `dynamo-full-prediction/prediction.json`.
@@ -452,7 +452,7 @@ optimizer:
 Run the search:
 
 ```bash
-aisimulate recommend --stack dynamo --config dynamo-recommendation.yaml --output-dir ./dynamo-full-recommendation
+aisim recommend --stack dynamo --config dynamo-recommendation.yaml --output-dir ./dynamo-full-recommendation
 ```
 
 The result contains `recommendation.json` and any selected prediction YAML files under

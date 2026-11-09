@@ -13,7 +13,7 @@ subtitle: A lossless candidate ledger with scalar and Pareto views
 `SweepResult` is the canonical result envelope for both exhaustive and optimizer-guided execution.
 The complete candidate ledger is the source of truth. Scalar top-N and Pareto fronts are views that
 refer to ledger rows by stable `candidate_id`; they do not discard the other evaluated candidates.
-The unified `aisimulate recommend` command writes this envelope as `recommendation.json` beside
+The unified `aisim recommend` command writes this envelope as `recommendation.json` beside
 the selected `recommendations/*.yaml` prediction inputs.
 
 ```python
@@ -62,7 +62,7 @@ Every materialized or capability-gated candidate attempt has one record when ret
 | `candidate_id` | Stable within the result, formatted `candidate-NNNNNN`. |
 | `status` | `feasible`, `infeasible`, `unsupported`, `timed_out`, `failed`, or `resource_limited`. |
 | `config` | Concrete backend, topology, engine knobs, load, and adapter configuration available at the terminal status. |
-| `prediction_config` | Concrete public `aisimulate predict` configuration when produced by the unified CLI. |
+| `prediction_config` | Concrete public `aisim predict` configuration when produced by the unified CLI. |
 | `used_gpus` | Provisioned GPU count, or `null` if materialization failed before it was known. Unit: GPUs. |
 | `score` | Scalar score normalized so larger is better; for a Pareto row it is the first objective's raw value. |
 | `metrics` | Normalized replay metrics in natural units for every attempt that completed replay, including attempts later classified infeasible. Empty only when no valid replay report exists. |
@@ -249,7 +249,7 @@ status 3 to make this partial coverage visible. See [local execution resources](
   tabular view of the result. See [local resources](../reference/local-resources.md) for the diagnostic files.
 - Each numbered YAML is a concrete prediction config. It excludes `optimization`, `optimizer`, and
   `preset`, contains no domains or `auto` values, and can be passed directly to
-  `aisimulate predict`.
+  `aisim predict`.
 
 For scalar optimization, file numbering follows best-to-worst rank. For Pareto optimization, it
 follows the deterministic display order of the complete nondominated front; that order does not

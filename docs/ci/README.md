@@ -22,7 +22,7 @@ declared in [scripts/pyproject.toml](../../scripts/pyproject.toml).
 
 The executable definitions live in the root
 [`.github/workflows/`](../../.github/workflows). Imported workflow copies under
-`python/aisimulate/.github/` are migration history and do not run for this repo.
+`python/aisim/.github/` are migration history and do not run for this repo.
 
 ### Validation and review
 
@@ -301,7 +301,7 @@ layer reuse. These operator-level queries complement the engine integration
 tests for context limits; they do not measure E2E gym MAPE or incorporate the
 separate TRT-LLM data collection in PR #264.
 
-The broader [prediction comparison](../../python/aisimulate/tools/prediction_regression_gate/report.py)
+The broader [prediction comparison](../../python/aisim/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
 previously working cases becoming broken. If the comparison base predates the
 harness, the report explicitly contains new-side statistics only. Frozen
@@ -324,7 +324,7 @@ round trips, with wheel hashes and request counts in `installed-cli-*` artifacts
 ## Application test inventory and exceptions
 
 Full CI uses **12 application jobs per architecture, 24 total**. Paths in this
-table are relative to `python/aisimulate/` unless marked repository-root.
+table are relative to `python/aisim/` unless marked repository-root.
 
 | Shard | Test selection | Parallelism per architecture |
 | --- | --- | --- |
@@ -377,7 +377,7 @@ After installing and activating the [development environment](../../DEVELOPMENT.
 run this from the repository root for extended CLI coverage:
 
 ```bash
-cd python/aisimulate
+cd python/aisim
 python -m pytest tests/e2e/cli -m 'not build'
 ```
 
@@ -618,13 +618,32 @@ independent InfX jobs retain their existing behavior. See the
 
 ## Repository rename to AISim
 
-The repository's canonical name is `ai-dynamo/aisim`, the product name is AISim, and the project Pages URL is `https://ai-dynamo.org/aisim/`. The published Python distribution and Rust crate are already named `aisim` and `aisim-core`. This rename preserves `aisimulate` and `aisimulate_core` Python imports, source paths, CLI compatibility, plugin namespaces, environment variables, data schemas, historical measurements, Hugging Face dataset identifiers, Artifactory repositories, GitHub team slugs, and runner labels. Those identifiers have independent consumers and do not change when GitHub renames a repository. Retained accuracy snapshots may record either repository URL; publication validates both while retaining their original provenance.
+The repository's canonical name is `ai-dynamo/aisim`, the product name is AISim, and the project Pages URL is `https://ai-dynamo.org/aisim/`. The Python project lives under `python/aisim/`; canonical application and estimator imports are `aisim` and `aisim_core`, backed by `aisim._runtime`. The distribution and Rust crate are `aisim` and `aisim-core`, and the Rust library is `aisim_core`. New CLI examples use `aisim`. The `aisimulate` executable and Python packages remain forwarding compatibility aliases; both import paths share classes, module state, native bindings, and bundled resources. Existing plugin registrations under `aisimulate.*` are discovered alongside `aisim.*`. The `python/aisimulate` symlink preserves the former checkout path.
+
+Serialized schema identifiers and v1 field names, historical measurements and release distribution identities, immutable upstream source citations, Hugging Face dataset identifiers, and Artifactory repository names remain compatibility/provenance contracts. This source rename does not migrate those external assets. Retained accuracy snapshots may record either GitHub repository URL. Dedicated runner selectors change to `prod-aisim-default-amd64-v1` and `prod-aisim-default-arm64-v1` together with [Velonix #882](https://github.com/ai-dynamo/velonix/pull/882).
+
+### Replacement GitHub teams
+
+Create replacement teams rather than renaming the original teams. The replacements have been created and verified against the old teams for direct membership, member/maintainer roles, parent hierarchy, visibility, notifications, and effective repository permissions. The replacement parent remains under `access-nvidian`; its corresponding child teams remain under the replacement parent. Existing teams remain intact.
+
+| Existing team | Replacement team |
+|---|---|
+| `team-aisimulate` | `team-aisim` |
+| `access-aisimulate-maintain` | `access-aisim-maintain` |
+| `aisimulate-forward-pass-engine-codeowners` | `aisim-forward-pass-engine-codeowners` |
+| `aisimulate-infra-codeowners` | `aisim-infra-codeowners` |
+| `aisimulate-mocker-codeowners` | `aisim-mocker-codeowners` |
+| `aisimulate-replay-codeowners` | `aisim-replay-codeowners` |
+| `aisimulate-sweeper-codeowners` | `aisim-sweeper-codeowners` |
+
+After #796 merges, verify generated CODEOWNERS review routing and repository access through the replacement teams. Audit other consumers before deleting the vestigial original teams as a separate post-merge cleanup. Do not rename or delete the original teams during preparation or cutover. The detailed runner drain, rename, merge, canary, and rollback sequence is maintained in [Velonix #882](https://github.com/ai-dynamo/velonix/pull/882).
+
 
 ### Prepare the cutover
 
 1. Confirm that `ai-dynamo/aisim` is available and record the repository ID, existing Pages settings, and current runner registration. Prepare the AISim rename PR and the [companion Velonix runner PR](https://github.com/ai-dynamo/velonix/pull/882) together. Keep both as drafts until the cutover is scheduled; the new repository guards and runner registration targets are intended for the new name.
-2. Review the Velonix changes to both dedicated ARC scale sets' `githubConfigUrl` and `velonix.nvidia.com/approved-repository`, the shared organization runner's repository allowlist, and the job hook's `HOME` path. Preserve existing scale-set labels, Kubernetes resource names, service accounts, IAM trust, and capacity. No Terraform change is required for a repository target change with those identities preserved. Drain running jobs and avoid dispatching new jobs during the transition; do not depend on redirects for ARC registration or admission checks.
-3. Inventory external consumers: workflows calling reusable workflows or actions through `uses: ai-dynamo/aisimulate/...`, Dynamo dependency/source URLs, GitHub Apps including ARC and copy-pr-bot, repository-specific webhook filters, organization rulesets, runner-group access, cloud OIDC trust subjects, PyPI trusted publishers, and GitLab/security handoffs. Update configured repository names where present. Secrets, environments, and branch rules belong to the same repository, but external name-based matches need verification. Historical release branches retain their committed workflows; audit and backport repository guards, provenance checks, URLs, and workspace fixes needed by active release automation.
+2. Review the Velonix changes to both dedicated ARC scale sets' `githubConfigUrl` and `velonix.nvidia.com/approved-repository`, the shared organization runner's repository allowlist, and the job hook's `HOME` path. Replace the drained dedicated scale sets and their runner labels with `prod-aisim-default-amd64-v1` and `prod-aisim-default-arm64-v1`, and update workflow selectors in the same window. Preserve service accounts, IAM trust, node-pool identities, shared-pool names, and capacity. Re-dispatch queued old-label jobs from the updated workflow revision. No Terraform change is required for a repository target change with those identities preserved. Drain running jobs and avoid dispatching new jobs during the transition; do not depend on redirects for ARC registration or admission checks.
+3. Inventory external consumers: workflows calling reusable workflows or actions through `uses: ai-dynamo/aisim/...`, Dynamo dependency/source URLs, GitHub Apps including ARC and copy-pr-bot, repository-specific webhook filters, organization rulesets, runner-group access, cloud OIDC trust subjects, PyPI trusted publishers, and GitLab/security handoffs. Update configured repository names where present. Secrets, environments, and branch rules belong to the same repository, but external name-based matches need verification. Historical release branches retain their committed workflows; audit and backport repository guards, provenance checks, URLs, and workspace fixes needed by active release automation.
 4. Arrange the old Pages path redirect with the owner of the organization site or HTTP edge. The Pages API currently reports workflow publication with no repository-specific custom domain; the `ai-dynamo.org` domain is inherited from the organization site. A custom organization domain does not preserve a renamed project path.
 
 ### Rename and validate

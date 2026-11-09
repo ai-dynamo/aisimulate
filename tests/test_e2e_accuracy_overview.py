@@ -59,7 +59,7 @@ def _row(
         "dynamo_ttft_ms": aisimulate_ttft,
         "dynamo_tpot_ms": aisimulate_tpot,
         "aisimulate_status": status,
-        "aisimulate_runner": "aisimulate.engine_replay",
+        "aisimulate_runner": "aisim.engine_replay",
     }
 
 
@@ -134,7 +134,7 @@ def _inputs() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
             "failed": 1,
             "method": "randomized_synthetic_engine_replay",
             "completed_at": "2026-08-26T01:00:00Z",
-            "runtime": {"packages": {"aisimulate": "0.12.0", "aisimulate-core": "0.12.0"}},
+            "runtime": {"packages": {"aisimulate": "0.12.0", "aisim-core": "0.12.0"}},
         },
     }
     coverage = {
@@ -207,7 +207,7 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
         "status": "complete",
         "runtime": {
             "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisim"},
-            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
+            "cli_entry_point": "aisim.legacy_cli.entrypoint:main",
         },
     }
     for document in (predictions, metadata, coverage):
@@ -470,7 +470,7 @@ def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
     assert 'fetch("./branches.json")' in script
 
 
-def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
+def test_public_page_prioritizes_aisim_over_aic_baseline() -> None:
     public_dir = ROOT / "pages" / "e2e-accuracy"
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
@@ -781,7 +781,7 @@ def test_page_explains_cli_migration_and_aic_deprecation() -> None:
 @pytest.mark.parametrize(
     "entry,api,adapter",
     [
-        ("aisimulate.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aisim.legacy_cli.entrypoint:main", "aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
         ("aiconfigurator.main:main", "aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
     ],
 )

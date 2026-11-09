@@ -12,7 +12,7 @@ steps from an AISim source checkout using the
 The GPU deployment steps run on a separate serving host.
 
 The unified `recommend` command writes concrete **prediction configurations**.
-Its numbered YAML files are not Kubernetes manifests. The current generator API is `aisimulate.generator`; the same wheel also
+Its numbered YAML files are not Kubernetes manifests. The current generator API is `aisim.generator`; the same wheel also
 provides the `aiconfigurator` compatibility command. No separate standalone
 AIConfigurator installation is required.
 
@@ -32,7 +32,7 @@ the workflow; it does not establish the best possible deployment.
 | Serving image | `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0`; record the pulled digest. |
 
 The Dynamo/backend pair is recorded in the generator's
-[version matrix](../../python/aisimulate/src/aisimulate/generator/facts/runtimes/dynamo.yaml).
+[version matrix](../../python/aisim/src/aisim/generator/facts/runtimes/dynamo.yaml).
 These pins make the intended environment explicit; local artifact generation
 is not a GPU deployment qualification. Before serving, verify the image's
 actual versions and the target machine's driver/GPU requirements using the
@@ -47,13 +47,13 @@ From the AISim repository root with its virtual environment active:
 
 ```bash
 mkdir -p deployment-study
-git rev-parse HEAD > deployment-study/aisimulate-source-sha.txt
-uv pip freeze --python python/aisimulate/.venv/bin/python > deployment-study/python-packages.txt
-aisimulate recommend --stack engine \
+git rev-parse HEAD > deployment-study/aisim-source-sha.txt
+uv pip freeze --python python/aisim/.venv/bin/python > deployment-study/python-packages.txt
+aisim recommend --stack engine \
   --config examples/cli/dynamo-deployment-recommend.yaml \
   --output-dir deployment-study/recommendation
 
-aisimulate predict --stack engine \
+aisim predict --stack engine \
   --config deployment-study/recommendation/recommendations/0001.yaml \
   --capture-per-request --output-dir deployment-study/prediction
 ```
@@ -84,8 +84,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from aisimulate.generator.api import generate_from_request
-from aisimulate.generator.request import from_sweeper_candidate
+from aisim.generator.api import generate_from_request
+from aisim.generator.request import from_sweeper_candidate
 
 parser = argparse.ArgumentParser(description="Render a selected recommendation")
 parser.add_argument("--candidate-id", help="Explicit candidate ID; required for Pareto results")
@@ -364,7 +364,7 @@ The complete resource, overlay, multinode and completion contracts belong to
 Run the repository validator inside the matching backend runtime:
 
 ```bash
-python python/aisimulate/tools/generator_validator/validator.py \
+python python/aisim/tools/generator_validator/validator.py \
   --backend vllm --path deployment-study/generated/k8s_deploy.yaml
 ```
 
@@ -543,7 +543,7 @@ SlurmConfig:
 ```
 
 ```bash
-python -m aisimulate.generator.main render-artifacts \
+python -m aisim.generator.main render-artifacts \
   --backend vllm --version 0.20.1 --deployment-target slurm \
   --config slurm.yaml --output ./slurm-bundle
 # Copy the bundle to a fresh directory on the cluster, then run there:

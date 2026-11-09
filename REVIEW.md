@@ -135,11 +135,11 @@ has no assignment.
   units, row counts, coverage, and anomalies plus proof that a real consumer
   reaches the new data. A clean binary diff is not evidence.
 - AISim is standalone. Dynamo is a downstream compatibility target, not a
-  required runtime dependency. The release surface remains one `aisimulate`
-  wheel and one `aisimulate-core` crate unless the artifact contract is changed
+  required runtime dependency. The release surface remains one `aisim`
+  wheel and one `aisim-core` crate unless the artifact contract is changed
   deliberately.
 - Only workflows under the repository-root `.github/workflows/` run for this
-  repository. Imported workflows below `python/aisimulate/` are provenance, not
+  repository. Imported workflows below `python/aisim/` are provenance, not
   hosted-CI evidence.
 
 ## High-value review paths

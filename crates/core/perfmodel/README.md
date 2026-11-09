@@ -21,7 +21,7 @@ Start with the [performance-model documentation](../../../docs/perf-model/README
 
 For estimator consumers, use `ForwardPassPerfModel::best_available` with the
 canonical `ForwardPassPerfModelConfig`. `AicEngineBuilder` is a lower-level
-compiled-engine builder. Native construction requires the matching `aisimulate`
+compiled-engine builder. Native construction requires the matching `aisim`
 wheel and Python feature; explicit regression construction does not.
 
 The exported wire-schema constants define binary compatibility. Recompile

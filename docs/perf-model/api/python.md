@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Python performance-model API
 
-The `aisimulate` wheel provides the `aisimulate_core` estimator namespace and
+The `aisim` wheel provides the `aisim_core` estimator namespace and
 native extension. It does not require a separate core wheel or Dynamo.
 
 Operation energy alone does not guarantee published power. Unified reporting
@@ -14,7 +14,7 @@ also applies the [modeled-power coverage gate](../power.md#publication-gate).
 ## Canonical estimator
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B", system="h200_sxm", backend="vllm",
@@ -53,7 +53,7 @@ Omitting the argument preserves existing behavior. The option does not change
 configuration, tuning or replay execution. See the
 [whole-forward contract](../methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm)
 for reference coverage, detailed evidence and calibration limits. The raw
-`aisimulate_core._native.RustForwardPassPerfModel` methods accept the same
+`aisim_core._native.RustForwardPassPerfModel` methods accept the same
 keyword-only option with JSON-string `fpm_json` input; their detailed result
 is a JSON string, while the SDK returns a dictionary.
 
@@ -62,7 +62,7 @@ is a JSON string, while the SDK returns a dictionary.
 New Python code should import from the small facade:
 
 ```python
-from aisimulate_core.sdk import (
+from aisim_core.sdk import (
     EngineHandle,
     ModelConfig,
     RuntimeConfig,
@@ -76,16 +76,16 @@ from aisimulate_core.sdk import (
 The explicit module paths remain supported:
 
 ```python
-from aisimulate_core.sdk.engine import EngineHandle, compile_engine
-from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
-from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
+from aisim_core.sdk.engine import EngineHandle, compile_engine
+from aisim_core.sdk.rust_engine_step import RustForwardPassPerfModel
+from aisim_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
 ```
 
-`aisimulate_core.sdk.__all__` is the supported high-level surface. The
+`aisim_core.sdk.__all__` is the supported high-level surface. The
 facade resolves lazily, so importing it does not load the model registry,
 performance database, or native engine until a name is used.
 
-The top-level `aisimulate_core` module exposes the lower-level native
+The top-level `aisim_core` module exposes the lower-level native
 extension contract:
 
 - `AicEngine`
@@ -118,7 +118,7 @@ engine-spec formats.
 Results are `list[tuple[str, float, float, str]]`, containing
 `(name, latency_ms, energy_wms, source)` with repeated operation names folded
 together. Energy is in watt-milliseconds and is zero when power data is
-unavailable. An empty operation list returns an empty list. `aisimulate_core.AicEngine` exposes this
+unavailable. An empty operation list returns an empty list. `aisim_core.AicEngine` exposes this
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
 

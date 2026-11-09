@@ -4,7 +4,7 @@
 //! MLA family perf tables: op-level context/generation, MLA BMM (pre/post),
 //! and module-level context/generation.
 //!
-//! Mirrors the SILICON paths of `aisimulate.sdk.operations.mla.{ContextMLA,
+//! Mirrors the SILICON paths of `aisim.sdk.operations.mla.{ContextMLA,
 //! GenerationMLA, MLABmm, MLAModule}._query_*_table` on the perf_interp v2
 //! engine: context-type tables ([num_heads][seq][batch], latency ~ seq^2) use
 //! a Grid resolver with SQRT blending on the seq axis; generation-type tables
@@ -1343,24 +1343,24 @@ mod tests {
     fn b200_vllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/vllm/0.24.0")
+            .join("python/aisim/src/aisim_core/systems/data/b200_sxm/vllm/0.24.0")
     }
 
     fn gb200_trtllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems/data/gb200/trtllm/1.3.0rc20")
+            .join("python/aisim/src/aisim_core/systems/data/gb200/trtllm/1.3.0rc20")
     }
 
     fn h200_trtllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/trtllm/1.3.0rc20")
+            .join("python/aisim/src/aisim_core/systems/data/h200_sxm/trtllm/1.3.0rc20")
     }
 
     fn load_spec(name: &str) -> SystemSpec {
         let systems_yaml = PathBuf::from(REPO_ROOT_HINT).join("../..").join(format!(
-            "python/aisimulate/src/aisimulate_core/systems/{name}.yaml"
+            "python/aisim/src/aisim_core/systems/{name}.yaml"
         ));
         SystemSpec::load(&systems_yaml).unwrap_or_else(|_| panic!("{name}.yaml must parse"))
     }

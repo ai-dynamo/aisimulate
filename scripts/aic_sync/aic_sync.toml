@@ -9,35 +9,35 @@ last_synced = "c8aee02f0887547a334c3d6cd192c42757e4b40e"
 # changes outside them so an upstream diff can be path-rewritten mechanically.
 [[mirror]]
 source = "src/aiconfigurator/sdk"
-target = "python/aisimulate/src/aisimulate/sdk"
+target = "python/aisim/src/aisim/sdk"
 
 [[mirror]]
 source = "src/aiconfigurator/generator"
-target = "python/aisimulate/src/aisimulate/generator"
+target = "python/aisim/src/aisim/generator"
 
 [[mirror]]
 source = "src/aiconfigurator/cli"
-target = "python/aisimulate/src/aisimulate/legacy_cli"
+target = "python/aisim/src/aisim/legacy_cli"
 
 [[mirror]]
 source = "aic-core/src/aiconfigurator_core"
-target = "python/aisimulate/src/aisimulate_core"
+target = "python/aisim/src/aisim_core"
 
 [[mirror]]
 source = "tests"
-target = "python/aisimulate/tests"
+target = "python/aisim/tests"
 
 [[mirror]]
 source = "collector"
-target = "python/aisimulate/collector"
+target = "python/aisim/collector"
 
 [[mirror]]
 source = "tools"
-target = "python/aisimulate/tools"
+target = "python/aisim/tools"
 
 [[manual]]
 source = "docs"
-reason = "Adapt upstream documentation into the AISim component docs; do not recreate the retired python/aisimulate/docs mirror."
+reason = "Adapt upstream documentation into the AISim component docs; do not recreate the retired python/aisim/docs mirror."
 
 [[mirror]]
 source = "aic-core/rust/aiconfigurator-core/src"

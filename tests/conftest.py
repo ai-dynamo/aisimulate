@@ -9,12 +9,12 @@ from pathlib import Path
 # Source-only tooling may inspect the repository before building the native
 # extension. Ignore runtime suites until the standalone package is available.
 try:
-    _core_available = find_spec("aisimulate.runner") is not None
+    _core_available = find_spec("aisim.runner") is not None
 except ModuleNotFoundError:
     _core_available = False
 
 try:
-    _sweeper_available = find_spec("aisimulate.sweeper.config") is not None
+    _sweeper_available = find_spec("aisim.sweeper.config") is not None
 except ModuleNotFoundError:
     _sweeper_available = False
 

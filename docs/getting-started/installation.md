@@ -16,15 +16,15 @@ predate a documented feature. Record your installed version before comparing
 results or reporting a problem:
 
 ```bash
-python -c 'import aisimulate; print(aisimulate.__version__)'
-python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
+python -c 'import aisim; print(aisim.__version__)'
+python -c 'import aisim, aisim._runtime; print(aisim.__file__); print(aisim._runtime.__file__)'
 ```
 
 ### Published packages
 
 The following example pins release `0.12.1`. Use its
 [versioned documentation](https://github.com/ai-dynamo/aisim/tree/v0.12.1). Check the
-[PyPI release files](https://pypi.org/project/aisimulate/#files) and
+[PyPI release files](https://pypi.org/project/aisim/#files) and
 [GitHub releases](https://github.com/ai-dynamo/aisim/releases) for newer
 artifacts and use the documentation associated with the selected release.
 
@@ -33,19 +33,19 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install 'aisimulate==0.12.1'
-aisimulate --help
+aisim --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
-prereleases, use `python -m pip index versions --pre aisimulate`.
-`python -m pip install aisimulate` normally selects a stable release; `--pre`
+prereleases, use `python -m pip index versions --pre aisim`.
+`python -m pip install aisim` normally selects a stable release; `--pre`
 allows prereleases. Neither command requests the latest repository source or
 an internal nightly automatically.
 
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../../README.md#upgrade-from-standalone-aiconfigurator)
-in the environment you intend to use. The `aisimulate` wheel owns both console
-commands. Python imports use `aisimulate` and `aisimulate_core`; see
+in the environment you intend to use. The `aisim` wheel owns both console
+commands. Python imports use `aisim` and `aisim_core`; see
 [Python source migration](../aic-backward-compatibility/migration.md#python-imports-and-resources) for the breaking import change.
 
 ## Platform matrix
@@ -116,9 +116,9 @@ For features documented on `main`, use a source checkout and record its commit:
 git clone https://github.com/ai-dynamo/aisim.git
 cd aisim
 git rev-parse HEAD
-uv sync --project python/aisimulate --extra dev
-source python/aisimulate/.venv/bin/activate
-aisimulate --help
+uv sync --project python/aisim --extra dev
+source python/aisim/.venv/bin/activate
+aisim --help
 ```
 
 Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
@@ -163,7 +163,7 @@ The [artifact contract](../ci/release.md) describes wheel/crate versioning.
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
 same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.7.0.dev20261028` and
-`aisimulate==0.13.0.dev202610240000000082`, from the NVIDIA prerelease index.
+`aisim==0.13.0.dev202610240000000082`, from the NVIDIA prerelease index.
 Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
 prediction of the best candidate pass with Python 3.12 on Linux.
 

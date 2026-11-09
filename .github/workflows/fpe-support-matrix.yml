@@ -35,7 +35,7 @@ env:
 jobs:
   prepare-wheel:
     name: Prepare exact FPE wheel
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 30
     container:
       # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
@@ -150,7 +150,7 @@ jobs:
   generate:
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: [discover-shards, prepare-wheel]
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 480
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
@@ -190,11 +190,11 @@ jobs:
           python - <<'PY'
           from scripts.release.package_identity import installed_distribution
           from pathlib import Path
-          from aisimulate import _runtime
+          from aisim import _runtime
           dist = installed_distribution()
           runtime = Path(_runtime.__file__).resolve()
           owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()
-                   if str(p).startswith("aisimulate/_runtime.")}
+                   if str(p).startswith("aisim/_runtime.")}
           if runtime not in owned:
               raise SystemExit(f"native runtime is not owned by the installed AISim wheel: {runtime}")
           print(runtime)

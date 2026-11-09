@@ -25,7 +25,7 @@ const catalog = { schema_version: 1, default_branch: "main", branches: [
 ] };
 const response = (data, status = 200) => ({ ok: status === 200, status, json: async () => structuredClone(data) });
 
-function harness(fetch = async () => response(historical), url = "https://example.com/aisimulate/e2e-accuracy/") {
+function harness(fetch = async () => response(historical), url = "https://example.com/aisim/e2e-accuracy/") {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
@@ -224,7 +224,7 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   await app.run('loadBranch("main")');
   assert.match(app.element("provenance-content").innerHTML, /actions\/runs\/123/);
   assert.match(app.element("provenance-content").innerHTML, /Qualified e2e-accuracy-web artifact/);
-  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisimulate\/blob\//);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisim\/blob\//);
   assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
@@ -376,8 +376,8 @@ test("topology curves retain missing-point gaps and expose normalized numeric de
   assert.match(html, /Operating points \(3\)/);
   assert.match(html, /1\.200×/);
   assert.match(html, /<td>failed \/ success<\/td>/);
-  assert.equal((html.match(/<line class="curve aisimulate"/g) ?? []).length, 0);
-  assert.equal((html.match(/<circle class="point aisimulate"/g) ?? []).length, 4);
+  assert.equal((html.match(/<line class="curve aisim"/g) ?? []).length, 0);
+  assert.equal((html.match(/<circle class="point aisim"/g) ?? []).length, 4);
 });
 
 test("changing topology updates the rendered points and shared selection in both directions", async () => {
@@ -786,7 +786,7 @@ test("evaluated snapshots require matching legacy CLI provenance", () => {
 });
 
 test("baseline entry point is validated and displayed for both layouts", async () => {
-  for (const entry of ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"]) {
+  for (const entry of ["aiconfigurator.main:main", "aisim.legacy_cli.entrypoint:main"]) {
     const data = withEvaluation();
     data.snapshot.aic_source.cli_entry_point = entry;
     const app = setup(async () => response(data));
@@ -1043,7 +1043,7 @@ test("models with only outlier predictions stay selectable and charted", async (
   assert.equal(app.run("state.data.models[0].aisimulate.points"), 0);
   assert.equal(app.run("visibleModels().length"), 1);
   assert.ok(app.run("selectedGpu()"));
-  assert.match(app.element("details-view").innerHTML, /point aisimulate/);
+  assert.match(app.element("details-view").innerHTML, /point aisim/);
   assert.match(app.element("details-view").innerHTML, /role="group"/);
 });
 
@@ -1171,7 +1171,7 @@ test("AgentX checklist separates silicon evidence from AISim settings", () => {
   const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
   const missing = checklist(point);
   assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
-  assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/Legacy missing evidence/);
+  assert.match(featureCell(missing,"cache.g1_prefix","aisimulate"),/Legacy missing evidence/);
   assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
   assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unrecorded means|Support has not been assessed/);
   assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
@@ -1215,7 +1215,7 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal((html.match(/Scope: Unrecorded/g)||[]).length,2);
   assert.match(html,/State-cache type: Unrecorded/);
   assert.match(featureCell(html,"speculation","silicon"),/Method: Unrecorded.*Draft length: Unrecorded/);
-  assert.match(featureCell(html,"speculation","aisim"),/Legacy missing evidence/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Legacy missing evidence/);
   for(const source of ["silicon"]) {
     assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
     assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
@@ -1226,7 +1226,7 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal(checklist(point),html);
   features.find(f=>f.id==="speculation").state="disabled";
   assert.doesNotMatch(featureCell(checklist(point),"speculation","silicon"),/Draft length:/);
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Legacy missing evidence/);
+  assert.match(featureCell(checklist(point),"speculation","aisimulate"),/Legacy missing evidence/);
 });
 
 test("AISim features use structured effective settings and preserve role differences", () => {
@@ -1240,22 +1240,22 @@ test("AISim features use structured effective settings and preserve role differe
       feature("routing.kv_aware","not_applicable"),feature("speculation","enabled",{method:"dspark",draft_length:7,verify_width:8}),
     ]}],speculation_comparison:[]}};
   let html=checklist(point);
-  assert.match(featureCell(html,"cache.g1_prefix","aisim"),/prefill.*status off.*decode.*status on/);
-  assert.match(featureCell(html,"cache.g2","aisim"),/Scope: cluster_shared/);
-  assert.match(featureCell(html,"speculation","aisim"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
-  assert.match(featureCell(html,"kv-aware-routing","aisim"),/status na/);
+  assert.match(featureCell(html,"cache.g1_prefix","aisimulate"),/prefill.*status off.*decode.*status on/);
+  assert.match(featureCell(html,"cache.g2","aisimulate"),/Scope: cluster_shared/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
+  assert.match(featureCell(html,"kv-aware-routing","aisimulate"),/status na/);
   assert.doesNotMatch(html,/Draft length: 99/);
   assert.doesNotMatch(html,/Observed use: unknown/);
   point.simulation_features.roles[1].features[0].observed={state:"exercised",count:3};
-  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: exercised/);
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisimulate"),/Observed use: exercised/);
   point.simulation_features.roles[1].features[0].observed={state:"not_observed",count:0};
-  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: not observed/);
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisimulate"),/Observed use: not observed/);
   point.simulation_features.speculation_comparison=[{role:"decode",status:"unsupported",actual_draft_length:7,aisim_max:5}];
   html=checklist(point);
-  assert.match(featureCell(html,"speculation","aisim"),/Unsupported \(actual: 7, AISim max: 5\)/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Unsupported \(actual: 7, AISim max: 5\)/);
   point.simulation_features.roles[1].features[3].state="failed_to_record";
   point.simulation_features.speculation_comparison=[];
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Recording failed/);
+  assert.match(featureCell(checklist(point),"speculation","aisimulate"),/Recording failed/);
   point.snapshot={commit_sha:"c".repeat(40),dataset_revision:"b".repeat(40)};
   assert.throws(()=>checklist(point),/identity mismatch/);
 });
@@ -1295,7 +1295,7 @@ test("curated silicon features expose recorded scopes, cache types and actual dr
   assert.match(featureCell(html,"cache.hybrid_state","silicon"),/State-cache type: recurrent_state/);
   assert.match(featureCell(html,"kv-aware-routing","silicon"),/agentx-feature-status on/);
   assert.match(featureCell(html,"speculation","silicon"),/Method: DSPARK.*Draft length: 7/);
-  assert.match(featureCell(html,"speculation","aisim"),/agentx-feature-status unknown/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/agentx-feature-status unknown/);
 });
 
 

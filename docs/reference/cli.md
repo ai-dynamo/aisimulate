@@ -5,10 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # CLI reference
 
-Use `aisimulate predict` for one concrete deployment and `aisimulate recommend`
+Use `aisim predict` for one concrete deployment and `aisim recommend`
 for a bounded search. Start with the [quickstart](../getting-started/quickstart.md)
 for a complete input, or consult [configuration](configuration.md) for the YAML
-shape. `aisimulate onboard` has its own [FPM self-service guide](../perf-model/fpm-self-service/implementation.md).
+shape. `aisim onboard` has its own [FPM self-service guide](../perf-model/fpm-self-service/implementation.md).
 The separate [AIC compatibility CLI](../aic-backward-compatibility/cli.md) retains
 its six established workflows.
 
@@ -18,8 +18,8 @@ its six established workflows.
 
 | Command | Purpose | Example invocation | Result |
 |---|---|---|---|
-| `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
-| `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
+| `predict` | Evaluate one concrete deployment under a workload. | `aisim predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
+| `recommend` | Search deployment and load choices for an optimization goal. | `aisim recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
 
 `recommend` also accepts repeatable `--output NAME` options. Each selected output adapter requires
 a same-named top-level configuration section, may observe live candidate and round notifications,
@@ -37,7 +37,7 @@ illustrate the output format. Captured detail examples are simulation results, n
 | `-c`, `--config PATH` | path | Required | Input YAML file. |
 | `--stack NAME` | string | `engine` | Built-in or discovered execution stack. This selection is CLI-only and is never written into YAML. |
 | `--set PATH=YAML_VALUE` | repeatable assignment | None | Set a supported configuration path after loading YAML. |
-| `--output-dir PATH` | path | `./aisimulate-output` | Directory for durable results. |
+| `--output-dir PATH` | path | `./aisim-output` | Directory for durable results. |
 | `--overwrite` | flag | `false` | Replace known AISim output files in an existing output directory. |
 | `--format table\|json` | enum | `table` | Standard-output presentation. It does not change durable output files. |
 
@@ -55,7 +55,7 @@ The CLI deliberately does not expose field-specific flags such as `--request-per
 ### Eager execution and CUDA graphs
 
 These flags control the vLLM worker used for FPM collection. `--enforce-eager`
-is a worker flag, not an `aisimulate predict` or `onboard init` option.
+is a worker flag, not an `aisim predict` or `onboard init` option.
 
 | Setting | CUDA graphs | `torch.compile` |
 |---|---|---|
@@ -76,7 +76,7 @@ explains the current qualification limit and conflicting graph settings.
 `--set` uses a dot-separated path and parses its value as YAML:
 
 ```bash
-aisimulate predict \
+aisim predict \
   --config prediction.yaml \
   --set traffic.load.concurrency=8 \
   --set engine.workers.aggregated.parallelism.replicas=2 \
@@ -101,8 +101,8 @@ The following rules apply:
 routing and Planner behavior, install a [matched integration](../getting-started/installation.md#optional-dynamo-integration) and select it explicitly:
 
 ```bash
-aisimulate predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
-aisimulate recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
+aisim predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
+aisim recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
 ```
 
 A config containing `router` or `planner` requires the corresponding installed adapters; the
@@ -121,7 +121,7 @@ the built-in engine is installed:
 stack 'dynamo' is unavailable; installed stacks: engine. Install the distribution that provides the requested stack.
 ```
 
-Install the integration in the same Python environment as `aisimulate`. Implementation details
+Install the integration in the same Python environment as `aisim`. Implementation details
 for stack and adapter authors are in [adapter contracts](../adapters/README.md).
 
 <a id="outputs"></a>
@@ -157,7 +157,7 @@ Consult the
 
 ### Power and energy detail
 
-Use `aisimulate predict --stack engine --config prediction.yaml --detail energy`
+Use `aisim predict --stack engine --config prediction.yaml --detail energy`
 to show phase and operation evidence alongside the normal power summary.
 `--detail all` includes energy. `--diagnostics power` remains a compatibility
 alias for its original stdout envelope. `--diagnostics-top-n N` bounds table
@@ -262,7 +262,7 @@ requested `auto` mode. The same fields appear in saved `prediction.json`.
 ### Prediction details
 
 ```bash
-aisimulate predict -c prediction.yaml --detail summary,memory,time \
+aisim predict -c prediction.yaml --detail summary,memory,time \
   --format json --output-dir ./prediction-details
 ```
 
@@ -379,7 +379,7 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 
 | Symptom | What to check | Example fix |
 |---|---|---|
-| `aisimulate: command not found` | The environment containing AISim must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisimulate`. |
+| `aisim: command not found` | The environment containing AISim must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisim`. |
 | Installation reports an unsupported Python version | AISim requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
 | Configuration or trace file cannot be found | Check the path and the directory where you ran the command. | Run from the directory containing `prediction.yaml`, or use absolute paths. |
 | Output directory is not empty | Each run needs an empty directory or explicit overwrite. | Add `--output-dir ./another-prediction`, or `--overwrite` to replace known outputs. |
@@ -389,7 +389,7 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 | No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
 | Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../perf-model/methods/whole-forward.md). |
-| `host cost table ... does not exist yet` (or a missing-row message) | A native SGLang VL prediction reads the frontend stage from a host cost table row measured on the serving host; the message prints the `collect` command that adds the row. | Run the printed `python -m aisimulate.vl.collect ...` with `--sglang-python` pointing at the serving venv, then rerun `predict`; see [SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md). |
+| `host cost table ... does not exist yet` (or a missing-row message) | A native SGLang VL prediction reads the frontend stage from a host cost table row measured on the serving host; the message prints the `collect` command that adds the row. | Run the printed `python -m aisim.vl.collect ...` with `--sglang-python` pointing at the serving venv, then rerun `predict`; see [SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
 For automation, check the exit code as well as standard output. `--format json` changes successful

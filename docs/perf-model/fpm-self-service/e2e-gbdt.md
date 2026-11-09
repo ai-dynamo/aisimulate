@@ -37,12 +37,12 @@ reviewing its identity and provenance through onboarding stages 1–3.
 In an AISim source checkout, prepare Python 3.11–3.13 and the training extra:
 
 ```bash
-uv sync --project python/aisimulate --extra learned
-source python/aisimulate/.venv/bin/activate
+uv sync --project python/aisim --extra learned
+source python/aisim/.venv/bin/activate
 export AIS_REPO="$PWD"
-export PYTHONPATH="$AIS_REPO/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
-python -m aisimulate_core.sdk.fpm_learned train --help
-aisimulate predict --help
+export PYTHONPATH="$AIS_REPO/python/aisim${PYTHONPATH:+:$PYTHONPATH}"
+python -m aisim_core.sdk.fpm_learned train --help
+aisim predict --help
 
 export FPM_RUN="$PWD/fpm-run"
 export FPM_ROLE=aggregated  # prefill or decode for P/D
@@ -292,7 +292,7 @@ using a trustworthy shared iteration identity. Producing and validating those
 synchronized groups is outside this walkthrough.
 
 ```bash
-python -m aisimulate_core.sdk.fpm_learned train \
+python -m aisim_core.sdk.fpm_learned train \
   --fpm "$FPM_RUN/selected/$FPM_ROLE.train.jsonl" \
   --worker-type "$FPM_ROLE" --features fpm5 --join-ranks none \
   --identity "$FPM_RUN/$FPM_ROLE.identity.json" \
@@ -300,7 +300,7 @@ python -m aisimulate_core.sdk.fpm_learned train \
   --out "$FPM_RUN/models/$FPM_ROLE.learned.json" \
   --online-checkpoint-dir "$FPM_RUN/models/$FPM_ROLE.online-seed"
 
-python -m aisimulate_core.sdk.fpm_learned evaluate \
+python -m aisim_core.sdk.fpm_learned evaluate \
   --model "$FPM_RUN/models/$FPM_ROLE.learned.json" \
   --fpm "$FPM_RUN/selected/$FPM_ROLE.test.jsonl" --join-ranks none
 ```
@@ -388,7 +388,7 @@ timing:
 ```
 
 ```bash
-aisimulate predict --stack engine --config replay.yaml --output-dir replay-result
+aisim predict --stack engine --config replay.yaml --output-dir replay-result
 ```
 
 For P/D, use `engine.mode: disaggregated`, separate prefill/decode worker blocks

@@ -60,7 +60,7 @@ fixed load, replace `{choices: [4, 8]}` with a concrete concurrency such as `8`.
 Run the bounded search:
 
 ```bash
-aisimulate recommend \
+aisim recommend \
   --config recommendation.yaml \
   --output-dir ./recommendation-output
 ```
@@ -137,7 +137,7 @@ constraints and the bundled AIC sizing alternative.
 If the search found a feasible candidate, pass a saved YAML directly to `predict`:
 
 ```bash
-aisimulate predict \
+aisim predict \
   --config ./recommendation-output/recommendations/0001.yaml \
   --output-dir ./best-prediction
 ```

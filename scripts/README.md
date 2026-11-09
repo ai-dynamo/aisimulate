@@ -67,4 +67,4 @@ resolve a dependency group together with the selected wheel's dev extra where a
 joint resolution is required.
 
 The application/runtime dependencies remain in
-[`python/aisimulate/pyproject.toml`](../python/aisimulate/pyproject.toml).
+[`python/aisim/pyproject.toml`](../python/aisim/pyproject.toml).

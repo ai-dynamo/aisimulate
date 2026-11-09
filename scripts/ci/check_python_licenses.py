@@ -12,7 +12,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-PYPROJECT = Path(__file__).resolve().parents[2] / "python/aisimulate/pyproject.toml"
+PYPROJECT = Path(__file__).resolve().parents[2] / "python/aisim/pyproject.toml"
 PIP_LICENSES = "pip-licenses==5.5.5"
 SETUPTOOLS = "setuptools>=84"
 ALLOWED_LICENSES = (
@@ -28,7 +28,7 @@ def check_licenses(python: str, inventory: Path | None = None, pyproject: Path |
     with (pyproject or PYPROJECT).open("rb") as manifest:
         dependencies = tomllib.load(manifest)["project"]["dependencies"]
     dependencies = [d for d in dependencies if not d.lower().startswith(("aisim-core", "aisimulate-core"))]
-    with tempfile.TemporaryDirectory(prefix="aisimulate-licenses-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="aisim-licenses-") as temporary:
         requirements = Path(temporary) / "runtime-deps.txt"
         requirements.write_text("\n".join(dependencies), encoding="utf-8")
         subprocess.run(
