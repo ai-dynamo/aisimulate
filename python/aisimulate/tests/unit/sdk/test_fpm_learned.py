@@ -58,12 +58,8 @@ def _prefill_fpm(np_: int, ptok: int, pkv: int, wall: float) -> dict:
 
 def test_feature_names_match_rust_abi() -> None:
     """The Rust side hard-codes the same tables; guard against drift."""
-    rust_src = fpm_learned.__file__.rsplit("/python/", 1)[0] + "/crates/core/src/perfmodel/fpm/learned.rs"
-    try:
-        with open(rust_src, encoding="utf-8") as handle:
-            text = handle.read()
-    except OSError:
-        pytest.skip("Rust sources not available in this checkout layout")
+    rust_src = Path(__file__).resolve().parents[5] / "crates/core/src/perfmodel/fpm/learned.rs"
+    text = rust_src.read_text(encoding="utf-8")
 
     def rust_array(const: str) -> tuple[str, ...]:
         block = text.split(f"pub const {const}", 1)[1].split("];", 1)[0]
