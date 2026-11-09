@@ -1035,7 +1035,7 @@ def _score_prepared(
             report_metrics=report,
         )
     if goal.requires_aggregate_sla:
-        violations = aggregate_sla_violations(report, goal.sla, goal.metric_constraints)
+        violations = aggregate_sla_violations(report, goal.sla, goal.enforced_metric_constraints)
         if violations:
             return _EvalResult(
                 candidate=None,

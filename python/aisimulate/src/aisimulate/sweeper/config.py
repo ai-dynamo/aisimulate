@@ -141,6 +141,11 @@ class OptimizationGoal(BaseModel):
         return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
 
     @property
+    def enforced_metric_constraints(self) -> list[MetricConstraint]:
+        # min_gpus forces the mean SLA gate, but metric constraints stay opt-in via strict_sla.
+        return self.metric_constraints if self.strict_sla else []
+
+    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 

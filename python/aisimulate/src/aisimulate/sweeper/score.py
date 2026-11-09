@@ -343,7 +343,7 @@ def analyze_candidates(
         pool = [
             candidate
             for candidate in pool
-            if not aggregate_sla_violations(candidate.metrics, goal.sla, goal.metric_constraints)
+            if not aggregate_sla_violations(candidate.metrics, goal.sla, goal.enforced_metric_constraints)
         ]
     if goal.target is OptimizationTarget.MIN_GPUS:
         pool = [
