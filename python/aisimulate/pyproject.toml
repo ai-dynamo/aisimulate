@@ -121,7 +121,7 @@ python-packages = [
     "aisimulate_core",
 ]
 abi3 = true
-features = ["extension-module"]
+features = ["extension-module", "jemalloc"]
 exclude = ["**/__pycache__/**", "**/*.pyc"]
 include = [
     "src/aisimulate/replay/dashboard*.html",

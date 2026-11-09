@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -17,6 +20,7 @@ from aisimulate.config.engine import (
     WorkersPredictionConfig,
 )
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplaySpec
@@ -91,6 +95,48 @@ def test_replay_estimation_schema_advertises_supported_modes(config_type, schema
 def test_timing_config_accepts_learned_without_loading_source(estimator_config):
     timing = TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
     assert TimingConfig.model_validate_json(timing.model_dump_json()) == timing
+
+
+def test_self_service_replay_template_preserves_learned_timing_after_config_roundtrip(tmp_path):
+    template = Path(__file__).resolve().parents[1] / "scripts/fpm_self_service/replay-aggregated.yaml"
+    values = {
+        "<trace-hash-block-size>": 16,
+        "<captured-model-id>": "example/model",
+        "<packaged-system-name>": "h200_sxm",
+        "<captured-engine-version>": "0.10.0",
+        "<captured-context-limit>": 8192,
+        "<captured-tp>": 4,
+        "<captured-moe-tp>": 1,
+        "<captured-ep>": 4,
+        "<captured-scheduler-token-limit>": 8192,
+        "<captured-sequence-limit>": 64,
+        "<observed-kv-block-size>": 16,
+        "<observed-bytes-per-token-per-tp-shard>": 16384,
+        "<captured-true-or-false>": True,
+        "<observed-usable-blocks-per-dp-rank>": 10000,
+        "/absolute/path/requests.jsonl": str(tmp_path / "requests.jsonl"),
+        "/absolute/path/fpm-run/models/aggregated.learned.json": str(tmp_path / "aggregated.learned.json"),
+    }
+
+    def replace_placeholders(value):
+        if isinstance(value, dict):
+            return {key: replace_placeholders(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_placeholders(item) for item in value]
+        if isinstance(value, str) and (value.startswith("<") or value.startswith("/absolute/path/")):
+            return values[value]
+        return value
+
+    config = CorePredictionConfig.model_validate(replace_placeholders(yaml.safe_load(template.read_text())))
+    restored = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    assert restored == config
+    timing = restored.engine.workers.aggregated.timing
+    assert timing.estimation_mode == "fpm_learned"
+    assert timing.fallback_policy == "deny"
+    assert timing.estimator_config == {
+        "fpm_learned": {"artifact_path": str(tmp_path / "aggregated.learned.json"), "adaptation": "frozen"},
+        "correction": {"enabled": False},
+    }
 
 
 @pytest.mark.parametrize(
@@ -1758,6 +1804,122 @@ def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() 
     assert (decode_timing["cp_size"], decode_timing["dcp"]) == (None, 4)
     assert spec.performance_model_metadata["prefill"]["config"]["cp_size"] == 2
     assert spec.performance_model_metadata["decode"]["config"]["dcp"] == 4
+
+
+def _disaggregated_engine(backend: str, decode: dict, prefill: dict | None = None, **engine) -> dict:
+    return {
+        **_engine(),
+        **engine,
+        "mode": "disaggregated",
+        "backend": backend,
+        "workers": {"prefill": prefill or {}, "decode": decode},
+    }
+
+
+def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -> None:
+    from aisimulate.compiler import _deployment
+
+    def decode_engine_args(decode: dict) -> dict:
+        config = CorePredictionConfig.model_validate({"engine": _disaggregated_engine("sglang", decode)})
+        return _deployment(config.engine, workload={}, afd_performance_model=None).decode_engine_args
+
+    default = decode_engine_args({})
+    assert default["enable_prefix_caching"] is True
+    assert "sglang" not in default
+
+    enabled = decode_engine_args({"kv_cache": {"decode_radix_cache": True}})
+    assert enabled["enable_prefix_caching"] is True
+    assert enabled["sglang"] == {"disaggregation_decode_enable_radix_cache": True}
+
+
+@pytest.mark.parametrize(
+    ("backend", "decode", "prefill", "engine", "needle"),
+    [
+        ("vllm", {"kv_cache": {"decode_radix_cache": True}}, None, {}, "only for backend=sglang"),
+        ("sglang", {}, {"kv_cache": {"decode_radix_cache": True}}, {}, "only to the decode role"),
+        (
+            "sglang",
+            {"kv_cache": {"decode_radix_cache": True, "prefix_caching": False}},
+            None,
+            {},
+            "requires prefix_caching=true",
+        ),
+        (
+            "sglang",
+            {"kv_cache": {"decode_radix_cache": True}},
+            None,
+            {"nextn": 1, "nextn_accepted": 1.0},
+            "speculative decoding",
+        ),
+    ],
+)
+def test_sglang_decode_radix_cache_rejects_unsupported_settings(backend, decode, prefill, engine, needle) -> None:
+    with pytest.raises(ValidationError, match=needle):
+        CorePredictionConfig.model_validate({"engine": _disaggregated_engine(backend, decode, prefill, **engine)})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper(enabled) -> None:
+    worker = {
+        "kv_cache": {"capacity": {"type": "fixed", "blocks": 2048}},
+        "timing": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+    }
+    engine = {
+        **_engine(),
+        "mode": "disaggregated",
+        "backend": "sglang",
+        "context_length": 4096,
+        "workers": {
+            "prefill": worker,
+            "decode": {**worker, "kv_cache": {**worker["kv_cache"], "decode_radix_cache": enabled}},
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {"type": "concurrency", "concurrency": 8},
+                "stop": {"requests": 100},
+            },
+            "evaluation": {"sla": {"itl_ms": 30}},
+            "optimization": {"target": "min_gpus"},
+        }
+    )
+
+    space = recommendation_to_sweeper(config).search_space
+    assert space.decode_radix_cache is enabled
+    assert space.decode_enable_prefix_caching is True
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    sample = unroll_sample(
+        search_space=space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": "sglang",
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 8,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 8,
+        },
+        parallel_config=DisaggParallelConfig(replica, replica),
+    )
+    deployment = build_backend_deployment(sample, backend_version="0.5.22")
+    assert (
+        deployment.decode_engine_args.get("sglang", {}).get("disaggregation_decode_enable_radix_cache", False)
+        is enabled
+    )
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            ReplaySpec(
+                backend_deployment=deployment,
+                workload={"isl": 16, "osl": 4, "concurrency": 1, "num_request_ratio": 2},
+                goal={"target": "throughput"},
+            )
+        )
+    )
+    assert report.metrics["completed_requests"] == 2
 
 
 @pytest.mark.parametrize(

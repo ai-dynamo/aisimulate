@@ -1706,6 +1706,7 @@ impl VllmKvManager {
 
         let data = if is_store {
             KvEventData::Stored(StoredBlocks {
+                cache_salt: None,
                 parent_hash,
                 start_position: None,
                 blocks: full_blocks

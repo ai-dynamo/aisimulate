@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Thin neutral contract adapter over the mechanically moved scheduler cores.
 
@@ -89,7 +92,7 @@ impl SchedulerRank {
     pub(crate) fn per_rank_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
         match &self.core {
             EngineCore::Vllm(core) => core.per_rank_host_cache_metrics(),
-            EngineCore::Sglang(_) => None,
+            EngineCore::Sglang(core) => core.host_cache_metrics(),
         }
     }
 
@@ -210,6 +213,16 @@ impl RankEngine for SchedulerRank {
         context: CommandContext,
         pending_pass: Option<&mut Self::PendingPass>,
     ) -> Result<Self::CommandEffects> {
+        if let Command::Submit(request)
+        | Command::SubmitHandoffPrefill { request, .. }
+        | Command::ReserveDestination { request, .. } = &command
+        {
+            ensure!(
+                matches!(self.core, EngineCore::Sglang(_))
+                    || request.cache_salt.as_deref().is_none_or(str::is_empty),
+                "cache_salt is supported only for backend=sglang"
+            );
+        }
         let pending_suppression = pending_output_suppression(&command, &self.handoff_requests);
         let handoff_update = handoff_tracking_update(&command);
         let core_command = Self::core_command(command);
@@ -378,8 +391,8 @@ impl RankEngine for SchedulerRank {
         pending.effects.metrics = self.metrics();
         pending.effects.metrics.sglang_cache_hit_tokens = sglang_cache_hit_tokens;
         pending.effects.metrics.sglang_cache_total_tokens = sglang_cache_total_tokens;
-        // Under the SGLang host loop a pass ends when the scheduler thread returns
-        // to its loop, not when its forward does; FPM telemetry wants the forward.
+        // SGLang passes can include preselection write-back waits or end before
+        // their forward under the host loop. FPM telemetry wants the forward itself.
         pending.effects.forward_pass_metrics.duration_ms = self
             .core
             .last_forward_ms()
@@ -499,7 +512,8 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         num_gpu_blocks: config.num_gpu_blocks,
         block_size: config.block_size,
         max_model_len: config.max_model_len,
-        max_num_seqs: Some(config.max_num_seqs),
+        max_num_seqs: (config.backend != Backend::Sglang || config.max_num_seqs != usize::MAX)
+            .then_some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
         prefill_schedule_interval: config.prefill_schedule_interval,
         prefill_decode_interval: config.prefill_decode_interval,
@@ -534,6 +548,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             PreemptionMode::Fifo => CorePreemptionMode::Fifo,
         },
         sglang: Some(SglangArgs {
+            hicache: config.sglang.hicache,
             schedule_policy: Some(
                 match config.sglang.schedule_policy {
                     crate::engine::SglangSchedulePolicy::Fifo => "fifo",
@@ -548,6 +563,11 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
             vlm_cache_bytes: Some(config.sglang.vlm_cache_bytes),
             host_loop: config.sglang.host_loop,
+            disaggregation_decode_enable_radix_cache: config
+                .sglang
+                .disaggregation_decode_enable_radix_cache,
+            num_reserved_decode_tokens: Some(config.sglang.num_reserved_decode_tokens),
+            disaggregation_decode_extra_slots: config.sglang.disaggregation_decode_extra_slots,
             frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,
@@ -594,6 +614,7 @@ fn core_request(request: Request) -> DirectRequest {
         uuid: Some(request.request_id),
         arrival_timestamp_ms: None,
         session_id: request.session_id,
+        cache_salt: request.cache_salt.filter(|salt| !salt.is_empty()),
         images: request.images,
         kv_hint: request.kv_hint,
     }
@@ -785,6 +806,147 @@ mod tests {
     };
 
     #[rstest::rstest]
+    fn cache_salt_rejects_unsupported_backends_before_mutating_request_state(
+        #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+        #[values(WorkerType::Aggregated, WorkerType::Prefill, WorkerType::Decode)]
+        worker_type: WorkerType,
+    ) {
+        let config = EngineConfig {
+            worker_type,
+            num_gpu_blocks: 16,
+            block_size: 4,
+            ..EngineConfig::for_backend(backend)
+        };
+        let mut rank = SchedulerRank::new(
+            RankIdentity {
+                worker_id: 0,
+                dp_rank: 0,
+                dp_size: NonZeroU32::MIN,
+            },
+            &config,
+        )
+        .unwrap();
+        let request_id = Uuid::from_u128(1);
+        let handoff_id = HandoffId::from(Uuid::from_u128(2));
+        let mut request: Request = serde_json::from_value(serde_json::json!({
+            "request_id": request_id,
+            "tokens": [1, 2, 3, 4],
+            "max_output_tokens": 2,
+            "cache_salt": "alpha",
+        }))
+        .unwrap();
+        let command = |request| match worker_type {
+            WorkerType::Aggregated => Command::Submit(request),
+            WorkerType::Prefill => Command::SubmitHandoffPrefill {
+                handoff_id,
+                request,
+            },
+            WorkerType::Decode => Command::ReserveDestination {
+                handoff_id,
+                request,
+            },
+        };
+        let context = CommandContext {
+            now_ms: 0.0,
+            pass_in_flight: false,
+        };
+        let before = rank.metrics();
+        let error = rank
+            .apply_command_effects(command(request.clone()), context, None)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cache_salt is supported only for backend=sglang")
+        );
+        assert_eq!(rank.metrics(), before);
+        assert!(rank.is_drained());
+        assert!(rank.handoff_requests.is_empty());
+        request.cache_salt = Some(String::new());
+        let effects = rank
+            .apply_command_effects(command(request), context, None)
+            .unwrap();
+        let expected = if worker_type == WorkerType::Decode {
+            CommandResult::DestinationAccepted { request_id }
+        } else {
+            CommandResult::Submitted(request_id)
+        };
+        assert_eq!(effects.result, expected);
+    }
+
+    #[rstest::rstest]
+    #[case::unset(serde_json::json!({}), 6)]
+    #[case::zero(serde_json::json!({"disaggregation_decode_extra_slots": 0}), 2)]
+    #[case::explicit(serde_json::json!({"disaggregation_decode_extra_slots": 1}), 3)]
+    fn json_decode_extra_slots_control_destination_admission(
+        #[case] sglang: serde_json::Value,
+        #[case] limit: u128,
+    ) {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "worker_type": "decode",
+            "num_gpu_blocks": 16384,
+            "block_size": 1,
+            "max_num_seqs": 2,
+            "sglang": sglang,
+            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+        }))
+        .unwrap();
+        let mut core = SglangCore::new(core_args(&config, config.built_in_timing_model().unwrap()));
+        for id in 1..=limit + 1 {
+            let handoff_id = HandoffId::from(Uuid::from_u128(id));
+            let effects = core
+                .apply_command_effects(
+                    CoreCommand::ReserveDestination {
+                        handoff_id,
+                        request: DirectRequest {
+                            uuid: Some(Uuid::from_u128(id)),
+                            tokens: vec![id as u32; 8],
+                            max_output_tokens: 1,
+                            ..Default::default()
+                        },
+                    },
+                    true,
+                )
+                .unwrap();
+            assert_eq!(effects.lifecycle_events.len(), usize::from(id <= limit));
+            if id <= limit {
+                core.apply_command(CoreCommand::ActivateDestination { handoff_id })
+                    .unwrap();
+            }
+        }
+        let released = core
+            .apply_command_effects(
+                CoreCommand::CancelDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(1)),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(released.lifecycle_events.len(), 1);
+        core.apply_command(CoreCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(limit + 1)),
+        })
+        .unwrap();
+        let mut outputs = 0;
+        let mut now = 0.0;
+        for _ in 0..10 {
+            let pass = core.execute_hidden_pass(now);
+            now = pass.end_ms;
+            outputs += pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+                .count();
+            if core.is_drained() {
+                break;
+            }
+        }
+        assert!(core.is_drained());
+        assert_eq!(outputs, limit as usize);
+    }
+
+    #[rstest::rstest]
     fn unsupported_native_images_reject_without_consuming_request_or_handoff_ids(
         #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
         #[values(WorkerType::Aggregated, WorkerType::Prefill, WorkerType::Decode)]
@@ -813,6 +975,7 @@ mod tests {
         let request_id = Uuid::from_u128(1);
         let handoff_id = HandoffId::from(Uuid::from_u128(2));
         let mut request = Request {
+            cache_salt: None,
             request_id,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
@@ -1002,6 +1165,7 @@ mod tests {
             let first = Uuid::from_u128(94_001);
             rank.apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: first,
                     tokens: vec![1, 2, 3, 4],
                     max_output_tokens: 20,
@@ -1025,6 +1189,7 @@ mod tests {
             let second = Uuid::from_u128(94_002);
             rank.apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: second,
                     tokens: (10..22).collect(),
                     max_output_tokens: 1,
@@ -1167,6 +1332,7 @@ mod tests {
         let effects = rank
             .apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id,
                     tokens,
                     max_output_tokens: 0,
@@ -1214,6 +1380,7 @@ mod tests {
                 Command::SubmitHandoffPrefill {
                     handoff_id,
                     request: Request {
+                        cache_salt: None,
                         request_id: restore_id,
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 0,
@@ -1245,6 +1412,7 @@ mod tests {
         let effects = rank
             .apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id,
                     tokens: vec![1, 2, 3, 4],
                     max_output_tokens: output_token_ids.len(),
@@ -1365,6 +1533,7 @@ mod tests {
         let submission = rank
             .apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: busy_id,
                     tokens: vec![21, 22, 23, 24],
                     max_output_tokens: 0,
@@ -1389,6 +1558,7 @@ mod tests {
         let arrival = rank
             .apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: arrival_id,
                     tokens: vec![31, 32, 33, 34],
                     max_output_tokens: 0,
@@ -1449,6 +1619,7 @@ mod tests {
         let error = rank
             .apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: restore_id,
                     tokens: vec![41, 42, 43, 44],
                     max_output_tokens: 0,
@@ -1508,6 +1679,7 @@ mod tests {
             let effects = rank
                 .apply_command_effects(
                     Command::Submit(Request {
+                        cache_salt: None,
                         request_id: *request_id,
                         tokens: tokens.clone(),
                         max_output_tokens: 0,
@@ -1548,6 +1720,7 @@ mod tests {
             let busy_id = Uuid::from_u128(94_000 + u128::from(cancel_source));
             rank.apply_command_effects(
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: busy_id,
                     tokens: vec![21, 22, 23, 24],
                     max_output_tokens: 0,
@@ -1642,6 +1815,7 @@ mod tests {
                 Command::ReserveDestination {
                     handoff_id,
                     request: Request {
+                        cache_salt: None,
                         request_id,
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 1,
@@ -1713,6 +1887,7 @@ mod tests {
             let effects = rank
                 .apply_command_effects(
                     Command::Submit(Request {
+                        cache_salt: None,
                         request_id,
                         tokens,
                         max_output_tokens: 8,
@@ -1771,6 +1946,7 @@ mod tests {
                 Command::SubmitHandoffPrefill {
                     handoff_id,
                     request: Request {
+                        cache_salt: None,
                         request_id,
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 1,
@@ -1866,6 +2042,7 @@ mod tests {
                 Command::ReserveDestination {
                     handoff_id: historical_handoff,
                     request: Request {
+                        cache_salt: None,
                         images: Vec::new(),
                         request_id: history,
                         tokens: (1..=9).collect(),
@@ -1917,6 +2094,7 @@ mod tests {
                 Command::SubmitHandoffPrefill {
                     handoff_id: consumer_handoff,
                     request: Request {
+                        cache_salt: None,
                         images: Vec::new(),
                         request_id: consumer,
                         tokens: (1..=9).collect(),

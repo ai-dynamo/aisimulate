@@ -288,6 +288,11 @@ def test_open_loop_tpot_and_sla_include_decode_queueing(
 
     assert [record["tpot_ms"] for record in report.metadata["per_request"]] == pytest.approx(expected_tpots)
     assert report.metrics["mean_tpot_ms"] == pytest.approx(sum(expected_tpots) / 4)
+    # Request-weighted user TPS, as in native replay and AIPerf. The previous
+    # 1000 / mean TPOT gave 54.05 instead of 61.29 for the prefill case.
+    assert report.metrics["mean_output_token_throughput_per_user"] == pytest.approx(
+        sum(1000 / tpot for tpot in expected_tpots) / 4
+    )
     assert report.metrics["goodput_completed_requests"] == 1.0
     assert report.metrics["goodput_request_throughput_rps"] == pytest.approx(1_000.0 / expected_duration)
     assert report.metrics["goodput_output_throughput_tok_s"] == pytest.approx(3_000.0 / expected_duration)

@@ -93,6 +93,8 @@ def _engine_args(*, role="aggregated", backend="vllm", timing=None):
         "aic_attention_dp_size": 1,
         "block_size": 4,
         "num_gpu_blocks": 16,
+        # These toy pools cannot hold SGLang's default 512-token decode reserve.
+        **({"sglang": {"num_reserved_decode_tokens": 0}} if backend == "sglang" else {}),
         "timing_model": timing or {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0},
     }
 
@@ -3450,3 +3452,19 @@ def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeyp
         engine["mode"] = "disaggregated"
     with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
+
+
+def test_native_summary_supplies_every_aiperf_selector():
+    from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
+
+    report = EngineReplayRunnerFactory().create(0).run(_spec(goal={"target": "output_token_throughput_per_user.p50"}))
+    # Fixed timing: 2 ms prefill, one 1 ms decode, one completed request.
+    expected = {
+        "time_to_first_token": 2,
+        "request_latency": 3,
+        "inter_token_latency": 1,
+        "output_token_throughput_per_user": 1000,
+    }
+    for metric in AIPerfMetric:
+        assert metric_value(report.metrics, metric) == expected[metric.value.rsplit(".", 1)[0]], metric
+    assert "native_report" not in report.metadata

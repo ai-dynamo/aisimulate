@@ -684,10 +684,10 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         "two-plays snapshot disagg: 3 a01db8613f512a83",
         "two-plays warmup agg: 3 0f7ad48710c5d7c6",
         "two-plays warmup disagg: 3 26a20280546a6cc7",
-        "two-plays profile agg: 821 e20edce760494c3c",
-        "two-plays profile disagg: 667 53b97fda7fd727e0",
-        "two-plays profile-cold agg: 820 556b4f20c32324af",
-        "two-plays profile-cold disagg: 601 21257dffb47e3779",
+        "two-plays profile agg: 821 10a719a78e167cd4",
+        "two-plays profile disagg: 667 c737d31ab004240b",
+        "two-plays profile-cold agg: 820 720a0b2eb0c2c09b",
+        "two-plays profile-cold disagg: 601 157c87c3cc4bbfe3",
     ];
     assert_eq!(actual, expected);
 }
