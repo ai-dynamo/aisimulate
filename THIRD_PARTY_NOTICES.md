@@ -17,7 +17,10 @@ to `python/aisimulate/` in the repository source tree.
 
 `collector/sglang/collect_kimi_k31_dsa_v1.py` adapts the native batch/request
 lifecycle from `python/sglang/benchmark/one_batch.py` and the attention
-observation boundary from `python/sglang/srt/models/kimi_k3.py`. The image
+observation boundary from `python/sglang/srt/models/kimi_k3.py`. Decode history
+continuation also follows `python/sglang/srt/managers/schedule_batch.py`,
+`python/sglang/srt/mem_cache/common.py`, and
+`python/sglang/srt/mem_cache/allocation.py` at the same revision. The image
 identifies the upstream repository as `radixark/sglang-k31`, commit
 `afcd7d6b487a9cbe73e25941971b4cc107e6f9ae`; that GitHub repository is not
 publicly accessible. The immutable source is embedded in the official
@@ -33,6 +36,8 @@ at repository root as `LICENSE`. No applicable upstream
 NOTICE file was present in the inspected source. Modified by NVIDIA: retain
 the native model/batch builders, reduce the untimed model to one layer,
 observe gated attention with CUDA events, and emit AISimulate DSA rows.
+Complete decode history is built through bounded native request continuations;
+the timed decode boundary remains unchanged.
 The serving implementation is imported from the runtime, not vendored.
 
 The gated-module and physical KV-layout accounting in

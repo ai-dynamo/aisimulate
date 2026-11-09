@@ -15,6 +15,7 @@ from collector.sglang.collect_kimi_k31_dsa_v1 import (
     MODEL,
     RUNTIME_VERSION,
     SOURCE_COMMIT,
+    _extend_history,
     executed_kernel_source,
     perf_item,
     run_kimi_k31_dsa_fullnode,
@@ -214,3 +215,70 @@ def test_native_forward_batch_must_match_persisted_prefix_and_history():
     batch.seq_lens = SimpleNamespace(tolist=lambda: [512])
     with pytest.raises(RuntimeError, match="KV history"):
         validate_forward_batch(batch, case, "context")
+
+
+def test_native_history_continuation_covers_every_token_without_replacing_requests():
+    reqs = [SimpleNamespace(kv=SimpleNamespace(req_pool_idx=i + 1)) for i in range(2)]
+    observed = [[] for _ in reqs]
+
+    def extend(actual):
+        assert actual is reqs
+        assert sum(req.extend_end - req.prefix_len for req in actual) <= 6
+        for index, req in enumerate(actual):
+            observed[index].extend(range(req.prefix_len, req.extend_end))
+        return (
+            [req.extend_end for req in actual],
+            None,
+            SimpleNamespace(
+                seq_lens_cpu=SimpleNamespace(tolist=lambda: [req.extend_end for req in actual]),
+                prefix_lens=[req.prefix_len for req in actual],
+                extend_lens=[req.extend_end - req.prefix_len for req in actual],
+            ),
+        )
+
+    tokens, _, receipt = _extend_history(SimpleNamespace(extend=extend), reqs, 7, chunk_tokens=6)
+    assert observed == [list(range(7)), list(range(7))]
+    assert tokens == [7, 7]
+    assert receipt == {
+        "protocol": "native-req-continuation-v1",
+        "chunk_tokens": 6,
+        "chunks": 3,
+        "history_per_request": 7,
+        "request_slots_preserved": True,
+    }
+
+
+@pytest.mark.parametrize("failure", ["prefix", "length", "request_slot", "unallocated", "native_error"])
+def test_native_history_continuation_fails_closed(failure):
+    req = SimpleNamespace(kv=SimpleNamespace(req_pool_idx=1))
+    calls = 0
+
+    def extend(reqs):
+        nonlocal calls
+        calls += 1
+        lengths = [req.extend_end]
+        prefixes = [req.prefix_len]
+        if calls == 2:
+            if failure == "native_error":
+                raise RuntimeError("native prefill failed")
+            if failure == "prefix":
+                prefixes = [0]
+            if failure == "length":
+                lengths = [1]
+            if failure == "request_slot":
+                req.kv.req_pool_idx = 2
+            if failure == "unallocated":
+                req.kv.req_pool_idx = None
+        return (
+            [0],
+            None,
+            SimpleNamespace(
+                seq_lens_cpu=SimpleNamespace(tolist=lambda: lengths),
+                prefix_lens=prefixes,
+                extend_lens=[req.extend_end - req.prefix_len],
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="native"):
+        _extend_history(SimpleNamespace(extend=extend), [req], 7, chunk_tokens=3)
+    assert calls == 2

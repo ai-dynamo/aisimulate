@@ -47,6 +47,7 @@ ARCHITECTURE = "KimiK31ForConditionalGeneration"
 RUNTIME_VERSION = "0.0.0.dev1+g41208373c.d20261104"
 SOURCE_COMMIT = "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae"
 NATIVE_HEADS = 96
+HISTORY_CHUNK_TOKENS = 8192
 
 
 def get_kimi_k31_dsa_context_test_cases():
@@ -232,6 +233,56 @@ def _assert_runtime() -> None:
         raise RuntimeError("native Kimi K3.1 source identity differs from the pinned official image")
 
 
+def _extend_history(bench, reqs, history_length: int, chunk_tokens: int = HISTORY_CHUNK_TOKENS):
+    """Build complete decode history through native request continuation.
+
+    afcd one_batch.prepare_extend_inputs_for_correctness_test and
+    mem_cache/common.py::checkpoint_kv_cache advance Req.prefix_len to the
+    previous extend_end. ScheduleBatch.prepare_for_extend and
+    allocation.py::_prefix_kv_indices reuse its existing cache row. Each
+    chunk executes the native model, including latent KV and index-K writes.
+    This untimed setup avoids one_batch's monolithic-prefill scratch limits;
+    it never replaces history with top-k tokens or changes timed decode.
+    """
+    if not reqs or history_length <= 0 or chunk_tokens < len(reqs):
+        raise ValueError("native history requires positive length and a chunk budget covering every request")
+    per_request = chunk_tokens // len(reqs)
+    prefix = 0
+    slots = None
+    chunks = 0
+    while prefix < history_length:
+        end = min(history_length, prefix + per_request)
+        for req in reqs:
+            req.prefix_len = prefix
+            req.extend_end = end
+        tokens, _, batch = bench.extend(reqs)
+        if (
+            batch.seq_lens_cpu.tolist() != [end] * len(reqs)
+            or batch.prefix_lens != [prefix] * len(reqs)
+            or batch.extend_lens != [end - prefix] * len(reqs)
+        ):
+            raise RuntimeError("native history chunk differs from the requested continuation")
+        current_slots = tuple(req.kv.req_pool_idx for req in reqs)
+        if None in current_slots or len(set(current_slots)) != len(reqs):
+            raise RuntimeError("native history requests lack distinct allocated cache rows")
+        if slots is not None and current_slots != slots:
+            raise RuntimeError("native history continuation changed request cache ownership")
+        slots = current_slots
+        prefix = end
+        chunks += 1
+    return (
+        tokens,
+        batch,
+        {
+            "protocol": "native-req-continuation-v1",
+            "chunk_tokens": chunk_tokens,
+            "chunks": chunks,
+            "history_per_request": history_length,
+            "request_slots_preserved": True,
+        },
+    )
+
+
 def _prepare_forward(bench, case: ModuleCase, phase: str):
     """Let native one_batch build every tensor, KV slot and attention metadata.
 
@@ -250,11 +301,14 @@ def _prepare_forward(bench, case: ModuleCase, phase: str):
         return original(batch, *args, **kwargs)
 
     runner.forward = capture
+    history = None
     try:
         bench.clear()
         if phase == "generation":
             reqs = prepare_synthetic_inputs_for_latency_test(case.batch_size, case.seq_len - 1)
-            tokens, _, batch = bench.extend(reqs)
+            tokens, batch, history = _extend_history(
+                bench, reqs, case.seq_len - 1, max(HISTORY_CHUNK_TOKENS, case.batch_size)
+            )
             bench.decode(tokens, batch)
         else:
             reqs = prepare_synthetic_inputs_for_latency_test(case.batch_size, case.prefix_len + case.seq_len)
@@ -270,7 +324,7 @@ def _prepare_forward(bench, case: ModuleCase, phase: str):
         runner.forward = original
     if len(captured) != 1:
         raise RuntimeError("native batch builder did not produce one forward")
-    return captured[0]
+    return captured[0], history
 
 
 def validate_forward_batch(batch, case: ModuleCase, phase: str) -> dict:
@@ -319,7 +373,7 @@ def _rank_main(rank, server_args, port_args, case_values, phase, output, first_g
         raise RuntimeError("native model builder did not select Kimi Gated DSA")
     if not attention.use_output_gate or attention.num_local_heads != case.num_heads:
         raise RuntimeError("native gate or local TP head geometry differs from the case")
-    batch = _prepare_forward(bench, case, phase)
+    batch, history = _prepare_forward(bench, case, phase)
     batch_receipt = validate_forward_batch(batch, case, phase)
 
     # KimiK3DecoderLayer._run_self_attn calls the Module normally. Events
@@ -366,6 +420,7 @@ def _rank_main(rank, server_args, port_args, case_values, phase, output, first_g
                         "case": list(case),
                         "phase": phase,
                         "forward_batch": batch_receipt,
+                        "history_preparation": history,
                         "kernel_source": source,
                         "observations": len(starts),
                         "latency_ms": duration.item(),
