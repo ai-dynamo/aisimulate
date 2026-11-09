@@ -389,6 +389,14 @@ SKIPS: list[dict] = [
     # vLLM: the attention collector has no FP8-compute (FP8 FMHA) input, so an
     # FP8-compute row would re-time the FP8-KV case under an fp8 label.
     {"backend": "vllm", "op": "attention_context", "attn_dtype": "fp8"},
+    # TRT-LLM off the SM100 family cannot run head_dim 512 attention: every
+    # non-MLA AttentionOp checks mmha_supported(head_size) when it is initialized
+    # (cpp/tensorrt_llm/common/attentionOp.cpp AttentionOp::initialize, "Head size
+    # %d is not supported by MMHA"), so serving refuses these layers too, and the
+    # uncaught C++ exception kills the collector worker at every case (h200
+    # attention_context shard: 1,122 cases, 1,122 worker restarts). SM100/103
+    # run them (b200 attention shards: no failures).
+    {"backend": "trtllm", "op": _ATTENTION_OPS, "sm": [80, 86, 89, 90, 120], "head_dim": 512},
     # TRT-LLM on SM90: FP8-KV decode with 96 query heads over 4 KV heads aborts
     # the worker (launch failure, then SIGABRT) at every head_dim, batch and KV
     # length (h200 attention_generation shard: 512 cases, none passing).
