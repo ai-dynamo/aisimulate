@@ -464,6 +464,18 @@ pub(crate) enum GroupHitBlocks {
     /// run.
     Attention(Vec<Option<CacheKey>>),
     State(Option<CacheKey>),
+    /// The own hit of a state group on a decode rank that loads a KV handoff:
+    /// the cached block keyed at `tokens`, below the loaded tokens. vLLM
+    /// counts it in both admission tests: its `cdiv(tokens, B)` blocks count
+    /// as computed, and the cached one counts again when no request holds it
+    /// (V31 `single:1762-1816`, V32 `single:1724-1778`). Then the decode rank
+    /// drops the block without holding it, as a Mamba group skips all but the
+    /// last computed token (V31 `single:298-303`, `:1990-1995`, V32
+    /// `single:295-300`, `:1954-1959`).
+    DroppedState {
+        key: CacheKey,
+        tokens: usize,
+    },
     None,
 }
 
@@ -720,7 +732,8 @@ impl GroupedPrefixCoordinator {
     ///    local prefix is again the hit that every group agrees on
     ///    (`mgr:360-364`).
     /// 4. Otherwise the local prefix is the full-attention hit, with a
-    ///    junction of 0 (`mgr:366-369`).
+    ///    junction of 0, and each group keeps its own hit blocks
+    ///    (`mgr:366-369`).
     /// 5. The scheduler floors the local prefix to the scheduler block before
     ///    it asks the connector (V31 `sched:941-952`, V32 `sched:971-982`). A
     ///    load that reaches past the local prefix truncates the hit blocks of
@@ -736,22 +749,30 @@ impl GroupedPrefixCoordinator {
     /// to the scheduler block, the LCM of every group block. The two differ
     /// only for a fine-grained profile whose full-attention block is below the
     /// scheduler block. A nonzero junction keeps its position. Without a
-    /// full-attention group nothing is floored.
+    /// full-attention group nothing is floored. The drop of a state hit above
+    /// the floor then reads the agreed hit itself, so a state hit that ends
+    /// inside its block is dropped. vLLM still floors to the scheduler block
+    /// there, so it can drop more where that block exceeds a state block.
     ///
-    /// Only the full-attention groups get hit blocks. On a decode rank vLLM
-    /// drops each group's hit blocks below its skipped tokens before it
+    /// Only the full-attention groups get hit blocks to pin. On a decode rank
+    /// vLLM drops each group's hit blocks below its skipped tokens before it
     /// touches them (V31 `single:295-316`, V32 `single:292-313`). A Mamba
     /// group skips all but the last computed token (V31 `single:1990-1995`,
-    /// V32 `single:1954-1959`), so vLLM never holds a lagging state hit block.
-    /// Its admission count still adds such a cached block when no request
-    /// holds it (V31 `single:1813-1816`, V32 `single:1775-1778`). This finder
-    /// does not count it. A window group keeps its hit blocks inside the
-    /// window, where this finder takes new blocks.
+    /// V32 `single:1954-1959`), so vLLM never holds a lagging state hit block,
+    /// though its two admission tests count it. So each state group with an
+    /// own hit gets `GroupHitBlocks::DroppedState`, which the tests count and
+    /// `pin_hit` skips. A state hit above the floor gets none, as the
+    /// truncation cuts its cached block. A local prefix that reaches
+    /// `loaded_tokens` leaves every state group without a hit, as vLLM then
+    /// loads nothing (`nixl/pull_scheduler.py:59-65`) and replay still moves
+    /// the state. A window group keeps its hit blocks inside the window, where
+    /// this finder takes new blocks.
     pub(crate) fn find_destination_hit(
         &self,
         pool: &GroupedBlockPool,
         lease: &BlockRequestLease,
         num_tokens: usize,
+        loaded_tokens: usize,
     ) -> GroupedHit {
         let rules = &self.rules;
         if num_tokens == 0 {
@@ -776,8 +797,8 @@ impl GroupedPrefixCoordinator {
             (!deeper).then_some((spec, ends, tokens))
         });
         let mut hit = match local {
-            // The keys of every group of `spec`, no other hit block and no
-            // junction.
+            // The keys of every group of `spec`, the own hit of each state
+            // group and no junction.
             Some((spec, ends, tokens)) => {
                 let mut hit = self.empty_hit();
                 for &g in &spec.groups {
@@ -787,23 +808,45 @@ impl GroupedPrefixCoordinator {
                             .collect(),
                     );
                 }
+                for state in rules
+                    .specs
+                    .iter()
+                    .filter(|spec| spec.kind == GroupRuleKind::State)
+                {
+                    let own = self.state_hit(pool, lease, state, max);
+                    for &g in &state.groups {
+                        if let Some(key) = (own > 0)
+                            .then(|| grouped_key(g, lease.prefix_hash_at(own)))
+                            .flatten()
+                        {
+                            hit.per_group[g] = GroupHitBlocks::DroppedState { key, tokens: own };
+                        }
+                    }
+                }
                 hit.tokens = tokens;
                 hit
             }
             // Rules 1 and 3: the fixed point, with no hit block outside full
-            // attention.
+            // attention. A state group keeps the agreed hit as its own.
             None => {
                 let mut hit = self.find_longest_hit(pool, lease, num_tokens);
+                let tokens = hit.tokens;
                 for (blocks, rule) in hit.per_group.iter_mut().zip(&rules.groups) {
                     if rule.kind != GroupRuleKind::FullAttention {
-                        *blocks = GroupHitBlocks::None;
+                        *blocks = match *blocks {
+                            GroupHitBlocks::State(Some(key)) => {
+                                GroupHitBlocks::DroppedState { key, tokens }
+                            }
+                            _ => GroupHitBlocks::None,
+                        };
                     }
                 }
                 hit
             }
         };
-        // Rule 5, floored to the full-attention block: only full-attention
-        // groups hold keys here, and each keeps the keys below the floor.
+        // Rule 5, floored to the full-attention block: the attention keys are
+        // full-attention keys here, and each group keeps the keys below the
+        // floor.
         if let Some(spec) = full {
             let floor = hit.tokens / spec.block * spec.block;
             if hit.junction_tokens > 0 {
@@ -814,6 +857,19 @@ impl GroupedPrefixCoordinator {
                 if let GroupHitBlocks::Attention(keys) = blocks {
                     keys.truncate(floor / rule.block);
                 }
+            }
+        }
+        // The truncation keeps `min(floor / B, len)` blocks of a Mamba list,
+        // so a state hit above the floor loses its cached block. Without a
+        // full-attention group nothing was floored, and this reads the agreed
+        // hit itself. A local prefix that reaches the loaded tokens loads
+        // nothing in vLLM, while replay still moves the state.
+        let tokens = hit.tokens;
+        for (blocks, rule) in hit.per_group.iter_mut().zip(&rules.groups) {
+            if let GroupHitBlocks::DroppedState { tokens: own, .. } = *blocks
+                && (own.div_ceil(rule.block) > tokens / rule.block || tokens >= loaded_tokens)
+            {
+                *blocks = GroupHitBlocks::None;
             }
         }
         hit
@@ -975,6 +1031,8 @@ impl GroupedPrefixCoordinator {
     /// `admission_blocks` of a decode rank that loads a P/D handoff on top of
     /// the local `hit`: the loaded tokens count as computed too, as the
     /// `total_computed_tokens` of vLLM's whole-prompt check (`mgr:519-536`).
+    /// A state group counts its own hit, which the decode rank then drops
+    /// without holding it (`GroupHitBlocks::DroppedState`).
     pub(crate) fn destination_admission_blocks(
         &self,
         pool: &GroupedBlockPool,
@@ -985,9 +1043,12 @@ impl GroupedPrefixCoordinator {
         self.blocks_to_allocate(pool, hit, loaded_tokens, prompt_tokens, prompt_tokens, true)
     }
 
-    /// The blocks that a decode rank takes for the tokens of a P/D handoff on
-    /// top of the local `hit`: vLLM's second test in `allocate_slots`, for an
-    /// async load with no new tokens (`mgr:558-576`, `sched:1064-1067`).
+    /// The blocks of vLLM's second test in `allocate_slots` for the tokens of
+    /// a P/D handoff on top of the local `hit`, for an async load with no new
+    /// tokens (`mgr:558-576`, `sched:1064-1067`). A state group counts its
+    /// own hit here too, though the decode rank never holds it
+    /// (`GroupHitBlocks::DroppedState`). So the count can exceed the blocks
+    /// that the load takes.
     pub(crate) fn destination_load_blocks(
         &self,
         pool: &GroupedBlockPool,
@@ -1070,9 +1131,12 @@ impl GroupedPrefixCoordinator {
                     new + inactive + copy
                 }
                 GroupRuleKind::State => {
-                    let key = match hit.per_group[g] {
-                        GroupHitBlocks::State(key) => key,
-                        _ => None,
+                    // The group's own hit: the hit itself, or on a decode rank
+                    // the hit that the load drops.
+                    let (key, own) = match hit.per_group[g] {
+                        GroupHitBlocks::State(key) => (key, hit.tokens),
+                        GroupHitBlocks::DroppedState { key, tokens: own } => (Some(key), own),
+                        _ => (None, 0),
                     };
                     let inactive = key.is_some_and(|key| key_is_inactive(pool, key));
                     // `cdiv(tokens, B) - len(computed)`, plus the copy block of
@@ -1080,10 +1144,13 @@ impl GroupedPrefixCoordinator {
                     // (`single:1757-1777`, `:1806-1811`, v0.32 `single:1770`).
                     // A valid checkpoint needs two new blocks or more, so one
                     // new block and the checkpoint block below reach the cap.
+                    // The copy block tests the local computed tokens, not the
+                    // group's own hit (V31 `single:1770-1777`, V32
+                    // `single:1732-1739`).
                     let copy = key.is_some() && !hit.tokens.is_multiple_of(block);
-                    // The computed blocks are the group's own hit only. A
-                    // decode rank's state group has none.
-                    let hit_blocks = key.map_or(0, |_| hit.tokens.div_ceil(block));
+                    // The computed blocks are the group's own hit only, its
+                    // null blocks included.
+                    let hit_blocks = key.map_or(0, |_| own.div_ceil(block));
                     let new = tokens.div_ceil(block).saturating_sub(hit_blocks).min(1)
                         + usize::from(copy);
                     // v0.32 `single:1750-1758`, `:1770`.
@@ -1116,7 +1183,8 @@ impl GroupedPrefixCoordinator {
             .flat_map(|blocks| match blocks {
                 GroupHitBlocks::Attention(keys) => keys.iter().flatten().copied().collect(),
                 GroupHitBlocks::State(key) => key.iter().copied().collect(),
-                GroupHitBlocks::None => Vec::new(),
+                // A decode rank drops this block without holding it.
+                GroupHitBlocks::DroppedState { .. } | GroupHitBlocks::None => Vec::new(),
             })
             .collect();
         if keys.is_empty() {

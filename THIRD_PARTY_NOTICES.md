@@ -476,6 +476,9 @@ From `kv_cache_manager.py`, `kv_cache_coordinator.py` and `sched/scheduler.py`,
 it also adapts the local prefix that a decode rank takes for a KV load: the
 full-attention hit of a model with Mamba layers unless another group hits
 deeper, and otherwise the hit that every group agrees on.
+From `single_type_kv_cache_manager.py`, it also adapts the count of a state
+group's own hit in both admission tests of a KV load. The decode rank then
+drops that hit block without holding it.
 From `sched/scheduler.py`,
 it adapts the align-mode prefill split, with the checkpoint branch of v0.32.0,
 and the release of a copied hit block at the end of its step. From

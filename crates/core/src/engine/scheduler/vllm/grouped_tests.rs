@@ -1716,6 +1716,41 @@ fn grouped_destination_without_state_layers_loads_past_the_hit_every_group_agree
 }
 
 #[test]
+fn grouped_destination_waits_for_the_cached_block_of_a_lagging_state_hit() {
+    let mut args = prefix_core(full_and_state_transfer_groups(), 600, 8192, 16, "0.31.0").args;
+    args.worker_type = WorkerType::Decode;
+    let mut core = VllmCore::new(args);
+    let mut trace = TraceCollector::default();
+    let mut step = 0;
+    // A caches full attention at 16 and 32 and its state at 32, its replay boundary.
+    let a = HandoffId::new(Uuid::from_u128(1771));
+    assert_eq!(
+        reserve_grouped(&mut core, a, pd_request(1770, 33, 1)),
+        Some(2)
+    );
+    activate(&mut core, a);
+    drain_pd(&mut core, &mut trace, &mut step, 5);
+    // B adds full attention at 48. Its state after 54 tokens sits at no boundary.
+    // B also counts the state hit of A at 32: its whole prompt needs
+    // 2 + 2 + 1 + 1 = 6 blocks of 6 free, so B still gets 2 units.
+    let b = HandoffId::new(Uuid::from_u128(1773));
+    assert_eq!(
+        reserve_grouped(&mut core, b, pd_request(1772, 55, 1)),
+        Some(2)
+    );
+    activate(&mut core, b);
+    drain_pd(&mut core, &mut trace, &mut step, 5);
+    assert_eq!(block_pool(&core).inactive_cached_blocks(), 4);
+    // C: local prefix 48, state hit 32. Whole prompt 7 > 6 free blocks.
+    let c = HandoffId::new(Uuid::from_u128(1775));
+    let request = DirectRequest {
+        tokens: (0..48).chain(1_000..1_017).collect(),
+        ..pd_request(1774, 0, 2)
+    };
+    assert_eq!(reserve_grouped(&mut core, c, request), None);
+}
+
+#[test]
 fn grouped_aggregated_rank_builds_no_transfer_rules() {
     // Groups that carry every transfer field, in byte and in block mode.
     let byte_mode = core(glm_transfer_groups(false), 128 * GLM_PAGE, 8192);

@@ -1421,7 +1421,7 @@ impl VllmKvManager {
                     && self.enable_prefix_caching
                     && sequence.enable_prefix_caching();
                 let hit = if reuse {
-                    coordinator.find_destination_hit(pool, lease, prompt)
+                    coordinator.find_destination_hit(pool, lease, prompt, transfer)
                 } else {
                     coordinator.empty_hit()
                 };
