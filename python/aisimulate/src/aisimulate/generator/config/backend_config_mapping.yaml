@@ -185,7 +185,9 @@ parameters:
 
 - param_key: chunked_prefill_size
   vllm: null
-  sglang: chunked-prefill-size
+  sglang:
+    key: chunked-prefill-size
+    value: "((chunked_prefill_size + 63) // 64) * 64 if chunked_prefill_size is defined and chunked_prefill_size is not none else none"
   trtllm: null
 
 - param_key: max_prefill_tokens
