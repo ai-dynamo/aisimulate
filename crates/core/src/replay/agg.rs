@@ -597,7 +597,10 @@ where
             next_event_ms
         };
         let next_internal_deadline_ms = choose_next_timestamp(
-            self.engine.next_internal_deadline_ms(),
+            choose_next_timestamp(
+                self.engine.next_internal_deadline_ms(),
+                self.engine.next_emission_ms(),
+            ),
             self.encoder
                 .as_ref()
                 .and_then(EncoderPool::next_deadline_ms),
@@ -802,6 +805,22 @@ where
             self.admission.defer_terminal(uuid, self.now_ms, status)?;
         }
         Ok(changed)
+    }
+
+    /// Deliver the outputs that workers held past their passes and release
+    /// now (vLLM `launch`).
+    fn apply_due_emissions(&mut self) -> anyhow::Result<bool> {
+        if self
+            .engine
+            .next_emission_ms()
+            .is_none_or(|at_ms| at_ms > self.now_ms)
+        {
+            return Ok(false);
+        }
+        for payload in self.engine.take_due_emissions(self.now_ms)? {
+            self.process_worker_completion_payload(payload)?;
+        }
+        Ok(true)
     }
 
     /// Drain all worker-completion events scheduled for the current logical timestamp.
@@ -1199,6 +1218,9 @@ where
             let released = self.placement.advance_clock(self.now_ms)?;
             changed |= !released.is_empty();
             self.dispatch_placements(released)?;
+            // Outputs held from an earlier pass leave before those of a pass
+            // that completes now.
+            changed |= self.apply_due_emissions()?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
@@ -1227,6 +1249,8 @@ where
                 self.drive_pending = true;
                 return Ok(());
             }
+            // A pass formed now can release the previous pass's outputs at once.
+            changed |= self.apply_due_emissions()?;
             let removed = self
                 .engine
                 .try_remove_drained()

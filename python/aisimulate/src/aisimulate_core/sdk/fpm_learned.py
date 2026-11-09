@@ -553,6 +553,94 @@ def iteration_wall_ms(metrics_by_rank: Sequence[dict[str, Any]]) -> float | None
     return best * 1000.0 if best > 0.0 else None
 
 
+def _launch_kind(fpm: dict[str, Any], max_cudagraph_capture_size: int) -> str:
+    s = _sched(fpm)
+    prefill = int(s.get("sum_prefill_tokens", 0))
+    lists = s.get("extend_lengths")
+    tokens = sum(lists) if lists else prefill + int(s.get("num_decode_requests", 0))
+    if tokens > max_cudagraph_capture_size:
+        return "eager"
+    return "piecewise" if prefill > 0 else "decode"
+
+
+def _check_launch_stall(stall_ms: Any, max_cudagraph_capture_size: Any) -> None:
+    if (
+        not isinstance(max_cudagraph_capture_size, int)
+        or isinstance(max_cudagraph_capture_size, bool)
+        or max_cudagraph_capture_size <= 0
+    ):
+        raise ValueError(f"max_cudagraph_capture_size must be a positive integer, got {max_cudagraph_capture_size!r}")
+    carriers, kinds = {"decode", "prefill"}, {"piecewise", "eager"}
+    if not isinstance(stall_ms, dict) or set(stall_ms) != carriers:
+        raise ValueError(f"stall_ms needs exactly the carriers {sorted(carriers)}, got {stall_ms!r}")
+    for carrier, by_kind in stall_ms.items():
+        if not isinstance(by_kind, dict) or set(by_kind) != kinds:
+            raise ValueError(f"stall_ms[{carrier!r}] needs exactly the next-pass kinds {sorted(kinds)}, got {by_kind}")
+        for kind, value in by_kind.items():
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"stall_ms[{carrier!r}][{kind!r}] must be a finite, nonnegative number, got {value!r}")
+
+
+def charge_own_launch(
+    iterations: Sequence[Sequence[dict[str, Any]]],
+    stall_ms: dict[str, dict[str, float]],
+    max_cudagraph_capture_size: int,
+) -> list[list[dict[str, Any]]]:
+    """Move the next pass's launch out of each vLLM record, for one-GPU workers.
+
+    Under async scheduling, vLLM launches pass k+1 before it processes pass k's
+    output, and the vLLM producer ends pass k's ``wall_time`` when that output
+    arrives. A launch longer than pass k therefore lands in pass k's record.
+    ``stall_ms[carrier][next]`` is what a record carries when the next pass is
+    ``"piecewise"`` (with prefill, at most ``max_cudagraph_capture_size``
+    scheduled tokens) or ``"eager"`` (more); a decode next pass carries none.
+    ``carrier`` is ``"prefill"`` for a record with prefill tokens, else
+    ``"decode"``. Each record gives up what it carries and takes back what its
+    predecessor carried for it. Two records are consecutive when they share
+    ``worker_id`` and their ``counter_id`` values differ by one, so a pass after
+    an idle heartbeat keeps its own launch. Times are floored at 0.5 ms.
+
+    Raises ``ValueError`` unless ``stall_ms`` gives a finite, nonnegative value
+    for each carrier and next-pass kind, ``max_cudagraph_capture_size`` is
+    positive, and every record has ``counter_id`` and a non-empty
+    ``worker_id`` that no other record shares with the same ``counter_id``.
+    """
+    if any(len(ranks) != 1 for ranks in iterations):
+        raise ValueError(
+            "charge_own_launch needs one rank per iteration; only a one-GPU vLLM worker launches in its engine loop"
+        )
+    _check_launch_stall(stall_ms, max_cudagraph_capture_size)
+    fpms = [ranks[0] for ranks in iterations]
+    position: dict[tuple[str, int], int] = {}
+    for i, fpm in enumerate(fpms):
+        worker = str(fpm.get("worker_id") or "")
+        if not worker or "counter_id" not in fpm:
+            raise ValueError(
+                "charge_own_launch needs counter_id and a non-empty worker_id on every record to find the pass after it"
+            )
+        key = (worker, int(fpm["counter_id"]))
+        if key in position:
+            raise ValueError(
+                f"duplicate FPM record for worker_id={key[0]!r} counter_id={key[1]}; counter_id repeats (worker "
+                "restart or concatenated runs) make the pass after it ambiguous"
+            )
+        position[key] = i
+    keys = list(position)
+    kinds = [_launch_kind(fpm, max_cudagraph_capture_size) for fpm in fpms]
+    carried = []
+    for fpm, (worker, counter) in zip(fpms, keys, strict=True):
+        nxt = position.get((worker, counter + 1))
+        carrier = "prefill" if int(_sched(fpm).get("sum_prefill_tokens", 0)) > 0 else "decode"
+        carried.append(0.0 if nxt is None or kinds[nxt] == "decode" else float(stall_ms[carrier][kinds[nxt]]))
+    out = []
+    for fpm, (worker, counter), own in zip(fpms, keys, carried, strict=True):
+        prev = position.get((worker, counter - 1))
+        given = carried[prev] if prev is not None else 0.0
+        wall_ms = max(1000.0 * float(fpm["wall_time"]) - own + given, 0.5)
+        out.append([{**fpm, "wall_time": wall_ms / 1000.0}])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Dataset, training, export
 # ---------------------------------------------------------------------------
@@ -1215,17 +1303,37 @@ def _format_report(report: dict[str, dict[str, float]]) -> str:
     return "\n".join(lines)
 
 
+def _read_launch_stall(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    spec = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(spec, dict) or set(spec) != {"max_cudagraph_capture_size", "stall_ms"}:
+        raise ValueError(f"--launch-stall needs exactly max_cudagraph_capture_size and stall_ms, got {spec!r}")
+    _check_launch_stall(spec["stall_ms"], spec["max_cudagraph_capture_size"])
+    return spec
+
+
+def _load_iterations(
+    paths: Sequence[str], join_ranks: str, launch_stall: dict[str, Any] | None
+) -> list[list[dict[str, Any]]]:
+    iterations = group_iterations(iter_fpm_records(paths), join_ranks)
+    if launch_stall is not None:
+        iterations = charge_own_launch(iterations, launch_stall["stall_ms"], launch_stall["max_cudagraph_capture_size"])
+    return iterations
+
+
 def _cmd_train(args: argparse.Namespace) -> int:
     if args.online_checkpoint_dir and not args.identity:
         raise ValueError("--online-checkpoint-dir requires --identity with the canonical FPM configuration JSON")
     identity = json.loads(Path(args.identity).read_text(encoding="utf-8")) if args.identity else None
-    iterations = group_iterations(iter_fpm_records(args.fpm), args.join_ranks)
+    launch_stall = _read_launch_stall(args.launch_stall)
+    iterations = _load_iterations(args.fpm, args.join_ranks, launch_stall)
     if not iterations:
         print("no FPM iterations with positive wall_time found", file=sys.stderr)
         return 2
     train_set, holdout = _split_holdout(iterations, args.holdout_frac, args.seed)
     if args.holdout_fpm:
-        holdout = holdout + group_iterations(iter_fpm_records(args.holdout_fpm), args.join_ranks)
+        holdout = holdout + _load_iterations(args.holdout_fpm, args.join_ranks, launch_stall)
     features = None
     if args.features:
         features = list(FEATURE_PRESETS.get(args.features, ())) or [f.strip() for f in args.features.split(",")]
@@ -1249,6 +1357,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "train_iterations": len(train_set),
             "holdout_iterations": len(holdout),
             "features_preset": args.features or DEFAULT_FEATURE_PRESET[args.worker_type],
+            **({"launch_stall": launch_stall} if launch_stall is not None else {}),
         },
     )
     out = Path(args.out)
@@ -1266,7 +1375,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     artifact = json.loads(Path(args.model).read_text(encoding="utf-8"))
     validate_artifact(artifact)
-    iterations = group_iterations(iter_fpm_records(args.fpm), args.join_ranks)
+    iterations = _load_iterations(args.fpm, args.join_ranks, _read_launch_stall(args.launch_stall))
     print(_format_report(evaluate(artifact, iterations)))
     return 0
 
@@ -1285,6 +1394,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("none", "counter"),
         default="none",
         help="'counter' keys records by (worker_id, counter_id) and rejects repeats; cross-rank joins are refused",
+    )
+    common.add_argument(
+        "--launch-stall",
+        default=None,
+        help="JSON file {max_cudagraph_capture_size, stall_ms}: charge each vLLM pass its own launch "
+        "(see charge_own_launch)",
     )
 
     tr = sub.add_parser("train", parents=[common], help="fit and export an artifact")

@@ -778,6 +778,8 @@ def _worker_engine_args(
         payload["sglang"] = {"disaggregation_decode_enable_radix_cache": True}
     if worker.scheduler.async_scheduling is not None:
         payload["async_scheduling"] = worker.scheduler.async_scheduling
+    if worker.scheduler.launch is not None:
+        payload["launch"] = worker.scheduler.launch.model_dump(mode="json")
     if engine.speculation is not None:
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
