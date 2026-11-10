@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""SGLang PD replay: PP prefill, prefill chunk size, decode DP balancing and V4 transfer bytes."""
+"""SGLang PD replay: prefill chunk size, decode DP balancing and V4 transfer bytes."""
 
 import json
 
 import pytest
 
-from aisimulate.capacity import estimate_kv_bytes_per_token, reject_pipeline_parallelism
+from aisimulate.capacity import estimate_kv_bytes_per_token
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
 from aisimulate.runner import EngineReplayRunnerFactory
@@ -33,9 +33,8 @@ def _worker(**scheduler):
     }
 
 
-def _public(*, prefill=None, decode=None, prefill_pipeline=1):
+def _public(*, prefill=None, decode=None):
     prefill_worker = _worker(**(prefill or {}))
-    prefill_worker["parallelism"] = {"pipeline": prefill_pipeline}
     return {
         "engine": {
             "mode": "disaggregated",
@@ -98,34 +97,6 @@ def test_replay_spec_rejects_load_balance_method_outside_decode():
 def test_unaligned_token_budget_chunks_whole_pages():
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill={"max_batched_tokens": 2049})))
     assert spec.backend_deployment.prefill_engine_args["sglang"]["chunked_prefill_size"] == 2048
-
-
-def test_sglang_pd_prefill_accepts_pipeline_stages():
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill_pipeline=4)))
-    assert spec.backend_deployment.parallel_config["prefill_pp"] == 4
-    assert spec.backend_deployment.prefill_engine_args["aic_pp_size"] == 4
-
-
-def test_pipeline_stages_need_an_aic_timing_model():
-    # Fixed and polynomial timing price one stage, so a PP width would be dropped.
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill_pipeline=4)))
-    with pytest.raises(ValueError, match="requires an AIC timing model, not .fixed. timing"):
-        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
-
-
-@pytest.mark.parametrize(
-    ("role", "backend"),
-    [
-        ("prefill", "vllm"),
-        ("decode", "sglang"),
-        ("aggregated", "sglang"),
-        ("prefill", None),
-    ],
-)
-def test_pipeline_parallelism_outside_sglang_pd_prefill_is_rejected(role, backend):
-    with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
-        reject_pipeline_parallelism(role, 2, backend=backend)
-    reject_pipeline_parallelism("prefill", 2, backend="sglang")
 
 
 def test_deepseek_v4_transfer_bytes_follow_its_compressed_cache():

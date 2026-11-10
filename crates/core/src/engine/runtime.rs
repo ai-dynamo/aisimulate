@@ -31,11 +31,6 @@ pub struct EngineFactory {
 }
 
 impl EngineFactory {
-    #[cfg(test)]
-    pub(crate) fn config(&self) -> &EngineConfig {
-        &self.config
-    }
-
     /// Construct a factory for a built-in timing model.
     pub fn new(config: EngineConfig) -> Result<Self> {
         config.validate()?;

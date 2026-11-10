@@ -231,8 +231,6 @@ pub struct ReplayRoleFactory {
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
     prefill_context_parallel_size: u32,
-    /// Pipeline stages of an SGLang PP prefill worker; one elsewhere.
-    pipeline_parallel_size: u32,
     backend: Backend,
     total_blocks: u64,
     kv_cache_capacity_bytes: Option<u64>,
@@ -361,11 +359,6 @@ impl ReplayRoleFactory {
                     .ok()
                     .and_then(|cp| gpus.checked_mul(cp))
             })
-            .and_then(|gpus| {
-                usize::try_from(self.pipeline_parallel_size)
-                    .ok()
-                    .and_then(|pp| gpus.checked_mul(pp))
-            })
             .ok_or_else(|| ReplayError::InvalidSpec("engine GPU count overflows usize".into()))
     }
 
@@ -486,29 +479,10 @@ impl ReplayEngineFactory {
             .is_some_and(|host| host.scope == G2Scope::ClusterShared);
         let g3_config = role.rank.g3_offload.take();
         let kvcr_config = role.rank.kvcr.take();
-        let pipeline_size = pipeline_parallel_size(&role.rank.timing_model)?;
-        if kvcr_config.is_some() && pipeline_size > 1 {
+        if kvcr_config.is_some() && pipeline_parallel_size(&role.rank.timing_model)? > 1 {
             return Err(ReplayError::InvalidSpec(
                 "kvcr does not support pipeline parallelism (pp must be 1)".into(),
             ));
-        }
-        // A prefill worker with pp stages keeps pp chunks in flight (SGLang's PP event loop feeds the
-        // next chunk of the same prompt into stage 0 while the previous one runs on later stages), so
-        // its passes retire at the per-stage rate. The timing provider prices the whole forward over
-        // every stage; the prompt's last forward still crosses the later stages before its KV is handed off.
-        if pipeline_size > 1 && (stage != WorkerStage::Prefill || backend != Backend::Sglang) {
-            return Err(ReplayError::InvalidSpec(
-                "engine replay prices pipeline parallelism only on an SGLang disaggregated prefill worker"
-                    .into(),
-            ));
-        }
-        if pipeline_size > 1 {
-            // A zero ratio means unscaled; normalize it before dividing by the stages.
-            if role.rank.speedup_ratio == 0.0 {
-                role.rank.speedup_ratio = 1.0;
-            }
-            role.rank.speedup_ratio *= pipeline_size as f64;
-            role.rank.pipeline_fill_passes = (pipeline_size - 1) as f64;
         }
         // A pull moves G2 bytes times the tensor-parallel size; it does not
         // model how prefill context parallelism shards the prompt's KV.
@@ -538,9 +512,6 @@ impl ReplayEngineFactory {
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
             prefill_context_parallel_size: role.prefill_context_parallel_size,
-            pipeline_parallel_size: u32::try_from(pipeline_size).map_err(|_| {
-                ReplayError::InvalidSpec("pipeline parallel size exceeds u32".into())
-            })?,
             backend,
             total_blocks,
             kv_cache_capacity_bytes,
@@ -1080,65 +1051,6 @@ mod kvcr_tests {
             "{:?}",
             plain.err()
         );
-    }
-
-    #[test]
-    fn pipeline_stages_are_priced_only_on_an_sglang_prefill_worker() {
-        let config = |backend| ReplayEngineConfig {
-            rank: EngineConfig {
-                backend,
-                timing_model: crate::engine::TimingModelConfig::External {
-                    provider: "aic".into(),
-                    config: serde_json::json!({"model": "m", "system": "s", "pp": 4}),
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        struct Unit;
-        impl crate::engine::TimingModel for Unit {
-            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
-                Ok(1.0)
-            }
-            fn predict_decode_ms(
-                &self,
-                _: usize,
-                _: usize,
-                _: usize,
-                _: usize,
-            ) -> anyhow::Result<f64> {
-                Ok(1.0)
-            }
-        }
-        // Its passes retire at the per-stage rate on four stages' GPUs.
-        let prefill = ReplayEngineFactory::with_timing_model(Arc::new(Unit))
-            .role_factory(&config(Backend::Sglang), WorkerStage::Prefill, false)
-            .unwrap();
-        assert_eq!(prefill.gpus_per_worker().unwrap(), 4);
-        let rank = prefill.factory.config();
-        assert_eq!((rank.speedup_ratio, rank.pipeline_fill_passes), (4.0, 3.0));
-        // Zero means unscaled, so it is one before the stages divide it.
-        let mut unscaled = config(Backend::Sglang);
-        unscaled.rank.speedup_ratio = 0.0;
-        let prefill = ReplayEngineFactory::with_timing_model(Arc::new(Unit))
-            .role_factory(&unscaled, WorkerStage::Prefill, false)
-            .unwrap();
-        assert_eq!(prefill.factory.config().speedup_ratio, 4.0);
-        for (backend, stage) in [
-            (Backend::Vllm, WorkerStage::Prefill),
-            (Backend::Sglang, WorkerStage::Decode),
-            (Backend::Sglang, WorkerStage::Aggregated),
-        ] {
-            let Err(error) = role_factory(&config(backend), stage) else {
-                panic!("pp=4 on {backend:?} {stage:?} must be rejected");
-            };
-            assert!(
-                error
-                    .to_string()
-                    .contains("only on an SGLang disaggregated prefill worker"),
-                "{error}"
-            );
-        }
     }
 
     #[test]

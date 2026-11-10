@@ -48,21 +48,11 @@ def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
     return layout
 
 
-def reject_pipeline_parallelism(role: str, *sizes: object, backend: str | None = None) -> None:
-    """Fail before any capacity work unless the role's pipeline stages are priced.
+def reject_pipeline_parallelism(role: str, *sizes: object) -> None:
+    """Engine replay has no pipeline-stage scheduler; fail before any capacity work."""
 
-    Engine replay models pipeline stages only on an SGLang disaggregated prefill
-    worker: passes retire at the per-stage rate and the last forward crosses the
-    remaining stages before its KV handoff.
-    """
-
-    if role == "prefill" and backend == "sglang":
-        return
     if any(size is not None and size != 1 for size in sizes):
-        raise ValueError(
-            f"engine replay does not support pipeline parallelism for {role}; use pipeline=1 "
-            "(only an SGLang disaggregated prefill worker accepts pipeline > 1)"
-        )
+        raise ValueError(f"engine replay does not support pipeline parallelism for {role}; use pipeline=1")
 
 
 def materialize_aic_num_gpu_blocks(
