@@ -85,8 +85,9 @@ arrays under the native report's `telemetry` object even without separate
 per-request capture. Its timestamps use absolute virtual milliseconds; existing
 profiling summaries and per-request clock semantics are unchanged. See the
 [telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
-A stack whose `RunnerCapabilities.supports_telemetry` is `False` is refused
-before its runner is created.
+`run_prediction` refuses telemetry from a stack whose
+`RunnerCapabilities.supports_telemetry` is `False` before it creates the
+runner.
 Analytical EPD does not provide raw native
 or per-request EPD reports. Large capture can require substantial memory.
 

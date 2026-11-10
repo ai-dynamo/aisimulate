@@ -183,6 +183,8 @@ def test_generic_speculation_requires_explicit_runner_capability(location, neste
 
 
 def test_engine_runner_factory_declares_telemetry_support():
+    # RunnerCapabilities is public: the new field goes last, so positional callers keep their meaning.
+    assert fields(RunnerCapabilities)[-1].name == "supports_telemetry"
     telemetry = ReplayOutputRequirements(capture_telemetry=True)
     capabilities = EngineReplayRunnerFactory().capabilities()
     capabilities.require_output_support(telemetry)
