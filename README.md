@@ -106,9 +106,9 @@ Install this pair on Linux with Python 3.12 in a **separate environment**:
 <!-- readme-check: dynamo-install -->
 ```bash
 python3 -m pip install --extra-index-url https://pypi.nvidia.com \
-  "aisim==0.13.0.dev202610240000000082" "ai-dynamo==1.7.0.dev20261028"
+  "aisimulate==0.13.0.dev202610240000000082" "ai-dynamo==1.7.0.dev20261028"
 python3 -m pip check
-aisim predict --help
+aisimulate predict --help
 ```
 
 This pair exercises the nightly AISim wheel, not the current source checkout.

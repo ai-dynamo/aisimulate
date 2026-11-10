@@ -100,7 +100,7 @@ def test_seeded_pool_matches_the_shared_generator_and_records_its_spec(tmp_path,
     assert spec == {
         "source": "seeded_tokens",
         "generator": "sha256_counter_rejection",
-        "generator_version": 1,
+        "generator_version": 2,
         "seed": 53,
         "count": count,
         "vocab_low": 0,

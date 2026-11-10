@@ -441,11 +441,11 @@ def _aic_source(
         raise SnapshotError("AIC baseline and AISim replay must evaluate the same branch and commit")
     result = {key: source[key] for key in ("repository", "branch", "commit_sha")}
     if "baseline_api" in runtime or "config_adapter" in runtime:
-        expected = (
-            ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter")
-            if runtime["cli_entry_point"] == "aiconfigurator.main:main"
-            else ("aisim.legacy_cli.api", "aisim.sdk.config_adapter")
-        )
+        expected = {
+            "aiconfigurator.main:main": ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+            "aisimulate.legacy_cli.entrypoint:main": ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+            "aisim.legacy_cli.entrypoint:main": ("aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
+        }[runtime["cli_entry_point"]]
         if (runtime.get("baseline_api"), runtime.get("config_adapter")) != expected:
             raise SnapshotError("baseline entry point and predictor modules disagree")
         result["cli_entry_point"] = runtime["cli_entry_point"]

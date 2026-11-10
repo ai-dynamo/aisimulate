@@ -782,6 +782,7 @@ def test_page_explains_cli_migration_and_aic_deprecation() -> None:
     "entry,api,adapter",
     [
         ("aisim.legacy_cli.entrypoint:main", "aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
+        ("aisimulate.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
         ("aiconfigurator.main:main", "aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
     ],
 )

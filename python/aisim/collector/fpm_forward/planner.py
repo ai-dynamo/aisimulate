@@ -81,7 +81,7 @@ def _runtime_memory_policy(
 
 
 _INSTALLED_DISTRIBUTION = "aisim"
-_INSTALLED_PAYLOAD_ROOTS = frozenset(("aisim_core", "aisim", "collector"))
+_INSTALLED_PAYLOAD_ROOTS = frozenset(("aisim_core", "aisim", "aisimulate", "aisimulate_core", "collector"))
 _INSTALLED_PLANNER_PATH = PurePosixPath("collector/fpm_forward/planner.py")
 _REQUIRED_INSTALLED_FPM_PAYLOAD = frozenset(
     (
@@ -123,13 +123,13 @@ def _is_installer_console_script(path: PurePosixPath) -> bool:
     return parent_count > 0 and target in {
         ("bin", "aiconfigurator"),
         ("bin", "aisim"),
-        ("bin", "aisim"),
+        ("bin", "aisimulate"),
         ("Scripts", "aiconfigurator.exe"),
         ("Scripts", "aiconfigurator-script.py"),
         ("Scripts", "aisim.exe"),
         ("Scripts", "aisim-script.py"),
-        ("Scripts", "aisim.exe"),
-        ("Scripts", "aisim-script.py"),
+        ("Scripts", "aisimulate.exe"),
+        ("Scripts", "aisimulate-script.py"),
     }
 
 

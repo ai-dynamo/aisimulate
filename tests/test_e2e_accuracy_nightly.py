@@ -391,7 +391,7 @@ def test_point_timeout_remains_an_explicit_incomplete_campaign(monkeypatch):
     }
 
 
-@pytest.fixture(params=["aisimulate", "aiconfigurator"])
+@pytest.fixture(params=["aisim", "aisimulate", "aiconfigurator"])
 def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
@@ -404,12 +404,18 @@ def artifact(tmp_path, monkeypatch, request):
         "wheel_identity",
         lambda path: {
             "wheel_sha256": "a" * 64,
-            "packages": {"aisimulate": "0.12.0"},
-            "baseline_api": "aiconfigurator.cli.api" if request.param == "aiconfigurator" else "aisim.legacy_cli.api",
+            "packages": {
+                "aisim" if request.param == "aisim" else "aisimulate": "0.14.0"
+                if request.param == "aisim"
+                else "0.12.0"
+            },
+            "baseline_api": "aiconfigurator.cli.api"
+            if request.param == "aiconfigurator"
+            else request.param + ".legacy_cli.api",
             "config_adapter": request.param + ".sdk.config_adapter",
             "cli_entry_point": "aiconfigurator.main:main"
             if request.param == "aiconfigurator"
-            else "aisim.legacy_cli.entrypoint:main",
+            else request.param + ".legacy_cli.entrypoint:main",
         },
     )
 
@@ -1269,16 +1275,17 @@ def test_dump_part_retry_fails_closed_after_three_attempts(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "api,adapter",
+    "api,adapter,application",
     [
-        ("aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
-        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+        ("aisim.legacy_cli.api", "aisim.sdk.config_adapter", "aisim"),
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter", "aisimulate"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter", "aisimulate"),
     ],
 )
-def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter):
+def test_wheel_identity_accepts_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter, application):
     members = {
-        "aisim/_runtime.py": b"runtime",
-        "aisim/runner.py": b"runner",
+        f"{application}/_runtime.py": b"runtime",
+        f"{application}/runner.py": b"runner",
         api.replace(".", "/") + ".py": b"baseline",
         adapter.replace(".", "/") + "/__init__.py": b"adapter",
     }
@@ -1289,7 +1296,9 @@ def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkey
             path = tmp_path / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
-    dist = SimpleNamespace(locate_file=lambda name: tmp_path / name, version="test", files=list(members))
+    dist = SimpleNamespace(
+        locate_file=lambda name: tmp_path / name, version="test", files=list(members), metadata={"Name": application}
+    )
     monkeypatch.setattr(campaign, "installed_distribution", lambda: dist)
     imported = []
 
@@ -1299,8 +1308,8 @@ def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkey
         return SimpleNamespace(__file__=str(tmp_path / path))
 
     monkeypatch.setattr(campaign.importlib, "import_module", load)
-    assert campaign.wheel_identity(wheel)["packages"] == {"aisimulate": "test"}
-    assert imported == ["aisim._runtime", "aisim.runner", api, adapter]
+    assert campaign.wheel_identity(wheel)["packages"] == {application: "test"}
+    assert imported == [f"{application}._runtime", f"{application}.runner", api, adapter]
     (tmp_path / (api.replace(".", "/") + ".py")).write_bytes(b"tampered")
     with pytest.raises(ValueError, match="differs from qualified wheel"):
         campaign.wheel_identity(wheel)

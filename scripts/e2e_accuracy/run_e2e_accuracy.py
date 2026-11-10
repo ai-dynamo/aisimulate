@@ -202,6 +202,7 @@ def predictor_module_names(files) -> tuple[str, str]:
         (api, adapter)
         for api, adapter in (
             ("aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
+            ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
             ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
         )
         if api.replace(".", "/") + ".py" in members
@@ -221,9 +222,13 @@ def wheel_identity(wheel: Path) -> dict:
     dist = installed_distribution()
     checked = 0
     with zipfile.ZipFile(wheel) as archive:
-        api, adapter = predictor_module_names(archive.namelist())
+        members = archive.namelist()
+        api, adapter = predictor_module_names(members)
+        application = "aisim" if "aisim/runner.py" in members else "aisimulate"
         for member in archive.namelist():
-            if member.endswith("/") or not member.startswith(("aisim/", "aiconfigurator/", "aisim_core/")):
+            if member.endswith("/") or not member.startswith(
+                ("aisim/", "aisimulate/", "aiconfigurator/", "aisim_core/", "aisimulate_core/")
+            ):
                 continue
             installed = Path(dist.locate_file(member))
             if not installed.is_file() or archive.read(member) != installed.read_bytes():
@@ -231,18 +236,18 @@ def wheel_identity(wheel: Path) -> dict:
             checked += 1
     if checked < 3:
         raise ValueError("wheel does not contain the unified package")
-    for name in ("aisim._runtime", "aisim.runner", api, adapter):
+    for name in (f"{application}._runtime", f"{application}.runner", api, adapter):
         module = importlib.import_module(name)
         if not Path(module.__file__).resolve().is_relative_to(Path(dist.locate_file("")).resolve()):
             raise ValueError("import resolved outside installed wheel")
     return {
         "wheel_sha256": digest(wheel),
-        "packages": {"aisim": dist.version},
+        "packages": {dist.metadata["Name"]: dist.version},
         "baseline_api": api,
         "config_adapter": adapter,
         "cli_entry_point": "aiconfigurator.main:main"
         if api.startswith("aiconfigurator.")
-        else "aisim.legacy_cli.entrypoint:main",
+        else api.removesuffix("api") + "entrypoint:main",
     }
 
 

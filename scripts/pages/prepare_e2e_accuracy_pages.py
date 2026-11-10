@@ -119,9 +119,12 @@ def public_contract(summary):
     if "cli_entry_point" in snapshot["aic_source"] and snapshot["aic_source"]["cli_entry_point"] not in {
         "aiconfigurator.main:main",
         "aisim.legacy_cli.entrypoint:main",
+        "aisimulate.legacy_cli.entrypoint:main",
     }:
         raise ValueError("unsupported baseline entry point")
-    keys(snapshot["aisimulate_packages"], {"aisim"})
+    keys(snapshot["aisimulate_packages"], {"aisim", "aisimulate"})
+    if len(snapshot["aisimulate_packages"]) != 1:
+        raise ValueError("campaign must identify exactly one application distribution")
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
     keys(snapshot["campaign"], CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS)
@@ -144,13 +147,13 @@ def public_contract(summary):
     )
 
     def aggregate(item, extra):
-        keys(item, {"rows", "aic", "aisim"} | extra)
+        keys(item, {"rows", "aic", "aisimulate"} | extra)
         keys(item["aic"], METRICS | {"status_counts", "coverage_pct"})
         if "status_counts" in item["aic"]:
             keys(item["aic"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
-        keys(item["aisim"], METRICS | {"status_counts", "coverage_pct"})
+        keys(item["aisimulate"], METRICS | {"status_counts", "coverage_pct"})
         keys(
-            item["aisim"]["status_counts"],
+            item["aisimulate"]["status_counts"],
             {"success", "failed", "unsupported", "unknown"},
         )
 
@@ -160,8 +163,8 @@ def public_contract(summary):
         groups = summary["totals"]["by_configuration_quality"]
         keys(groups, {"verified", "estimated", "not_recorded"})
         for group in groups.values():
-            keys(group, {"rows", "aic", "aisim"})
-            keys(group["aisim"], METRICS)
+            keys(group, {"rows", "aic", "aisimulate"})
+            keys(group["aisimulate"], METRICS)
             keys(group["aic"], METRICS | {"status_counts", "coverage_pct"})
             keys(group["aic"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
     for model in summary["models"]:
@@ -206,7 +209,7 @@ def public_contract(summary):
                                 "infx_run_id",
                                 "measured",
                                 "aic",
-                                "aisim",
+                                "aisimulate",
                                 "configuration",
                                 "aisim_error",
                             },
@@ -242,7 +245,7 @@ def public_contract(summary):
                             not isinstance(run_id, str) or re.fullmatch(r"[1-9][0-9]*", run_id) is None
                         ):
                             raise ValueError("invalid InferenceX GitHub run ID")
-                        for name in ("measured", "aic", "aisim"):
+                        for name in ("measured", "aic", "aisimulate"):
                             keys(
                                 point[name],
                                 {
@@ -360,7 +363,7 @@ def unpack_artifact(archive: bytes) -> dict:
         or outcomes.get("evaluated") != summary["scope"]["raw_rows"]
         or type(q["published"]) is not int
         or q["published"] != summary["totals"]["rows"]
-        or summary["totals"]["aisim"]["points"] <= 0
+        or summary["totals"]["aisimulate"]["points"] <= 0
     ):
         raise ValueError("incomplete campaign coverage")
     return summary

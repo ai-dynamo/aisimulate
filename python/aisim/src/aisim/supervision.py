@@ -203,6 +203,11 @@ class OwnedTree:
                 os.killpg(self.process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS may report EPERM for the vanished group after the
+                # owned root exits. A live root still indicates a real denial.
+                if self.process.poll() is None:
+                    raise
         try:
             terminate_processes([p for p in self.known.values() if p.pid != self.process.pid])
             try:
@@ -215,6 +220,9 @@ class OwnedTree:
                     os.killpg(self.process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    if self.process.poll() is None:
+                        raise
             if self.process.poll() is None:
                 self.process.kill()
             self.process.wait(timeout=2 * _GRACE_SECONDS)
