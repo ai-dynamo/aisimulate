@@ -41,12 +41,16 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
 
-/// Tells a configured payload (a `spec` key) from a legacy bare `ReplaySpec`
-/// without buffering the document: every value is skipped unread.
+/// Tells a configured payload (a `spec` key, also `null`) from a legacy bare
+/// `ReplaySpec` without buffering the document: every value is skipped unread.
 #[derive(Deserialize)]
 struct ExecutionPayloadProbe {
-    #[serde(default)]
-    spec: Option<serde::de::IgnoredAny>,
+    #[serde(default, deserialize_with = "key_is_present")]
+    spec: bool,
+}
+
+fn key_is_present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
 }
 
 /// The configured execution payload. It is parsed directly, not through an
@@ -4263,33 +4267,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         serving_path,
         telemetry_sample_interval_ms,
     ) = {
-        let probe: ExecutionPayloadProbe =
-            serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
-        if probe.spec.is_some() {
-            let ConfiguredExecutionPayload {
-                spec,
-                traffic,
-                capture_performance_diagnostics,
-                capture_telemetry,
-                telemetry_sample_interval_ms,
-                determinism,
-                tokenization,
-                detokenization,
-            } = serde_json::from_str(payload).context("invalid AISimulate execution payload")?;
-            (
-                spec,
-                traffic.map(|t| *t),
-                capture_performance_diagnostics,
-                determinism,
-                ServingPath {
-                    tokenization,
-                    detokenization,
-                },
-                capture_telemetry.then_some(telemetry_sample_interval_ms),
-            )
-        } else {
-            let spec: ReplaySpec =
-                serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
+        let legacy = |spec: ReplaySpec| {
             (
                 spec,
                 None,
@@ -4298,6 +4276,45 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ServingPath::default(),
                 None,
             )
+        };
+        let probe: ExecutionPayloadProbe =
+            serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
+        if !probe.spec {
+            legacy(
+                serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?,
+            )
+        } else {
+            match serde_json::from_str::<ConfiguredExecutionPayload>(payload) {
+                Ok(ConfiguredExecutionPayload {
+                    spec,
+                    traffic,
+                    capture_performance_diagnostics,
+                    capture_telemetry,
+                    telemetry_sample_interval_ms,
+                    determinism,
+                    tokenization,
+                    detokenization,
+                }) => (
+                    spec,
+                    traffic.map(|t| *t),
+                    capture_performance_diagnostics,
+                    determinism,
+                    ServingPath {
+                        tokenization,
+                        detokenization,
+                    },
+                    capture_telemetry.then_some(telemetry_sample_interval_ms),
+                ),
+                // A bare ReplaySpec ignores unknown keys, so it may carry its
+                // own `spec` key. Report the configured error only when the
+                // legacy form does not parse either.
+                Err(error) => match serde_json::from_str::<ReplaySpec>(payload) {
+                    Ok(spec) => legacy(spec),
+                    Err(_) => {
+                        return Err(error).context("invalid AISimulate execution payload");
+                    }
+                },
+            }
         }
     };
     if let Some(interval_ms) = telemetry_sample_interval_ms {
@@ -10264,6 +10281,26 @@ mod tests {
             );
             assert!(error.contains(expected), "{field}: {error}");
         }
+        // A bare ReplaySpec ignores unknown keys, also one named `spec`.
+        for extra in [serde_json::json!("metadata"), serde_json::Value::Null] {
+            let mut bare = serde_json::to_value(&spec).unwrap();
+            bare["spec"] = extra.clone();
+            let output: serde_json::Value =
+                serde_json::from_str(&execute_json(&bare.to_string(), false).unwrap()).unwrap();
+            assert_eq!(
+                output["completed_requests"], report["completed_requests"],
+                "{extra}"
+            );
+        }
+        let payload = serde_json::json!({"spec": null, "capture_telemetry": true});
+        let error = format!(
+            "{:#}",
+            execute_json(&payload.to_string(), false).unwrap_err()
+        );
+        assert!(
+            error.contains("invalid AISimulate execution payload: invalid type: null"),
+            "{error}"
+        );
 
         spec.requests.clear();
         for record_per_request in [false, true] {
