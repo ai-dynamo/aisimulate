@@ -129,6 +129,9 @@ struct UnpricedPass {
     /// the previous forward is observed.
     end_ms: Option<f64>,
     launch: Option<HostLaunch>,
+    /// PP prefill handoffs this forward completes; they wait `pipeline_fill_passes`
+    /// more forwards for the remaining stages.
+    pipeline_fill_requests: Vec<Uuid>,
     result: EnginePassResult,
 }
 
@@ -776,7 +779,9 @@ impl SglangCore {
         request
     }
 
-    fn complete_source(&mut self, mut request: SglangRequest) {
+    /// `pipeline_fill_ms` is the time the request's last forward still spends in later PP stages;
+    /// a pass-completed request gets it in `resolve_pass`, once that forward is priced.
+    fn complete_source(&mut self, mut request: SglangRequest, pipeline_fill_ms: f64) {
         self.batch_is_full = false;
         let uuid = request.uuid;
         self.active_request_ids.remove(&uuid);
@@ -788,13 +793,14 @@ impl SglangCore {
             cache_materialized_prefix(&mut request, &mut self.kv_manager, &self.config);
         }
         let published = request.cached_tokens() > cached_before;
-        let transfer_timing = prefill_handoff_transfer_timing(
+        let mut transfer_timing = prefill_handoff_transfer_timing(
             request.prompt_len(),
             self.config.kv_transfer_bandwidth,
             self.config.kv_transfer_bytes_per_token,
             0,
             self.config.kv_transfer_timing_mode,
         );
+        transfer_timing.pipeline_fill_ms = pipeline_fill_ms;
         let payload = HeldSglangPrefill { request };
         let released = match self.source_holds.complete_source(uuid, payload) {
             SourceCompletion::Release(payload) => {
@@ -1239,6 +1245,20 @@ impl SglangCore {
             .max(self.kv_manager.host_load_end_ms());
         let forward_ms = forward_end_ms - stream_start_ms;
         let mut result = pass.result;
+        if !pass.pipeline_fill_requests.is_empty() {
+            let fill_ms = self.config.pipeline_fill_passes * forward_ms;
+            for event in &mut result.lifecycle_events {
+                if let SchedulerLifecycleEvent::SourceHeld {
+                    request_id,
+                    transfer_timing,
+                    ..
+                } = event
+                    && pass.pipeline_fill_requests.contains(request_id)
+                {
+                    transfer_timing.pipeline_fill_ms = fill_ms;
+                }
+            }
+        }
         if let Some(launch) = pass.launch {
             let host = self
                 .host
@@ -1566,9 +1586,23 @@ impl SglangCore {
                     .extract_if(.., |request| request.pending_terminal),
             );
         }
+        // A PP prefill forward's last stages run after this pass retires; its
+        // handoffs wait for them once the forward is priced.
+        let pipeline_fill_requests = if self.config.pipeline_fill_passes > 0.0 {
+            decode
+                .completed_requests
+                .iter()
+                .map(|request| request.uuid)
+                .collect()
+        } else {
+            Vec::new()
+        };
         for request in decode.completed_requests.drain(..) {
-            self.complete_source(request);
+            self.complete_source(request, 0.0);
         }
+        // Under the host loop, this pass observes the forward the previous one launched.
+        let observed_fill_ms =
+            self.config.pipeline_fill_passes * self.last_forward_ms.unwrap_or(0.0);
         self.last_forward_ms = None;
         let (end_ms, mut output_signals, observed_forward, launch) = match &mut self.host {
             Some(host) => {
@@ -1650,7 +1684,7 @@ impl SglangCore {
                 );
                 terminals.append(&mut finishing_inflight);
                 for request in terminals {
-                    self.complete_source(request);
+                    self.complete_source(request, observed_fill_ms);
                 }
                 (
                     Some(end_ms),
@@ -1862,6 +1896,7 @@ impl SglangCore {
             decode: decode_shape,
             end_ms,
             launch,
+            pipeline_fill_requests,
             result,
         });
         Ok(work)

@@ -1566,6 +1566,60 @@ def test_runner_rejects_decode_pipeline_parallelism_before_prefill_capacity(monk
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize("role", ["aggregated", "decode"])
+def test_sglang_pipeline_parallelism_is_only_for_prefill(monkeypatch, role):
+    _forbid_capacity(monkeypatch)
+    args = {**_engine_args(role=role, backend="sglang"), "aic_pp_size": 2}
+    with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
+        _materialize_engine_role("sglang", "test", {}, args, role)
+    aic.reject_pipeline_parallelism("prefill", 2, backend="sglang")
+
+
+@pytest.mark.parametrize("source", ["deployment", "flat"])
+def test_sglang_prefill_pipeline_needs_an_aic_timing_model(monkeypatch, source):
+    # Fixed and polynomial timing price one stage, so a PP width would be dropped.
+    _forbid_capacity(monkeypatch)
+    args = _engine_args(role="prefill", backend="sglang")
+    parallel = {"prefill_pp": 4} if source == "deployment" else {}
+    if source == "flat":
+        args["aic_pp_size"] = 4
+    with pytest.raises(ValueError, match="requires an AIC timing model, not .fixed. timing"):
+        _materialize_engine_role("sglang", "test", parallel, args, "prefill")
+
+
+def test_sglang_pd_prefill_compiles_pipeline_stages():
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "mode": "disaggregated",
+                "backend": "sglang",
+                "model": "sglang-pd-smoke",
+                "hardware": "h200_sxm",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {
+                        "parallelism": {"pipeline": 4},
+                        "kv_cache": {"block_size": 64, "capacity": {"type": "fixed", "blocks": 64}},
+                        "timing": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+                    },
+                    "decode": {
+                        "kv_cache": {"block_size": 64, "capacity": {"type": "fixed", "blocks": 64}},
+                        "timing": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+                    },
+                },
+            },
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 1},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+        }
+    )
+    deployment = prediction_to_replay_spec(config).backend_deployment
+    assert deployment.parallel_config["prefill_pp"] == 4
+    assert deployment.prefill_engine_args["aic_pp_size"] == 4
+
+
 def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_reservation():
     engine_args = {
         "engine_type": "vllm",

@@ -1107,7 +1107,7 @@ def _materialize_engine_execution_spec(
         raw_decode = _required_engine_args(deployment.decode_engine_args, "decode")
         # Check both roles before either one estimates capacity.
         for raw, role in ((raw_prefill, "prefill"), (raw_decode, "decode")):
-            _reject_role_pipeline_parallelism(deployment.parallel_config, raw, role)
+            _reject_role_pipeline_parallelism(deployment.parallel_config, raw, role, deployment.backend)
         prefill = _materialize_engine_role(
             deployment.backend,
             deployment.backend_version,
@@ -1540,7 +1540,7 @@ def materialize_engine_launch_config(
 
 
 def _reject_role_pipeline_parallelism(
-    parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str
+    parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str, backend: str
 ) -> None:
     # `rank: null` falls back to the flat role fields during materialization.
     rank = role_config.get("rank")
@@ -1563,7 +1563,21 @@ def _reject_role_pipeline_parallelism(
             for value in (timing_config.get("pp", 1), timing_config.get("pp_size", 1))
             if value != UNKNOWN_IDENTITY
         ),
+        backend=backend,
     )
+    # Only AIC timing reads a pipeline width; any other model would replay the
+    # stages as one.
+    if timing is not None and not (
+        isinstance(timing, Mapping) and timing.get("type") == "external" and timing.get("provider") in ("aic", "ais")
+    ):
+        widths = (
+            parallel_config.get("pp" if role == "aggregated" else f"{role}_pp", 1),
+            role_config.get("aic_pp_size", 1),
+            rank.get("aic_pp_size", 1),
+        )
+        if any(width not in (None, 1) for width in widths):
+            kind = timing.get("type") if isinstance(timing, Mapping) else timing
+            raise ValueError(f"pipeline parallelism on {role} requires an AIC timing model, not {kind!r} timing")
 
 
 def _materialize_engine_role(
@@ -1581,7 +1595,7 @@ def _materialize_engine_role(
     # New generic schemes use caller-authored capacity; leave the existing
     # Ngram/NextN capacity paths unchanged.
     requested_rank = role_config.get("rank", role_config)
-    _reject_role_pipeline_parallelism(parallel_config, role_config, role)
+    _reject_role_pipeline_parallelism(parallel_config, role_config, role, deployment_backend)
     if isinstance(requested_rank, Mapping):
         requested_rank = dict(requested_rank)
         if "rank" in role_config:

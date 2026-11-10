@@ -217,6 +217,9 @@ pub(crate) struct MockEngineArgs {
     pub speedup_ratio: f64,
     #[builder(default = "1.0")]
     pub decode_speedup_ratio: f64,
+    /// Passes a completed prefill forward still spends in later pipeline stages (PP prefill).
+    #[builder(default = "0.0")]
+    pub pipeline_fill_passes: f64,
     #[builder(default = "WorkerType::Aggregated")]
     pub worker_type: WorkerType,
     #[builder(default = "Arc::new(PerfModel::Polynomial)")]

@@ -270,7 +270,7 @@ def _deployment(
     for role in ("aggregated",) if mode == "agg" else ("prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is not None:
-            reject_pipeline_parallelism(role, worker.parallelism.pipeline)
+            reject_pipeline_parallelism(role, worker.parallelism.pipeline, backend=engine.backend)
     if mode == "disagg":
         from aisimulate_core.sdk.perf_database import load_system_spec
 

@@ -466,7 +466,9 @@ impl HandoffCoordinatorCore {
                     handoff_id: self.handoff_id,
                     delay_ms: transfer_timing
                         .delay_ms(transferable_prompt_tokens)
-                        .unwrap_or(self.fallback_transfer_delay_ms),
+                        .unwrap_or(
+                            self.fallback_transfer_delay_ms + transfer_timing.pipeline_fill_ms,
+                        ),
                 }),
             ]);
         }
@@ -656,6 +658,7 @@ mod tests {
             kv_bytes_per_token: None,
             state_bytes: 0,
             bandwidth_gb_s: None,
+            pipeline_fill_ms: 0.0,
         };
         assert_eq!(start_transfer_delay(missing, 7.5), 7.5);
 
@@ -666,6 +669,12 @@ mod tests {
         };
         validate_transfer_timing(zero_bandwidth).unwrap();
         assert_eq!(start_transfer_delay(zero_bandwidth, 7.5), 7.5);
+
+        let filled = HandoffTransferTiming {
+            pipeline_fill_ms: 2.0,
+            ..missing
+        };
+        assert_eq!(start_transfer_delay(filled, 7.5), 9.5);
     }
 
     #[test]
@@ -676,6 +685,7 @@ mod tests {
             kv_bytes_per_token: Some(1024),
             state_bytes: 0,
             bandwidth_gb_s: Some(-1.0),
+            pipeline_fill_ms: 0.0,
         };
         assert!(validate_transfer_timing(timing).is_err());
     }
