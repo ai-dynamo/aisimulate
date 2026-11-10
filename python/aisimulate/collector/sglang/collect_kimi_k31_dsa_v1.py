@@ -19,8 +19,8 @@ Deviation: this initial lane explicitly configures eager serving. Its rows
 carry an ``_eager`` kernel_source suffix. Native graph replay/overlap can change
 latency in either direction; qualification must compare graph serving before
 removing this note or claiming default-serving prediction accuracy. The
-registry admits SM103 after native B300 TP1/2/4 boundary validation; other
-targeted SMs remain unverified.
+registry admits SM103 after native B300 TP1/2/4 boundary validation and SM90
+after H100/H200 TP1/2/4/8 dense/sparse/prefix/decode smoke; SM100 is still unverified.
 """
 
 from __future__ import annotations

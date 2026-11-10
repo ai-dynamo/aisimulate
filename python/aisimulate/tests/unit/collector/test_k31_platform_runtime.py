@@ -31,7 +31,7 @@ def test_platform_selects_only_its_exact_build(monkeypatch, machine):
     for entry in REGISTRY:
         if entry.op in OPS:
             assert resolve_module(entry, runtime.version) == native.__name__
-            assert {90, 100} <= set(entry.unverified_sms)
+            assert 90 not in entry.unverified_sms and 100 in entry.unverified_sms
     wrong = next(version for arch, version in BUILDS.items() if arch != machine)
     for version in (wrong, "0.0.0.dev1", "0.0.0.dev1+unknown"):
         with pytest.raises(RuntimeError, match="requires exactly"):

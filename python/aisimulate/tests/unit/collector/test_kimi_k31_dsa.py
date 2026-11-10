@@ -124,7 +124,7 @@ def test_stock_runtime_cannot_select_native_preview_collector():
         assert "@sha256:" in runtime.image()
         assert entry.run_func == "run_kimi_k31_dsa_fullnode"
         assert not entry.unverified
-        assert set(entry.unverified_sms) == {80, 86, 89, 90, 100, 120}
+        assert set(entry.unverified_sms) == {80, 86, 89, 100, 120}
         assert resolve_module(entry, runtime.version) == "collector.sglang.collect_kimi_k31_dsa_v1"
         assert resolve_module(entry, get_collector_runtime("sglang").version) is None
         assert _check_compat(f"sglang=={RUNTIME_VERSION}", RUNTIME_VERSION)
