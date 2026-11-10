@@ -2411,6 +2411,16 @@ def _run_support_matrix_mode(args):
     print("\n".join(lines))
 
 
+def _default_support_version(model: str, system: str, backend: str, architecture: str | None) -> str | None:
+    """Use the current slot, or the latest relevant certification version without slot policy."""
+    slots = perf_database.get_version_slots(system.lower(), backend.lower())
+    if slots:
+        return slots["current"]
+    return _latest_support_matrix_version(
+        common.get_support_matrix(), system, backend, model=model, architecture=architecture
+    )
+
+
 def _run_support_mode(args):
     """Run the support mode to see if a model/hardware combo is supported."""
     if args.backend is None:
@@ -2432,17 +2442,10 @@ def _run_support_mode(args):
     except Exception:
         architecture = None
 
-    # If no version specified, find the latest model-relevant version in the support matrix
+    # Match prediction's current slot even when it has no certification rows.
+    # Trees without slot policy retain their matrix-based compatibility default.
     if not version:
-        matrix = common.get_support_matrix()
-        version = _latest_support_matrix_version(
-            matrix,
-            system,
-            backend,
-            model=model,
-            architecture=architecture,
-            queryable_versions=_queryable_versions(system, backend),
-        )
+        version = _default_support_version(model, system, backend, architecture)
         if version is None:
             logger.info(
                 "No valid support-matrix backend version found for model=%s system=%s backend=%s",
@@ -2469,6 +2472,8 @@ def _run_support_mode(args):
     print("-" * 60)
     print(f"  Aggregated Support:    {'YES' if result.agg_supported else 'NO'}")
     print(f"  Disaggregated Support: {'YES' if result.disagg_supported else 'NO'}")
+    if not result.exact_match and result.agg_total_count == 0 and result.disagg_total_count == 0:
+        print("  Note: No matching model or eligible architecture certification rows were found.")
 
     # Show explanation if support was inferred from architecture majority vote
     if not result.exact_match and result.architecture and (result.agg_total_count > 0 or result.disagg_total_count > 0):

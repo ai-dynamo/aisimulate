@@ -3,9 +3,9 @@
 
 from pathlib import Path
 
-AISIMULATE_ROOT = Path(__file__).resolve().parents[2]
-PAGES_ROOT = next(root / "pages" for root in (AISIMULATE_ROOT, *AISIMULATE_ROOT.parents) if (root / "pages").is_dir())
-PACKAGE_README = AISIMULATE_ROOT / "README.md"
+AISIM_ROOT = Path(__file__).resolve().parents[2]
+PAGES_ROOT = next(root / "pages" for root in (AISIM_ROOT, *AISIM_ROOT.parents) if (root / "pages").is_dir())
+PACKAGE_README = AISIM_ROOT / "README.md"
 
 
 def test_landing_page_is_aisim_branded_and_hides_outdated_universe():

@@ -2,6 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 interface:
-  display_name: "AI Simulate Replay Parity"
+  display_name: "AISim Replay Parity"
   short_description: "Detect engine replay semantic regressions"
-  default_prompt: "Use $aisim-replay-parity to compare this AI Simulate replay change against a pinned baseline."
+  default_prompt: "Use $aisim-replay-parity to compare this AISim replay change against a pinned baseline."

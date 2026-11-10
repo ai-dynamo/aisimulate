@@ -385,7 +385,7 @@ def test_agentx_replay_cli_table_and_help_identify_qualification(tmp_path: Path)
         "agentic_mooncake",
         "HBM-only",
         "vLLM/SGLang",
-        "speculative decoding disabled",
+        "canonical MTP",
         "functional_only",
     ):
         assert expected in help_text

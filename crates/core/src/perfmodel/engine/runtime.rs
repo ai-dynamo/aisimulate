@@ -3869,8 +3869,7 @@ pub(crate) mod tests {
     use crate::{BackendKind, ParallelMapping, QuantizationConfig};
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
     }
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";

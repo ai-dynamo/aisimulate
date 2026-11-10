@@ -365,9 +365,10 @@ mod tests {
     fn mhc_query_regime_routing() {
         // Structural routing over the three op lanes and an off-grid token
         // count. Math on synthetic grids in perf_interp; values in goldens.
-        let table = MhcTable::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../python/aisim/src/aisim_core/systems/data/b200_sxm/sglang/0.5.14",
-        ));
+        let table = MhcTable::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../python/aisim/src/aisim_core/systems/data/b200_sxm/sglang/0.5.14"),
+        );
         for &(op, nt) in &[("pre", 3u32), ("post", 3), ("both", 3), ("pre", 8)] {
             let got = table
                 .query_module(op, nt, 4, 7168, &linear_sol)

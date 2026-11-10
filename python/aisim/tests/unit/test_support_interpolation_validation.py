@@ -471,6 +471,96 @@ def test_ragged_unsupported_holdout_is_not_an_error_sample_or_a_pass(holdout_cas
     assert permissive["status"] == "failed"  # An entirely unsupported phase has no error assessment.
 
 
+_EDGE_TOKENS = (16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
+_SELECTION = "retained_envelope_grid_edges_execution_boundaries_seeded_farthest_shape_v3"
+
+
+def _context_edge_kv(tokens, *, context=8192, hash_block=16):
+    """Last KV point of a Dynamo batch-1 prefill row (_bench_max_prefill_kv_read_tokens)."""
+    return hash_block * ((context - tokens - 1) // hash_block)
+
+
+def _prefill_rows(template, points):
+    return [
+        {
+            **template,
+            "batch_size": 1,
+            "total_prefill_tokens": tokens,
+            "total_kv_read_tokens": kv,
+            "latency_ms": 10.25 + tokens / 100 + kv / 1000,
+        }
+        for tokens, kv in points
+    ]
+
+
+def _dynamo_prefill_points():
+    points = []
+    for tokens in _EDGE_TOKENS:
+        edge = _context_edge_kv(tokens) // 16
+        blocks = {0, 1, edge, *(2**power for power in range(13) if 2**power <= edge)}
+        points.extend((tokens, 16 * count) for count in sorted(blocks))
+    return points
+
+
+def _with_prefill(holdout_case, points):
+    request, source, parquet, rows = holdout_case
+    template = next(row for row in rows if row["workload_kind"] == "prefill")
+    decode = [row for row in rows if row["workload_kind"] == "decode"]
+    _write_pair(parquet, _prefill_rows(template, points) + decode)
+    return request, source
+
+
+def _prefill_anchors(output):
+    plan = json.loads((output / "holdout-plan.json").read_text())
+    anchors = {
+        (point["total_prefill_tokens"], point["total_kv_read_tokens"])
+        for point in plan["retained_envelope_anchors"]
+        if point["phase"] == "prefill"
+    }
+    return plan, anchors
+
+
+def _withheld_prefill(report):
+    return {
+        (point["coordinates"]["total_prefill_tokens"], point["coordinates"]["total_kv_read_tokens"])
+        for point in report["predictions"]
+        if point["phase"] == "prefill"
+    }
+
+
+def test_context_limited_grid_keeps_edges_and_supports_every_holdout(holdout_case, tmp_path):
+    request, source = _with_prefill(holdout_case, _dynamo_prefill_points())
+    output = tmp_path / "assessment"
+    report = evaluate_interpolation_holdout(request, systems_root=source, output_dir=output)
+    prefill = report["phases"]["prefill"]
+    assert prefill["selected_count"] == 16
+    assert prefill["unsupported_count"] == 0
+    assert report["status"] == "passed"
+    plan, anchors = _prefill_anchors(output)
+    assert plan["policy"]["selection"] == _SELECTION
+    edges = {(tokens, _context_edge_kv(tokens)) for tokens in _EDGE_TOKENS}
+    assert (512, 7664) in edges  # main 2022b019 withholds this edge point with seed 42
+    assert edges <= anchors
+    assert not edges & _withheld_prefill(report)
+
+
+@pytest.mark.parametrize(
+    ("points", "edges"),
+    [
+        ([(16, 0), (16, 4096), (64, 0), (64, 2048), (256, 0), (256, 1024), (1024, 0)], {(64, 2048), (256, 1024)}),
+        ([(16, 256), (32, 128), (64, 0), (64, 256), (128, 0)], {(32, 128)}),
+    ],
+    ids=["upper_edge", "lower_edge"],
+)
+def test_grid_edges_are_retained_envelope_anchors(holdout_case, tmp_path, points, edges):
+    request, source = _with_prefill(holdout_case, points)
+    output = tmp_path / "assessment"
+    report = evaluate_interpolation_holdout(request, systems_root=source, output_dir=output)
+    _plan, anchors = _prefill_anchors(output)
+    assert edges <= anchors
+    assert not edges & _withheld_prefill(report)
+
+
 def test_sparse_tables_are_incomplete_and_fake_rows_are_not_holdouts(holdout_case, tmp_path):
     request, source, parquet, rows = holdout_case
     retained = []

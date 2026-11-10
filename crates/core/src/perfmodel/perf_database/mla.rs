@@ -1359,9 +1359,9 @@ mod tests {
     }
 
     fn load_spec(name: &str) -> SystemSpec {
-        let systems_yaml = PathBuf::from(REPO_ROOT_HINT).join("../..").join(format!(
-            "python/aisim/src/aisim_core/systems/{name}.yaml"
-        ));
+        let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
+            .join("../..")
+            .join(format!("python/aisim/src/aisim_core/systems/{name}.yaml"));
         SystemSpec::load(&systems_yaml).unwrap_or_else(|_| panic!("{name}.yaml must parse"))
     }
 

@@ -356,7 +356,7 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 
 **Optional arguments:**
 - `--backend`: Filter by specific backend (`trtllm`, `vllm`, `sglang`). Defaults to `trtllm`.
-- `--backend-version`: Filter by a specific backend version (slot versions / `current` / `previous` / `next` aliases). Defaults to the current slot for the given system/backend.
+- `--backend-version`: Filter by a specific backend version (slot versions / `current` / `previous` / `next` aliases). For a single system/backend, defaults to its current slot, even when that version has no support-matrix rows. Systems without slot policy retain the latest model-relevant support-matrix version as the compatibility default. This is a certification lookup; successful prediction alone does not establish SILICON support.
 - `--systems-paths`: Override system YAML/data search paths (comma-separated; `default` maps to the built-in systems path). First match wins for identical system/backend/version.
 
 **Example output:**
@@ -524,7 +524,7 @@ The command will create two experiments for the given problem, one is `agg` and 
 #### Spica migration
 
 The experimental Spica smart sweeper has moved to Dynamo's standalone
-[AI Simulate distribution](https://docs.nvidia.com/dynamo/dev/knowledge-base/modular-components/ai-simulate/spica/overview).
+[AISim distribution](https://docs.nvidia.com/dynamo/dev/knowledge-base/modular-components/ai-simulate/spica/overview).
 The AIC `--thorough-sweep` and `--thorough-config` flags have been removed. Install
 it from a matching Dynamo checkout with `python -m pip install ./aisim`, then run Spica
 through `python -m aisim.spica`. Runnable configurations and tools live under

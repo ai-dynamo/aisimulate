@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from aisim.legacy_cli import cli_support
 from aisim.legacy_cli.main import _latest_support_matrix_version, _run_support_mode
+from aisim.sdk import perf_database
 
 pytestmark = pytest.mark.unit
 
@@ -162,8 +164,13 @@ def test_latest_support_matrix_version_filters_queryable_versions_before_model_p
 
 
 def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, capsys):
+    monkeypatch.setattr("aisim.legacy_cli.main.perf_database.get_version_slots", lambda *_args: None)
     monkeypatch.setattr(
         "aisim.legacy_cli.main.get_model_config_from_model_path",
+        lambda _model: {"architecture": "UnknownArchitecture"},
+    )
+    monkeypatch.setattr(
+        "aisim.sdk.utils.get_model_config_from_model_path",
         lambda _model: {"architecture": "UnknownArchitecture"},
     )
     monkeypatch.setattr(
@@ -186,44 +193,86 @@ def test_run_support_mode_stops_when_auto_version_is_unavailable(monkeypatch, ca
     )
 
     assert "No valid support-matrix backend version found" in capsys.readouterr().out
+    result = cli_support("local-unknown-model", "b200_sxm", backend="sglang")
+    assert tuple(result) == (False, False)
+    assert not result.exact_match
 
 
-def test_run_support_mode_ignores_versions_prediction_rejects(monkeypatch, capsys):
-    # A regenerated `next` slot leaves stale support-matrix rows behind; the
-    # default version must be one that prediction accepts.
+@pytest.mark.parametrize(
+    ("version", "expected_version", "supported"), [(None, "2.0", False), ("", "2.0", False), ("1.0", "1.0", True)]
+)
+def test_support_without_slots_uses_latest_model_version(monkeypatch, capsys, version, expected_version, supported):
+    monkeypatch.setattr("aisim.legacy_cli.main.perf_database.get_version_slots", lambda *_args, **_kwargs: None)
+    for path in ("aisim.legacy_cli.main", "aisim.sdk.utils"):
+        monkeypatch.setattr(f"{path}.get_model_config_from_model_path", lambda _model: {"architecture": "Arch"})
+    matrix = [
+        dict(_row(system="external", version=v), Mode=mode, Status=status)
+        for v, status in [("1.0", "PASS"), ("2.0", "FAIL")]
+        for mode in ("agg", "disagg")
+    ]
+    matrix.append(dict(_row(model="other-model", system="external", version="9.0"), Mode="agg", Status="PASS"))
+    monkeypatch.setattr("aisim.legacy_cli.main.common.get_support_matrix", lambda: matrix)
+
+    _run_support_mode(SimpleNamespace(backend="sglang", backend_version=version, model_path="model", system="external"))
+    output = capsys.readouterr().out
+    assert f"Version:         {expected_version}" in output
+    assert f"Aggregated Support:    {'YES' if supported else 'NO'}" in output
+    assert f"Disaggregated Support: {'YES' if supported else 'NO'}" in output
+    assert tuple(cli_support("model", "external", backend="sglang", backend_version=version)) == (supported, supported)
+
+
+@pytest.mark.parametrize(
+    ("system", "backend"),
+    [("h200_sxm", "sglang"), ("a100_sxm", "sglang"), ("h200_sxm", "vllm"), ("h200_sxm", "trtllm")],
+)
+@pytest.mark.parametrize(
+    ("current_model", "current_status"),
+    [
+        (None, "PASS"),
+        ("model", "PASS"),
+        ("same-architecture-model", "PASS"),
+        ("model", "FAIL"),
+        ("same-architecture-model", "FAIL"),
+    ],
+)
+def test_run_support_mode_defaults_to_current_certification(
+    monkeypatch, capsys, system, backend, current_model, current_status
+):
+    slots = perf_database.get_version_slots(system, backend)
+    assert slots is not None
+    matrix = [
+        dict(_row(system=system, backend=backend, version=version), Mode="agg", Status="PASS")
+        for version in {"0.0.1", slots.get("previous", "0.0.1")}
+    ]
+    if current_model:
+        matrix.append(
+            dict(
+                _row(model=current_model, system=system, backend=backend, version=slots["current"]),
+                Mode="agg",
+                Status=current_status,
+            )
+        )
     monkeypatch.setattr(
         "aisim.legacy_cli.main.get_model_config_from_model_path",
-        lambda _model: {"architecture": "Qwen3ForCausalLM"},
+        lambda _model: {"architecture": "Arch"},
     )
     monkeypatch.setattr(
-        "aisim.legacy_cli.main.common.get_support_matrix",
-        lambda: [
-            _row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.14"),
-            _row(model="Qwen/Qwen3-32B", architecture="Qwen3ForCausalLM", version="0.5.16"),
-        ],
+        "aisim.sdk.utils.get_model_config_from_model_path",
+        lambda _model: {"architecture": "Arch"},
     )
-    monkeypatch.setattr(
-        "aisim.legacy_cli.main.perf_database.get_version_slots",
-        lambda system, backend: {"current": "0.5.14", "next": "0.5.17"},
-    )
-    checked = []
+    monkeypatch.setattr("aisim.legacy_cli.main.common.get_support_matrix", lambda: matrix)
 
-    def check_support(**kwargs):
-        checked.append(kwargs["version"])
-        return SimpleNamespace(
-            agg_supported=True,
-            disagg_supported=True,
-            exact_match=True,
-            architecture=None,
-            agg_total_count=1,
-            disagg_total_count=1,
+    versions = [None, "", "current", slots["current"]]
+    if "previous" in slots:
+        versions.extend(["previous", slots["previous"]])
+    for version in versions:
+        _run_support_mode(SimpleNamespace(backend=backend, backend_version=version, model_path="model", system=system))
+        output = capsys.readouterr().out
+        previous = "previous" in slots and version in {"previous", slots["previous"]}
+        supported = (current_model is not None and current_status == "PASS") or previous
+        assert f"Aggregated Support:    {'YES' if supported else 'NO'}" in output
+        assert f"Version:         {version or slots['current']}" in output
+        assert ("No matching model or eligible architecture certification rows" in output) == (
+            current_model is None and not previous
         )
-
-    monkeypatch.setattr("aisim.legacy_cli.main.common.check_support", check_support)
-
-    _run_support_mode(
-        SimpleNamespace(backend="sglang", backend_version=None, model_path="Qwen/Qwen3-32B", system="b200_sxm")
-    )
-
-    assert checked == ["0.5.14"]
-    assert "Version:         0.5.14" in capsys.readouterr().out
+        assert cli_support("model", system, backend=backend, backend_version=version).agg_supported == supported

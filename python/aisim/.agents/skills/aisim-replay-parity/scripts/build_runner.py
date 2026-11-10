@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build the exact skill runner source against an isolated AI Simulate checkout."""
+"""Build the exact skill runner source against an isolated AISim checkout."""
 
 from __future__ import annotations
 

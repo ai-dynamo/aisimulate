@@ -1,6 +1,6 @@
 ---
 name: aisim-replay-parity
-description: Runs deterministic byte-parity and golden-point qualification campaigns for AI Simulate engine-only offline replay across round-robin vLLM, SGLang, and TRT-LLM configurations, including forced preemption, retraction, handoff, and liveness coverage. Use when validating replay refactors, engine scheduler or event changes, or topology changes against a pinned baseline revision; this skill does not execute performance gates, and the Dynamo KV replay skill covers Router, Planner, KVBM, and other Dynamo-owned composition behavior.
+description: Runs deterministic byte-parity and golden-point qualification campaigns for AISim engine-only offline replay across round-robin vLLM, SGLang, and TRT-LLM configurations, including forced preemption, retraction, handoff, and liveness coverage. Use when validating replay refactors, engine scheduler or event changes, or topology changes against a pinned baseline revision; this skill does not execute performance gates, and the Dynamo KV replay skill covers Router, Planner, KVBM, and other Dynamo-owned composition behavior.
 license: Apache-2.0
 metadata:
   author: NVIDIA
@@ -13,9 +13,9 @@ metadata:
     - regression
 ---
 
-# AI Simulate replay parity
+# AISim replay parity
 
-Compare two revisions of AI Simulate engine-only offline replay using deterministic
+Compare two revisions of AISim engine-only offline replay using deterministic
 virtual-time reports. Use the existing replay and test harnesses; extend them only when a
 required semantic signal is unavailable. This version of the skill does not claim an
 executable performance gate because current main lacks the required loop-only timing
@@ -173,7 +173,7 @@ searching for capacity edges. Use the committed fixed-timing seeds to verify har
 wiring, determinism, worker identity, and handoff evidence. They are not substitutes for
 qualifying internal-polynomial long-corpus configurations on the pinned baseline.
 
-Do not import Dynamo's KV-aware capacities or expected counters as AI Simulate golden
+Do not import Dynamo's KV-aware capacities or expected counters as AISim golden
 points. Round-robin placement changes worker assignment, queue pressure, reuse, and
 preemption/retraction behavior. Matching lifecycle counts do not waive an unstable
 canonical digest; stop correctness and performance work until internal determinism and

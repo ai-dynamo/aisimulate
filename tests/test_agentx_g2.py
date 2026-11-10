@@ -160,9 +160,9 @@ def test_weka_g2_rejects_incompatible_shared_layout() -> None:
         ("workers", "agentic host offload requires one aggregated worker or one prefill and one decode worker"),
         ("dp", "agentic host offload requires attention DP=1 on every role"),
         ("backend", "agentic host offload requires backend=vllm on every role"),
-        ("aic_nextn", "agentic replay requires speculative decoding disabled"),
-        ("nextn", "agentic replay requires speculative decoding disabled"),
-        ("speculation", "agentic replay requires speculative decoding disabled"),
+        ("aic_nextn", "requires canonical mtp speculation"),
+        ("nextn", "requires canonical mtp speculation"),
+        ("speculation", "agentic G2 replay requires speculative decoding disabled"),
         ("g3", "agentic replay does not support G3 offload"),
         ("scope", "dp_rank_local"),
         ("scaling", "agentic host offload requires static worker pools without a scaling policy"),
@@ -218,11 +218,7 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
         raise AssertionError(f"unhandled semantic fault: {fault}")
     with pytest.raises(ValueError, match=message):
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
-    native_message = (
-        "agentic host offload requires speculative decoding disabled"
-        if fault in {"aic_nextn", "nextn", "speculation"}
-        else message
-    )
+    native_message = "requires.*canonical" if fault in {"aic_nextn", "nextn", "speculation"} else message
     with pytest.raises(RuntimeError, match=native_message):
         _runtime.run_replay_json(json.dumps(payload))
 
@@ -344,3 +340,26 @@ def test_agentic_g3_rejection_matches_without_requiring_g2(backend, with_g2) -> 
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
     with pytest.raises(RuntimeError, match=message):
         _runtime.run_replay_json(json.dumps(payload))
+
+
+def test_agentic_canonical_mtp_executes_with_local_g2() -> None:
+    config = _config("agentx-g2-local.yaml")
+    engine = config["engine"]
+    engine.update(
+        model="meta-llama/Meta-Llama-3.1-8B",
+        backend_version="0.24.0",
+        estimation_mode="op_level",
+        speculation={
+            "kind": "mtp",
+            "params": {"depth": 2},
+            "expected_accepted_tokens": 1.5,
+            "seed": 17,
+        },
+    )
+    engine["workers"]["aggregated"]["timing"] = {"type": "default"}
+    engine["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 4
+    report = _run(config)
+    assert report["completed_requests"] == 4
+    assert report["total_output_tokens"] == 4
+    assert report["agentic_qualification"] == "functional_only"
+    assert _restored(report)["first_admission_host_reused_input_tokens"] > 0

@@ -8,6 +8,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ import yaml
 import aisim.main as cli
 from aisim.config import CorePredictionConfig, CoreRecommendationConfig
 from aisim.support.fpm import fpm_cli_args
-from aisim.support.plan import request_id
+from aisim.support.plan import MEMORY_OBSERVATION_VERSIONS, check_plan, request_id
 from aisim.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -1090,6 +1091,186 @@ def test_guided_review_keeps_unavailable_activation_memory_pending(tmp_path, mon
     review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1]
     assert "fmha_quant_mode: fp8" in review
     assert "No activation or non-KV byte estimate is required" in review
+
+
+_SYNCHRONOUS_POLICY = (
+    "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
+    "This is a collection policy, not the default for arbitrary vLLM serving."
+)
+_NATIVE_TIMING_POLICY = (
+    "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
+)
+# The pending-memory prerequisite that support plans saved before vLLM 0.32.0 support carry.
+_SAVED_PENDING_MEMORY_DETAIL = (
+    "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+    "initialization for supported vLLM 0.27.0 layouts; other versions can collect timings but leave memory "
+    "unresolved. No activation or non-KV byte declaration is required. Run onboard finalize after successful "
+    "collection, then review the resolved profile."
+)
+# The pending-memory prerequisites saved for the versions that gained memory observation. They must never change.
+_OBSERVED_PENDING_MEMORY_DETAILS = {
+    "0.32.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.32.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+    "0.33.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.33.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+}
+
+
+def _pending_support_plan(tmp_path, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources, framework_version=version)) == 0
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.memory_source == "pending"
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    return plan
+
+
+@pytest.mark.parametrize(
+    ("version", "policy", "detail"),
+    [
+        ("0.32.0", _SYNCHRONOUS_POLICY, _OBSERVED_PENDING_MEMORY_DETAILS["0.32.0"]),
+        ("0.31.0", _NATIVE_TIMING_POLICY, _SAVED_PENDING_MEMORY_DETAIL),
+    ],
+    ids=["0.32.0", "0.31.0"],
+)
+def test_pending_profile_plan_states_whether_the_runtime_version_observes_memory(tmp_path, version, policy, detail):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == policy
+    assert saved["prerequisites"][0]["status"] == "runtime_memory_pending"
+    assert saved["prerequisites"][0]["detail"] == detail
+
+
+@pytest.mark.parametrize(
+    ("version", "policy"),
+    [("0.27.0", _SYNCHRONOUS_POLICY), ("0.28.0", _NATIVE_TIMING_POLICY)],
+    ids=["0.27.0", "0.28.0"],
+)
+def test_pending_plan_saved_before_vllm_032_support_still_passes_check_plan(tmp_path, version, policy):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    # Write the two texts as the code before vLLM 0.32.0 support saved them; check_plan compares every byte.
+    saved["fpm"]["scheduling_policy"] = policy
+    saved["prerequisites"][0]["detail"] = _SAVED_PENDING_MEMORY_DETAIL
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", sorted(_OBSERVED_PENDING_MEMORY_DETAILS))
+def test_pending_plan_saved_with_its_observed_version_text_passes_check_plan(tmp_path, version):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    saved["fpm"]["scheduling_policy"] = _SYNCHRONOUS_POLICY
+    saved["prerequisites"][0]["detail"] = _OBSERVED_PENDING_MEMORY_DETAILS[version]
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+def _patch_release_detail(version, audited):
+    return (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        f"initialization for vLLM {version} layouts if the vLLM files that the observers read match audited vLLM "
+        f"{audited}. Otherwise memory stays unresolved. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    )
+
+
+@pytest.mark.parametrize(("version", "audited"), [("0.33.1", "0.33.0"), ("0.32.2", "0.32.0")])
+def test_patch_release_plan_names_its_version_and_the_audited_release(tmp_path, version, audited):
+    plan = _pending_support_plan(tmp_path, version)
+    saved = json.loads((plan / "support-plan.json").read_text())
+    detail = saved["prerequisites"][0]["detail"]
+    assert saved["fpm"]["scheduling_policy"] == _SYNCHRONOUS_POLICY
+    assert detail == _patch_release_detail(version, audited)
+    assert re.findall(r"\d+\.\d+\.\d+", detail) == [version, audited]
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+def test_saved_pre_patch_support_plan_is_refused(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "aisim.support.plan.audited_memory_release",
+            lambda version: version if version in MEMORY_OBSERVATION_VERSIONS else None,
+        )
+        plan = _pending_support_plan(tmp_path, "0.33.1")
+        saved = json.loads((plan / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == _NATIVE_TIMING_POLICY
+    assert saved["prerequisites"][0]["detail"] == _SAVED_PENDING_MEMORY_DETAIL
+    with pytest.raises(ValueError, match="was modified; choose a new output directory"):
+        check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", ["0.27.1", "0.33.1rc0"])
+def test_refused_patch_versions_keep_the_saved_texts(tmp_path, version):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == _NATIVE_TIMING_POLICY
+    assert saved["prerequisites"][0]["detail"] == _SAVED_PENDING_MEMORY_DETAIL
+
+
+@pytest.mark.parametrize("version", [version for version in MEMORY_OBSERVATION_VERSIONS if version != "0.27.0"])
+def test_observed_version_prerequisite_names_only_its_own_version(tmp_path, version):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    # Naming only its own version keeps the saved text the same when another version is added.
+    assert re.findall(r"\d+\.\d+\.\d+", saved["prerequisites"][0]["detail"]) == [version]
+
+
+def _guided_review_transcript(tmp_path, monkeypatch, capsys, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(output, source, resources, framework_version=version) + ["--interactive"]) == 0
+    return capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_guided_review_states_that_supported_versions_observe_memory(tmp_path, monkeypatch, capsys, version):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
+    assert f"  Memory is observed during initialized vLLM {version} collection." in lines
+    assert (
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
+    )
+    assert not any("this version can collect timings only" in line for line in lines)
+
+
+@pytest.mark.parametrize(("version", "audited"), [("0.33.1", "0.33.0"), ("0.32.2", "0.32.0")])
+def test_guided_review_names_the_audited_release_for_a_patch_release(tmp_path, monkeypatch, capsys, version, audited):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
+    assert (
+        f"  Memory is observed during initialized vLLM {version} collection if the vLLM files that the observers read "
+        f"match audited vLLM {audited}." in lines
+    )
+    assert (
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
+    )
+    assert not any("this version can collect timings only" in line for line in lines)
+
+
+def test_guided_review_refuses_a_pre_release(tmp_path, monkeypatch, capsys):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.33.1rc0")
+    assert (
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+        in lines
+    )
+
+
+def test_guided_review_states_that_an_unsupported_version_collects_timings_only(tmp_path, monkeypatch, capsys):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.31.0")
+    assert (
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+        in lines
+    )
+    assert not any("Memory is observed during initialized vLLM" in line for line in lines)
+    assert not any(line.startswith("  Collection policy:") for line in lines)
 
 
 def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):

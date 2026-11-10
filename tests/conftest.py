@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collect AI Simulate tests only where its standalone package is available."""
+"""Collect AISim tests only where its standalone package is available."""
 
 from importlib.util import find_spec
 from pathlib import Path

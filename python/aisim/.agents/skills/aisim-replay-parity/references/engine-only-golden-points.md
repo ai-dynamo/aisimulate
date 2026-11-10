@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-Use these configurations as preflight and qualification seeds for AI Simulate's built-in
+Use these configurations as preflight and qualification seeds for AISim's built-in
 `RoundRobinComposition`. The long-corpus results are qualified only for the pinned AI
 Simulate revision, trace, runner, and configuration recorded below; they are not universal
 capacities or portable performance results.
@@ -30,7 +30,7 @@ These are the currently committed preflight expectations:
 
 The authoritative long-corpus status is different:
 
-| 5,000-row requirement | Current status in AI Simulate |
+| 5,000-row requirement | Current status in AISim |
 | --- | --- |
 | Canonical 5,000-row input trace | **REPRODUCIBLE FROM PINNED UPSTREAM; NOT COMMITTED LOCALLY** |
 | Qualified engine-only configurations | **QUALIFIED ON `fb7b0d56de035d66ca9fcae7ff424055dcbf37cd`** |
@@ -299,7 +299,7 @@ They do not exercise the authoritative multi-worker/backend/topology matrix.
 
 ## Qualified internal-polynomial long-corpus golden points
 
-These results were qualified on 2026-08-26 against AI Simulate
+These results were qualified on 2026-08-26 against AISim
 `fb7b0d56de035d66ca9fcae7ff424055dcbf37cd`, using Rust/Cargo 1.93.1 in release mode,
 the pinned 5,000-row trace above, trace block size 512, arrival speedup 4, model/decode
 speedups 1, DP=1, TP=1, round-robin placement, and no scaling. Qualification ran on an
@@ -371,7 +371,7 @@ must also require exact authored output-token completion.
 
 ## Qualified asymmetric attention-DP golden points
 
-These additional disaggregated rows were qualified on 2026-09-03 against AI Simulate
+These additional disaggregated rows were qualified on 2026-09-03 against AISim
 `0bae79b6c2b61dc4803484fcfbe2211f1987d692`, the first revision in this campaign that
 supports request-level asymmetric attention-DP handoff. The pre-support baseline
 `d25f25de87c5e6512fd4b8b35e145109589e4395` rejects these rows by design, so they are a

@@ -363,9 +363,8 @@ mod tests {
     }
 
     fn gb200_trtllm_table() -> TrtllmAlltoallTable {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../python/aisim/src/aisim_core/systems/data/gb200/trtllm/1.3.0rc10",
-        );
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisim/src/aisim_core/systems/data/gb200/trtllm/1.3.0rc10");
         TrtllmAlltoallTable::new(root)
     }
 

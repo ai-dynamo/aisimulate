@@ -346,7 +346,7 @@ runner. If every selected backend/topology pair is runner-incompatible, prefligh
 The experimental `AISIMULATE_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier
 algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer.
 `SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
-AI Simulate variable takes precedence.
+AISim variable takes precedence.
 
 ## `kv_load_ratio` (candidate-relative concurrency)
 

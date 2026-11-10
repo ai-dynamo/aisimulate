@@ -1,5 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 // SPDX-License-Identifier: Apache-2.0
+
+// Modified persistent speculative-capacity interface derived from vLLM:
+// https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_manager.py
+// https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+// See THIRD_PARTY_NOTICES.md for the Apache-2.0 attribution.
 
 //! Scheduler-facing facade over the native vLLM-style G1 manager.
 //!
@@ -220,6 +226,38 @@ impl G1Manager {
     ) -> NativeAllocation<usize> {
         self.inner
             .allocate_lease(owner, lease, cumulative_tokens, reusable_prefix_blocks)
+    }
+
+    /// Preserve grouped and recurrent-state managers' existing lifecycle.
+    pub(crate) fn supports_native_speculative_slots(&self) -> bool {
+        self.inner.supports_native_speculative_slots()
+    }
+
+    pub(crate) fn allocate_native_with_slots(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        known_target_tokens: usize,
+        physical_slot_target_tokens: usize,
+        reusable_prefix_blocks: usize,
+    ) -> NativeAllocation<usize> {
+        self.inner.allocate_lease_with_slots(
+            owner,
+            lease,
+            known_target_tokens,
+            physical_slot_target_tokens,
+            reusable_prefix_blocks,
+        )
+    }
+
+    pub(crate) fn bind_native_owned_capacity(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        known_target_tokens: usize,
+    ) -> NativeAllocation<usize> {
+        self.inner
+            .bind_lease_owned_capacity(owner, lease, known_target_tokens)
     }
 
     pub(crate) fn authorize_native_compute_after_dependencies(

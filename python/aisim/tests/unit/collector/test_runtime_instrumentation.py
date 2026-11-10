@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,3 +88,36 @@ def test_version_unknown_keys_duplicate_keys_and_undeclared_modules_rejected(tmp
     path.write_text("schema_version: x\nschema_version: y\n")
     with pytest.raises(ValueError, match="duplicate"):
         load_instrumentation(path)
+
+
+def test_probe_observer_refuses_layer_strided_cache_records(tmp_path, monkeypatch):
+    import importlib.util
+
+    from collector.fpm_forward.runtime import fpm_memory_observer as legacy
+
+    from .test_fpm_runtime_memory import _initialized_layer_strided
+
+    # The probe route reads shared_by with vLLM 0.27.0 meaning and has bundles for 0.27.0 and 0.28.0 only.
+    monkeypatch.setitem(sys.modules, "fpm_memory_observer", legacy)
+    path = Path(legacy.__file__).parent / "instrumentation" / "observer.py"
+    spec = importlib.util.spec_from_file_location("probe_observer_under_test", path)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    worker, _scheduler, _config = _initialized_layer_strided()
+    context = {
+        "attempt_id": "a",
+        "configuration": "c",
+        "phase": "prefill",
+        "bundle_sha256": "b" * 64,
+        "launch": {"identity": {"gpu": "synthetic"}},
+    }
+    (tmp_path / "context.json").write_text(json.dumps(context))
+    (tmp_path / "manifest.json").write_text(json.dumps({"runtime": {"source_files": {}}}))
+    monkeypatch.setenv("AISIMULATE_RUNTIME_CONTEXT", str(tmp_path / "context.json"))
+    monkeypatch.setenv("AISIMULATE_RUNTIME_INSTRUMENTATION", str(tmp_path / "manifest.json"))
+    monkeypatch.setenv("AISIMULATE_RUNTIME_OBSERVATION_DIR", str(tmp_path / "out"))
+    probe.observe("worker", worker, version="0.32.0", dp_rank=0, tp_rank=0, pp_rank=0)
+    record = json.loads(next((tmp_path / "out").glob("runtime-observation-worker-*.json")).read_text())
+    assert "cache" in record["unresolved_fields"]
+    assert "cache" not in record
+    assert "layer-strided cache tensor records need an audited instrumentation adapter" in record["error"]

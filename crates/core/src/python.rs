@@ -284,8 +284,10 @@ fn validate_public_agentic_engine(
         );
         for role in &roles {
             ensure!(
-                role.rank.aic_nextn.is_none(),
-                "agentic host offload requires speculative decoding disabled"
+                role.rank.aic_nextn.is_none()
+                    || (matches!(&spec.topology, ReplayTopology::Aggregated { .. })
+                        && role.rank.has_canonical_mtp_timing()),
+                "agentic host offload requires speculative decoding disabled except canonical MTP on an aggregated worker"
             );
             ensure!(
                 role.rank.backend == Backend::Vllm,
@@ -3143,6 +3145,7 @@ fn resolve_role_timing(
     capture_performance_diagnostics: bool,
     coverage_sources: &mut Vec<(ForwardPassWorkerType, Arc<ForwardPassPerfModel>)>,
 ) -> Result<Option<Arc<dyn TimingModel>>> {
+    role.rank.validate_host_offload_speculation()?;
     let TimingModelConfig::External { provider, config } = role.rank.timing_model.clone() else {
         return Ok(None);
     };
@@ -5291,7 +5294,11 @@ mod tests {
                     (
                         "/spec/engine/decode/rank/aic_nextn",
                         serde_json::json!(1),
-                        "speculative decoding disabled",
+                        if other.is_some() {
+                            "requires canonical mtp"
+                        } else {
+                            "speculative decoding disabled"
+                        },
                     ),
                     (
                         "/spec/engine/decode/rank/g3_offload",
@@ -5963,9 +5970,7 @@ mod tests {
         use crate::perfmodel::engine::spec::EngineSpec;
 
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
-        if let Err(error) =
-            Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ()))
-        {
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
             assert!(
                 !required,
                 "native_phase_evidence_matches_python_bridge: \
@@ -9029,9 +9034,7 @@ mod tests {
     /// TensorRT-LLM 1.3.0rc20 model, whose GEMM and attention tables do.
     fn packaged_op_level_timing(test: &str, power: bool) -> Option<AicTimingModel> {
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
-        if let Err(error) =
-            Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ()))
-        {
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
             assert!(
                 !required,
                 "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisim_core.sdk.engine` \

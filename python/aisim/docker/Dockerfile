@@ -91,8 +91,8 @@ RUN cd /workspace/python/aisim && \
 # Exercise the one-wheel boundary outside the checkout, including all
 # compatibility imports, bundled data, and the native estimator.
 RUN uv venv --python 3.13 /tmp/aisim-wheel-test && \
-    AISIMULATE_WHL=$(ls /workspace/dist/*.whl) && \
-    uv pip install --python /tmp/aisim-wheel-test/bin/python "${AISIMULATE_WHL}" && \
+    AISIM_WHL=$(ls /workspace/dist/*.whl) && \
+    uv pip install --python /tmp/aisim-wheel-test/bin/python "${AISIM_WHL}" && \
     uv pip check --python /tmp/aisim-wheel-test/bin/python && \
     cd /tmp && /tmp/aisim-wheel-test/bin/python \
         /workspace/python/aisim/tools/verify_installed_package_layers.py --exercise-engine
@@ -102,11 +102,11 @@ RUN uv venv --python 3.13 /tmp/aisim-wheel-test && \
 # delete a compatibility file now owned by the unified distribution.
 RUN "${UV_PYTHON}" /workspace/python/aisim/tools/build_legacy_monolith_fixture.py /tmp/legacy-dist && \
     LEGACY_WHL=$(ls /tmp/legacy-dist/aiconfigurator-0.9.0-*.whl) && \
-    AISIMULATE_WHL=$(ls /workspace/dist/*.whl) && \
+    AISIM_WHL=$(ls /workspace/dist/*.whl) && \
     "${UV_PYTHON}" -m venv /tmp/aic-pip-migration && \
     /tmp/aic-pip-migration/bin/pip install "${LEGACY_WHL}" && \
     /tmp/aic-pip-migration/bin/pip uninstall -y aiconfigurator aiconfigurator-core && \
-    /tmp/aic-pip-migration/bin/pip install "${AISIMULATE_WHL}" && \
+    /tmp/aic-pip-migration/bin/pip install "${AISIM_WHL}" && \
     cd /tmp && /tmp/aic-pip-migration/bin/python \
         /workspace/python/aisim/tools/verify_installed_package_layers.py --exercise-engine
 
@@ -131,8 +131,8 @@ RUN apt-get update && \
 # Runtime already installed the unified wheel. Add its development extras
 # before copying the test sources.
 COPY --from=build /workspace/dist /wheelhouse
-RUN AISIMULATE_WHL=$(ls /wheelhouse/*.whl) && \
-    uv pip install "${AISIMULATE_WHL}[dev]" && \
+RUN AISIM_WHL=$(ls /wheelhouse/*.whl) && \
+    uv pip install "${AISIM_WHL}[dev]" && \
     rm -rf /wheelhouse
 
 COPY python/aisim/pytest.ini /workspace/
