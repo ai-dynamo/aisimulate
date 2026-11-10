@@ -8,6 +8,16 @@ runtime:
   image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc2
   image_digest: sha256:93a3eaf1fa574813d608a7147735134bcfbd06d18d1aa98e8ee0d5da09e51e3a
 tables:
+  msa_context_module_perf:
+    rows: 10900
+    status: complete
+    collections:
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:1abe47124fcf161a81a152fa3cae8dd9cd3afdcd4d2942473da576949780129a
+      collected_at: '2026-11-10'
+      rows: 10900
+      status: complete
   msa_generation_module_perf:
     rows: 1924
     status: complete
