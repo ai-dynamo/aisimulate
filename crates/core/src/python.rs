@@ -4347,7 +4347,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             )
         };
         let spec_keys = serde_json::from_str::<SpecKeyCount>(payload)
-            .context("invalid AISimulate execution ReplaySpec")?
+            .context("invalid AISimulate execution payload")?
             .0;
         // Repeated `spec` keys are legacy metadata only when none holds a
         // replay; otherwise the configured envelope is ambiguous.
@@ -10381,6 +10381,29 @@ mod tests {
         );
         assert!(
             error.contains("invalid AISimulate execution payload: invalid type: null"),
+            "{error}"
+        );
+        // The sequence form of a legacy ReplaySpec (fields in declaration order) still runs.
+        let sequence = serde_json::json!([
+            spec.version,
+            &spec.topology,
+            &spec.engine,
+            &spec.adapters,
+            spec.max_sim_time_ms,
+            spec.max_in_flight,
+            spec.record_per_request,
+            &spec.sla,
+            &spec.encoder,
+            &spec.requests,
+        ]);
+        let output: serde_json::Value =
+            serde_json::from_str(&execute_json(&sequence.to_string(), false).unwrap()).unwrap();
+        assert_eq!(output["completed_requests"], report["completed_requests"]);
+        assert_eq!(output["per_request"][0]["request_id"], "authored-id");
+        // Malformed JSON names the payload and the parse position.
+        let error = format!("{:#}", execute_json("{\"spec\": ", false).unwrap_err());
+        assert!(
+            error.starts_with("invalid AISimulate execution payload: EOF while parsing"),
             "{error}"
         );
         // Repeated `spec` metadata on a bare ReplaySpec: the legacy form still runs.
