@@ -1354,8 +1354,11 @@ _GLM_SCHEDULER = "prefill scheduler of DP rank 0"
             "request, but its cache groups reserve 495",
         ),
         (None, f"{_GLM_SCHEDULER} lacks a positive kv_cache_max_concurrency"),
+        (0, f"{_GLM_SCHEDULER} lacks a positive kv_cache_max_concurrency"),
+        (-27.67070707070707, f"{_GLM_SCHEDULER} lacks a positive kv_cache_max_concurrency"),
+        (True, f"{_GLM_SCHEDULER} lacks a positive kv_cache_max_concurrency"),
     ],
-    ids=["vllm", "no_checkpoint_block", "missing"],
+    ids=["vllm", "no_checkpoint_block", "missing", "zero", "negative", "bool"],
 )
 def test_v033_glm_scheduler_concurrency_must_follow_its_cache_groups(tmp_path, concurrency, diagnostic):
     path, launches = observation_fixture(tmp_path, layout="glm_tp4")
@@ -2240,6 +2243,56 @@ def test_v033_records_must_hold_what_the_observer_guarantees(tmp_path, case, dia
     if diagnostic is None:
         assert result["status"] == "complete", result["diagnostics"]
         return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+def test_v033_scheduler_concurrency_must_be_finite():
+    # A JSON record cannot hold infinity, so import refuses such a file before this check. The check refuses it too.
+    record = {
+        "phase": "prefill",
+        "dp_rank": 0,
+        "resolved_config": {"model_config": {"max_model_len": 4096}},
+        "cache": {
+            "groups": [{"spec_type": "vllm.v1.kv_cache_interface.FullAttentionSpec", "block_size_tokens": 16}],
+            "num_blocks": 512,
+            "kv_cache_max_concurrency": 2.0,
+        },
+    }
+    runtime_observations._validate_startup_concurrency(record)  # 512 blocks of 256 blocks per request.
+    record["cache"]["kv_cache_max_concurrency"] = math.inf
+    with pytest.raises(ValueError, match="^prefill scheduler of DP rank 0 lacks a positive kv_cache_max_concurrency$"):
+        runtime_observations._validate_startup_concurrency(record)
+
+
+@pytest.mark.parametrize(
+    "case,diagnostic",
+    [
+        ("view_storage", "layer tensor aliases or offsets contradict the allocation plan"),
+        ("allocation_size", "allocation plan differs from actual backing storage"),
+        ("allocation_layer", "allocation plan does not account for every layer and backing storage"),
+    ],
+)
+def test_v033_layer_strided_allocations_must_cover_the_one_backing_storage(tmp_path, case, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        if record["kind"] != "worker":
+            return
+        cache = record["cache"]
+        allocation = next(item for item in cache["tensor_allocations"] if item["layers"] == ["attn.0", "attn.1"])
+        if case == "view_storage":
+            # A view of another storage than the one of its allocation.
+            cache["layer_tensors"]["attn.0"][0]["storage_id"] = "storage-other"
+        elif case == "allocation_size":
+            # vLLM gives every KVCacheTensor the size of the one shared buffer (v1/worker/utils.py:579-581).
+            allocation["size"] -= 1
+        else:
+            # attn.1 keeps its views but no allocation lists it.
+            allocation["layers"] = ["attn.0"]
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "incomplete"
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 

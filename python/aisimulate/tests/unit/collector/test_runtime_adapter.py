@@ -1497,6 +1497,35 @@ def test_v033_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
             assert name in record["error"]
 
 
+@pytest.mark.parametrize("change", ["one_layer_retention", "group_retention", "kernel_block_stride"])
+def test_v033_retention_and_kernel_view_stride_are_checked(tmp_path, monkeypatch, change):
+    import copy
+
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    # The worker's uniform group of the 11 tail rings. Its inner specs are one shared CircularBufferSpec, which the
+    # scheduler copy of the group also holds.
+    specs = campaign.cache.kv_cache_groups[5].kv_cache_spec.kv_cache_specs
+    tails = list(specs)
+    if change == "one_layer_retention":
+        # The second ring alone retains one more token, so only the worker's layers disagree.
+        specs[tails[1]] = copy.copy(specs[tails[1]])
+        specs[tails[1]].extra_retained_tokens = 1
+        expected = f"cache group layers disagree on retention: {tails}"
+    elif change == "group_retention":
+        specs[tails[0]].extra_retained_tokens = 1
+        expected = f"unsupported cache retention for {tails}: extra=1, chunk=None"
+    else:
+        # The indexer's AttentionGroup holds the stride of its kernel-block view (v1/worker/utils.py:261-273).
+        campaign.adapter.ObservedWorker().model_runner.attn_groups[4][0].kernel_block_stride = -1
+        expected = "kernel block stride must be a nonnegative integer"
+    records = {record["kind"]: record for record in campaign.run()}
+    field = "cache.layer_tensors" if change == "kernel_block_stride" else "cache.groups"
+    assert records["worker"]["unresolved_fields"] == [field]
+    assert records["worker"]["error"] == f"{field}: ValueError: {expected}"
+    # The scheduler reads no layer view, and its tail group holds the shared spec.
+    assert (records["scheduler"]["unresolved_fields"] == []) == (change != "group_retention")
+
+
 @pytest.mark.parametrize("runner_version", [1, 2])
 def test_v033_plain_attention_record_is_complete(tmp_path, monkeypatch, runner_version):
     campaign = _fake_campaign(tmp_path, monkeypatch, version="0.33.0", runner_version=runner_version)

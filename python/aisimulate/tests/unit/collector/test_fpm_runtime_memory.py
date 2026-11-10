@@ -386,11 +386,6 @@ def test_import_carries_the_checkpoint_evidence_of_a_mamba_group(count, alignmen
     assert group.get("prefill_checkpoint_alignment") == alignment
 
 
-def test_import_accepts_a_mamba_group_without_checkpoint_blocks():
-    cache, scheduler = _hybrid_caches(_mamba(num_prefill_checkpoint_blocks=0, prefill_checkpoint_alignment=None))
-    runtime_memory._normalized_groups(cache, scheduler, PAGE)
-
-
 @pytest.mark.parametrize(
     ("count", "alignment", "error"),
     [
@@ -569,6 +564,23 @@ def test_cache_groups_that_mix_layer_spec_evidence_are_refused():
     del scheduled["groups"][1]["layer_specs"]
     with pytest.raises(ValueError, match="runtime memory cache lacks complete layer spec evidence"):
         runtime_memory._normalized_groups(cache, scheduled, cache["groups"][0]["spec_page_size_bytes"])
+
+
+def test_uniform_group_with_an_unknown_inner_spec_class_is_refused():
+    cache, _scheduler = _hybrid_caches(_mamba())
+    group = cache["groups"][1]
+    # A uniform group whose second inner spec has a class without a cache kind. The scheduler copy keeps the first
+    # inner spec (kv_cache_utils.py:1110-1116), so the two copies still agree.
+    group["spec_type"] = "vllm.v1.kv_cache_interface.UniformTypeKVCacheSpecs"
+    group["layer_specs"]["kda.1"] = {
+        **group["layer_specs"]["kda.1"],
+        "spec_type": "vllm.v1.kv_cache_interface.RSWASpec",
+    }
+    scheduler = {"groups": [runtime_memory._scheduler_copy(item) for item in cache["groups"]]}
+    with pytest.raises(
+        ValueError, match=re.escape("unsupported runtime cache spec: 'vllm.v1.kv_cache_interface.RSWASpec'")
+    ):
+        runtime_memory._normalized_groups(cache, scheduler, PAGE)
 
 
 @pytest.mark.parametrize("empty", [(), []])
@@ -1749,6 +1761,17 @@ def test_pending_memory_rejects_conflicting_runtime_policy(flag):
         cell, backend_policy=planner.BackendPolicy("conflict", {"params": {"agg": {"extra_cli_args": [flag]}}}, {})
     )
     with pytest.raises(ValueError, match="memory"):
+        runner._cell_generator_overrides(plan, cell, {})
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_pending_memory_refuses_a_policy_mamba_cache_mode():
+    plan = _pending_plan()
+    policy = {"params": {"agg": {"extra_cli_args": ["--mamba-cache-mode=align"]}}}
+    cell = replace(plan.cells[0], backend_policy=planner.BackendPolicy("conflict", policy, {}))
+    with pytest.raises(
+        ValueError, match="^backend policy cannot select the Mamba cache mode for runtime memory observation$"
+    ):
         runner._cell_generator_overrides(plan, cell, {})
 
 
