@@ -42,8 +42,10 @@ def schedule() -> list[dict]:
     result = []
     for block in range(3):
         conditions = CONDITIONS[block:] + CONDITIONS[:block]
-        for index, (traversal, order) in enumerate(conditions):
-            arms = list(ARMS) if (block + index) % 2 == 0 else list(reversed(ARMS))
+        for traversal, order in conditions:
+            # Use condition values so rotation cannot cancel variation across blocks.
+            reverse_arms = (block + (traversal == "reverse") + (order[0] == "right")) % 2
+            arms = list(reversed(ARMS)) if reverse_arms else list(ARMS)
             for arm in arms:
                 result.append(
                     {

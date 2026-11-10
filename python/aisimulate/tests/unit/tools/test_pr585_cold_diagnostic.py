@@ -101,6 +101,60 @@ def test_balanced_study_preserves_physical_identity_and_exposes_order_effect(mon
         assert point["median_ratio"] == pytest.approx(expected)
 
 
+def test_worker_invocations_vary_arm_order_within_each_condition(monkeypatch, tmp_path):
+    calls = []
+    installations = lanes()
+    installation_names = {lane["python"]: name for name, lane in installations.items()}
+    forward = tuple(case["case_id"] for case in diagnostic.selected_cases())
+    traversals = {forward: "forward", forward[::-1]: "reverse"}
+
+    def controlled_worker(**kwargs):
+        if kwargs["iterations"] == 100:
+            calls.append((installation_names[kwargs["python"]], tuple(case["case_id"] for case in kwargs["cases"])))
+        return [response(case, kwargs["revision"], kwargs["iterations"]) for case in kwargs["cases"]], None
+
+    monkeypatch.setattr(diagnostic, "run_worker_batch", controlled_worker)
+    diagnostic.collect(installations, tmp_path, {"controlled_worker": True}, cpu=0)
+    assert len(calls) == 48
+    pairs = []
+    for first, second in zip(calls[::2], calls[1::2], strict=True):
+        assert first[1] == second[1]
+        names = (first[0], second[0])
+        arm = "base_vs_head" if "head" in names else "base_vs_base"
+        assert set(names) == ({"base", "head"} if arm == "base_vs_head" else {"base", "control"})
+        order = tuple("left" if name == "base" else "right" for name in names)
+        pairs.append((traversals[first[1]], order, arm))
+
+    first_arms = []
+    for first, second in zip(pairs[::2], pairs[1::2], strict=True):
+        assert first[:2] == second[:2]
+        assert {first[2], second[2]} == {"base_vs_head", "base_vs_base"}
+        first_arms.append(first)
+    conditions = {
+        (traversal, order) for traversal in ("forward", "reverse") for order in (("left", "right"), ("right", "left"))
+    }
+    for start in range(0, len(first_arms), 4):
+        assert {(traversal, order) for traversal, order, _ in first_arms[start : start + 4]} == conditions
+    for traversal, order in conditions:
+        counts = Counter(
+            arm
+            for actual_traversal, actual_order, arm in first_arms
+            if (actual_traversal, actual_order) == (traversal, order)
+        )
+        assert sorted(counts.values()) == [1, 2]
+    assert Counter(arm for _, _, arm in first_arms) == {"base_vs_head": 6, "base_vs_base": 6}
+    for traversal in ("forward", "reverse"):
+        assert Counter(arm for actual, _, arm in first_arms if actual == traversal) == {
+            "base_vs_head": 3,
+            "base_vs_base": 3,
+        }
+    for order in (("left", "right"), ("right", "left")):
+        assert Counter(arm for _, actual, arm in first_arms if actual == order) == {
+            "base_vs_head": 3,
+            "base_vs_base": 3,
+        }
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
