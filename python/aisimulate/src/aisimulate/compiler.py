@@ -997,25 +997,39 @@ def _resolve_kv_bytes_per_token(
     if configured != "auto":
         return configured
     parallel = worker.parallelism
+    from .sweeper.state_snapshot import saved_snapshot_config
+
+    controls = worker.timing.estimator_config
+    saved = saved_snapshot_config(controls if controls is not None else engine.estimator_config)
+
+    def control(name: str) -> str | None:
+        value = getattr(worker.timing, name)
+        if value is None:
+            value = getattr(engine, name)
+        return saved.get(name) if value is None else value
+
     return estimate_kv_bytes_per_token(
         engine.model,
         tp_size=parallel.tensor,
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
+        backend=engine.backend,
+        backend_version=engine.backend_version,
+        attention_dp_size=parallel.attention_data,
+        attention_backend=control("attention_backend"),
+        cp_size=_prefill_cp(parallel),
+        dcp_size=_decode_cp(parallel),
         **(
             {
                 "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
                 "worker_type": role,
                 "system": worker.hardware or engine.hardware,
-                "backend": engine.backend,
-                "backend_version": engine.backend_version,
-                "attention_dp_size": parallel.attention_data,
             }
             if engine.fpm_profile is not None
             else {}
         ),
-        kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
+        kvcache_quant_mode=control("kvcache_quant_mode"),
     )
 
 

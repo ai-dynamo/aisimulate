@@ -328,6 +328,30 @@ fn estimate_kwargs<'py>(
     kwargs.set_item("moe_tp_size", parallel.moe_tp_size)?;
     kwargs.set_item("moe_ep_size", parallel.moe_ep_size)?;
     kwargs.set_item("cp_size", parallel.cp_size.unwrap_or(1))?;
+    kwargs.set_item("dcp_size", parallel.dcp_size.unwrap_or(1))?;
+    kwargs.set_item("moe_kernel_source", engine.moe_kernel_source.as_deref())?;
+    // EngineConfig's extensible identity carries backend choices that are not
+    // typed fields on the legacy Mocker request. Preserve explicit choices:
+    // attention backend, in particular, determines the physical MLA KV layout.
+    for name in ["attention_backend", "moe_backend", "comm_quant_mode"] {
+        if let Some(value) = engine.extra.get(name) {
+            kwargs.set_item(name, value)?;
+        }
+    }
+    if let Some(value) = engine.extra.get("enable_eplb") {
+        let value = value.parse::<bool>().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "engine.extra.enable_eplb must be true or false",
+            )
+        })?;
+        kwargs.set_item("enable_eplb", value)?;
+    }
+    if let Some(value) = engine.extra.get("wideep_num_slots") {
+        let value = value.parse::<u32>().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("engine.extra.wideep_num_slots must be a u32")
+        })?;
+        kwargs.set_item("wideep_num_slots", value)?;
+    }
     kwargs.set_item(
         "fpm_profile",
         engine.extra.get("fpm_profile").map(String::as_str),
@@ -345,9 +369,8 @@ fn estimate_kwargs<'py>(
         "fmha_quant_mode",
         quant.activation_dtype.as_ref().map(dtype_str),
     )?;
-    // `comm_quant_mode` is intentionally NOT forwarded: the comm/NCCL
-    // overhead comes from `system_spec` (`nccl_mem` / `other_mem`), not the
-    // comm quant mode, so it does not affect the non-KV breakdown.
+    // No communication mode is synthesized: system_spec owns the NCCL
+    // overhead, but an explicitly recorded mode above still binds FPM identity.
     kwargs.set_item("nextn", nextn)?;
     kwargs.set_item(
         "systems_path",
@@ -658,12 +681,60 @@ mod tests {
 
         pyo3::prepare_freethreaded_python();
         let mut req = python_forwarding_request();
+        req.engine.parallel.dcp_size = Some(4);
+        req.engine.moe_kernel_source = Some("cutlass".into());
+        for (name, value) in [
+            ("attention_backend", "flashmla"),
+            ("moe_backend", "deepep_moe"),
+            ("comm_quant_mode", "half"),
+            ("enable_eplb", "true"),
+            ("wideep_num_slots", "128"),
+        ] {
+            req.engine.extra.insert(name.into(), value.into());
+        }
         req.engine.extra.insert(
             "fpm_profile".into(),
             serde_json::json!({"model": "test-model"}).to_string(),
         );
         Python::with_gil(|py| -> PyResult<()> {
             let kwargs = estimate_kwargs(py, &req)?;
+            assert_eq!(kwargs.get_item("dcp_size")?.unwrap().extract::<u32>()?, 4);
+            assert_eq!(
+                kwargs
+                    .get_item("attention_backend")?
+                    .unwrap()
+                    .extract::<String>()?,
+                "flashmla"
+            );
+            assert_eq!(
+                kwargs
+                    .get_item("moe_backend")?
+                    .unwrap()
+                    .extract::<String>()?,
+                "deepep_moe"
+            );
+            assert_eq!(
+                kwargs
+                    .get_item("moe_kernel_source")?
+                    .unwrap()
+                    .extract::<String>()?,
+                "cutlass"
+            );
+            assert_eq!(
+                kwargs
+                    .get_item("comm_quant_mode")?
+                    .unwrap()
+                    .extract::<String>()?,
+                "half"
+            );
+            assert!(kwargs.get_item("enable_eplb")?.unwrap().extract::<bool>()?);
+            assert_eq!(
+                kwargs
+                    .get_item("wideep_num_slots")?
+                    .unwrap()
+                    .extract::<u32>()?,
+                128
+            );
             assert_eq!(
                 kwargs
                     .get_item("fpm_profile")?
@@ -710,5 +781,44 @@ mod tests {
             Ok(())
         })
         .expect("deterministic PyDict round-trip must succeed");
+    }
+
+    #[cfg(feature = "embed-python")]
+    #[test]
+    fn compiled_memory_identity_survives_spec_serialization_and_kwargs() {
+        use crate::perfmodel::engine::spec::EngineSpec;
+        use pyo3::prelude::*;
+        use pyo3::types::PyDictMethods;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| -> PyResult<()> {
+            // Exercise the real Python spec producer without perf data or a
+            // remote model: the resolved config and empty op graph are enough
+            // to test identity transport through the serialized Rust spec.
+            let fixture = pyo3::types::PyModule::from_code(
+                py,
+                c"from types import SimpleNamespace\nfrom aisimulate_core.sdk.config import ModelConfig\nfrom aisimulate_core.sdk.engine import build_engine_spec_json\nconfig = ModelConfig(tp_size=8, dcp_size=4, attention_backend='flashmla', moe_backend='deepep_moe', moe_kernel_source='cutlass', enable_eplb=True, wideep_num_slots=128)\nmodel = SimpleNamespace(config=config, context_ops=[], generation_ops=[])\nspec = build_engine_spec_json(model, model_path='/local/renamed-checkpoint', system='test-system', backend='vllm', backend_version='test-version', kv_block_size=64, systems_path=None, nextn=0, database=SimpleNamespace(version='test-version'))\n",
+                c"memory_identity_fixture.py", c"memory_identity_fixture",
+            )?;
+            let json: String = fixture.getattr("spec")?.extract()?;
+            let spec: EngineSpec = serde_json::from_str(&json).unwrap();
+            let spec = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+            let mut req = python_forwarding_request();
+            req.engine = spec.engine;
+            let kwargs = estimate_kwargs(py, &req)?;
+            assert_eq!(kwargs.get_item("attention_backend")?.unwrap().extract::<String>()?, "flashmla");
+            assert_eq!(kwargs.get_item("dcp_size")?.unwrap().extract::<u32>()?, 4);
+            assert_eq!(kwargs.get_item("moe_kernel_source")?.unwrap().extract::<String>()?, "cutlass");
+            assert_eq!(kwargs.get_item("moe_backend")?.unwrap().extract::<String>()?, "deepep_moe");
+            assert!(kwargs.get_item("enable_eplb")?.unwrap().extract::<bool>()?);
+            assert_eq!(kwargs.get_item("wideep_num_slots")?.unwrap().extract::<u32>()?, 128);
+            // Missing backend geometry remains missing; the SDK must reject
+            // unsupported K31 FP8 layouts rather than inventing one here.
+            req.engine.extra.remove("attention_backend");
+            assert!(!estimate_kwargs(py, &req)?.contains("attention_backend")?);
+            req.engine.extra.insert("enable_eplb".into(), "invalid".into());
+            assert!(estimate_kwargs(py, &req).is_err());
+            Ok(())
+        }).expect("compiled memory identity must survive the public wire format");
     }
 }

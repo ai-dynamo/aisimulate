@@ -544,6 +544,9 @@ for name in ("sglang", "vllm", "tensorrt_llm", "torch"):
 from collector.op_plans import OP_PLANS, plan
 for op in OP_PLANS:
     for backend in ("sglang", "trtllm", "vllm"):
+        if op in {"kimi_k31_dsa_context_module", "kimi_k31_dsa_generation_module"} and backend != "sglang":
+            assert not plan(op, backend, 100).cases, (op, backend)
+            continue
         assert plan(op, backend, 100).cases, (op, backend)
 """
     env = dict(os.environ)

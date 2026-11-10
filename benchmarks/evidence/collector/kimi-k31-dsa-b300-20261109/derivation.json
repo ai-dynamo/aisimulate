@@ -1,0 +1,67 @@
+{
+  "schema": "disjoint-native-op-union/v1",
+  "operation": "Arrow concatenation of disjoint immutable native rows; provenance.append_collection_event/render_collection_meta preserve all source events.",
+  "original_git_commit": "e6b7c36d5c998037599544d75c644d5d690f3ab1",
+  "derivation_script_sha256": "2d1b1ecd1499f811de19db0399b127985b4c14a222457d2d12f800540d47b8d0",
+  "invocation": [
+    "python",
+    "merge-campaigns.py",
+    "<original60>",
+    "<chunked12>",
+    "<combined>"
+  ],
+  "inputs": [
+    {
+      "campaign": "original60",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "85ab7e801884bc32b0acef612be0b2fcc5ffd5a8155f9b019fca370c8fe8725a"
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "c0ccbdd2c364618f7892d12e89b24468a3f388830dd6001b40777628dd4c436e"
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "1b85ff55bb088f11d124ef2ca249679f941145dff3a8f26b4d63a5ebdec8c8b6"
+        }
+      ]
+    },
+    {
+      "campaign": "chunked12",
+      "files": [
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "f5896525e226ad19457beb6a99108c24b7d8cad34fee51246cb2f5be2e43f176"
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "f22b2d443c2e327d64db8e0bc70eac235caf7ba71651df7e3625e55ec1716eae"
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "dsa_context_module_perf.parquet",
+      "sha256": "85ab7e801884bc32b0acef612be0b2fcc5ffd5a8155f9b019fca370c8fe8725a"
+    },
+    {
+      "name": "dsa_generation_module_perf.parquet",
+      "sha256": "491f3774aea5b614c0d6b5c7e0afa7fe2af1223b7e9335cc2527f38d62573a4c"
+    },
+    {
+      "name": "collection_meta.yaml",
+      "sha256": "2a473e1c155c6d90cd9569fad9f695e11103054d4909d3c56d0e8e49205dffa8"
+    }
+  ],
+  "validation": {
+    "disjoint_consumer_keys": true,
+    "exact_all_column_row_union": true,
+    "generation_rows": 33,
+    "context_rows": 39,
+    "original_events_preserved": true,
+    "new_events_preserved": true
+  }
+}

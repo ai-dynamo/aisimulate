@@ -88,6 +88,20 @@ def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
     registry = {"sglang": SGLANG_REGISTRY, "trtllm": TRTLLM_REGISTRY}[backend]
     module_versions: dict[str, set[str]] = {}
     for entry in registry:
+        if entry.versions:
+            assert backend == "sglang" and entry.op.startswith("kimi_k31_dsa_")
+            runtime = require_collector_runtime(
+                backend,
+                "0.0.0.dev1+g41208373c.d20261104",
+                requested_ops={entry.op},
+                model_path="moonshotai/Kimi-K3.1-Pro",
+            )
+            from collector.version_resolver import resolve_module
+
+            module = resolve_module(entry, runtime.version)
+            assert module and resolve_module(entry, get_collector_runtime(backend).version) is None
+            module_versions.setdefault(module, set()).add(runtime.version)
+            continue
         module_versions.setdefault(entry.module, set()).add(resolve_op_runtime(backend, entry.op).version)
     for module, versions in sorted(module_versions.items()):
         assert len(versions) == 1, (module, versions)

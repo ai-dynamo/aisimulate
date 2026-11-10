@@ -397,6 +397,12 @@ def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
             "pp_size": 1,
             "moe_tp_size": 1,
             "moe_ep_size": 1,
+            "backend": "vllm",
+            "backend_version": None,
+            "attention_dp_size": 1,
+            "attention_backend": None,
+            "cp_size": 1,
+            "dcp_size": 1,
             "kvcache_quant_mode": None,
         }
     ]
@@ -424,6 +430,82 @@ def test_prediction_auto_transfer_geometry_uses_prefill_source_shape(
     assert [call["tp_size"] for call in calls] == [2]
     assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
     assert deployment.decode_engine_args["kv_transfer_timing_mode"] == "destination_missing"
+
+
+def test_saved_prediction_preserves_kv_layout_precision_and_parallelism(monkeypatch) -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine.update(backend="sglang", backend_version="0.5.14", kvcache_quant_mode="bfloat16", attention_backend="fa3")
+    engine["kv_transfer"] = {"bandwidth_gb_per_second": 400.0}
+    prefill = engine["workers"]["prefill"]
+    prefill["timing"] = {"type": "default", "kvcache_quant_mode": "fp8", "attention_backend": "flashmla"}
+    prefill["parallelism"].update(
+        tensor=8, attention_data=2, moe_tensor=2, moe_expert=16, prefill_context=2, decode_context=2
+    )
+    engine["workers"]["decode"]["timing"] = {"type": "default"}
+    calls = []
+
+    def estimate(model, **identity):
+        calls.append((model, identity))
+        return 9456
+
+    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", estimate)
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    reloaded = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    deployment = prediction_to_replay_spec(reloaded).backend_deployment
+
+    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 9456
+    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 9456
+    assert calls == [
+        (
+            "example/model",
+            {
+                "tp_size": 8,
+                "pp_size": 1,
+                "moe_tp_size": 2,
+                "moe_ep_size": 16,
+                "backend": "sglang",
+                "backend_version": "0.5.14",
+                "attention_dp_size": 2,
+                "attention_backend": "flashmla",
+                "cp_size": 2,
+                "dcp_size": 2,
+                "kvcache_quant_mode": "fp8",
+            },
+        )
+    ]
+
+
+def test_kv_geometry_reads_saved_snapshot_controls_when_unspecified(tmp_path, monkeypatch) -> None:
+    from aisimulate.compiler import _resolve_kv_bytes_per_token
+
+    engine = _prediction_engine()
+    engine["estimator_config"] = {"state_snapshot": {"path": str(tmp_path)}}
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "estimator_config": engine["estimator_config"],
+                "attention_backend": "flashmla",
+                "kvcache_quant_mode": "fp8",
+            }
+        )
+    )
+    engine["workers"]["aggregated"]["timing"] = {"type": "default"}
+    config = CorePredictionConfig.model_validate_json(
+        CorePredictionConfig.model_validate({"engine": engine}).model_dump_json()
+    )
+    seen = {}
+
+    def estimate(_model, **identity):
+        seen.update(identity)
+        return 18_912
+
+    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", estimate)
+    assert (
+        _resolve_kv_bytes_per_token(config.engine, config.engine.workers.aggregated, "auto", role="aggregated")
+        == 18_912
+    )
+    assert seen["attention_backend"] == "flashmla"
+    assert seen["kvcache_quant_mode"] == "fp8"
 
 
 def test_prediction_transfer_and_cache_geometry_are_independent(monkeypatch) -> None:

@@ -123,6 +123,10 @@ mappings:
   - {framework: sglang, kernel_source: sglang_dsa_indexer_fa3, backend: fa3, source: "PR#1342 collect_mla_module.py (indexer path, fa3)"}
   - {framework: sglang, kernel_source: sglang_dsa_indexer_trtllm, backend: trtllm_mla, source: "PR#1342 collect_mla_module.py (indexer path, trtllm-gen sparse MLA)"}
   - {framework: sglang, kernel_source: sglang_dsa_indexer_flashmla_kv, backend: flashmla, source: "PR#1342 collect_mla_module.py (indexer path, FlashMLA dense-kv)"}
+  # K3.1's labels additionally attest the physical KV layout and eager mode.
+  # Packed FlashMLA KV storage does not change the short-prefill execution backend.
+  - {framework: sglang, kernel_source: sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager, backend: trtllm_ragged, source: "collector/sglang/collect_kimi_k31_dsa_v1.py:executed_kernel_source; sglang@afcd7d6b487a9cbe73e25941971b4cc107e6f9ae python/sglang/srt/layers/attention/dsa_backend.py:_forward_mha (CUDA SM100+, trtllm_ragged_attention_deepseek); benchmarks/evidence/collector/kimi-k31-dsa-b300-20261109/receipt.json"}
+  - {framework: sglang, kernel_source: sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager, backend: flashmla, source: "collector/sglang/collect_kimi_k31_dsa_v1.py:executed_kernel_source; sglang@afcd7d6b487a9cbe73e25941971b4cc107e6f9ae python/sglang/srt/layers/attention/dsa_backend.py:forward_extend/forward_decode (flashmla_kv), _forward_flashmla_kv (flash_mla_with_kvcache); benchmarks/evidence/collector/kimi-k31-dsa-b300-20261109/receipt.json"}
   - {framework: sglang, kernel_source: sglang_dsa_indexer_flashmla_sparse, backend: flashmla, source: "PR#1342 collect_mla_module.py (indexer path, FlashMLA sparse)"}
   - {framework: sglang, kernel_source: sglang_dsa_skip_indexer_trtllm, backend: trtllm_mla, source: "PR#1342 collect_mla_module.py (GLM-5.2 reuse layer, trtllm-gen)"}
   - {framework: sglang, kernel_source: sglang_dsa_skip_indexer_flashmla_sparse, backend: flashmla, source: "PR#1342 collect_mla_module.py (GLM-5.2 reuse layer, FlashMLA sparse)"}

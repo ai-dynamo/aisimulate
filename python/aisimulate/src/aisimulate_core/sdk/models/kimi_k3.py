@@ -12,7 +12,7 @@ from aisimulate_core.sdk.models.blocks.vit import build_kimi_k3_encoder_ops
 @register_model("KIMIK3")
 class KimiK3Model(BaseModel):
     """
-    Kimi-K3 hybrid KDA + MLA LatentMoE model (2.8T, 93 layers = 69 KDA + 24 MLA).
+    Kimi-K3/K3.1 hybrid KDA + gated MLA/DSA LatentMoE model.
 
     Layer types from KimiK3Config.layer_types:
       - "linear_attention": KDA (Kimi Delta Attention) layers — fused qkvg
@@ -20,6 +20,7 @@ class KimiK3Model(BaseModel):
         the KDA delta-rule kernels (chunk_kda / fused_recurrent_kda_packed_decode).
       - "full_attention": DeepSeek-geometry MLA (96 heads, NoPE) plus an
         output-gate GEMM (mla_use_output_gate).
+      - "sparse_attention": K3.1's indexer + sparse MLA module, including its output gate.
 
     FFN: layer 0 is a dense SwiGLU MLP (first_k_dense_replace=1); all other
     layers run LatentMoE — router in hidden space, a replicated hidden->latent
@@ -105,6 +106,23 @@ class KimiK3Model(BaseModel):
         self._backend_name = backend_name
         cfg: common.KimiK3Config = self.extra_params
         assert isinstance(cfg, common.KimiK3Config), "KimiK3Model requires KimiK3Config extra_params"
+        if cfg.dsa_config is not None:
+            if self.config.kvcache_quant_mode not in (common.KVCacheQuantMode.bfloat16, common.KVCacheQuantMode.fp8):
+                raise ValueError("Kimi K3.1 supports only bfloat16 or fp8 KV cache")
+            attention_backend = self.config.attention_backend
+            if attention_backend not in (None, common.AttentionBackend.default, "flashmla", "trtllm_mla"):
+                raise ValueError("Kimi K3.1 attention_backend must be flashmla or trtllm_mla")
+            if self.config.kvcache_quant_mode != common.KVCacheQuantMode.bfloat16 and attention_backend not in (
+                "flashmla",
+                "trtllm_mla",
+            ):
+                raise ValueError("Kimi K3.1 FP8 KV requires attention_backend=flashmla or trtllm_mla")
+            if self._nextn > 0 or (self.config.speculation is not None and self.config.speculation.kind != "none"):
+                raise ValueError(
+                    "Kimi K3.1 currently supports non-speculative decoding only; K3 DSPARK is not inherited"
+                )
+            if (self.config.dcp_size or 1) > 1:
+                raise ValueError("Kimi K3.1 decode context parallelism is not supported by the gated-DSA model")
 
         assert (
             self.config.tp_size * self.config.attention_dp_size * self.config.cp_size
@@ -161,7 +179,51 @@ class KimiK3Model(BaseModel):
         return {
             "linear": cfg.layer_types.count("linear_attention"),
             "full": cfg.layer_types.count("full_attention"),
+            "sparse": cfg.layer_types.count("sparse_attention"),
         }
+
+    def _dsa_attention_ops(self, prefix: str, *, context: bool) -> list:
+        """The K3.1 DSA module owns projections/indexing/attention and the output gate."""
+        cfg: common.KimiK3Config = self.extra_params
+        count = cfg.layer_types.count("sparse_attention")
+        if not count:
+            return []
+        tp = self.config.tp_size
+        hidden = self._hidden_size
+        if context:
+            attention = ops.ContextDSAModule(
+                f"{prefix}_dsa_module",
+                count,
+                self._num_heads // tp,
+                self.config.kvcache_quant_mode,
+                self.config.fmha_quant_mode,
+                self.config.gemm_quant_mode,
+                architecture=self.architecture,
+                attention_backend=(
+                    str(self.config.attention_backend)
+                    if self.config.attention_backend not in (None, common.AttentionBackend.default)
+                    else None
+                ),
+            )
+        else:
+            attention = ops.GenerationDSAModule(
+                f"{prefix}_dsa_module",
+                count,
+                self._num_heads // tp,
+                self.config.kvcache_quant_mode,
+                self.config.gemm_quant_mode,
+                architecture=self.architecture,
+                attention_backend=(
+                    str(self.config.attention_backend)
+                    if self.config.attention_backend not in (None, common.AttentionBackend.default)
+                    else None
+                ),
+            )
+        return [
+            ops.ElementWise(f"{prefix}_dsa_norm", count, 2 * hidden, 2 * hidden, 0.8),
+            attention,
+            ops.CustomAllReduce(f"{prefix}_dsa_ar", count, hidden, tp),
+        ]
 
     def _mla_dims(self, cfg: common.KimiK3Config) -> dict[str, int]:
         n = self._num_heads
@@ -243,6 +305,8 @@ class KimiK3Model(BaseModel):
                     ops.CustomAllReduce("context_kda_ar", c, h, tp),
                 ]
             )
+
+        self.context_ops.extend(self._dsa_attention_ops("context", context=True))
 
         # --- MLA full-attention layers ---
         if counts["full"] > 0:
@@ -467,6 +531,8 @@ class KimiK3Model(BaseModel):
                     ops.CustomAllReduce("generation_kda_ar", c, h, tp),
                 ]
             )
+
+        self.generation_ops.extend(self._dsa_attention_ops("generation", context=False))
 
         # --- MLA full-attention layers ---
         if counts["full"] > 0:
@@ -798,7 +864,7 @@ class KimiK3Model(BaseModel):
         (kv_lora_rank + qk_rope_head_dim, TP-replicated). With DSPARK the
         draft model's GQA KV (5 layers, TP-sharded) adds per-token elements."""
         cfg: common.KimiK3Config = self.extra_params
-        n_mla = cfg.layer_types.count("full_attention")
+        n_mla = cfg.layer_types.count("full_attention") + cfg.layer_types.count("sparse_attention")
         elements = n_mla * (cfg.kv_lora_rank + cfg.qk_rope_head_dim)
         if self._nextn > 0:
             if self._backend_name == "vllm":
@@ -809,6 +875,26 @@ class KimiK3Model(BaseModel):
                 draft_kv_heads = max(1, self.DRAFT_NUM_KV_HEADS // tp)
                 elements += self.DRAFT_NUM_LAYERS * 2 * draft_kv_heads * self.DRAFT_HEAD_DIM
         return elements
+
+    def _paged_cache_bytes_per_token(self) -> float:
+        """Sparse selection keeps the full latent history and adds an FP8 indexer key cache."""
+        cfg: common.KimiK3Config = self.extra_params
+        token_bytes = self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        if cfg.dsa_config is not None:
+            if (
+                self.config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+                and self.config.attention_backend == "flashmla"
+            ):
+                # FlashMLA DS-MLA storage retains the 64-wide tail in BF16 and
+                # adds one FP32 scale per 128 latent values. TRT-LLM stores
+                # the complete 576-wide latent entry as raw FP8 instead.
+                token_bytes += cfg.layer_types.count("sparse_attention") * (
+                    cfg.qk_rope_head_dim + (cfg.kv_lora_rank // 128) * 4
+                )
+            token_bytes += cfg.layer_types.count("sparse_attention") * common.indexer_cache_entry_bytes(
+                cfg.dsa_config.index_head_dim
+            )
+        return token_bytes
 
     def _kda_state_bytes_per_request(self) -> float:
         """Constant KDA state-pool bytes per admitted request on one GPU:
@@ -831,15 +917,19 @@ class KimiK3Model(BaseModel):
         this estimate is optimistic for default-mode deployments (owner
         decision 2026-07-31: annotate, don't model the split)."""
         seq_len = max(0, seq_len)
-        token_bytes = seq_len * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
+        token_bytes = seq_len * self._paged_cache_bytes_per_token()
         return token_bytes + self._kda_state_bytes_per_request()
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         # Same single-elastic-budget assumption as
         # get_kvcache_bytes_per_sequence — see the note there.
-        per_token = self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
-        budget = kv_budget_bytes - self._kda_state_bytes_per_request()
-        if budget <= 0 or per_token <= 0:
+        return self.get_kvcache_batch_capacity(kv_budget_bytes, 1)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Reserve fixed KDA state for every scheduler slot before sizing KV."""
+        per_token = self._paged_cache_bytes_per_token()
+        budget = float(kv_budget_bytes) - max_batch_size * self._kda_state_bytes_per_request()
+        if max_batch_size <= 0 or budget <= 0 or per_token <= 0:
             return 0
         return int(budget // per_token)
 
@@ -847,15 +937,17 @@ class KimiK3Model(BaseModel):
     # per-request and rank-local (every rank runs the full recurrence on its
     # own KDA head shard), so it must be reserved whole BEFORE the stripe.
     def get_kvcache_rank_bytes_per_sequence(self, seq_len: int) -> float:
-        token_bytes = (
-            max(0, seq_len) * self.config.kvcache_quant_mode.value.memory * self.get_kvcache_elements_per_token()
-        )
-        return token_bytes / self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request()
+        return max(0, seq_len) * self.get_kvcache_rank_bytes_per_token() + self._kda_state_bytes_per_request()
+
+    def get_kvcache_rank_bytes_per_token(self) -> float:
+        """Token-linear latent/indexer KV only; KDA state is per request."""
+        return self._paged_cache_bytes_per_token() / self._cp_kv_memory_divisor()
 
     def get_kvcache_rank_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
-        token_budget = float(kv_budget_bytes) - self._kda_state_bytes_per_request()
+        state_budget = max_batch_size * self._kda_state_bytes_per_request()
+        token_budget = float(kv_budget_bytes) - state_budget
         if token_budget <= 0:
             return 0
         return self.get_kvcache_batch_capacity(
-            token_budget * self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request(), max_batch_size
+            token_budget * self._cp_kv_memory_divisor() + state_budget, max_batch_size
         )

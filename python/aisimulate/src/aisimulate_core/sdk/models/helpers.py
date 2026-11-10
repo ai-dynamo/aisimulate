@@ -415,6 +415,7 @@ def attention_op_keys(
     is_large_ep: bool = False,
     *,
     enable_wideep: bool | None = None,
+    architecture: str | None = None,
 ) -> tuple[str, str]:
     """(context_op, generation_op) support-matrix keys for a model family /
     backend / large-EP combination.
@@ -434,7 +435,7 @@ def attention_op_keys(
 
     if model_family == "DEEPSEEKV4":
         return "deepseek_v4_context_module", "deepseek_v4_generation_module"
-    if model_family == "DEEPSEEKV32":
+    if model_family == "DEEPSEEKV32" or architecture == "KimiK31ForConditionalGeneration":
         return "dsa_context_module", "dsa_generation_module"
     if model_family == "KIMIK3" and backend_name != "vllm":
         # Kimi-K3 full-attention layers are DeepSeek-geometry MLA (NoPE + output
@@ -1179,7 +1180,7 @@ def resolve_kimi_k3_moe_arch_mode(
     """
     if backend_name != "sglang":
         return None
-    if model_path != "moonshotai/Kimi-K3":
+    if model_path not in {"moonshotai/Kimi-K3", "moonshotai/Kimi-K3.1-Pro"}:
         return None
     from aisimulate_core.sdk.perf_database import is_blackwell_system
 
@@ -1428,7 +1429,7 @@ def resolve_context_fmha_by_data(
     # Joint (fmha, kv) capability: use the kv mode this estimate will actually
     # run with (explicit wins, else the checkpoint inference).
     kv_mode = model_config.kvcache_quant_mode or inferred.get("kvcache_quant_mode")
-    ctx_op, _ = attention_op_keys(family, backend_name)
+    ctx_op, _ = attention_op_keys(family, backend_name, architecture=info.get("architecture"))
     supported = context_fmha_supported_modes(database, ctx_op, kv_mode)
     if not supported or common.FMHAQuantMode.fp8.name in supported:
         return

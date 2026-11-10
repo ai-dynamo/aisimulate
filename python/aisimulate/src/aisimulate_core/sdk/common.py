@@ -380,8 +380,21 @@ class Qwen35Config:
 
 
 @dataclass(frozen=True)
+class KimiK31DSAConfig:
+    """Indexer identity for K3.1's gated sparse-attention layers."""
+
+    index_topk: int
+    index_head_dim: int
+    index_num_heads: int
+    index_rope_dim: int
+    index_k_norm_type: str
+    index_topk_freq: int
+    index_skip_topk_offset: int
+
+
+@dataclass(frozen=True)
 class KimiK3Config:
-    """Config for Kimi-K3 hybrid KDA + MLA LatentMoE model.
+    """Config for Kimi-K3/K3.1 hybrid KDA + gated MLA/DSA LatentMoE models.
 
     layer_types: per-layer tuple of "linear_attention" (KDA) or "full_attention" (MLA),
                  derived from config.json linear_attn_config.kda_layers (1-based).
@@ -397,9 +410,10 @@ class KimiK3Config:
     vision_config: optional MoonViT3D and PatchMergerV2 geometry. Retained for
                    visual context sizing on language-only workers, which omit
                    encoder execution and memory allocation.
+    dsa_config: K3.1 indexer identity; its layers use "sparse_attention".
     """
 
-    layer_types: tuple[str, ...]  # per-layer: "linear_attention" (KDA) or "full_attention" (MLA)
+    layer_types: tuple[str, ...]  # per-layer: linear_attention, full_attention, or sparse_attention
     kda_num_heads: int
     kda_head_dim: int
     kda_conv_kernel: int
@@ -417,6 +431,7 @@ class KimiK3Config:
     dense_inter_size: int = 0
     attn_res_block_size: int = 0
     vision_config: VisionEncoderConfig | None = None
+    dsa_config: KimiK31DSAConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -889,6 +904,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Glm5NextForConditionalGeneration": "GLM53FLASH",
     "KimiK25ForConditionalGeneration": "KIMIK25",
     "KimiK3ForConditionalGeneration": "KIMIK3",
+    "KimiK31ForConditionalGeneration": "KIMIK3",
     "NemotronForCausalLM": "NEMOTRONNAS",
     "DeciLMForCausalLM": "NEMOTRONNAS",
     "NemotronHForCausalLM": "NEMOTRONH",
@@ -928,6 +944,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Glm5NextForConditionalGeneration": "text_config",
     "KimiK25ForConditionalGeneration": "text_config",
     "KimiK3ForConditionalGeneration": "text_config",
+    "KimiK31ForConditionalGeneration": "text_config",
     # Step-3.7/3.5-Flash ship a vision tower and nest the whole decoder under
     # text_config; without this the parser reads the top level and rejects real
     # checkpoints for having no num_hidden_layers.
@@ -1347,6 +1364,8 @@ class AttentionBackend(StrEnum):
     triton = "triton"
     trtllm_mha = "trtllm_mha"
     flashinfer = "flashinfer"
+    flashmla = "flashmla"
+    trtllm_mla = "trtllm_mla"
     fla = "fla"
     default = "default"
 

@@ -4,13 +4,30 @@
 """
 Declarative registry mapping ops to collector modules for SGLang.
 
-No version forks exist yet. When SGLang API changes require a fork,
-add a ``versions`` tuple following the trtllm registry pattern.
+The Kimi K3.1 preview route requires its dedicated model-scoped runtime.
 """
 
-from collector.registry_types import OpEntry, PerfFile
+from collector.registry_types import OpEntry, PerfFile, VersionRoute
 
 REGISTRY: list[OpEntry] = [
+    OpEntry(
+        op="kimi_k31_dsa_context_module",
+        versions=(VersionRoute("0.0.0.dev1+g41208373c.d20261104", "collector.sglang.collect_kimi_k31_dsa_v1"),),
+        get_func="get_kimi_k31_dsa_context_test_cases",
+        run_func="run_kimi_k31_dsa_fullnode",
+        perf_filename=PerfFile.DSA_CONTEXT_MODULE,
+        # Native TP1/2/4 eager boundary verified on B300 (SM103). Other
+        # targeted architectures still require their own native GPU campaign.
+        unverified_sms=(80, 86, 89, 90, 100, 120),
+    ),
+    OpEntry(
+        op="kimi_k31_dsa_generation_module",
+        versions=(VersionRoute("0.0.0.dev1+g41208373c.d20261104", "collector.sglang.collect_kimi_k31_dsa_v1"),),
+        get_func="get_kimi_k31_dsa_generation_test_cases",
+        run_func="run_kimi_k31_dsa_fullnode",
+        perf_filename=PerfFile.DSA_GENERATION_MODULE,
+        unverified_sms=(80, 86, 89, 90, 100, 120),
+    ),
     OpEntry(
         op="dsv41_module",
         module="collector.sglang.collect_dsv41_module",

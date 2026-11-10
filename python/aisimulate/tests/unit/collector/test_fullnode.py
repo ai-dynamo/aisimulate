@@ -70,6 +70,37 @@ def test_shape_index_rejects_out_of_range(monkeypatch):
         fullnode.select_cases("deepep_normal", [{"shape": 0}, {"shape": 1}], limit=None)
 
 
+def test_native_tp_route_uses_common_limit_without_collective_shape_selector(monkeypatch):
+    monkeypatch.setenv("DEEPEP_LL_SHAPE_INDEX", "999")
+    cases = [{"tp": 1}, {"tp": 2}, {"tp": 4}]
+    assert fullnode.select_cases("kimi_k31_dsa_context_module", cases, limit=2) == cases[:2]
+    assert fullnode.select_cases("kimi_k31_dsa_generation_module", cases, limit=None) == cases
+
+
+@pytest.mark.parametrize("maturity", [{"unverified": True}, {"unverified_sms": (103,)}])
+def test_fullnode_preserves_registry_maturity_gate_before_import(maturity):
+    _Checkpoint.instances.clear()
+    errors = fullnode.collect_sglang_fullnode_op(
+        {"name": "sglang", "type": "kimi_k31_dsa_context_module", "module": "must_not_import", **maturity},
+        runtime_version="0.0.0.dev1",
+        limit=None,
+        shuffle=False,
+        shuffle_seed=42,
+        backend="sglang",
+        resume_options=None,
+        model_path=None,
+        case_plan=None,
+        sm_version=103,
+        case_filters=None,
+        get_test_cases_for_model=lambda *_args: pytest.fail("planned unverified collector"),
+        resume_checkpoint_cls=_Checkpoint,
+        logger=_logger(),
+    )
+    assert errors[0]["error_type"] == "UnverifiedCollector"
+    assert errors[0]["classification"] == "unverified_skipped"
+    assert not _Checkpoint.instances
+
+
 def test_runner_maps_reported_failure_to_exact_checkpoint_task(monkeypatch):
     cases = [
         {"hidden_size": 2048, "num_experts": 128, "topk": 8},

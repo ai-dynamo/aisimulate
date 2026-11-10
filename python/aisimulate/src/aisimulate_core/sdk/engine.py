@@ -161,6 +161,8 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 29 (native VL): optional `vision` section (encoder layout plus the patch,
 #   transformer and output op groups) appended after the op lists. Claimed 21
 #   concurrently with AIC-1781; renumbered after GLM-5.3-Flash at the merge.
+# - 30 (Kimi K3.1 DSA): explicit sparse attention backend/cache layout appended
+#   to DsaModuleOp; legacy JSON defaults do not cover positional bincode.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -314,6 +316,20 @@ def _literal_backend_version(
     return perf_database.resolve_query_version(system, backend, requested, systems_paths=systems_path)
 
 
+def _memory_identity_extra(config: Any) -> dict[str, str]:
+    """Preserve resolved kernel identity for the Rust Mocker memory bridge."""
+    extra = {}
+    for name in ("attention_backend", "moe_backend", "comm_quant_mode"):
+        value = getattr(config, name, None)
+        if value is not None:
+            extra[name] = getattr(value, "name", str(value))
+    for name in ("enable_eplb", "wideep_num_slots"):
+        value = getattr(config, name, None)
+        if value is not None:
+            extra[name] = json.dumps(value)
+    return extra
+
+
 def _engine_config_dict(
     *,
     model: Any,
@@ -395,7 +411,7 @@ def _engine_config_dict(
         # directory, so the Rust reload skips its missing-directory gate for
         # exactly this identity.
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
-        "extra": {},
+        "extra": _memory_identity_extra(cfg),
     }
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
@@ -814,6 +830,7 @@ def _direct_fpm_spec_json(
         "database_mode": "SILICON",
         "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
         "extra": {
+            **_memory_identity_extra(deployment),
             "fpm_profile": profile.model_dump_json(),
             **({"worker_type": worker_type} if deployment.worker_type is not None else {}),
             "estimator_config": json.dumps({"fpm_interpolation": controls}),

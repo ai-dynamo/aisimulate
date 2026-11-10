@@ -47,6 +47,7 @@ A cold regression is not usable for offline prediction.
 - [Collector](collector/README.md): operation data, runtime pins, and publication.
 - [Extend the model](extending.md): model structure, native operations, and SOL integration.
 - [DeepSeek-V4.1](models/deepseek-v41.md): model-specific execution and physical memory contracts.
+- [Kimi K3.1 Pro](models/kimi-k31.md): gated DSA, native KV layouts, and collection scope.
 - [Power](power.md) and [limitations](limitations.md): interpretation and boundaries.
 - API reference: [Python](api/python.md), [Rust](api/rust.md).
 

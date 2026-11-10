@@ -45,7 +45,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `block_size` | vLLM `64`, SGLang `1`, TensorRT-LLM `32` | Searchable; fixed by default | Tokens per block. vLLM and TensorRT-LLM require at least 2. |
 | `prefix_caching` | `true` | fixed | Keep completed prompt blocks for reuse by later requests. |
 | `decode_radix_cache` | `false` | fixed | SGLang `decode` only. Enables the decode worker's radix cache (`--disaggregation-decode-enable-radix-cache`); requires `prefix_caching: true` and no speculative decoding. See [SGLang decode radix cache](#sglang-decode-radix-cache). |
-| `bytes_per_token` | `auto` | fixed | KV bytes per token on one TP shard. `auto` derives it from the model, KV precision and this role's parallelism. |
+| `bytes_per_token` | `auto` | fixed | Token KV bytes per rank, excluding fixed per-request state. `auto` preserves the model, KV precision, attention backend and this role's parallelism. |
 | `capacity.type` | `default` | fixed | `default` sizes G1 from GPU memory; `fixed` uses `blocks` or `bytes`. |
 | `capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`, SGLang `0.88` | Searchable; fixed by default | In `(0, 1]`. `default` capacity only. Same meaning as vLLM `gpu_memory_utilization`, SGLang `mem_fraction_static`, TensorRT-LLM `free_gpu_memory_fraction`. |
 | `capacity.cuda_graph_reserved_bytes` | `0` | predict only | Bytes held back from G1 for CUDA graphs. `default` capacity only. |
@@ -71,8 +71,10 @@ from a simulation default. vLLM accepts the block count directly. Set
 ## GPU cache (G1)
 
 Each attention-DP rank has its own G1 cache and its own running requests.
-Tensor parallelism splits each token's KV across GPUs. `bytes_per_token` and
-`capacity` are therefore per TP shard and per DP rank.
+`bytes_per_token` and `capacity` describe one TP rank within an attention-DP
+replica. Whether TP partitions or replicates token KV depends on the model;
+for example, Kimi K3.1 replicates its latent and indexer entries on each TP
+rank, while its KDA state is partitioned by attention heads.
 
 With `capacity.type: default`, the number of G1 blocks comes from the
 performance model's memory estimate, which applies `memory_fraction` the way
@@ -570,6 +572,21 @@ from aisimulate_core.sdk import estimate_state_cache
 
 state = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8, kvcache_quant_mode="fp8", block_size=128)
 ```
+
+Kimi K3.1 requires explicit state accounting at the native Replay entry point,
+including fixed-capacity configurations and saved estimators. Supply manual
+`state_cache.bytes_per_request` with numeric token geometry under the vLLM G1
+contract, or a compatible grouped FPM memory profile with per-request state
+groups. An attention-only profile or `capacity.blocks` alone is insufficient.
+Automatic `state_cache: {}` sizing for K3.1 remains unsupported: the analytic
+K3 five-slot state estimate does not establish native physical page geometry.
+Manual geometry is a user-supplied simulation input, not runtime qualification.
+
+Replay identifies this requirement from the compiled model or validated FPM
+profile, including the `KimiLinearForCausalLM` decoder architecture. A fitted
+estimator, including a restored snapshot, without either must retain readable
+checkpoint architecture metadata, or supply explicit state geometry. Replay reports an error if it
+cannot verify the architecture; renaming a checkpoint does not bypass the check.
 
 For DeepSeek V4, `state_cache: {}` follows vLLM's allocation. vLLM stores
 `fp8_ds_mla` KV and gives every cache group the same pool row, as wide as the

@@ -58,7 +58,15 @@ frameworks:
     # their version key; re-collect them from main at c540ff90a. Moving the
     # lane to 0.5.21 needs the GLM attention runner, KDA, mHC and GEMM ports,
     # then a re-collection.
-    models: {}
+    models:
+      # Official cookbook day-zero image. Package METADATA and the image's
+      # .k31-source-commit marker attest the exact runtime below. The model's
+      # initial plan activates only the two native K31 DSA operations.
+      "moonshotai/Kimi-K3.1-Pro":
+        version: "0.0.0.dev1+g41208373c.d20261104"
+        source_commit: "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae"
+        images:
+          default: "lmsysorg/sglang:dev-kimi-k31-pro@sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391"
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
     # H20/sm90 upgrade audit (benchmarks/evidence/collector/op-probe-2026-10/findings.yaml
