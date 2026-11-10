@@ -21,7 +21,12 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
             "block_size": cache.block_size,
             "kv_bytes_per_token": cache.bytes_per_token,
         }
+        if sizing.sliding_window_lookahead_tokens is not None:
+            # A resolved DeepSeek V4 state keeps the window it was resolved with.
+            result["sliding_window_lookahead_tokens"] = sizing.sliding_window_lookahead_tokens
     else:
+        if sizing.sliding_window_lookahead_tokens is not None:
+            raise ValueError("state_cache.sliding_window_lookahead_tokens requires bytes_per_request")
         result = estimate_state_cache(
             engine.model,
             backend=engine.backend,
@@ -34,6 +39,13 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
             indexer_cache_dtype=sizing.indexer_cache_dtype,
             num_speculative_tokens=engine.speculation.num_speculative_tokens if engine.speculation else engine.nextn,
         )
+    if sizing.retention_interval is not None:
+        if "sliding_window_lookahead_tokens" not in result:
+            raise ValueError("state_cache.retention_interval requires inferred DeepSeek V4 geometry")
+        if sizing.retention_interval % result["block_size"]:
+            raise ValueError("state_cache.retention_interval must be a multiple of the resolved block_size")
+    if "sliding_window_lookahead_tokens" in result and cache.prefix_match_unit is not None:
+        raise ValueError("DeepSeek V4 state resumes at block boundaries; leave prefix_match_unit unset")
     block_size = result["block_size"]
     bytes_per_token = result["kv_bytes_per_token"]
     if cache.prefix_match_unit is not None and block_size % cache.prefix_match_unit:
