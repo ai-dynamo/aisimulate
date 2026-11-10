@@ -185,22 +185,14 @@ def isolated_runtime_imports():
 def _v033_runtime(storage, layout, blocks):
     """vLLM 0.33.0 cache objects: one backing storage and block-first layer views.
 
-    ``glm_tp4`` holds the six GLM-5.3-Flash groups at TP 4 with an fp8 cache and no
-    speculation, in the layer-outer layout that vLLM 0.31.0 wrote for them
-    (v0.31.0 kv_cache_utils.py:1213-1292): G0 the 11 MLA latent and 11 indexer
-    layers, G1 the 11 tail layers and G2 to G5 the 34 KDA layers. KDA layer i of each
-    Mamba group shares the region of MLA layer i, and tail layer i the region of
-    indexer layer i (v0.31.0 :1725-1755). Still from vLLM 0.31.0 are the layout name
-    LBHNC, the layer-outer placement and offsets, the regions that overlay each other,
-    the tail page padded to the 71,808-byte indexer page, the 13,045,120-byte pool block
-    and the capacity that follows from them. vLLM 0.33.0 builds the GLM groups in the
-    block-outer packed layout instead (v1/core/kv_cache_planning.py:914-1041), so this
-    layout tests the layer-stride rules and not a GLM launch. Its specs, kernel blocks and
-    views follow vLLM 0.33.0: the specs have no storage block, and every G0 view is in the
-    runner's 64-token kernel block of the group. Its tail is the vLLM 0.33.0
-    CircularBufferSpec (kv_cache_interface.py:968). The specs keep the static_forward_context order:
-    a GLM layer builds its indexer caches before its MLA layer
-    (glm5next/common/attention.py:519, :554). Returns the worker and scheduler
+    ``glm_tp4`` holds the six GLM-5.3-Flash groups at TP 4 with an fp8 cache and no speculation, with the groups,
+    pages, strides, view shapes, pool block count and kernel blocks of the live vLLM 0.33.0 record
+    (fixtures/glm53flash_vllm_0330_probe). vLLM packs them in the block-outer BLHNC layout
+    (v1/core/kv_cache_planning.py:914-1041): G0 to G3 are uniform groups of 9, 9, 8 and 8 KDA layers, G4 lists
+    each indexer before its MLA latent layer, and G5 holds the 11 tail rings, each a CircularBufferSpec
+    (kv_cache_interface.py:968). Every tensor has the 13,516,800-byte pool block as its block stride, and every group
+    starts at byte 0, except the latent tensor, which follows the 11 indexer pages of G4. The indexer backend reads
+    its layers in 128-token kernel blocks that start 3,200 apart. Returns the worker and scheduler
     cache configs, the forward-context layers, the attention groups and the kernel
     block sizes.
     """
@@ -400,10 +392,16 @@ def _v033_runtime(storage, layout, blocks):
             num_blocks=blocks, kv_cache_groups=[group(names, latent)], kv_cache_tensors=tensors, kv_cache_layout="BLHNC"
         )
         return cache, scheduler_cache, layers, attn, [64]
+    # The live prefill record of GLM-5.3-Flash at TP 4 on GB300 (fixtures/glm53flash_vllm_0330_probe).
     mla = list(range(3, 45, 4))
     kda = [index for index in range(45) if index % 4 != 3]
-    # Round robin into cdiv(34, 11) = 4 Mamba groups of 9, 9, 8 and 8 layers (vLLM 0.31.0 kv_cache_utils.py:1276-1286).
-    mamba_groups = [[f"layers.{index}.kda" for index in kda[start::4]] for start in range(4)]
+    name = "language_model.model.layers.{}.self_attn".format
+    # The KDA bucket splits into the 4 groups that 11 states per block need, layer i into group i mod 4
+    # (v1/core/kv_cache_planning.py:1018-1039).
+    mamba_groups = [[name(index) for index in kda[start::4]] for start in range(4)]
+    indexers = [name(index) + ".indexer.k_cache" for index in mla]
+    latents = [name(index) + ".attn" for index in mla]
+    tails = [name(index) + ".indexer.tail_cache" for index in mla]
     latent = spec(
         "MLAAttentionSpec",
         block_size=2176,
@@ -423,7 +421,9 @@ def _v033_runtime(storage, layout, blocks):
         cache_role=cache_role.INDEXER,
     )
     # The GLM tail ring of 4 tokens without speculation (models/glm5next/common/attention.py:162-179).
-    tail = spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
+    tail = spec("CircularBufferSpec", block_size=4, page_size_bytes=2048, dtype="torch.bfloat16", tokens_per_state=1)
+    # FlashKDA gives each KDA spec one prefill checkpoint block aligned to 16 tokens
+    # (models/glm5next/common/kda.py:168-176).
     state = spec(
         "MambaSpec",
         block_size=2176,
@@ -431,71 +431,91 @@ def _v033_runtime(storage, layout, blocks):
         page_size_padded=1_114_112,
         mamba_cache_mode="align",
         num_speculative_blocks=0,
-        num_prefill_checkpoint_blocks=0,
-        prefill_checkpoint_alignment=None,
-        shapes=((6144, 3), (16, 128, 128)),
+        num_prefill_checkpoint_blocks=1,
+        prefill_checkpoint_alignment=16,
+        shapes=((3, 6144), (16, 128, 128)),
         dtypes=("torch.bfloat16", "torch.float32"),
         real_page_size_bytes=1_085_440,
         tokens_per_state=-1,
     )
-    attention_names = [name for index in mla for name in (f"layers.{index}.indexer", f"layers.{index}.mla")]
-    tails = [f"layers.{index}.tail" for index in mla]
-    uniform = {name: latent if name.endswith(".mla") else indexer for name in attention_names}
+    attention_names = [item for pair in zip(indexers, latents, strict=True) for item in pair]
+    uniform = {item: latent if item in latents else indexer for item in attention_names}
     groups = [
-        group(
-            attention_names,
-            uniform_spec(block_size=2176, page_size_bytes=13_045_120, kv_cache_specs=uniform),
+        *(
+            group(
+                names,
+                uniform_spec(
+                    block_size=2176, page_size_bytes=len(names) * 1_114_112, kv_cache_specs=dict.fromkeys(names, state)
+                ),
+            )
+            for names in mamba_groups
         ),
-        group(
-            tails,
-            uniform_spec(block_size=4, page_size_bytes=789_888, kv_cache_specs=dict.fromkeys(tails, tail)),
-        ),
-        *(group(names, state) for names in mamba_groups),
+        group(attention_names, uniform_spec(block_size=2176, page_size_bytes=13_045_120, kv_cache_specs=uniform)),
+        group(tails, uniform_spec(block_size=4, page_size_bytes=22_528, kv_cache_specs=dict.fromkeys(tails, tail))),
     ]
-    tensors, layers = [], {}
-    for position, index in enumerate(mla):
-        offset = position * 8_912_896
-        tensors.append(tensor(f"layers.{index}.mla", 1_114_112, offset))
-        # MLA and the indexer bind the view with H squeezed (mla_attention.py:748-750, deepseek_v2.py:653-656).
-        layers[f"layers.{index}.mla"] = layer(
+
+    def packed(names, layer_stride, offset):
+        # Block-outer: one tensor per group and spec, whose block stride is the 13,516,800-byte pool block
+        # (v1/core/kv_cache_planning.py:679).
+        return SimpleNamespace(
+            size=storage.size,
+            layers=names,
+            layer_stride=layer_stride,
+            block_stride=13_516_800,
+            offset=offset,
+            host_resident=False,
+        )
+
+    tensors = [
+        *(packed(names, 1_114_112, 0) for names in mamba_groups),
+        packed(indexers, 71_808, 0),
+        packed(latents, 1_114_112, 789_888),
+        packed(tails, 2048, 0),
+    ]
+    layers = {}
+    for names in mamba_groups:
+        for position, item in enumerate(names):
+            region = position * 1_114_112
+            # Mamba bind_kv_cache cuts the conv and SSM states from each page (mamba/abstract.py:28-42).
+            layers[item] = layer(
+                "vllm.models.glm5next.common.kda",
+                "Glm5NextLinearAttention",
+                (
+                    View([blocks, 3, 6144], [13_516_800, 12_288, 2], 2, region),
+                    View([blocks, 16, 128, 128], [13_516_800, 65_536, 512, 4], 4, region + 36_864),
+                ),
+            )
+    for position in range(len(mla)):
+        # The indexer view is in 128-token kernel blocks that start 3,200 apart. MLA and the indexer bind the view
+        # with H squeezed (mla_attention.py:748-750, deepseek_v2.py:653-656).
+        layers[indexers[position]] = layer(
+            "vllm.models.glm5next.common.attention",
+            "Glm5NextIndexerCache",
+            View([43_827_217, 32, 132], [4224, 132, 1], 1, position * 71_808),
+        )
+        layers[latents[position]] = layer(
             "vllm.model_executor.layers.attention.mla_attention",
             "MLAAttention",
-            View([272, 64, 512], [32_768, 512, 1], 1, offset),
+            View([blocks, 2176, 512], [13_516_800, 512, 1], 1, 789_888 + position * 1_114_112),
         )
-        for names in mamba_groups:
-            if position < len(names):
-                tensors.append(tensor(names[position], 1_114_112, offset))
-                # Mamba bind_kv_cache cuts the conv and SSM states from each page (mamba/abstract.py:28-42).
-                layers[names[position]] = layer(
-                    "vllm.models.glm5next.common.kda",
-                    "Glm5NextLinearAttention",
-                    (
-                        View([8, 6144, 3], [1_114_112, 6, 2], 2, offset),
-                        View([8, 16, 128, 128], [1_114_112, 65_536, 512, 4], 4, offset + 36_864),
-                    ),
-                )
-    for position, index in enumerate(mla):
-        offset = 98_041_856 + position * 574_464
-        for name, cls, view in (
-            # The indexer view in the group's 64-token kernel blocks: 34 of 16 x 132 bytes per 71,808-byte page.
-            ("indexer", "Glm5NextIndexerCache", View([272, 16, 132], [2112, 132, 1], 1, offset)),
-            ("tail", "Glm5NextTailCache", View([8, 2, 4, 128], [71_808, 1024, 256, 2], 2, offset)),
-        ):
-            tensors.append(tensor(f"layers.{index}.{name}", 71_808, offset))
-            layers[f"layers.{index}.{name}"] = layer("vllm.models.glm5next.common.attention", cls, view)
+        layers[tails[position]] = layer(
+            "vllm.models.glm5next.common.attention",
+            "Glm5NextTailCache",
+            View([blocks, 2, 4, 128], [13_516_800, 1024, 256, 2], 2, position * 2048),
+        )
     gdn = backend("vllm.v1.attention.backends.gdn_attn", "GDNAttentionBackend", "GDN_ATTN")
-    # init_attn_backend makes the attention groups in G0 layer order (gpu/attn_utils.py:230-265).
-    # create_metadata_builders gives each G0 backend the runner's 64-token kernel block, which differs from the
-    # 2,176-token spec block (v1/worker/utils.py:292-299). The layer-outer manager views already hold 64-token rows,
-    # so map_kv_cache_to_kernel_blocks binds them unchanged and the stride stays 0 (utils.py:402-403).
+    # The attention groups of the live record: the indexer backend reads its layers in 128-token kernel blocks that
+    # start 3,200 apart, and every other backend takes its group's blocks.
     attn = [
+        *([attention(gdn, names, state, group_id)] for group_id, names in enumerate(mamba_groups)),
         [
             attention(
-                backend("vllm.v1.attention.backends.mla.indexer", "DeepseekV32IndexerBackend", "DEEPSEEK_V32_INDEXER"),
-                [f"layers.{index}.indexer" for index in mla],
+                backend("vllm.v1.attention.backends.mla.indexer", "Glm5NextIndexerBackend", "DEEPSEEK_V32_INDEXER"),
+                indexers,
                 indexer,
-                0,
-                kernel_block_size=64,
+                4,
+                kernel_block_size=128,
+                kernel_block_stride=3200,
             ),
             attention(
                 backend(
@@ -503,31 +523,32 @@ def _v033_runtime(storage, layout, blocks):
                     "FlashInferMLASparseTRTLLMBackend",
                     "FLASHINFER_MLA_SPARSE",
                 ),
-                [f"layers.{index}.mla" for index in mla],
+                latents,
                 latent,
-                0,
-                kernel_block_size=64,
+                4,
             ),
         ],
         [
             attention(
-                backend("vllm.v1.attention.backends.mla.indexer", "KpoolTailBackend", "KPOOL_TAIL"), tails, tail, 1
+                backend("vllm.v1.attention.backends.mla.indexer", "KpoolTailBackend", "KPOOL_TAIL"), tails, tail, 5
             )
         ],
-        *([attention(gdn, names, state, group_id)] for group_id, names in enumerate(mamba_groups, start=2)),
     ]
     cache = SimpleNamespace(
-        num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=tensors, kv_cache_layout="LBHNC"
+        num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=tensors, kv_cache_layout="BLHNC"
     )
-    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:1110-1116):
-    # the first indexer for G0 and the first tail for G1.
+    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:1110-1116).
     scheduler_cache = SimpleNamespace(
         num_blocks=blocks,
-        kv_cache_groups=[group(attention_names, indexer), group(tails, tail), *groups[2:]],
+        kv_cache_groups=[
+            *(group(names, state) for names in mamba_groups),
+            group(attention_names, indexer),
+            group(tails, tail),
+        ],
         kv_cache_tensors=tensors,
-        kv_cache_layout="LBHNC",
+        kv_cache_layout="BLHNC",
     )
-    return cache, scheduler_cache, layers, attn, [64, 4, 2176, 2176, 2176, 2176]
+    return cache, scheduler_cache, layers, attn, [2176] * 5 + [4]
 
 
 def _fake_campaign(
@@ -574,9 +595,13 @@ def _fake_campaign(
     config.parallel_config.data_parallel_rank = 0
     config.parallel_config.enable_expert_parallel = False
     config.quant_config = None
-    # GLM: 8 blocks of the 13,045,120-byte pool block, 11 * (1,114,112 + 71,808).
-    blocks, page = {"glm_tp4": (8, 13_045_120), "kernel_view": (8, 4096)}.get(layout, (10, 4096))
+    # GLM: the 13,697 pool blocks of 13,516,800 bytes of the live record, which runs a 1,048,576-token context.
+    blocks, page = {"glm_tp4": (13_697, 13_516_800), "kernel_view": (8, 4096)}.get(layout, (10, 4096))
+    context = 1_048_576 if layout == "glm_tp4" else 4096
+    config.model_config.max_model_len = context
     storage = _Storage(1024, blocks * page * (2 if packed else 1))
+    # The profiled allowance of the live GLM record.
+    available = 185_140_872_090 if layout == "glm_tp4" else storage.size + page
 
     class Tensor:
         def __init__(self, offset=0):
@@ -624,21 +649,31 @@ def _fake_campaign(
             kv_cache_max_concurrency=None,
         )
         if layout == "glm_tp4":
-            # The probe launches GLM-5.3-Flash with an fp8_e4m3 cache, which its uint8 specs store.
-            config.cache_config.cache_dtype = "fp8_e4m3"
+            # The live record of GLM-5.3-Flash resolves an fp8 cache, which its uint8 specs store.
+            config.cache_config.cache_dtype = "fp8"
         # The engine core sets the startup capacity in its own process, before it
-        # builds the scheduler (engine/core.py:347-352); workers keep None. One request at
-        # 4,096 tokens counts as 2 attention, 4 x 2 KDA and 1 tail blocks of GLM in align mode,
-        # or 4096 / block_size blocks of the one attention group (kv_cache_utils.py:1076-1087).
-        concurrency = blocks / (11 if layout == "glm_tp4" else 4096 // block_size)
+        # builds the scheduler (engine/core.py:347-352); workers keep None. For GLM these are the values of the live
+        # scheduler record: one request at 1,048,576 tokens counts as 482 attention, 4 x 3 KDA and 1 tail blocks in
+        # align mode (kv_cache_utils.py:1076-1087). Otherwise one request counts 4096 / block_size blocks of the one
+        # attention group.
+        concurrency, size_tokens = (
+            (27.67070707070707, 29_014_839)
+            if layout == "glm_tp4"
+            else (blocks / (4096 // block_size), int(blocks / (4096 // block_size) * 4096))
+        )
         scheduler_config = SimpleNamespace(**vars(config))
         scheduler_config.cache_config = SimpleNamespace(
             **{
                 **vars(config.cache_config),
-                "kv_cache_size_tokens": int(concurrency * 4096),
+                "kv_cache_size_tokens": size_tokens,
                 "kv_cache_max_concurrency": concurrency,
             }
         )
+        if layout == "glm_tp4":
+            # The engine core keeps the Mamba block size of configuration time, the 16-token block of that time
+            # (models/config.py:778-779). Only a worker sets it to the enlarged block
+            # (platforms/interface.py:1106-1115).
+            scheduler_config.cache_config.mamba_block_size = 16
         scheduler_fields = {"block_size": block_size, "hash_block_size": block_size}
     else:
         groups, layers, allocations, attn = [], {}, [], []
@@ -702,7 +737,7 @@ def _fake_campaign(
         def determine_available_memory(self):
             if self.fail == "profile":
                 raise RuntimeError("runtime profile failure")
-            return storage.size + page
+            return available
 
         def initialize_from_config(self, supplied):
             assert supplied is cache
@@ -744,7 +779,11 @@ def _fake_campaign(
     )
     sys.modules["torch"].cuda = SimpleNamespace(
         get_device_properties=lambda _device: SimpleNamespace(
-            name="NVIDIA GB300", major=10, minor=3, total_memory=1_000_000_000
+            # The device memory of the live GLM record holds its pool.
+            name="NVIDIA GB300",
+            major=10,
+            minor=3,
+            total_memory=297_020_948_480 if layout == "glm_tp4" else 1_000_000_000,
         )
     )
     old_version = importlib.metadata.version
@@ -776,7 +815,7 @@ def _fake_campaign(
             "enable_eplb": False,
         },
         "collection": {
-            "max_model_len": 4096,
+            "max_model_len": context,
             "max_num_batched_tokens": 1024,
             "max_num_seqs": 64,
             "gpu_memory_utilization": 0.9,
@@ -818,7 +857,7 @@ def _fake_campaign(
         monkeypatch.setenv("AISIMULATE_RUNTIME_INSTRUMENTATION", str(bundle.manifest_path))
         monkeypatch.setenv("AISIMULATE_RUNTIME_OBSERVATION_DIR", str(directory))
         worker = adapter.ObservedWorker()
-        assert worker.determine_available_memory() == storage.size + page
+        assert worker.determine_available_memory() == available
         assert worker.initialize_from_config(cache) == "initialized"
         assert worker.compile_or_warm_up_model() == "warmed"
         adapter.ObservedInstrumentedScheduler(scheduler_config, scheduler_cache)
@@ -839,6 +878,7 @@ def _fake_campaign(
         launch=launch,
         config=config,
         cache=cache,
+        scheduler_cache=scheduler_cache,
         pool=pool,
         site=fake_site,
         source=manifest,
@@ -1278,63 +1318,79 @@ def test_v033_glm_worker_record_is_complete(tmp_path, monkeypatch):
             next(record for record in records if record["kind"] == kind) for kind in ("worker", "scheduler")
         )
         cache = worker["cache"]
-        assert [group["kind"] for group in cache["groups"]] == ["attention"] + ["state"] * 5
+        assert [group["kind"] for group in cache["groups"]] == ["state"] * 4 + ["attention", "state"]
         assert cache["prefix_caching"] == {"enable_prefix_caching": True, "mamba_cache_mode": "align"}
         views = cache["layer_tensors"]
         assert all(isinstance(layer, list) for layer in views.values())
-        assert [len(layer) for name, layer in views.items() if name.endswith(".kda")] == [2] * 34
+        kda = [name for group in cache["groups"][:4] for name in group["layer_names"]]
+        assert [len(views[name]) for name in kda] == [2] * 34
         kernels = {}
         for name, layer in views.items():
-            kernels.setdefault(name.rsplit(".", 1)[1], set()).update(view["kernel_block_size_tokens"] for view in layer)
-        assert kernels == {"mla": {64}, "indexer": {64}, "tail": {4}, "kda": {2176}}
-        # Every view binds the manager blocks unchanged, so no kernel block stride is set.
-        assert {view["kernel_block_stride"] for layer in views.values() for view in layer} == {0}
+            kernels.setdefault(name.rsplit(".", 1)[1], set()).update(
+                (view["kernel_block_size_tokens"], view["kernel_block_stride"]) for view in layer
+            )
+        # Only the indexer view is in kernel blocks, of 128 tokens that start 3,200 apart.
+        assert kernels == {
+            "self_attn": {(2176, 0)},
+            "k_cache": {(128, 3200)},
+            "attn": {(2176, 0)},
+            "tail_cache": {(4, 0)},
+        }
         assert [(group["kernel_block_size"], group["kernel_block_stride"]) for group in worker["attention_groups"]] == [
-            (64, 0),
-            (64, 0),
-            (None, 0),
-        ] + [(None, 0)] * 4
+            (None, 0)
+        ] * 4 + [(128, 3200), (None, 0), (None, 0)]
         assert {view["block_axis"] for layer in views.values() for view in layer} == {0}
         # MLA and the indexer bind 3-D views: their bind_kv_cache squeezes H.
-        latent, indexer = views["layers.3.mla"][0], views["layers.3.indexer"][0]
-        assert (latent["shape"], latent["stride_bytes"]) == ([272, 64, 512], [32_768, 512, 1])
-        assert (indexer["shape"], indexer["stride_bytes"]) == ([272, 16, 132], [2112, 132, 1])
+        prefix = "language_model.model.layers.3.self_attn"
+        latent, indexer = views[prefix + ".attn"][0], views[prefix + ".indexer.k_cache"][0]
+        assert (latent["shape"], latent["stride_bytes"]) == ([13_697, 2176, 512], [13_516_800, 512, 1])
+        assert (indexer["shape"], indexer["stride_bytes"]) == ([43_827_217, 32, 132], [4224, 132, 1])
         # The SSM state starts after the 36,864-byte convolution state of the page.
-        assert [view["storage_offset_bytes"] for view in views["layers.0.kda"]] == [0, 36_864]
+        assert [view["storage_offset_bytes"] for view in views["language_model.model.layers.0.self_attn"]] == [
+            0,
+            36_864,
+        ]
         allocation = cache["tensor_allocations"][0]
-        assert (allocation["layers"], allocation["layer_stride"]) == (["layers.3.mla"], 8_912_896)
-        # G0 lists each indexer before its MLA layer, and the scheduler copy holds the first inner spec.
-        attention = cache["groups"][0]
+        assert (allocation["layers"], allocation["layer_stride"], allocation["block_stride"]) == (
+            cache["groups"][0]["layer_names"],
+            1_114_112,
+            13_516_800,
+        )
+        # G4 lists each indexer before its MLA layer, and the scheduler copy holds the first inner spec.
+        attention = cache["groups"][4]
         first = attention["layer_specs"][attention["layer_names"][0]]
         assert (attention["layer_names"][0], first["page_size_bytes"], first["cache_role"]) == (
-            "layers.3.indexer",
+            prefix + ".indexer.k_cache",
             71_808,
             "INDEXER",
         )
-        assert scheduler["cache"]["groups"][0]["spec_page_size_bytes"] == 71_808
-        assert worker["raw_cache_config"]["kv_cache_layout"] == "LBHNC"
-        assert worker["raw_cache_config"]["tensor_allocations"][0]["layer_stride"] == 8_912_896
+        assert scheduler["cache"]["groups"][4]["spec_page_size_bytes"] == 71_808
+        assert worker["raw_cache_config"]["kv_cache_layout"] == "BLHNC"
+        assert worker["raw_cache_config"]["tensor_allocations"][0]["layer_stride"] == 1_114_112
         # A uniform group spec inherits the KVCacheSpec tokens_per_state, which raises NotImplementedError
         # (kv_cache_interface.py:250-252), so its raw record leaves that field out. The layer specs of its
         # group keep the value of each layer, and the raw records of other spec classes keep the field.
         raw_groups = worker["raw_cache_config"]["groups"]
-        assert [set(group) for group in raw_groups[:2]] == [
+        assert [set(group) for group in raw_groups] == [
             {"layer_names", "spec_type", "block_size", "page_size_bytes"}
-        ] * 2
+        ] * 6
         assert {name: spec["tokens_per_state"] for name, spec in attention["layer_specs"].items()} == {
-            name: 4 if name.endswith(".indexer") else 1 for name in attention["layer_names"]
+            name: 4 if name.endswith(".k_cache") else 1 for name in attention["layer_names"]
         }
-        assert [group["tokens_per_state"] for group in raw_groups[2:]] == [-1] * 4
-        # The KDA specs record their prefill checkpoint count and alignment in the raw groups and the state.
-        checkpoints = [(0, None)] * 4
+        # The KDA specs record their prefill checkpoint count and alignment in the scheduler's raw groups, which hold
+        # the inner specs, and in the state of every record.
+        scheduler_raw = scheduler["raw_cache_config"]["groups"]
+        assert [group["tokens_per_state"] for group in scheduler_raw[:4]] == [-1] * 4
+        checkpoints = [(1, 16)] * 4
         assert [
-            (group["num_prefill_checkpoint_blocks"], group["prefill_checkpoint_alignment"]) for group in raw_groups[2:]
+            (group["num_prefill_checkpoint_blocks"], group["prefill_checkpoint_alignment"])
+            for group in scheduler_raw[:4]
         ] == checkpoints
         assert [
             (group["state"]["num_prefill_checkpoint_blocks"], group["state"]["prefill_checkpoint_alignment"])
-            for group in cache["groups"][2:]
+            for group in cache["groups"][:4]
         ] == checkpoints
-        assert scheduler["raw_cache_config"]["groups"][0]["tokens_per_state"] == 4
+        assert scheduler_raw[4]["tokens_per_state"] == 4
         assert scheduler["cache"]["prefix_caching"] == {
             "enable_prefix_caching": True,
             "mamba_cache_mode": "align",
@@ -1343,9 +1399,12 @@ def test_v033_glm_worker_record_is_complete(tmp_path, monkeypatch):
         }
         # The startup capacity is engine-core evidence of the scheduler record only.
         assert (scheduler["cache"]["kv_cache_size_tokens"], scheduler["cache"]["kv_cache_max_concurrency"]) == (
-            2_978,
-            8 / 11,
+            29_014_839,
+            27.67070707070707,
         )
+        # The scheduler keeps the Mamba block size of configuration time; the worker has the enlarged block.
+        assert scheduler["resolved_config"]["cache_config"]["mamba_block_size"] == 16
+        assert worker["resolved_config"]["cache_config"]["mamba_block_size"] == 2176
 
 
 def test_v033_glm_records_import_complete(tmp_path, monkeypatch):
@@ -1362,7 +1421,7 @@ def test_v033_glm_records_import_complete(tmp_path, monkeypatch):
     assert result["status"] == "complete", result["diagnostics"]
     assert result["resources"]["cache_groups"] == glm_tp4_cache_groups()
     memory = result["resources"]["runtime_memory"]
-    assert memory["kv_cache_bytes"] == 7 * 13_045_120
+    assert memory["kv_cache_bytes"] == 13_696 * 13_516_800
     assert (memory["enable_prefix_caching"], memory["mamba_cache_mode"], memory["hash_block_size_tokens"]) == (
         True,
         "align",
@@ -1386,10 +1445,11 @@ def test_v033_kernel_view_records_import_complete(tmp_path, monkeypatch):
 
 def test_v033_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):
     campaign = _glm_campaign(tmp_path, monkeypatch)
-    campaign.config.compilation_config.static_forward_context["layers.3.mla"].kv_cache.shape = [270, 64, 512]
+    latent = "language_model.model.layers.3.self_attn.attn"
+    campaign.config.compilation_config.static_forward_context[latent].kv_cache.shape = [13_696, 2176, 512]
     worker = next(record for record in campaign.run() if record["kind"] == "worker")
     assert worker["unresolved_fields"] == ["cache.layer_tensors"]
-    assert "layers.3.mla" in worker["error"]
+    assert latent in worker["error"]
 
 
 def test_v033_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkeypatch):
@@ -1403,17 +1463,21 @@ def test_v033_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkey
 @pytest.mark.parametrize("change", ["host_resident", "role", "enable_kv_transfer", "tensor"])
 def test_v033_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
     campaign = _glm_campaign(tmp_path, monkeypatch)
-    # The worker and scheduler cache configs share the Mamba groups and the tensors.
-    group = campaign.cache.kv_cache_groups[2]
-    if change == "host_resident":
-        group.host_resident = True
-    elif change == "role":
-        group.role = type(group.role)["HISPARSE_SOURCE"]
-    elif change == "enable_kv_transfer":
-        group.enable_kv_transfer = False
-    else:
+    # The worker and scheduler cache configs share the tensors. Each holds its own copy of the KDA group G0.
+    for group in (campaign.cache.kv_cache_groups[0], campaign.scheduler_cache.kv_cache_groups[0]):
+        if change == "host_resident":
+            group.host_resident = True
+        elif change == "role":
+            group.role = type(group.role)["HISPARSE_SOURCE"]
+        elif change == "enable_kv_transfer":
+            group.enable_kv_transfer = False
+    if change == "tensor":
         campaign.cache.kv_cache_tensors[0].host_resident = True
-    name = "tensor placement for ['layers.3.mla']" if change == "tensor" else "group placement for ['layers.0.kda',"
+    name = (
+        "tensor placement for ['language_model.model.layers.0.self_attn',"
+        if change == "tensor"
+        else "group placement for ['language_model.model.layers.0.self_attn',"
+    )
     # The memory observer refuses a host-resident group, a role other than DEFAULT and a host-resident tensor
     # before the cache groups are read; the scheduler does not read the tensors.
     early = {

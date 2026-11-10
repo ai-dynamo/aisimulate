@@ -34,7 +34,7 @@ def _campaign(
     tmp_path,
     *,
     capacity_multiplier=1,
-    context_length=4096,
+    context_length=None,
     tp=2,
     cpu_policy=True,
     worker_type=None,
@@ -44,8 +44,11 @@ def _campaign(
     block_tokens=(16, 16),
     layout="attention",
     decode_prefix_caching=True,
-    checkpoint=(0, None),
+    checkpoint=None,
 ):
+    # The GLM-5.3-Flash records hold the 1,048,576-token context of the live probe record.
+    if context_length is None:
+        context_length = 1_048_576 if layout == "glm_tp4" else 4096
     index, launches = observation_fixture(
         tmp_path / "probe",
         dense=True,
@@ -78,6 +81,8 @@ def _campaign(
         del config["model_type"]
         config.update(
             architectures=["Glm5NextForConditionalGeneration"],
+            # The text_config value of the live model config.
+            max_position_embeddings=1_048_576,
             num_hidden_layers=45,
             head_dim=0,
             layer_types=["deepseek_sparse_attention" if index % 4 == 3 else "linear_attention" for index in range(45)],
@@ -745,7 +750,7 @@ def _imported(
     capsys,
     *,
     capacity_multiplier=1,
-    context_length=4096,
+    context_length=None,
     tp=2,
     worker_type=None,
     model=None,
@@ -860,21 +865,21 @@ def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, ca
         save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
 
 
-# The groups that the GLM-5.3-Flash TP4 probe fixture imports: the 11 MLA and 11 indexer layers, the 11 tail layers
-# and four KDA groups. Every page is one pool block of 13,045,120 bytes. By default the KDA groups hold no prefill
-# checkpoint block.
+# The groups that the GLM-5.3-Flash TP4 probe fixture imports, as the import of its live vLLM 0.33.0 record gives them:
+# four KDA groups with one prefill checkpoint block aligned to 16 tokens each, the 11 MLA and 11 indexer layers and the
+# 11 tail layers. Every page is one pool block of 13,516,800 bytes.
 _GLM_GROUPS = [
     {
         "name": f"runtime_group_{index}",
-        "kind": "attention" if index == 0 else "state",
+        "kind": "attention" if index == 4 else "state",
         "num_layers": layers,
-        "block_size_tokens": 4 if index == 1 else 2176,
-        "page_size_bytes": 13_045_120,
+        "block_size_tokens": 4 if index == 5 else 2176,
+        "page_size_bytes": 13_516_800,
         "sliding_window": None,
-        **({} if index == 0 else {"blocks_per_request": 1}),
-        **({"prefill_checkpoint_blocks": 0} if index > 1 else {}),
+        **({} if index == 4 else {"blocks_per_request": 1}),
+        **({"prefill_checkpoint_blocks": 1, "prefill_checkpoint_alignment": 16} if index < 4 else {}),
     }
-    for index, layers in enumerate((22, 11, 9, 9, 8, 8))
+    for index, layers in enumerate((9, 9, 8, 8, 22, 11))
 ]
 
 
@@ -903,7 +908,7 @@ def test_glm_state_groups_import_into_a_grouped_draft(tmp_path, capsys):
 def test_state_group_claim_must_match_blocks_per_request(tmp_path, capsys, blocks):
     # The exact claim imports, so blocks_per_request is the only difference that refuses the second one.
     claim = copy.deepcopy(_GLM_GROUPS)
-    claim[2]["blocks_per_request"] = blocks
+    claim[0]["blocks_per_request"] = blocks
     checkpoint, index, _ = _campaign(tmp_path, tp=4, layout="glm_tp4", resource_overrides={"cache_groups": claim})
     status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
     result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
@@ -928,21 +933,21 @@ _PROBE_FIELDS = ("prefill_checkpoint_blocks", "prefill_checkpoint_alignment")
         # Stated fields must match the probe, and here they do: each KDA group has one block aligned to 16 tokens.
         (
             {
-                "prefill_checkpoint_blocks": [None, None, 1, 1, 1, 1],
-                "prefill_checkpoint_alignment": [None, None, 16, 16, 16, 16],
+                "prefill_checkpoint_blocks": [1, 1, 1, 1, None, None],
+                "prefill_checkpoint_alignment": [16, 16, 16, 16, None, None],
             },
             True,
         ),
         # The alignment differs from the probe.
         (
             {
-                "prefill_checkpoint_blocks": [None, None, 1, 1, 1, 1],
-                "prefill_checkpoint_alignment": [None, None, 32, 32, 32, 32],
+                "prefill_checkpoint_blocks": [1, 1, 1, 1, None, None],
+                "prefill_checkpoint_alignment": [32, 32, 32, 32, None, None],
             },
             False,
         ),
         # A field stated for one group is compared on every group, and the other groups then differ.
-        ({"prefill_checkpoint_blocks": [None, None, 1, None, None, None]}, False),
+        ({"prefill_checkpoint_blocks": [1, None, None, None, None, None]}, False),
     ],
 )
 def test_cache_group_claim_compares_probe_fields_only_when_stated(tmp_path, capsys, stated, accepted):
@@ -984,8 +989,9 @@ def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, 
 
 
 def test_plan_admits_the_imported_glm_draft_at_its_observed_capacity(tmp_path, capsys):
-    # The GLM probe leaves 7 usable pool blocks of 13,045,120 bytes. A 4096-token request needs two 2176-token
-    # attention blocks and one block in each of the five state groups, the 4-token tail group too: all 7 blocks.
+    # The live GLM probe record leaves 13,696 usable pool blocks of 13,516,800 bytes. A request at its 1,048,576-token
+    # context needs 482 attention blocks of 2,176 tokens and one block in each of the five state groups, the 4-token
+    # tail group too: 487 blocks.
     _, _, _, files = _imported(tmp_path, capsys, tp=4, layout="glm_tp4")
     root = tmp_path / "collection"
     assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
@@ -994,7 +1000,8 @@ def test_plan_admits_the_imported_glm_draft_at_its_observed_capacity(tmp_path, c
     assert plan["prerequisites"][0]["detail"] == (
         "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
     )
-    assert plan["resources"]["request_peak_cache_bytes"] == plan["resources"]["total_kv_size_bytes"] == 7 * 13_045_120
+    assert plan["resources"]["request_peak_cache_bytes"] == 487 * 13_516_800
+    assert plan["resources"]["total_kv_size_bytes"] == 13_696 * 13_516_800
 
 
 @pytest.mark.parametrize("claim", [False, True], ids=["grouped", "linear"])
