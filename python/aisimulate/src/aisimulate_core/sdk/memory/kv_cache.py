@@ -47,7 +47,7 @@ from typing import Any
 
 from aisimulate_core.sdk import perf_database
 from aisimulate_core.sdk.backends.factory import get_backend
-from aisimulate_core.sdk.common import DefaultHFModels
+from aisimulate_core.sdk.common import ARCHITECTURE_TO_MODEL_FAMILY, DefaultHFModels
 from aisimulate_core.sdk.config import validate_parallel_size
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls, validate_nextn
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
@@ -329,9 +329,9 @@ class KVCacheEstimator:
         decode multiplier); ``isl``/``osl``/``max_seq_len`` only
         feed the discarded ``kvcache`` key, so they are set to a neutral ``1``. Note
         ``max_batch_size`` does NOT affect non-KV memory (activations use
-        ``num_tokens``, KV is recomputed per token), but it is accepted to mirror the
-        request shape. SGLang retains peak activations in the breakdown for
-        diagnostics but excludes them from the static weights/KV pool: its
+        ``num_tokens``), but capacity sizing reserves fixed per-request state
+        for that many scheduler slots when the model has it. SGLang retains peak
+        activations in the breakdown for diagnostics but excludes them from the static weights/KV pool: its
         ``mem_fraction_static`` already reserves transient execution headroom.
 
         Raises when AIC cannot build the model/backend or the system spec is missing --
@@ -450,6 +450,10 @@ class KVCacheEstimator:
         rank_bytes_per_sequence = getattr(
             model, "get_kvcache_rank_bytes_per_sequence", model.get_kvcache_bytes_per_sequence
         )
+        rank_bytes_per_token = getattr(model, "get_kvcache_rank_bytes_per_token", None)
+        kv_size_per_token_bytes = (
+            rank_bytes_per_token() if rank_bytes_per_token is not None else rank_bytes_per_sequence(1)
+        )
 
         def tokens_from_kv_bytes(kv_budget_bytes: float) -> int:
             # Resolved lazily: some callers never invert (stubs without the
@@ -470,7 +474,7 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
+                "kv_size_per_token_bytes": float(kv_size_per_token_bytes),
                 "kvcache_quant_mode": (
                     model_config.kvcache_quant_mode.name if model_config.kvcache_quant_mode is not None else None
                 ),
@@ -678,6 +682,20 @@ class NaiveKVCacheEstimator:
         This is the no-I/O counterpart to :meth:`from_model_path`. Callers that
         already loaded a config can reuse it without issuing a second HF request.
         """
+        architectures = hf_config.get("architectures") or ()
+        if isinstance(architectures, str):
+            architectures = (architectures,)
+        if hf_config.get("model_type") in ("kimi_k3", "kimi_k31") or (
+            isinstance(architectures, (list, tuple))
+            and any(
+                isinstance(architecture, str) and ARCHITECTURE_TO_MODEL_FAMILY.get(architecture) == "KIMIK3"
+                for architecture in architectures
+            )
+        ):
+            raise ValueError(
+                "naive KV-cache estimation does not support Kimi K3/K3.1 token and recurrent-state pools; "
+                "use the native model with an explicit cache layout or qualified FPM resource geometry"
+            )
         try:
             parsed = _parse_hf_config_json(hf_config)  # supported arch -> normalized parse
         except Exception:

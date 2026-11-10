@@ -825,6 +825,29 @@ def test_naive_fallback_mla_fixture():
     assert out["kv_size_per_token_bytes"] == 70_272  # config-driven MLA latent
 
 
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"architectures": ["KimiK3ForConditionalGeneration"]},
+        {"architectures": ["KimiK31ForConditionalGeneration"]},
+        {"model_type": "kimi_k3"},
+        {"model_type": "kimi_k31"},
+    ],
+)
+def test_naive_capacity_rejects_kimi_token_state_geometry(identity):
+    # Even malformed/unparsed Kimi metadata must not become a plain 93-layer
+    # MLA estimate which discards the KDA state and K3.1 indexer layout.
+    raw = {
+        **identity,
+        "num_hidden_layers": 93,
+        "kv_lora_rank": 512,
+        "qk_rope_head_dim": 64,
+        "hidden_size": 7168,
+    }
+    with pytest.raises(ValueError, match="naive KV-cache estimation does not support Kimi K3/K3.1"):
+        memory.NaiveKVCacheEstimator.from_hf_config(raw, tp_size=8, pp_size=1)
+
+
 def test_naive_fallback_unsupported_arch_uses_raw_read(monkeypatch):
     # Unsupported architecture: `_parse_hf_config_json` raises, so the estimator
     # falls to the raw-key read. This drives the real parser (FooBar arch is not in

@@ -1440,6 +1440,49 @@ impl Engine {
         )
     }
 
+    /// Whether replay needs explicit request-state geometry or a grouped
+    /// memory profile. Use the compiled checkpoint architecture, including
+    /// FPM's retained SOL graph, so local paths and renamed checkpoints behave
+    /// identically. This does not infer physical KDA geometry from Kimi-K3.
+    #[cfg(feature = "python")]
+    pub(crate) fn requires_explicit_state_cache(&self) -> bool {
+        self.context_ops
+            .iter()
+            .chain(&self.generation_ops)
+            .any(Self::op_requires_explicit_state_cache)
+    }
+
+    #[cfg(any(feature = "python", test))]
+    fn op_requires_explicit_state_cache(op: &Op) -> bool {
+        match op {
+            Op::DsaContext(op) | Op::DsaGeneration(op) => {
+                op.architecture == "KimiK31ForConditionalGeneration"
+            }
+            Op::TokenScale(op) => Self::op_requires_explicit_state_cache(&op.op),
+            Op::Overlap(op) => op
+                .group_a
+                .iter()
+                .chain(&op.group_b)
+                .any(Self::op_requires_explicit_state_cache),
+            Op::Fallback(op) => {
+                Self::op_requires_explicit_state_cache(&op.primary)
+                    || op
+                        .fallback
+                        .iter()
+                        .any(Self::op_requires_explicit_state_cache)
+            }
+            Op::FpmForward(op) => op
+                .sol_ops
+                .iter()
+                .any(Self::op_requires_explicit_state_cache),
+            Op::Dsv41Stage(op) => op
+                .children
+                .iter()
+                .any(Self::op_requires_explicit_state_cache),
+            _ => false,
+        }
+    }
+
     /// Content digest of the compiled spec, excluding storage locations.
     pub(crate) fn spec_sha256(&self) -> &str {
         &self.spec_sha256
@@ -3874,6 +3917,76 @@ pub(crate) mod tests {
     }
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
+
+    #[test]
+    fn k31_state_cache_requirement_follows_checkpoint_architecture_through_wrappers() {
+        use crate::operators::DsaModuleOp;
+        use crate::operators::fpm_forward::{FpmForwardOp, FpmPhase};
+        use crate::operators::op::{FallbackOp, OverlapOp, TokenScaleOp};
+
+        let dsa = |architecture| {
+            DsaModuleOp::new(
+                "attention",
+                64,
+                KvCacheQuantMode::Bfloat16,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                architecture,
+                2048,
+            )
+        };
+        let k31 = Op::DsaContext(dsa("KimiK31ForConditionalGeneration"));
+        let ordinary = Op::DsaGeneration(dsa("DeepseekV32ForCausalLM"));
+        assert!(Engine::op_requires_explicit_state_cache(&k31));
+        assert!(Engine::op_requires_explicit_state_cache(
+            &Op::DsaGeneration(dsa("KimiK31ForConditionalGeneration"))
+        ));
+        for architecture in ["DeepseekV32ForCausalLM", "KimiK3ForConditionalGeneration"] {
+            assert!(!Engine::op_requires_explicit_state_cache(&Op::DsaContext(
+                dsa(architecture)
+            )));
+        }
+        for (primary, fallback) in [
+            (k31.clone(), ordinary.clone()),
+            (ordinary.clone(), k31.clone()),
+        ] {
+            let wrapped = Op::TokenScale(TokenScaleOp {
+                numerator: 1,
+                denominator: 1,
+                op: Box::new(Op::Overlap(OverlapOp::new(
+                    "overlap",
+                    vec![ordinary.clone()],
+                    vec![Op::Fallback(FallbackOp::new(
+                        "fallback",
+                        primary,
+                        vec![fallback],
+                    ))],
+                ))),
+            });
+            assert!(Engine::op_requires_explicit_state_cache(&wrapped));
+        }
+        let mut fpm = FpmForwardOp {
+            name: "fpm".into(),
+            phase: FpmPhase::Prefill,
+            model_path: "/local/renamed-checkpoint".into(),
+            match_identity: vec![],
+            weight_bytes: 0.0,
+            verify_width: 1,
+            interpolation: Default::default(),
+            sol_ops: vec![k31],
+            original_fmha_quant_mode: None,
+            dcp_size: None,
+        };
+        assert!(Engine::op_requires_explicit_state_cache(&Op::FpmForward(
+            fpm.clone()
+        )));
+        // A model-name substring is never evidence of checkpoint architecture.
+        fpm.model_path = "moonshotai/Kimi-K3.1-Pro".into();
+        fpm.sol_ops = vec![ordinary];
+        assert!(!Engine::op_requires_explicit_state_cache(&Op::FpmForward(
+            fpm
+        )));
+    }
 
     /// Hand-built context op list against the b200_sxm/vllm/0.24.0 perf tables.
     /// `Elementwise` is DB-free (pure mem-bandwidth SOL); `Gemm` and

@@ -501,6 +501,57 @@ def test_public_predict_runs_with_a_state_group(grouped_case, tmp_path, dep):
     assert memory["total_kv_size_tokens"] is None
 
 
+@pytest.mark.parametrize("architecture", ["KimiK31ForConditionalGeneration", "KimiLinearForCausalLM"])
+@pytest.mark.parametrize("has_state", [False, True], ids=["attention-only", "with-state"])
+@pytest.mark.parametrize("dep", [False, True], ids=["tp", "attention-dp"])
+def test_kimi_fpm_alias_native_replay_requires_state_group(grouped_case, architecture, has_state, dep):
+    from aisimulate import _runtime
+    from aisimulate.runner import _materialize_engine_execution_spec
+
+    profile, root = grouped_case
+    profile = deepcopy(profile)
+    profile["architecture"] = architecture
+    # Both spellings are legitimate collector identities: a decoder without
+    # its own architecture inherits the multimodal wrapper's declaration.
+    decoder = {} if architecture == "KimiK31ForConditionalGeneration" else {"architectures": [architecture]}
+    (Path(profile["model"]) / "config.json").write_text(
+        json.dumps({"architectures": ["KimiK31ForConditionalGeneration"], "text_config": decoder})
+    )
+    for deployment in profile["deployments"]:
+        resources = deployment["resources"]
+        resources["cache_groups"] = [group for group in resources["cache_groups"] if group["kind"] == "attention"]
+        if has_state:
+            resources["cache_groups"].append(dict(_STATE_GROUP))
+        resources["provenance"] = (
+            "Synthetic attention/state pages for Kimi alias guard coverage; no physical qualification."
+        )
+
+    public = CorePredictionConfig.model_validate(_prediction(profile, root, dep=dep))
+    reloaded = CorePredictionConfig.model_validate_json(public.model_dump_json())
+    spec = prediction_to_replay_spec(reloaded)
+    execution = _materialize_engine_execution_spec(spec, trace_block_size=64, record_per_request=True)
+    rank = execution["spec"]["engine"]["rank"]
+    config = rank["timing_model"]["config"]
+    assert config["fpm_profile"]["architecture"] == architecture
+    assert config["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert rank.get("state_cache") is None
+    assert any(group["kind"] == "state" for group in rank["kv_cache_groups"]) is has_state
+
+    # Execute the serialized wire in Rust: direct FPM has no KDA op graph,
+    # so architecture validation must still prevent attention-only admission.
+    wire = json.dumps(execution)
+    if not has_state:
+        with pytest.raises(RuntimeError, match="requires explicit state_cache geometry"):
+            _runtime.run_replay_json(wire)
+        return
+
+    report = json.loads(_runtime.run_replay_json(wire))
+    assert report["completed_requests"] == 2
+    assert len(report["per_request"]) == 2
+    assert all(row["output_length"] == 4 for row in report["per_request"])
+    assert report["fpm_query_coverage"]["status"] == "covered"
+
+
 def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, tmp_path):
     profile, root = grouped_case
     # Window-only allocation is bounded, but the first decode after the
