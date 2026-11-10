@@ -78,7 +78,8 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096, checkpoint=
     of the live prefill record of GLM-5.3-Flash at TP 4 (fixtures/glm53flash_vllm_0330_probe) in its block-outer
     BLHNC layout: G0 to G3 are uniform groups of 9, 9, 8 and 8 KDA layers, G4 lists each indexer before its MLA
     latent layer, and G5 holds the 11 tail rings. The scheduler copy of each uniform group is its first inner spec,
-    and the scheduler keeps the Mamba block size of configuration time. The other cases of ``prefix_caching``,
+    and the scheduler keeps the Mamba block size of configuration time, as with the multiprocess executor of the live
+    run. The other cases of ``prefix_caching``,
     ``checkpoint`` and ``max_model_len`` change only what follows from them. ``mamba_hybrid`` is vLLM's generic
     layer-outer grouping of two attention and four Mamba layers: every group's tensor starts at byte 0
     (kv_cache_planning.py:685-732). Without prefix caching a Mamba block holds max_model_len
@@ -482,8 +483,10 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096, checkpoint=
     }
     scheduler_resolved = copy.deepcopy(resolved)
     if layout == "glm_tp4" and mode == "align":
-        # The engine core keeps the Mamba block size of configuration time, the 16-token block of that time
-        # (models/config.py:778-779). Only a worker sets it to the enlarged block (platforms/interface.py:1106-1115).
+        # With the multiprocess executor of the live run, the engine core keeps the Mamba block size of configuration
+        # time, the 16-token block of that time (models/config.py:778-779), and only a worker process sets it to the
+        # enlarged block (v1/executor/multiproc_executor.py:802, platforms/interface.py:1106-1115). The uniprocess
+        # executor sets it in the engine-core process (v1/executor/uniproc_executor.py:75).
         scheduler_resolved["cache_config"]["mamba_block_size"] = 16
     return worker, scheduler, resolved, scheduler_resolved
 

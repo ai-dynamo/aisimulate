@@ -670,9 +670,11 @@ def _fake_campaign(
             }
         )
         if layout == "glm_tp4":
-            # The engine core keeps the Mamba block size of configuration time, the 16-token block of that time
-            # (models/config.py:778-779). Only a worker sets it to the enlarged block
-            # (platforms/interface.py:1106-1115).
+            # With the multiprocess executor of the live run, the engine core keeps the Mamba block size of
+            # configuration time, the 16-token block of that time (models/config.py:778-779), and only a worker
+            # process sets it to the enlarged block (v1/executor/multiproc_executor.py:802,
+            # platforms/interface.py:1106-1115). The uniprocess executor sets it in the engine-core process
+            # (v1/executor/uniproc_executor.py:75).
             scheduler_config.cache_config.mamba_block_size = 16
         scheduler_fields = {"block_size": block_size, "hash_block_size": block_size}
     else:
@@ -1402,7 +1404,8 @@ def test_v033_glm_worker_record_is_complete(tmp_path, monkeypatch):
             29_014_839,
             27.67070707070707,
         )
-        # The scheduler keeps the Mamba block size of configuration time; the worker has the enlarged block.
+        # As with the multiprocess executor of the live run, the scheduler keeps the Mamba block size of configuration
+        # time, and the worker has the enlarged block.
         assert scheduler["resolved_config"]["cache_config"]["mamba_block_size"] == 16
         assert worker["resolved_config"]["cache_config"]["mamba_block_size"] == 2176
 
