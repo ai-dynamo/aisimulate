@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 use super::model::AfdLayerTimes;
 use crate::common::error::AicError;
 
@@ -111,6 +112,7 @@ impl ReadyQueue {
 impl AfdPipelineLayout {
     /// Heterogeneous source layer sequence. Empty stages are bypassed rather
     /// than queued on an unrelated resource (dense layers use A only).
+    #[cfg(test)]
     pub(crate) fn plan_latency_ms(
         self,
         templates: &[[f64; 5]],
@@ -258,7 +260,8 @@ impl AfdPipelineLayout {
     }
 
     /// Apply the transfer factor once, before grouping stages.
-    pub fn step_latency_ms(
+    #[cfg(test)]
+    pub(crate) fn step_latency_ms(
         self,
         times: &AfdLayerTimes,
         microbatches: u32,
