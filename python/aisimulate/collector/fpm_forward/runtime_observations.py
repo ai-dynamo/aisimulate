@@ -601,8 +601,8 @@ def _layer_views(
         raise ValueError(f"layer views exceed the page of their cache spec: {name}")
     if spec.get("spec_type") == _MAMBA_SPEC:
         # bind_kv_cache cuts one view per state from the page, in the order of the spec's shapes and dtypes: the
-        # block axis, then the state's shape (mamba/abstract.py:28-42, :69-71). The states fill the spec's real
-        # page, and the page may pad it (kv_cache_interface.py:1057-1077).
+        # block axis, then the state's shape (mamba/abstract.py:28-42, :76-78). The states fill the spec's real
+        # page, and the page may pad it (kv_cache_interface.py:1116-1129).
         state = group["state"]
         shapes, dtypes = state.get("shapes"), state.get("dtypes")
         if (
@@ -803,7 +803,7 @@ def _physical_views(
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
     if hybrid:
         # The runner's kernel block of every group, which the worker records before any view
-        # (runtime/instrumentation/observer.py:355-359).
+        # (runtime/instrumentation/observer.py, _layer_views).
         runner = cache.get("model_runner")
         kernels = runner.get("kernel_block_sizes") if isinstance(runner, dict) else None
         if not isinstance(kernels, list) or len(kernels) != len(cache["groups"]):
@@ -811,7 +811,7 @@ def _physical_views(
         for kernel in kernels:
             _positive(kernel, "kernel block size")
         # The observer reads that list only from the two audited native runners
-        # (runtime/instrumentation/observer.py:346-351).
+        # (runtime/instrumentation/observer.py, _layer_views).
         if runner.get("class") not in (
             "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
             "vllm.v1.worker.gpu.model_runner.GPUModelRunner",
@@ -1081,8 +1081,8 @@ def _phase_prefix_caching(
                     f"cache group block size contradicts the resolved Mamba block size: {group['layer_names']}"
                 )
     # Each process reads this evidence from the cache config that it resolved
-    # (runtime/instrumentation/observer.py:493-502). The launch-setting comparisons leave those resolved settings
-    # out, so the evidence must equal them.
+    # (runtime/instrumentation/observer.py, _prefix_caching). The launch-setting comparisons leave those resolved
+    # settings out, so the evidence must equal them.
     if hybrid:
         names = ("enable_prefix_caching", "mamba_cache_mode")
         for record in (*schedulers.values(), *workers.values()):
@@ -1092,7 +1092,7 @@ def _phase_prefix_caching(
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
         # A scheduler copies its own block size and hash block size into the evidence
-        # (runtime/instrumentation/observer.py:500-501).
+        # (runtime/instrumentation/observer.py, _prefix_caching).
         sizes = ("block_size", "hash_block_size")
         for record in schedulers.values():
             cache = record["cache"]
@@ -1100,7 +1100,8 @@ def _phase_prefix_caching(
                 [cache.get(name) for name in sizes]
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the scheduler block sizes")
-            # The scheduler also records the mode of its resolved cache config (runtime/fpm_memory_observer.py:820).
+            # The scheduler also records the mode of its resolved cache config
+            # (runtime/fpm_memory_observer.py, scheduler_memory).
             if canonical_json(cache["prefix_caching"]["mamba_cache_mode"]) != canonical_json(
                 cache.get("mamba_cache_mode")
             ):

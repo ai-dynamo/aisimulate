@@ -609,7 +609,7 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
         if kind == "convolution" and window != 4:
             raise ValueError("runtime memory cache kind is unsupported")
         # The observer refuses a vLLM 0.33.0 group whose layers disagree on the window or on the state evidence
-        # (runtime/fpm_memory_observer.py:630, :648). Only a window spec class has a window, and only a MambaSpec
+        # (runtime/fpm_memory_observer.py, cache_groups). Only a window spec class has a window, and only a MambaSpec
         # has Mamba state fields, so a group cannot mix such a class with another.
         if hybrid and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
             raise ValueError("cache group layers disagree on sliding window")
@@ -675,10 +675,12 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
                 if checkpoint == 1:
                     checkpoint_fields["prefill_checkpoint_alignment"] = alignment
             # blocks_per_request is the steady count, held between block boundaries. In vLLM 0.33.0, a MambaSpec
-            # holds one state block and its speculative blocks in both modes (kv_cache_interface.py:1140-1141), and
-            # a CircularBufferSpec holds one block (:982-989). So without speculative blocks every state spec class
-            # gives one block. For a MambaSpec in align mode, the count leaves out the 2 + k + c blocks that vLLM's
-            # startup sizing counts, c being the prefill checkpoint blocks (:1135-1139). It also leaves out the
+            # holds one state block and its speculative blocks in both modes (mode none:
+            # kv_cache_interface.py:1140-1141, align mode: single_type_kv_cache_manager.py:1640-1657 frees the older
+            # block), and a CircularBufferSpec holds one block (kv_cache_interface.py:982-989). So without speculative
+            # blocks every state spec class gives one block. For a MambaSpec in align mode, the count leaves out the
+            # 2 + k + c blocks that vLLM's startup sizing counts, c being the prefill checkpoint blocks
+            # (kv_cache_interface.py:1135-1139). It also leaves out the
             # previous state block, held for one or two steps after a boundary, two with async scheduling
             # (single_type_kv_cache_manager.py:1640-1657). The observation import checks the startup count against
             # the recorded concurrency.
