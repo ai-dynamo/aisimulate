@@ -102,10 +102,10 @@ REGISTRY: list[OpEntry] = [
         op="mla_context_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_mla_context_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.MLA_CONTEXT_MODULE,
         # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
-        # (see collect_mla_module._get_precision_combos); SM121 has never run
+        # (see the header of collect_mla_module); SM121 has never run
         # them on hardware — cases are queued there and this marker records
         # the maturity gap (layer_permissions.md registry markers).
         unverified_sms=(121,),
@@ -114,10 +114,10 @@ REGISTRY: list[OpEntry] = [
         op="mla_generation_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_mla_generation_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.MLA_GENERATION_MODULE,
         # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
-        # (see collect_mla_module._get_precision_combos); SM121 has never run
+        # (see the header of collect_mla_module); SM121 has never run
         # them on hardware — cases are queued there and this marker records
         # the maturity gap (layer_permissions.md registry markers).
         unverified_sms=(121,),
@@ -126,14 +126,14 @@ REGISTRY: list[OpEntry] = [
         op="dsa_context_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_dsa_context_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
     ),
     OpEntry(
         op="dsa_generation_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_dsa_generation_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.DSA_GENERATION_MODULE,
     ),
     OpEntry(
@@ -146,9 +146,9 @@ REGISTRY: list[OpEntry] = [
     # DeepSeek-V4 CSA/HCA attention modules. Requires trtllm>=1.3.0rc21
     # (module __compat__); the framework itself rejects pre-Blackwell GPUs
     # (mla.py forward_*_sparse_mla "DeepSeek-V4 is not supported on
-    # pre-blackwell GPUs" @1.3.0rc23) — those platforms fail into the
+    # pre-blackwell GPUs") — those platforms fail into the
     # classified log per observe-don't-predict.
-    # SM120 probe (RTX PRO 6000, 1.3.0rc23, campaign 2026-08-07): 100% of
+    # SM120 probe (RTX PRO 6000, 1.3.0rc23): 100% of
     # cases fail from case 0 (~5.4s/case classified errors with SIGABRT
     # worker resets), matching the DeepGEMM sparse-attention "Unsupported
     # architecture" family limit already documented for DSA in
@@ -157,7 +157,7 @@ REGISTRY: list[OpEntry] = [
         op="dsv4_csa_context_module",
         module="collector.trtllm.collect_dsv4_attn",
         get_func="get_dsv4_csa_context_test_cases",
-        run_func="run_dsv4_attn_worker",
+        run_func="run_dsv4_attn_series_worker",
         perf_filename=PerfFile.DSV4_CSA_CONTEXT_MODULE,
         unverified_sms=(120,),
     ),
@@ -165,7 +165,7 @@ REGISTRY: list[OpEntry] = [
         op="dsv4_hca_context_module",
         module="collector.trtllm.collect_dsv4_attn",
         get_func="get_dsv4_hca_context_test_cases",
-        run_func="run_dsv4_attn_worker",
+        run_func="run_dsv4_attn_series_worker",
         perf_filename=PerfFile.DSV4_HCA_CONTEXT_MODULE,
         unverified_sms=(120,),
     ),
@@ -173,7 +173,7 @@ REGISTRY: list[OpEntry] = [
         op="dsv4_csa_generation_module",
         module="collector.trtllm.collect_dsv4_attn",
         get_func="get_dsv4_csa_generation_test_cases",
-        run_func="run_dsv4_attn_worker",
+        run_func="run_dsv4_attn_series_worker",
         perf_filename=PerfFile.DSV4_CSA_GENERATION_MODULE,
         unverified_sms=(120,),
     ),
@@ -181,7 +181,7 @@ REGISTRY: list[OpEntry] = [
         op="dsv4_hca_generation_module",
         module="collector.trtllm.collect_dsv4_attn",
         get_func="get_dsv4_hca_generation_test_cases",
-        run_func="run_dsv4_attn_worker",
+        run_func="run_dsv4_attn_series_worker",
         perf_filename=PerfFile.DSV4_HCA_GENERATION_MODULE,
         unverified_sms=(120,),
     ),
@@ -189,7 +189,7 @@ REGISTRY: list[OpEntry] = [
         op="msa_context_module",
         module="collector.trtllm.collect_msa_module",
         get_func="get_msa_context_module_test_cases",
-        run_func="run_msa_module_worker",
+        run_func="run_msa_module_series_worker",
         perf_filename=PerfFile.MSA_CONTEXT_MODULE,
         # MiniMax-M3 MSA modules: hardware-validated on SM90 (h100/h200,
         # rc23 Triton reference path) and SM100/103 (b200/b300/gb200/gb300,
@@ -206,7 +206,7 @@ REGISTRY: list[OpEntry] = [
         op="msa_generation_module",
         module="collector.trtllm.collect_msa_module",
         get_func="get_msa_generation_module_test_cases",
-        run_func="run_msa_module_worker",
+        run_func="run_msa_module_series_worker",
         perf_filename=PerfFile.MSA_GENERATION_MODULE,
         # See msa_context_module marker rationale.
         unverified_sms=(121,),

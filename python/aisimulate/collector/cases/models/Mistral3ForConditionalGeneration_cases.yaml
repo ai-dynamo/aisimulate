@@ -13,7 +13,7 @@ framework_specific_base_ops:
   # Pixtral ViT is head_dim=104. TensorRT-LLM has no FMHA kernel for that head
   # size (raises "FMHA kernels are not found ... D : 104" on SM90), so it cannot
   # run this vision encoder; only sglang and vllm collect it. Verified on
-  # 8xH200 (SM90), trtllm 1.3.0rc20, 2026-09-03.
+  # 8xH200 (SM90), trtllm 1.3.0rc20.
   sglang:
     - encoder_attention
   vllm:

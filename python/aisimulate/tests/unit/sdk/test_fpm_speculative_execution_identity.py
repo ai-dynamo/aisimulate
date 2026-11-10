@@ -64,16 +64,20 @@ def profile(*, speculative=True):
     }
 
 
-def test_native_selector_is_self_describing_and_normalizes_input_key_order():
-    deployment = FpmModelProfile.model_validate(profile()).deployments[0]
+@pytest.mark.parametrize("method", ["eagle3", "mtp"])
+def test_native_selector_is_self_describing_and_normalizes_input_key_order(method):
+    data = profile()
+    descriptor = execution() | {"method": method}
+    data["deployments"][0]["execution_profile"] = descriptor
+    deployment = FpmModelProfile.model_validate(data).deployments[0]
     suffix = deployment.execution_identity("1" * 40)
     assert suffix[0] == "" and suffix[2:] == ("none", "text")
     assert suffix[1].startswith("speculative_round_v1:")
     assert json.loads(suffix[1].split(":", 1)[1]) == {
         "model_revision": "1" * 40,
-        "execution_profile": execution(),
+        "execution_profile": descriptor,
     }
-    reversed_keys = dict(reversed(list(execution().items())))
+    reversed_keys = dict(reversed(list(descriptor.items())))
     assert speculative_execution_identity("1" * 40, reversed_keys) == suffix
     assert len(deployment.match_identity()) == 15
 
@@ -117,9 +121,23 @@ def test_python_and_rust_reject_invalid_descriptor(field, value):
         speculative_execution_identity("1" * 40, data)
 
 
+def test_canonical_mtp_descriptor_records_the_target_and_round_trips():
+    data = profile()
+    descriptor = execution() | {"method": "mtp", "draft_model": data["model"], "draft_revision": data["model_revision"]}
+    data["deployments"][0]["execution_profile"] = descriptor
+    deployment = FpmModelProfile.model_validate(data).deployments[0]
+    restored = FpmModelProfile.model_validate_json(FpmModelProfile.model_validate(data).model_dump_json())
+    suffix = deployment.execution_identity(data["model_revision"])
+    assert restored.deployments[0].execution_identity(data["model_revision"]) == suffix
+    assert json.loads(suffix[1].split(":", 1)[1])["execution_profile"] == descriptor
+    # Other recorded draft values are a different exact identity, never an alias.
+    assert speculative_execution_identity(data["model_revision"], execution() | {"method": "mtp"}) != suffix
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
+        ("method", "mtp"),
         ("num_draft_tokens", 4),
         ("draft_model", "test/other"),
         ("draft_revision", "3" * 40),

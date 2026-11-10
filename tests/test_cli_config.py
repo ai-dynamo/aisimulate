@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -17,6 +20,7 @@ from aisimulate.config.engine import (
     WorkersPredictionConfig,
 )
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplaySpec
@@ -31,10 +35,10 @@ def _engine() -> dict:
     }
 
 
-@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, EngineRecommendationConfig])
 @pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
-def test_engine_configuration_rejects_learned_timing_before_loading_source(config_type, role):
-    engine = _engine()
+def test_engine_configuration_accepts_learned_timing_without_loading_source(config_type, role):
+    engine = {**_engine(), "mode": "aggregated"}
     policy = {
         "estimation_mode": "fpm_learned",
         "estimator_config": {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
@@ -47,8 +51,15 @@ def test_engine_configuration_rejects_learned_timing_before_loading_source(confi
         engine["mode"] = "disaggregated"
         engine["workers"] = {"prefill": {}, "decode": {}}
         engine["workers"][role]["timing"] = policy
-    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
-        config_type.model_validate({"engine": engine})
+    # Replay prices learned models per iteration; their source is read at construction.
+    if config_type is CorePredictionConfig:
+        validated = config_type.model_validate({"engine": engine}).engine
+    else:
+        validated = config_type.model_validate(engine)
+    if role is None:
+        assert validated.estimation_mode == "fpm_learned"
+    else:
+        assert validated.workers.model_dump()[role]["timing"]["estimation_mode"] == "fpm_learned"
 
 
 @pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
@@ -56,7 +67,7 @@ def test_engine_configuration_rejects_learned_timing_before_loading_source(confi
 def test_replay_estimation_schema_advertises_supported_modes(config_type, schema_mode):
     field = config_type.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
     alternatives = field.get("anyOf", [field])
-    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression"}
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"}
     assert [set(option["enum"]) for option in alternatives if "enum" in option] == [supported]
     assert {option["type"] for option in alternatives} == (
         {"string", "null"} if config_type is TimingConfig else {"string"}
@@ -81,9 +92,51 @@ def test_replay_estimation_schema_advertises_supported_modes(config_type, schema
         {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
     ],
 )
-def test_timing_config_rejects_learned_with_actionable_error_before_loading_source(estimator_config):
-    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
-        TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
+def test_timing_config_accepts_learned_without_loading_source(estimator_config):
+    timing = TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
+    assert TimingConfig.model_validate_json(timing.model_dump_json()) == timing
+
+
+def test_self_service_replay_template_preserves_learned_timing_after_config_roundtrip(tmp_path):
+    template = Path(__file__).resolve().parents[1] / "scripts/fpm_self_service/replay-aggregated.yaml"
+    values = {
+        "<trace-hash-block-size>": 16,
+        "<captured-model-id>": "example/model",
+        "<packaged-system-name>": "h200_sxm",
+        "<captured-engine-version>": "0.10.0",
+        "<captured-context-limit>": 8192,
+        "<captured-tp>": 4,
+        "<captured-moe-tp>": 1,
+        "<captured-ep>": 4,
+        "<captured-scheduler-token-limit>": 8192,
+        "<captured-sequence-limit>": 64,
+        "<observed-kv-block-size>": 16,
+        "<observed-bytes-per-token-per-tp-shard>": 16384,
+        "<captured-true-or-false>": True,
+        "<observed-usable-blocks-per-dp-rank>": 10000,
+        "/absolute/path/requests.jsonl": str(tmp_path / "requests.jsonl"),
+        "/absolute/path/fpm-run/models/aggregated.learned.json": str(tmp_path / "aggregated.learned.json"),
+    }
+
+    def replace_placeholders(value):
+        if isinstance(value, dict):
+            return {key: replace_placeholders(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_placeholders(item) for item in value]
+        if isinstance(value, str) and (value.startswith("<") or value.startswith("/absolute/path/")):
+            return values[value]
+        return value
+
+    config = CorePredictionConfig.model_validate(replace_placeholders(yaml.safe_load(template.read_text())))
+    restored = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    assert restored == config
+    timing = restored.engine.workers.aggregated.timing
+    assert timing.estimation_mode == "fpm_learned"
+    assert timing.fallback_policy == "deny"
+    assert timing.estimator_config == {
+        "fpm_learned": {"artifact_path": str(tmp_path / "aggregated.learned.json"), "adaptation": "frozen"},
+        "correction": {"enabled": False},
+    }
 
 
 @pytest.mark.parametrize(
@@ -738,10 +791,16 @@ def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
     ]
 
 
-def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
+@pytest.mark.parametrize("pinned_role,independent_role", [("prefill", "decode"), ("decode", "prefill")])
+@pytest.mark.parametrize("gpu_budget", [2, 3])
+@pytest.mark.model("Qwen/Qwen3-32B-FP8")
+def test_disagg_mixed_parallel_presets_preserve_each_role_semantics(pinned_role, independent_role, gpu_budget) -> None:
+    from aisimulate.sweeper.model_hw import NoViableParallelConfig
+    from aisimulate.sweeper.search_space import enumerate_branches
+
     mapping = {
         "replicas": 1,
-        "tensor": 1,
+        "tensor": 2,
         "pipeline": 1,
         "attention_data": 1,
         "moe_tensor": 1,
@@ -751,41 +810,58 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
         {
             "engine": {
                 "mode": "disaggregated",
-                "model": "example/model",
+                "model": "Qwen/Qwen3-32B-FP8",
                 "hardware": "h200_sxm",
                 "backend": "vllm",
                 "context_length": 4096,
                 "workers": {
-                    "prefill": {"parallelism": {"preset": [mapping]}},
-                    "decode": {
+                    pinned_role: {"parallelism": {"preset": [mapping]}},
+                    independent_role: {
                         "parallelism": {
                             "preset": False,
+                            "tensor": 1,
                             "replicas": {"choices": [1, 2]},
                         }
                     },
                 },
             },
-            "optimization": {},
+            "optimization": {"constraints": {"max_candidate_gpus": gpu_budget}},
         }
     )
 
     lowered = recommendation_to_sweeper(config)
 
-    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"]["prefill"] == [
+    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"][pinned_role] == [
         {
             "replicas": 1,
-            "tp": 1,
+            "tp": 2,
             "pp": 1,
             "attention_dp": 1,
             "moe_tp": 1,
             "moe_ep": 1,
         }
     ]
-    assert lowered.search_space.parallel_independent_by_mode["disagg"]["decode_replicas"] == [
+    assert lowered.search_space.parallel_independent_by_mode["disagg"][f"{independent_role}_replicas"] == [
         1,
         2,
     ]
-    assert not any(name.startswith("prefill_") for name in lowered.search_space.parallel_independent_by_mode["disagg"])
+    assert not any(
+        name.startswith(f"{pinned_role}_") for name in lowered.search_space.parallel_independent_by_mode["disagg"]
+    )
+
+    if gpu_budget == 2:
+        with pytest.raises(NoViableParallelConfig, match="used_gpus=3 exceeds gpu_budget=2"):
+            enumerate_branches(lowered, max_seq_len=4096)
+    else:
+        (branch,) = enumerate_branches(lowered, max_seq_len=4096)
+        expected = DisaggParallelConfig(
+            **{
+                pinned_role: ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+                independent_role: ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+            }
+        )
+        assert branch.parallel_configs == (expected,)
+        assert expected.total_gpus == 3
 
 
 def test_backend_specific_block_size_validation() -> None:
@@ -976,6 +1052,7 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                     "paths": ["weka-corpus"],
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
+                    "client": "agentx",
                 },
                 "load": {"type": "trace_timestamps"},
             },
@@ -983,6 +1060,7 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
         }
     )
     assert configured_weka.traffic.source.nested_timestamp_basis == "relative"
+    assert configured_weka.traffic.source.client == "agentx"
 
     with pytest.raises(ValidationError, match="only valid for trace format 'weka'"):
         CorePredictionConfig.model_validate(
@@ -994,6 +1072,16 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                         "format": "mooncake",
                         "nested_timestamp_basis": "absolute",
                     },
+                    "load": {"type": "trace_timestamps"},
+                },
+                "engine": _engine(),
+            }
+        )
+    with pytest.raises(ValidationError, match="client is only valid for trace format 'weka'"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {"type": "trace", "paths": ["trace.jsonl"], "format": "mooncake", "client": "agentx"},
                     "load": {"type": "trace_timestamps"},
                 },
                 "engine": _engine(),
@@ -1718,6 +1806,122 @@ def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() 
     assert spec.performance_model_metadata["decode"]["config"]["dcp"] == 4
 
 
+def _disaggregated_engine(backend: str, decode: dict, prefill: dict | None = None, **engine) -> dict:
+    return {
+        **_engine(),
+        **engine,
+        "mode": "disaggregated",
+        "backend": backend,
+        "workers": {"prefill": prefill or {}, "decode": decode},
+    }
+
+
+def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -> None:
+    from aisimulate.compiler import _deployment
+
+    def decode_engine_args(decode: dict) -> dict:
+        config = CorePredictionConfig.model_validate({"engine": _disaggregated_engine("sglang", decode)})
+        return _deployment(config.engine, workload={}, afd_performance_model=None).decode_engine_args
+
+    default = decode_engine_args({})
+    assert default["enable_prefix_caching"] is True
+    assert "sglang" not in default
+
+    enabled = decode_engine_args({"kv_cache": {"decode_radix_cache": True}})
+    assert enabled["enable_prefix_caching"] is True
+    assert enabled["sglang"] == {"disaggregation_decode_enable_radix_cache": True}
+
+
+@pytest.mark.parametrize(
+    ("backend", "decode", "prefill", "engine", "needle"),
+    [
+        ("vllm", {"kv_cache": {"decode_radix_cache": True}}, None, {}, "only for backend=sglang"),
+        ("sglang", {}, {"kv_cache": {"decode_radix_cache": True}}, {}, "only to the decode role"),
+        (
+            "sglang",
+            {"kv_cache": {"decode_radix_cache": True, "prefix_caching": False}},
+            None,
+            {},
+            "requires prefix_caching=true",
+        ),
+        (
+            "sglang",
+            {"kv_cache": {"decode_radix_cache": True}},
+            None,
+            {"nextn": 1, "nextn_accepted": 1.0},
+            "speculative decoding",
+        ),
+    ],
+)
+def test_sglang_decode_radix_cache_rejects_unsupported_settings(backend, decode, prefill, engine, needle) -> None:
+    with pytest.raises(ValidationError, match=needle):
+        CorePredictionConfig.model_validate({"engine": _disaggregated_engine(backend, decode, prefill, **engine)})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper(enabled) -> None:
+    worker = {
+        "kv_cache": {"capacity": {"type": "fixed", "blocks": 2048}},
+        "timing": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+    }
+    engine = {
+        **_engine(),
+        "mode": "disaggregated",
+        "backend": "sglang",
+        "context_length": 4096,
+        "workers": {
+            "prefill": worker,
+            "decode": {**worker, "kv_cache": {**worker["kv_cache"], "decode_radix_cache": enabled}},
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {"type": "concurrency", "concurrency": 8},
+                "stop": {"requests": 100},
+            },
+            "evaluation": {"sla": {"itl_ms": 30}},
+            "optimization": {"target": "min_gpus"},
+        }
+    )
+
+    space = recommendation_to_sweeper(config).search_space
+    assert space.decode_radix_cache is enabled
+    assert space.decode_enable_prefix_caching is True
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    sample = unroll_sample(
+        search_space=space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": "sglang",
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 8,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 8,
+        },
+        parallel_config=DisaggParallelConfig(replica, replica),
+    )
+    deployment = build_backend_deployment(sample, backend_version="0.5.22")
+    assert (
+        deployment.decode_engine_args.get("sglang", {}).get("disaggregation_decode_enable_radix_cache", False)
+        is enabled
+    )
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            ReplaySpec(
+                backend_deployment=deployment,
+                workload={"isl": 16, "osl": 4, "concurrency": 1, "num_request_ratio": 2},
+                goal={"target": "throughput"},
+            )
+        )
+    )
+    assert report.metrics["completed_requests"] == 2
+
+
 @pytest.mark.parametrize(
     ("backend", "prefill", "decode", "needle"),
     [
@@ -1972,6 +2176,31 @@ def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, 
     recommended = Workload.model_validate(_recommendation_workload(traffic))
     assert recommended.model_dump(mode="json")["agentic_profile"] == expected
     assert Workload.model_validate_json(recommended.model_dump_json()).agentic_profile == recommended.agentic_profile
+
+
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_agentic_warmup_policy_compiles_for_prediction_and_recommendation(policy: str) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 2,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+        "agentic_warmup_policy": policy,
+    }
+    if policy == "live_trajectory_v1":
+        load["agentic_profile"] = {}
+    traffic = {"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load}
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    assert prediction_to_replay_spec(prediction).workload["agentic_warmup_policy"] == policy
+    recommended = _recommendation_workload(traffic)
+    assert recommended["agentic_warmup_policy"] == policy
+    assert Workload.model_validate(recommended).agentic_warmup_policy == policy
 
 
 @pytest.mark.parametrize(

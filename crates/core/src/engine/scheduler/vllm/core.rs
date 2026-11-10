@@ -720,6 +720,16 @@ impl DecodeBatch {
     fn total_length(&self) -> usize {
         self.lengths.iter().sum()
     }
+
+    /// Add one request's context length. The first push reserves `max`, the
+    /// most the pass can add, so a pass allocates once, or not at all without
+    /// decode work.
+    fn push(&mut self, length: usize, max: usize) {
+        if self.lengths.capacity() == 0 {
+            self.lengths.reserve_exact(max);
+        }
+        self.lengths.push(length);
+    }
 }
 
 struct HeldVllmPrefill {
@@ -928,13 +938,11 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
-        if native_host_offload
+        if let Some(order) = native_host_offload
             .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::is_shared)
+            .and_then(VllmHostOffloadAdapter::store_source_hold)
         {
-            // Like Mooncake Store and LMCache MP, a shared-pool store keeps a
-            // reference on the G1 blocks it copies until the copy completes.
-            kv_manager.hold_native_store_sources();
+            kv_manager.hold_native_store_sources(order);
         }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(
@@ -1619,10 +1627,33 @@ impl VllmCore {
     fn cleanup_completed_prefill(&mut self, payload: HeldVllmPrefill) {
         let HeldVllmPrefill {
             request_id,
-            request,
+            mut request,
         } = payload;
+        self.finish_host_request(request_id, &mut request);
         self.kv_manager
             .finish_native(request_id, request.sequence.lease);
+    }
+
+    /// The G2 connector's work when a request finishes or is dropped, before
+    /// its G1 blocks are released: vLLM calls the connector's
+    /// `request_finished` from `Scheduler._free_request`, which frees them.
+    fn finish_host_request(&mut self, uuid: Uuid, request: &mut VllmRequestState) {
+        if let (Some(adapter), Some(host)) = (
+            self.native_host_offload.as_mut(),
+            request.host_offload.as_deref_mut(),
+        ) {
+            let now_ms = adapter.current_time_ms();
+            adapter.finish_request(
+                uuid,
+                host,
+                &request.sequence.lease,
+                request.num_computed_tokens,
+                request.sequence.num_input_tokens(),
+                self.args.block_size,
+                &mut self.kv_manager,
+                now_ms,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -1649,6 +1680,15 @@ impl VllmCore {
             || !self.state.waiting_members.is_empty()
             || self.state.has_ready_connector_waiter()
             || self.destination_retry_ready
+            || self.has_unsubmitted_host_stores()
+    }
+
+    /// G2 stores a request prepared when it left between passes; the next
+    /// (possibly empty) pass submits them.
+    fn has_unsubmitted_host_stores(&self) -> bool {
+        self.native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::has_unsubmitted_stores)
     }
 
     #[allow(dead_code)]
@@ -1667,7 +1707,10 @@ impl VllmCore {
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && !self.is_drained() && !self.destination_retry_ready
+        self.is_empty()
+            && !self.is_drained()
+            && !self.destination_retry_ready
+            && !self.has_unsubmitted_host_stores()
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
@@ -2551,7 +2594,7 @@ impl VllmCore {
                 requests: scheduled
                     .values()
                     .filter(|work| work.prompt_tokens > 0)
-                    .map(|work| (work.prompt_tokens, work.prefix_tokens))
+                    .map(|work| (work.prompt_tokens, work.prefix_tokens, work.prompt_len))
                     .collect(),
             }),
             decode: (forward.decode_count > 0).then(|| DecodeWork {
@@ -2641,10 +2684,11 @@ impl VllmCore {
             || self.kv_manager.num_active_blocks() < active_blocks_before;
         self.source_holds.remove_request(uuid);
         self.active_destination_handoffs.remove_request(uuid);
-        let request = self
+        let mut request = self
             .state
             .take_completed(&uuid)
             .expect("request drop must remove the scheduler-owned request");
+        self.finish_host_request(uuid, &mut request);
         self.kv_manager.finish_native(uuid, request.sequence.lease);
         if capacity_improved {
             self.bump_capacity_generation();
@@ -3104,7 +3148,7 @@ impl VllmCore {
                 .cached_prefix_tokens
                 .get_or_insert(cached_prefix_tokens);
             let attribution = request.host_offload.as_deref_mut().and_then(|host| {
-                VllmHostOffloadAdapter::on_admitted(
+                self.native_host_offload.as_ref()?.on_admitted(
                     host,
                     cached_prefix_tokens,
                     self.args.block_size,
@@ -3192,13 +3236,15 @@ impl VllmCore {
     ) -> bool {
         // The final prefill forward already includes the output head. First
         // tokens sampled from it do not require a second full forward pass.
-        self.args.worker_type == WorkerType::Aggregated
-            && policy::first_token_uses_prefill_forward(
-                self.args.scheduling_policy(),
-                self.speculative_sampler.is_some(),
-            )
-            && request.sequence.generated_tokens() == 0
-            && work.is_some_and(|work| work.prompt_tokens > 0)
+        // A prefill worker's tokens all come from its prefill forward.
+        self.args.worker_type == WorkerType::Prefill
+            || (self.args.worker_type == WorkerType::Aggregated
+                && policy::first_token_uses_prefill_forward(
+                    self.args.scheduling_policy(),
+                    self.speculative_sampler.is_some(),
+                )
+                && request.sequence.generated_tokens() == 0
+                && work.is_some_and(|work| work.prompt_tokens > 0))
     }
 
     /// Emit the tokens of the requests ready to decode, returning the decode
@@ -3234,7 +3280,7 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
-                decode.lengths.push(request.sequence.len());
+                decode.push(request.sequence.len(), self.state.running.len());
             }
         }
 
@@ -3285,14 +3331,6 @@ impl VllmCore {
             )?;
             output_signals.append(&mut speculative_signals);
             return Ok((decode, output_signals));
-        }
-
-        // For prefill workers, the first decode token is produced as part of
-        // the prefill forward pass — no separate decode iteration needed.
-        // All signals remain visible at the common pass boundary, including
-        // first tokens when ongoing decoders add work to a mixed pass.
-        if self.args.worker_type == WorkerType::Prefill {
-            decode.lengths.clear();
         }
 
         let mut running_changed = !output_signals.is_empty();
@@ -3485,16 +3523,10 @@ impl VllmCore {
             }
         };
 
-        let decode = DecodeBatch {
-            lengths: if worker_type == WorkerType::Prefill {
-                Vec::new()
-            } else {
-                bursts
-                    .iter()
-                    .filter_map(|burst| burst.decode_length)
-                    .collect()
-            },
-        };
+        let mut decode = DecodeBatch::default();
+        for length in bursts.iter().filter_map(|burst| burst.decode_length) {
+            decode.push(length, bursts.len());
+        }
 
         let sampler = self
             .speculative_sampler

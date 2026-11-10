@@ -330,10 +330,7 @@ def get_moe_a2a_shapes(*, required_expert_parallel_size: int | None = None) -> l
     """Return declared TensorRT-LLM WideEP geometry and serving routing."""
     from collector.case_generator import get_common_moe_test_cases, is_wideep_moe_model
 
-    recipes = get_common_moe_test_cases(
-        backend="trtllm",
-        required_expert_parallel_size=required_expert_parallel_size,
-    )
+    recipes = get_common_moe_test_cases(required_expert_parallel_size=required_expert_parallel_size)
     shapes = {
         MoeA2AShape(
             int(recipe.hidden_size),
@@ -1133,7 +1130,6 @@ def _run_collection_body(
                 case_ids=case_plan_ids(cases),
                 parquet_path=parquet_path,
                 failure_count=failures,
-                module_name=MODULE_NAME,
             )
         except BaseException as error:
             sidecar_error = error

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """``--ops`` naming an op the collector v2 case plan does not contain exits with the
 dedicated EXIT_CODE_OPS_NOT_IN_PLAN, not argparse's 2, so a shard scheduler can mark
-the shard terminal (sm100 shard plans 2026-10-05: the registry-only vllm
+the shard terminal (sm100 shard plans the registry-only vllm
 dsv4_hca_attn_module retried to max_attempts on eight systems). That op was removed
 on 2026-10-15, so the probe below uses an op another backend's registry owns: a valid
 ``--ops`` choice that vLLM's case plan never carries, the shape of a stale or

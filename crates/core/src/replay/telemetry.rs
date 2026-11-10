@@ -514,11 +514,12 @@ impl ReplayTelemetryCaptureSink {
                 completion_status,
             });
         }
+        // Stable: equal arrival times keep the per-request record order, which
+        // does not depend on runtime UUIDs.
         state.0.requests.sort_by(|a, b| {
             a.request
                 .arrival_time_ms
                 .total_cmp(&b.request.arrival_time_ms)
-                .then_with(|| a.request.uuid.cmp(&b.request.uuid))
         });
         state
             .0

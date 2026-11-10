@@ -7,3 +7,5 @@ python/aisimulate/src/aisimulate_core/systems/**/*.parquet diff=parquet -text
 python/aisimulate/src/aisimulate_core/model_configs/*_hf_quant_config.json linguist-generated=true
 # Preserve the byte-identical Plotly distribution, including upstream whitespace.
 pages/fpm-accuracy/assets/plotly.min.js -whitespace linguist-vendored=true
+# Preserve byte-addressed unified-patch context, including blank context lines.
+scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch -whitespace

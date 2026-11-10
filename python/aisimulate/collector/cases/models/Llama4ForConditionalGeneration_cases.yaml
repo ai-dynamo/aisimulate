@@ -12,8 +12,10 @@ include_base: true
 base_ops:
   - gemm
 framework_specific_base_ops:
-  # vLLM 0.24's Llama 4 attention uses fixed chunk boundaries; a generic
-  # sliding-window profile is not an equivalent persisted workload.
+  # Model runs leave vLLM's attention out: vLLM serves Llama 4's local layers
+  # with fixed chunk boundaries, which a sliding-window row only approximates.
+  # Full collections still time the window-8192 shapes on vLLM (and TRT-LLM),
+  # as sliding windows; only SGLang's rows carry the 8192-token chunk.
   sglang:
     - attention_context
     - attention_generation

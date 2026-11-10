@@ -67,6 +67,9 @@ class BatchSpec:
     seq_lens: list[int]
     query_lens: list[int]
 
+    def compute_num_tokens(self):
+        return sum(self.query_lens)
+
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
 def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache):
@@ -384,7 +387,7 @@ def test_mla_backend_name_records_actually_invoked_backend(attn_type, is_context
 
 
 def test_mla_backend_name_never_reads_num_prefills_off_the_mla_context_branch():
-    """Sparse DSA metadata (FlashMLASparseMetadata @0.24.0) has no top-level
+    """Sparse DSA metadata (FlashMLASparseMetadata) has no top-level
     ``num_prefills``; the helper must not read it for DSA or generation rows."""
     backend_name = _load_function(MLA_ATTN_SOURCE, "_mla_backend_name", {})
     mla_layer = SimpleNamespace(

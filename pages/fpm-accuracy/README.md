@@ -186,7 +186,15 @@ and small workloads can differ from the requested ratio. Model, GPU, framework,
 workload, metric, scenario, ratio, and configuration selections persist in the URL.
 Costs cover all workloads even when the metric filter selects one workload.
 
-Public assets use `fpm-scenarios-v13`. Strict C has zero offline inputs and admits
+New public assets use `fpm-scenarios-v14`. Publication and the viewer also support
+historical `fpm-scenarios-v13` results; publication validates each version against
+its own protocol metadata. For A/A+C, Gym seed preparation consumes the native
+loader's effective targets for `fake_fallback` rows and records source hashes and
+replacement counts in affected results. Offline spline seeds use canonical feature
+ordering followed by a fixed shuffle independently for each worker. These v14
+normalization and ordering declarations do not apply to historical v13 results.
+
+Strict C has zero offline inputs and admits
 only the first scored observation at or after each five-second event-time tick,
 including during cold-start warmup. The first tick is five seconds after the first
 scored timestamp. Prediction and scoring always precede the update. Intervening
@@ -283,14 +291,15 @@ node --test tests/test_fpm_accuracy_workflow.mjs
 ## Source attribution
 
 The overview structure and behavior were adapted from NVIDIA
-[AISim FPM Gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/e8221729db2802e822f6919fd68bc2941743385b/dashboard),
+AISim FPM Gym; the [public migrated overview](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/pages/fpm-accuracy) derives from
 commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
 `dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a best-MAPE
 overview, a three-column Predictors page (derived from the same overview),
 qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
-Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`; the 3D HTML,
+Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`
+([public migration](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/pages/fpm-accuracy)); the 3D HTML,
 JS and CSS derive from `dashboard/3d-visualization.html` and
 `dashboard/assets/visualization.{js,css}` at that revision. They are modified
 for AISimulate navigation, styling and GitHub artifact data. Plotly.js v3.4.0

@@ -48,9 +48,11 @@ mod speculative;
 mod tests;
 
 pub use config::{
-    EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig,
-    ForwardPassSpeculationConfig,
+    DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassFallbackPolicy,
+    ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, UNKNOWN_IDENTITY, UNKNOWN_SIZE,
 };
+#[cfg(feature = "python")]
+pub(crate) use config::{identity_optional_size, identity_size};
 pub use coverage::{FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose};
 pub use estimator::*;
 pub(crate) use evidence::accumulate_fpm_estimates;
@@ -79,7 +81,7 @@ pub use options::{CorrectionMode, ForwardPassPerfOptions};
 pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
+    FpmCacheLayout, FpmMambaCacheMode, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 pub use snapshot::{STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotKind};
 pub use speculative::SpeculativeForwardPassEstimate;

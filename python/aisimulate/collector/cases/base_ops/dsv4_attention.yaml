@@ -4,16 +4,13 @@
 schema_version: 1
 op: dsv4_attention
 description: >-
-  Universal sweep budgets for the DSV4 CSA/HCA attention module collectors
-  (trtllm and vllm). These are op-level budget fields (case_authoring.md
-  "the op's universal math (identities, budgets)" — generator constraint /
-  base-op budget field), NOT model properties, so they live at the base-op
-  layer; the model file declares only the model-correlated grids. Enforced
-  at case-generation time with per-reason counted drops.
+  Decode budget of the DSV4 CSA/HCA attention module plans (collector/op_plans.py),
+  shared by every backend. It is an op-level budget (case_authoring.md "the op's
+  universal math (identities, budgets)"), not a model property, so it lives at the
+  base-op layer; the model file declares the batch and KV-length lists. Context
+  points follow the shared long-context grid (mla_module_plan in mla_module.yaml).
 common_case_values:
   dsv4_module_budgets:
-    max_seq_len: 65536
-    max_context_query_tokens: 262144
     max_generation_kv_tokens: 1048576
     # decode batch ladder: [seq_len_floor, max_batch] — a decode shape with
     # sl >= seq_len_floor and bs > max_batch is out of budget.
