@@ -173,8 +173,9 @@ pub(super) struct PreemptedRequest {
 struct ScheduledWork {
     /// Known tokens plus scheduled speculative verification tokens.
     total_tokens: usize,
+    /// Scheduled speculative positions; native MTP work's valid drafts.
     draft_tokens: usize,
-    mtp: Option<policy::MtpWork>,
+    native_mtp: bool,
     from_waiting: bool,
     prompt_tokens: usize,
     prefix_tokens: usize,
@@ -186,6 +187,11 @@ struct ScheduledWork {
     /// removed from state before `compute_fpm` runs.
     sequence_len: usize,
 }
+
+// Every pass writes one entry per scheduled request and reads it back several
+// times: keep feature-specific plans out of it.
+#[cfg(test)]
+const _: () = assert!(std::mem::size_of::<ScheduledWork>() == 7 * std::mem::size_of::<usize>());
 
 /// One ready request's speculative burst inputs for a pass.
 struct SpeculativeBurst {
@@ -2073,6 +2079,8 @@ impl VllmCore {
         let mut admissions = Vec::with_capacity(waiting_capacity_hint);
         let mut preempted_any = false;
         let mut rejected_uuids: Vec<Uuid> = Vec::new();
+        // Fixed for the pass: resolve it once, not per scheduled request.
+        let native_mtp_depth = self.native_mtp_depth();
 
         let mut req_index = 0usize;
         while req_index < self.state.running.len() && token_budget > 0 {
@@ -2106,6 +2114,7 @@ impl VllmCore {
                 uuid,
                 false,
                 None,
+                native_mtp_depth,
                 &mut token_budget,
                 &mut scheduled,
                 &mut batch_count,
@@ -2142,7 +2151,6 @@ impl VllmCore {
         let scheduling_policy = self.args.scheduling_policy();
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
         let mut host_step_skipped = Vec::new();
-        let native_mtp_depth = self.native_mtp_depth();
         // Agent-style workloads can keep many requests in both collections.
         // Scan once, then update only the selected request's contribution as
         // this pass queues/consumes a host load or admits a new prefill.
@@ -2533,6 +2541,7 @@ impl VllmCore {
                 uuid,
                 true,
                 Some(&prefill_cost),
+                native_mtp_depth,
                 &mut token_budget,
                 &mut scheduled,
                 &mut batch_count,
@@ -3038,6 +3047,7 @@ impl VllmCore {
         uuid: Uuid,
         from_waiting: bool,
         prefill_cost: Option<&PrefillCost>,
+        native_depth: Option<usize>,
         token_budget: &mut usize,
         scheduled: &mut FxHashMap<Uuid, ScheduledWork>,
         batch_count: &mut usize,
@@ -3102,7 +3112,6 @@ impl VllmCore {
             return Ok(ScheduleOutcome::Blocked);
         }
 
-        let native_depth = self.native_mtp_depth();
         let mtp = if let Some(nextn) = native_depth {
             let pad_waiting = from_waiting
                 && *batch_count == 0
@@ -3264,7 +3273,7 @@ impl VllmCore {
                     *batch_count = batch_count.saturating_sub(1);
                     *batch_total_isl = batch_total_isl.saturating_sub(
                         undone.prefix_tokens
-                            + if undone.mtp.is_some() {
+                            + if undone.native_mtp {
                                 undone.total_tokens
                             } else {
                                 undone.prompt_tokens
@@ -3332,7 +3341,7 @@ impl VllmCore {
             ScheduledWork {
                 total_tokens: tokens_used,
                 draft_tokens: scheduled_drafts,
-                mtp,
+                native_mtp: mtp.is_some(),
                 from_waiting,
                 prompt_tokens,
                 prefix_tokens: prompt_before,
@@ -3478,12 +3487,13 @@ impl VllmCore {
         // Speculative emission prices its own decode work after reservation.
         let speculative = self.speculative_sampler.is_some();
         let mut decode = DecodeBatch::default();
+        let native_mtp = self.native_mtp_depth().is_some();
         for uuid in self.state.running.iter().copied() {
             let Some(request) = self.state.requests.get(&uuid) else {
                 continue;
             };
             if request.num_computed_tokens < request.sequence.len()
-                || (self.native_mtp_depth().is_some() && !scheduled.contains_key(&uuid))
+                || (native_mtp && !scheduled.contains_key(&uuid))
             {
                 continue;
             }
@@ -3637,21 +3647,16 @@ impl VllmCore {
                 continue;
             };
             let work = scheduled.get(&uuid);
-            let native = work.and_then(|work| work.mtp);
-            let limit = native.map_or_else(
-                || {
-                    policy::speculative_burst_limit(
-                        scheduling_policy,
-                        worker_type,
-                        nextn,
-                        work.map_or(0, |work| work.draft_tokens),
-                    )
-                },
-                |work| work.valid_drafts + 1,
-            );
+            let native = work.is_some_and(|work| work.native_mtp);
+            let draft_tokens = work.map_or(0, |work| work.draft_tokens);
+            let limit = if native {
+                draft_tokens + 1
+            } else {
+                policy::speculative_burst_limit(scheduling_policy, worker_type, nextn, draft_tokens)
+            };
             let remaining =
                 policy::remaining_generation_tokens(&request.sequence, self.args.max_model_len);
-            if native.is_none() {
+            if !native {
                 match self.kv_manager.decode_requirement(
                     &request.sequence.lease,
                     request.sequence.len(),
@@ -4694,6 +4699,7 @@ mod state_cache_tests {
             id,
             false,
             None,
+            core.native_mtp_depth(),
             &mut budget,
             &mut scheduled,
             &mut count,

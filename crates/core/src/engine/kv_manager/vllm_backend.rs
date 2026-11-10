@@ -658,6 +658,20 @@ impl VllmKvManager {
         if self.state_cache.is_some() {
             return self.allocate_state_lease(lease, cumulative_tokens, reusable_prefix_blocks);
         }
+        let previous_blocks = lease
+            .allocated_tokens
+            .div_ceil(self.block_size)
+            .min(lease.entries.len());
+        if cumulative_tokens.div_ceil(self.block_size) <= previous_blocks {
+            // Most decode steps stay inside a block the lease already owns:
+            // there is no capacity to acquire or bind. Keep the watermark
+            // monotonic and report any pending write dependency again.
+            lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
+            return NativeAllocation::Ready {
+                value: 0,
+                dependencies: self.pending_capacity_write_dependencies(lease),
+            };
+        }
         self.allocate_lease_with_slots(
             owner,
             lease,
@@ -2376,6 +2390,15 @@ mod tests {
             _ => panic!("dependency-bearing suffix must still be acquired"),
         };
         assert_eq!(dependencies, vec![dependency]);
+        // A retry that needs no new block reports the unauthorized fence again.
+        assert!(matches!(
+            manager.allocate_lease(owner, &mut lease, 4, 0),
+            NativeAllocation::Ready {
+                value: 0,
+                dependencies: ref retry,
+            } if *retry == dependencies
+        ));
+        assert_eq!(lease.allocated_tokens(), 8);
         manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
         assert!(matches!(
             manager.allocate_lease(owner, &mut lease, 4, 0),
