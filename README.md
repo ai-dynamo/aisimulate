@@ -103,6 +103,8 @@ Use `aisim` and `aisim_core` for new Python imports; `aisimulate` and `aisimulat
 
 Install this pair on Linux with Python 3.12 in a **separate environment**:
 
+The Dynamo command examples below use this historical pair's `aisimulate` executable. Current source-built AISim environments use `aisim`.
+
 <!-- readme-check: dynamo-install -->
 ```bash
 python3 -m pip install --extra-index-url https://pypi.nvidia.com \
@@ -178,7 +180,7 @@ See the API reference for the runnable example, arguments and results.
 
 <!-- readme-check: dynamo-predict -->
 ```bash
-aisim predict \
+aisimulate predict \
   --stack dynamo \
   --config prediction.yaml \
   --output-dir ./aisim-dynamo-prediction
@@ -260,7 +262,7 @@ See the API reference for the runnable example, arguments and results.
 
 <!-- readme-check: dynamo-recommend -->
 ```bash
-aisim recommend \
+aisimulate recommend \
   --stack dynamo \
   --config recommendation.yaml \
   --output-dir ./aisim-dynamo-recommendation
@@ -281,7 +283,7 @@ For the Dynamo result, use the same stack on the round trip:
 
 <!-- readme-check: dynamo-roundtrip -->
 ```bash
-aisim predict \
+aisimulate predict \
   --stack dynamo \
   --config ./aisim-dynamo-recommendation/recommendations/0001.yaml \
   --output-dir ./aisim-dynamo-best-prediction
