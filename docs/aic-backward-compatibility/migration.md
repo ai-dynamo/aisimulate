@@ -258,8 +258,8 @@ that mode first, then the other modes in global priority order. Invalid inputs
 do not trigger fallback. An untrained regression is not ready for offline
 simulation, and queries do not switch estimators after construction.
 
-Engine-wide data policies require regular aggregated/disaggregated language
-workers with default timing in every role. AFD, analytical encoders, and
+Engine-wide data policies apply to regular aggregated/disaggregated language
+workers with default timing and to native AFD pools. Analytical encoders and
 fixed/polynomial timing retain their separate paths. Saved recommendation YAML
 preserves resolved role data roots, versions, policies, and estimator settings.
 External FPM profiles require a matching parquet/metadata pair; see the
@@ -311,7 +311,7 @@ providers can omit memory details. Analytical EPD reports available language
 memory without claiming a complete encoder breakdown.
 
 Whole-forward FPM and latency-only providers do not expose per-operation
-timing/source evidence. EPD/AFD overlays and the external Dynamo Python adapter
+timing/source evidence. Analytical EPD overlays and the external Dynamo Python adapter
 do not export a qualified combined operation report. Missing SOL evidence keeps
 the measured timing and an explicit reason.
 

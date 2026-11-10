@@ -34,7 +34,16 @@ def test_native_afd_reports_request_weighted_user_throughput(tmp_path):
     trace = tmp_path / "requests.jsonl"
     trace.write_text(
         "".join(
-            json.dumps({"timestamp": 0, "input_length": inputs, "output_length": outputs, "hash_ids": [index]}) + "\n"
+            json.dumps(
+                {
+                    "timestamp": 0,
+                    "input_length": inputs,
+                    "output_length": outputs,
+                    # Mooncake hashes each cover 512 tokens; keep the requests' prefixes disjoint.
+                    "hash_ids": list(range(index * 16, index * 16 + (inputs + 511) // 512)),
+                }
+            )
+            + "\n"
             for index, (inputs, outputs) in enumerate(((64, 3), (8192, 7)))
         )
     )

@@ -43,8 +43,8 @@ the coverage calculation.
 AFD timing and energy use the same operator queries and
 [batch-pricing rules](../sweeper/afd-topology.md#batch-pricing): embedding joins a
 dense prefix once at full replica batch, otherwise it runs per microbatch;
-logits always run per microbatch. Fixed synthetic decode reuses a stride-averaged
-timing/evidence pair, contributing it on every pass. Prefill uses actual batch
+logits always run per microbatch. Decode queries timing and energy with the
+actual batch size and mean context length on every pass. Prefill uses actual batch
 and uncached tokens for both timing and evidence.
 
 These values are modeling evidence. They must retain the timing provider,

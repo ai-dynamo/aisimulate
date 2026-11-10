@@ -867,3 +867,105 @@ fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
     assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
     assert!(stepped.next_timestamps().1.unwrap() > 0.0);
 }
+
+#[test]
+fn native_replay_retracts_readmits_and_finishes_deterministically() {
+    use std::sync::Arc;
+
+    use crate::engine::scheduler::afd::timing::tests::provider_for;
+    use crate::engine::{Backend, EngineConfig, TimingModelConfig};
+    use crate::replay::{
+        CanonicalReplayCoverage, CanonicalReplayRecord, ReplayCaptureOptions, ReplayDeterminism,
+        ReplayEngineConfig, ReplayEngineFactory, ReplayRequest, ReplaySpec, ReplayTerminalStatus,
+        ReplayTopology, Replayer,
+    };
+
+    {
+        let mut rank = EngineConfig::for_backend(Backend::Sglang);
+        rank.block_size = 1;
+        rank.num_gpu_blocks = 330;
+        rank.max_num_seqs = 3;
+        rank.max_num_batched_tokens = 512;
+        rank.enable_prefix_caching = false;
+        rank.sglang.schedule_conservativeness = 0.0;
+        rank.sglang.num_reserved_decode_tokens = 0;
+        rank.sglang.clip_max_new_tokens = 1;
+        rank.timing_model = TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        };
+        let spec = ReplaySpec {
+            version: 1,
+            topology: ReplayTopology::aggregated(1),
+            engine: serde_json::to_value(ReplayEngineConfig {
+                rank,
+                ..Default::default()
+            })
+            .unwrap(),
+            encoder: None,
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: Some(3),
+            record_per_request: true,
+            sla: Default::default(),
+            requests: (0..3)
+                .map(|i| ReplayRequest {
+                    id: format!("pressure-{i}"),
+                    arrival_time_ms: 0.0,
+                    input_tokens: 96,
+                    input_token_ids: Some(vec![i; 96]),
+                    output_tokens: 24,
+                    output_token_ids: None,
+                    dp_rank: None,
+                    prefill_dp_rank: None,
+                    kv_hints: None,
+                    session_id: None,
+                    cache_salt: None,
+                    turn_index: None,
+                    metadata: serde_json::Value::Null,
+                })
+                .collect(),
+        };
+        let capture = ReplayCaptureOptions {
+            determinism: ReplayDeterminism::CanonicalV1,
+            capture_canonical_evidence: true,
+            ..Default::default()
+        };
+        let run = || {
+            let timing = Arc::new(provider_for(1, 3, 1));
+            let report =
+                Replayer::new(spec.clone(), ReplayEngineFactory::with_timing_model(timing))
+                    .unwrap()
+                    .with_capture_options(capture)
+                    .run()
+                    .unwrap();
+            assert_eq!(report.request_counts.completed_requests, 3);
+            assert_eq!(report.per_request.len(), 3);
+            assert!(report.per_request.iter().all(|r| {
+                r.terminal_status == ReplayTerminalStatus::Completed && r.output_length == 24
+            }));
+            let pressure = report.runtime_evidence.pressure.as_ref().unwrap();
+            assert!(
+                (1..=3).contains(&pressure.sglang_retractions_total),
+                "fixture must exercise bounded pressure: {pressure:?}"
+            );
+            assert!(
+                pressure
+                    .records
+                    .iter()
+                    .all(|r| r.readmitted_at_ms.is_some())
+            );
+            assert!(report.committed_prefill_tokens > 288);
+            CanonicalReplayRecord::build(
+                &report,
+                serde_json::json!({"timing": "afd"}),
+                &CanonicalReplayCoverage::from_report(&report, capture),
+                serde_json::Value::Null,
+            )
+            .unwrap()
+            .into_json_line()
+            .unwrap()
+        };
+        assert_eq!(run(), run());
+    }
+}
