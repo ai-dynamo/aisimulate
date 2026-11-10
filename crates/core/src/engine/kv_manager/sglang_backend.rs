@@ -53,6 +53,9 @@ pub(crate) struct RadixRequestLease {
     pub(crate) request_id: Uuid,
 
     cache_salt: Option<String>,
+    mamba_branch_point: Option<usize>,
+    mamba_prefill_checkpoint: Option<usize>,
+    mamba_decode_checkpoint: Option<usize>,
 }
 
 impl RadixRequestLease {
@@ -75,6 +78,10 @@ impl RadixRequestLease {
     #[cfg(any(test, debug_assertions))]
     pub(crate) fn page_count(&self) -> usize {
         self.pages.len()
+    }
+
+    pub(crate) fn prefill_checkpoint(&self) -> Option<usize> {
+        self.mamba_prefill_checkpoint
     }
 
     pub(crate) fn cached_tokens(&self) -> usize {
@@ -154,6 +161,9 @@ impl RadixRequestLease {
             request_id: Uuid::nil(),
 
             cache_salt: None,
+            mamba_branch_point: None,
+            mamba_prefill_checkpoint: None,
+            mamba_decode_checkpoint: None,
         }
     }
 }
@@ -187,6 +197,9 @@ pub struct SglangKvManager {
     /// Committed cache events, coalesced until the scheduler reaches a publish boundary.
     queued_events: Vec<KvEvent>,
     hicache: Option<HiCache>,
+    mamba_cache: Option<crate::engine::SglangMambaCacheConfig>,
+    mamba_active_requests: usize,
+    mamba_capacity_error: Option<String>,
 }
 
 pub struct DecodeTokenReservation {
@@ -281,6 +294,9 @@ impl SglangKvManager {
             page_hash_present: FixedBitSet::with_capacity(event_pages),
             queued_events: Vec::new(),
             hicache: None,
+            mamba_cache: None,
+            mamba_active_requests: 0,
+            mamba_capacity_error: None,
         }
     }
 
@@ -304,6 +320,70 @@ impl SglangKvManager {
 
     pub fn cache(&self) -> &RadixCache {
         &self.cache
+    }
+
+    pub(crate) fn enable_mamba_cache(&mut self, config: crate::engine::SglangMambaCacheConfig) {
+        self.mamba_cache = Some(config);
+    }
+
+    /// This first implementation models checkpoint ownership without guessing the
+    /// separate native state-LRU under pressure. Surface unsupported pressure as
+    /// a replay error, never an unbounded wait or an optimistic cache hit.
+    pub(crate) fn validate_mamba_capacity(&self) -> anyhow::Result<()> {
+        if let Some(error) = &self.mamba_capacity_error {
+            anyhow::bail!("{error}");
+        }
+        Ok(())
+    }
+
+    fn check_mamba_capacity(&mut self, additional: usize) -> bool {
+        let Some(config) = self.mamba_cache else {
+            return true;
+        };
+        let required = self
+            .mamba_active_requests
+            .saturating_mul(3)
+            .saturating_add(self.cache.mamba_checkpoint_count())
+            .saturating_add(additional);
+        if required > config.max_states {
+            self.mamba_capacity_error = Some(format!(
+                "SGLang Mamba state pressure is not supported: {required} states required, max_states={}",
+                config.max_states
+            ));
+            return false;
+        }
+        true
+    }
+
+    /// Matching a checkpoint creates the candidate's private live-state copy,
+    /// before native admission decides whether the KV budget can fit it.
+    pub(crate) fn check_mamba_match_capacity(&mut self, matched_tokens: usize) -> bool {
+        self.mamba_cache.is_none() || matched_tokens == 0 || self.check_mamba_capacity(1)
+    }
+
+    pub(crate) fn prepare_prefill_checkpoint(
+        &self,
+        lease: &mut RadixRequestLease,
+        prefix: usize,
+        end: usize,
+    ) {
+        let Some(config) = self.mamba_cache else {
+            return;
+        };
+        let interval = config.prefill_checkpoint_interval;
+        let extend = end.saturating_sub(prefix);
+        if extend < interval {
+            lease.mamba_prefill_checkpoint = None;
+            return;
+        }
+        let default = prefix + extend / interval * interval;
+        let checkpoint = lease
+            .mamba_branch_point
+            .filter(|&branch| {
+                prefix < branch && branch < end && (branch - prefix).is_multiple_of(interval)
+            })
+            .unwrap_or(default);
+        lease.mamba_prefill_checkpoint = Some(checkpoint);
     }
 
     pub(crate) fn enable_hicache(&mut self, config: SglangHiCacheConfig, block_bytes: usize) {
@@ -485,6 +565,11 @@ impl SglangKvManager {
         pages: usize,
     ) -> usize {
         let page_keys = &lease.page_hashes[..pages];
+        if self.mamba_cache.is_some() {
+            let (checkpoint, branch) = self.cache.mamba_prefix_match(page_keys);
+            lease.mamba_branch_point = (branch > checkpoint).then_some(branch);
+            return checkpoint;
+        }
         let matched = self
             .cache
             .prefix_match_hashes_len_hinted(page_keys, &mut lease.admission_match_hint);
@@ -589,6 +674,10 @@ impl SglangKvManager {
         if required_tokens > available {
             self.evict(required_tokens - available);
         }
+        if self.mamba_cache.is_some() && !self.check_mamba_capacity(3) {
+            self.cache.dec_lock_ref(last_node);
+            return None;
+        }
         let mut pages = self.collect_path_pages_through(last_node, prefix_len);
 
         let available_before = self.cache.available_tokens();
@@ -608,6 +697,10 @@ impl SglangKvManager {
         lease.cached_tokens = prefix_len;
         lease.admission_reused_tokens = prefix_len;
         lease.last_node = Some(last_node);
+        if self.mamba_cache.is_some() {
+            self.mamba_active_requests += 1;
+            self.check_mamba_capacity(0);
+        }
         Some(prefix_len)
     }
 
@@ -691,6 +784,9 @@ impl SglangKvManager {
         let complete_pages = complete_len / self.cache.page_size();
         let page_hashes = &lease.page_hashes[..complete_pages];
         let pages = &mut lease.pages[..complete_pages];
+        if self.mamba_cache.is_some() && !self.check_mamba_capacity(1) {
+            return;
+        }
         let new_last_node = self.cache_unfinished_hashes(
             page_hashes,
             pages,
@@ -702,6 +798,10 @@ impl SglangKvManager {
         );
         lease.last_node = Some(new_last_node);
         lease.cached_tokens = complete_len;
+        if self.mamba_cache.is_some() {
+            self.cache.mark_mamba_checkpoint(new_last_node);
+            lease.mamba_prefill_checkpoint = None;
+        }
     }
 
     /// Start a backup only after the forward that produced these pages is observed.
@@ -752,6 +852,13 @@ impl SglangKvManager {
             lease.pages.push(reservation.take_page());
         }
         lease.materialized_tokens += 1;
+        if let Some(config) = self.mamba_cache
+            && lease
+                .materialized_tokens
+                .is_multiple_of(config.decode_checkpoint_interval)
+        {
+            lease.mamba_decode_checkpoint = Some(lease.materialized_tokens);
+        }
     }
 
     pub(crate) fn finish(&mut self, token_ids: &[u32], mut lease: RadixRequestLease) {
@@ -766,8 +873,20 @@ impl SglangKvManager {
             self.cache.dec_lock_ref(last_node);
             return;
         }
-        let complete_len =
-            token_ids.len().min(lease.len()) / self.cache.page_size() * self.cache.page_size();
+        let cacheable_tokens = if self.mamba_cache.is_some() {
+            lease
+                .cached_tokens
+                .max(lease.mamba_prefill_checkpoint.unwrap_or(0))
+                .max(lease.mamba_decode_checkpoint.unwrap_or(0))
+        } else {
+            token_ids.len()
+        };
+        let complete_len = cacheable_tokens.min(token_ids.len()).min(lease.len())
+            / self.cache.page_size()
+            * self.cache.page_size();
+        if self.mamba_cache.is_some() {
+            self.mamba_active_requests -= 1;
+        }
         assert!(
             lease.cached_tokens <= complete_len,
             "invalid SGLang KV lease finish: cached_tokens={}, complete_tokens={complete_len}, owned_tokens={}",
@@ -832,6 +951,9 @@ impl SglangKvManager {
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
+        if self.mamba_cache.is_some() {
+            self.cache.mark_mamba_checkpoint(new_last_node);
+        }
         let duplicate_pages =
             self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
         self.publish_stored_hashes(
@@ -1030,11 +1152,23 @@ impl SglangKvManager {
         lease.materialized_tokens = 0;
         lease.cached_tokens = 0;
         lease.host_inserted_tokens = 0;
+        if self.mamba_cache.is_some() {
+            self.mamba_active_requests -= 1;
+            lease.mamba_prefill_checkpoint = None;
+            lease.mamba_decode_checkpoint = None;
+            lease.mamba_branch_point = None;
+        }
         capacity_improved
     }
 
     fn match_prefix_hashes_and_lock(&mut self, page_hashes: &[LocalBlockHash]) -> (usize, NodeId) {
         if self.enable_prefix_caching {
+            let page_hashes = if self.mamba_cache.is_some() {
+                let (checkpoint, _) = self.cache.mamba_prefix_match(page_hashes);
+                &page_hashes[..checkpoint / self.cache.page_size()]
+            } else {
+                page_hashes
+            };
             self.cache.match_prefix_hashes_and_lock(page_hashes)
         } else {
             (0, self.cache.root())
@@ -1160,6 +1294,12 @@ impl SglangKvManager {
 
     /// Evict tokens from the cache, publish BlockRemoved events, and log a trace.
     pub fn evict(&mut self, num_tokens: usize) {
+        if self.mamba_cache.is_some() && num_tokens > 0 {
+            self.mamba_capacity_error = Some(
+                "SGLang Mamba KV pressure is not supported; increase the KV capacity".to_string(),
+            );
+            return;
+        }
         let (evicted, evicted_pages) = match &mut self.hicache {
             Some(host) => host.evict(&mut self.cache, num_tokens, Uuid::nil()),
             None => self.cache.evict(num_tokens),

@@ -2103,3 +2103,21 @@ OSRB approval.
   The fixture holds values computed by the pinned AIPerf metric classes with
   `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
   No AIPerf runtime dependency or source files are bundled.
+
+
+## SGLang extra-buffer hybrid prefix checkpoints
+
+Modified checkpoint ownership/tracking contracts in repository-root
+`crates/core/src/engine/cache/radix_cache.rs`, `engine/kv_manager/sglang_backend.rs`,
+`engine/scheduler/sglang/{config,core,decode,prefill}.rs`, and their configuration
+plumbing (`engine/{config,mod}.rs`, `engine/common/protocols.rs`, `engine/scheduler/rank.rs`;
+all abbreviated engine paths are under `crates/core/src/`) derive from SGLang
+commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original paths under `python/sglang/srt/`: `mem_cache/{mamba_radix_cache,memory_pool}.py`,
+`runtime_context.py`, `managers/{schedule_batch,scheduler}.py`, and
+`managers/scheduler_components/batch_result_processor.py`.
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt
+Copyright 2023-2024 SGLang Team and contributors; Apache-2.0 (included in `LICENSE`).
+Upstream license: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+The simulation adaptation rejects state/KV eviction pressure; no upstream GPU
+allocator, production prompts, or external trace fixtures are included.

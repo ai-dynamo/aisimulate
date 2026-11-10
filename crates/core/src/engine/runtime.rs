@@ -107,6 +107,10 @@ impl EngineFactory {
 
     /// Build a single-rank or attention-DP logical engine.
     pub fn build(&self, identity: EngineIdentity, dp_size: NonZeroU32) -> Result<Engine> {
+        anyhow::ensure!(
+            self.config.sglang.mamba_cache.is_none() || dp_size.get() == 1,
+            "sglang.mamba_cache currently requires dp_size=1"
+        );
         GeneralizedMockerEngine::new_with_rank_factory(identity, dp_size, |rank_identity| {
             self.build_rank(rank_identity)
         })

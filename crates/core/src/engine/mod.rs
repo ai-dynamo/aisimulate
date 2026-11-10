@@ -1,5 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Hybrid checkpoint contract adapted and modified from SGLang (Apache-2.0).
+// Copyright 2023-2024 SGLang Team and contributors.
+// Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/runtime_context.py
+// See THIRD_PARTY_NOTICES.md for the complete source list and modification scope.
 
 //! Runtime-neutral mock inference schedulers and attention-DP composition.
 
@@ -39,8 +43,8 @@ pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
     G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
-    SglangHiCacheConfig, SglangHiCacheWritePolicy, SglangSchedulePolicy, StateCacheConfig,
-    TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    SglangHiCacheConfig, SglangHiCacheWritePolicy, SglangMambaCacheConfig, SglangSchedulePolicy,
+    StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{

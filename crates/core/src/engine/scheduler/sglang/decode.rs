@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Hybrid checkpoint contract adapted and modified from SGLang (Apache-2.0).
+// Copyright 2023-2024 SGLang Team and contributors.
+// Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
+// See THIRD_PARTY_NOTICES.md for the complete source list and modification scope.
 // Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
@@ -266,6 +270,11 @@ fn uncached_aligned_prefix(
     if !config.enable_prefix_caching {
         return None;
     }
+    let tokens = if config.mamba_cache.is_some() {
+        req.kv_lease.prefill_checkpoint()?.min(tokens)
+    } else {
+        tokens
+    };
     let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
     (aligned_tokens > req.cached_tokens()).then_some(aligned_tokens)
 }
@@ -430,7 +439,11 @@ fn prefill_first_tokens(
 
     // Prefill computes the prompt's KV and samples one output without computing its KV.
     for (idx, req) in running.iter_mut().enumerate() {
-        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+        // A one-output request donates its existing tracked state at finish;
+        // it never allocates an unfinished-request replacement checkpoint.
+        if config.mamba_cache.is_none() || req.remaining_output_tokens() > 1 {
+            commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+        }
         if req.pending_terminal {
             continue;
         }

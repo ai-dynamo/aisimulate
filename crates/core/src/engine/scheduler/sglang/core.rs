@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Hybrid checkpoint contract adapted and modified from SGLang (Apache-2.0).
+// Copyright 2023-2024 SGLang Team and contributors.
+// Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/managers/scheduler_components/batch_result_processor.py
+// See THIRD_PARTY_NOTICES.md for the complete source list and modification scope.
 // Modified behavioral adaptation of SGLang v0.5.22 and v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Sources: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d (admission)
 //          https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e (retraction)
@@ -273,6 +277,9 @@ impl SglangCore {
             enable_prefix_caching,
             args.emit_kv_token_ids,
         );
+        if let Some(mamba) = config.mamba_cache {
+            kv_manager.enable_mamba_cache(mamba);
+        }
         if let Some(hicache) = args.sglang.as_ref().and_then(|sglang| sglang.hicache) {
             let block_bytes = args.block_size
                 * args
@@ -1718,6 +1725,8 @@ impl SglangCore {
         } else {
             self.publish_kv_events_if_idle();
         }
+
+        self.kv_manager.validate_mamba_capacity()?;
 
         // Build FPM snapshot now that all state has settled.
         // Radix-cache reuse: admission matches over prompt tokens processed this pass. A chunked

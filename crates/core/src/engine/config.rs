@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Hybrid checkpoint contract adapted and modified from SGLang (Apache-2.0).
+// Copyright 2023-2024 SGLang Team and contributors.
+// Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/runtime_context.py
+// See THIRD_PARTY_NOTICES.md for the complete source list and modification scope.
 // Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
@@ -231,6 +235,9 @@ impl FrontendConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SglangConfig {
+    /// SGLang extra-buffer recurrent checkpoints required for hybrid prefix reuse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mamba_cache: Option<SglangMambaCacheConfig>,
     /// Per-rank host KV cache for aggregated SGLang workers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hicache: Option<SglangHiCacheConfig>,
@@ -280,6 +287,7 @@ const fn default_vlm_cache_bytes() -> u64 {
 impl Default for SglangConfig {
     fn default() -> Self {
         Self {
+            mamba_cache: None,
             hicache: None,
             schedule_policy: SglangSchedulePolicy::Fifo,
             max_prefill_tokens: default_max_prefill_tokens(),
@@ -308,6 +316,79 @@ impl SglangConfig {
         ensure!(
             self.schedule_conservativeness.is_finite() && self.schedule_conservativeness >= 0.0,
             "sglang.schedule_conservativeness must be finite and non-negative"
+        );
+        Ok(())
+    }
+}
+
+/// Checkpoint geometry for SGLang's non-speculative `extra_buffer` Mamba cache.
+///
+/// Modified simulation contract from SGLang v0.5.20, revision
+/// 94602c9c2b7cbdb8efd5c52802dac6a1c180089e, `mamba_radix_cache.py` and
+/// `schedule_batch.py`. Copyright 2023-2024 SGLang Team and contributors,
+/// Apache-2.0. See THIRD_PARTY_NOTICES.md.
+/// State-pool pressure is rejected at runtime; checkpoint eviction is not modeled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SglangMambaCacheConfig {
+    #[serde(default = "default_mamba_prefill_interval")]
+    pub prefill_checkpoint_interval: usize,
+    #[serde(default = "default_mamba_decode_interval")]
+    pub decode_checkpoint_interval: usize,
+    /// Effective native `max_mamba_cache_size`, in state slots, including live requests.
+    pub max_states: usize,
+}
+
+const fn default_mamba_prefill_interval() -> usize {
+    64
+}
+
+const fn default_mamba_decode_interval() -> usize {
+    256
+}
+
+impl SglangMambaCacheConfig {
+    fn validate(&self, engine: &EngineConfig) -> Result<()> {
+        ensure!(
+            engine.backend == Backend::Sglang && engine.worker_type == WorkerType::Aggregated,
+            "sglang.mamba_cache requires backend=sglang and worker_type=aggregated"
+        );
+        ensure!(
+            engine.enable_prefix_caching,
+            "sglang.mamba_cache requires enable_prefix_caching=true"
+        );
+        ensure!(
+            engine.aic_nextn.is_none(),
+            "sglang.mamba_cache does not support speculative decoding"
+        );
+        ensure!(
+            engine.sglang.hicache.is_none()
+                && engine.native_host_offload.is_none()
+                && engine.g3_offload.is_none(),
+            "sglang.mamba_cache does not support host or G3 offload"
+        );
+        ensure!(
+            !engine.emit_kv_events,
+            "sglang.mamba_cache does not support KV events"
+        );
+        ensure!(
+            self.prefill_checkpoint_interval > 0
+                && engine.block_size > 0
+                && self
+                    .prefill_checkpoint_interval
+                    .is_multiple_of(engine.block_size),
+            "sglang.mamba_cache.prefill_checkpoint_interval must be a positive multiple of block_size"
+        );
+        ensure!(
+            self.decode_checkpoint_interval > 0
+                && self
+                    .decode_checkpoint_interval
+                    .is_multiple_of(self.prefill_checkpoint_interval),
+            "sglang.mamba_cache.decode_checkpoint_interval must be a positive multiple of prefill_checkpoint_interval"
+        );
+        ensure!(
+            self.max_states >= 4,
+            "sglang.mamba_cache.max_states must fit three active state slots and one cached checkpoint"
         );
         Ok(())
     }
@@ -1252,6 +1333,9 @@ impl EngineConfig {
     /// Validate rank configuration without constructing a scheduler or timing provider.
     pub fn validate(&self) -> Result<()> {
         self.validate_state_cache()?;
+        if let Some(mamba) = &self.sglang.mamba_cache {
+            mamba.validate(self)?;
+        }
         if let Some(hicache) = &self.sglang.hicache {
             hicache.validate(self)?;
         }

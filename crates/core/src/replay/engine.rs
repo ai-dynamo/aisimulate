@@ -155,6 +155,12 @@ impl ReplayEngineConfig {
     }
 
     fn validate_eviction_geometry(&self, rank: &EngineConfig) -> ReplayResult<()> {
+        if self.kv_eviction_policy == KvEvictionPolicy::Belady && rank.sglang.mamba_cache.is_some()
+        {
+            return Err(ReplayError::InvalidSpec(
+                "belady does not support sglang.mamba_cache checkpoint ownership".into(),
+            ));
+        }
         if self.kv_eviction_policy == KvEvictionPolicy::Belady && rank.prefix_match_unit.is_some() {
             // The oracle hashes complete physical pages. Fine state keys and
             // token-page aliases require a different future-demand index.
@@ -441,6 +447,15 @@ impl ReplayEngineFactory {
     ) -> ReplayResult<ReplayRoleFactory> {
         let mut role = config.role(stage);
         config.validate_eviction_geometry(&role.rank)?;
+        if role.rank.sglang.mamba_cache.is_some()
+            && (role.dp_size != 1
+                || role.prefill_context_parallel_size != 1
+                || pipeline_parallel_size(&role.rank.timing_model)? != 1)
+        {
+            return Err(ReplayError::InvalidSpec(
+                "sglang.mamba_cache requires attention DP, prefill context parallelism and pipeline parallelism of one".into(),
+            ));
+        }
         role.rank.emit_kv_events = emit_kv_events;
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
