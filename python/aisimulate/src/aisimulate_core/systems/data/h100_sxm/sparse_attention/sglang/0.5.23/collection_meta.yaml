@@ -8,6 +8,22 @@ runtime:
   image: lmsysorg/sglang:v0.5.23
   image_digest: sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f
 tables:
+  dsa_context_module_perf:
+    rows: 45030
+    status: complete
+    collections:
+    - collector_ref: e22b5faedc65193d24a17c235ee1ff408c13c5b1
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+      case_plan_hash: sha256:cfaa876ebc7af0f023586ecb5a835c4ccdde04ea8f85ef3c8229cc3f4e10693e
+      collected_at: '2026-11-09'
+      rows: 26870
+      status: complete
+    - collector_ref: e22b5faedc65193d24a17c235ee1ff408c13c5b1
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+      case_plan_hash: sha256:284feac47393b54ae48ff4e05f6898e300d0afa494fed78dbdf703a96cce6620
+      collected_at: '2026-11-10'
+      rows: 18160
+      status: complete
   dsv4_csa_context_module_perf:
     rows: 4120
     status: complete
@@ -67,4 +83,34 @@ tables:
       case_plan_hash: sha256:ef4b7b6bde30d74e32fc5ccac8d1b4fbe696ca206545be84a00031b8666d5a3e
       collected_at: '2026-11-09'
       rows: 3918
+      status: complete
+  glm5_dsa_attn_module_perf:
+    rows: 1310
+    status: complete
+    collections:
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+      case_plan_hash: sha256:64081861ec4cfffd735ce4058d36a4f27ca24e2dfd40168f8b97bde14b183f1a
+      collected_at: '2026-11-10'
+      rows: 1310
+      status: complete
+  glm5_mqa_logits_module_perf:
+    rows: 1310
+    status: complete
+    collections:
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+      case_plan_hash: sha256:5d10e19aa8654180ec399ce0ec18d9456b12e2e8ce5a02dbd5c81dc1aaafb3f6
+      collected_at: '2026-11-10'
+      rows: 1310
+      status: complete
+  glm5_topk_module_perf:
+    rows: 2620
+    status: complete
+    collections:
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+      case_plan_hash: sha256:071bff586ce9a510a09224daeb008d25aa4739b272f3f7acf3a2e83984aba716
+      collected_at: '2026-11-10'
+      rows: 2620
       status: complete

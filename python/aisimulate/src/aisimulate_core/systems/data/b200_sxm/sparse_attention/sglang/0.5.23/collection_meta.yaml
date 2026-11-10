@@ -8,6 +8,38 @@ runtime:
   image: lmsysorg/sglang:v0.5.23
   image_digest: sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f
 tables:
+  dsa_context_module_perf:
+    rows: 55200
+    status: complete
+    collections:
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:f5216d0f5c8bb5b28269cb0d3746449494b705a6d59fe299b065d9a726e55ee0
+      collected_at: '2026-11-09'
+      rows: 32940
+      status: complete
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:5f22c541793acf42a8eb17046d2ecd84307ba61d8c6dc7f04d369b34ca80df70
+      collected_at: '2026-11-10'
+      rows: 22260
+      status: complete
+  dsa_generation_module_perf:
+    rows: 9560
+    status: complete
+    collections:
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:b0a3bff85967a6b9ec18e879223281f789e8ba5180e1943ade8cf72d929ce9ef
+      collected_at: '2026-11-09'
+      rows: 5700
+      status: complete
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:84e416942fc85086151e0a110511e910613512ff6154c14669d985e7409fb77a
+      collected_at: '2026-11-10'
+      rows: 3860
+      status: complete
   dsv4_csa_context_module_perf:
     rows: 4940
     status: complete
@@ -67,4 +99,34 @@ tables:
       case_plan_hash: sha256:ef4b7b6bde30d74e32fc5ccac8d1b4fbe696ca206545be84a00031b8666d5a3e
       collected_at: '2026-11-09'
       rows: 3918
+      status: complete
+  glm5_dsa_attn_module_perf:
+    rows: 1364
+    status: complete
+    collections:
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:d7025786a579ff0f26928b3713ebcaade7380f0127ef1e5dc230b8c83c7040b9
+      collected_at: '2026-11-10'
+      rows: 1364
+      status: complete
+  glm5_mqa_logits_module_perf:
+    rows: 1364
+    status: complete
+    collections:
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:b805733c6262e422e8c28adc818296ca6f716eff9f001a6a3c0480d05093bb62
+      collected_at: '2026-11-10'
+      rows: 1364
+      status: complete
+  glm5_topk_module_perf:
+    rows: 2728
+    status: complete
+    collections:
+    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
+      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+      case_plan_hash: sha256:70cf9b209e64fa0718feaf589681f276d761251a11f586004cc57ff98ba2d98b
+      collected_at: '2026-11-10'
+      rows: 2728
       status: complete
