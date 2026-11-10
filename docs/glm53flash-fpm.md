@@ -20,6 +20,9 @@ configuration (prefix/radix cache on). Text only, pure TP, DP = PP = EP = 1.
 Checkpoints: `zai-org/GLM-5.3-Flash@eb9eb208eb0d988989d07a6a12d0fdeb5f52574a`
 and `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
 FP8 TP1 does not fit on one GPU. Hopper profiles use BF16 KV for both backends.
+The 15 published vLLM profiles are data from stock vLLM 0.31.0. New vLLM
+collections run the [producer](#vllm-producer) on vLLM 0.33.0 with the Dynamo
+1.7 scheduler.
 
 The tables (`fpm_forward_perf.{parquet,metadata.json}`) are not stored in this
 repository. They are published in `nvidia/aisimulate-fpm-dataset`
@@ -45,9 +48,13 @@ The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blo
 `python/aisimulate/collector/fpm_forward/runtime/glm53flash/` contains the
 producer. It is staged next to `fpm_exec.sh` and `preflight.py` and runs with
 the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`. The first
-part of the overlay below is the `ai-dynamo 1.6.0.dev20261010` build, whose
-scheduler file equals `ai-dynamo/dynamo@395f0240`, and
+part of the overlay below is the `ai-dynamo 1.7.0.dev20261109` build, whose
+scheduler file equals `ai-dynamo/dynamo@9abd2ef0d9` on `release/1.7.0`, and
 `runtime-source-sha256.json` pins that file.
+
+The producer runs on exactly stock vLLM 0.33.0 (`4ba787ec`) with the Dynamo 1.7
+scheduler. It refuses every other vLLM version, a patch release such as 0.33.1
+included, before the scheduler loads.
 
 - `sitecustomize.py` checks the installed vLLM/Dynamo sources against
   `runtime-source-sha256.json` before the scheduler loads. It then replaces
@@ -61,12 +68,19 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   lookup, Mamba `align` chunking, KDA/conv, MLA and IndexPool state all run
   their serving code paths.
 - Stock v0.31.0 does not complete IndexPool entries at a cached or chunked
-  prefill start that is not a multiple of 4. Inputs are therefore built on the
-  4-token grid, and the producer fails the run on any unaligned prefill chunk
-  start. A decode point keeps its true context `c`: the prompt has `c - 1`
-  tokens and the cached seed `4 * floor((c - 2) / 4)`.
+  prefill start that is not a multiple of 4, and the sources do not show that
+  v0.33.0 removed the defect. Inputs are therefore built on the 4-token grid,
+  and the producer fails the run on any unaligned prefill chunk start. A decode
+  point keeps its true context `c`: the prompt has `c - 1` tokens and the
+  cached seed `4 * floor((c - 2) / 4)`.
 - Each point runs 5 warmups and 10 measurements, and the table stores the
-  median.
+  median. The first repetition of a point whose requests reuse a seeded prefix
+  is rejected, and the later repetitions are measured. With the default
+  `prefix_cache_retention_interval` of 0, the seed does not keep the Mamba
+  state at the end of the prefix. vLLM 0.33.0 stops the first repetition there,
+  at the shared-prefix junction, and caches the state. The later repetitions
+  hit the whole prefix. One rejected repetition for each such point is the
+  expected result.
 - Request tokens come from `collector/glm53flash_attention_tokens.py`
   (seed 53, ordinary BPE vocabulary of the pinned tokenizer).
 - A pinned revision needs the configuration of its own checkpoint. The
@@ -92,13 +106,24 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   every request, and the producer rejects every repetition. One request can
   prefill its suffix over several steps. No other request decodes before it,
   and the producer records no step with a prefill request.
-- With prefix caching, vLLM runs GLM-5.3-Flash in Mamba `align` mode. It stops
-  a prefill chunk at the last block boundary of the prompt. After a prefix that
-  ends inside a block, it also stops the chunk at the next block boundary. A
-  prefill point whose chunk holds such a stop runs in more than one step, and
-  the producer accepts one step per repetition. So the producer refuses the
-  point before it seeds anything. After a prefix of whole blocks, new tokens of
-  at most one block or of a whole number of blocks run in one step.
+- With prefix caching, vLLM runs GLM-5.3-Flash in Mamba `align` mode. vLLM
+  0.33.0 stops a prefill chunk at the last block boundary before the prompt
+  end, `(end - 1) // block * block`. After a prefix that ends inside a block, it
+  also stops the chunk at the next block boundary. A prefill point whose chunk
+  holds such a stop runs in more than one step, and the producer accepts one
+  step per repetition. So the producer refuses the point before it seeds
+  anything. Without a prefill checkpoint block, new tokens of at most one block
+  after a prefix of whole blocks run in one step.
+- With the FlashKDA prefill backend, each KDA state group holds one prefill
+  checkpoint block with an alignment of 16 tokens. vLLM 0.33.0 then saves the
+  checkpoint inside the last chunk and takes neither stop when the chunk starts
+  on a hash block boundary, ends more than one block after its start, and its
+  last block boundary before the prompt end lies a multiple of 16 tokens after
+  its start. If the block is a multiple of 16 tokens, every prefill after a
+  prefix of whole blocks then runs in one step. The Triton backend gives no
+  checkpoint block. `_glm_align_stop` in the producer holds the exact rule,
+  and the artifact records the checkpoint blocks and their alignment in
+  `serving_config.mamba_prefill_checkpoint`.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3
@@ -153,7 +178,7 @@ The container needs one overlay directory at `/opt/glm53flash-dynamo`. A Slurm
 run can mount it with `--container-mount`. The collector uses that path unless
 the deployment environment declares its own `PYTHONPATH`. The overlay is a
 composite of two parts. The first part is the `dynamo` files of the
-`ai-dynamo 1.6.0.dev20261010` build, whose scheduler file
+`ai-dynamo 1.7.0.dev20261109` build, the Dynamo 1.7 scheduler whose file
 `runtime-source-sha256.json` pins. The second part is the `collector`,
 `aisimulate_core` and `aisimulate` packages of the AISimulate checkout that
 plans the collection. The producer imports them.
@@ -184,10 +209,12 @@ prefix and decode context. These are the axes:
 
 - Prefill new tokens per request: the powers of two from 4 to the token budget,
   every whole hash block up to the budget, and the budget itself. The list caps
-  the budget at 8,192. Above one hash block, the list keeps whole numbers of
-  hash blocks only. vLLM's `align` mode runs any other such length in more than
-  one step, as the producer rules above say. At default serving the hash block
-  is the Mamba block.
+  the budget at 8,192. The list keeps a length only if vLLM's `align` mode runs
+  it in one step after each planned prefix, as the producer rules above say.
+  Without a prefill checkpoint block, that leaves no length above one hash
+  block. With the FlashKDA checkpoint block and a hash block that is a multiple
+  of 16 tokens, it keeps every length. At default serving the hash block is the
+  Mamba block.
 - Prefill requests per batch: the powers of two up to the smallest of 32,
   `max_batch_size` and the number of requests whose new tokens fit the budget,
   and that smallest value itself.
@@ -215,18 +242,22 @@ suffixes fit the budget. The planner logs the counts in one line. Guided
 onboarding sets no log handler, so the collection plan also records them in
 `point_generation.dropped_points`. The planner refuses a plan with no prefill
 point or no decode point. The estimate counts the attention blocks of each
-request and one block in each state group. A request with a prefix hit can
-hold more than one block in a recurrent-state group, for example the cached
-block of its prefix and the block of its running state. So a point near the
-capacity limit can still fail when it runs. At TP4 with 2,176-token hash
-blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the list
-has 472 prefill points and 81 decode points. The align rule drops 24 of 496
+request, one block in each state group and one more block in each state group
+with a prefill checkpoint block. A request with a prefix hit can hold more than
+one block in a recurrent-state group, for example the cached block of its
+prefix and the block of its running state. So a point near the capacity limit
+can still fail when it runs. At TP4 with 2,176-token hash
+blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, a FlashKDA
+launch (five state groups, four of them KDA groups with a checkpoint block) has
+496 prefill points and 81 decode points. The align rule drops none of 496
 prefill candidates, and the token budget drops 16 of 97 decode candidates.
+Without a prefill checkpoint block, the align rule drops 40 prefill candidates,
+and the list has 456 prefill points.
 The largest decode batch is 32 at contexts up to 256 and at 32,768 and 65,536.
 It is 16 at 512 and 131,072, 8 at 1,024, 4 at 2,048 to 8,192, and 7 at 16,384.
-By the estimate, that list needs an accepted cache of at least 2,113 pool
-blocks (the profile's `kv_cache_bytes` divided by its largest
-`page_size_bytes`).
+By the estimate, the FlashKDA list needs an accepted cache of at least 2,241
+pool blocks (the profile's `kv_cache_bytes` divided by its largest
+`page_size_bytes`), and the list without a checkpoint block needs 2,113.
 
 The smoke measures two points of this list for each phase that the plan
 collects. If the list holds the third prefill point below, the smoke also
@@ -237,11 +268,14 @@ The smoke runs under the plan hash of formal collection and keeps its own
 campaign directory. The prefill points are one request with 64 new tokens, once
 without a prefix and once after one hash block of prefix. The third prefill
 point is one request with two hash blocks of new tokens after one hash block of
-prefix. Its chunk holds a block boundary before its end, and vLLM's `align`
-mode does not stop there. So the smoke shows that such a point runs in one
-step. The TP4 list above holds this point, so its aggregated smoke measures
-five points. The decode points are one request and two requests at the
-smallest context above one hash block where the list holds both. The token
+prefix. The list holds it only for a launch with a prefill checkpoint block.
+Its chunk holds a block boundary before its end, and vLLM's `align` mode saves
+the checkpoint inside the chunk instead of stopping there. So the smoke shows
+that such a point runs in one step. An aggregated smoke therefore measures
+four points when the launch has no prefill checkpoint block, and five points
+with the FlashKDA backend, as for the TP4 list above. The decode points are one
+request and two requests at the smallest context above one hash block where
+the list holds both. The token
 budget can leave a smaller context with one request only. If no context above
 one hash block holds two requests, the smoke takes one request at each of the
 two smallest contexts above the block. A `max_batch_size` of 1 or a cache with

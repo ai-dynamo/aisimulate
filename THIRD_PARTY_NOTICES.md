@@ -314,11 +314,11 @@ shipped as ai-dynamo 1.5.0.dev20260917 in
 `lmsysorg/sglang@sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862`
 (file SHA256 `76cdd291e92c3c41f259279c316bcdedcc6a9aa615ad61e29ca6997105950047`, git blob
 `cbc2a12947ce18304721ac0549274fbeac51ddef`). Its queued-request classification for vLLM
-v0.31.0 (`_compute_queued` over `waiting` and `kv_holding_waiting`, replacing the removed
+v0.33.0 (`_compute_queued` over `waiting` and `kv_holding_waiting`, replacing the removed
 `skipped_waiting`) is ported from the same path at
-https://github.com/ai-dynamo/dynamo/tree/395f02405c1dd1835ab73a39f7a5984ae5fd4552 (file SHA256
-`06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e`, git blob
-`c19f8174b2e232cf8c0f5a26da83b8085ef71776`). Changes: GLM-5.3-Flash
+https://github.com/ai-dynamo/dynamo/tree/9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 (file SHA256
+`2509d616b888cbbdf87888a7f305feeb8c1c6643c4dd5bc348c66b5fb297aaee`, git blob
+`ff366785a75d0d5aadf8b0cfbc85c4de96a8ea1a`; ai-dynamo 1.7.0.dev20261109 ships the same file). Changes: GLM-5.3-Flash
 default serving state (prefix caching on, Mamba align mode), seeded token inputs, executed
 per-request geometries on the 4-token IndexPool grid with recorded prefill chunk starts,
 5+10 repetitions with native-FPM validation, and compact deferred evidence. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.

@@ -607,9 +607,10 @@ def _glm_smoke(tmp_path, monkeypatch):
 
     Each cell has its generated launch, the producer's rank artifact of the smoke points and one execution record per
     TP rank, which the execution observer writes from a stand-in vLLM 0.33.0 configuration of that launch. The rank
-    artifacts have no measurement protocol, benchmark measurement or warm-up evidence, because the producer's scheduler
-    base, ai-dynamo 1.6.0.dev20261010, writes none. The profile names no probe provenance, so readiness does not bind
-    the runtime memory to probe observations here. Return the request and the onboarding root.
+    artifacts have no measurement protocol, benchmark measurement or warm-up evidence, as a scheduler base that writes
+    none, such as ai-dynamo 1.6.0.dev20261010, leaves them. The producer's scheduler base, ai-dynamo 1.7.0.dev20261109,
+    writes them. The profile names no probe provenance, so readiness does not bind the runtime memory to probe
+    observations here. Return the request and the onboarding root.
     """
     from types import SimpleNamespace
 

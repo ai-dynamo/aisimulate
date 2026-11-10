@@ -957,7 +957,9 @@ collector path.
 The FPM profile holds per-request state groups, and the vLLM 0.33.0 runtime
 probe imports them. Guided collection of these layouts requires real prefix
 seeding for every cached prefill. GLM-5.3-Flash collection runs the
-repository's GLM-5.3-Flash producer as its runtime adapter. The planner
+repository's GLM-5.3-Flash producer as its runtime adapter, on exactly vLLM
+0.33.0 with the Dynamo 1.7 scheduler. The producer refuses any other vLLM
+version, a patch release such as 0.33.1 included. The planner
 generates its point list from the collection limits, as described in
 [the GLM-5.3-Flash FPM page](../../glm53flash-fpm.md). Formal collection on
 vLLM 0.33.0 records the cache groups and the execution evidence of every

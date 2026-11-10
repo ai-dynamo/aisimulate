@@ -101,7 +101,7 @@ class FakeBase:
         return False
 
     def _bench_build_grid(self):
-        # Dynamo 395f0240 materializes the manifest and then plans native warm-up stages (instrumented_scheduler:2718).
+        # Dynamo 9abd2ef0d9 materializes the manifest, then plans native warm-up stages (instrumented_scheduler:3260).
         if self._bench_grid_built:
             return
         self._bench_grid_built = True
@@ -368,17 +368,17 @@ class Engine:
 
 
 class BudgetEngine(Engine):
-    """Schedules like vLLM v0.31.0 with a token budget per step, on hash blocks of ``unit`` tokens.
+    """Schedules like vLLM v0.33.0 with a token budget per step, on hash blocks of ``unit`` tokens.
 
-    Running requests go first, then waiting requests in order (scheduler.py:630, :1073). A prefill chunk that ends
+    Running requests go first, then waiting requests in order (scheduler.py:795, :1295). A prefill chunk that ends
     before the prompt end is cut to a block boundary when the block fits the budget. Mamba align mode of vLLM 0.33.0
     also stops a chunk at the last cacheable block boundary before the prompt end and, after a start inside a block, at
     the next boundary. A prompt's last chunk that can save a prefill checkpoint of ``alignment`` inside it takes neither
     stop (vLLM 0.33.0 scheduler.py:579-606, :644-661, kv_cache_interface.py:1169-1210). A chunk that the cut empties
-    waits: a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:473-480,
-    :724-742, :1134-1135). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2089-2091,
-    :3719-3722), so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill
-    request (output.py:189-191, instrumented_scheduler.py:2078-2085 at ai-dynamo/dynamo@395f0240).
+    waits: a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:612-619,
+    :891-909, :1357-1358). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2062-2064,
+    :3486-3489), so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill
+    request (output.py:189-191, instrumented_scheduler.py:2590-2597 at ai-dynamo/dynamo@9abd2ef0d9).
     """
 
     def __init__(self, scheduler, *, budget, unit, alignment=None):
@@ -783,7 +783,7 @@ def test_explicit_align4_decode_contexts_override_the_even_split(monkeypatch, tm
 
 def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_path):
     module = load_producer(monkeypatch)
-    monkeypatch.setattr(sys.modules["vllm"], "__version__", "0.31.0", raising=False)
+    monkeypatch.setattr(sys.modules["vllm"], "__version__", "0.33.0", raising=False)
     points = [Point("prefill", 1, 2, 64, 0, rows=[[32, 0], [32, 0]])]
     s = make_scheduler(module, tmp_path, points)
     run(s, Engine(s), "prefill")
@@ -797,22 +797,26 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
     s._glm_enrich(output, tmp_path / "benchmark.json")
     assert output["input_provenance"]["seed"] == 53
     assert output["input_provenance"]["repetition_evidence_manifest"]["records"] == s._glm_evidence_count
-    assert output["producer"]["vllm_package_version"] == "0.31.0"
+    assert output["producer"]["vllm_package_version"] == "0.33.0"
     # The derived code keeps its revision. The scheduler file that ran is named separately.
     assert output["producer"]["instrumentation_revision"] == "54960177085413259859c88bd34ed0734d4c2ea9"
-    assert output["producer"]["runtime_scheduler_revision"] == "395f02405c1dd1835ab73a39f7a5984ae5fd4552"
-    assert output["producer"]["runtime_distribution"] == "ai-dynamo 1.6.0.dev20261010"
+    assert output["producer"]["runtime_scheduler_revision"] == "9abd2ef0d908c4bb323e1b8956ea76a5772a1d41"
+    assert output["producer"]["runtime_distribution"] == "ai-dynamo 1.7.0.dev20261109"
+    assert output["producer"]["reviewed_scheduler_api_revision"] == "4ba787ec9959e566d3b587a796dff07673324da5"
+    assert output["producer"]["queued_metrics_port_source"] == (
+        "ai-dynamo/dynamo@9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 instrumented_scheduler._compute_queued"
+    )
     assert output["results"][0]["kv_seed_regime"] == "not_applicable"
 
 
-def test_dynamo_runtime_pins_match_the_ai_dynamo_1_6_0_dev20261010_build():
+def test_dynamo_runtime_pins_match_the_ai_dynamo_1_7_0_dev20261109_build():
     pins = json.loads(MANIFEST.read_text())
-    # The ai-dynamo 1.6.0.dev20261010 build carries these four files of ai-dynamo/dynamo@395f0240.
+    # The ai-dynamo 1.7.0.dev20261109 build carries these four files of ai-dynamo/dynamo@9abd2ef0d9 (release/1.7.0).
     expected = {
-        "dynamo/vllm/instrumented_scheduler.py": "06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e",
+        "dynamo/vllm/instrumented_scheduler.py": "2509d616b888cbbdf87888a7f305feeb8c1c6643c4dd5bc348c66b5fb297aaee",
         "dynamo/vllm/benchmark_points.py": "bdc6f2f0bb222498e8542859ed2b4f950d1949868f02f50aaee8199257172f91",
-        "dynamo/vllm/gc_policy.py": "4221e5a20718525559ad4c9e9bee34928ee22dcf2cfdf8036936be2a360153a4",
-        "dynamo/common/forward_pass_metrics.py": "523dfc4e7ccbc5a37dbcf03b331a41b628227ad8a5d9c64fda8abc96dd31b188",
+        "dynamo/vllm/gc_policy.py": "9b0d6443dbb36f6f6b84017fa618a4606884235855405be258257f93a5256180",
+        "dynamo/common/forward_pass_metrics.py": "b1551b47794b1ed30f1e6c90eea404cb7ce7769e0263c86f1375cd39fb35513b",
     }
     assert {name: pins[name] for name in expected} == expected
 
@@ -1282,7 +1286,7 @@ def test_bench_init_refuses_a_launch_revision_that_differs_from_the_tokenizer_re
     lookups = hub_stand_in(monkeypatch, str(tmp_path / "config.json"))
     scheduler, config, loads = init_scheduler(module, monkeypatch, model=FP8_MODEL, checkpoint=tmp_path)
     # vLLM loads the weights of the revision in its model configuration. A launch by Hub ID without --revision loads
-    # the default branch: vLLM 0.31.0 stores the requested revision as a string subclass whose value is "main".
+    # the default branch: vLLM 0.33.0 stores the requested revision as a string subclass whose value is "main".
     config.model_config.revision = loaded
     with pytest.raises(ValueError) as refused:
         scheduler._bench_init(config)

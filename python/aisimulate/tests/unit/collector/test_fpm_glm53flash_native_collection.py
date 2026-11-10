@@ -190,14 +190,14 @@ def glm_native_payload(phase: str, *, points: list[dict], rank: int = 0, dp: int
         },
         producer={
             "instrumentation_revision": "54960177085413259859c88bd34ed0734d4c2ea9",
-            "runtime_scheduler_revision": "395f02405c1dd1835ab73a39f7a5984ae5fd4552",
-            "runtime_distribution": "ai-dynamo 1.6.0.dev20261010",
+            "runtime_scheduler_revision": "9abd2ef0d908c4bb323e1b8956ea76a5772a1d41",
+            "runtime_distribution": "ai-dynamo 1.7.0.dev20261109",
             "real_seed_port_source": "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea "
             "instrumented_scheduler._bench_realseed_*",
-            "queued_metrics_port_source": "ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552 "
+            "queued_metrics_port_source": "ai-dynamo/dynamo@9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 "
             "instrumented_scheduler._compute_queued",
-            "vllm_package_version": "0.31.0",
-            "reviewed_scheduler_api_revision": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+            "vllm_package_version": "0.33.0",
+            "reviewed_scheduler_api_revision": "4ba787ec9959e566d3b587a796dff07673324da5",
             "runtime_source_manifest_sha256": hashlib.sha256(b"runtime source manifest").hexdigest(),
             "overlay_sha256": hashlib.sha256(b"producer overlay").hexdigest(),
             "context_policy_version": 1,
@@ -261,7 +261,7 @@ def _glm_plan(template_id: str = GENERIC_RUNTIME_TEMPLATE_ID) -> SimpleNamespace
         backend="vllm",
         options=SimpleNamespace(warmup_iterations=0),
         capability=SimpleNamespace(
-            support_level="native_runtime", template_id=template_id, template_version=1, aic_database_version="0.31.0"
+            support_level="native_runtime", template_id=template_id, template_version=1, aic_database_version="0.33.0"
         ),
     )
 

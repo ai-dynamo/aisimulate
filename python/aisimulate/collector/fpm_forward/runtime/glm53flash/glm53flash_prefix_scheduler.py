@@ -1,19 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Modified code derived from ai-dynamo/dynamo (Apache-2.0, https://github.com/ai-dynamo/dynamo),
-# components/src/dynamo/vllm/instrumented_scheduler.py at two immutable revisions:
+# components/src/dynamo/vllm/instrumented_scheduler.py at three immutable revisions:
 # - 54960177085413259859c88bd34ed0734d4c2ea9: InstrumentedScheduler benchmark state machine
 #   (requests injected into and scheduled by the parent vLLM scheduler);
 # - 99dae1f53e5a0534c274223ff9daa97f0b1fc2ea (shipped as ai-dynamo 1.5.0.dev20260917): prefix-cache
 #   real-seed staging (_bench_realseed_stage_point / _bench_realseed_pending_step: seed shot,
 #   untimed warm shot, validated measured shot), ported onto the 54960177 overlay;
-# - 395f02405c1dd1835ab73a39f7a5984ae5fd4552 (vLLM v0.31.0 bump): queued-request classification
-#   over vLLM 0.31's ``waiting`` + ``kv_holding_waiting`` queues (_compute_queued), overriding the
-#   54960177 method that reads the removed ``Scheduler.skipped_waiting``.
+# - 9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 (release/1.7.0; the method is unchanged since the vLLM v0.31.0
+#   bump 395f02405c1dd1835ab73a39f7a5984ae5fd4552): queued-request classification over vLLM's ``waiting`` +
+#   ``kv_holding_waiting`` queues (_compute_queued), overriding the 54960177 method that reads the removed
+#   ``Scheduler.skipped_waiting``.
 # Modified: GLM-5.3-Flash default-serving hybrid state (prefix caching on, Mamba "align" mode),
 # seeded token inputs, align-4 prefill chunk-start checks, repeated measurements and compact
 # deferred evidence. Upstream license: LICENSE.
-# Runtime base: ai-dynamo 1.6.0.dev20261010 (scheduler file ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552).
+# Runtime base: ai-dynamo 1.7.0.dev20261109 (scheduler file ai-dynamo/dynamo@9abd2ef0d908c4bb323e1b8956ea76a5772a1d41).
 """GLM-5.3-Flash native FPM producer on the default serving configuration.
 
 Timing is the unchanged Dynamo ``InstrumentedScheduler`` FPM ``wall_time``:
@@ -46,7 +47,8 @@ finished, and the compact evidence record of a point (prompt specifications,
 not token arrays) is written after all of its repetitions.
 
 Stock vLLM v0.31.0 does not complete IndexPool entries at a cached/chunked
-prefill start that is not a multiple of the pool width (4). Every prefill
+prefill start that is not a multiple of the pool width (4), and the sources do
+not show that v0.33.0 removed the defect. Every prefill
 prefix and new-token length and every decode seed is therefore a multiple of 4, and every scheduled
 prefill chunk start (seed, warmup and measured shots) is recorded from the
 native ``SchedulerOutput`` and checked after its stage; an unaligned start
@@ -76,17 +78,18 @@ from vllm.tokenizers import get_tokenizer
 from vllm.v1.request import Request, RequestStatus
 
 DYNAMO_SHA = "54960177085413259859c88bd34ed0734d4c2ea9"
-# The scheduler file that runs, which is not derived code: the ai-dynamo 1.6.0.dev20261010 build carries it.
-DYNAMO_RUNTIME_SHA = "395f02405c1dd1835ab73a39f7a5984ae5fd4552"
-DYNAMO_RUNTIME_DISTRIBUTION = "ai-dynamo 1.6.0.dev20261010"
+# The scheduler file that runs, which is not derived code: the ai-dynamo 1.7.0.dev20261109 build carries it.
+DYNAMO_RUNTIME_SHA = "9abd2ef0d908c4bb323e1b8956ea76a5772a1d41"
+DYNAMO_RUNTIME_DISTRIBUTION = "ai-dynamo 1.7.0.dev20261109"
 REAL_SEED_SOURCE = "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea instrumented_scheduler._bench_realseed_*"
-QUEUED_PORT_SOURCE = "ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552 instrumented_scheduler._compute_queued"
-VLLM_SHA = "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+QUEUED_PORT_SOURCE = "ai-dynamo/dynamo@9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 instrumented_scheduler._compute_queued"
+VLLM_SHA = "4ba787ec9959e566d3b587a796dff07673324da5"
 # Pure-TP sizes accepted for both checkpoints. Whether a size fits a system is
 # decided by the native runtime (weight load and KV allocation fail observably),
 # not by this producer.
 TP_SIZES = (1, 2, 4, 8)
-# IndexPool width: stock v0.31.0 requires pool-aligned prefill chunk starts.
+# IndexPool width: stock v0.31.0 requires pool-aligned prefill chunk starts. The rule stays for v0.33.0, whose sources
+# do not show the defect removed.
 CHUNK_ALIGN = 4
 STATE_PROTOCOL = "glm53flash_prefix_cache_real_seed_v1"
 INPUT_SOURCE = "seeded_tokens"
@@ -427,7 +430,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         return True
 
     def _kvwarm_prepare(self, mode):
-        # ai-dynamo/dynamo@395f0240 _bench_build_grid calls this at line 2718 to plan native warm-up stages and to
+        # ai-dynamo/dynamo@9abd2ef0d9 _bench_build_grid calls this at line 3260 to plan native warm-up stages and to
         # reorder the decode grid. This producer seeds every point through its own stages, so nothing is planned.
         return None
 
@@ -453,7 +456,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 num_local_computed_tokens=0,
                 num_tokens_main_model=num_tokens,
                 apply_admission_cap=apply_admission_cap,
-                # v0.31.0 KVCacheManager.allocate_slots: max(num_prompt_tokens, num_tokens - 1).
+                # v0.33.0 KVCacheManager.allocate_slots (kv_cache_manager.py:529):
+                # max(num_prompt_tokens, num_tokens - 1).
                 prefill_end=num_tokens,
             )
             for manager in self.kv_cache_manager.coordinator.single_type_managers
@@ -569,10 +573,10 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                         f"GLM-5.3-Flash decode batch {point.batch_size} exceeds the producer limit {MAX_BATCH}"
                     )
                 # A repetition prefills each prompt beyond its cached seed, and it is accepted only if its first decode
-                # step holds every request. vLLM v0.31.0 schedules at most max_num_batched_tokens tokens in one step
-                # (scheduler.py:585, :1073, :1313-1314). The suffixes of two or more requests above that budget spread
+                # step holds every request. vLLM v0.33.0 schedules at most max_num_batched_tokens tokens in one step
+                # (scheduler.py:722, :1295, :1570-1571). The suffixes of two or more requests above that budget spread
                 # over several steps, so every repetition is rejected: the cached prefix cannot grow beyond the seed.
-                # One request may prefill its suffix over several steps (scheduler.py:468-480): no other request can
+                # One request may prefill its suffix over several steps (scheduler.py:607-619): no other request can
                 # decode before it, and _bench_should_record_scheduled records no step with a prefill request.
                 budget = self.scheduler_config.max_num_batched_tokens
                 prompts = [self._glm_decode_prompt(context) for context in contexts]
@@ -657,8 +661,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         return result
 
     def _compute_queued(self):
-        # Ported from QUEUED_PORT_SOURCE: vLLM v0.31.0 replaced
-        # Scheduler.skipped_waiting by kv_holding_waiting (scheduler.py:216).
+        # Ported from QUEUED_PORT_SOURCE: vLLM v0.31.0 replaced Scheduler.skipped_waiting by kv_holding_waiting, and
+        # v0.33.0 keeps both waiting queues (scheduler.py:232, :236).
         prefill = native.WelfordAccumulator()
         decode_kv = native.WelfordAccumulator()
         for request in chain(self.waiting, self.kv_holding_waiting):
