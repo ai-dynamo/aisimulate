@@ -343,10 +343,7 @@ runner. If every selected backend/topology pair is runner-incompatible, prefligh
 
 ## SDK: Sampler Algorithm Override
 
-The experimental `AISIMULATE_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier
-algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer.
-`SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
-AISim variable takes precedence.
+The experimental `AISIM_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer. The legacy `AISIMULATE_SWEEPER_VIZIER_ALGO` remains a compatibility fallback, followed by the deprecated `SPICA_VIZIER_ALGO`; the canonical AISim variable takes precedence when multiple names are set.
 
 ## `kv_load_ratio` (candidate-relative concurrency)
 
