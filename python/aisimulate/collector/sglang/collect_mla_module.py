@@ -86,6 +86,7 @@ try:
     )
     from collector.sglang.runtime_limits import (
         kv_pool_page_size,
+        request_slots,
         required_kv_alloc_tokens,
         required_kv_tokens,
         required_prefill_extend_tokens,
@@ -103,6 +104,7 @@ except ModuleNotFoundError:
     )
     from runtime_limits import (
         kv_pool_page_size,
+        request_slots,
         required_kv_alloc_tokens,
         required_kv_tokens,
         required_prefill_extend_tokens,
@@ -1090,6 +1092,7 @@ def load_model_runner(
     enable_piecewise_cuda_graph: bool = False,
     max_total_tokens: int | None = None,
     chunked_prefill_size: int | None = None,
+    max_running_requests: int | None = None,
 ):
     """Load SGLang ModelRunner with dummy weights.
 
@@ -1167,6 +1170,9 @@ def load_model_runner(
         disable_prefill_cuda_graph=True,
         kv_cache_dtype=sglang_kv_dtype,
         max_total_tokens=max_total_tokens,
+        # The request slots of the timed batches, not the count SGLang derives from the
+        # dummy's token capacity (runtime_limits.request_slots).
+        max_running_requests=max_running_requests,
         chunked_prefill_size=chunked_prefill_size,
         quantization=load_quantization,
     )
@@ -1191,7 +1197,8 @@ def load_model_runner(
     print(
         f"Using attention backend: {attention_backend}, kv_cache_dtype: {sglang_kv_dtype}, "
         f"gpu_id: {gpu_id}, chunked_prefill_size={server_args.chunked_prefill_size}, "
-        f"max_prefill_tokens={server_args.max_prefill_tokens}, max_total_tokens={max_total_tokens}"
+        f"max_prefill_tokens={server_args.max_prefill_tokens}, max_total_tokens={max_total_tokens}, "
+        f"max_running_requests={max_running_requests}"
     )
 
     if num_layers > 0 and load_format == "dummy":
@@ -2738,6 +2745,7 @@ def run_mla_module(
             enable_piecewise_cuda_graph=enable_runner_piecewise_cuda_graph,
             max_total_tokens=max_total_tokens,
             chunked_prefill_size=chunked_prefill_size,
+            max_running_requests=request_slots(bs for bs, _seq_len, _ip, _prefix_len in runnable),
         )
 
         if attn_type == "dsa":
@@ -2746,6 +2754,7 @@ def run_mla_module(
                 print(f"[DSA] SGLang runtime chunked_prefill_size={runtime_chunk}")
                 _refuse(cases, refused, lambda case: _over_chunk(case, runtime_chunk))
             kv_capacity = _kv_pool_capacity_tokens(model_runner)
+            print(f"[DSA] SGLang KV pool holds {kv_capacity} tokens")
             if kv_capacity is not None:
                 page_size = kv_pool_page_size(model_runner)
                 _refuse(cases, refused, lambda case: _over_kv_pool(case, page_size, kv_capacity))

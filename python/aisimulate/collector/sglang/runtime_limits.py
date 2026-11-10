@@ -5,7 +5,7 @@
 
 import importlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 
 
@@ -117,6 +117,31 @@ def required_swa_kv_alloc_tokens(
     rounded_past = ((past_len + page_size - 1) // page_size) * page_size
     rounded_total = ((past_len + fresh_len + page_size - 1) // page_size) * page_size
     return batch_size * (rounded_tail + rounded_total - rounded_past)
+
+
+# The floor of the request slots SGLang derives when max_running_requests is unset:
+# max(min(int(token_capacity / context_len * 512), 4096), 2048)
+# (KVCacheConfigurator.resolve_max_num_reqs, srt/mem_cache/kv_cache_configurator.py:3119-3132 at v0.5.23).
+SGLANG_MIN_REQUEST_SLOTS = 2048
+
+
+def request_slots(batch_sizes: Iterable[int]) -> int:
+    """ServerArgs.max_running_requests for a module runner that times these batch sizes.
+
+    Unset, SGLang derives the slots from the KV pool's token capacity (the formula
+    above) and allocates req_to_token as (slots + 1) x (context_len + 4) int32
+    (ReqToTokenPool, srt/mem_cache/memory_pool.py:388-408; _build_default_req_pool,
+    kv_cache_configurator.py:1755-1777) outside the KV byte budget: only the
+    1 - mem_fraction_static slack covers it (_profile_available_bytes, :2990-3060).
+    A module dummy keeps two of the model's layers, so its pool holds many times the
+    tokens serving's does and the estimate lands on 4096. For a 1M-token context that
+    is 16 GiB, more than the slack of an 80 GB device, and a pool SGLang clamps to its
+    profiled capacity then overcommits the device. The floor is what a server of the
+    full model resolves wherever it holds at most four context windows of KV, and it
+    is not below any decode CUDA-graph batch size (serving_memory_defaults), so the
+    graph buckets stay SGLang's (memory_hook.py:182-188).
+    """
+    return max([SGLANG_MIN_REQUEST_SLOTS, *batch_sizes])
 
 
 def sglang_dsa_mqa_logits_chunking_supported() -> bool:
