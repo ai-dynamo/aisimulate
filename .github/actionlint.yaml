@@ -6,5 +6,5 @@
 # them.
 self-hosted-runner:
   labels:
-    - prod-aisim-default-amd64-v1
-    - prod-aisim-default-arm64-v1
+    - prod-aisimulate-default-amd64-v1
+    - prod-aisimulate-default-arm64-v1
