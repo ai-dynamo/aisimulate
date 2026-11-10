@@ -37,6 +37,7 @@ from .common import (
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
+NonNegativeU64 = Annotated[int, Field(strict=True, ge=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -138,7 +139,8 @@ class SchedulerPredictionConfig(StrictModel):
         default=None,
         description=(
             "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
-            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts "
+            "or MTP with G2 host offload."
         ),
     )
 
@@ -249,10 +251,18 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+class SlidingWindowStateConfig(StrictModel):
+    """Prefix-cache retention of a sliding-window state (DeepSeek V4)."""
+
+    retention_interval: NonNegativeU64 | None = None
+    lookahead_tokens: NonNegativeU64
+
+
 class StateCacheConfig(StrictModel):
     """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
+    sliding_window: SlidingWindowStateConfig | None = None
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -275,6 +285,18 @@ class StateCachePredictionConfig(StrictModel):
     bytes_per_request: PositiveU64 | None = None
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
+    # vLLM's VLLM_PREFIX_CACHE_RETENTION_INTERVAL; DeepSeek V4 only.
+    retention_interval: NonNegativeU64 | None = None
+    # Sizing fills this for DeepSeek V4; authored only beside explicit bytes.
+    sliding_window_lookahead_tokens: NonNegativeU64 | None = None
+
+    def resolved_sliding_window(self) -> dict[str, int] | None:
+        if self.sliding_window_lookahead_tokens is None:
+            return None
+        window = {"lookahead_tokens": self.sliding_window_lookahead_tokens}
+        if self.retention_interval is not None:
+            window["retention_interval"] = self.retention_interval
+        return window
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -299,7 +321,13 @@ class KvCachePredictionConfig(StrictModel):
     @classmethod
     def _accept_resolved_state_config(cls, value: Any) -> Any:
         if isinstance(value, StateCacheConfig):
-            return value.model_dump()
+            # The resolved window round-trips through the sizing fields.
+            window = value.sliding_window
+            return StateCachePredictionConfig(
+                bytes_per_request=value.bytes_per_request,
+                retention_interval=window.retention_interval if window else None,
+                sliding_window_lookahead_tokens=window.lookahead_tokens if window else None,
+            )
         return value
 
     @model_validator(mode="after")
@@ -1314,7 +1342,24 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError(f"{kind} speculation does not support host_offload")
+            if kind != "mtp":
+                raise ValueError(f"{kind} speculation does not support host_offload")
+            if worker.scheduler.async_scheduling is True:
+                raise ValueError("mtp speculation with host_offload requires async_scheduling=false")
+            cache = worker.kv_cache
+            if (
+                backends != {"vllm"}
+                or modes != {"aggregated"}
+                or role != "aggregated"
+                or worker.parallelism.attention_data != 1
+                or not cache.prefix_caching
+                or cache.host_offload.scope != "dp_rank_local"
+                or cache.g3_offload is not None
+            ):
+                raise ValueError(
+                    "mtp speculation with host_offload requires aggregated vllm, attention_data=1, "
+                    "prefix_caching=true, scope=dp_rank_local, and no g3_offload"
+                )
         if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
@@ -1494,6 +1539,8 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
+    if engine.nextn or engine.nextn_accepted is not None:
+        raise ValueError("host_offload with speculative decoding requires canonical engine.speculation kind=mtp")
     if engine.mode == "afd":
         raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":

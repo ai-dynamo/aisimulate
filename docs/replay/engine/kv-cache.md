@@ -349,7 +349,24 @@ and shared bandwidths; otherwise the run is rejected. In `recommend` with
 
 G2 supports vLLM aggregated and token-only disaggregated workers with prefix
 caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
-native MTP, ngram speculation, `state_cache`, and Belady eviction.
+ngram speculation, `state_cache`, and Belady eviction.
+
+Canonical `engine.speculation.kind: mtp` can combine with G2 only on an
+aggregated vLLM worker with `attention_data: 1`, `scope: dp_rank_local`, prefix
+caching and no G3. Use explicit fixed KV capacity and default timing. This
+models synchronous single-module MTP with one uniform shared FullAttention
+cache; separate draft models and grouped caches are unsupported. See
+[speculation](speculation.md#registered-schemes) for the complete composition.
+
+This combined behavior is adapted and modified from the
+[vLLM v0.32.0 scheduler](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py)
+and [OffloadingConnector](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py),
+Copyright contributors to the vLLM project, Apache-2.0. Prompt stores exclude
+unverified drafts, and G1 copy sources stay protected until their transfer
+completes. A next step that can never fit physical KV capacity or the total
+padded verification budget is rejected instead of retried indefinitely; this
+is a simulation capacity guard. The scheduling baseline does not change the
+version or provenance of the performance data used for timing.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
@@ -541,6 +558,8 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
 | `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
+| `state_cache.retention_interval` | Unset (every block boundary) | DeepSeek V4 with inferred bytes only. vLLM's `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`: `0` or a multiple of the resolved `block_size`. DeepSeek V4 rejects `prefix_match_unit`. |
+| `state_cache.sliding_window_lookahead_tokens` | Inferred (DeepSeek V4: 64) | Tokens past the full-attention hit that the MTP layer's sliding-window group reads; sizing fills it. Set it only with explicit `bytes_per_request`, to replay a state resolved earlier. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
 
 `state_cache: {}` infers Kimi K3 geometry from the model. `block_size` is then
@@ -584,8 +603,27 @@ for every token of a prefill chunk until the next step (3,360 rows for an
 8,192-token chunk), and a prefix hit restores 22 of the 26 rows. None of these
 is modeled.
 
-Prefix reuse resumes from a stored state snapshot, so it does not land on every
-matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
+DeepSeek V4's state is a sliding window that vLLM caches block by block, so a
+later request can resume at a retained boundary the earlier request passed,
+wherever its steps ended. `retention_interval` selects the boundaries, as
+`VLLM_PREFIX_CACHE_RETENTION_INTERVAL` does in vLLM v0.32.0: unset keeps every
+256-token boundary; `0` keeps only the last boundary below each prompt's end; a
+positive value additionally keeps one boundary per interval. With speculative
+decoding the group holding the MTP layer also needs the 64 tokens after a
+boundary, and they must lie inside the block-aligned token hit, so a hit lands
+one block lower and vLLM keeps the boundary one block lower instead. A 40,000-token
+prompt with `retention_interval: 32768` keeps 32,768 and 39,936 without
+speculative decoding, and 32,768 and 39,680 with it; its next turn resumes at
+39,936 or 39,680. Each retained boundary holds one reclaimable state copy
+(vLLM keeps about 22 of the 26 rows) until eviction. vLLM also keeps state
+where a request's cache hit stopped short of a longer shared prefix; replay
+does not model that. vLLM keeps the window in the request's own blocks, while
+replay copies the state, so a full pool with nothing to evict skips the
+boundary. This model needs inferred geometry: with `bytes_per_request` set,
+DeepSeek V4 falls back to one recurrent-style checkpoint per request.
+
+Kimi K3's recurrent state resumes only from a stored snapshot, so it does not
+land on every matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
 24,300-token prompt keeps snapshots at 23,040 and 24,192 tokens. A later request
 sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode.
 
@@ -629,9 +667,11 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
 one aggregated worker, one prefill and one decode worker, or several aggregated
-workers that each own a `dp_rank_local` G2. All need `attention_data: 1`, static
-workers and no speculative decoding. Either G2 scope works with one worker per
-role; G3 is not supported. `kvcr` is accepted but never pulls, because agentic
+workers that each own a `dp_rank_local` G2. All need `attention_data: 1` and static
+workers. Without speculation, either G2 scope works with one worker per role.
+Canonical MTP additionally supports a single aggregated worker with local G2 and
+prefix caching, within the [combined scope](#supported) above. Other speculation
+and G3 are not supported. `kvcr` is accepted but never pulls, because agentic
 traffic carries no router hint. Results are qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:

@@ -3128,6 +3128,9 @@ where
             changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.release_tokenized()?;
+            // Submit arrivals released at this boundary before a worker commits
+            // its next pass. The engine still enforces async batch eligibility.
+            changed |= self.drive_pending_actions()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self

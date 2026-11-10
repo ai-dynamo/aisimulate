@@ -687,7 +687,10 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         "two-plays profile agg: 821 10a719a78e167cd4",
         "two-plays profile disagg: 667 c737d31ab004240b",
         "two-plays profile-cold agg: 820 720a0b2eb0c2c09b",
-        "two-plays profile-cold disagg: 601 157c87c3cc4bbfe3",
+        // Same-timestamp arrivals now join the synchronous prefill pass: the
+        // first affected recycled request admits at 13 ms instead of 15 ms,
+        // allowing 667 requests to issue before the 1 s profiling cutoff.
+        "two-plays profile-cold disagg: 667 126b8310bccd00f3",
     ];
     assert_eq!(actual, expected);
 }
