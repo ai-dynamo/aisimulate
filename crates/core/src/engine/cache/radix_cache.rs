@@ -185,6 +185,8 @@ pub struct TreeNode {
     /// Bumped whenever this edge's tail changes in place (leaf extension or partial eviction),
     /// so a [`PrefixMatchHint`] ending at this node is not reused across such a change.
     edge_version: u64,
+    /// Recurrent state exists at this exact endpoint; a split never inherits it.
+    mamba_checkpoint: bool,
 }
 
 /// Where a read-only prefix match fully matched its deepest node, so the same page hashes can be
@@ -246,6 +248,7 @@ impl RadixCache {
             lock_ref: 0,
             last_access_time: Instant::now(),
             edge_version: 0,
+            mamba_checkpoint: false,
         });
         Self {
             nodes,
@@ -579,6 +582,46 @@ impl RadixCache {
         (matched_pages * self.page_size, current)
     }
 
+    /// Hybrid reuse needs KV and recurrent state at the same endpoint. Return the
+    /// checkpoint-qualified prefix and the ordinary KV branch position separately.
+    pub(crate) fn mamba_prefix_match(&self, page_keys: &[LocalBlockHash]) -> (usize, usize) {
+        let mut current = self.root;
+        let mut pages = 0;
+        let mut checkpoint_pages = 0;
+        while pages < page_keys.len() {
+            let Some(&child) = self.nodes[current].children.get(&page_keys[pages]) else {
+                break;
+            };
+            let node = &self.nodes[child];
+            if node.value.is_empty() {
+                break;
+            }
+            let common = Self::key_match(&node.key, &page_keys[pages..]);
+            pages += common;
+            if common != node.key.len() {
+                break;
+            }
+            current = child;
+            if node.mamba_checkpoint {
+                checkpoint_pages = pages;
+            }
+        }
+        (checkpoint_pages * self.page_size, pages * self.page_size)
+    }
+
+    pub(crate) fn mark_mamba_checkpoint(&mut self, node: NodeId) {
+        if node != self.root {
+            self.nodes[node].mamba_checkpoint = true;
+        }
+    }
+
+    pub(crate) fn mamba_checkpoint_count(&self) -> usize {
+        self.nodes
+            .values()
+            .filter(|node| node.mamba_checkpoint)
+            .count()
+    }
+
     /// Read-only prefix match length (does not mutate timestamps or split nodes).
     /// Used for LPM scheduling scoring.
     #[cfg(test)]
@@ -807,6 +850,7 @@ impl RadixCache {
             let can_extend_leaf = current != self.root
                 && self.hicache.is_none()
                 && self.nodes[current].children.is_empty()
+                && !self.nodes[current].mamba_checkpoint
                 && (self.nodes[current].lock_ref == 0
                     || (allow_locked_tail_extension
                         && current == start_node
@@ -952,6 +996,7 @@ impl RadixCache {
             lock_ref,
             last_access_time: accessed,
             edge_version: 0,
+            mamba_checkpoint: false,
         };
         let inter_id = self.nodes.insert(intermediate);
         if let Some(host) = &mut self.hicache
@@ -993,6 +1038,7 @@ impl RadixCache {
             lock_ref: 0,
             last_access_time: now,
             edge_version: 0,
+            mamba_checkpoint: false,
         };
         let ck = key[0];
         let new_id = self.nodes.insert(new_node);
@@ -1125,6 +1171,7 @@ impl RadixCache {
                 let victim_node = &mut nodes[victim_id];
                 victim_node.key.truncate(split_pos);
                 victim_node.edge_version += 1;
+                victim_node.mamba_checkpoint = false;
                 let evicted_values = &victim_node.value[split_pos..];
                 if let Some(belady) = &mut self.belady {
                     for page in evicted_values {

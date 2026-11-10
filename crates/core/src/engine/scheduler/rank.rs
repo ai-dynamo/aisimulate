@@ -548,6 +548,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             PreemptionMode::Fifo => CorePreemptionMode::Fifo,
         },
         sglang: Some(SglangArgs {
+            mamba_cache: config.sglang.mamba_cache,
             hicache: config.sglang.hicache,
             schedule_policy: Some(
                 match config.sglang.schedule_policy {

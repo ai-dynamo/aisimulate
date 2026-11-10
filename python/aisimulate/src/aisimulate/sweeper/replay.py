@@ -427,6 +427,7 @@ class RunnerCapabilities:
     supports_grouped_kv_cache: bool = False
     supports_native_epd: bool = False
     supports_sglang_host_loop: bool = False
+    supports_sglang_mamba_cache: bool = False
     supports_agentic_live_warmup: bool = False
     supports_weka_client: bool = False
     supports_generic_speculation: bool = False
@@ -582,6 +583,12 @@ class RunnerCapabilities:
                     raise ValueError(
                         "runner does not support state_cache; select a stack that advertises this capability"
                     )
+        if not self.supports_sglang_mamba_cache:
+            for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+                rank = args.get("rank", args) if args else None
+                sglang = rank.get("sglang") if isinstance(rank, Mapping) else None
+                if isinstance(sglang, Mapping) and sglang.get("mamba_cache") is not None:
+                    raise ValueError("runner does not support SGLang mamba_cache; use --stack engine")
         if not self.supports_sglang_host_loop:
             for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
                 if not args:

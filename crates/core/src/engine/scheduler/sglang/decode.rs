@@ -266,6 +266,11 @@ fn uncached_aligned_prefix(
     if !config.enable_prefix_caching {
         return None;
     }
+    let tokens = if config.mamba_cache.is_some() {
+        req.kv_lease.prefill_checkpoint()?.min(tokens)
+    } else {
+        tokens
+    };
     let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
     (aligned_tokens > req.cached_tokens()).then_some(aligned_tokens)
 }
@@ -430,7 +435,11 @@ fn prefill_first_tokens(
 
     // Prefill computes the prompt's KV and samples one output without computing its KV.
     for (idx, req) in running.iter_mut().enumerate() {
-        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+        // A one-output request donates its existing tracked state at finish;
+        // it never allocates an unfinished-request replacement checkpoint.
+        if config.mamba_cache.is_none() || req.remaining_output_tokens() > 1 {
+            commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+        }
         if req.pending_terminal {
             continue;
         }

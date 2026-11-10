@@ -29,6 +29,7 @@ pub enum SchedulePolicy {
 }
 
 pub(super) struct SglangConfig {
+    pub(super) mamba_cache: Option<crate::engine::SglangMambaCacheConfig>,
     pub(super) schedule_policy: SchedulePolicy,
     pub(super) max_prefill_tokens: usize,
     pub(super) max_running_requests: usize,
@@ -133,6 +134,7 @@ impl SglangConfig {
             });
 
         Self {
+            mamba_cache: sglang.and_then(|s| s.mamba_cache),
             schedule_policy,
             prefill_decode_interval: args.prefill_decode_interval,
             max_running_requests,

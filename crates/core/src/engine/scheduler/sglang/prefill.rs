@@ -99,6 +99,10 @@ pub(super) fn get_new_batch_prefill(
         } else {
             Default::default()
         };
+        if first_admission && !kv_manager.check_mamba_match_capacity(matched.device_tokens) {
+            waiting.push_front(req);
+            break;
+        }
         let mut host_tokens = matched.host_tokens;
         let (start, chunk_tokens, output_reserve) = loop {
             let cached_prefix = matched.device_tokens + host_tokens;
@@ -211,6 +215,7 @@ pub(super) fn get_new_batch_prefill(
             waiting.push_front(req);
             break;
         };
+        kv_manager.prepare_prefill_checkpoint(&mut lease, prefix_len, chunk_end);
         let tokens_computed = chunk_end.saturating_sub(prefix_len);
         // Cache reuse is what the radix tree supplied at admission; a continuation's `prefix_len`
         // is the request's own earlier chunks and must not be reported as a cache hit.

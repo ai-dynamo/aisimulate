@@ -282,6 +282,26 @@ class StateCachePredictionConfig(StrictModel):
         return StateCacheConfig(bytes_per_request=self.bytes_per_request).state_blocks(block_size, bytes_per_token)
 
 
+class SglangMambaCacheConfig(StrictModel):
+    """Explicit resolved extra-buffer geometry; state/KV eviction pressure is unsupported.
+
+    Modified SGLang v0.5.20 contract, revision 94602c9c2b7cbdb8efd5c52802dac6a1c180089e,
+    srt/mem_cache/mamba_radix_cache.py and srt/managers/schedule_batch.py.
+    Copyright 2023-2024 SGLang Team and contributors, Apache-2.0.
+    See THIRD_PARTY_NOTICES.md.
+    """
+
+    prefill_checkpoint_interval: PositiveInt = 64
+    decode_checkpoint_interval: PositiveInt = 256
+    max_states: Annotated[int, Field(strict=True, ge=4)]
+
+    @model_validator(mode="after")
+    def _validate_intervals(self) -> SglangMambaCacheConfig:
+        if self.decode_checkpoint_interval % self.prefill_checkpoint_interval:
+            raise ValueError("mamba_cache.decode_checkpoint_interval must be a multiple of prefill_checkpoint_interval")
+        return self
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_match_unit: PositiveU64 | None = None
@@ -291,6 +311,7 @@ class KvCachePredictionConfig(StrictModel):
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     hicache: HiCacheConfig | None = None
+    mamba_cache: SglangMambaCacheConfig | None = None
     g3_offload: G3OffloadConfig | None = None
     kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
@@ -969,6 +990,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         )
         _validate_prediction_host_offload(self)
         _validate_prediction_hicache(self)
+        _validate_prediction_mamba_cache(self)
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
@@ -1083,6 +1105,8 @@ class KvCacheRecommendationConfig(StrictModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_state_cache_recommendation(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("mamba_cache") is not None:
+            raise ValueError("mamba_cache currently supports prediction only; recommendation is not supported")
         if isinstance(value, dict) and value.get("hicache") is not None:
             raise ValueError("hicache currently supports prediction only; recommendation is not supported")
         if isinstance(value, dict) and value.get("state_cache") is not None:
@@ -1475,6 +1499,29 @@ def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
             raise ValueError("pure AFD recommendation requires phase='both'; use combined_with_pd=true for one phase")
         if configured:
             raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
+
+
+def _validate_prediction_mamba_cache(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.mamba_cache is None:
+            continue
+        cache = worker.kv_cache
+        if engine.backend != "sglang" or engine.mode != "aggregated" or role != "aggregated":
+            raise ValueError("mamba_cache requires backend=sglang and mode=aggregated")
+        if worker.parallelism.attention_data != 1 or worker.parallelism.pipeline != 1:
+            raise ValueError("mamba_cache currently requires attention_data=1 and pipeline=1")
+        if worker.parallelism.prefill_context not in (None, 1) or worker.parallelism.decode_context not in (None, 1):
+            raise ValueError("mamba_cache does not support context parallelism")
+        if not cache.prefix_caching:
+            raise ValueError("mamba_cache requires prefix_caching=true")
+        if engine.nextn or engine.speculation is not None:
+            raise ValueError("mamba_cache does not support speculative decoding")
+        if any(getattr(cache, key) is not None for key in ("hicache", "host_offload", "g3_offload", "state_cache")):
+            raise ValueError("mamba_cache cannot be combined with host offload or state_cache")
+        block_size = resolve_block_size(engine.backend, cache.block_size)
+        if cache.mamba_cache.prefill_checkpoint_interval % block_size:
+            raise ValueError("mamba_cache.prefill_checkpoint_interval must be a multiple of block_size")
 
 
 def _validate_prediction_hicache(engine: EnginePredictionConfig) -> None:

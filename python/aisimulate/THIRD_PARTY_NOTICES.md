@@ -2062,3 +2062,33 @@ OSRB approval.
   The fixture holds values computed by the pinned AIPerf metric classes with
   `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
   No AIPerf runtime dependency or source files are bundled.
+
+
+## SGLang extra-buffer hybrid prefix checkpoints
+
+Checkpoint ownership, prefill/decode tracking, and lifecycle rules in these
+repository-root files are adapted and modified from SGLang at immutable commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`:
+
+- `crates/core/src/engine/cache/radix_cache.rs`
+- `crates/core/src/engine/kv_manager/sglang_backend.rs`
+- `crates/core/src/engine/scheduler/sglang/{config,core,decode,prefill,tests}.rs`
+- `crates/core/src/engine/{config,mod}.rs`
+- `crates/core/src/engine/common/protocols.rs`
+- `crates/core/src/engine/scheduler/rank.rs`
+- `python/aisimulate/src/aisimulate/config/engine.py`
+- `docs/replay/engine/kv-cache.md`
+
+Original paths under `python/sglang/srt/`: `mem_cache/mamba_radix_cache.py`,
+`mem_cache/memory_pool.py`, `runtime_context.py`, `managers/schedule_batch.py`,
+`managers/scheduler.py`, and `managers/scheduler_components/batch_result_processor.py`.
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under the
+Apache License, Version 2.0; the full license is included as `LICENSE`.
+Upstream license: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+
+These are modified Rust/Python simulation contracts and independently authored
+synthetic regression cases. The scoped implementation rejects state/KV eviction
+pressure; it does not copy the native GPU allocator or claim full Mamba LRU parity.
+No production prompt contents or external trace fixture is distributed in this change.

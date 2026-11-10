@@ -3854,6 +3854,7 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
     [
         "",
         "pub host_loop: bool, pub vlm_cache_bytes: u64,",
+        "pub mamba_cache: Option<SglangMambaCacheConfig>,",
         "pub disaggregation_decode_enable_radix_cache: bool, pub num_reserved_decode_tokens: usize, "
         "pub disaggregation_decode_extra_slots: Option<usize>,",
     ],
@@ -3888,6 +3889,8 @@ def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monke
         if "host_loop" in fields:
             assert "host_loop: false," in adapter.read_text()
             assert "vlm_cache_bytes: SglangConfig::default().vlm_cache_bytes," in adapter.read_text()
+        if "mamba_cache" in fields:
+            assert "mamba_cache: None," in adapter.read_text()
         if "num_reserved_decode_tokens" in fields:
             assert "disaggregation_decode_enable_radix_cache: false," in adapter.read_text()
             assert (

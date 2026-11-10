@@ -155,6 +155,12 @@ impl ReplayEngineConfig {
     }
 
     fn validate_eviction_geometry(&self, rank: &EngineConfig) -> ReplayResult<()> {
+        if self.kv_eviction_policy == KvEvictionPolicy::Belady && rank.sglang.mamba_cache.is_some()
+        {
+            return Err(ReplayError::InvalidSpec(
+                "belady does not support sglang.mamba_cache checkpoint ownership".into(),
+            ));
+        }
         if self.kv_eviction_policy == KvEvictionPolicy::Belady && rank.prefix_match_unit.is_some() {
             // The oracle hashes complete physical pages. Fine state keys and
             // token-page aliases require a different future-demand index.
@@ -436,6 +442,15 @@ impl ReplayEngineFactory {
     ) -> ReplayResult<ReplayRoleFactory> {
         let mut role = config.role(stage);
         config.validate_eviction_geometry(&role.rank)?;
+        if role.rank.sglang.mamba_cache.is_some()
+            && (role.dp_size != 1
+                || role.prefill_context_parallel_size != 1
+                || pipeline_parallel_size(&role.rank.timing_model)? != 1)
+        {
+            return Err(ReplayError::InvalidSpec(
+                "sglang.mamba_cache requires attention DP, prefill context parallelism and pipeline parallelism of one".into(),
+            ));
+        }
         role.rank.emit_kv_events = emit_kv_events;
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
@@ -735,6 +750,51 @@ mod disaggregated_tests {
 #[cfg(test)]
 mod belady_tests {
     use super::*;
+
+    #[test]
+    fn mamba_checkpoint_cache_rejects_belady() {
+        let mut config = ReplayEngineConfig::default();
+        config.rank = EngineConfig::for_backend(crate::engine::Backend::Sglang);
+        config.rank.sglang.mamba_cache = Some(crate::engine::SglangMambaCacheConfig {
+            prefill_checkpoint_interval: 64,
+            decode_checkpoint_interval: 256,
+            max_states: 64,
+        });
+        config.kv_eviction_policy = KvEvictionPolicy::Belady;
+        assert!(
+            config
+                .validate_eviction_geometry(&config.rank)
+                .unwrap_err()
+                .to_string()
+                .contains("mamba_cache")
+        );
+    }
+
+    #[test]
+    fn mamba_checkpoint_cache_rejects_unsupported_parallelism_at_factories() {
+        let mut config = ReplayEngineConfig::default();
+        config.rank = EngineConfig::for_backend(crate::engine::Backend::Sglang);
+        config.rank.sglang.mamba_cache = Some(crate::engine::SglangMambaCacheConfig {
+            prefill_checkpoint_interval: 64,
+            decode_checkpoint_interval: 256,
+            max_states: 64,
+        });
+        for (dp, context) in [(2, 1), (1, 2)] {
+            config.dp_size = dp;
+            config.prefill_context_parallel_size = context;
+            let Err(error) =
+                ReplayEngineFactory::new().role_factory(&config, WorkerStage::Aggregated, false)
+            else {
+                panic!("Mamba replay must reject unsupported parallelism");
+            };
+            assert!(error.to_string().contains("mamba_cache"));
+        }
+        let factory = EngineFactory::new(config.rank).unwrap();
+        let Err(error) = factory.build(EngineIdentity::new(0), NonZeroU32::new(2).unwrap()) else {
+            panic!("direct engine factory must reject Mamba attention DP");
+        };
+        assert!(error.to_string().contains("dp_size=1"));
+    }
 
     #[test]
     fn fine_prefix_caching_rejects_belady_at_topology_and_role_entrypoints() {

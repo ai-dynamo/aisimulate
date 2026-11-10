@@ -273,6 +273,9 @@ impl SglangCore {
             enable_prefix_caching,
             args.emit_kv_token_ids,
         );
+        if let Some(mamba) = config.mamba_cache {
+            kv_manager.enable_mamba_cache(mamba);
+        }
         if let Some(hicache) = args.sglang.as_ref().and_then(|sglang| sglang.hicache) {
             let block_bytes = args.block_size
                 * args
@@ -1718,6 +1721,8 @@ impl SglangCore {
         } else {
             self.publish_kv_events_if_idle();
         }
+
+        self.kv_manager.validate_mamba_capacity()?;
 
         // Build FPM snapshot now that all state has settled.
         // Radix-cache reuse: admission matches over prompt tokens processed this pass. A chunked

@@ -976,6 +976,10 @@ def _worker_engine_args(
         )
     if cache.hicache is not None:
         payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
+    if cache.mamba_cache is not None:
+        sglang = payload.setdefault("sglang", {})
+        sglang["mamba_cache"] = cache.mamba_cache.model_dump(mode="json")
+        sglang["chunked_prefill_size"] = worker.scheduler.max_batched_tokens
     return payload
 
 
