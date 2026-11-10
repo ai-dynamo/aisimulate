@@ -5,6 +5,8 @@
   "vllm/v1/core/sched/scheduler.py": "d76cc22257550972137df9c893505d0bd0f5d482374691e6eca4372772de501a",
   "vllm/v1/core/kv_cache_manager.py": "39ae1c1564a034fd59736a92d962bfab5a0af03529e01349b765422dbd5a355d",
   "vllm/v1/core/single_type_kv_cache_manager.py": "4b8c34ff759855b94a5a3a4a3a1b4784077f27077539e01509c1b3f72e75455f",
+  "vllm/v1/core/kv_cache_coordinator.py": "6bf7583c5fd3fb85a99437eb3d7f3eddd319314ff93737e847d071fda59383e3",
+  "vllm/v1/kv_cache_interface.py": "1e0b5027cc13ed845488ff3f671292e6c57fcae99c5b7130ad92c9d176a38684",
   "vllm/models/glm5next/common/model.py": "ca9617d20431548507910debdfafeab4f9381db4ab783e88478d507c79da21a4",
   "vllm/models/glm5next/common/attention.py": "e83364215dccc2871e47906a8a5286852bd6a922a6a322394ff8f27db80952e0",
   "vllm/models/glm5next/common/kda.py": "cc89b4a0b08860fad2f0558ad85a9082fda400188583fb55a62db64e61ec2d94",

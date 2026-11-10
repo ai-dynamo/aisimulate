@@ -35,4 +35,10 @@ def test_stock_source_manifest_is_bound_byte_for_byte():
     pins = identity.vllm_source_pins("0.33.0", MANIFEST)
     assert "vllm/models/glm5next/nvidia/sparse_indexer.py" in pins
     assert "vllm/v1/worker/gpu_worker.py" in pins
+    # The producer copies the checkpoint position rule of kv_cache_interface.py into _glm_align_stop and reads the
+    # managers of the cache coordinator, so both files are pinned at the tag v0.33.0.
+    assert pins["vllm/v1/kv_cache_interface.py"] == "1e0b5027cc13ed845488ff3f671292e6c57fcae99c5b7130ad92c9d176a38684"
+    assert pins["vllm/v1/core/kv_cache_coordinator.py"] == (
+        "6bf7583c5fd3fb85a99437eb3d7f3eddd319314ff93737e847d071fda59383e3"
+    )
     assert identity.vllm_source_manifest_sha256("0.33.0", MANIFEST) == hashlib.sha256(MANIFEST.read_bytes()).hexdigest()
