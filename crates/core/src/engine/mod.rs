@@ -61,6 +61,8 @@ pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
 #[cfg(feature = "python")]
 pub(crate) use scheduler::afd::timing::AfdTimingModel;
+#[cfg(test)]
+pub(crate) use scheduler::afd::timing::tests::provider_for as afd_timing_provider_for;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{

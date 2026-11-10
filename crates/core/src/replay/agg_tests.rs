@@ -872,8 +872,7 @@ fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
 fn native_replay_retracts_readmits_and_finishes_deterministically() {
     use std::sync::Arc;
 
-    use crate::engine::scheduler::afd::timing::tests::provider_for;
-    use crate::engine::{Backend, EngineConfig, TimingModelConfig};
+    use crate::engine::{Backend, EngineConfig, TimingModelConfig, afd_timing_provider_for};
     use crate::replay::{
         CanonicalReplayCoverage, CanonicalReplayRecord, ReplayCaptureOptions, ReplayDeterminism,
         ReplayEngineConfig, ReplayEngineFactory, ReplayRequest, ReplaySpec, ReplayTerminalStatus,
@@ -932,7 +931,7 @@ fn native_replay_retracts_readmits_and_finishes_deterministically() {
             ..Default::default()
         };
         let run = || {
-            let timing = Arc::new(provider_for(1, 3, 1));
+            let timing = Arc::new(afd_timing_provider_for(1, 3, 1));
             let report =
                 Replayer::new(spec.clone(), ReplayEngineFactory::with_timing_model(timing))
                     .unwrap()
