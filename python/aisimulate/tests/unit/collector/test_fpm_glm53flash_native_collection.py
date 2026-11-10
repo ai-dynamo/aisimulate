@@ -667,16 +667,40 @@ def test_glm_producer_dp_ranks_must_agree_on_input_provenance(tmp_path, tamper):
         _validate(tmp_path, cell)
 
 
-def test_collection_refuses_ranks_that_disagree_on_the_checkpoint_evidence(tmp_path):
+_NO_KEY = "no key"
+_WITH_CHECKPOINT = {"blocks": True, "alignment": 16}
+_WITHOUT_CHECKPOINT = {"blocks": False, "alignment": None}
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "refused"),
+    [
+        pytest.param(_WITH_CHECKPOINT, _WITHOUT_CHECKPOINT, True, id="different-values"),
+        pytest.param(_NO_KEY, _WITH_CHECKPOINT, True, id="first-rank-lacks-the-key"),
+        pytest.param(_WITH_CHECKPOINT, _NO_KEY, True, id="second-rank-lacks-the-key"),
+        pytest.param(_NO_KEY, _NO_KEY, False, id="no-rank-has-the-key"),
+        pytest.param(_WITH_CHECKPOINT, dict(_WITH_CHECKPOINT), False, id="equal-values"),
+    ],
+)
+def test_collection_refuses_ranks_that_disagree_on_the_checkpoint_evidence(tmp_path, first, second, refused):
     cell = glm_cell("prefill", dp=2)
     pod = _pod(tmp_path, cell)
     payloads = [glm_native_payload("prefill", points=[PREFILL_COLD], rank=rank, dp=2) for rank in range(2)]
-    artifacts = [write_glm_rank(pod, payload) for payload in payloads]
-    assert len(_validate(tmp_path, cell).points) == 1
-    payloads[1]["serving_config"]["mamba_prefill_checkpoint"] = {"blocks": False, "alignment": None}
-    artifacts[1].write_text(json.dumps(payloads[1]))
-    with pytest.raises(ValueError, match=r"native ranks disagree on serving_config\.mamba_prefill_checkpoint"):
-        _validate(tmp_path, cell)
+    for payload, value in zip(payloads, (first, second), strict=True):
+        if value == _NO_KEY:
+            del payload["serving_config"]["mamba_prefill_checkpoint"]
+        else:
+            payload["serving_config"]["mamba_prefill_checkpoint"] = value
+    for payload in payloads:
+        write_glm_rank(pod, payload)
+    if refused:
+        with pytest.raises(
+            ValueError,
+            match=r"^native ranks disagree on serving_config\.mamba_prefill_checkpoint: .+benchmark_dp1\.json$",
+        ):
+            _validate(tmp_path, cell)
+    else:
+        assert len(_validate(tmp_path, cell).points) == 1
 
 
 REAL_KV_REFUSAL = "execution-identity cells require real KV measurements for cached prefill and decode, got {}"

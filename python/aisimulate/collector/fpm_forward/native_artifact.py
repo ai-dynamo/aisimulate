@@ -40,6 +40,8 @@ class NativePointMeasurement:
 # Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
 # kvwarm block during cross-rank consistency checking.
 _KVWARM_UNSEEN = object()
+# The value of a rank whose serving configuration holds no checkpoint evidence, so that it differs from any record.
+_NO_CHECKPOINT_EVIDENCE = object()
 
 
 def _validate_seed_regime(row: dict[str, Any], path: Path) -> str | None:
@@ -650,7 +652,7 @@ def validate_native_collection(
     run_identity: tuple[str, str] | None = None
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
-    checkpoint_seen: object = _KVWARM_UNSEEN
+    checkpoint_evidence: list[object] = []
     input_provenance: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     seed_regimes: dict[int, str | None] = {}
@@ -693,10 +695,13 @@ def validate_native_collection(
             raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         # One launch shares one scheduler configuration, so the ranks must agree on the checkpoint evidence of it.
         serving = payload.get("serving_config")
-        checkpoint = serving.get("mamba_prefill_checkpoint", _KVWARM_UNSEEN) if isinstance(serving, dict) else None
-        if checkpoint_seen is _KVWARM_UNSEEN:
-            checkpoint_seen = checkpoint
-        elif checkpoint != checkpoint_seen:
+        checkpoint = (
+            serving.get("mamba_prefill_checkpoint", _NO_CHECKPOINT_EVIDENCE)
+            if isinstance(serving, dict)
+            else _NO_CHECKPOINT_EVIDENCE
+        )
+        checkpoint_evidence.append(checkpoint)
+        if checkpoint != checkpoint_evidence[0]:
             raise ValueError(f"native ranks disagree on serving_config.mamba_prefill_checkpoint: {path}")
         expected = coverage.get("expected_points")
         if (
