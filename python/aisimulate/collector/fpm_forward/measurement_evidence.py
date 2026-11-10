@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,17 @@ _EXECUTION_CONTRACT = {
     "cudagraph_source": "ModelRunnerOutput.cudagraph_stats",
     "warmup_scope": "request_completion_and_existing_shape_validation",
 }
+# The GLM-5.3-Flash producer (runtime/glm53flash/glm53flash_prefix_scheduler.py) measures each point ten times in one
+# launch and keeps the median wall time. It writes this record into measurement_protocol["producer"] and seeded token
+# content into synthetic_content. The producer cannot import this module inside the runtime image, so both sides keep
+# the values, and a test keeps them equal.
+GLM_PRODUCER_PROTOCOL = {
+    "state_protocol": "glm53flash_prefix_cache_real_seed_v1",
+    "warmup_repeats": 5,
+    "measurement_repeats": 10,
+    "reduction": "repetition_median",
+}
+GLM_PRODUCER_CONTENT = "seeded_tokens"
 
 
 def _hash(value: Any) -> str:
@@ -82,6 +94,11 @@ def _regime_gaps(point: dict[str, Any], regime: str | None) -> list[str]:
     return reasons
 
 
+def _glm_producer(protocol: Any) -> bool:
+    """Whether the protocol carries the producer record exactly, with the same JSON types (5.0 is not 5)."""
+    return isinstance(protocol, dict) and _hash(protocol.get("producer")) == _hash(GLM_PRODUCER_PROTOCOL)
+
+
 def _validate_protocol(protocol: Any) -> None:
     if not isinstance(protocol, dict):
         raise ValueError("measurement_protocol must be a mapping")
@@ -97,9 +114,13 @@ def _validate_protocol(protocol: Any) -> None:
         _integer(protocol.get(key), 1) for key in ("schema_version", "independent_repetitions")
     ):
         raise ValueError("measurement_protocol has unsupported identity, timing, or repetition semantics")
-    if not all(isinstance(protocol.get(key), str) for key in ("content_seed", "synthetic_pool_tag")) or protocol.get(
-        "synthetic_content"
-    ) not in {"random", "sharegpt", "sharegpt_chain", "zeros"}:
+    contents = {"random", "sharegpt", "sharegpt_chain", "zeros"} | (
+        {GLM_PRODUCER_CONTENT} if _glm_producer(protocol) else set()
+    )
+    if (
+        not all(isinstance(protocol.get(key), str) for key in ("content_seed", "synthetic_pool_tag"))
+        or protocol.get("synthetic_content") not in contents
+    ):
         raise ValueError("measurement_protocol has malformed content settings")
     unobserved = protocol.get("unobserved")
     if not isinstance(unobserved, list) or not all(isinstance(item, str) and item for item in unobserved):
@@ -139,7 +160,9 @@ def _validate_prompts(prompts: Any) -> bool:
     return True
 
 
-def _validate_estimate(measurement: dict[str, Any], fpm: dict[str, Any], rank: int, benchmark_id: int) -> None:
+def _validate_estimate(
+    measurement: dict[str, Any], fpm: dict[str, Any], rank: int, benchmark_id: int, *, producer: bool
+) -> None:
     raw = measurement.get("raw_fpms")
     expected = measurement.get("expected_internal_samples")
     estimate = measurement.get("estimate")
@@ -173,6 +196,14 @@ def _validate_estimate(measurement: dict[str, Any], fpm: dict[str, Any], rank: i
         indices = [len(raw) - 1]
     elif method == "adjacent_upper_median" and expected > 2 and len(raw) > 1:
         indices = list(range(1, len(raw)))
+    elif (
+        method == "repetition_median"
+        and producer
+        and expected == GLM_PRODUCER_PROTOCOL["measurement_repeats"]
+        and len(raw) == expected
+    ):
+        # One raw sample per measured repetition of the producer, every one in the median.
+        indices = list(range(len(raw)))
     else:
         raise ValueError("benchmark_measurement has inconsistent reduction method")
     if estimate.get("raw_sample_indices") != indices or any(
@@ -180,7 +211,12 @@ def _validate_estimate(measurement: dict[str, Any], fpm: dict[str, Any], rank: i
     ):
         raise ValueError("benchmark_measurement has inconsistent raw sample indices")
     walls = sorted(raw[index]["wall_time"] for index in indices)
-    if not math.isclose(walls[len(walls) // 2], fpm["wall_time"], rel_tol=1e-9, abs_tol=1e-12):
+    if method == "repetition_median":
+        # The producer keeps statistics.median of its repetitions, so the same function must give the same value.
+        agrees = statistics.median(walls) == fpm["wall_time"]
+    else:
+        agrees = math.isclose(walls[len(walls) // 2], fpm["wall_time"], rel_tol=1e-9, abs_tol=1e-12)
+    if not agrees:
         raise ValueError("benchmark_measurement reduction disagrees with retained timing")
 
 
@@ -212,7 +248,7 @@ def _read_measurement(
     ):
         raise ValueError("benchmark_measurement has inconsistent grid/order/KV preparation")
     recorded = _validate_prompts(measurement.get("prompts"))
-    _validate_estimate(measurement, fpm, rank, row["point"]["benchmark_id"])
+    _validate_estimate(measurement, fpm, rank, row["point"]["benchmark_id"], producer=_glm_producer(protocol))
     return measurement, [] if recorded else [f"rank {rank}: injected prompt hashes unavailable"]
 
 
@@ -322,12 +358,17 @@ def _observed_execution(measurement, fpm, history, prefixes, previous_forward):
         raise ValueError("retained estimate cannot claim a single benchmark_sample")
     observed, reasons = [], []
     preceding_forward = previous_forward
+    # A repetition median keeps the same recorded step of each repetition, so its raw samples share one index among
+    # the FPMs of their repetition. The forward indices still rise strictly.
+    repeated = measurement["estimate"]["method"] == "repetition_median"
+    first = measurement["raw_fpms"][0].get("benchmark_sample")
+    shared_index = first.get("sample_index") if repeated and isinstance(first, dict) else None
     for index, raw in enumerate(measurement["raw_fpms"]):
         sample = raw.get("benchmark_sample")
         if (
             not isinstance(sample, dict)
             or not _integer(sample.get("sample_index"))
-            or sample["sample_index"] != index
+            or sample["sample_index"] != (shared_index if repeated else index)
             or not _integer(sample.get("forward_index"))
             or sample["forward_index"] <= previous_forward
         ):

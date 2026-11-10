@@ -58,6 +58,7 @@ Inputs are the seeded token stream of ``collector.glm53flash_attention_tokens``
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -92,6 +93,9 @@ INPUT_SOURCE = "seeded_tokens"
 TIMING_BOUNDARY = "dynamo_vllm_instrumented_scheduler_fpm_wall_time"
 WARMUP_REPEATS = 5
 MEASUREMENT_REPEATS = 10
+# The reduction of the measured repetitions: statistics.median of their wall times. The collector's measurement
+# evidence reader keeps this value and the three before it, and a test keeps them equal.
+REDUCTION = "repetition_median"
 MAX_REJECTED_REPETITIONS = 10
 MAX_BATCH = 32
 MAX_CONTEXT = 131072
@@ -906,16 +910,35 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._glm_repetitions.append(record)
         return len(self._glm_repetitions) == WARMUP_REPEATS + MEASUREMENT_REPEATS
 
+    def _bench_measurement_protocol(self):
+        # ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:4236-4281 names the synthetic content of the native
+        # prompts and one launch per point. The prompts here are the seeded token stream, and each point holds the
+        # measured repetitions of one launch, so independent_repetitions stays 1.
+        return {
+            **super()._bench_measurement_protocol(),
+            "synthetic_content": INPUT_SOURCE,
+            "producer": {
+                "state_protocol": STATE_PROTOCOL,
+                "warmup_repeats": WARMUP_REPEATS,
+                "measurement_repeats": MEASUREMENT_REPEATS,
+                "reduction": REDUCTION,
+            },
+        }
+
     def _glm_finish_point(self):
         point = self._glm_point
         measured = [record for record in self._glm_repetitions if record["role"] == "measurement"]
-        fpms = [dict(fpm) for fpm in measured[-1]["fpms"]]
-        for index, fpm in enumerate(fpms):
-            fpm["wall_time"] = statistics.median(record["fpms"][index]["wall_time"] for record in measured)
+        # The retained FPM of a repetition is its only prefill FPM or its last (steady) decode FPM.
+        retained = [copy.deepcopy(record["fpms"][-1]) for record in measured]
         self._bench_current_point = point
-        self._bench_current_fpms = fpms
+        self._bench_current_fpms = [dict(fpm) for fpm in measured[-1]["fpms"]]
         self._glm_stage = None
+        saved = len(self._bench_results)
         self._bench_save_current_point()
+        # A point that the native shape validation skips (instrumented_scheduler.py:7613-7628 at 9abd2ef0d9) is
+        # recorded as skipped and saves no result, so it has no record to rewrite.
+        if len(self._bench_results) != saved:
+            self._glm_record_repetitions(point, retained)
         evidence = {
             "benchmark_id": point.benchmark_id,
             "point_type": point.point_type,
@@ -935,6 +958,32 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._glm_seed = None
         self._glm_rows = None
         self._glm_prompt_lengths = {}
+
+    def _glm_record_repetitions(self, point, retained):
+        """Make the saved point hold the median of the measured repetitions and the raw sample of each one.
+
+        ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:7437-7500 copies the FPMs of the last measured repetition
+        into ``benchmark_measurement.raw_fpms`` and keeps one FPM. With one attention-DP rank there is no synchronizer
+        (:2944-2955), so the point result and the iteration group hold that same FPM list (:7508-7511, :7659-7674).
+        Each raw sample keeps its own ``wall_time`` and ``benchmark_sample``, so its timing interval measures it.
+        """
+        result = self._bench_results[-1]
+        group = self._bench_iteration_groups[-1]
+        if (
+            result.point.benchmark_id != point.benchmark_id
+            or group["benchmark_id"] != point.benchmark_id
+            or len(result.fpms) != 1
+            or len(group["rank_results"]) != 1
+            or group["rank_results"][0]["fpms"] is not result.fpms
+        ):
+            raise RuntimeError(f"benchmark_id={point.benchmark_id}: the native save did not keep one FPM of one rank")
+        (fpm,) = result.fpms
+        measurement = fpm["benchmark_measurement"]
+        measurement["expected_internal_samples"] = MEASUREMENT_REPEATS
+        measurement["raw_fpms"] = retained
+        measurement["estimate"] = {"method": REDUCTION, "raw_sample_indices": list(range(MEASUREMENT_REPEATS))}
+        fpm["wall_time"] = statistics.median(sample["wall_time"] for sample in retained)
+        group["wall_time"] = fpm["wall_time"]
 
     def _bench_cleanup_requests(self):
         super()._bench_cleanup_requests()

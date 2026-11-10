@@ -11,12 +11,15 @@ hardware or timing evidence.
 from __future__ import annotations
 
 import collections
+import copy
 import hashlib
 import importlib.util
 import json
+import math
+import statistics
 import sys
 import types
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import pytest
@@ -77,7 +80,12 @@ class Request:
 
 
 class FakeBase:
-    """Subset of Dynamo InstrumentedScheduler + vLLM Scheduler used by the producer."""
+    """Subset of Dynamo InstrumentedScheduler + vLLM Scheduler used by the producer.
+
+    The per-sample record, the point save and the measurement protocol follow
+    ai-dynamo/dynamo@9abd2ef0d9 components/src/dynamo/vllm/instrumented_scheduler.py for one attention-DP rank
+    without a synchronizer, the only layout that the producer accepts.
+    """
 
     def _bench_init(self, config):  # pragma: no cover - the test builds state directly
         raise AssertionError
@@ -133,20 +141,120 @@ class FakeBase:
             return "decode mismatch"
         return None
 
+    def _bench_measurement_protocol(self):
+        # instrumented_scheduler.py:4236-4281 with the random synthetic content of a vocabulary above one token.
+        return {
+            "schema_version": 1,
+            "content_identity": "coordinate_rank_slot_v1",
+            "content_seed": "0",
+            "synthetic_content": "random",
+            "synthetic_pool_tag": "",
+            "prompt_hash_encoding": "uint32_le",
+            "independent_repetitions": 1,
+            "timing_metric": "scheduler_wall_time",
+            "execution_evidence": {
+                "schema_version": 1,
+                "sample_field": "benchmark_sample",
+                "warmup_field": "warmup_evidence",
+                "forward_index_scope": "rank_process",
+                "timing_clock": "process_local_monotonic",
+                "cudagraph_source": "ModelRunnerOutput.cudagraph_stats",
+                "warmup_scope": "request_completion_and_existing_shape_validation",
+            },
+            "input_evidence_scope": "injected_prompt_token_ids",
+            "unobserved": [
+                "sampled_continuation_token_ids",
+                "kv_cache_tensors",
+                "recurrent_state_tensors",
+                "execution_history_equivalence",
+                "warmup_graph_kernel_and_cache_equivalence",
+                "decode_real_kv_chain_warmup_history",
+            ],
+            "preparation": {
+                "warmup_iterations": 0,
+                "prefill_real_seed": False,
+                "decode_real_kv_warmup": False,
+                "giant_kv_threshold": 32768,
+                "giant_kv_repeats": 3,
+            },
+        }
+
     def _bench_save_current_point(self):
-        fpms = self._bench_current_fpms[-1:]
-        self.saved.append((self._bench_current_point, fpms))
+        # instrumented_scheduler.py:7437-7500: the native save copies the FPMs that it gets into raw_fpms and names
+        # the reduction. :7508-7511 and :7659-7674 store the kept FPM list in the point result and in the iteration
+        # group of the only rank.
+        point = self._bench_current_point
+        local_fpms = list(self._bench_current_fpms)
+        raw_fpms = copy.deepcopy(local_fpms)
+        reduction, sample_indices = "single_step", list(range(len(local_fpms)))
+        expected_fpms = getattr(self, "_bench_expected_fpms", 1)
+        assert expected_fpms <= 2, "the giant-KV median of the native save is not modeled"
+        if expected_fpms > 1 and len(local_fpms) >= expected_fpms:
+            chosen = dict(local_fpms[-1])
+            chosen["kvwarm_steady_sample"] = True
+            local_fpms = [chosen]
+            reduction, sample_indices = "last_step", [len(raw_fpms) - 1]
+        assert len(local_fpms) == 1
+        local_fpms[0].pop("benchmark_sample", None)
+        local_fpms[0]["benchmark_measurement"] = {
+            "schema_version": 1,
+            "point_key": f"point-{point.benchmark_id}",
+            "dp_rank": 0,
+            "prompts": {"status": "unavailable", "sha256": None, "requests": []},
+            "preparation": {
+                "grid_digest": "fake-grid",
+                "completed_points_before": len(self._bench_results),
+                "kv_seed_regime": None,
+                "warmup_records_before": len(self._bench_warmup_evidence),
+            },
+            "expected_internal_samples": expected_fpms,
+            "raw_fpms": raw_fpms,
+            "estimate": {"method": reduction, "raw_sample_indices": sample_indices},
+        }
+        assert self._bench_fpm_validation_failure(point, local_fpms[0]) is None
+        rank_results = [{"dp_rank": 0, "fpms": local_fpms}]
+        self._bench_results.append(types.SimpleNamespace(point=point, fpms=local_fpms))
+        self._bench_iteration_groups.append(
+            {
+                "benchmark_id": point.benchmark_id,
+                "complete": True,
+                "wall_time": local_fpms[0]["wall_time"],
+                "rank_results": rank_results,
+            }
+        )
+        self.saved.append((point, local_fpms))
+        self._bench_current_point = None
+        self._bench_current_fpms = []
 
     def _update_from_output(self, output, model_output):
+        # instrumented_scheduler.py:2437-2503 and :2526-2532: every benchmark step takes a forward index. A recorded
+        # step keeps its own timing interval, its CUDA graph dispatch and its index among the recorded FPMs.
         metrics = output.metrics
         self.clock += 1
+        forward_index = self._bench_forward_index
+        self._bench_forward_index += 1
         if self._bench_should_record_scheduled(metrics):
+            wall = self.wall(output)
+            start = self.monotonic
+            self.monotonic += wall + 0.125
+            steady = self._bench_current_point.point_type == "decode" and bool(self._bench_current_fpms)
+            stats = model_output.cudagraph_stats
             self._bench_current_fpms.append(
                 {
                     "counter_id": self._bench_current_point.benchmark_id,
                     "dp_rank": 0,
-                    "wall_time": self.wall(output),
+                    "wall_time": wall,
                     "scheduled_requests": metrics.__dict__.copy(),
+                    "benchmark_sample": {
+                        "sample_index": len(self._bench_current_fpms),
+                        "forward_index": forward_index,
+                        "timing": {
+                            "basis": "inter_output" if steady else "schedule_to_output",
+                            "start_monotonic": start,
+                            "end_monotonic": start + wall,
+                        },
+                        "cudagraph": {"status": "observed", **asdict(stats)},
+                    },
                 }
             )
 
@@ -343,6 +451,8 @@ def make_scheduler(module, tmp_path, points):
     s.requests, s.waiting, s.saved, s.clock = {}, [], [], 0
     s._bench_active_req_ids, s._bench_seq = set(), 0
     s._bench_current_point, s._bench_current_fpms = None, []
+    s._bench_results, s._bench_iteration_groups, s._bench_warmup_evidence = [], [], []
+    s._bench_forward_index, s.monotonic = 0, 1000.0
     s._bench_grid = collections.deque(points)
     s._bench_phase = "prefill"
     s._bench_block_hasher = None
@@ -382,6 +492,23 @@ def run(scheduler, engine, point_type, limit=10000):
             return
         engine.step()
     raise AssertionError("producer did not finish")
+
+
+def _run_prefill_point(scheduler, *, measured_walls):
+    """Run the scheduler's one prefill point. Measured repetition ``i`` records one FPM of wall time
+    ``measured_walls[i]``, the seed and the warmups one of 0.25 s. Returns the saved point as the native artifact
+    writes it (instrumented_scheduler.py:7904-7911 at ai-dynamo/dynamo@9abd2ef0d9)."""
+
+    warmups = type(scheduler)._glm_step.__globals__["WARMUP_REPEATS"]
+
+    def wall(output):
+        measured = len(scheduler._glm_repetitions) - warmups
+        return measured_walls[measured] if scheduler._glm_stage == "measure" and measured >= 0 else 0.25
+
+    scheduler.wall = wall
+    run(scheduler, Engine(scheduler), "prefill")
+    (result,) = scheduler._bench_results
+    return {"point": asdict(result.point), "fpms": result.fpms}
 
 
 def test_prefill_prefix_seed_lifecycle(monkeypatch, tmp_path):
@@ -432,6 +559,73 @@ def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, seed):
     assert all(rep["prefill_chunks"] == [[[seed, context - 1 - seed]] * 3] for rep in record["repetitions"])
     assert record["seed"]["prefill_chunks"] == [[[0, seed]] * 3]
     assert not record["rejected_repetitions"]
+
+
+def test_producer_point_keeps_the_sample_of_each_repetition_and_names_the_median(monkeypatch, tmp_path):
+    walls = [0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
+    scheduler = make_scheduler(
+        load_producer(monkeypatch), tmp_path, [Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])]
+    )
+    # Each repetition records one FPM with its own timing interval.
+    point = _run_prefill_point(scheduler, measured_walls=walls)
+    fpm = point["fpms"][0]
+    measurement = fpm["benchmark_measurement"]
+    assert fpm["wall_time"] == statistics.median(walls) == 0.455
+    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    assert measurement["expected_internal_samples"] == 10
+    assert [raw["wall_time"] for raw in measurement["raw_fpms"]] == walls
+    for raw in measurement["raw_fpms"]:
+        timing = raw["benchmark_sample"]["timing"]
+        assert math.isclose(timing["end_monotonic"] - timing["start_monotonic"], raw["wall_time"])
+    assert "benchmark_sample" not in fpm
+    # The iteration group holds the same kept FPM, and its wall time is the retained one.
+    (group,) = scheduler._bench_iteration_groups
+    assert group["rank_results"][0]["fpms"][0] is fpm and group["wall_time"] == 0.455
+    # The raw samples are the measured repetitions of the sidecar, which keeps every FPM as recorded.
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    measured = [rep for rep in record["repetitions"] if rep["role"] == "measurement"]
+    assert measurement["raw_fpms"] == [rep["fpms"][0] for rep in measured]
+    assert all("benchmark_measurement" not in fpm for rep in record["repetitions"] for fpm in rep["fpms"])
+
+
+def test_producer_decode_point_keeps_the_steady_sample_of_each_repetition(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    s = make_scheduler(module, tmp_path, [Point("decode", 1, 3, 0, 3 * 201)])
+    run(s, Engine(s), "decode")
+    ((_, (fpm,)),) = s.saved
+    measurement = fpm["benchmark_measurement"]
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    measured = [rep for rep in record["repetitions"] if rep["role"] == "measurement"]
+    # A decode repetition records its first decode step and the measured second one. The second one is kept.
+    assert measurement["raw_fpms"] == [rep["fpms"][-1] for rep in measured]
+    assert [raw["benchmark_sample"]["sample_index"] for raw in measurement["raw_fpms"]] == [1] * 10
+    assert {raw["benchmark_sample"]["timing"]["basis"] for raw in measurement["raw_fpms"]} == {"inter_output"}
+    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    assert measurement["expected_internal_samples"] == 10
+    assert fpm["wall_time"] == statistics.median(rep["fpms"][-1]["wall_time"] for rep in measured)
+    assert fpm["kvwarm_steady_sample"] is True and "benchmark_sample" not in fpm
+    assert s._bench_iteration_groups[0]["wall_time"] == fpm["wall_time"]
+
+
+def test_producer_protocol_names_its_repetitions_and_seeded_tokens(monkeypatch, tmp_path):
+    from collector.fpm_forward import measurement_evidence
+
+    module = load_producer(monkeypatch)
+    s = make_scheduler(module, tmp_path, [Point("prefill", 1, 1, 4, 0, rows=[[4, 0]])])
+    protocol = s._bench_measurement_protocol()
+    native = FakeBase._bench_measurement_protocol(s)
+    producer = {
+        "state_protocol": "glm53flash_prefix_cache_real_seed_v1",
+        "warmup_repeats": 5,
+        "measurement_repeats": 10,
+        "reduction": "repetition_median",
+    }
+    assert protocol == {**native, "synthetic_content": "seeded_tokens", "producer": producer}
+    # The repetitions of a point share one launch.
+    assert protocol["independent_repetitions"] == 1
+    # The reader cannot import the producer inside the runtime image, so it keeps its own copy.
+    assert producer == measurement_evidence.GLM_PRODUCER_PROTOCOL
+    assert measurement_evidence.GLM_PRODUCER_CONTENT == module.INPUT_SOURCE
 
 
 def _parallel(tp, **overrides):

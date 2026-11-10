@@ -15,6 +15,7 @@ import pytest
 from collector.fpm_forward import cli, execution_evidence, repeatability, runner
 from collector.fpm_forward.config import with_kv_warmup_defaults
 from collector.fpm_forward.database import aggregate_cell
+from collector.fpm_forward.measurement_evidence import extract_measurement_evidence
 from collector.fpm_forward.native_artifact import (
     _expected_scheduled,
     validate_native_collection,
@@ -22,7 +23,13 @@ from collector.fpm_forward.native_artifact import (
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.runtime_memory import validate_saved_plan
 
-from .test_fpm_measurement_evidence import _add_measurement_protocol, _remove_execution_protocol
+from .test_fpm_glm53flash_prefix_seed import Point as GlmPoint
+from .test_fpm_glm53flash_prefix_seed import _run_prefill_point, load_producer, make_scheduler
+from .test_fpm_measurement_evidence import (
+    _add_execution_protocol,
+    _add_measurement_protocol,
+    _remove_execution_protocol,
+)
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _native_payload, _write_provenance
 from .test_fpm_runtime_memory import _vllm_config
@@ -1804,3 +1811,187 @@ def test_historical_dynamo_deployment_hash_loads_executes_and_resumes(campaign, 
         repeatability.run_repeatability(**{**args, "generator_overrides": changed}, resume=True)
     assert len(calls) == count
     assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def _dynamo_17_campaign(tmp_path, coordinate):
+    """A Dynamo 1.7 rank artifact on vLLM 0.33.0 of one prefill point on the cell of one attention-DP rank."""
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = "0.33.0"
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.33.0"})
+    cell = next(cell for cell in plan.cells if cell.topology.dp == 1 and cell.workload_kind == "prefill")
+    plan = repeatability._subset_plan(
+        plan,
+        {"cell_id": cell.cell_id, "benchmark_points": {"schema_version": 3, "prefill": [coordinate], "decode": []}},
+    )
+    _write_campaign(tmp_path / "source", tmp_path / "source-checkpoint.json", plan)
+    (cell,) = plan.cells
+    return plan, cell, tmp_path / "source" / "cells" / cell.cell_id / "raw"
+
+
+def _producer_collection(tmp_path, *, walls, retained=None, shift_sample=None):
+    """The Dynamo 1.7 artifact of one prefill point whose measurement record the GLM-5.3-Flash producer wrote.
+
+    The producer runs its point on the fake of the native scheduler. Its measurement protocol, its retained wall time
+    and its raw samples replace the synthetic ones. ``retained`` overrides the retained wall time, and
+    ``shift_sample`` moves the start of that raw sample's timing interval by 0.1 s.
+    """
+    (tmp_path / "producer").mkdir(parents=True)
+    with pytest.MonkeyPatch.context() as patch:
+        scheduler = make_scheduler(
+            load_producer(patch), tmp_path / "producer", [GlmPoint("prefill", 1, 1, 32, 120, rows=[[32, 120]])]
+        )
+        produced = _run_prefill_point(scheduler, measured_walls=walls)["fpms"][0]
+        protocol = scheduler._bench_measurement_protocol()
+    plan, cell, raw = _dynamo_17_campaign(
+        tmp_path, {"batch_size": 1, "total_prefill_tokens": 32, "total_kv_read_tokens": 120}
+    )
+    path = raw / "pod" / "benchmark-dp0.json"
+    payload = json.loads(path.read_text())
+    ((row,), (group,)) = payload["results"], payload["iteration_groups"]
+    wall = produced["wall_time"] if retained is None else retained
+    record = produced["benchmark_measurement"]
+    samples = copy.deepcopy(record["raw_fpms"])
+    if shift_sample is not None:
+        samples[shift_sample]["benchmark_sample"]["timing"]["start_monotonic"] -= 0.1
+    payload["measurement_protocol"] = protocol
+    for fpm in (row["fpms"][0], group["rank_results"][0]["fpms"][0]):
+        assert (fpm["counter_id"], fpm["dp_rank"]) == (produced["counter_id"], produced["dp_rank"])
+        fpm["wall_time"] = wall
+        fpm["benchmark_measurement"].update(
+            expected_internal_samples=record["expected_internal_samples"],
+            estimate=copy.deepcopy(record["estimate"]),
+            raw_fpms=copy.deepcopy(samples),
+        )
+    group["wall_time"] = payload["timing"]["measured_iteration_seconds"] = wall
+    path.write_text(json.dumps(payload))
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    return raw, collection
+
+
+def _edit_rank_artifact(root, action):
+    path = root / "pod" / "benchmark-dp0.json"
+    payload = json.loads(path.read_text())
+    action(payload)
+    path.write_text(json.dumps(payload))
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_accepts_a_repetition_median_point(tmp_path):
+    root, collection = _producer_collection(
+        tmp_path, walls=[0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
+    )
+    evidence = extract_measurement_evidence(root, collection)
+    (point,) = evidence["points"].values()
+    assert point["wall_time_seconds"] == 0.455
+    # Every raw sample passes the interval rule, and the record is complete.
+    assert evidence["status"] == point["status"] == "recorded"
+    samples = point["ranks"]["0"]["observed_execution"]["samples"]
+    assert [sample["sample_index"] for sample in samples] == list(range(10))
+    assert evidence["measurement_protocol"]["independent_repetitions"] == 1
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_refuses_a_repetition_median_that_is_not_the_median(tmp_path):
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10, retained=0.5)
+    with pytest.raises(ValueError, match="benchmark_measurement reduction disagrees with retained timing"):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_refuses_a_repetition_sample_with_a_foreign_timing_interval(tmp_path):
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10, shift_sample=3)
+    with pytest.raises(ValueError, match="benchmark_sample contradicts its local timing interval"):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        # A repetition median needs the producer's protocol record.
+        ({"synthetic_content": "random", "producer": None}, "inconsistent reduction method"),
+        # Seeded token content needs it too.
+        ({"producer": None}, "malformed content settings"),
+        # A record that differs from the producer's in a value or in a JSON type is not the producer's.
+        ({"producer": {"measurement_repeats": 10.0}}, "malformed content settings"),
+        ({"producer": {"reduction": "adjacent_upper_median"}}, "malformed content settings"),
+    ],
+)
+def test_measurement_evidence_refuses_producer_values_without_the_producer_protocol(tmp_path, change, message):
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
+
+    def alter(payload):
+        protocol = payload["measurement_protocol"]
+        for key, value in change.items():
+            if value is None:
+                protocol.pop(key)
+            elif key == "producer":
+                protocol["producer"].update(value)
+            else:
+                protocol[key] = value
+
+    _edit_rank_artifact(root, alter)
+    with pytest.raises(ValueError, match=message):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_refuses_a_repetition_median_whose_samples_have_different_indices(tmp_path):
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
+
+    def renumber(payload):
+        for fpm in (payload["results"][0]["fpms"][0], payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]):
+            fpm["benchmark_measurement"]["raw_fpms"][4]["benchmark_sample"]["sample_index"] = 4
+
+    _edit_rank_artifact(root, renumber)
+    with pytest.raises(ValueError, match="invalid sample or process-local forward index"):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.parametrize("method", ["single_step", "last_step"])
+def test_measurement_evidence_reads_plain_native_reductions_as_before(tmp_path, method):
+    plan, cell, root = _dynamo_17_campaign(
+        tmp_path, {"batch_size": 1, "total_prefill_tokens": 1, "total_kv_read_tokens": 16}
+    )
+
+    def two_steps(payload):
+        # instrumented_scheduler.py:7461-7474 at ai-dynamo/dynamo@9abd2ef0d9: the native save keeps the last of the
+        # expected FPMs and names it.
+        for fpm in (payload["results"][0]["fpms"][0], payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]):
+            measurement = fpm["benchmark_measurement"]
+            first = {**copy.deepcopy(measurement["raw_fpms"][0]), "wall_time": 0.5}
+            measurement.update(
+                expected_internal_samples=2,
+                raw_fpms=[first, measurement["raw_fpms"][0]],
+                estimate={"method": "last_step", "raw_sample_indices": [1]},
+            )
+        _add_execution_protocol(payload)
+
+    if method == "last_step":
+        _edit_rank_artifact(root, two_steps)
+    collection = validate_native_collection(cell, root, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    evidence = extract_measurement_evidence(root, collection)
+    (point,) = evidence["points"].values()
+    measurement = point["ranks"]["0"]
+    assert evidence["status"] == point["status"] == "recorded"
+    assert point["wall_time_seconds"] == 0.01
+    assert measurement["estimate"]["method"] == method
+    samples = measurement["observed_execution"]["samples"]
+    assert [sample["sample_index"] for sample in samples] == list(range(len(measurement["raw_fpms"])))
+    # The producer's reduction is refused on the plain native path.
+    _edit_rank_artifact(
+        root,
+        lambda payload: [
+            fpm["benchmark_measurement"].update(
+                estimate={
+                    "method": "repetition_median",
+                    "raw_sample_indices": list(range(len(fpm["benchmark_measurement"]["raw_fpms"]))),
+                }
+            )
+            for fpm in (payload["results"][0]["fpms"][0], payload["iteration_groups"][0]["rank_results"][0]["fpms"][0])
+        ],
+    )
+    with pytest.raises(ValueError, match="inconsistent reduction method"):
+        extract_measurement_evidence(root, collection)
