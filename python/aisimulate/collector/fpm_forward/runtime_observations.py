@@ -24,7 +24,13 @@ from aisimulate_core.sdk.perf_database import load_system_spec
 from . import runtime_memory
 from .config import PrefillSamplingProfile, collection_phases
 from .planner import BackendPolicy, FPMCell
-from .runtime.fpm_memory_observer import _LEGACY_SPECS, _MAMBA_SPEC, _SPEC_MODULE, _WINDOW_SPECS
+from .runtime.fpm_memory_observer import (
+    _LEGACY_SPECS,
+    _MAMBA_SPEC,
+    _SPEC_MODULE,
+    _WINDOW_SPECS,
+    HYBRID_EVIDENCE_VERSION,
+)
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
     InstrumentationBundle,
@@ -238,6 +244,12 @@ def _validate_record(
         {**bundle.manifest["runtime"], "image": launch["deployment"]["image"]},
         "runtime build/source",
     )
+    # The hybrid rules of this import follow vLLM 0.33.0 exactly; a patch release or another version gets none.
+    version = record["runtime"]["version"]
+    if runtime_memory._hybrid_evidence(record.get("cache")) and version != HYBRID_EVIDENCE_VERSION:
+        raise ValueError(
+            f"hybrid cache evidence requires vLLM {HYBRID_EVIDENCE_VERSION}; the record names vLLM {version}"
+        )
     if record.get("unresolved_fields") != [] or record.get("error"):
         raise ValueError(
             f"runtime observation has unresolved fields: {record.get('unresolved_fields')}: {record.get('error')}"
