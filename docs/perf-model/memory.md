@@ -190,8 +190,9 @@ read them yet.
   must be positive, and it needs `prefill_checkpoint_blocks` of 1. A vLLM
   0.33.0 import writes it for a Mamba group with one checkpoint block. It
   refuses a record whose alignment does not match the count. In vLLM
-  0.33.0, a KDA layer that prefills with FlashKDA has one checkpoint block
-  with an alignment of 16 tokens. See vLLM v0.33.0
+  0.33.0, a GLM-5.3-Flash KDA layer that prefills with FlashKDA has one
+  checkpoint block with an alignment of 16 tokens. With the Triton kernel it
+  has no checkpoint block and no alignment. See vLLM v0.33.0
   [`kda.py:168-176`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/models/glm5next/common/kda.py#L168-L176)
   and
   [`kda_checkpoint.py:9-10`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/model_executor/layers/mamba/kda_checkpoint.py#L9-L10).
