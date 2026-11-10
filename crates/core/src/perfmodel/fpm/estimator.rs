@@ -22,6 +22,9 @@ pub struct EstimatorConfig {
     #[serde(skip_serializing_if = "SelectorConfig::is_default")]
     pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
+    /// Kept outside learned fitting controls to preserve their binary checkpoints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mixed_composition: Option<TemporaryMixedCompositionConfig>,
     /// Restore tuned state written by `ForwardPassPerfModel::save_state_snapshot`.
     /// Absent for ordinary construction and omitted from serialization.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,11 +86,11 @@ impl StateSnapshotConfig {
     }
 
     /// Anchor the directory and bind the manifest bytes before caller caches
-    /// use the resolved configuration. Relative paths resolve against the
-    /// working directory and are normalized lexically, without resolving
-    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
-    /// bounded.
-    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+    /// use the resolved configuration, and return those bytes. Relative paths
+    /// resolve against the working directory and are normalized lexically,
+    /// without resolving symlinks, matching the path `save_state_snapshot`
+    /// records. The manifest read is bounded.
+    pub(crate) fn resolve_source(&mut self) -> Result<Vec<u8>, AicError> {
         use sha2::{Digest, Sha256};
         self.path = super::snapshot::normalized_absolute(&self.path)?;
         let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
@@ -102,7 +105,7 @@ impl StateSnapshotConfig {
             ));
         }
         self.sha256 = Some(actual);
-        Ok(())
+        Ok(bytes)
     }
 }
 
@@ -351,6 +354,206 @@ impl FpmLearnedConfig {
         }
         Ok(())
     }
+}
+
+/// The source scenario is explicit: a frozen model alone does not identify A.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TemporaryMixedCompositionScenario {
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "a_c")]
+    AC,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporaryMixedCompositionMode {
+    Compose,
+    ComposeCalibrated,
+}
+
+/// A manifest binds the original accepted A groups and seed artifacts.
+/// Counts and attention/MoE geometry are computed natively from its groups.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalASource {
+    pub manifest_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sha256: Option<String>,
+}
+
+impl OriginalASource {
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        self.validate()?;
+        self.manifest_path =
+            std::path::absolute(&self.manifest_path).map_err(|source| AicError::Io {
+                path: self.manifest_path.clone(),
+                source,
+            })?;
+        let mut file = std::fs::File::open(&self.manifest_path).map_err(|source| AicError::Io {
+            path: self.manifest_path.clone(),
+            source,
+        })?;
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            let count = file.read(&mut bytes).map_err(|source| AicError::Io {
+                path: self.manifest_path.clone(),
+                source,
+            })?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&bytes[..count]);
+        }
+        let actual = format!("{:x}", digest.finalize());
+        if self
+            .source_sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(invalid_mixed_composition(
+                "original_a.source_sha256 does not match manifest contents",
+            ));
+        }
+        self.source_sha256 = Some(actual);
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), AicError> {
+        if self.manifest_path.as_os_str().is_empty() {
+            return Err(invalid_mixed_composition(
+                "original_a.manifest_path cannot be empty",
+            ));
+        }
+        if self.source_sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(invalid_mixed_composition(
+                "original_a.source_sha256 must contain 64 hexadecimal characters",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Reuses hybrid correction with attention/MoE coordinates. Its two policies
+/// each receive the sampling budget; their state is independent of pure models.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MixedCompositionCalibrationConfig {
+    pub sampling: SamplingConfig,
+    pub min_observations: usize,
+    pub factor_bounds: CorrectionFactorBounds,
+}
+
+impl Default for MixedCompositionCalibrationConfig {
+    fn default() -> Self {
+        Self {
+            sampling: SamplingConfig::default(),
+            min_observations: 5,
+            factor_bounds: CorrectionFactorBounds::default(),
+        }
+    }
+}
+
+impl MixedCompositionCalibrationConfig {
+    pub(crate) fn options(&self) -> ForwardPassPerfOptions {
+        ForwardPassPerfOptions {
+            correction_mode: CorrectionMode::Hybrid,
+            bucket_shape: Some(self.sampling.bins_per_axis),
+            max_observations: self.sampling.max_observations,
+            min_observations: self.min_observations,
+            min_faster_correction_factor: self.factor_bounds.min,
+            max_slower_correction_factor: self.factor_bounds.max,
+            ..ForwardPassPerfOptions::default()
+        }
+    }
+}
+
+/// Optional causal quality check for original-A missing mixed classes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MixedQualityGateConfig {
+    pub alpha: f64,
+    pub min_comparisons: usize,
+}
+
+impl Default for MixedQualityGateConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0.05,
+            min_comparisons: 5,
+        }
+    }
+}
+
+impl MixedQualityGateConfig {
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        if !self.alpha.is_finite()
+            || self.alpha <= 0.0
+            || self.alpha > 1.0
+            || self.min_comparisons == 0
+        {
+            return Err(invalid_mixed_composition(
+                "quality_gate requires 0 < alpha <= 1 and min_comparisons >= 1",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Version-one policy: interpolation, ownership fixed from the original A seed,
+/// and existing hybrid calibration over native attention/MoE scores.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporaryMixedCompositionConfig {
+    pub scenario: TemporaryMixedCompositionScenario,
+    pub mode: TemporaryMixedCompositionMode,
+    pub original_a: OriginalASource,
+    #[serde(default)]
+    pub calibration: MixedCompositionCalibrationConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_gate: Option<MixedQualityGateConfig>,
+}
+
+impl TemporaryMixedCompositionConfig {
+    fn validate(&self) -> Result<(), AicError> {
+        if !matches!(
+            (self.scenario, self.mode),
+            (
+                TemporaryMixedCompositionScenario::A,
+                TemporaryMixedCompositionMode::Compose
+            ) | (
+                TemporaryMixedCompositionScenario::AC,
+                TemporaryMixedCompositionMode::ComposeCalibrated
+            )
+        ) {
+            return Err(invalid_mixed_composition(
+                "scenario='a' requires mode='compose'; scenario='a_c' requires mode='compose_calibrated'",
+            ));
+        }
+        if let Some(gate) = &self.quality_gate {
+            if self.scenario != TemporaryMixedCompositionScenario::AC {
+                return Err(invalid_mixed_composition(
+                    "quality_gate requires scenario='a_c'",
+                ));
+            }
+            gate.validate()?;
+        }
+        self.original_a.validate()?;
+        validate_options(&self.calibration.options())
+            .map_err(|error| invalid_mixed_composition(&format!("calibration: {error}")))
+    }
+}
+
+fn invalid_mixed_composition(reason: &str) -> AicError {
+    AicError::InvalidEngineConfig(format!(
+        "estimator_config.temporary_mixed_composition: {reason}"
+    ))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -649,6 +852,17 @@ impl RegressionUpdatePolicy {
     }
 }
 
+/// Named fitted-feature sets for linear regression. A set replaces
+/// `feature_axes`; retention still uses `sampling.axes`.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegressionFeatureSet {
+    /// The 17 cross-rank aggregates of the learned `fpm5` preset, computed
+    /// from scheduled FPM v1 counts and sums only.
+    Fpm5,
+}
+
 /// Controls specific to linear fitting. Omission of `fit.linear` keeps the
 /// existing two-coordinate nonnegative fit and eager coefficient updates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -657,6 +871,10 @@ pub struct LinearFitConfig {
     pub feature_axes: Vec<RegressionFeatureAxis>,
     pub non_negative: bool,
     pub update_policy: RegressionUpdatePolicy,
+    /// Opt-in named feature set fitted instead of `feature_axes`, which must
+    /// then keep its default. Omitted from serialization when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_set: Option<RegressionFeatureSet>,
 }
 
 impl Default for LinearFitConfig {
@@ -665,6 +883,7 @@ impl Default for LinearFitConfig {
             feature_axes: default_regression_axes(),
             non_negative: true,
             update_policy: RegressionUpdatePolicy::Always,
+            feature_set: None,
         }
     }
 }
@@ -1144,6 +1363,23 @@ impl EstimatorConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         self.fpm_learned.validate()?;
+        if let Some(mixed) = &self.temporary_mixed_composition {
+            mixed.validate()?;
+            for (name, weight) in [
+                ("attention_kv_weight", self.features.attention_kv_weight),
+                (
+                    "prefill_attention_pair_weight",
+                    self.features.prefill_attention_pair_weight,
+                ),
+                ("ffn_token_weight", self.features.ffn_token_weight),
+            ] {
+                if !weight.is_finite() || weight <= 0.0 {
+                    return Err(invalid_mixed_composition(&format!(
+                        "features.{name} must be finite and strictly positive"
+                    )));
+                }
+            }
+        }
         self.selector.validate()?;
         if let Some(snapshot) = &self.state_snapshot {
             snapshot.validate()?;
@@ -1179,6 +1415,37 @@ impl EstimatorConfig {
             ));
         }
         validate_regression_axes(&linear.feature_axes, "fit.linear.feature_axes")?;
+        if let Some(RegressionFeatureSet::Fpm5) = linear.feature_set {
+            if !is_default_regression_axes(&linear.feature_axes) {
+                return Err(invalid_regression_config(
+                    "fit.linear.feature_set",
+                    "cannot be combined with non-default fit.linear.feature_axes",
+                ));
+            }
+            // Every fpm5 fit already uses the exact retained rows, so no
+            // rebuild clock exists to schedule.
+            if self.fpm_regression.fit.rebuild_interval.is_some() {
+                return Err(invalid_regression_config(
+                    "fit.rebuild_interval",
+                    "must be null for fit.linear.feature_set='fpm5'",
+                ));
+            }
+            // Ratios such as mean_decode_kv duplicate their sums under a fixed
+            // batch; only the ridge keeps those normal equations solvable.
+            if self.fpm_regression.fit.singular_ridge_scale <= 0.0 {
+                return Err(invalid_regression_config(
+                    "fit.singular_ridge_scale",
+                    "must be positive for fit.linear.feature_set='fpm5'",
+                ));
+            }
+            // Each store needs one more retained row than fitted features.
+            if self.fpm_regression.sampling.max_observations <= super::learned::FPM5_FEATURE_COUNT {
+                return Err(invalid_regression_config(
+                    "sampling.max_observations",
+                    "must be at least 18 for fit.linear.feature_set='fpm5'",
+                ));
+            }
+        }
         let RegressionUpdatePolicy::ErrorThreshold {
             relative_tolerance,
             absolute_tolerance_ms,
@@ -1916,6 +2183,92 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("sampling.axes")
+        );
+    }
+
+    #[test]
+    fn fpm5_feature_set_is_opt_in_and_round_trips() {
+        // Absent sets keep the existing wire format of every linear block.
+        assert_eq!(
+            serde_json::to_value(LinearFitConfig::default()).unwrap(),
+            serde_json::json!({
+                "feature_axes": ["attention", "moe"], "non_negative": true,
+                "update_policy": {"kind": "always"},
+            }),
+        );
+        assert!(
+            !serde_json::to_string(&EstimatorConfig::default())
+                .unwrap()
+                .contains("feature_set")
+        );
+        let config: EstimatorConfig = serde_json::from_value(serde_json::json!({
+            "fpm_regression": {"fit": {"linear": {"feature_set": "fpm5", "non_negative": false}}}
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let linear = config.fpm_regression.fit.linear.as_ref().unwrap();
+        assert_eq!(linear.feature_set, Some(RegressionFeatureSet::Fpm5));
+        assert_eq!(linear.feature_axes, default_regression_axes());
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            serialized["fpm_regression"]["fit"]["linear"],
+            serde_json::json!({
+                "feature_axes": ["attention", "moe"], "non_negative": false,
+                "update_policy": {"kind": "always"}, "feature_set": "fpm5",
+            }),
+        );
+        assert_eq!(
+            serde_json::from_value::<EstimatorConfig>(serialized).unwrap(),
+            config
+        );
+        assert!(serde_json::from_str::<LinearFitConfig>(r#"{"feature_set":"fpm6"}"#).is_err());
+    }
+
+    #[test]
+    fn fpm5_feature_set_rejects_axes_spline_and_small_stores() {
+        let error = |edit: &dyn Fn(&mut EstimatorConfig)| {
+            let mut config = EstimatorConfig::default();
+            config.fpm_regression.fit.linear = Some(LinearFitConfig {
+                feature_set: Some(RegressionFeatureSet::Fpm5),
+                ..LinearFitConfig::default()
+            });
+            edit(&mut config);
+            config.validate().err().map(|error| error.to_string())
+        };
+        assert_eq!(error(&|_| {}), None);
+        let message = error(&|config| {
+            let linear = config.fpm_regression.fit.linear.as_mut().unwrap();
+            linear.feature_axes = vec![RegressionFeatureAxis::Count];
+        })
+        .unwrap();
+        assert!(message.contains("fit.linear.feature_set"), "{message}");
+        let message = error(&|config| {
+            config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        })
+        .unwrap();
+        assert!(message.contains("fit.linear requires"), "{message}");
+        let message = error(&|config| {
+            config.fpm_regression.sampling.max_observations = 17;
+        })
+        .unwrap();
+        assert!(message.contains("sampling.max_observations"), "{message}");
+        let message =
+            error(&|config| config.fpm_regression.fit.singular_ridge_scale = 0.0).unwrap();
+        assert!(message.contains("fit.singular_ridge_scale"), "{message}");
+        let message =
+            error(&|config| config.fpm_regression.fit.rebuild_interval = Some(4096)).unwrap();
+        assert!(message.contains("fit.rebuild_interval"), "{message}");
+        assert_eq!(
+            error(&|config| config.fpm_regression.sampling.max_observations = 18),
+            None
+        );
+        // Retention axes stay independent of the fitted set.
+        assert_eq!(
+            error(&|config| {
+                config.fpm_regression.sampling.axes = vec![RegressionFeatureAxis::Count];
+                config.fpm_regression.sampling.bins_per_axis = vec![8];
+            }),
+            None
         );
     }
 

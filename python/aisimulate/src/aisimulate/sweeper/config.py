@@ -25,10 +25,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
@@ -36,7 +37,7 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode, _validate_replay_estimation_mode
+from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
 
 
 class OptimizationTarget(str, Enum):
@@ -55,7 +56,7 @@ class OptimizationTarget(str, Enum):
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
-    # Standalone AISimulate only; Dynamo integration does not support this target.
+    # Static engine pools, optionally behind the Dynamo Router; the Dynamo Planner is unsupported.
     MIN_GPUS = "min_gpus"  # minimize provisioned GPUs subject to workload/SLA constraints
     PARETO = "pareto"  # multi-objective: Pareto front over pareto_objectives
 
@@ -103,6 +104,10 @@ class SLATarget(BaseModel):
 # target and the per-objective list under a pareto goal.
 _SLA_TARGETS = frozenset({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
 
+# Adapters that keep min_gpus well defined. Router placement adds no GPUs and leaves the
+# engine pool static; Planner autoscaling would make the provisioned GPU count time-varying.
+_MIN_GPUS_ADAPTERS = frozenset({"dynamo.router"})
+
 # Default Pareto objectives: throughput per GPU (y) vs mean per-user throughput (x) —
 # the InferenceX tok/s/gpu vs tok/s/user frontier.
 _DEFAULT_PARETO_OBJECTIVES = (
@@ -116,12 +121,14 @@ class OptimizationGoal(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target: OptimizationTarget = OptimizationTarget.THROUGHPUT
+    target: OptimizationTarget | AIPerfMetric = OptimizationTarget.THROUGHPUT
+    # Aggregate AIPerf metric constraints, enforced only with strict_sla.
+    metric_constraints: list[MetricConstraint] = Field(default_factory=list)
     # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
     sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
-    pareto_objectives: list[OptimizationTarget] | None = None
+    pareto_objectives: list[OptimizationTarget | AIPerfMetric] | None = None
     # Preserve replay goodput's per-request SLA semantics by default. When
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
@@ -129,11 +136,21 @@ class OptimizationGoal(BaseModel):
     min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @property
+    def uses_aiperf_metrics(self) -> bool:
+        targets = self.resolved_pareto_objectives if self.is_pareto else [self.target]
+        return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
+
+    @property
+    def enforced_metric_constraints(self) -> list[MetricConstraint]:
+        # min_gpus forces the mean SLA gate, but metric constraints stay opt-in via strict_sla.
+        return self.metric_constraints if self.strict_sla else []
+
+    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
-    def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
+    def resolved_pareto_objectives(self) -> list[OptimizationTarget | AIPerfMetric]:
         """The effective Pareto objective list: the configured one, or the default pair only
         when unset (``None``). An explicitly-supplied empty/short list is kept as-is so the
         validator's ``len < 2`` guard rejects it (rather than silently using the default).
@@ -168,8 +185,8 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and not has_sla:
-            raise ValueError("strict_sla requires at least one SLA bound")
+        if self.strict_sla and not has_sla and not self.metric_constraints:
+            raise ValueError("strict_sla requires at least one SLA bound or metric constraint")
         if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
             raise ValueError("min_gpus requires at least one SLA bound")
         if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
@@ -305,11 +322,12 @@ class Workload(BaseModel):
     trace_block_size: int | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
+    weka_client: Literal["recorded", "agentx"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
-    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"] = "repeated_prefixes"
     agentic_profile: AgenticProfileOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
@@ -436,12 +454,18 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.weka_client is not None and (
+            self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
+        ):
+            raise ValueError("weka_client requires Weka trace input")
         if self.agentic_warmup and self.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
         if self.agentic_warmup_policy == "live_trajectory_v1" and (
             not self.agentic_warmup or self.agentic_profile is None
         ):
             raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if self.agentic_warmup_policy == "primers_only" and not self.agentic_warmup:
+            raise ValueError("primers_only requires agentic_warmup")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if (
@@ -649,7 +673,8 @@ class SearchSpace(BaseModel):
     # pinned
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
-    decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_enable_prefix_caching: bool = False
+    decode_radix_cache: bool = False  # SGLang --disaggregation-decode-enable-radix-cache
     decode_kv_bytes_per_token: int | str = "auto"
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
@@ -692,12 +717,17 @@ class SearchSpace(BaseModel):
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
+    # Validated snapshots of roles whose estimator controls name one.
+    _state_snapshots: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_estimator_selection(cls, value):
+        from .state_snapshot import derive_snapshot_roles, reject_engine_wide_snapshot
+
         if not isinstance(value, dict):
             return value
+        reject_engine_wide_snapshot(value)
         modes = value.get("deployment_mode")
         if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
             "encoder"
@@ -719,13 +749,13 @@ class SearchSpace(BaseModel):
                     "estimation_mode", "fpm_interpolation" if legacy == "fpm" else "op_level"
                 )
         value["role_estimator_controls"] = controls
-        return value
+        # Roles timed by a state snapshot take their engine identity from it
+        # before any field is validated or defaulted.
+        return derive_snapshot_roles(value)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
-        for controls in self.role_estimator_controls.values():
-            _validate_replay_estimation_mode(controls.get("estimation_mode"))
         if self.fpm_profile is not None:
             from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
@@ -831,7 +861,15 @@ class SearchSpace(BaseModel):
         raise ValueError(f"unknown engine role {role!r}")
 
     def systems_paths_for(self, role: str) -> list[str] | None:
+        snapshot = self._state_snapshots.get(role)
+        if snapshot is not None and snapshot.packed_root is not None:
+            return [snapshot.packed_root]
         return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
+
+    def state_snapshot_role(self, role: str) -> Any:
+        """The validated state snapshot timing ``role``, if its estimator controls name one."""
+
+        return self._state_snapshots.get(role)
 
     @field_validator(
         "afd_tp_a_candidates",
@@ -879,6 +917,8 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_afd_contract(self) -> SearchSpace:
         afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if afd_modes and self.decode_radix_cache:
+            raise ValueError("decode_radix_cache is unsupported for AFD")
         if self.afd_phase not in {"prefill", "decode", "both"}:
             raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
         if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
@@ -995,6 +1035,33 @@ class SearchSpace(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _bind_state_snapshots(self) -> SearchSpace:
+        """Keep each snapshot role's validated snapshot for estimator construction."""
+        from .forward_pass_estimator import resolve_systems_paths
+        from .state_snapshot import load_snapshot_role, state_snapshot_reference
+
+        if self._uses_legacy_estimator_provider():
+            return self
+        roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
+            {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
+        )
+        self._state_snapshots = {
+            role: load_snapshot_role(role, reference)
+            for role, controls in self.role_estimator_controls.items()
+            if role in roles and (reference := state_snapshot_reference(controls)) is not None
+        }
+        for role, snapshot in self._state_snapshots.items():
+            # Regression and learned models read no performance data.
+            if snapshot.fitted:
+                continue
+            if snapshot.packed_root is None and len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
+                raise ValueError(
+                    f"{snapshot.describe()} references performance data outside the snapshot; give the "
+                    f"{role} role exactly one systems root holding that data"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_backend_versions(self) -> SearchSpace:
         configured = list(dict.fromkeys(self.backend))
         if isinstance(self.backend_version, str):
@@ -1022,6 +1089,13 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_engine_controls(self):
+        if self.decode_radix_cache and "sglang" not in self.backend:
+            raise ValueError("decode_radix_cache requires a search with backend=sglang")
+        if self.decode_radix_cache and "disagg" in self.deployment_mode:
+            if not self.decode_enable_prefix_caching:
+                raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
+            if self.aic_nextn or self.speculation is not None:
+                raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
         if self.enable_chunked_prefill is not None and any(
             mode not in {"agg", "disagg"} for mode in self.deployment_mode
         ):
@@ -1293,31 +1367,41 @@ class SmartSearchConfig(BaseModel):
         if self.goal.target is not OptimizationTarget.MIN_GPUS:
             return self
         workload = self.workload
-        if self.adapters:
-            raise ValueError("min_gpus requires static engine pools without adapters")
+        if "dynamo.planner" in self.adapters:
+            raise ValueError(
+                "min_gpus does not support dynamo.planner: Planner autoscaling makes the provisioned GPU count "
+                "time-varying; remove the planner section or choose another target"
+            )
+        unsupported = sorted(set(self.adapters) - _MIN_GPUS_ADAPTERS)
+        if unsupported:
+            raise ValueError(
+                f"min_gpus supports only the dynamo.router adapter over static engine pools, got {unsupported}"
+            )
         if (
-            workload.trace_path is not None
-            or workload.trace_paths is not None
-            or workload.source_type not in (None, "synthetic")
-            or workload.turns_per_session != 1
-            or workload.kv_load_ratio is not None
+            workload.kv_load_ratio is not None
             or workload.load_search_field is not None
             or workload.load_choices is not None
             or workload.load_range is not None
         ):
-            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
-        allowed_load_types = (
-            {None, "constant_rate", "poisson"} if workload.request_rate is not None else {None, "concurrency"}
-        )
-        if workload.load_type not in allowed_load_types:
-            raise ValueError("min_gpus requires a synthetic load_type matching the fixed load field")
-        if workload.request_rate is not None:
+            raise ValueError("min_gpus requires a fixed absolute traffic load")
+        if workload.is_trace_based:
+            capped = workload.replay_concurrency is not None
+            closed_loop = capped or workload.agentic_lanes is not None
+            load_types = {None, "concurrency"} if capped else {None, "trace_timestamps"}
+            # Trace timestamps set the offered rate, and validation does not read the trace.
+            offered_rps = None
+        else:
+            closed_loop = workload.concurrency is not None
+            load_types = {None, "concurrency"} if closed_loop else {None, "constant_rate", "poisson"}
+            # A session rate counts sessions; each session offers turns_per_session requests.
+            offered_rps = None if closed_loop else workload.request_rate * workload.turns_per_session
+        if workload.load_type not in load_types:
+            raise ValueError("min_gpus requires a load_type matching the fixed load field")
+        if not closed_loop:
             if self.goal.min_goodput_rps is None:
-                raise ValueError("min_gpus with request-rate traffic requires min_goodput_rps")
-            if self.goal.min_goodput_rps > workload.request_rate:
+                raise ValueError("min_gpus with open-loop traffic requires min_goodput_rps")
+            if offered_rps is not None and self.goal.min_goodput_rps > offered_rps:
                 raise ValueError("min_goodput_rps cannot exceed the offered request rate")
-        elif workload.concurrency is None:
-            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
         encoder = self.search_space.encoder
         if encoder is not None and encoder.mode == "analytical" and self.goal.min_goodput_rps is not None:
             raise ValueError("analytical EPD cannot enforce min_goodput_rps")

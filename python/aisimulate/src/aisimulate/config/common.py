@@ -13,6 +13,8 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -156,6 +158,7 @@ class ExecutionConfig(StrictModel):
 
 
 class CandidateConstraints(StrictModel):
+    metrics: list[MetricConstraint] = Field(default_factory=list)
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
     min_goodput_rps: PositiveFiniteFloat | None = None
@@ -168,17 +171,20 @@ class CandidateConstraints(StrictModel):
 
 
 class OptimizationConfig(StrictModel):
-    target: Literal[
-        "throughput",
-        "throughput_per_gpu",
-        "throughput_per_user",
-        "goodput",
-        "goodput_per_gpu",
-        "min_gpus",
-        "ttft",
-        "e2e_latency",
-        "pareto",
-    ] = "throughput"
+    target: (
+        Literal[
+            "throughput",
+            "throughput_per_gpu",
+            "throughput_per_user",
+            "goodput",
+            "goodput_per_gpu",
+            "min_gpus",
+            "ttft",
+            "e2e_latency",
+            "pareto",
+        ]
+        | AIPerfMetric
+    ) = "throughput"
     hardware: str | None = None
     strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
@@ -278,8 +284,15 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 
 
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
-    """Keep additive defaults out of timing payloads parsed by older runners."""
+    """Keep additive defaults out of timing payloads parsed by older runners.
+
+    A configuration that restores a state snapshot keeps them: restoration
+    compares the saved identity exactly, and only a current runner restores one.
+    """
     result = dict(config)
+    estimator_config = result.get("estimator_config")
+    if isinstance(estimator_config, dict) and estimator_config.get("state_snapshot") is not None:
+        return result
     for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)

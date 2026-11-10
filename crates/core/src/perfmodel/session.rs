@@ -11,6 +11,7 @@
 //! op lists from an [`crate::perfmodel::engine::spec::EngineSpec`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::common::error::AicError;
 use crate::operators::base::PerformanceResult;
@@ -27,17 +28,21 @@ pub(crate) struct OpListPlan {
     query_slots: usize,
     /// First-encounter slot of each op's name, for folding without name scans.
     name_slot: Vec<usize>,
-    names: usize,
+    /// Distinct op names indexed by name slot.
+    names: Arc<[String]>,
 }
 
 impl OpListPlan {
     pub(crate) fn new(ops: &[Op]) -> Self {
-        let mut names = HashMap::<&str, usize>::new();
+        let mut slots = HashMap::<&str, usize>::new();
+        let mut names = Vec::new();
         let name_slot = ops
             .iter()
             .map(|op| {
-                let next = names.len();
-                *names.entry(op.name()).or_insert(next)
+                *slots.entry(op.name()).or_insert_with(|| {
+                    names.push(op.name().to_owned());
+                    names.len() - 1
+                })
             })
             .collect();
         let mut identities = HashMap::<String, usize>::new();
@@ -54,7 +59,7 @@ impl OpListPlan {
             query_slot,
             query_slots: identities.len(),
             name_slot,
-            names: names.len(),
+            names: names.into(),
         }
     }
 
@@ -65,7 +70,12 @@ impl OpListPlan {
 
     /// Number of distinct op names.
     pub(crate) fn names(&self) -> usize {
-        self.names
+        self.names.len()
+    }
+
+    /// Distinct op names indexed by name slot, shared by every pass.
+    pub(crate) fn slot_names(&self) -> &Arc<[String]> {
+        &self.names
     }
 
     pub(crate) fn query_slot(&self, index: usize) -> Option<usize> {
@@ -288,12 +298,34 @@ pub(crate) fn query_context_op(
     seq_imbalance_correction_scale: f64,
     x_override: Option<u32>,
 ) -> Result<PerformanceResult, AicError> {
+    op.query(
+        db,
+        &context_op_runtime(
+            op,
+            batch_size,
+            effective_isl,
+            prefix,
+            seq_imbalance_correction_scale,
+            x_override,
+        ),
+    )
+}
+
+/// The [`RuntimeContext`] [`query_context_op`] prices `op` at.
+pub(crate) fn context_op_runtime(
+    op: &Op,
+    batch_size: u32,
+    effective_isl: u32,
+    prefix: u32,
+    seq_imbalance_correction_scale: f64,
+    x_override: Option<u32>,
+) -> RuntimeContext {
     let x = x_override.unwrap_or(if op.is_logits_gemm() {
         batch_size
     } else {
         batch_size * effective_isl
     });
-    let ctx = RuntimeContext {
+    RuntimeContext {
         batch_size,
         beam_width: 1,
         s: effective_isl,
@@ -302,8 +334,7 @@ pub(crate) fn query_context_op(
         seq_imbalance_correction_scale,
         gen_seq_imbalance_correction_scale: 1.0,
         num_image_tokens: 0,
-    };
-    op.query(db, &ctx)
+    }
 }
 
 /// Python `_run_generation_phase` inner loop body for a single decode step
@@ -446,7 +477,29 @@ pub(crate) fn query_generation_op(
     prefix: u32,
     x_override: Option<u32>,
 ) -> Result<PerformanceResult, AicError> {
-    let ctx = RuntimeContext {
+    op.query(
+        db,
+        &generation_op_runtime(
+            batch_size,
+            beam_width,
+            kv_seq_tokens,
+            gen_seq_imbalance_correction_scale,
+            prefix,
+            x_override,
+        ),
+    )
+}
+
+/// The [`RuntimeContext`] [`query_generation_op`] prices an op at.
+pub(crate) fn generation_op_runtime(
+    batch_size: u32,
+    beam_width: u32,
+    kv_seq_tokens: u32,
+    gen_seq_imbalance_correction_scale: f64,
+    prefix: u32,
+    x_override: Option<u32>,
+) -> RuntimeContext {
+    RuntimeContext {
         batch_size,
         beam_width: beam_width.max(1),
         s: kv_seq_tokens,
@@ -455,8 +508,7 @@ pub(crate) fn query_generation_op(
         seq_imbalance_correction_scale: 1.0,
         gen_seq_imbalance_correction_scale,
         num_image_tokens: 0,
-    };
-    op.query(db, &ctx)
+    }
 }
 
 /// FPM-telemetry mix-step composition (the Dynamo mocker contract). Consumed
@@ -471,21 +523,29 @@ pub(crate) fn query_generation_op(
 ///    context-attention ops, with `batch=1`, `isl=ctx_tokens+gen_tokens`,
 ///    `prefix=combined_prefix`.
 /// 2. Context attention contribution: re-run only context-attention ops with
-///    the prefill batch shape (`batch = ceil(ctx_tokens/isl)`).
+///    the prefill batch shape (`batch = prefill_batch` requests of
+///    `new_tokens_per_prefill_req` tokens).
 /// 3. Decode attention contribution: iterate `generation_ops`, only
 ///    generation-attention ops, with the decode batch shape.
+///
+/// `on_op` observes each queried op: whether it runs in a context pass
+/// (passes 1 and 2) or the decode pass, its index in its op list, the op,
+/// its runtime context, its RAW result and the divisor the total applies to
+/// it (pass 2's `scale_factor`, otherwise 1).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn get_mix_step_ops(
-    context_ops: &[Op],
-    generation_ops: &[Op],
+pub(crate) fn get_mix_step_ops<'a>(
+    context_ops: &'a [Op],
+    generation_ops: &'a [Op],
     db: &PerfDatabase,
     ctx_tokens: u32,
     gen_tokens: u32,
     new_tokens_per_prefill_req: u32,
+    prefill_batch: u32,
     prefix_per_req: u32,
     combined_prefix: u32,
     kv_per_decode_req: u32,
     decode_batch: u32,
+    mut on_op: impl FnMut(bool, usize, &'a Op, &RuntimeContext, PerformanceResult, f64),
 ) -> Result<f64, AicError> {
     // ---- Pass 1: combined non-attention work (batch=1, isl=ctx+gen) ----
     // Python: `run_static` is called with `isl = num_tokens_combined`
@@ -506,7 +566,7 @@ pub(crate) fn get_mix_step_ops(
     // ignored, so threading it through is harmless.
     let effective_isl_combined = (ctx_tokens + gen_tokens).max(1);
     let mut total = 0.0_f64;
-    for op in context_ops {
+    for (index, op) in context_ops.iter().enumerate() {
         if op.is_context_attention() {
             continue;
         }
@@ -525,7 +585,9 @@ pub(crate) fn get_mix_step_ops(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        total += op.query(db, &ctx)?.latency_ms;
+        let result = op.query(db, &ctx)?;
+        total += result.latency_ms;
+        on_op(true, index, op, &ctx, result, 1.0);
     }
 
     // ---- Pass 2: context attention with prefill batch ----
@@ -537,13 +599,15 @@ pub(crate) fn get_mix_step_ops(
     // The FPM only carries this chunk's metrics. For the common
     // un-chunked path (chunk == one request's new tokens) we treat
     // `new_tokens_per_prefill_req` as the per-request ISL and the
-    // ceil/scale cancel to 1; chunked-prefill callers should encode
-    // their full ISL through the packing if they need exact parity
-    // with Python's chunked path.
+    // scale is 1; chunked-prefill callers should encode their full ISL
+    // through the packing if they need exact parity with Python's
+    // chunked path. The batch is the pass's own request count: with the
+    // integer mean as the ISL, `ceil(ctx_tokens / isl)` would add a request
+    // whenever the count does not divide `ctx_tokens`.
     let isl_eff_pass2 = new_tokens_per_prefill_req.max(1);
-    let ctx_attn_batch = ((ctx_tokens + isl_eff_pass2 - 1) / isl_eff_pass2).max(1);
+    let ctx_attn_batch = prefill_batch.max(1);
     let scale_factor = ((isl_eff_pass2 + ctx_tokens - 1) / ctx_tokens.max(1)).max(1) as f64;
-    for op in context_ops {
+    for (index, op) in context_ops.iter().enumerate() {
         if !op.is_context_attention() {
             continue;
         }
@@ -557,7 +621,9 @@ pub(crate) fn get_mix_step_ops(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        total += op.query(db, &ctx)?.latency_ms / scale_factor;
+        let result = op.query(db, &ctx)?;
+        total += result.latency_ms / scale_factor;
+        on_op(true, index, op, &ctx, result, scale_factor);
     }
 
     // ---- Pass 3: generation attention with decode batch ----
@@ -568,7 +634,7 @@ pub(crate) fn get_mix_step_ops(
     // than query at the `decode_batch.max(1)` floor, which would add a spurious
     // batch-1 generation_attention and inflate the step latency.
     if decode_batch > 0 {
-        for op in generation_ops {
+        for (index, op) in generation_ops.iter().enumerate() {
             if !op.is_generation_attention() {
                 continue;
             }
@@ -582,7 +648,9 @@ pub(crate) fn get_mix_step_ops(
                 gen_seq_imbalance_correction_scale: 1.0,
                 num_image_tokens: 0,
             };
-            total += op.query(db, &ctx)?.latency_ms;
+            let result = op.query(db, &ctx)?;
+            total += result.latency_ms;
+            on_op(false, index, op, &ctx, result, 1.0);
         }
     }
 

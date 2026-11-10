@@ -16,8 +16,10 @@ from aisimulate_core.sdk.models.helpers import (
     attention_projection_exclusions,
     build_large_ep_moe_ops,
     large_ep_gpus_per_node,
+    modelopt_shared_experts_unlisted,
     mtp_scale_factor,
     quant_exclude_patterns,
+    validate_modelopt_targets_only_gemm_mode,
     validate_trtllm_large_ep,
 )
 
@@ -85,11 +87,16 @@ class DeepSeekModel(BaseModel):
         # whole self_attn block from quantization; DeepSeek-V3.1-NVFP4 excludes
         # only q/kv projections and keeps o_proj NVFP4; native FP8 checkpoints
         # exclude nothing. Drives per-GEMM dtypes and the MLA-module perf key.
-        attn_exclusions = attention_projection_exclusions(model_info.get("raw_config") or {})
+        # Targets-only ModelOpt MIXED_PRECISION exports keep every module absent
+        # from quantized_layers unquantized (helpers.modelopt_mixed_precision_targets);
+        # the listed non-expert GEMMs must agree with the coarse gemm mode.
+        raw_config = model_info.get("raw_config") or {}
+        if not model_info.get("gemm_quant_mode_is_explicit", False):
+            validate_modelopt_targets_only_gemm_mode(raw_config, model_config.gemm_quant_mode)
+        attn_exclusions = attention_projection_exclusions(raw_config)
         shared_expert_excluded = any(
-            "shared_expert" in str(pattern).lower()
-            for pattern in quant_exclude_patterns(model_info.get("raw_config") or {})
-        )
+            "shared_expert" in str(pattern).lower() for pattern in quant_exclude_patterns(raw_config)
+        ) or modelopt_shared_experts_unlisted(raw_config)
         shared_expert_quant_mode = model_config.gemm_quant_mode
         if shared_expert_excluded and not model_info["gemm_quant_mode_is_explicit"]:
             shared_expert_quant_mode = common.GEMMQuantMode.bfloat16

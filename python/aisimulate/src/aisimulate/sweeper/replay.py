@@ -209,6 +209,9 @@ class BackendDeploymentSpec:
     # Per-worker tokenization: ``{"workers", "base_ms", "per_input_token_ms"}``.
     # Omitted from canonical JSON when unset, so existing spec identities hold.
     tokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
+    # Per-worker detokenization: ``{"workers", "base_ms", "per_output_ms"}``.
+    # Omitted from canonical JSON when unset.
+    detokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
 
 
 @dataclass(frozen=True)
@@ -255,7 +258,17 @@ class ReplayReport:
 
 @dataclass(frozen=True)
 class ReplayOutputRequirements:
-    """Optional detail requested from a Runner without changing replay semantics."""
+    """Optional detail requested from a Runner.
+
+    Capture fields never change replay semantics. ``defer_encoder_overlay`` does: an
+    analytical EPD replay returns its language report, and the caller applies each
+    encoder pool's overlay.
+
+    ``capture_telemetry`` retains native all-phase request, sample, and lifecycle
+    records under ``metadata["native_report"]["telemetry"]``. It collects request
+    detail internally without enabling the separate profiling-only
+    ``capture_per_request`` output. Sampling uses the absolute virtual clock.
+    """
 
     include_raw_report: bool = False
     capture_per_request: bool = False
@@ -263,6 +276,7 @@ class ReplayOutputRequirements:
     telemetry_sample_interval_ms: float = 1000.0
     capture_memory_diagnostics: bool = False
     capture_performance_diagnostics: bool = False
+    defer_encoder_overlay: bool = False
 
     def __post_init__(self) -> None:
         interval = self.telemetry_sample_interval_ms
@@ -306,6 +320,10 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
     ranks = [(role, args, args.get("rank", args)) for role, args in roles]
     if not any(isinstance(rank, Mapping) and rank.get("native_host_offload") is not None for _, _, rank in ranks):
         return
+    # Imported here: the SDK loads the Rust runtime, and this module is read
+    # where it is not built, through result.py.
+    from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
     deployment = spec.backend_deployment
     if spec.execution_mode != "offline":
         raise ValueError("agentic host offload requires offline execution")
@@ -317,8 +335,21 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         counts = (deployment.num_prefill_workers, deployment.num_decode_workers)
     else:
         raise ValueError("agentic host offload supports only aggregated or disaggregated workers")
-    if any(type(count) is not int or count != 1 for count in counts):
-        raise ValueError("agentic host offload requires one aggregated worker or one prefill and one decode worker")
+    # Each aggregated worker owns a private G2; a shared pool and P/D keep one
+    # worker per role.
+    shared = any(
+        isinstance(rank, Mapping)
+        and isinstance(rank.get("native_host_offload"), Mapping)
+        and rank["native_host_offload"].get("scope", "dp_rank_local") != "dp_rank_local"
+        for _, _, rank in ranks
+    )
+    if any(type(count) is not int or count < 1 for count in counts) or (
+        any(count != 1 for count in counts) and (deployment.deployment_mode != "agg" or shared)
+    ):
+        raise ValueError(
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker, "
+            "or static aggregated workers with scope=dp_rank_local"
+        )
     if any(hook.kind == "scaling_policy" for hook in spec.runtime_hooks):
         raise ValueError("agentic host offload requires static worker pools without a scaling policy")
     for role, args, rank in ranks:
@@ -349,14 +380,39 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
             or any(identity.get(name) is not None for name in ("aic_nextn", "speculation"))
             or identity.get("nextn") not in (None, 0)
         ):
-            raise ValueError("agentic replay requires speculative decoding disabled")
+            selections = [
+                selection
+                for selection in (rank.get("speculation"), identity.get("speculation"))
+                if selection is not None
+            ]
+            if not (
+                deployment.deployment_mode == "agg"
+                and role == "aggregated"
+                and deployment.num_workers == 1
+                and selections
+                and all(isinstance(selection, Mapping) and selection.get("kind") == "mtp" for selection in selections)
+                and isinstance(offload, Mapping)
+                and offload.get("scope", "dp_rank_local") == "dp_rank_local"
+                and rank.get("enable_prefix_caching", True) is True
+                and rank.get("g3_offload") is None
+                and rank.get("state_cache") is None
+                and rank.get("prefix_match_unit") is None
+                and not rank.get("kv_cache_groups")
+            ):
+                raise ValueError(
+                    "agentic G2 replay requires speculative decoding disabled except canonical MTP "
+                    "on an aggregated worker with prefix caching and scope=dp_rank_local"
+                )
         prefix = "" if role == "aggregated" else f"{role}_"
+        # A fitted snapshot's identity may spell its width unknown; as in the
+        # runner, that leaves the role's own DP, which the other sources give.
+        known_identity = {name: value for name, value in identity.items() if value != UNKNOWN_IDENTITY}
         dp_values = [
             source[name]
             for source, names in (
                 (args, ("dp_size", "aic_attention_dp_size")),
                 (rank, ("dp_size", "aic_attention_dp_size")),
-                (identity, ("attention_dp", "attention_dp_size")),
+                (known_identity, ("attention_dp", "attention_dp_size")),
                 (deployment.parallel_config, (f"{prefix}attention_dp",)),
             )
             for name in names
@@ -394,8 +450,14 @@ class RunnerCapabilities:
     supports_native_epd: bool = False
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
+    supports_weka_client: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
+    supports_detokenization: bool = False
+    supports_deferred_encoder_overlay: bool = False
+    supports_mtp_host_offload: bool = False
+
+    supports_agentic_primers_only: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -527,6 +589,20 @@ class RunnerCapabilities:
                     raise ValueError("generic speculation is unsupported for AFD")
                 if not self.supports_generic_speculation:
                     raise ValueError("runner does not support generic speculation; use --stack engine")
+            if rank.get("native_host_offload") is not None:
+                canonical_mtp = any(
+                    isinstance(selection, Mapping) and selection.get("kind") == "mtp"
+                    for selection in (requested_speculation, identity.get("speculation"))
+                )
+                legacy_depth = any(
+                    controls.get(name) not in (None, 0)
+                    for controls in (rank, identity)
+                    for name in ("aic_nextn", "nextn")
+                )
+                if legacy_depth and not canonical_mtp:
+                    raise ValueError("native_host_offload with speculative decoding requires canonical mtp speculation")
+                if canonical_mtp and not self.supports_mtp_host_offload:
+                    raise ValueError("runner does not support MTP with host offload; use --stack engine")
             explicit_mtp = isinstance(requested_speculation, Mapping) and requested_speculation.get("kind") == "mtp"
             if explicit_mtp or any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
                 if is_afd:
@@ -565,6 +641,13 @@ class RunnerCapabilities:
                 raise ValueError("runner does not support engine.tokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.tokenization requires offline replay")
+        if deployment.detokenization is not None:
+            if is_afd:
+                raise ValueError("engine.detokenization is unsupported for AFD")
+            if not self.supports_detokenization:
+                raise ValueError("runner does not support engine.detokenization; use --stack engine")
+            if spec.execution_mode != "offline":
+                raise ValueError("engine.detokenization requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None:
@@ -586,6 +669,14 @@ class RunnerCapabilities:
                 raise ValueError("weka_nested_timestamp_basis requires Weka input")
             if weka_basis not in {"auto", "absolute", "relative"}:
                 raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
+        weka_client = spec.workload.get("weka_client")
+        if weka_client is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_client requires Weka input")
+            if weka_client not in {"recorded", "agentx"}:
+                raise ValueError("weka_client must be 'recorded' or 'agentx'")
+            if weka_client == "agentx" and not self.supports_weka_client:
+                raise ValueError("runner does not support weka_client 'agentx'; use --stack engine")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:
@@ -613,7 +704,11 @@ class RunnerCapabilities:
             if not self.supports_agentic_warmup:
                 raise ValueError("runner does not support agentic warmup")
         warmup_policy = spec.workload.get("agentic_warmup_policy", "repeated_prefixes")
-        if not isinstance(warmup_policy, str) or warmup_policy not in {"repeated_prefixes", "live_trajectory_v1"}:
+        if not isinstance(warmup_policy, str) or warmup_policy not in {
+            "repeated_prefixes",
+            "live_trajectory_v1",
+            "primers_only",
+        }:
             raise ValueError("unknown agentic_warmup_policy")
         if warmup_policy == "live_trajectory_v1":
             if not agentic_warmup or agentic_profile is None:
@@ -622,6 +717,14 @@ class RunnerCapabilities:
                 raise ValueError(
                     "runner does not support live agentic warmup; "
                     "update the adapter before selecting live_trajectory_v1"
+                )
+        if warmup_policy == "primers_only":
+            if not agentic_warmup:
+                raise ValueError("primers_only requires agentic_warmup")
+            if not self.supports_agentic_primers_only:
+                raise ValueError(
+                    "runner does not support primers-only agentic warmup; "
+                    "update the adapter before selecting primers_only"
                 )
         if agentic_snapshot is not None:
             try:

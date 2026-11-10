@@ -174,9 +174,13 @@ impl ReplayEngineConfig {
                     "belady requires aggregated replay with dp_size=1 per worker".into(),
                 ));
             }
-            if self.rank.native_host_offload.is_some() || self.rank.g3_offload.is_some() {
+            if self.rank.native_host_offload.is_some()
+                || self.rank.g3_offload.is_some()
+                || self.rank.sglang.hicache.is_some()
+            {
                 return Err(ReplayError::InvalidSpec(
-                    "belady does not support native_host_offload or g3_offload".into(),
+                    "belady does not support native_host_offload, g3_offload or sglang.hicache"
+                        .into(),
                 ));
             }
             if !self.rank.enable_prefix_caching {
@@ -187,6 +191,7 @@ impl ReplayEngineConfig {
         }
         match topology {
             ReplayTopology::Aggregated { .. } => {
+                validate_host_mtp_dp(&self.rank, self.dp_size)?;
                 if self.rank.g3_offload.is_some() && self.dp_size != 1 {
                     return Err(ReplayError::InvalidSpec(
                         "g3_offload supports only dp_size=1".to_string(),
@@ -194,8 +199,12 @@ impl ReplayEngineConfig {
                 }
             }
             ReplayTopology::Disaggregated { .. } => {
-                let [prefill, decode] =
-                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage).rank);
+                let roles =
+                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage));
+                for role in &roles {
+                    validate_host_mtp_dp(&role.rank, role.dp_size)?;
+                }
+                let [prefill, decode] = roles.map(|role| role.rank);
                 if prefill.g3_offload.is_some() || decode.g3_offload.is_some() {
                     return Err(ReplayError::InvalidSpec(
                         "g3_offload supports only aggregated replay".to_string(),
@@ -225,6 +234,8 @@ pub struct ReplayRoleFactory {
     backend: Backend,
     total_blocks: u64,
     kv_cache_capacity_bytes: Option<u64>,
+    /// Per-rank P/D KV transfer link bandwidth in decimal GB/s, if priced.
+    kv_transfer_bandwidth: Option<f64>,
     pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
     pub(crate) g3_block_bytes: usize,
     pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
@@ -364,6 +375,10 @@ impl ReplayRoleFactory {
     pub(crate) fn kv_cache_capacity_bytes(&self) -> Option<u64> {
         self.kv_cache_capacity_bytes
     }
+
+    pub(crate) fn kv_transfer_bandwidth(&self) -> Option<f64> {
+        self.kv_transfer_bandwidth
+    }
 }
 
 /// Resolves built-in or Runner-provided timing once, then creates role factories.
@@ -430,6 +445,7 @@ impl ReplayEngineFactory {
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
         })?;
+        validate_host_mtp_dp(&role.rank, dp_size.get())?;
         if role.tensor_parallel_size == 0 {
             return Err(ReplayError::InvalidSpec(
                 "native tensor_parallel_size must be positive".into(),
@@ -447,6 +463,7 @@ impl ReplayEngineFactory {
         };
         let backend = role.rank.backend;
         let kv_cache_capacity_bytes = role.rank.kv_cache_capacity_bytes;
+        let kv_transfer_bandwidth = role.rank.kv_transfer_bandwidth;
         let total_blocks = if role.rank.kv_cache_groups.is_empty() {
             u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
                 ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
@@ -498,6 +515,7 @@ impl ReplayEngineFactory {
             backend,
             total_blocks,
             kv_cache_capacity_bytes,
+            kv_transfer_bandwidth,
             g3_config,
             g3_block_bytes,
             g3_tier: None,
@@ -625,8 +643,10 @@ pub fn run_engine_handoff_conformance(
 }
 
 /// Pipeline-parallel size of an `aic`/`ais` timing provider (`pp`, alias
-/// `pp_size`, default 1). Other providers model one stage. A present value that
-/// is not a positive integer is rejected rather than read as 1.
+/// `pp_size`, default 1). Other providers model one stage. A regression or
+/// learned identity that records `pp` as `"unknown"` takes the engine's
+/// topology, which replays one stage. Any other present value that is not a
+/// positive integer is rejected rather than read as 1.
 fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u64, ReplayError> {
     let crate::engine::TimingModelConfig::External { provider, config } = timing else {
         return Ok(1);
@@ -640,6 +660,9 @@ fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u
     else {
         return Ok(1);
     };
+    if value.as_str() == Some(crate::UNKNOWN_IDENTITY) {
+        return Ok(1);
+    }
     value.as_u64().filter(|size| *size > 0).ok_or_else(|| {
         ReplayError::InvalidSpec(format!(
             "timing provider `{key}` must be a positive integer, got {value}"
@@ -649,6 +672,125 @@ fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+fn validate_host_mtp_dp(rank: &EngineConfig, dp_size: u32) -> ReplayResult<()> {
+    if rank.native_host_offload.is_some() && rank.aic_nextn.is_some() && dp_size != 1 {
+        return Err(ReplayError::InvalidSpec(
+            "native_host_offload with MTP supports only dp_size=1".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod host_mtp_dp_tests {
+    use super::*;
+    use crate::engine::NativeHostOffloadConfig;
+
+    struct TestTiming;
+    impl TimingModel for TestTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+
+    fn rank(host: bool, nextn: Option<usize>, shared: bool) -> EngineConfig {
+        let offload = NativeHostOffloadConfig::new(8).with_bandwidths(0.0, 0.0);
+        EngineConfig {
+            num_gpu_blocks: 8,
+            block_size: 4,
+            kv_cache_bytes_per_token: Some(16),
+            native_host_offload: host.then(|| {
+                if shared {
+                    offload.cluster_shared("mtp-dp-test")
+                } else {
+                    offload
+                }
+            }),
+            aic_nextn: nextn,
+            timing_model: nextn.map_or(crate::engine::TimingModelConfig::Polynomial, |depth| {
+                crate::engine::TimingModelConfig::External {
+                    provider: "aic".into(),
+                    config: serde_json::json!({"speculation": {"kind": "mtp", "params": {"depth": depth}}}),
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn g2_mtp_dp_limit_is_enforced_at_topology_and_direct_factory_entrypoints() {
+        for (host, nextn, dp_size, shared, supported) in [
+            (true, Some(2), 1, false, true),
+            (true, Some(2), 2, false, false),
+            (true, Some(2), 2, true, false),
+            (true, None, 2, false, true),
+            (true, None, 2, true, true),
+            (false, Some(2), 2, false, true),
+        ] {
+            let config = ReplayEngineConfig {
+                dp_size,
+                rank: rank(host, nextn, shared),
+                ..Default::default()
+            };
+            let validation = config.validate_topology(&ReplayTopology::aggregated(1));
+            let construction = ReplayEngineFactory::with_timing_model(Arc::new(TestTiming))
+                .role_factory(&config, WorkerStage::Aggregated, false);
+            if supported {
+                validation.unwrap();
+                assert_eq!(construction.unwrap().dp_size(), dp_size);
+            } else {
+                assert!(
+                    validation
+                        .unwrap_err()
+                        .to_string()
+                        .contains("MTP supports only dp_size=1")
+                );
+                let error = match construction {
+                    Ok(_) => {
+                        panic!("direct role construction must enforce the MTP/G2 DP limit")
+                    }
+                    Err(error) => error,
+                };
+                assert!(error.to_string().contains("MTP supports only dp_size=1"));
+            }
+        }
+    }
+
+    #[test]
+    fn role_override_cannot_bypass_the_g2_mtp_dp_limit() {
+        let config = ReplayEngineConfig {
+            prefill: Some(ReplayRoleConfig {
+                dp_size: 2,
+                rank: rank(true, Some(2), false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let topology: ReplayTopology = serde_json::from_value(serde_json::json!({
+            "kind": "disaggregated",
+            "prefill": {"initial_workers": 1},
+            "decode": {"initial_workers": 1}
+        }))
+        .unwrap();
+        assert!(
+            config
+                .validate_topology(&topology)
+                .unwrap_err()
+                .to_string()
+                .contains("MTP supports only dp_size=1")
+        );
+        let error =
+            match ReplayEngineFactory::new().role_factory(&config, WorkerStage::Prefill, false) {
+                Ok(_) => panic!("role overrides must validate their resolved DP size"),
+                Err(error) => error,
+            };
+        assert!(error.to_string().contains("MTP supports only dp_size=1"));
+    }
 }
 
 #[cfg(test)]
@@ -887,6 +1029,20 @@ mod kvcr_tests {
                     .contains("`pp` must be a positive integer"),
                 "{error}"
             );
+        }
+        // A regression or learned identity that does not know its pipeline
+        // width takes the engine's single stage.
+        let timing = EngineConfig::default().built_in_timing_model().unwrap();
+        for pp in ["pp", "pp_size"] {
+            let unknown = config_with(
+                Some(KvcrConfig::default()),
+                pp,
+                serde_json::json!("unknown"),
+            );
+            let factory = ReplayEngineFactory::with_timing_model(Arc::clone(&timing))
+                .role_factory(&unknown, WorkerStage::Aggregated, false)
+                .unwrap_or_else(|error| panic!("kvcr with {pp}=unknown: {error}"));
+            assert_eq!(factory.kvcr_config, Some(KvcrConfig::default()));
         }
         // Pipeline parallelism alone is not KVCR's to reject.
         let plain = role_factory(&config(None, "pp"), WorkerStage::Aggregated);

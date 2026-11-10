@@ -5,7 +5,9 @@
 
 import ast
 import math
+import os
 import sys
+import time
 from contextlib import ExitStack, contextmanager, nullcontext
 from functools import wraps
 from pathlib import Path
@@ -24,8 +26,24 @@ def _load_function(path, name, namespace):
     return namespace[name]
 
 
-def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pattern=None):
+def _load_constant(path, name, namespace):
+    tree = ast.parse(path.read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == name)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+
+
+def _module_runner(
+    *,
+    graph_flag=True,
+    failure=None,
+    reuse_frequency=1,
+    reuse_pattern=None,
+    point_failures=None,
+    total_memory=2**40,
+    module_query_len=16,
+):
     events, published, benchmark_calls = [], [], []
+    point_failures = dict(point_failures or {})
     error = RuntimeError(f"{failure} failed")
     active_contexts = []
     active_slot_mapping = {}
@@ -86,8 +104,9 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
     def create_module(**kwargs):
         if failure == "construction":
             raise error
-        assert kwargs["max_query_len"] == 16
-        assert kwargs["max_seq_len"] in {16, 144}
+        events.append("module")
+        assert kwargs["max_query_len"] == module_query_len
+        assert kwargs["max_seq_len"] in {module_query_len, module_query_len + 128}
         return module, config
 
     @contextmanager
@@ -101,6 +120,18 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         kwargs["kernel_func"]()
         yield {"used_cuda_graph": graph_flag, "latency_ms": 0.015, "power_stats": None}
         events.append("graph teardown")
+
+    def create_kv(**kwargs):
+        events.append(("kv", kwargs["seq_len"]))
+        if kwargs["seq_len"] in point_failures:
+            raise point_failures[kwargs["seq_len"]]
+        return (
+            Tensor(),
+            object(),
+            SimpleNamespace(slot_mapping=query_slots),
+            Tensor() if kwargs["attn_type"] == "dsa" else None,
+            object() if kwargs["attn_type"] == "dsa" else None,
+        )
 
     def cleanup():
         assert active_contexts == []
@@ -120,21 +151,19 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
             cuda=SimpleNamespace(
                 set_device=lambda value: None,
                 get_device_name=lambda value: "B200",
+                get_device_properties=lambda value: SimpleNamespace(total_memory=total_memory),
                 OutOfMemoryError=MemoryError,
+                empty_cache=lambda: events.append("empty_cache"),
             ),
         ),
+        "gc": SimpleNamespace(collect=lambda: None),
         "setup_distributed": lambda device: None,
         "enable_engine_fused_ops": lambda: None,
         "init_workspace_manager": lambda device: events.append("workspace init"),
         "_create_attention_module": create_module,
+        "_install_rope_missing_key_shims": lambda module: ([], []),
         "_process_module_weights": lambda *args: None,
-        "_create_kv_cache_and_metadata": lambda **kwargs: (
-            Tensor(),
-            object(),
-            SimpleNamespace(slot_mapping=query_slots),
-            Tensor() if kwargs["attn_type"] == "dsa" else None,
-            object() if kwargs["attn_type"] == "dsa" else None,
-        ),
+        "_create_kv_cache_and_metadata": create_kv,
         "set_current_vllm_config": lambda config: context("config"),
         "set_forward_context": forward_context,
         "benchmark_with_power": benchmark,
@@ -142,21 +171,32 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "log_perf": lambda **kwargs: published.append(kwargs),
         "_cleanup": cleanup,
         "vllm_version": "0.25.0",
-        "traceback": SimpleNamespace(print_exc=lambda: None),
+        "traceback": SimpleNamespace(print_exc=lambda: None, clear_frames=lambda _tb: None),
+        "time": time,
     }
     _load_function(COLLECTOR / "vllm/utils.py", "with_exit_stack", namespace)
+    namespace["_model_max_position_embeddings"] = lambda _model: None
+    for constant in ("_MLA_KV_ENTRY_ELEMS", "_MEMORY_BUDGET_SAFETY_FACTOR"):
+        _load_constant(COLLECTOR / "vllm/collect_mla_module.py", constant, namespace)
+    for helper in (
+        "_series_points",
+        "_is_fatal_cuda_error",
+        "_generation_kv_footprint_bytes",
+        "_kv_does_not_fit",
+    ):
+        _load_function(COLLECTOR / "vllm/collect_mla_module.py", helper, namespace)
     run = _load_function(COLLECTOR / "vllm/collect_mla_module.py", "run_mla_module", namespace)
 
-    def execute(attn_type="dsa", phase="context"):
+    def execute(attn_type="dsa", phase="context", seq_len=16, prefix_len=128):
         return run(
-            seq_len=16,
+            seq_len=seq_len,
             batch_size=2,
             num_heads=8,
             kv_cache_dtype="fp8",
             compute_dtype="bfloat16",
             gemm_type="bfloat16",
             perf_filename=f"{attn_type}_{phase}_module_perf.txt",
-            prefix_len=128,
+            prefix_len=prefix_len,
             model_path="fixture/model",
             attn_type=attn_type,
         )
@@ -169,7 +209,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
 @pytest.mark.parametrize("reuse_frequency", [1, None])
 def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, phase, reuse_frequency):
     execute, events, published, calls, _ = _module_runner(reuse_frequency=reuse_frequency)
-    assert execute(attn_type, phase) == 0.015
+    assert execute(attn_type, phase) == [0.015]
     assert len(calls) == len(published) == 1
     assert events[-4:] == ["graph teardown", "exit forward", "exit config", "cleanup"]
     row = published[0]["item_list"][0]
@@ -185,7 +225,7 @@ def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, 
 @pytest.mark.parametrize("reuse", [{"reuse_frequency": 4}, {"reuse_frequency": None, "reuse_pattern": "FFSS"}])
 def test_reuse_checkpoint_publishes_native_full_and_skip_measurements(phase, reuse):
     execute, events, published, calls, _ = _module_runner(**reuse)
-    assert execute(phase=phase) == 0.015
+    assert execute(phase=phase) == [0.015]
     assert [call["skip_indexer"] for call in calls] == [False, True]
     assert [row["op_name"] for row in published] == [
         f"dsa_{phase}_module",
@@ -216,6 +256,96 @@ def test_ordinary_mla_does_not_publish_dsa_reuse_rows():
     execute(attn_type="mla")
     assert len(calls) == 1
     assert [row["op_name"] for row in published] == ["mla_context_module"]
+
+
+def test_series_builds_the_module_once_and_measures_every_point_largest_first():
+    execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
+    assert execute(seq_len=[8, 16, 8]) == [0.015, 0.015]
+    assert events.count("workspace init") == 1
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "kv"] == [("kv", 16), ("kv", 8)]
+    assert [(row["op_name"], row["item_list"][0]["isl"]) for row in published] == [
+        ("dsa_context_module", 16),
+        ("dsa_context_module_skip_indexer", 16),
+        ("dsa_context_module", 8),
+        ("dsa_context_module_skip_indexer", 8),
+    ]
+    assert len(calls) == 4 and events[-1] == "cleanup" and events.count("cleanup") == 1
+
+
+def test_series_measures_the_isl_prefix_points_of_one_module_largest_total_context_first():
+    """A DSA context case lists its (isl, prefix) points: one module, every point of the plan
+    row measured on it, largest total context first (module build was 0.9-1.2 s/pt under the
+    campaign's 8 workers when it was amortised over one prefix only)."""
+    execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
+    assert execute(seq_len=[[8, 0], [16, 128], [16, 0], [8, 128]], prefix_len=0) == [0.015] * 4
+    assert events.count("workspace init") == 1
+    kv_events = [e for e in events if isinstance(e, tuple) and e[0] == "kv"]
+    assert kv_events == [("kv", 16), ("kv", 8), ("kv", 16), ("kv", 8)]
+    rows = [
+        (row["item_list"][0]["isl"], row["item_list"][0]["step"])
+        for row in published
+        if row["op_name"] == "dsa_context_module"
+    ]
+    assert rows == [(16, 128), (8, 128), (16, 0), (8, 0)]
+    assert len(calls) == 8 and events.count("cleanup") == 1
+
+
+def test_series_keeps_measuring_after_a_non_fatal_point_failure_and_raises_it_afterwards():
+    oom = MemoryError("CUDA out of memory (fixture)")
+    execute, events, published, calls, _ = _module_runner(point_failures={16: oom})
+    with pytest.raises(MemoryError) as caught:
+        execute(seq_len=[16, 8])
+    assert caught.value is oom
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "kv"] == [("kv", 16), ("kv", 8)]
+    assert "empty_cache" in events, "the failed point's memory is released before the next point"
+    assert [row["item_list"][0]["isl"] for row in published] == [8]
+    assert len(calls) == 1 and events[-1] == "cleanup"
+
+
+def test_series_summarises_several_point_failures_in_one_classified_error():
+    failures = {16: MemoryError("oom at 16"), 4: RuntimeError("Missing TRTLLM-GEN kernel (decode)")}
+    execute, _, published, _, _ = _module_runner(point_failures=failures)
+    with pytest.raises(RuntimeError, match=r"2/3 point\(s\) of the module series failed") as caught:
+        execute(seq_len=[16, 8, 4])
+    assert "s=16 prefix=128: MemoryError: oom at 16" in str(caught.value)
+    assert "s=4 prefix=128: RuntimeError: Missing TRTLLM-GEN kernel" in str(caught.value)
+    assert [row["item_list"][0]["isl"] for row in published] == [8]
+
+
+def test_series_aborts_at_once_on_a_sticky_cuda_error():
+    sticky = RuntimeError("CUDA error: an illegal memory access was encountered")
+    execute, events, published, _, _ = _module_runner(point_failures={16: sticky})
+    with pytest.raises(RuntimeError) as caught:
+        execute(seq_len=[16, 8])
+    assert caught.value is sticky
+    kv_points = [e for e in events if isinstance(e, tuple) and e[0] == "kv"]
+    assert kv_points == [("kv", 16)], "no further point on a dead context"
+    assert published == [] and events[-1] == "cleanup"
+
+
+def test_single_point_failures_keep_their_original_exception_and_timing():
+    """A one-point case (CLI, single-point fills) behaves exactly like before the series layout."""
+    oom = MemoryError("oom")
+    execute, events, published, _, _ = _module_runner(point_failures={16: oom})
+    with pytest.raises(MemoryError) as caught:
+        execute(seq_len=16)
+    assert caught.value is oom and published == [] and events[-1] == "cleanup"
+
+
+def test_generation_points_the_device_cannot_hold_are_refused_before_allocation():
+    # 30,000 B of device memory holds the FP8 KV cache of b=2, s=8 (18,432 B), not of s=16.
+    execute, events, published, _, _ = _module_runner(total_memory=30_000, module_query_len=8)
+    with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): does not fit"):
+        execute("mla", "generation", seq_len=[16, 8])
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "kv"] == [("kv", 8)]
+    assert [row["item_list"][0]["step"] for row in published] == [7]
+
+
+def test_a_series_the_device_cannot_hold_builds_no_module():
+    execute, events, published, _, _ = _module_runner(total_memory=10_000)
+    with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): does not fit"):
+        execute("mla", "generation", seq_len=[16, 8])
+    assert "module" not in events and published == [] and events[-1] == "cleanup"
 
 
 def test_explicit_full_pattern_overrides_reuse_frequency():
@@ -259,9 +389,11 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     """Run actual construction and inspect both tensor shape and context capacity."""
     allocations, configs = [], []
 
-    class Module:
-        def __init__(self, **kwargs):
-            assert kwargs["topk_indices_buffer"] == (expected_tokens, 2048)
+    class Attention:
+        topk_indices_buffer = "meta"  # what the meta-device model allocated
+
+        def named_modules(self):
+            return [("", self)]
 
         def parameters(self):
             return []
@@ -277,9 +409,19 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         def requires_grad_(self, enabled):
             assert enabled is False
 
+    attention = Attention()
+
+    class Model:
+        def __init__(self, *, vllm_config, prefix):
+            assert prefix == ""
+
+        def named_modules(self):
+            return [("model.layers.0.self_attn", attention)]
+
     def create_config(**kwargs):
         configs.append(kwargs)
         hf = SimpleNamespace(
+            architectures=["DeepseekV32ForCausalLM"],
             index_topk=2048,
             hidden_size=7168,
             qk_nope_head_dim=192,
@@ -299,7 +441,12 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         return shape
 
     monkeypatch.setitem(
-        sys.modules, "vllm.model_executor.models.deepseek_v2", SimpleNamespace(DeepseekV2MLAAttention=Module)
+        sys.modules, "vllm.model_executor.models.deepseek_v2", SimpleNamespace(DeepseekV2MLAAttention=object)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.model_executor.models.registry",
+        SimpleNamespace(ModelRegistry=SimpleNamespace(resolve_model_cls=lambda archs, cfg: (Model, archs[0]))),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -311,7 +458,8 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     )
     namespace = {
         "math": math,
-        "torch": SimpleNamespace(empty=empty, int32="int32", no_grad=nullcontext),
+        "os": os,
+        "torch": SimpleNamespace(empty=empty, int32="int32", no_grad=nullcontext, device=lambda name: nullcontext()),
         "_resolve_model_path": lambda model: model,
         "create_vllm_config": create_config,
         "_create_gemm_quant_config": lambda gemm: None,
@@ -331,5 +479,9 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         is_context=is_context,
     )
     assert allocations == [(expected_tokens, 2048)]
+    assert attention.topk_indices_buffer == (expected_tokens, 2048)  # swapped in for the meta buffer
     assert configs[0]["max_model_len"] == max(prefix + query, 4096)
-    assert configs[0]["num_gpu_blocks"] == max(1 + math.ceil((prefix + query + 1) / 64) * batch, 8192)
+    # The module is built before the backend (and its page) is known: the KV
+    # capacity is an upper bound at the smallest page (16) and is recomputed
+    # per selected page in _create_kv_cache_and_metadata.
+    assert configs[0]["num_gpu_blocks"] == max(1 + math.ceil((prefix + query + 1) / 16) * batch, 8192)

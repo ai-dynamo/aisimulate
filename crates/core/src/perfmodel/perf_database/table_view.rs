@@ -2448,9 +2448,9 @@ pub const TABLE_VIEW_ATTRIBUTES: &[(&str, &[&str])] = &[
 /// The engine-side table view: `attribute` is the PerfDatabase attribute name
 /// the retired Python loader used to fill (`"_gemm_data"`, ...). Returns
 /// `Ok(None)` exactly when that loader returned `None` (every source path
-/// missing), and the loader-shaped nested JSON otherwise. The three DSV4
-/// sparse sub-tables are addressed as
-/// `"_dsv4_sparse_kernel_data.<paged_mqa_logits|hca_attn|csa_attn>"`.
+/// missing), and the loader-shaped nested JSON otherwise. The DSV4 sparse
+/// sub-table is addressed as `"_dsv4_sparse_kernel_data.paged_mqa_logits"`
+/// (the hca_attn / csa_attn sidecars were retired 2026-10-15).
 pub fn table_view_json(tables: &PerfTables, attribute: &str) -> Result<Option<String>, AicError> {
     let src = |basename: &str| {
         tables

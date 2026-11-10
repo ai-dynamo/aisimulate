@@ -1,5 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 // SPDX-License-Identifier: Apache-2.0
+
+// Modified source-read ordering semantics derived from vLLM v0.32.0:
+// https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be
+// Exact upstream source paths and Apache-2.0 attribution: THIRD_PARTY_NOTICES.md.
 
 //! Physical-capacity model for vLLM's GPU block pool.
 //!
@@ -54,6 +59,16 @@ impl SourceReuseDependency {
     }
 }
 
+/// The order in which a satisfied transfer returns the copies it held.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceReleaseOrder {
+    /// Like Mooncake Store: the request's shared prefix is evicted last.
+    TailFirst,
+    /// Like vLLM's SimpleCPU connector, which frees copied blocks in block
+    /// order (`_process_store_completion`).
+    HeadFirst,
+}
+
 #[derive(Debug)]
 enum CopyState {
     Private,
@@ -84,6 +99,9 @@ struct CopySourceReuse {
     /// Authorization does not satisfy the dependency. It only permits the
     /// write-producing pass to proceed behind an already-installed fence.
     write_after_source_reuse: bool,
+    /// Current contents were produced behind the preceding reader's fence.
+    /// A subsequent read submitted after that compute may dominate it.
+    produced_after_source_reuse: bool,
 }
 
 /// Host-only copy metadata. Ordinary G1 pools never allocate this sidecar, so
@@ -354,6 +372,7 @@ pub(crate) struct VllmBlockPool {
     source_reuse: Option<Box<SourceReuseTracker>>,
     /// See [`Self::hold_pending_sources`].
     hold_sources: bool,
+    source_release: SourceReleaseOrder,
     belady: Option<Box<BeladyCandidates>>,
 }
 
@@ -373,6 +392,7 @@ impl VllmBlockPool {
             free: FreshCapacity::Untracked(capacity),
             source_reuse: None,
             hold_sources: false,
+            source_release: SourceReleaseOrder::TailFirst,
             belady: None,
         }
     }
@@ -382,13 +402,14 @@ impl VllmBlockPool {
     ///
     /// A released source then stays out of the free capacity and the inactive
     /// LRU, although it remains a prefix-cache hit, so no reservation inherits
-    /// a pending dependency. Satisfaction returns the capacity tail first.
-    pub(crate) fn hold_pending_sources(&mut self) {
+    /// a pending dependency. Satisfaction returns the capacity in `order`.
+    pub(crate) fn hold_pending_sources(&mut self, order: SourceReleaseOrder) {
         assert!(
             self.source_reuse.is_none(),
             "source holding must be configured before any transfer reads G1"
         );
         self.hold_sources = true;
+        self.source_release = order;
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
@@ -642,6 +663,7 @@ impl VllmBlockPool {
                         CopySourceReuse {
                             dependency,
                             write_after_source_reuse: false,
+                            produced_after_source_reuse: false,
                         },
                     )
                     .is_none(),
@@ -718,6 +740,11 @@ impl VllmBlockPool {
             matches!(copy.state, CopyState::Private),
             "only a private copy can enter the prefix cache"
         );
+        let produced_after_source_reuse = !self.hold_sources
+            && source_reuse.is_some_and(|state| {
+                state.write_after_source_reuse
+                    && self.is_source_reuse_dependency_pending(state.dependency)
+            });
         let Some(copy) = self.copies.get_mut(id) else {
             panic!("attempted to cache an unknown block copy")
         };
@@ -733,6 +760,7 @@ impl VllmBlockPool {
             .as_deref_mut()
             .and_then(|tracker| tracker.by_copy.get_mut(&id))
         {
+            state.produced_after_source_reuse = produced_after_source_reuse;
             state.write_after_source_reuse = false;
         }
         let (became_visible, became_redundant) = match hash {
@@ -936,12 +964,17 @@ impl VllmBlockPool {
         copies.iter().all(|id| {
             unique.insert(*id)
                 && self.copies.contains_key(*id)
-                && self
-                    .copy_source_reuse(*id)
-                    .is_none_or(|state| !self.is_source_reuse_dependency_pending(state.dependency))
+                && self.copy_source_reuse(*id).is_none_or(|state| {
+                    !self.is_source_reuse_dependency_pending(state.dependency)
+                        || (!self.hold_sources && state.produced_after_source_reuse)
+                })
         })
     }
 
+    /// The caller submits this read after producing the copy's new contents.
+    /// In a fencing pool it therefore dominates the preceding reader for this
+    /// copy. The old transfer remains globally pending for other source copies.
+    /// Holding pools retain their separate source ownership until completion.
     pub(crate) fn attach_source_reuse_dependency(
         &mut self,
         copies: &[BlockCopyId],
@@ -977,11 +1010,15 @@ impl VllmBlockPool {
                 CopySourceReuse {
                     dependency,
                     write_after_source_reuse: false,
+                    produced_after_source_reuse: false,
                 },
             );
             assert!(
-                previous.is_none_or(|state| !tracker.pending.contains(&state.dependency)),
-                "source copy retained another pending dependency"
+                previous.is_none_or(|state| {
+                    !tracker.pending.contains(&state.dependency)
+                        || (!self.hold_sources && state.produced_after_source_reuse)
+                }),
+                "source copy retained another pending dependency without a produced-after fence"
             );
         }
     }
@@ -1002,10 +1039,12 @@ impl VllmBlockPool {
         true
     }
 
-    /// Return a satisfied transfer's held capacity. Like Mooncake Store's
-    /// tail-first release, the request's shared prefix is evicted last.
-    fn release_held_sources(&mut self, sources: Vec<BlockCopyId>) {
-        for id in sources.into_iter().rev() {
+    /// Return a satisfied transfer's held capacity in its release order.
+    fn release_held_sources(&mut self, mut sources: Vec<BlockCopyId>) {
+        if self.source_release == SourceReleaseOrder::TailFirst {
+            sources.reverse();
+        }
+        for id in sources {
             let tracker = self
                 .source_reuse
                 .as_deref_mut()
@@ -2396,7 +2435,7 @@ mod tests {
     #[test]
     fn held_sources_keep_their_capacity_but_stay_prefix_hits() {
         let mut pool = VllmBlockPool::new(3);
-        pool.hold_pending_sources();
+        pool.hold_pending_sources(SourceReleaseOrder::TailFirst);
         let mut source = reserve(&mut pool, &[], 2).reservation;
         let cached = pool.allocate_private(&mut source);
         assert!(pool.cache_private(cached, 7));
@@ -2426,24 +2465,29 @@ mod tests {
     }
 
     #[test]
-    fn a_satisfied_hold_releases_sources_tail_first_at_satisfaction() {
-        let mut pool = VllmBlockPool::new(4);
-        pool.hold_pending_sources();
-        let parent = cache_copy(&mut pool, 7);
-        let child = cache_copy(&mut pool, 8);
-        let owned = cache_copy(&mut pool, 9);
-        let dependency = SourceReuseDependency::from_adapter_id(41);
-        pool.attach_source_reuse_dependency(&[parent, child, owned], dependency);
-        pool.release(child);
-        pool.release(parent);
-        let unrelated = cache_copy(&mut pool, 10);
-        pool.release(unrelated);
+    fn a_satisfied_hold_releases_sources_in_its_order_at_satisfaction() {
+        for (order, removed) in [
+            (SourceReleaseOrder::TailFirst, [10, 8, 7, 9]),
+            (SourceReleaseOrder::HeadFirst, [10, 7, 8, 9]),
+        ] {
+            let mut pool = VllmBlockPool::new(4);
+            pool.hold_pending_sources(order);
+            let parent = cache_copy(&mut pool, 7);
+            let child = cache_copy(&mut pool, 8);
+            let owned = cache_copy(&mut pool, 9);
+            let dependency = SourceReuseDependency::from_adapter_id(41);
+            pool.attach_source_reuse_dependency(&[parent, child, owned], dependency);
+            pool.release(child);
+            pool.release(parent);
+            let unrelated = cache_copy(&mut pool, 10);
+            pool.release(unrelated);
 
-        // A copy still referenced at satisfaction later returns as usual.
-        assert!(pool.satisfy_source_reuse_dependency(dependency));
-        pool.release(owned);
-        pool.assert_lru_consistent();
-        assert_eq!(reserve(&mut pool, &[], 4).removed, vec![10, 8, 7, 9]);
+            // A copy still referenced at satisfaction later returns as usual.
+            assert!(pool.satisfy_source_reuse_dependency(dependency));
+            pool.release(owned);
+            pool.assert_lru_consistent();
+            assert_eq!(reserve(&mut pool, &[], 4).removed, removed, "{order:?}");
+        }
     }
 
     #[test]
@@ -2521,5 +2565,99 @@ mod tests {
         }
         pool.cancel(pressure.reservation);
         pool.assert_hash_index_consistent();
+    }
+    #[test]
+    fn produced_copy_chains_source_reads_without_completing_the_prior_transfer() {
+        let mut pool = VllmBlockPool::new(2);
+        let mut seed = reserve(&mut pool, &[], 2).reservation;
+        let original = pool.allocate_private(&mut seed);
+        let sibling = pool.allocate_private(&mut seed);
+        assert!(pool.cache_private(original, 7));
+        assert!(pool.cache_private(sibling, 8));
+        let old_read = SourceReuseDependency::from_adapter_id(61);
+        let new_read = SourceReuseDependency::from_adapter_id(62);
+        pool.attach_source_reuse_dependency(&[original, sibling], old_read);
+        assert!(!pool.can_attach_source_reuse_dependency(&[original]));
+        pool.release(original);
+
+        // Keeping the sibling active forces reuse of the first source's slot.
+        let mut reused = reserve(&mut pool, &[], 1).reservation;
+        assert_eq!(
+            pool.reservation_pending_dependencies(&reused),
+            vec![old_read]
+        );
+        let produced = pool.allocate_private(&mut reused);
+        assert!(!pool.can_attach_source_reuse_dependency(&[produced]));
+        pool.authorize_source_reuse_writes([produced], &[old_read]);
+        assert!(
+            !pool.can_attach_source_reuse_dependency(&[produced]),
+            "authorization without produced contents must not supersede the reader"
+        );
+        assert!(pool.cache_private(produced, 9));
+        assert!(pool.can_attach_source_reuse_dependency(&[produced]));
+        pool.attach_source_reuse_dependency(&[produced], new_read);
+        assert!(
+            !pool.can_attach_source_reuse_dependency(&[produced]),
+            "each generation must establish its own produced-after proof"
+        );
+        assert!(pool.is_source_reuse_dependency_pending(old_read));
+        assert!(pool.is_source_reuse_dependency_pending(new_read));
+        assert_eq!(
+            pool.copy_source_reuse(sibling).unwrap().dependency,
+            old_read
+        );
+        assert_eq!(
+            pool.copy_source_reuse(produced).unwrap().dependency,
+            new_read
+        );
+
+        // The next reuse follows only the latest read, whose submission is
+        // ordered after the producing compute and therefore after old_read.
+        pool.release(produced);
+        let next = reserve(&mut pool, &[], 1).reservation;
+        assert_eq!(pool.reservation_pending_dependencies(&next), vec![new_read]);
+        assert!(pool.satisfy_source_reuse_dependency(old_read));
+        assert_eq!(pool.reservation_pending_dependencies(&next), vec![new_read]);
+        assert!(pool.is_source_reuse_dependency_pending(new_read));
+        pool.cancel(next);
+        let reacquired = reserve(&mut pool, &[], 1).reservation;
+        assert_eq!(
+            pool.reservation_pending_dependencies(&reacquired),
+            vec![new_read]
+        );
+        assert!(pool.satisfy_source_reuse_dependency(new_read));
+        assert!(
+            pool.reservation_pending_dependencies(&reacquired)
+                .is_empty()
+        );
+        pool.cancel(reacquired);
+        pool.release(sibling);
+        assert_eq!(pool.num_active(), 0);
+        pool.assert_lru_consistent();
+    }
+
+    #[test]
+    fn production_after_a_terminal_source_read_does_not_keep_a_chaining_proof() {
+        let mut pool = VllmBlockPool::new(1);
+        let mut seed = reserve(&mut pool, &[], 1).reservation;
+        let source = pool.allocate_private(&mut seed);
+        assert!(pool.cache_private(source, 7));
+        let dependency = SourceReuseDependency::from_adapter_id(63);
+        pool.attach_source_reuse_dependency(&[source], dependency);
+        pool.release(source);
+        let mut reservation = reserve(&mut pool, &[], 1).reservation;
+        let produced = pool.allocate_private(&mut reservation);
+        pool.authorize_source_reuse_writes([produced], &[dependency]);
+        assert!(pool.satisfy_source_reuse_dependency(dependency));
+        assert!(pool.cache_private(produced, 8));
+        assert!(
+            !pool
+                .copy_source_reuse(produced)
+                .unwrap()
+                .produced_after_source_reuse
+        );
+        assert!(pool.can_attach_source_reuse_dependency(&[produced]));
+        pool.release(produced);
+        assert_eq!(pool.num_active(), 0);
     }
 }

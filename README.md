@@ -33,6 +33,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
+[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
 AISimulate is the successor to the
@@ -61,14 +62,36 @@ on `main` can describe features newer than the latest published wheel.
 
 Install AISimulate by itself to use the built-in simulation engine without a
 Dynamo dependency. Use a fresh virtual environment for each installation profile.
-These commands install published releases; for the examples on `main`, use
-[Develop from source](#develop-from-source):
+This branch builds the renamed `aisim` distribution. The following commands
+require an `aisim` release on your selected index; until that publication is
+available, use a historical `aisimulate` release in its own environment or
+[develop from source](#develop-from-source).
 
 <!-- readme-check: release-install -->
 ```bash
-python3 -m pip install aisimulate
-aisimulate --help
+python3 -m pip install aisim
+aisim --help
 ```
+
+### Migrate an existing AISimulate environment
+
+`aisim` and `aisimulate` are different distribution names but install the same
+Python packages and `aisimulate` command. Uninstall `aisimulate` **before**
+installing `aisim`; installing both and then removing the old one can delete
+files needed by the new one. Use the same ordering for upgrades:
+
+Run `python3 -m pip uninstall -y aisimulate`, followed by
+`python3 -m pip install --upgrade aisim`, then `python3 -m pip check` and
+`aisim --help`. The [installation guide](docs/getting-started/installation.md#migrate-to-the-renamed-distribution)
+also shows migration using an exact downloaded wheel.
+
+If both are already installed, use a fresh environment or uninstall
+`aisimulate` and **force-reinstall** the selected `aisim` wheel to restore its
+files. For an environment containing Dynamo, first select a Dynamo release
+whose declared dependency is `aisim`; a release that still requires
+`aisimulate` can reinstall the old distribution. Keep the historical pair below
+in a separate environment until that downstream migration is available.
+Python imports remain `aisimulate` and `aisimulate_core`.
 
 ### With Dynamo
 
@@ -83,7 +106,7 @@ Install this pair on Linux with Python 3.12 in a **separate environment**:
 <!-- readme-check: dynamo-install -->
 ```bash
 python3 -m pip install --extra-index-url https://pypi.nvidia.com \
-  "aisimulate==0.13.0.dev202609270000000058" "ai-dynamo==1.6.0.dev20260930"
+  "aisimulate==0.13.0.dev202610240000000082" "ai-dynamo==1.7.0.dev20261028"
 python3 -m pip check
 aisimulate predict --help
 ```
@@ -103,8 +126,8 @@ In an engine-only environment, remove the former distributions before upgrading:
 
 <!-- readme-check: release-upgrade -->
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
-python3 -m pip install --upgrade aisimulate
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
+python3 -m pip install --upgrade aisim
 python3 -m pip check
 ```
 
@@ -133,6 +156,17 @@ aisimulate predict \
   --config prediction.yaml \
   --output-dir ./aisimulate-prediction
 ```
+
+For offline `--stack engine` replay with vLLM/SGLang, `--capture-telemetry`
+also exports all-phase request records, periodic scheduler/cache/traffic samples,
+and agentic lifecycle events. Sampling defaults to 1,000 simulated milliseconds;
+adjust it with `--telemetry-sample-interval-ms`. See the
+[telemetry output contract](docs/getting-started/understand-results.md#replay-telemetry).
+
+Add `--export-html` to `aisimulate predict` to capture telemetry and write a
+standalone `report.html` dashboard with profiling, warmup, and request timelines.
+Open it directly in a browser; charts and data are embedded for offline use.
+See the [dashboard guide](docs/getting-started/understand-results.md#replay-dashboard).
 
 ### Python prediction API
 
@@ -265,6 +299,12 @@ workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
+Support queries default to the backend's current version slot. The example
+below currently reports `NO` for both modes because that slot lacks certification
+for this model; generating a starting configuration does not certify support.
+The displayed result and the expected output in `scripts/readme/readme_commands.json`
+track the current slot and certification data; update them together when that data changes.
+
 <!-- readme-check: legacy-cli -->
 ```bash
 # Check whether a model/system combination is supported.
@@ -314,9 +354,8 @@ identified in the migration guide.
 ## Experimental status and validation boundary
 
 > [!WARNING]
-> Replay and Sweeper are experimental surfaces intended for evaluation and
-> feedback, not production capacity planning. Their APIs, schemas, search
-> behavior, and output may change without a standard deprecation period.
+> Replay and Sweeper are still evolving. Their APIs, schemas, search behavior,
+> and output may change without a standard deprecation period.
 
 AISimulate narrows a deployment search and identifies candidates; it does not
 replace validation on the target hardware. Benchmark shortlisted
@@ -422,17 +461,20 @@ Collector, tests, documentation, and development tooling live under
 
 This repository produces exactly two release artifacts:
 
-1. `aisimulate` Python wheel — the application, both console commands,
+1. `aisim` Python wheel — the application, console commands,
    estimator SDK, model/performance data, Replay, Sweeper, and unified native
    extension;
-2. `aisimulate-core` Rust crate — the native estimator and simulation core for
+2. `aisim-core` Rust crate — the native estimator and simulation core for
    Rust consumers.
 
 It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
-`aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
+`aisim` wheel exposes the `aisimulate` application and `aisimulate_core`
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
 [Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
+
+Source builds also provide `aisim` as an alias for `aisimulate`; both commands
+use the same entry point. Python imports remain `aisimulate` and `aisimulate_core`.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations

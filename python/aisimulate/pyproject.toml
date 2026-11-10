@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [project]
-name = "aisimulate"
-version = "0.13.0"
+name = "aisim"
+version = "0.14.0"
 authors = [
     { name = "NVIDIA Inc.", email = "sw-dl-dynamo@nvidia.com" },
 ]
@@ -108,6 +108,7 @@ build-backend = "maturin"
 
 [project.scripts]
 # Retain the legacy executable; all Python implementation lives under AISimulate.
+aisim = "aisimulate.supervision:main"
 aisimulate = "aisimulate.supervision:main"
 aiconfigurator = "aisimulate.legacy_cli.entrypoint:main"
 
@@ -120,9 +121,13 @@ python-packages = [
     "aisimulate_core",
 ]
 abi3 = true
-features = ["extension-module"]
+features = ["extension-module", "jemalloc"]
 exclude = ["**/__pycache__/**", "**/*.pyc"]
 include = [
+    "src/aisimulate/replay/dashboard*.html",
+    "src/aisimulate/replay/dashboard.css",
+    "src/aisimulate/replay/dashboard.js",
+    "src/aisimulate/replay/plotly-js-LICENSE.txt",
     "src/aisimulate/legacy_cli/*.yaml",
     "src/aisimulate/legacy_cli/exps/*.yaml",
     "src/aisimulate/generator/config/**/*.yaml",
@@ -133,6 +138,7 @@ include = [
     "src/aisimulate/sdk/config_adapter/schemas/*.json",
     { path = "collector/__init__.py", format = "wheel" },
     { path = "collector/model_cases.py", format = "wheel" },
+    { path = "collector/skips.py", format = "wheel" },
     { path = "collector/glm53flash_attention_tokens.py", format = "wheel" },
     { path = "collector/glm53flash_runtime_identity.py", format = "wheel" },
     { path = "collector/cases/**/*.yaml", format = "wheel" },

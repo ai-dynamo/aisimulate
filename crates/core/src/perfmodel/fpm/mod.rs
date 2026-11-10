@@ -36,19 +36,23 @@ mod learned_online;
 mod metrics;
 mod model;
 mod options;
+mod quality_gate;
 mod regression;
 mod resources;
 mod samples;
 mod selector;
 mod snapshot;
+mod speculative;
 
 #[cfg(test)]
 mod tests;
 
 pub use config::{
-    EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig,
-    ForwardPassSpeculationConfig,
+    DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassFallbackPolicy,
+    ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, UNKNOWN_IDENTITY, UNKNOWN_SIZE,
 };
+#[cfg(feature = "python")]
+pub(crate) use config::{identity_optional_size, identity_size};
 pub use coverage::{FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose};
 pub use estimator::*;
 pub(crate) use evidence::accumulate_fpm_estimates;
@@ -62,6 +66,8 @@ pub use learned::LEARNED_SCHEMA_VERSION;
 pub(crate) use learned_online::canonical_learned_identity;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
+#[cfg(feature = "python")]
+pub(crate) use model::NativeIterationEstimate;
 pub use model::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
     ForwardPassDeploymentTopology, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
@@ -75,6 +81,7 @@ pub use options::{CorrectionMode, ForwardPassPerfOptions};
 pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
+    FpmCacheLayout, FpmMambaCacheMode, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 pub use snapshot::{STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotKind};
+pub use speculative::SpeculativeForwardPassEstimate;

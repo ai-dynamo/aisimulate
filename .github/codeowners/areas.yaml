@@ -62,6 +62,8 @@ areas:
       - tests/test_output_adapter_context.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
+      - tests/test_replay_dashboard.py
+      - tests/browser/
       - tests/test_ngram_cli.py
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
@@ -76,6 +78,8 @@ areas:
       - tests/test_agentx_snapshot_export.py
       - tests/test_agentx_live_warmup.py
       - tests/test_runner.py
+      - tests/test_aiperf_metrics.py
+      - tests/fixtures/aiperf_0.13.0_request_metrics.json
       - tests/test_traffic.py
       - tests/e2e/
   - label: mocker
@@ -85,6 +89,7 @@ areas:
   - label: infra
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
+      - .cargo/
       - .github/
       - .dockerignore
       - .gitignore
@@ -108,6 +113,11 @@ areas:
       - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
+      - tests/test_agentx_accuracy.py
+      - tests/test_agentx_inputs.py
+      - tests/test_simulation_features.py
+      - tests/test_agentx_curves.py
+      - tests/test_benchmark_features.py
       - tests/test_e2e_hf_measurements.py
       - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
@@ -178,6 +188,16 @@ shared:
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_agentx_accuracy.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_agentx_inputs.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_simulation_features.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_agentx_curves.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_benchmark_features.py
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_e2e_hf_measurements.py
     owners: [forward-pass-engine, replay, infra, maintainers]
@@ -263,6 +283,10 @@ shared:
     owners: [replay, forward-pass-engine, maintainers]
   - glob: tests/test_unified_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_replay_dashboard.py
+    owners: [replay, maintainers]
+  - glob: tests/browser/
+    owners: [replay, maintainers]
   - glob: tests/test_ngram_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py
@@ -291,6 +315,10 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
+  - glob: tests/test_aiperf_metrics.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/fixtures/aiperf_0.13.0_request_metrics.json
+    owners: [replay, sweeper, maintainers]
   - glob: tests/test_traffic.py
     owners: [replay, maintainers]
   - glob: tests/e2e/
