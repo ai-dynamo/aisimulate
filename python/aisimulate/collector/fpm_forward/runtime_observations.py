@@ -597,8 +597,6 @@ def _layer_views(
     intervals.sort()
     if any(end > following for (_, end), (following, _) in itertools.pairwise(intervals)):
         raise ValueError(f"views of one layer overlap inside the block: {name}")
-    if dense > spec["page_size_bytes"]:
-        raise ValueError(f"layer views exceed the page of their cache spec: {name}")
     if spec.get("spec_type") == _MAMBA_SPEC:
         # bind_kv_cache cuts one view per state from the page, in the order of the spec's shapes and dtypes: the
         # block axis, then the state's shape (mamba/abstract.py:28-42, :76-78). The states fill the spec's real
