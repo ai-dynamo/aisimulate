@@ -355,6 +355,9 @@ def test_shipped_mla_kernel_tables_carry_num_heads():
 # [native][local] (same recipe as the MLA module tables above).
 _DSA_MODEL_NATIVE_HEADS = {
     "deepseek-ai/DeepSeek-V3.2": 128,
+    # K3.1 uses its own KimiK31ForConditionalGeneration architecture; the
+    # native DSA heads shard to 96/48/24 at the shipped TP1/2/4 points.
+    "moonshotai/Kimi-K3.1-Pro": 96,
     "zai-org/GLM-5": 64,
     "zai-org/GLM-5-FP8": 64,
     "nvidia/GLM-5-NVFP4": 64,
