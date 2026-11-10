@@ -161,11 +161,70 @@ def create_standard_kv_cache_spec(
     return FullAttentionSpec(**spec_kwargs)
 
 
+def set_attention_layer_shape(
+    model_config: ModelConfig,
+    *,
+    head_dim: int | None = None,
+    num_heads: int | None = None,
+    num_kv_heads: int | None = None,
+) -> None:
+    """Give a ModelConfig the head shape of the one attention layer a harness builds.
+
+    The attention builders and KV-cache specs read the layer's shape off the
+    model: ModelConfig.get_head_size, get_num_kv_heads and
+    get_num_attention_heads (config/model.py:1643-1685 at v0.32.0) return the
+    whole-model values of ``model_arch_config``. A value left at None keeps
+    the model's own.
+    """
+    if head_dim is not None:
+        model_config.hf_config.head_dim = head_dim
+        model_config.model_arch_config.head_size = head_dim
+    # ModelConfig.model_arch_config is built once in __init__, so keep its
+    # cached head counts aligned with the HF config used by this harness.
+    arch_cfg = model_config.model_arch_config
+    if num_heads is not None:
+        model_config.hf_config.num_attention_heads = num_heads
+        arch_cfg.total_num_attention_heads = num_heads
+    if num_kv_heads is not None:
+        model_config.hf_config.num_key_value_heads = num_kv_heads
+        arch_cfg.total_num_kv_heads = num_kv_heads
+
+
+def set_attention_layer_of_model(
+    model_config: ModelConfig,
+    *,
+    sliding_window: int | None,
+    head_dim: int,
+    num_heads: int,
+    num_kv_heads: int,
+    max_model_len: int,
+) -> None:
+    """Narrow a real model's ModelConfig to one dense attention layer, after its config hooks ran.
+
+    Besides the head shape, a real model carries three model-wide values the
+    builders and specs read for every layer:
+
+    - ``hf_text_config.sliding_window`` (ModelConfig.get_sliding_window,
+      config/model.py:1612-1614): the layer's own window replaces it, None for
+      a full-attention layer of a model that also has windowed ones.
+    - ``model_arch_config.is_deepseek_mla``: an MLA model reports one KV head
+      for every layer (ModelConfig.get_num_kv_heads, :1650-1670, through
+      use_mla, :2050-2063); the layer under test is dense.
+    - ``max_model_len``: the FlashInfer builder sizes its per-request page
+      table from it (flashinfer.py:774). The harness passes the length of the
+      case it times, which may exceed what the model's config allows.
+    """
+    set_attention_layer_shape(model_config, head_dim=head_dim, num_heads=num_heads, num_kv_heads=num_kv_heads)
+    model_config.hf_text_config.sliding_window = sliding_window
+    model_config.model_arch_config.is_deepseek_mla = False
+    model_config.max_model_len = max_model_len
+
+
 def create_vllm_config(
     model_name: str = "meta-llama/Meta-Llama-3-8B",
     tensor_parallel_size: int = 1,
     distributed_executor_backend: str | None = None,
-    max_model_len: int = 1024,
+    max_model_len: int | None = 1024,
     dtype: Union[ModelDType, torch.dtype] = "auto",
     num_gpu_blocks: int = 1000,
     block_size: int | None = 16,
@@ -187,6 +246,16 @@ def create_vllm_config(
     ``hf_overrides`` is forwarded verbatim to ``ModelConfig`` — the same
     mechanism as vLLM's ``--hf-overrides`` serving flag, applied to the HF
     config before architecture resolution (config/model.py:496-541).
+
+    ``max_model_len=None`` keeps the length the model's config derives, as
+    serving does without ``--max-model-len``.
+
+    The layer shape (``sliding_window``, ``head_dim``, ``num_heads``,
+    ``num_kv_heads``) is written before ``VllmConfig`` is built, so a model's
+    config hook (VllmConfig.try_verify_and_update_config, config/vllm.py:
+    2629-2658 at v0.32.0) sees it in place of the model's own. A caller that
+    needs the hook to see the real model leaves these at None and calls
+    :func:`set_attention_layer_of_model` on the returned config.
     """
 
     model_config = ModelConfig(
@@ -257,18 +326,7 @@ def create_vllm_config(
 
     if hf_config_override:
         model_config.hf_config.update(hf_config_override)
-    if head_dim is not None:
-        model_config.hf_config.head_dim = head_dim
-        model_config.model_arch_config.head_size = head_dim
-    # ModelConfig.model_arch_config is built once in __init__, so keep its
-    # cached head counts aligned with the fake HF config used by this harness.
-    arch_cfg = model_config.model_arch_config
-    if num_heads is not None:
-        model_config.hf_config.num_attention_heads = num_heads
-        arch_cfg.total_num_attention_heads = num_heads
-    if num_kv_heads is not None:
-        model_config.hf_config.num_key_value_heads = num_kv_heads
-        arch_cfg.total_num_kv_heads = num_kv_heads
+    set_attention_layer_shape(model_config, head_dim=head_dim, num_heads=num_heads, num_kv_heads=num_kv_heads)
 
     return VllmConfig(
         model_config=model_config,

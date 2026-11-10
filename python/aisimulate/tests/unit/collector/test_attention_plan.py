@@ -8,19 +8,37 @@ import ast
 from pathlib import Path
 
 import pytest
+import yaml
 from collector import case_generator
 from collector.case_generator import (
+    SGLANG_ATTENTION_BACKENDS,
     AttentionHeadConfig,
+    AttentionOwner,
+    get_attention_architecture_models,
     get_attention_context_shape_sweeps,
     get_attention_head_configs,
     get_attention_shapes,
     sglang_default_attention_backend,
 )
+from collector.helper import _resolve_local_model_path
 from collector.op_plans import OP_PLANS, AttentionCase, _attention_points, plan
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+MODEL_CASE_FILES = sorted((REPO_ROOT / "collector" / "cases" / "models").glob("*_cases.yaml"))
+
+VLLM_FIELDS = (
+    "batch_size",
+    "input_len",
+    "num_heads",
+    "num_kv_heads",
+    "head_dim",
+    "use_fp8_kv_cache",
+    "is_context_phase",
+    "window_size",
+)
 
 SGLANG_FIELDS = (
     "batch_size",
@@ -163,8 +181,9 @@ def test_sglang_rows_carry_each_models_attention_properties(monkeypatch):
     assert {row["attn_backend_name"] for row in qwen35} == {"triton"}
 
 
-def test_a_shape_two_models_serve_on_different_backends_runs_on_both(model_files):
-    model_files(_profile("ModelA", sglang_backends={100: "flashinfer"}), _profile("ModelB"))
+def test_a_shape_two_models_serve_on_different_backends_runs_on_both(model_files, monkeypatch):
+    monkeypatch.setitem(SGLANG_ATTENTION_BACKENDS, "ModelA", {100: "flashinfer"})
+    model_files(_profile("ModelA"), _profile("ModelB"))
     rows = plan("attention_generation", "sglang", 100).rows
     shapes = _by_shape(dict(zip(SGLANG_FIELDS, row, strict=True)) for row in rows)
     rows = shapes[(8, 2, 128, 0)]
@@ -192,6 +211,163 @@ def test_two_models_that_disagree_on_one_backend_raise(model_files):
 def test_a_chunk_size_on_a_full_attention_shape_does_not_split_it(model_files):
     model_files(_profile("ModelA"), _profile("ModelB", sglang_attention_chunk_size=8192))
     assert plan("attention_context", "sglang", 90).rows
+
+
+def test_model_case_files_declare_no_sglang_backend(model_files):
+    """A model case file holds structure; the backend per architecture lives in collector code."""
+    assert MODEL_CASE_FILES
+    for path in MODEL_CASE_FILES:
+        profiles = (yaml.safe_load(path.read_text(encoding="utf-8")).get("model_case_values") or {}).get("attention")
+        for profile in profiles or []:
+            assert "sglang_backends" not in profile, path.name
+
+    model_files(_profile("ModelA", sglang_backends={100: "flashinfer"}))
+    with pytest.raises(ValueError, match="no sglang_backends field"):
+        get_attention_shapes("context")
+
+
+# The backend the plan dispatches each architecture on, per SM (89, 90, 100,
+# 103, 120): its table entry where it has one, else the default.
+_SGLANG_BACKENDS_BY_SM = {
+    "Gemma4ForConditionalGeneration": ("triton", "triton", "trtllm_mha", "trtllm_mha", "triton"),
+    "GptOssForCausalLM": ("triton", "fa3", "trtllm_mha", "trtllm_mha", "triton"),
+    "KimiK3ForConditionalGeneration": ("flashinfer", "fa3", "trtllm_mha", "trtllm_mha", "flashinfer"),
+    "Llama4ForConditionalGeneration": ("triton", "fa3", "trtllm_mha", "trtllm_mha", "triton"),
+    "MiMoV2FlashForCausalLM": ("triton", "fa3", "fa4", "fa4", "triton"),
+    "NemotronHForCausalLM": ("flashinfer", "fa3", "flashinfer", "flashinfer", "flashinfer"),
+    "Qwen3_5ForConditionalGeneration": ("flashinfer", "fa3", "triton", "triton", "flashinfer"),
+    "Qwen3_5MoeForCausalLM": ("flashinfer", "fa3", "trtllm_mha", "trtllm_mha", "flashinfer"),
+    "Qwen3_5MoeForConditionalGeneration": ("flashinfer", "fa3", "triton", "triton", "flashinfer"),
+}
+
+
+def test_the_sglang_backend_table_has_every_architecture_that_declared_one():
+    """An architecture on the default has an explicit empty entry, so the table lists every reviewed one."""
+    assert set(SGLANG_ATTENTION_BACKENDS) == set(_SGLANG_BACKENDS_BY_SM)
+    assert {name for name, backends in SGLANG_ATTENTION_BACKENDS.items() if not backends} == {
+        "KimiK3ForConditionalGeneration",
+        "Qwen3_5MoeForCausalLM",
+    }
+    for architecture, backends in SGLANG_ATTENTION_BACKENDS.items():
+        assert (REPO_ROOT / "collector" / "cases" / "models" / f"{architecture}_cases.yaml").exists(), architecture
+        assert set(backends) <= {89, 90, 100, 103, 120}, architecture
+        assert set(backends.values()) <= {"fa3", "fa4", "flashinfer", "triton", "trtllm_mha"}, architecture
+
+
+@pytest.mark.parametrize("architecture", sorted(_SGLANG_BACKENDS_BY_SM))
+def test_the_sglang_backend_table_keeps_each_architectures_backends(architecture):
+    sink = architecture == "GptOssForCausalLM"  # every GPT-OSS layer has attention sinks
+    owner = AttentionOwner(from_model=True, architecture=architecture, has_attention_sink=sink)
+    assert tuple(owner.sglang_backend(sm) for sm in (89, 90, 100, 103, 120)) == _SGLANG_BACKENDS_BY_SM[architecture]
+
+
+def test_an_architecture_outside_the_table_and_the_base_grid_take_the_default():
+    for owner in (AttentionOwner(), AttentionOwner(from_model=True, architecture="Qwen3ForCausalLM")):
+        for sm in (89, 90, 100, 103, 120):
+            assert owner.sglang_backend(sm) == sglang_default_attention_backend(sm, False)
+
+
+def test_the_sglang_backend_table_cites_the_override_of_every_entry():
+    """Each entry sits under a comment naming the SGLang file and symbol that decide it."""
+    source = (REPO_ROOT / "collector" / "case_generator.py").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(source) if line.startswith("SGLANG_ATTENTION_BACKENDS"))
+    comment: list[str] = []
+    cited = {}
+    for line in source[start + 1 :]:
+        stripped = line.strip()
+        if stripped == "}":
+            break
+        if stripped.startswith("#"):
+            comment.append(stripped.lstrip("# "))
+            continue
+        cited[stripped.split('"')[1]] = " ".join(comment)
+        comment = []
+    assert set(cited) == set(SGLANG_ATTENTION_BACKENDS)
+    providers = {
+        "Gemma4ForConditionalGeneration": "gemma4.py _gemma4_overrides",
+        "GptOssForCausalLM": "gpt_oss.py _gpt_oss_overrides",
+        "KimiK3ForConditionalGeneration": "kimi_k3.py _kimi_k3_overrides",
+        "Llama4ForConditionalGeneration": "llama4.py _llama4_overrides",
+        "MiMoV2FlashForCausalLM": "mimo_v2.py _mimo_v2_overrides",
+        "NemotronHForCausalLM": "nemotron_h.py _nemotron_h_overrides",
+        "Qwen3_5ForConditionalGeneration": "qwen3_5.py _qwen3_5_hybrid_overrides",
+        # Shares the comment above the entry before it.
+        "Qwen3_5MoeForConditionalGeneration": "",
+        "Qwen3_5MoeForCausalLM": "qwen3_5.py registers _qwen3_5_hybrid_overrides",
+    }
+    for architecture, provider in providers.items():
+        assert provider in cited[architecture], architecture
+
+
+def test_vllm_rows_name_the_models_that_plan_a_shape():
+    """A model-planned shape runs under its models' configs; a base-grid shape names none."""
+    for phase in ("context", "generation"):
+        shapes = get_attention_shapes(phase)
+        rows = plan(f"attention_{phase}", "vllm", 90).rows
+        seen = set()
+        for row in rows:
+            shape = (row[2], row[3], row[4], row[7])
+            owners = [owner for owner in shapes[shape] if owner.from_model]
+            if owners:
+                assert len(row) == len(VLLM_FIELDS) + 1, row
+                assert row[-1] == list(dict.fromkeys(owner.model_path for owner in owners))
+            else:
+                assert len(row) == len(VLLM_FIELDS), row
+            seen.add(shape)
+        assert seen == set(shapes)
+        base_only = {shape for shape, owners in shapes.items() if not any(owner.from_model for owner in owners)}
+        assert base_only and {head_dim for _n, _kv, head_dim, _w in base_only} == {128}
+
+
+def test_vllm_gemma_4_rows_name_the_gemma_4_models():
+    gemma = {"google/gemma-4-26B-A4B", "nvidia/Gemma-4-31B-IT-NVFP4"}
+    for op in ("attention_context", "attention_generation"):
+        rows = plan(op, "vllm", 89).rows
+        gemma_rows = [row for row in rows if (row[4], row[7]) in {(256, 1024), (512, 0)}]
+        assert gemma_rows
+        assert all(set(row[-1]) <= gemma for row in gemma_rows)
+        assert {tuple(row[-1]) for row in gemma_rows if row[2] == 16} == {tuple(sorted(gemma))}
+        assert {tuple(row[-1]) for row in gemma_rows if row[2] == 32} == {("nvidia/Gemma-4-31B-IT-NVFP4",)}
+        # No other shape runs under a Gemma 4 config.
+        others = [row for row in rows if (row[4], row[7]) not in {(256, 1024), (512, 0)}]
+        assert not any(gemma & set(row[-1]) for row in others if len(row) > len(VLLM_FIELDS))
+    for model in gemma:
+        assert Path(_resolve_local_model_path(model), "config.json").exists()
+
+
+def test_vllm_rows_keep_the_case_and_only_grow_by_the_models():
+    """The row decides how a case runs: every case gives one row with the case's own values."""
+    for sm_version in (89, 90, 100, 103, 120):
+        vllm = plan("attention_generation", "vllm", sm_version)
+        assert len(vllm.rows) == len(vllm.cases)
+        for case, row in zip(vllm.cases, vllm.rows, strict=True):
+            assert row[: len(VLLM_FIELDS)] == [
+                case.batch_size,
+                case.input_len,
+                case.num_heads,
+                case.num_kv_heads,
+                case.head_dim,
+                case.kv_cache_dtype == "fp8",
+                False,
+                case.window_size,
+            ]
+
+
+def test_a_model_profile_without_a_model_path_cannot_name_its_vllm_config(model_files):
+    profile = _profile("ModelA")
+    del profile["model_case_values"]["attention"][0]["model_path"]
+    model_files(profile)
+    with pytest.raises(ValueError, match="names no model_path"):
+        _ = plan("attention_context", "vllm", 90).rows
+
+
+def test_an_architectures_models_are_its_profiles_models_then_aliases():
+    assert get_attention_architecture_models("Gemma4ForConditionalGeneration") == (
+        "google/gemma-4-26B-A4B",
+        "nvidia/Gemma-4-26B-A4B-NVFP4",
+        "nvidia/Gemma-4-31B-IT-NVFP4",
+    )
+    assert get_attention_architecture_models("NoSuchArchitecture") == ()
 
 
 def test_sglang_default_backend_follows_serving_selection():

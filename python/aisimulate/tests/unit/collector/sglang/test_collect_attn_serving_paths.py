@@ -8,8 +8,10 @@ context phase is driven here: the decode branch compares tensor sizes, which a p
 torch fake cannot answer.
 """
 
+import ast
 import contextlib
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -194,23 +196,40 @@ def attn(monkeypatch):
         world.perf_rows.append(kwargs)
         return True
 
+    # What SGLang serving resolves per model, (prefill, decode); None is an MLA model. A
+    # model missing here resolves to the row's own backend, so the lane tests run unchecked.
+    world.serving = {}
+    world.resolved = []
+
+    def resolve_serving_attention_backends(model):
+        world.resolved.append(model)
+        if model in world.serving:
+            return world.serving[model]
+        return (world.dispatch, world.dispatch)
+
     monkeypatch.setattr(module, "benchmark_with_power", benchmark_with_power)
     monkeypatch.setattr(module, "log_perf", log_perf)
     monkeypatch.setattr(module, "_dist_version", lambda name: "0.5.23")
+    monkeypatch.setattr(module, "resolve_serving_attention_backends", resolve_serving_attention_backends)
+    monkeypatch.setattr(module, "_resolve_local_model_path", lambda model: f"bundled:{model}")
+    module._world = world
     return module, world, torch
 
 
-def _run_context(module, sm, backend, *, head_dim=128, v_head_dim=None, architecture=None, fp8=False):
+def _run_context(
+    module, sm, backend, *, head_dim=128, v_head_dim=None, architecture=None, fp8=False, is_context=True, input_len=1000
+):
     module.get_sm_version = lambda: sm
+    module._world.dispatch = backend
     module.run_attention_torch(
         2,
-        1000,
+        input_len,
         8,
         2,
         head_dim,
         fp8,
         fp8,
-        True,
+        is_context,
         0,
         v_head_dim,
         -1,
@@ -292,6 +311,163 @@ def test_attention_rows_time_without_the_moe_first_point_warmup(attn):
 
     assert "min_warmup_seconds" not in world.bench_kwargs[0]
     assert world.events[:2] == ["allocate:flashinfer_workspace", "build:flashinfer"]
+
+
+# ------------------------------------------------- the plan's dispatch against serving
+def test_a_row_runs_when_serving_resolves_the_plans_backend_for_its_architecture(attn):
+    """Gemma 4 on SM90: the plan and gemma4.py _gemma4_overrides both say triton."""
+    module, world, _ = attn
+    world.serving["google/gemma-4-26B-A4B"] = ("triton", "triton")
+    _run_context(module, 90, "triton", architecture="Gemma4ForConditionalGeneration")
+    assert world.resolved == ["google/gemma-4-26B-A4B"]
+    assert world.perf_rows[0]["kernel_source"] == "triton"
+
+
+def test_a_row_fails_when_serving_resolves_another_backend_than_the_plan(attn):
+    module, world, _ = attn
+    world.serving["nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"] = ("trtllm_mha", "trtllm_mha")
+    with pytest.raises(RuntimeError) as error:
+        _run_context(module, 100, "flashinfer", architecture="NemotronHForCausalLM")
+    message = str(error.value)
+    assert "the plan dispatches NemotronHForCausalLM prefill attention on flashinfer" in message
+    assert "SGLang serving resolves trtllm_mha for nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16" in message
+    # Refused before anything is built or timed.
+    assert world.backends == [] and world.pools == [] and world.perf_rows == []
+
+
+def test_the_phase_the_op_times_is_the_one_checked(attn):
+    """Serving may split the pair (Qwen3-VL on a large Hopper GPU decodes on flashinfer,
+    arg_groups/model_overrides/qwen3_vl.py:129-130): a context row is checked against
+    prefill, a generation row against decode."""
+    module, world, _ = attn
+    world.serving["Qwen/Qwen3-VL-2B-Instruct"] = ("fa3", "flashinfer")
+    _run_context(module, 90, "fa3", architecture="Qwen3VLForConditionalGeneration")
+    assert len(world.perf_rows) == 1
+
+    with pytest.raises(RuntimeError, match="decode attention on fa3, but SGLang serving resolves flashinfer"):
+        module.check_dispatch_is_servings("fa3", "Qwen3VLForConditionalGeneration", is_context_phase=False)
+    module.check_dispatch_is_servings("flashinfer", "Qwen3VLForConditionalGeneration", is_context_phase=False)
+
+
+def test_a_base_grid_row_is_checked_against_a_model_without_an_override(attn):
+    module, world, _ = attn
+    world.serving[module.DEFAULT_BACKEND_MODEL] = ("trtllm_mha", "trtllm_mha")
+    _run_context(module, 100, "trtllm_mha")
+    assert world.resolved == [module.DEFAULT_BACKEND_MODEL]
+
+    with pytest.raises(RuntimeError, match="base-grid prefill attention on flashinfer.*resolves trtllm_mha"):
+        _run_context(module, 100, "flashinfer")
+
+    # The stand-in ships its config and its architecture has no table entry: it takes the default.
+    config = COLLECTOR_DIR.parent / "src/aisimulate_core/model_configs/Qwen--Qwen3-32B_config.json"
+    (architecture,) = json.loads(config.read_text(encoding="utf-8"))["architectures"]
+    assert module.DEFAULT_BACKEND_MODEL == "Qwen/Qwen3-32B" and architecture == "Qwen3ForCausalLM"
+    case_generator = sys.modules["collector.case_generator"]
+    assert architecture not in case_generator.SGLANG_ATTENTION_BACKENDS
+
+
+def test_serving_is_resolved_once_per_architecture_for_both_phases(attn):
+    module, world, _ = attn
+    world.serving["openai/gpt-oss-120b"] = ("fa3", "fa3")
+    world.serving[module.DEFAULT_BACKEND_MODEL] = ("fa3", "fa3")
+    for _ in range(3):
+        module.check_dispatch_is_servings("fa3", "GptOssForCausalLM", is_context_phase=True)
+        module.check_dispatch_is_servings("fa3", "GptOssForCausalLM", is_context_phase=False)
+        module.check_dispatch_is_servings("fa3", None, is_context_phase=True)
+    assert world.resolved == ["openai/gpt-oss-120b", module.DEFAULT_BACKEND_MODEL]
+
+
+def test_an_mla_models_dense_rows_are_not_checked_against_its_own_attention_backend(attn):
+    """Kimi-K3's own attention is MLA; its dense rows time the speculative draft."""
+    module, world, _ = attn
+    world.serving["moonshotai/Kimi-K3"] = None
+    _run_context(module, 100, "trtllm_mha", architecture="KimiK3ForConditionalGeneration")
+    assert world.resolved == ["moonshotai/Kimi-K3"] and len(world.perf_rows) == 1
+
+
+def test_a_resolution_that_fails_fails_every_row_of_the_architecture_without_retrying(attn, monkeypatch):
+    module, world, _ = attn
+    attempts = []
+
+    def broken(model):
+        attempts.append(model)
+        raise ValueError("config not recognized")
+
+    monkeypatch.setattr(module, "resolve_serving_attention_backends", broken)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="cannot resolve the attention backend SGLang serves .*config not recog"):
+            _run_context(module, 90, "fa3", architecture="Llama4ForConditionalGeneration")
+    assert attempts == ["meta-llama/Llama-4-Scout-17B-16E-Instruct"]
+    assert world.perf_rows == []
+
+
+def test_an_architecture_is_resolved_through_its_first_model_with_a_config(attn, monkeypatch):
+    module, world, _ = attn
+
+    def bundled(model):
+        if model in {"Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B", "Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-9B"}:
+            raise FileNotFoundError(model)
+        return f"bundled:{model}"
+
+    monkeypatch.setattr(module, "_resolve_local_model_path", bundled)
+    assert module._architecture_model("Qwen3_5ForConditionalGeneration") == "Qwen/Qwen3.5-27B"
+    assert module._architecture_model(None) == module.DEFAULT_BACKEND_MODEL
+
+    monkeypatch.setattr(
+        module, "_resolve_local_model_path", lambda model: (_ for _ in ()).throw(FileNotFoundError(model))
+    )
+    with pytest.raises(RuntimeError, match="no model of Mistral3ForConditionalGeneration has a config"):
+        _run_context(module, 90, "fa3", architecture="Mistral3ForConditionalGeneration")
+
+
+def test_serving_is_resolved_by_servings_own_pipeline_on_the_models_config(attn, monkeypatch):
+    """resolve_serving_attention_backends builds the model's ServerArgs, runs
+    ServerArgs.resolve_once and reads the pair the pipeline resolved; it holds no table."""
+    module, world, _ = attn
+    monkeypatch.undo()  # the real function, over a fake sglang surface
+    events = []
+
+    class ServerArgs:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            events.append(("server_args", kwargs))
+
+        def resolve_once(self):
+            events.append("resolve_once")
+
+    override_base = {
+        "attention_backends_of": lambda view: (events.append(("pair_of", view)), ("fa3", "flashinfer"))[1],
+        "resolved_view": lambda server_args: ("view", server_args),
+        "use_mla_backend": lambda server_args: server_args.kwargs["model_path"].endswith("Kimi-K3"),
+    }
+    for name, attrs in {
+        "sglang.srt.arg_groups.model_override_base": override_base,
+        "sglang.srt.server_args": {"ServerArgs": ServerArgs},
+    }.items():
+        fake = types.ModuleType(name)
+        vars(fake).update(attrs)
+        monkeypatch.setitem(sys.modules, name, fake)
+    monkeypatch.setattr(module, "_resolve_local_model_path", lambda model: f"bundled:{model}")
+
+    assert module.resolve_serving_attention_backends("Qwen/Qwen3-32B") == ("fa3", "flashinfer")
+    server_args, resolve, pair = events
+    assert server_args == (
+        "server_args",
+        {"model_path": "bundled:Qwen/Qwen3-32B", "load_format": "dummy", "trust_remote_code": True},
+    )
+    assert resolve == "resolve_once" and pair[0] == "pair_of" and pair[1][0] == "view"
+    assert module.resolve_serving_attention_backends("moonshotai/Kimi-K3") is None
+
+    source = (COLLECTOR_DIR / "sglang" / "collect_attn.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    resolver = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_serving_attention_backends"
+    )
+    literals = {n.value for n in ast.walk(resolver) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    literals.discard(ast.get_docstring(resolver, clean=False))
+    assert not literals & {"fa3", "fa4", "flashinfer", "triton", "trtllm_mha"}
 
 
 # ---------------------------------------------------------------- encoder

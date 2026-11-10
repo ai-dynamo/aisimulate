@@ -6,8 +6,9 @@
 Builds lightweight RadixAttention/ForwardBatch mocks to benchmark context and
 generation attention without launching a full SGLang server. The cases and
 the backend each runs on come from the shared attention plan
-(collector/op_plans.py); this file owns SGLang backend construction, KV-cache
-setup and perf logging for the SGLang runtime.
+(collector/op_plans.py); this file checks that backend against the one SGLang
+serving resolves for the row's architecture on the device, and owns SGLang
+backend construction, KV-cache setup and perf logging for the SGLang runtime.
 """
 
 __compat__ = "sglang==0.5.23"
@@ -19,8 +20,8 @@ from types import SimpleNamespace
 from typing import NamedTuple
 
 import torch
-from collector.case_generator import sglang_default_attention_backend
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.case_generator import get_attention_architecture_models, sglang_default_attention_backend
+from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
@@ -197,6 +198,100 @@ class MockModelRunner:
         self.gpu_id = 0  # model_runner.py:366; triton_backend.py:315 reads its SM count
 
 
+# The model a base-grid row (no architecture) is checked against. Qwen3ForCausalLM
+# has no provider under arg_groups/model_overrides/ and no MODEL_OVERRIDES entry
+# (arg_groups/model_override_base.py:18-22), no attention sinks and equal K and V
+# widths, so serving resolves get_default_attn_backend's choice for a plain MHA
+# model (model_override_base.py:277-334).
+DEFAULT_BACKEND_MODEL = "Qwen/Qwen3-32B"
+
+# architecture (None: the base grid) -> ((prefill, decode) or None, the model resolved), or the failure.
+_SERVING_BACKENDS: dict = {}
+
+
+def _architecture_model(architecture: str | None) -> str:
+    """The first model of an architecture's attention profiles whose config resolves (bundled, else fetched)."""
+    if architecture is None:
+        return DEFAULT_BACKEND_MODEL
+    models = get_attention_architecture_models(architecture)
+    for model in models:
+        try:
+            _resolve_local_model_path(model)
+        except FileNotFoundError:
+            continue
+        return model
+    raise FileNotFoundError(f"no model of {architecture} has a config (attention profiles declare {models})")
+
+
+def resolve_serving_attention_backends(model: str) -> tuple[str, str] | None:
+    """The (prefill, decode) attention backends SGLang serving resolves for a model on this device.
+
+    The model's ServerArgs go through serving's own resolution
+    (ServerArgs.resolve_once, srt/server_args.py:244-300, as launch_server.py:29
+    calls it): the model's override provider declares its backend
+    (arg_groups/model_hook.py:233-237 collect_model_override_declarations) and
+    the default fills what is left (arg_groups/attention_hook.py:120
+    _attention_backend_default -> get_default_attn_backend). The pair is read as
+    the pipeline reads it before publishing (model_override_base.py:138-153
+    attention_backends_of; a runner takes the same pair, model_executor/
+    model_runner_components/attention_backend_setup.py:184-204). The record is
+    never published: the worker keeps its offline runtime.
+
+    None for a model whose own attention is MLA (Kimi-K3): its dense rows time
+    the speculative draft, which ``attention_backend`` does not describe.
+
+    Needs the SGLang runtime and the device: the platform facts the providers
+    read are probed from the GPU.
+    """
+    from sglang.srt.arg_groups.model_override_base import attention_backends_of, resolved_view, use_mla_backend
+    from sglang.srt.server_args import ServerArgs
+
+    # The resolved directory may hold config.json only: "dummy" is serving's load
+    # format for a run without weights, as the module collectors use it.
+    server_args = ServerArgs(model_path=_resolve_local_model_path(model), load_format="dummy", trust_remote_code=True)
+    server_args.resolve_once()
+    if use_mla_backend(server_args):
+        return None
+    prefill, decode = attention_backends_of(resolved_view(server_args))
+    return prefill, decode
+
+
+def serving_attention_backends(architecture: str | None) -> tuple[tuple[str, str] | None, str]:
+    """An architecture's resolved (prefill, decode) backends and the model they were resolved for, once per process."""
+    if architecture not in _SERVING_BACKENDS:
+        try:
+            model = _architecture_model(architecture)
+            _SERVING_BACKENDS[architecture] = (resolve_serving_attention_backends(model), model)
+        except Exception as exc:
+            _SERVING_BACKENDS[architecture] = (
+                f"cannot resolve the attention backend SGLang serves {architecture or 'a model without an override'} "
+                f"on: {type(exc).__name__}: {exc}"
+            )
+    resolved = _SERVING_BACKENDS[architecture]
+    if isinstance(resolved, str):
+        raise RuntimeError(resolved)
+    return resolved
+
+
+def check_dispatch_is_servings(attn_backend_name: str, architecture: str | None, is_context_phase: bool) -> None:
+    """Raise when the plan's dispatch is not the backend SGLang serving resolves for the row's architecture.
+
+    The plan picks the backend from case_generator.SGLANG_ATTENTION_BACKENDS and
+    the default table, which a person keeps in step with SGLang's overrides;
+    this is the check against the framework. Context rows time prefill and
+    generation rows decode, which serving may put on different backends.
+    """
+    backends, model = serving_attention_backends(architecture)
+    if backends is None:
+        return
+    phase, served = ("prefill", backends[0]) if is_context_phase else ("decode", backends[1])
+    if served != attn_backend_name:
+        raise RuntimeError(
+            f"the plan dispatches {architecture or 'base-grid'} {phase} attention on {attn_backend_name}, "
+            f"but SGLang serving resolves {served} for {model} on this device"
+        )
+
+
 def create_req_to_token_pool(batch_size, total_len, page_size, torch_device, device_str):
     """Create req_to_token mapping consistent with test_flashattn_backend.py."""
     assert total_len > 0, "Total sequence length must be positive"
@@ -322,6 +417,7 @@ def run_attention_torch(
         attn_backend_name = sglang_default_attention_backend(sm_version, has_attention_sink)
         if attn_backend_name is None:
             raise ValueError(f"No SGLang attention backend for SM{sm_version}")
+    check_dispatch_is_servings(attn_backend_name, architecture, is_context_phase)
     if page_size is None:
         # The page size serving resolves for the backend: trtllm_mha forces 64 when unset
         # (arg_groups/overrides.py:1174-1187 _mla_backend_page_constraints), fa4 on SM100/103

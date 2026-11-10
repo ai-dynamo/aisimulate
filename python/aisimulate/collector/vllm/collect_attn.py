@@ -28,10 +28,11 @@
 # leaves these kernels on their fixed heuristics, as timed here.
 __compat__ = "vllm==0.32.0"
 
+import functools
 import os
 
 import torch
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
 from collector.vllm.utils import (
     BatchSpec,
@@ -41,6 +42,7 @@ from collector.vllm.utils import (
     create_vllm_config,
     framework_kv_block_size,
     get_attention_backend,
+    set_attention_layer_of_model,
     with_exit_stack,
 )
 from vllm.config import set_current_vllm_config
@@ -51,7 +53,7 @@ from vllm.v1.attention.backends.utils import (
     get_supported_kv_cache_layouts,
     resolve_kv_cache_layout,
 )
-from vllm.v1.attention.selector import get_attn_backend
+from vllm.v1.attention.selector import _cached_get_attn_backend, get_attn_backend
 from vllm.version import __version__ as vllm_version
 
 # Serving's default scheduler bound on GPUs with 70 GB or more (H100 and newer,
@@ -153,6 +155,74 @@ def match_serving_fa_aot_schedule(builder, window_size: int) -> None:
     builder.aot_schedule = False
 
 
+def select_attention_backend(head_dim, use_fp8_kv_cache, has_sliding_window):
+    """The backend vLLM selects for one causal attention layer under the current VllmConfig.
+
+    Serving's Attention layer selects through get_attn_backend
+    (model_executor/layers/attention/attention.py:350-360), which builds the
+    selector config from the current VllmConfig and takes the model-wide
+    choice a config hook left on ``attention_config`` (v1/attention/selector.py:
+    105-200; block_size stays None without --block-size, :131-135). This
+    collector times no attention sinks (op_plans._vllm_attention_rows).
+
+    vLLM memoizes the outcome per (backend, selector config) for the process
+    (_cached_get_attn_backend, v1/attention/selector.py:203-225), which holds
+    in serving, where a process serves one model. The validation behind it
+    also reads the current config: the FlashAttention version a hook forced
+    (fa_utils.get_flash_attn_version, fa_utils.py:112-117, called from
+    flash_attn.py:457-509). A worker runs many models, so the memo is cleared
+    before every selection.
+    """
+    _cached_get_attn_backend.cache_clear()
+    return get_attn_backend(
+        head_dim,
+        torch.bfloat16,
+        "fp8" if use_fp8_kv_cache else "auto",
+        has_sliding_window=has_sliding_window,
+    )
+
+
+@functools.cache
+def model_attention_selection(model, head_dim, use_fp8_kv_cache, has_sliding_window):
+    """What vLLM resolves for one attention layer of a model: the backend and the attention config.
+
+    The VllmConfig is built from the model's own config (helper._resolve_local_model_path), so
+    VllmConfig.__post_init__ runs the model's hook from MODELS_CONFIG_MAP
+    (try_verify_and_update_config, config/vllm.py:1443, :2629-2658) exactly as
+    serving does. ``attention_config`` holds what a hook decides for the whole
+    model: Gemma4Config forces FlashAttention 4 or TRITON_ATTN there
+    (model_executor/models/config.py:229-290).
+    """
+    vllm_config = create_vllm_config(
+        model_name=_resolve_local_model_path(model),
+        max_model_len=None,
+        dtype="bfloat16",
+        block_size=None,
+        use_fp8_kv_cache=use_fp8_kv_cache,
+    )
+    with set_current_vllm_config(vllm_config):
+        backend_cls = select_attention_backend(head_dim, use_fp8_kv_cache, has_sliding_window)
+    return backend_cls.get_name(), repr(vllm_config.attention_config)
+
+
+def require_one_attention_selection(models, head_dim, use_fp8_kv_cache, has_sliding_window):
+    """Raise unless vLLM resolves the same backend and attention config for every model of a row.
+
+    The attention tables hold one row per shape, so the models that share a
+    shape must run it on the same kernel.
+    """
+    selections = {
+        model: model_attention_selection(model, head_dim, use_fp8_kv_cache, has_sliding_window) for model in models
+    }
+    if len(set(selections.values())) > 1:
+        described = "; ".join(f"{model}: {name} under {config}" for model, (name, config) in selections.items())
+        raise RuntimeError(
+            f"vLLM resolves different attention backends for the models that share head_dim {head_dim}, "
+            f"{'FP8' if use_fp8_kv_cache else 'BF16'} KV, {'sliding' if has_sliding_window else 'full'} "
+            f"attention: {described}"
+        )
+
+
 @with_exit_stack
 def run_attention_torch(
     exit_stack,
@@ -164,6 +234,7 @@ def run_attention_torch(
     use_fp8_kv_cache,
     is_context_phase,
     window_size=0,
+    models=(),
     *,
     perf_filename,
     device="cuda:0",
@@ -171,7 +242,6 @@ def run_attention_torch(
     torch.cuda.set_device(device)
 
     dtype = torch.bfloat16
-    model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
     # Backend selection runs at the framework default page (serving does the same: the
     # model is built at CacheConfig.DEFAULT_BLOCK_SIZE, the page is re-derived from the
     # selected backend afterwards — utils.framework_kv_block_size).
@@ -192,9 +262,7 @@ def run_attention_torch(
 
     set_random_seed(42)
 
-    vllm_config = create_vllm_config(
-        model_name=model,
-        max_model_len=max(batch_spec.seq_lens),
+    serving_config = dict(
         block_size=block_size,
         num_gpu_blocks=8192,
         # Serving's scheduler bound, not this case's batch: the builders read
@@ -214,34 +282,64 @@ def run_attention_torch(
         # buffers for that call (flashinfer.py:770-772, workspace :1107-1130).
         max_num_batched_tokens=max(8192, batch_spec.compute_num_tokens()),
         use_fp8_kv_cache=use_fp8_kv_cache,
+    )
+    layer_shape = dict(
         sliding_window=window_size if window_size > 0 else None,
         head_dim=head_dim,
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
     )
+    layer_len = max(batch_spec.seq_lens)
+    if models:
+        # A shape that models plan runs under the config vLLM builds for the
+        # model, its hook included (model_attention_selection). The model keeps
+        # its own shape and length until the backend is selected: a hook reads
+        # them (Gemma4Config compares the head sizes of the model's layers).
+        # The compute dtype is the row's, BF16, as with --dtype bfloat16.
+        require_one_attention_selection(tuple(models), head_dim, use_fp8_kv_cache, window_size > 0)
+        vllm_config = create_vllm_config(
+            model_name=_resolve_local_model_path(models[0]),
+            max_model_len=None,
+            dtype="bfloat16",
+            **serving_config,
+        )
+    else:
+        # A shape only the base grid plans has no model: a generic config
+        # (Qwen3, no config hook) shaped as the layer.
+        vllm_config = create_vllm_config(
+            model_name=os.path.join(os.path.dirname(__file__), "fake_hf_model"),
+            max_model_len=layer_len,
+            **serving_config,
+            **layer_shape,
+        )
 
     exit_stack.enter_context(set_current_vllm_config(vllm_config))
 
-    # Serving's Attention layer selects through get_attn_backend
-    # (model_executor/layers/attention/attention.py:350-360), which builds the
-    # selector config from the current VllmConfig (v1/attention/selector.py:
-    # 105-200; block_size stays None without --block-size, :131-135). This
-    # collector times no attention sinks (op_plans._vllm_attention_rows).
-    # Deviation (Gemma 4 shapes: head_dim 256 window 1024, head_dim 512; no
-    # other model has them): serving's Gemma4Config (model_executor/models/
-    # config.py:229-290) keeps per-layer selection only for FP8 KV on SM90,
-    # forces FA4 on every FlashAttention layer elsewhere when FA4 is available,
-    # and forces TRITON_ATTN when it is not. These rows time native per-shape
-    # selection, so on SM90 with BF16 KV the head_dim 256 layer runs FA3 where
-    # Gemma 4 runs FA4, and where FA4 is unavailable the rows run FA2 or
-    # FlashInfer where Gemma 4 runs Triton. Direction unknown. Retiring it needs
-    # a model-aware row for these shapes.
-    backend_cls = get_attn_backend(
-        head_dim,
-        dtype,
-        "fp8" if use_fp8_kv_cache else "auto",
-        has_sliding_window=window_size > 0,
-    )
+    # Deviation (Gemma 4 rows on SM90, SM100 and SM103): the model masks image
+    # tokens bidirectionally (ModelConfig.is_mm_prefix_lm), so serving's layer
+    # passes use_mm_prefix (attention.py:344-360) and selects a composite:
+    # TRITON_FLASH_ATTN on SM90 and TRITON_FLASHINFER on SM10x (platforms/
+    # cuda.py:158-179; v1/attention/backends/triton_flash_attn.py,
+    # triton_flashinfer.py). The composite sends a batch with an image mask to
+    # Triton and every causal batch to FlashAttention or FlashInfer
+    # (composite.py:87-99 MMPrefixAttentionRouting, :209-244). This call
+    # leaves use_mm_prefix out and selects that causal backend directly, under
+    # the same FlashAttention version, so the rows time the kernel serving runs
+    # for text. Three things differ. Serving writes the KV cache through
+    # Triton's writer on both routes (composite.py:268-270). TRITON_FLASHINFER
+    # pages the kernel at 64 tokens (triton_flashinfer.py:20), where FlashInfer
+    # alone pages at 16 here. With an FP8 KV cache the composite takes a
+    # quantized query only if both members do (composite.py:194-197) and Triton
+    # does not, so serving hands the causal member a BF16 query, where
+    # FlashAttention 3 and SM10x FlashInfer alone take the FP8 query timed here
+    # (flash_attn.py:1158-1160, flashinfer.py:1912-1918). Batches with image
+    # tokens are not timed. Direction unknown. On SM89 and SM120 serving has no
+    # composite and runs the TRITON_ATTN that Gemma4Config forces, as these
+    # rows do. Retiring it needs the row to pass use_mm_prefix and register a
+    # layer the composite's routing can read (composite.py:90-95).
+    backend_cls = select_attention_backend(head_dim, use_fp8_kv_cache, window_size > 0)
+    if models:
+        set_attention_layer_of_model(vllm_config.model_config, max_model_len=layer_len, **layer_shape)
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
 

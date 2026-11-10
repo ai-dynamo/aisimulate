@@ -478,6 +478,7 @@ _ATTN_UTILS = {
     "create_vllm_config": _dummy,
     "framework_kv_block_size": _dummy,
     "get_attention_backend": _dummy,
+    "set_attention_layer_of_model": _dummy,
     "with_exit_stack": _with_exit_stack,
 }
 
@@ -493,7 +494,12 @@ VLLM_0320_ATTN_SURFACE = {
         "get_supported_kv_cache_layouts": _dummy,
         "resolve_kv_cache_layout": _dummy,
     },
-    "vllm.v1.attention.selector": {"get_attn_backend": _dummy},
+    # _cached_get_attn_backend is the per-process memo behind get_attn_backend
+    # (v1/attention/selector.py:203-225); the collector clears it per selection.
+    "vllm.v1.attention.selector": {
+        "get_attn_backend": _dummy,
+        "_cached_get_attn_backend": functools.cache(_dummy),
+    },
 }
 
 # vLLM 0.32.0 ViT surface. vit_flash_attn_wrapper is deliberately absent: the

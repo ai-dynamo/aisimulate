@@ -34,15 +34,6 @@ model_case_values:
       head_dim: 192
       v_head_dim: 128
       window_size: 0
-      # SGLang serves MiMo-V2 on fa4 on SM100/103 (arg_groups/model_overrides/
-      # mimo_v2.py _mimo_v2_overrides; the generic default also picks fa4 for
-      # asymmetric K/V, model_override_base.py get_default_attn_backend), on fa3
-      # on SM90, and on triton on SM89/SM120: MiMo-V2-Flash sets the sink-bias
-      # flags, so the generic default skips flashinfer (model_config.py
-      # _detect_attention_sinks), which also rejects the 192/128 K/V pool (L40S
-      # and RTX 6000 Pro probes: prefill reshape '[-1, 4, 192]' on the 128-wide
-      # V pool, decode paged K/V stride check 768 vs 512).
-      sglang_backends: {89: triton, 90: fa3, 100: fa4, 103: fa4, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
     - id: mimo_v2_swa_attention
       model_path: XiaomiMiMo/MiMo-V2-Flash
@@ -52,7 +43,6 @@ model_case_values:
       v_head_dim: 128
       window_size: 128
       has_attention_sink: true
-      sglang_backends: {89: triton, 90: fa3, 100: fa4, 103: fa4, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
   moe:
     - model_path: XiaomiMiMo/MiMo-V2-Flash

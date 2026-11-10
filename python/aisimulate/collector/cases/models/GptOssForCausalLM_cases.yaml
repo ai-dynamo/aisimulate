@@ -35,7 +35,6 @@ model_case_values:
       head_dim: 64
       window_size: 0
       has_attention_sink: true
-      sglang_backends: {90: fa3, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
     - id: gpt_oss_swa_attention
       model_path: openai/gpt-oss-120b
@@ -46,7 +45,6 @@ model_case_values:
       window_size: 128
       sglang_runtime_window_size: 127
       has_attention_sink: true
-      sglang_backends: {90: fa3, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
   moe:
     - model_path: openai/gpt-oss-120b

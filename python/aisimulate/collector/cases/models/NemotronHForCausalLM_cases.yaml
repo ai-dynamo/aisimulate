@@ -29,7 +29,6 @@ model_case_values:
       num_key_value_heads: 2
       head_dim: 128
       window_size: 0
-      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
     - id: nemotron_h_super_attention
       model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
@@ -37,7 +36,6 @@ model_case_values:
       num_key_value_heads: 2
       head_dim: 128
       window_size: 0
-      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
     - id: nemotron_h_ultra_attention
       model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
@@ -49,7 +47,6 @@ model_case_values:
       num_key_value_heads: 2
       head_dim: 128
       window_size: 0
-      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
     - id: nemotron_h_56b_attention
       model_path: nvidia/Nemotron-H-56B-Base-8K
@@ -57,7 +54,6 @@ model_case_values:
       num_key_value_heads: 8
       head_dim: 128
       window_size: 0
-      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
   moe:
     - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16

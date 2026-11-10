@@ -37,8 +37,8 @@ mappings:
   # ---------------------------------------------------------------- sglang
   # Attention backend pins (serving-truth per SM): collector/sglang/collect_attn.py
   # records the plan's dispatch (case_generator.sglang_default_attention_backend,
-  # overridden by a model's sglang_backends) as kernel_source: fa3, fa4,
-  # flashinfer, trtllm_mha or triton.
+  # overridden per architecture by case_generator.SGLANG_ATTENTION_BACKENDS) as
+  # kernel_source: fa3, fa4, flashinfer, trtllm_mha or triton.
   - {framework: sglang, kernel_source: flash_attention, backend: fa3, source: "collector/sglang/collect_attn.py + collect_mla.py (FlashAttentionBackend pin)"}
   - {framework: sglang, kernel_source: flash_attention_v3, backend: fa3, source: "collector/sglang/collect_attn_encoder.py"}
   - {framework: sglang, kernel_source: flash_attention_v4, backend: fa4, source: "collector/sglang/collect_attn_encoder.py"}

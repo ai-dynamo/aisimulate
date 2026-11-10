@@ -2288,19 +2288,28 @@ def _vllm_attention_rows(phase: str):
     # path, where serving runs V=128 on FLASH_ATTN_DIFFKV or TRITON_ATTN_DIFFKV
     # (vllm model_executor/models/mimo_v2.py:300-321), and GPT-OSS's rows
     # without attention sinks.
+    # A shape that model profiles plan names their models as a last argument:
+    # the collector builds its VllmConfig from each model's config, so vLLM's
+    # own per-architecture hook (model_executor/models/config.py
+    # MODELS_CONFIG_MAP, applied by VllmConfig.try_verify_and_update_config,
+    # config/vllm.py:2629-2658 at v0.32.0) decides the backend as in serving.
+    # A shape only the base grid plans names none and keeps the generic config.
     def rows(case: AttentionCase, sm_version: int | None, runner: str | None) -> list[list]:
-        return [
-            [
-                case.batch_size,
-                case.input_len,
-                case.num_heads,
-                case.num_kv_heads,
-                case.head_dim,
-                case.kv_cache_dtype == "fp8",
-                is_context,
-                case.window_size,
-            ]
+        row = [
+            case.batch_size,
+            case.input_len,
+            case.num_heads,
+            case.num_kv_heads,
+            case.head_dim,
+            case.kv_cache_dtype == "fp8",
+            is_context,
+            case.window_size,
         ]
+        owners = [owner for owner in _attention_owners(phase, case) if owner.from_model]
+        if any(owner.model_path is None for owner in owners):
+            raise ValueError(f"an attention profile that plans {case} names no model_path")
+        models = list(dict.fromkeys(owner.model_path for owner in owners))
+        return [[*row, models]] if models else [row]
 
     return rows
 

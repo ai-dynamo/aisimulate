@@ -315,10 +315,11 @@ def get_attention_head_configs(
 def sglang_default_attention_backend(sm_version: int | None, has_attention_sink: bool) -> str | None:
     """SGLang's default dense-attention backend on an SM, or None outside its table.
 
-    Mirrors server_args._get_default_attn_backend (python/sglang/srt/server_args.py):
-    SM90 runs fa3 and SM100/103 trtllm_mha; SM89 and SM120 run flashinfer, or
-    triton for a model with attention sinks, which flashinfer rejects. A
-    model's ``sglang_backends`` overrides it per SM.
+    Mirrors get_default_attn_backend for an MHA model without speculative
+    decoding (python/sglang/srt/arg_groups/model_override_base.py:277-334 at
+    v0.5.23): SM90 runs fa3 and SM100/103 trtllm_mha; SM89 and SM120 run
+    flashinfer, or triton for a model with attention sinks, which flashinfer
+    rejects. An architecture in ``SGLANG_ATTENTION_BACKENDS`` overrides it per SM.
     """
     return {
         89: "triton" if has_attention_sink else "flashinfer",
@@ -329,47 +330,115 @@ def sglang_default_attention_backend(sm_version: int | None, has_attention_sink:
     }.get(sm_version)
 
 
+# The dense-attention backend SGLang serves an architecture on, per SM, where
+# its model override decides instead of the default above. An SM an entry
+# leaves out, and an empty entry, take the default. Each entry cites the
+# v0.5.23 provider under python/sglang/srt/arg_groups/model_overrides/ that
+# declares ``attention_backend``; providers test get_platform().is_sm90,
+# is_sm100 and is_sm120, which are the capability majors 9, 10 (SM100 and
+# SM103) and 12 (srt/utils/common.py:274-337). The plan reads this table for
+# the dispatch; the SGLang worker compares the dispatch with what serving
+# resolves for the architecture on the device (sglang/collect_attn.py).
+SGLANG_ATTENTION_BACKENDS: dict[str, dict[int, str]] = {
+    # gemma4.py _gemma4_overrides:30-39: trtllm_mha when is_sm100, triton on
+    # every other platform.
+    "Gemma4ForConditionalGeneration": {89: "triton", 90: "triton", 100: "trtllm_mha", 103: "trtllm_mha", 120: "triton"},
+    # gpt_oss.py _gpt_oss_overrides:29-44: trtllm_mha when is_sm100, fa3 when
+    # is_sm90, triton on the other CUDA platforms.
+    "GptOssForCausalLM": {89: "triton", 90: "fa3", 100: "trtllm_mha", 103: "trtllm_mha", 120: "triton"},
+    # The default. The target's own attention is MLA (kimi_k3.py
+    # _kimi_k3_overrides:122-135 declares trtllm_mla on SM100/103); the dense
+    # shape is its DSPARK draft's, which arg_groups/kimi_k3_hook.py
+    # apply_kimi_k3_spec_backend_defaults:42-51 puts on trtllm_mha when is_sm100.
+    "KimiK3ForConditionalGeneration": {},
+    # llama4.py _llama4_overrides:23-37: trtllm_mha when is_sm100, fa3 when
+    # is_sm90, triton on the other CUDA platforms.
+    "Llama4ForConditionalGeneration": {89: "triton", 90: "fa3", 100: "trtllm_mha", 103: "trtllm_mha", 120: "triton"},
+    # mimo_v2.py _mimo_v2_overrides:27-29: fa4 when is_sm100 (the default picks
+    # fa4 there too for unequal K and V widths, model_override_base.py:323-324).
+    # SM89 and SM120 take the default's triton branch for every layer: the
+    # checkpoint sets add_swa_attention_sink_bias, so ModelConfig.has_attention_sinks
+    # is true for the model (configs/model_config.py:1273-1289), not only for the
+    # sliding-window profile that carries the sink flag here. flashinfer cannot
+    # hold the 192/128 K/V pool either (L40S and RTX PRO 6000 probes: prefill
+    # reshape '[-1, 4, 192]' on the 128-wide V pool, decode paged K/V stride
+    # check 768 vs 512). SM90 is the default.
+    "MiMoV2FlashForCausalLM": {89: "triton", 100: "fa4", 103: "fa4", 120: "triton"},
+    # nemotron_h.py _nemotron_h_overrides:123-148 declares trtllm_mha when
+    # is_sm100 without speculative decoding, which is the default. The plan
+    # keeps these rows on flashinfer until a GPU run settles the entry: the
+    # worker's check against serving fails them where serving resolves
+    # trtllm_mha.
+    "NemotronHForCausalLM": {100: "flashinfer", 103: "flashinfer"},
+    # qwen3_5.py _qwen3_5_hybrid_overrides:26-49: on is_sm100, trtllm_mha when
+    # that is the default and the Mamba cache keeps an extra buffer, the radix
+    # cache is off or speculative decoding is on; triton otherwise. Under
+    # serving's defaults the provider runs before the Mamba strategy is
+    # resolved (arg_groups/model_hook.py:223-237, :737), so it declares triton
+    # with page size 1.
+    "Qwen3_5ForConditionalGeneration": {100: "triton", 103: "triton"},
+    "Qwen3_5MoeForConditionalGeneration": {100: "triton", 103: "triton"},
+    # The default: qwen3_5.py registers _qwen3_5_hybrid_overrides for the
+    # multimodal architectures only (:17-23), not for this text-only one.
+    "Qwen3_5MoeForCausalLM": {},
+}
+
+
 @dataclasses.dataclass(frozen=True)
 class AttentionOwner:
     """A model attention profile, or the base grid, that plans an attention shape.
 
     It carries the model's attention properties a backend's rows may take: the
-    architecture, the V head size, attention sinks, and SGLang's runtime window,
-    chunk size, scaling and backend per SM.
+    architecture, the model, the V head size, attention sinks, and SGLang's
+    runtime window, chunk size and scaling.
     """
 
     from_model: bool = False
     architecture: str | None = None
+    model_path: str | None = None
     v_head_dim: int | None = None
     has_attention_sink: bool = False
     sglang_runtime_window_size: int | None = None
     sglang_attention_chunk_size: int | None = None
     sglang_scaling: float | None = None
-    sglang_backends: tuple[tuple[int, str], ...] = ()
 
     def sglang_backend(self, sm_version: int | None) -> str | None:
         """The SGLang attention backend serving runs this profile on."""
-        override = dict(self.sglang_backends).get(sm_version)
+        override = SGLANG_ATTENTION_BACKENDS.get(self.architecture or "", {}).get(sm_version)
         return override or sglang_default_attention_backend(sm_version, self.has_attention_sink)
 
 
 def _attention_owner(profile: dict[str, object]) -> AttentionOwner:
-    backends = profile.get("sglang_backends") or {}
-    if not isinstance(backends, dict):
-        raise TypeError("model_case_values.attention.sglang_backends must be a mapping")
+    if "sglang_backends" in profile:
+        raise ValueError(
+            "model_case_values.attention has no sglang_backends field: a model case file holds the model's "
+            "structure, and SGLang's backend per architecture is case_generator.SGLANG_ATTENTION_BACKENDS"
+        )
     runtime_window_size = profile.get("sglang_runtime_window_size")
     attention_chunk_size = profile.get("sglang_attention_chunk_size")
     scaling = profile.get("sglang_scaling")
     return AttentionOwner(
         from_model=True,
         architecture=str(profile["architecture"]) if profile.get("architecture") else None,
+        model_path=str(profile["model_path"]) if profile.get("model_path") else None,
         v_head_dim=int(profile["v_head_dim"]) if profile.get("v_head_dim") is not None else None,
         has_attention_sink=bool(profile.get("has_attention_sink", False)),
         sglang_runtime_window_size=int(runtime_window_size) if runtime_window_size is not None else None,
         sglang_attention_chunk_size=int(attention_chunk_size) if attention_chunk_size is not None else None,
         sglang_scaling=float(scaling) if scaling is not None else None,
-        sglang_backends=tuple(sorted((int(sm), str(name)) for sm, name in backends.items())),
     )
+
+
+def get_attention_architecture_models(architecture: str) -> tuple[str, ...]:
+    """The models an architecture's attention profiles declare: each profile's model, then its aliases."""
+    models: list[str] = []
+    for profile in _model_case_values("attention", apply_model_filter=False):
+        if profile.get("architecture") != architecture:
+            continue
+        for model in (profile.get("model_path"), *(profile.get("model_aliases") or ())):
+            if model and model not in models:
+                models.append(str(model))
+    return tuple(models)
 
 
 def get_attention_shapes(phase: str) -> dict[tuple[int, int, int, int], tuple[AttentionOwner, ...]]:
