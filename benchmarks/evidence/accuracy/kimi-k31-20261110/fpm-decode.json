@@ -1,0 +1,312 @@
+{
+  "schema": "kimi-k31-public-fpm-holdout-accuracy/v1",
+  "method": "fpm_direct_interpolation",
+  "phase": "decode",
+  "model": "moonshotai/Kimi-K3.1-Pro",
+  "system": "gb300",
+  "tp": 8,
+  "runtime": "Dynamo/vLLM 0.1.dev24216+g266e88c05",
+  "timing_boundary": "Native scheduler-wall forward-pass estimates; not CUDA-event latency.",
+  "scope": "Same GB300, TP8, runtime and original worker role. Seed 42, 20% capped at 16 coordinates, retained envelope/native expected mode boundaries; simultaneously remove all selected coordinates before direct native interpolation. No calibration self-lookups or predictor fallback.",
+  "not_assessed": [
+    "Cross-TP or cross-GPU SOL transfer/extrapolation",
+    "Independent repeatability qualification",
+    "Serving TTFT/TPOT or SemiAnalysis accuracy"
+  ],
+  "source_report_sha256": "9a69581b84ca0758e913b6b2c041ff76d5d811af2bacb1e2abc5eeb77441a155",
+  "producer_binding_sha256": "8b45ac3b62f465a9551501ae2800261280a01d94fa8f05ea6aaa440a4723012b",
+  "producer": {
+    "producer_source": "261f0972e56f3f74d3945f1a59210cb1a15d6e44",
+    "producer_archive_sha256": "d0c19dcee2182b8bf09a9004a3201f189163dae49c0ae047085652f114a7bf89",
+    "producer_runtime_validator_sha256": "3ba6dc73bdc2c5f75786b57baa876cabce2fc90e72fa14eac8f1ccee1f2856ee",
+    "producer_measurement_evidence_sha256": "6e5657cf7a7b5d62b9c6649a76b4af4e4985c26d843d96ff2427e7bea6b25149",
+    "producer_execution_evidence_sha256": "d88f8059639b1aea40b39ded6905c24e6171e241cc19ade735426afc76083d8f"
+  },
+  "native_artifact_sha256": [
+    "8bf298d3dc81b83c25e0ea3f4134c7fd5fc77f7b8f2139fb25502b1b67e1cfe7"
+  ],
+  "canonical_report_sha256": "7ba789ccec04ee11b80aec9e31eb821be761ae276da9638e421b353129a37bfb",
+  "holdout_plan_sha256": "2ca88f8b66f7c4ead15a4cbe607f42e2a9aa7480dbaca43da181ffbc53dc3388",
+  "source_hashes": {
+    "request": "d69e8b120371f444621eacaa66289e9713b92bb30ea159f6a78b17df8812d5e7",
+    "execution_evidence": "6f84d34a89fc893bb661f0914d3d94ce109ec1e854b6c9d6c4d05562cb25bc7d",
+    "implementation": "c605b1208ca22652111dd7c31c79db11f6acdfb5e1367afaafcfcd9141600f60",
+    "runtime_extension": "c8c5d5ced6a3ecccf79e59101a9cc54cb3a447f6c2e3c8a043faafb6047bd81f",
+    "build_receipt": "54d975042859817f4beb7873c83ecff3967aa8f7a3f76686ed78b99e8d440e2e",
+    "scorer": "2c0a305d8cce0b2b6c0577a938c78eb270cd43b6805a2dd0cd5fe133dec990cc"
+  },
+  "original_table_sha256": "a18135056fcfb88e552ad55797c055904d960efe6ad77910f3e86d177163a5f1",
+  "original_sidecar_sha256": "b7c73d979c22f04561701cac7e10f66c3d7fca82db747b7f3b9709c7cf795f7e",
+  "predictor": {
+    "predictor_build_source_commit": "40eeb4872650facf2fe0bc03df3bc387343e40f3",
+    "predictor_wheel_sha256": "f5e10b61546393f1cf70f217b710287a25c5cbff5a54dbd090e1f10843dd1eaf"
+  },
+  "formal_rows": 80,
+  "retained_calibration_rows": 64,
+  "withheld_rows": 16,
+  "native_query_coverage": {
+    "interpolated": 16,
+    "measured": 0,
+    "unsupported": 0
+  },
+  "canonical_status": "passed",
+  "capture_boundary_status": "assessed",
+  "capture_boundary_limitation": "Native expected modes and resolved graph configuration are available; per-call observed dispatch is not reported.",
+  "sampling_audit_sha256": "800a6f332cbf9a915a8b48c45ff61f0302559ee968db96cdc7e9c2b4f25cccf7",
+  "sampling": {
+    "dp_point_estimate_count": 80,
+    "expected_internal_samples": [
+      {
+        "value": 2,
+        "count": 6
+      },
+      {
+        "value": 4,
+        "count": 74
+      }
+    ],
+    "observed_raw_fpm_count": [
+      {
+        "value": 2,
+        "count": 6
+      },
+      {
+        "value": 4,
+        "count": 74
+      }
+    ],
+    "estimate_method": [
+      {
+        "value": "adjacent_upper_median",
+        "count": 74
+      },
+      {
+        "value": "last_step",
+        "count": 6
+      }
+    ],
+    "raw_sample_indices": [
+      {
+        "value": [
+          1,
+          2,
+          3
+        ],
+        "count": 74
+      },
+      {
+        "value": [
+          1
+        ],
+        "count": 6
+      }
+    ],
+    "raw_timing_bases": [
+      {
+        "value": [
+          "schedule_to_output",
+          "inter_output",
+          "inter_output",
+          "inter_output"
+        ],
+        "count": 74
+      },
+      {
+        "value": [
+          "schedule_to_output",
+          "inter_output"
+        ],
+        "count": 6
+      }
+    ]
+  },
+  "sampling_note": "One formal collection, one retained native estimate per point/DP stream. Internal sample counts and reducers are shown above. No separate repeatability qualification was performed; the generic canonical limitation must not be read as claiming one internal forward or existing repeatability evidence.",
+  "summary": {
+    "selected": 16,
+    "paired": 16,
+    "mape_percent": 2.455794628281419,
+    "p95_ape_percent": 11.540846535041203,
+    "max_ape_percent": 13.01718782199773,
+    "mean_signed_error_percent": -1.239087285896612
+  },
+  "points": [
+    {
+      "phase": "decode",
+      "batch_size": 3,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 64,
+      "predicted_ms": 13.543061135957638,
+      "measured_ms": 13.6438081972301,
+      "status": "predicted",
+      "signed_error_percent": -0.738408659929095,
+      "ape_percent": 0.738408659929095
+    },
+    {
+      "phase": "decode",
+      "batch_size": 8,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 32768,
+      "predicted_ms": 16.833977975910795,
+      "measured_ms": 16.651807818561792,
+      "status": "predicted",
+      "signed_error_percent": 1.0939962755631683,
+      "ape_percent": 1.0939962755631683
+    },
+    {
+      "phase": "decode",
+      "batch_size": 1,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 4096,
+      "predicted_ms": 11.211645165176286,
+      "measured_ms": 12.604255694895983,
+      "status": "predicted",
+      "signed_error_percent": -11.04873277272236,
+      "ape_percent": 11.04873277272236
+    },
+    {
+      "phase": "decode",
+      "batch_size": 8,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 256,
+      "predicted_ms": 16.477066557854414,
+      "measured_ms": 17.09292782470584,
+      "status": "predicted",
+      "signed_error_percent": -3.603018003511776,
+      "ape_percent": 3.603018003511776
+    },
+    {
+      "phase": "decode",
+      "batch_size": 1,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 4,
+      "predicted_ms": 11.116426438093185,
+      "measured_ms": 11.045407969504595,
+      "status": "predicted",
+      "signed_error_percent": 0.6429682704764406,
+      "ape_percent": 0.6429682704764406
+    },
+    {
+      "phase": "decode",
+      "batch_size": 3,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 16384,
+      "predicted_ms": 13.849726753403308,
+      "measured_ms": 13.731968123465776,
+      "status": "predicted",
+      "signed_error_percent": 0.8575509998184507,
+      "ape_percent": 0.8575509998184507
+    },
+    {
+      "phase": "decode",
+      "batch_size": 1,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 128,
+      "predicted_ms": 11.106506455689669,
+      "measured_ms": 11.082463897764683,
+      "status": "predicted",
+      "signed_error_percent": 0.21694235277261073,
+      "ape_percent": 0.21694235277261073
+    },
+    {
+      "phase": "decode",
+      "batch_size": 5,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 2048,
+      "predicted_ms": 15.642165361593166,
+      "measured_ms": 15.580575913190842,
+      "status": "predicted",
+      "signed_error_percent": 0.39529635326369295,
+      "ape_percent": 0.39529635326369295
+    },
+    {
+      "phase": "decode",
+      "batch_size": 2,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 1024,
+      "predicted_ms": 12.841856262336174,
+      "measured_ms": 12.830143794417381,
+      "status": "predicted",
+      "signed_error_percent": 0.09128867225859984,
+      "ape_percent": 0.09128867225859984
+    },
+    {
+      "phase": "decode",
+      "batch_size": 5,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 16,
+      "predicted_ms": 15.586080198938197,
+      "measured_ms": 15.682751778513193,
+      "status": "predicted",
+      "signed_error_percent": -0.616419751713762,
+      "ape_percent": 0.616419751713762
+    },
+    {
+      "phase": "decode",
+      "batch_size": 2,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 8,
+      "predicted_ms": 12.739274650812149,
+      "measured_ms": 12.640480417758226,
+      "status": "predicted",
+      "signed_error_percent": 0.7815702393330687,
+      "ape_percent": 0.7815702393330687
+    },
+    {
+      "phase": "decode",
+      "batch_size": 5,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 32768,
+      "predicted_ms": 15.978297735976504,
+      "measured_ms": 15.843679662793875,
+      "status": "predicted",
+      "signed_error_percent": 0.8496641944784867,
+      "ape_percent": 0.8496641944784867
+    },
+    {
+      "phase": "decode",
+      "batch_size": 8,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 4096,
+      "predicted_ms": 16.47259745125969,
+      "measured_ms": 16.561247874051332,
+      "status": "predicted",
+      "signed_error_percent": -0.5352883035495251,
+      "ape_percent": 0.5352883035495251
+    },
+    {
+      "phase": "decode",
+      "batch_size": 5,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 256,
+      "predicted_ms": 15.689194512863955,
+      "measured_ms": 18.03712034597993,
+      "status": "predicted",
+      "signed_error_percent": -13.01718782199773,
+      "ape_percent": 13.01718782199773
+    },
+    {
+      "phase": "decode",
+      "batch_size": 8,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 32,
+      "predicted_ms": 16.419114855428536,
+      "measured_ms": 16.323775984346867,
+      "status": "predicted",
+      "signed_error_percent": 0.5840491267038395,
+      "ape_percent": 0.5840491267038395
+    },
+    {
+      "phase": "decode",
+      "batch_size": 2,
+      "total_prefill_tokens": 0,
+      "total_kv_read_tokens": 8192,
+      "predicted_ms": 13.501452049771181,
+      "measured_ms": 12.954719830304384,
+      "status": "predicted",
+      "signed_error_percent": 4.220332254410099,
+      "ape_percent": 4.220332254410099
+    }
+  ],
+  "all_selected_coordinates_retained": true,
+  "reselection_or_tuning_after_truth": false
+}

@@ -1,0 +1,43 @@
+{
+  "schema": "kimi-k31-public-fpm-both-role-accuracy/v1",
+  "source_report_sha256": "21b2d756999f318595615f12f0d48ee3dde7d671d21a5eca9966b3902e662df8",
+  "selection_protocol_sha256": "2ca88f8b66f7c4ead15a4cbe607f42e2a9aa7480dbaca43da181ffbc53dc3388",
+  "phase_summary_sha256": {
+    "prefill": "0b7dcb3ef8b3f8faf0151a4864a0dc1f089ff028a267bfcc04cfe15239e1a33f",
+    "decode": "9a69581b84ca0758e913b6b2c041ff76d5d811af2bacb1e2abc5eeb77441a155"
+  },
+  "summary": {
+    "all": {
+      "selected": 26,
+      "paired": 26,
+      "mape_percent": 4.746640241145649,
+      "p95_ape_percent": 12.525074059678888,
+      "max_ape_percent": 33.7880184498195,
+      "mean_signed_error_percent": 2.111082475268053
+    },
+    "prefill": {
+      "selected": 10,
+      "paired": 10,
+      "mape_percent": 8.411993221728418,
+      "p95_ape_percent": 23.338833565958502,
+      "max_ape_percent": 33.7880184498195,
+      "mean_signed_error_percent": 7.471354093131517
+    },
+    "decode": {
+      "selected": 16,
+      "paired": 16,
+      "mape_percent": 2.455794628281419,
+      "p95_ape_percent": 11.540846535041203,
+      "max_ape_percent": 13.01718782199773,
+      "mean_signed_error_percent": -1.239087285896612
+    }
+  },
+  "phase_canonical_status": {
+    "prefill": "failed",
+    "decode": "passed"
+  },
+  "all_phase_accuracy_gates_passed": false,
+  "acceptance_note": "Each phase keeps its original gate result. The aggregate error does not override a failed phase gate. Complete formal collection and calibration publication do not imply accuracy acceptance.",
+  "aggregation": "Equal weight across all paired selected coordinates, with selected/paired and unsupported coverage retained per phase.",
+  "comparison_with_op": "Different backend/runtime/timing boundaries; these scores do not rank Op versus FPM on the same runtime."
+}

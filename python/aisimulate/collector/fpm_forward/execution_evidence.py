@@ -479,6 +479,8 @@ def inspect_execution_evidence(
             failures.append(f"runtime attention group observation is malformed: {path}")
         config = payload.get("resolved_config")
         model = config.get("model_config", {}) if isinstance(config, dict) else {}
+        if not isinstance(model, dict):
+            model = {}
         native_worker = None
         if getattr(plan, "runtime_instrumentation", None) is not None and (
             collection.backend_version not in EXECUTION_SUPPORTED_VERSIONS

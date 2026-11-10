@@ -1,0 +1,216 @@
+{
+  "schema": "kimi-k31-public-fpm-holdout-accuracy/v1",
+  "method": "fpm_direct_interpolation",
+  "phase": "prefill",
+  "model": "moonshotai/Kimi-K3.1-Pro",
+  "system": "gb300",
+  "tp": 8,
+  "runtime": "Dynamo/vLLM 0.1.dev24216+g266e88c05",
+  "timing_boundary": "Native scheduler-wall forward-pass estimates; not CUDA-event latency.",
+  "scope": "Same GB300, TP8, runtime and original worker role. Seed 42, 20% capped at 16 coordinates, retained envelope/native expected mode boundaries; simultaneously remove all selected coordinates before direct native interpolation. No calibration self-lookups or predictor fallback.",
+  "not_assessed": [
+    "Cross-TP or cross-GPU SOL transfer/extrapolation",
+    "Independent repeatability qualification",
+    "Serving TTFT/TPOT or SemiAnalysis accuracy"
+  ],
+  "source_report_sha256": "0b7dcb3ef8b3f8faf0151a4864a0dc1f089ff028a267bfcc04cfe15239e1a33f",
+  "producer_binding_sha256": "8b45ac3b62f465a9551501ae2800261280a01d94fa8f05ea6aaa440a4723012b",
+  "producer": {
+    "producer_source": "261f0972e56f3f74d3945f1a59210cb1a15d6e44",
+    "producer_archive_sha256": "d0c19dcee2182b8bf09a9004a3201f189163dae49c0ae047085652f114a7bf89",
+    "producer_runtime_validator_sha256": "3ba6dc73bdc2c5f75786b57baa876cabce2fc90e72fa14eac8f1ccee1f2856ee",
+    "producer_measurement_evidence_sha256": "6e5657cf7a7b5d62b9c6649a76b4af4e4985c26d843d96ff2427e7bea6b25149",
+    "producer_execution_evidence_sha256": "d88f8059639b1aea40b39ded6905c24e6171e241cc19ade735426afc76083d8f"
+  },
+  "native_artifact_sha256": [
+    "2d218e9699a1cf1348d40efae72c1df87b1bcbb3a403b89e6f087fa5b267453f"
+  ],
+  "canonical_report_sha256": "e71b19da84eac7cf244e0c23e8e8acf7bc661db836a28e97740f56f9c16afde1",
+  "holdout_plan_sha256": "2ca88f8b66f7c4ead15a4cbe607f42e2a9aa7480dbaca43da181ffbc53dc3388",
+  "source_hashes": {
+    "request": "03bc4629ae69b609fef95b2efb8986f5feae2e6900544d8c5aa105220982e055",
+    "execution_evidence": "469a3f4b1422725430ef83d2f6fc2bc3a888fec09a6a0bfacc5d09ad431c66cf",
+    "implementation": "c605b1208ca22652111dd7c31c79db11f6acdfb5e1367afaafcfcd9141600f60",
+    "runtime_extension": "c8c5d5ced6a3ecccf79e59101a9cc54cb3a447f6c2e3c8a043faafb6047bd81f",
+    "build_receipt": "54d975042859817f4beb7873c83ecff3967aa8f7a3f76686ed78b99e8d440e2e",
+    "scorer": "2c0a305d8cce0b2b6c0577a938c78eb270cd43b6805a2dd0cd5fe133dec990cc"
+  },
+  "original_table_sha256": "9166b4542e765a8ac02e4732e6e2e59b3bca31c06192c54bad60470e6bc4bedf",
+  "original_sidecar_sha256": "0b241d3b4edd8dd3bd6a679657a56d0a842807c75a94eccbf716db7d66f7869b",
+  "predictor": {
+    "predictor_build_source_commit": "40eeb4872650facf2fe0bc03df3bc387343e40f3",
+    "predictor_wheel_sha256": "f5e10b61546393f1cf70f217b710287a25c5cbff5a54dbd090e1f10843dd1eaf"
+  },
+  "formal_rows": 51,
+  "retained_calibration_rows": 41,
+  "withheld_rows": 10,
+  "native_query_coverage": {
+    "interpolated": 10,
+    "measured": 0,
+    "unsupported": 0
+  },
+  "canonical_status": "failed",
+  "capture_boundary_status": "assessed",
+  "capture_boundary_limitation": "Native expected modes and resolved graph configuration are available; per-call observed dispatch is not reported.",
+  "sampling_audit_sha256": "6e6e16ecf4302da73849795b18d925976a563243adf2504e682dd97552742b7c",
+  "sampling": {
+    "dp_point_estimate_count": 51,
+    "expected_internal_samples": [
+      {
+        "value": 1,
+        "count": 51
+      }
+    ],
+    "observed_raw_fpm_count": [
+      {
+        "value": 1,
+        "count": 51
+      }
+    ],
+    "estimate_method": [
+      {
+        "value": "single_step",
+        "count": 51
+      }
+    ],
+    "raw_sample_indices": [
+      {
+        "value": [
+          0
+        ],
+        "count": 51
+      }
+    ],
+    "raw_timing_bases": [
+      {
+        "value": [
+          "schedule_to_output"
+        ],
+        "count": 51
+      }
+    ]
+  },
+  "sampling_note": "One formal collection, one retained native estimate per point/DP stream. Internal sample counts and reducers are shown above. No separate repeatability qualification was performed; the generic canonical limitation must not be read as claiming one internal forward or existing repeatability evidence.",
+  "summary": {
+    "selected": 10,
+    "paired": 10,
+    "mape_percent": 8.411993221728418,
+    "p95_ape_percent": 23.338833565958502,
+    "max_ape_percent": 33.7880184498195,
+    "mean_signed_error_percent": 7.471354093131517
+  },
+  "points": [
+    {
+      "phase": "prefill",
+      "batch_size": 2,
+      "total_prefill_tokens": 3,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 76.29782380536199,
+      "measured_ms": 80.06336027756333,
+      "status": "predicted",
+      "signed_error_percent": -4.7031956429845065,
+      "ape_percent": 4.7031956429845065
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 4,
+      "total_prefill_tokens": 4096,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 265.4679783930381,
+      "measured_ms": 240.09561585262418,
+      "status": "predicted",
+      "signed_error_percent": 10.56760759679511,
+      "ape_percent": 10.56760759679511
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 2048,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 243.13767456139126,
+      "measured_ms": 226.56124830245972,
+      "status": "predicted",
+      "signed_error_percent": 7.316532012042052,
+      "ape_percent": 7.316532012042052
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 4,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 307.6568219533309,
+      "measured_ms": 306.66028801351786,
+      "status": "predicted",
+      "signed_error_percent": 0.324963478730288,
+      "ape_percent": 0.324963478730288
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 308.67345816396335,
+      "measured_ms": 306.37865606695414,
+      "status": "predicted",
+      "signed_error_percent": 0.7490084741763858,
+      "ape_percent": 0.7490084741763858
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 2,
+      "total_prefill_tokens": 256,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 280.67629877477884,
+      "measured_ms": 258.5717439651489,
+      "status": "predicted",
+      "signed_error_percent": 8.548712427220677,
+      "ape_percent": 8.548712427220677
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 2,
+      "total_prefill_tokens": 4096,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 300.21282145753503,
+      "measured_ms": 224.39440013840795,
+      "status": "predicted",
+      "signed_error_percent": 33.7880184498195,
+      "ape_percent": 33.7880184498195
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 2,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 74.96582390740514,
+      "measured_ms": 72.10681634023786,
+      "status": "predicted",
+      "signed_error_percent": 3.964961583766203,
+      "ape_percent": 3.964961583766203
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 4,
+      "total_prefill_tokens": 512,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 253.89677860463658,
+      "measured_ms": 236.40342382714152,
+      "status": "predicted",
+      "signed_error_percent": 7.399789095392382,
+      "ape_percent": 7.399789095392382
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 256,
+      "total_kv_read_tokens": 0,
+      "predicted_ms": 279.3644160653154,
+      "measured_ms": 261.6821760311723,
+      "status": "predicted",
+      "signed_error_percent": 6.7571434563570705,
+      "ape_percent": 6.7571434563570705
+    }
+  ],
+  "all_selected_coordinates_retained": true,
+  "reselection_or_tuning_after_truth": false
+}
