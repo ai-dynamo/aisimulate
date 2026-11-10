@@ -54,17 +54,19 @@ SCHEMA_NAME = "aisimulate_fpm_runtime_memory"
 SCHEMA_VERSION = 1
 MEMORY_SUPPORTED_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
 EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0", "0.32.0", "0.33.0")
+# The one vLLM version whose probe records carry the hybrid cache evidence. The probe compares the exact string.
+HYBRID_EVIDENCE_VERSION = "0.33.0"
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
 _UNIFORM_SPEC = _SPEC_MODULE + "UniformTypeKVCacheSpecs"
 _MAMBA_SPEC = _SPEC_MODULE + "MambaSpec"
 _CONV_CLASS = "vllm.models.inkling.nvidia.sconv_swa_attn.InklingConvState"
-# Cache spec classes of vllm/v1/kv_cache_interface.py at vLLM 0.31.0
-# (db9527a46873454610df6dbedf79a36d6bf1a7f6), keyed by class name. The table
-# maps by class, not by get_kv_cache_spec_kind: KpoolTailSpec reports a sliding
-# window (1394-1395) but holds one block per request (1019-1025). RSWASpec is
+# Cache spec classes of vllm/v1/kv_cache_interface.py at vLLM 0.33.0
+# (4ba787ec9959e566d3b587a796dff07673324da5), keyed by class name. The table
+# maps by class, not by get_kv_cache_spec_kind: CircularBufferSpec has no spec
+# kind (1421-1459) but holds one block per request (982-989). RSWASpec is
 # left out: its manager frees the blocks between the prompt and the decode
-# window (v1/core/single_type_kv_cache_manager.py:905-948), which no kind models.
+# window (v1/core/single_type_kv_cache_manager.py:900-943), which no kind models.
 SPEC_KINDS: dict[str, str] = {
     **dict.fromkeys(
         (
@@ -77,13 +79,13 @@ SPEC_KINDS: dict[str, str] = {
         ),
         "attention",
     ),
-    **dict.fromkeys(("KpoolTailSpec", "CircularBufferSpec", "MambaSpec"), "state"),
+    **dict.fromkeys(("CircularBufferSpec", "MambaSpec"), "state"),
 }
-# SlidingWindowSpec and its subclasses (831, 930, 1016) declare a positive window.
-_WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec", "KpoolTailSpec"))
+# SlidingWindowSpec and its subclass SlidingWindowMLASpec (901-902, 1008) declare a positive window.
+_WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec"))
 # The spec classes that records without hybrid evidence accept (vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0).
 _LEGACY_SPECS = frozenset((_SPEC_MODULE + "FullAttentionSpec", _SPEC_MODULE + "SlidingWindowSpec"))
-# Cache settings that only hybrid evidence records (vLLM 0.31.0 config/cache.py).
+# Cache settings that only hybrid evidence records (vLLM 0.33.0 config/cache.py:187-304).
 _HYBRID_CACHE_FIELDS = (
     "block_size",
     "mamba_cache_mode",
@@ -440,7 +442,7 @@ def _cached_config_commit(model_config: Any) -> str | None:
 def execution_config(config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
     """Read execution identity without requiring the memory-finalization APIs.
 
-    ``hybrid_evidence`` adds the vLLM 0.31.0 cache settings; without it the
+    ``hybrid_evidence`` adds the vLLM 0.33.0 cache settings; without it the
     record keeps the fields that 0.27.0 and 0.28.0 records have.
     """
     sections = (
@@ -561,7 +563,7 @@ def _layer_spec(spec: Any) -> dict[str, Any]:
 
 
 def _state(spec: Any) -> dict[str, Any]:
-    # KpoolTailSpec (1019-1025) and CircularBufferSpec (904-911) hold one block per request.
+    # A CircularBufferSpec holds one block per request (982-989).
     if _class_name(spec) != _MAMBA_SPEC:
         return {"blocks_per_request": 1}
     fields = (
@@ -573,9 +575,9 @@ def _state(spec: Any) -> dict[str, Any]:
         "real_page_size_bytes",
     )
     # The steady count: one state block plus the speculative blocks, held between block boundaries in both modes
-    # (1093-1094). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1089-1092). After a boundary, the
-    # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.31.0
-    # default (v1/core/single_type_kv_cache_manager.py:1658-1675).
+    # (1140-1141). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1135-1139). After a boundary, the
+    # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.33.0
+    # default (config/vllm.py:1685-1719, v1/core/single_type_kv_cache_manager.py:1640-1657).
     return {
         **{key: _json_value(getattr(spec, key)) for key in fields},
         "blocks_per_request": 1 + spec.num_speculative_blocks,
@@ -591,7 +593,7 @@ def _shared(values: list[Any], label: str) -> Any:
 def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False) -> list[dict[str, Any]]:
     """Record every cache group with its spec class, block, page, window and dtype.
 
-    ``hybrid_evidence`` maps the vLLM 0.31.0 spec classes of SPEC_KINDS and adds
+    ``hybrid_evidence`` maps the vLLM 0.33.0 spec classes of SPEC_KINDS and adds
     each group's kind, the spec of each layer and state evidence. A
     UniformTypeKVCacheSpecs group keeps one inner spec per layer; its layers share
     one window and one state, and the group dtype is None when layers differ.
@@ -664,7 +666,7 @@ def _storage(tensor: Any) -> tuple[tuple[str, int], int]:
 def _layer_storages(kv_cache: Any) -> set[tuple[str, int]]:
     """Storage keys of one cache tensor, or of every tensor of a tuple or list.
 
-    A vLLM 0.31.0 Mamba layer binds a tuple of state views of one page.
+    A vLLM 0.33.0 Mamba layer binds a tuple of state views of one page (model_executor/layers/mamba/abstract.py:28-42).
     """
     tensors = kv_cache if isinstance(kv_cache, (tuple, list)) else (kv_cache,)
     if not tensors:
@@ -811,7 +813,7 @@ def _layer_strided_allocations(
 def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
     """Read the initialized cache groups, storage and allocation plan of one worker.
 
-    ``hybrid_evidence`` records the vLLM 0.31.0 evidence of ``cache_groups``;
+    ``hybrid_evidence`` records the vLLM 0.33.0 evidence of ``cache_groups``;
     without it the groups are the ones vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0
     runtimes have. The shape of the allocation record picks its reader.
     """
@@ -876,7 +878,7 @@ def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, An
 def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
     """Read the initialized block pool of one scheduler.
 
-    ``hybrid_evidence`` adds the vLLM 0.31.0 block sizes, Mamba cache mode and
+    ``hybrid_evidence`` adds the vLLM 0.33.0 block sizes, Mamba cache mode and
     startup capacity, and records the ``cache_groups`` evidence without the kind;
     without it the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
     """
@@ -903,8 +905,8 @@ def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = Fal
         "groups": cache_groups(config, hybrid_evidence=hybrid_evidence),
     }
     if hybrid_evidence:
-        # vLLM 0.31.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:198, :312);
-        # its BlockPool keeps the hash block size too (core/block_pool.py:170).
+        # vLLM 0.33.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:218, :350);
+        # its BlockPool keeps the hash block size too (core/block_pool.py:173).
         hash_block_size = getattr(scheduler, "hash_block_size", None)
         if hasattr(pool, "hash_block_size") and pool.hash_block_size != hash_block_size:
             raise ValueError("scheduler hash block size differs from its block pool")

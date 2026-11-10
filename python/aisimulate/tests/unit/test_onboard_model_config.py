@@ -787,14 +787,18 @@ def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp
     assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
 
 
-# Collection observes pending memory on the vLLM versions of support/plan.py MEMORY_OBSERVATION_VERSIONS.
-# The bundled vLLM 0.31.0 instrumentation observes it in runtime probes only.
+# Collection observes pending memory on the vLLM versions of support/plan.py MEMORY_OBSERVATION_VERSIONS, also for a
+# grouped cache of full and sliding attention, whose specs the memory reader of the collection accepts. A draft whose
+# cache geometry is pending the runtime probe stops with the probe guidance before this review.
 _PENDING_MEMORY_LINES = {
     "0.27.0": [
         "  Memory is observed during initialized vLLM 0.27.0 collection.",
         "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
     ],
-    "0.31.0": ["  Memory is observed during initialized vLLM 0.31.0 probes only."],
+    "0.33.0": [
+        "  Memory is observed during initialized vLLM 0.33.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
     "0.28.0": [
         "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
     ],
@@ -1235,8 +1239,7 @@ def test_guided_review_states_that_supported_versions_observe_memory(tmp_path, m
 
 
 def test_guided_review_states_that_an_unsupported_version_collects_timings_only(tmp_path, monkeypatch, capsys):
-    # vLLM 0.28.0 has neither memory collection nor a bundled probe instrumentation.
-    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.28.0")
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.31.0")
     assert (
         "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
         in lines
@@ -1924,7 +1927,7 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     assert "model config did not produce a complete FPM profile" not in captured.err
     limit = (
         "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from vLLM "
-        "0.31.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
+        "0.33.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
         "unsupported runtime cache specs (guide: "
         "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
     )
@@ -2090,6 +2093,18 @@ def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monke
     assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
     assert "onboard probe-runtime" in stderr and "fmha_quant_mode: resolve" not in stderr
     assert explicit_topology or "explicit topology" in stderr
+    assert not out.exists()
+
+
+def test_runtime_resolved_interactive_stops_before_the_memory_review(tmp_path, monkeypatch, capsys):
+    # vLLM 0.33.0 has a bundled probe instrumentation, and the draft still stops with the probe guidance before the
+    # review that states where pending memory is observed.
+    _terminal(monkeypatch)
+    out = tmp_path / "request.yaml"
+    command = [*_ISSUE_ARGS, "--framework-version", "0.33.0", "--model-config", str(_GLM), *_glm_precision(tmp_path)]
+    stdout, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert "Review FPM profile before saving:" not in stdout + stderr
+    assert "Memory is observed" not in stdout + stderr
     assert not out.exists()
 
 

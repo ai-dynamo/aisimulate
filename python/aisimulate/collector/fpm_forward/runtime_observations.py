@@ -489,15 +489,15 @@ def _check_element_size(item_size: int, precision: str) -> None:
         raise ValueError("tensor element size contradicts cache dtype")
 
 
-# The element bytes of the vLLM 0.31.0 Mamba state dtypes. MambaStateDtypeCalculator gives every state the model
-# dtype, a MambaDType choice (config/cache.py:61) or float32 (model_executor/layers/mamba/mamba_utils.py:53-158).
+# The element bytes of the vLLM 0.33.0 Mamba state dtypes. MambaStateDtypeCalculator gives every state the model
+# dtype, a MambaDType choice (config/cache.py:175) or float32 (model_executor/layers/mamba/mamba_utils.py:53-150).
 _STATE_DTYPE_BYTES = {"torch.float32": 4, "torch.float16": 2, "torch.bfloat16": 2}
 
 
 def _indexer(spec: dict[str, Any]) -> bool:
-    """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.31.0 kv_cache_interface.py:668).
+    """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.33.0 kv_cache_interface.py:737).
 
-    It stores uint8 keys at every KV precision (models/glm5next/common/attention.py:293-299).
+    It stores uint8 keys at every KV precision (models/glm5next/common/attention.py:260-262).
     """
     return (
         spec.get("spec_type") == "vllm.v1.kv_cache_interface.MLAAttentionSpec" and spec.get("cache_role") == "INDEXER"
@@ -620,13 +620,13 @@ def _layer_strided_views(
     precision: str,
     kernels: list[int],
 ) -> None:
-    """Check the vLLM 0.31.0 placement of every cache layer in one backing buffer.
+    """Check the vLLM 0.33.0 placement of every cache layer in one backing buffer.
 
     Block ``b`` of layer ``layers[l]`` starts at ``offset + l * layer_stride + b * block_stride``
-    (kv_cache_interface.py:1417-1438). The last page of the last layer bounds the region in
+    (kv_cache_interface.py:1475-1495). The last page of the last layer bounds the region in
     layer-outer and block-outer layouts. Tensors whose regions intersect overlay
-    cache groups, which is sound because a block ID belongs to one group at a time (:1428-1430).
-    The generic layouts start every group's tensors at byte 0 (kv_cache_utils.py:1775-1819), so
+    cache groups, which is sound because a block ID belongs to one group at a time (:1485-1487).
+    The generic layouts start every group's tensors at byte 0 (v1/core/kv_cache_planning.py:706-732), so
     overlapping tensors may differ in offset and layer count. The overlap check therefore compares pages:
     two pages may share bytes only when they hold one block ID for layers of different groups.
     """
@@ -717,7 +717,7 @@ def _physical_views(
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
     hybrid = runtime_memory._hybrid_evidence(cache)
-    # A vLLM 0.31.0 scheduler reserves only the null block (runtime/instrumentation/observer.py:446-452).
+    # A vLLM 0.33.0 scheduler reserves only the null block (runtime/instrumentation/observer.py _reservations).
     if hybrid and reserved != [scheduled["null_block_id"]]:
         raise ValueError("additional initialized reservations lack an audited permanent-reservation mapping")
     groups = runtime_memory._normalized_groups(cache, scheduled, page)
@@ -734,7 +734,7 @@ def _physical_views(
             or group.get("attention_chunk_size") is not None
         ):
             raise ValueError("unsupported or unresolved extra/chunk cache retention")
-        # A vLLM 0.31.0 uniform group can mix dtypes, so its layers are checked one by one. Only
+        # A vLLM 0.33.0 uniform group can mix dtypes, so its layers are checked one by one. Only
         # attention layers store KV at the requested precision; the sparse MLA indexer is exempt.
         dtypes = (
             [
@@ -764,8 +764,8 @@ def _physical_views(
         ):
             raise ValueError(f"compressed cache storage is unsupported: {group['layer_names']}")
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
-        # The page of a vLLM 0.31.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1261-1263). In
-        # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py:544).
+        # The page of a vLLM 0.33.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1319-1320). In
+        # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py cache_groups).
         if hybrid:
             pages = [spec["page_size_bytes"] for spec in group["layer_specs"].values()]
             if any(
@@ -885,11 +885,11 @@ def _physical_views(
 
 
 def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, hybrid: bool) -> dict[str, Any] | None:
-    """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for other records.
+    """The prefix-caching settings that one vLLM 0.33.0 process recorded; None for other records.
 
     vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key. A campaign-local adapter can add one;
-    the import reads it only when ``hybrid`` says that the phase holds vLLM 0.31.0 records. The scheduler
-    adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
+    the import reads it only when ``hybrid`` says that the phase holds vLLM 0.33.0 records. The scheduler
+    adds its block size and hash block size (core/sched/scheduler.py:218, :348-350).
     """
     if not hybrid or "prefix_caching" not in cache:
         return None
@@ -912,23 +912,22 @@ def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, hybrid: 
     return value
 
 
-# The vLLM 0.31.0 spec classes whose groups take no part in prefix caching (kv_cache_interface.py:920-922,
-# :1032-1034). A SlidingWindowMLASpec group takes part unless it replays a bounded window (:949-951), which no record
-# holds.
-_NO_PREFIX_CACHING_SPECS = frozenset(_SPEC_MODULE + name for name in ("CircularBufferSpec", "KpoolTailSpec"))
+# The vLLM 0.33.0 spec classes whose groups take no part in prefix caching (kv_cache_interface.py:998-1000). A
+# SlidingWindowMLASpec group takes part unless it replays a bounded window (:1015, :1027-1029), which no record holds.
+_NO_PREFIX_CACHING_SPECS = frozenset({_SPEC_MODULE + "CircularBufferSpec"})
 
 
 def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
-    """The hash block sizes that vLLM 0.31.0 can derive for a scheduler from its cache groups and cache settings.
+    """The hash block sizes that vLLM 0.33.0 can derive for a scheduler from its cache groups and cache settings.
 
-    The engine core resolves the hash block size from the scheduler copies of the cache groups (engine/core.py:164-176,
-    v1/core/kv_cache_utils.py:739-798). One group hashes in its own block size. Several groups hash in the scheduler
+    The engine core resolves the hash block size from the scheduler copies of the cache groups (engine/core.py:176-188,
+    v1/core/kv_cache_utils.py:816-891). One group hashes in its own block size. Several groups hash in the scheduler
     block size, the LCM of their block sizes, when prefix caching is off or a Mamba group is outside align mode. A KV
     connector would give them finer hashes without prefix caching, but every accepted record has no
     kv_transfer_config. Otherwise several groups hash in prefix_match_unit tokens, or in the GCD of the block sizes of
     the groups that take part in prefix caching, or of every group when none does. Each of these cases gives one size.
-    Each SlidingWindowMLASpec group takes part unless its spec replays a bounded window (kv_cache_interface.py:937,
-    :949-951), which no record holds. With such groups, each choice of the groups that take part gives one size.
+    Each SlidingWindowMLASpec group takes part unless its spec replays a bounded window (kv_cache_interface.py:1015,
+    :1027-1029), which no record holds. With such groups, each choice of the groups that take part gives one size.
     """
     groups, settings = record["cache"]["groups"], record["resolved_config"]["cache_config"]
     blocks = [_positive(group["block_size_tokens"], "cache block size") for group in groups]
@@ -960,16 +959,16 @@ def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
 
 
 def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
-    """Whether vLLM 0.31.0 starts with the hash block size of a scheduler and its cache groups.
+    """Whether vLLM 0.33.0 starts with the hash block size of a scheduler and its cache groups.
 
-    The engine core resolves the block sizes before it builds the scheduler (engine/core.py:164-176). With several
+    The engine core resolves the block sizes before it builds the scheduler (engine/core.py:176-188). With several
     groups that hash in prefix_match_unit tokens or in a GCD, resolve_kv_cache_block_sizes raises unless two rules hold
-    (v1/core/kv_cache_utils.py:785-832). The hash block size divides the block size of every group that takes part in
-    prefix caching, or of every group when none does (:792-805). A GCD always does, so only a unit can break this rule.
+    (v1/core/kv_cache_utils.py:885-917). The hash block size divides the block size of every group that takes part in
+    prefix caching, or of every group when none does (:885-898). A GCD always does, so only a unit can break this rule.
     The cache-hit alignment is a multiple of every int tokens_per_state above 1 of a spec in prefix caching
-    (:806-832). At the decode context parallel size of 1 that every accepted record has, the alignment is the hash
+    (:899-917). At the decode context parallel size of 1 that every accepted record has, the alignment is the hash
     block size when a Mamba group has a larger block, else the scheduler block size. The scheduler record holds the
-    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:2434-2440).
+    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:1110-1116).
 
     A SlidingWindowMLASpec group may or may not take part, so one choice of the groups that take part must give the
     recorded hash block size and meet both rules. With that hash block size, the alignment no longer depends on the
@@ -1020,8 +1019,8 @@ def _phase_prefix_caching(
     """The prefix-caching evidence of one phase, on which every rank of the phase agrees.
 
     The hash block size comes from the scheduler. Every MambaSpec takes the mode of its cache
-    config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode. A vLLM
-    0.31.0 record always carries the evidence. Every other record gives None.
+    config (mamba/abstract.py:83), so each Mamba state group reports the phase's mode. A vLLM
+    0.33.0 record always carries the evidence. Every other record gives None.
     """
     label = f"{phase} prefix-caching settings across ranks"
     hybrid = any(runtime_memory._hybrid_evidence(record["cache"]) for record in workers.values())
@@ -1044,8 +1043,8 @@ def _phase_prefix_caching(
     for record in workers.values():
         for group in record["cache"]["groups"]:
             state = group.get("state")
-            # A vLLM 0.31.0 record holds the mode of every MambaSpec, also inside a uniform group
-            # (runtime/fpm_memory_observer.py:488-504). The scheduler copy of each group equals the worker group
+            # A vLLM 0.33.0 record holds the mode of every MambaSpec, also inside a uniform group
+            # (runtime/fpm_memory_observer.py _state). The scheduler copy of each group equals the worker group
             # (runtime_memory._normalized_groups), so it holds the mode too.
             if (
                 hybrid
@@ -1056,9 +1055,11 @@ def _phase_prefix_caching(
             if group.get("kind") == "state" and isinstance(state, dict) and "mamba_cache_mode" in state:
                 _same(state["mamba_cache_mode"], scheduled["mamba_cache_mode"], f"{phase} Mamba cache mode")
             # A MambaSpec takes the Mamba block size of its worker's cache config, which the worker resolves before it
-            # builds the specs (mamba/abstract.py:66-73). Grouping keeps that block: it pads a Mamba page rather than
-            # scale its block (v1/core/kv_cache_utils.py:1417-1426), and only the HiddenStateCacheSpec layers of a
-            # speculative run scale every group block (:2268-2297, :2369-2372). The import refuses speculative runs.
+            # builds the specs (mamba/abstract.py:72-91). Grouping keeps that block: the packed path never scales it
+            # (v1/core/kv_cache_planning.py:914-1041), the other path pads a Mamba page rather than scale its block
+            # (:380-389), and only HiddenStateCacheSpec layers scale every group block there (:1081-1110, :1179-1182).
+            # Those layers serve hidden-state extraction through a KV connector (:1089-1090), and the probe refuses a
+            # run with a KV transfer config.
             if (
                 hybrid
                 and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], hybrid)
@@ -1094,9 +1095,9 @@ def _phase_prefix_caching(
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
             # The scheduler block size is the LCM of the block sizes of the scheduler's cache groups, which a decode
-            # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:761-770, engine/core.py:164-176).
+            # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:860-863, engine/core.py:176-188).
             # The hash block size is one that vLLM can derive from those groups, and vLLM also refuses to start unless
-            # it fits them (v1/core/kv_cache_utils.py:792-832).
+            # it fits them (v1/core/kv_cache_utils.py:885-917).
             hash_blocks = {canonical_json(value) for value in _scheduler_hash_block_sizes(record)}
             if (
                 cache["block_size"] != math.lcm(*(group["block_size_tokens"] for group in cache["groups"]))
@@ -1111,21 +1112,21 @@ def _phase_prefix_caching(
     }
 
 
-# The vLLM 0.31.0 spec classes that vLLM's startup sizing counts as one block per request: the tail and the ring
-# (kv_cache_interface.py:868-877, :1019-1022, :904-907).
-_ONE_BLOCK_SPECS = frozenset(_SPEC_MODULE + name for name in ("KpoolTailSpec", "CircularBufferSpec"))
+# The vLLM 0.33.0 spec classes that vLLM's startup sizing counts as one block per request: the ring
+# (kv_cache_interface.py:982-985).
+_ONE_BLOCK_SPECS = frozenset({_SPEC_MODULE + "CircularBufferSpec"})
 
 
 def _validate_startup_concurrency(record: dict[str, Any]) -> None:
-    """Check the kv_cache_max_concurrency of a vLLM 0.31.0 scheduler against its cache groups.
+    """Check the kv_cache_max_concurrency of a vLLM 0.33.0 scheduler against its cache groups.
 
     vLLM divides the pool blocks by the blocks that its startup sizing counts for one request at max_model_len in the
-    scheduler's groups (v1/core/kv_cache_utils.py:1105-1116, v1/engine/core.py:333-351). It counts 2 + k + c blocks
-    for a MambaSpec group in align mode and 1 + k in mode none (kv_cache_interface.py:1083-1094), so this check sees
-    the align count that the steady blocks_per_request leaves out. It counts one block for the tail and the ring.
+    scheduler's groups (v1/core/kv_cache_utils.py:1076-1087, v1/engine/core.py:335-352). It counts 2 + k + c blocks
+    for a MambaSpec group in align mode and 1 + k in mode none (kv_cache_interface.py:1135-1141), so this check sees
+    the align count that the steady blocks_per_request leaves out. It counts one block for the ring (:982-985).
     Every other class of SPEC_KINDS but the windowed ones is FullAttentionSpec or a subclass of it. For these it counts
     cdiv(max_model_len, block_size) blocks at the decode context parallel size of 1 that every accepted record has
-    (:578-583). vLLM's count for a windowed group also covers the tokens in flight (:840-877), which this check does
+    (:643-648). vLLM's count for a windowed group also covers the tokens in flight (:918-944), which this check does
     not model, so a layout with one keeps the other checks only.
     """
     cache = record["cache"]
@@ -1160,7 +1161,7 @@ def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cache groups without the parts of a state group that follow the prefix-caching mode.
 
     A Mamba block holds the hybrid block in align mode and max_model_len in none mode
-    (models/config.py:663-675), and every MambaSpec records the mode (kv_cache_interface.py:1047).
+    (models/config.py:763-787), and every MambaSpec records the mode (kv_cache_interface.py:1099).
     No layer spec field follows the block size, so the layer specs stay compared.
     """
     result = copy.deepcopy(groups)
@@ -1267,7 +1268,7 @@ def _configuration(
                         "hardware across phases/ranks",
                     )
                 settings = copy.deepcopy(config)
-                # In a vLLM 0.31.0 record these settings follow the phase's prefix-caching mode or the engine core,
+                # In a vLLM 0.33.0 record these settings follow the phase's prefix-caching mode or the engine core,
                 # and provenance prefix_caching records the mode of every phase instead. Another record can hold
                 # them only from a campaign-local adapter, and its provenance keeps them, as finalized campaigns
                 # compare that provenance byte for byte.
@@ -1337,13 +1338,13 @@ def _configuration(
                 }
             )
         prefix_caching[phase] = _phase_prefix_caching(phase, workers, schedulers)
-        # Only vLLM 0.31.0 records hold prefix-caching evidence and the startup concurrency.
+        # Only vLLM 0.33.0 records hold prefix-caching evidence and the startup concurrency.
         if prefix_caching[phase] is not None:
             for _, scheduler in sorted(schedulers.items()):
                 _validate_startup_concurrency(scheduler)
     # The record holds the prefix-caching values of the role's first collection phase that this validation covers.
     record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
-    # Only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
+    # Only vLLM 0.33.0 evidence adds these keys. Its records carry prefix caching, which every
     # hybrid record must. The cache geometry comparison across phases includes layer_specs, so every phase
     # agrees on hybrid evidence. The provenance of a vLLM 0.27.0 or 0.28.0 import stays as it was, because
     # finalized campaigns compare it byte for byte.

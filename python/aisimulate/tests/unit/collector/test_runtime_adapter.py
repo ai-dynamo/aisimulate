@@ -20,13 +20,28 @@ def test_bundled_adapter_is_self_contained_and_unknown_version_needs_local_bundl
     assert bundled_instrumentation("0.28.0") is None
 
 
-def test_bundled_0_31_0_adapter_is_self_contained(tmp_path):
+def test_bundled_instrumentation_serves_vllm_0330_and_not_0310(tmp_path):
     from collector.fpm_forward.runtime_instrumentation import relative_path
 
-    bundle = bundled_instrumentation("0.31.0")
+    bundle = bundled_instrumentation("0.33.0")
     manifest = bundle.manifest
-    assert manifest["runtime"]["version"] == "0.31.0"
-    assert manifest["source_notes"] == "instrumentation/vllm-0.31.0.md"
+    assert manifest["runtime"]["version"] == "0.33.0"
+    assert manifest["runtime"]["source_revision"] == "4ba787ec9959e566d3b587a796dff07673324da5"
+    assert manifest["source_notes"] == "instrumentation/vllm-0.33.0.md"
+    assert manifest["worker_class"] == "instrumentation.vllm_033.ObservedWorker"
+    assert manifest["scheduler_class"] == "instrumentation.vllm_033.ObservedInstrumentedScheduler"
+    sources = manifest["runtime"]["source_files"]
+    for path in (
+        "vllm/v1/core/kv_cache_planning.py",
+        "vllm/v1/core/kv_cache_config_builder.py",
+        "vllm/model_executor/layers/mamba/kda_checkpoint.py",
+        "vllm/v1/attention/backends/utils.py",
+        "vllm/v1/worker/utils.py",
+        "vllm/_version.py",
+    ):
+        assert path in sources
+    assert sources["dynamo/vllm/instrumented_scheduler.py"].startswith("2509d616")
+    assert bundled_instrumentation("0.31.0") is None
     assert manifest["source_notes"] in bundle.files
     assert all(relative_path(name) == name for name in manifest["runtime"]["source_files"])
     frozen = freeze_instrumentation(bundle, tmp_path / "bundle")
@@ -34,7 +49,7 @@ def test_bundled_0_31_0_adapter_is_self_contained(tmp_path):
     assert bundled_instrumentation("0.28.0") is None
 
 
-@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.31.0"])
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.33.0"])
 def test_frozen_scheduler_export_preserves_native_benchmark_contract(tmp_path, monkeypatch, version):
     import importlib
 
@@ -148,14 +163,18 @@ def isolated_runtime_imports():
     sys.modules.update(saved)
 
 
-def _v031_runtime(storage, layout, blocks):
-    """vLLM 0.31.0 cache objects: one backing storage and block-first layer views.
+def _v033_runtime(storage, layout, blocks):
+    """vLLM 0.33.0 cache objects: one backing storage and block-first layer views.
 
     ``glm_tp4`` holds the six GLM-5.3-Flash groups at TP 4 with an fp8 cache and no
-    speculation (kv_cache_utils.py:1213-1292): G0 the 11 MLA latent and 11 indexer
+    speculation, in the layer-outer layout that vLLM 0.31.0 wrote for them
+    (v0.31.0 kv_cache_utils.py:1213-1292): G0 the 11 MLA latent and 11 indexer
     layers, G1 the 11 tail layers and G2 to G5 the 34 KDA layers. KDA layer i of each
     Mamba group shares the region of MLA layer i, and tail layer i the region of
-    indexer layer i (:1725-1755). The specs keep the static_forward_context order:
+    indexer layer i (v0.31.0 :1725-1755). vLLM 0.33.0 builds the GLM groups in the
+    block-outer packed layout instead (v1/core/kv_cache_planning.py:914-1041), so this
+    layout tests the layer-stride rules and not a GLM launch. Its tail is the vLLM 0.33.0
+    CircularBufferSpec (kv_cache_interface.py:968). The specs keep the static_forward_context order:
     a GLM layer builds its indexer caches before its MLA layer
     (glm5next/common/attention.py:546, :581). Returns the worker and scheduler
     cache configs, the forward-context layers, the attention groups and the kernel
@@ -230,7 +249,7 @@ def _v031_runtime(storage, layout, blocks):
         return value
 
     def backend(module, cls, name):
-        # vLLM 0.31.0 backends have no get_kv_cache_block_dim.
+        # vLLM 0.33.0 backends have no get_kv_cache_block_dim.
         return type(cls, (), {"__module__": module, "get_name": staticmethod(lambda: name)})
 
     def attention(backend, names, kv_cache_spec, group_id):
@@ -282,14 +301,8 @@ def _v031_runtime(storage, layout, blocks):
         cache_role=cache_role.INDEXER,
         storage_block_size=128,
     )
-    tail = spec(
-        "KpoolTailSpec",
-        block_size=4,
-        page_size_bytes=71_808,
-        sliding_window=4,
-        extra_retained_tokens=0,
-        dtype="torch.bfloat16",
-    )
+    # The GLM tail ring of 4 tokens without speculation (models/glm5next/common/attention.py:162-179).
+    tail = spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
     state = spec(
         "MambaSpec",
         block_size=2176,
@@ -394,7 +407,7 @@ def _fake_campaign(
 ):
     """Synthetic vendor files and GPU objects; verifies mapping, never GPU support.
 
-    vLLM 0.31.0 fakes place every layer in one backing storage and view it block
+    vLLM 0.33.0 fakes place every layer in one backing storage and view it block
     axis first; ``layout="glm_tp4"`` holds the GLM-5.3-Flash TP4 cache groups.
     """
     import hashlib
@@ -466,8 +479,8 @@ def _fake_campaign(
     Backend.__module__ = "vllm.v1.attention.backends.flashinfer"
     mode = Enum("KVQuantMode", ["NONE"])
     scheduler_config, scheduler_fields = config, {}
-    if version == "0.31.0":
-        cache, scheduler_cache, layers, attn, kernel_block_sizes = _v031_runtime(storage, layout, blocks)
+    if version == "0.33.0":
+        cache, scheduler_cache, layers, attn, kernel_block_sizes = _v033_runtime(storage, layout, blocks)
         block_size, mamba_cache_mode = (2176, "align") if layout == "glm_tp4" else (16, "none")
         vars(config.cache_config).update(
             block_size=block_size,
@@ -719,7 +732,7 @@ def test_runtime_records_import_complete_for_source_audited_layouts(tmp_path, mo
         worker = next(record for record in records if record["kind"] == "worker")
         assert worker["cache"]["layer_tensors"]["layer0"]["block_axis"] == (1 if planar else 0)
         assert worker["model_config_sha256"] == campaign.launch["model_config"]["sha256"]
-        # Only vLLM 0.31.0 records carry the new cache evidence.
+        # Only vLLM 0.33.0 records carry the new cache evidence.
         assert all("prefix_caching" not in record["cache"] for record in records)
         assert all("kv_cache_layout" not in record["raw_cache_config"] for record in records)
         allocation = worker["raw_cache_config"]["tensor_allocations"][0]
@@ -1087,10 +1100,10 @@ def test_hub_loaded_config_without_its_own_commit_is_unresolved(tmp_path, monkey
 
 
 def _glm_campaign(tmp_path, monkeypatch):
-    return _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=2, layout="glm_tp4")
+    return _fake_campaign(tmp_path, monkeypatch, version="0.33.0", runner_version=2, layout="glm_tp4")
 
 
-def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
+def test_v033_glm_worker_record_is_complete(tmp_path, monkeypatch):
     campaign = _glm_campaign(tmp_path, monkeypatch)
     for phase in ("prefill", "decode"):
         records = campaign.run(phase)
@@ -1154,12 +1167,12 @@ def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
         )
 
 
-def test_v031_glm_records_import_complete(tmp_path, monkeypatch):
+def test_v033_glm_records_import_complete(tmp_path, monkeypatch):
     from collector.fpm_forward.runtime_observations import validate_observations
 
     from .test_runtime_observations import glm_tp4_cache_groups
 
-    # The records that the 0.31.0 adapter writes go through the importer unchanged.
+    # The records that the 0.33.0 adapter writes go through the importer unchanged.
     campaign = _glm_campaign(tmp_path, monkeypatch)
     for phase in ("prefill", "decode"):
         records = campaign.run(phase)
@@ -1176,7 +1189,7 @@ def test_v031_glm_records_import_complete(tmp_path, monkeypatch):
     )
 
 
-def test_v031_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):
+def test_v033_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):
     campaign = _glm_campaign(tmp_path, monkeypatch)
     campaign.config.compilation_config.static_forward_context["layers.3.mla"].kv_cache.shape = [270, 64, 512]
     worker = next(record for record in campaign.run() if record["kind"] == "worker")
@@ -1185,7 +1198,7 @@ def test_v031_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("change", [None, "latent_storage_block", "indexer_role"])
-def test_v031_indexer_storage_block_is_the_kernel_block(tmp_path, monkeypatch, change):
+def test_v033_indexer_storage_block_is_the_kernel_block(tmp_path, monkeypatch, change):
     campaign = _glm_campaign(tmp_path, monkeypatch)
     specs = campaign.cache.kv_cache_groups[0].kv_cache_spec.kv_cache_specs
     # Only the sparse MLA indexer stores its tokens in blocks other than the cache block.
@@ -1210,7 +1223,7 @@ def test_v031_indexer_storage_block_is_the_kernel_block(tmp_path, monkeypatch, c
         assert scheduler["unresolved_fields"] == []
 
 
-def test_v031_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkeypatch):
+def test_v033_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkeypatch):
     campaign = _glm_campaign(tmp_path, monkeypatch)
     campaign.adapter.ObservedWorker().model_runner.attn_groups[2][0].backend.__module__ = "vendor.kda_backend"
     worker = next(record for record in campaign.run() if record["kind"] == "worker")
@@ -1219,7 +1232,7 @@ def test_v031_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkey
 
 
 @pytest.mark.parametrize("change", ["host_resident", "role", "enable_kv_transfer", "tensor"])
-def test_v031_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
+def test_v033_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
     campaign = _glm_campaign(tmp_path, monkeypatch)
     # The worker and scheduler cache configs share the Mamba groups and the tensors.
     group = campaign.cache.kv_cache_groups[2]
@@ -1249,8 +1262,8 @@ def test_v031_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
 
 
 @pytest.mark.parametrize("runner_version", [1, 2])
-def test_v031_plain_attention_record_is_complete(tmp_path, monkeypatch, runner_version):
-    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=runner_version)
+def test_v033_plain_attention_record_is_complete(tmp_path, monkeypatch, runner_version):
+    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.33.0", runner_version=runner_version)
     records = campaign.run()
     assert len(records) == 2
     assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
@@ -1278,8 +1291,8 @@ def test_v031_plain_attention_record_is_complete(tmp_path, monkeypatch, runner_v
     }
 
 
-def test_v031_only_an_mla_storage_block_sets_the_view_kernel_block(tmp_path, monkeypatch):
-    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=2)
+def test_v033_only_an_mla_storage_block_sets_the_view_kernel_block(tmp_path, monkeypatch):
+    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.33.0", runner_version=2)
     # vLLM views a layer with its storage block only for an MLAAttentionSpec (worker/utils.py:449-450).
     campaign.cache.kv_cache_groups[0].kv_cache_spec.storage_block_size = 8
     worker = next(record for record in campaign.run() if record["kind"] == "worker")

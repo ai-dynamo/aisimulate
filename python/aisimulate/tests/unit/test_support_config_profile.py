@@ -95,7 +95,7 @@ def _glm_request(**topology):
                 "model": "zai-org/GLM-5.3-Flash",
                 "model_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
                 "model_kind": "moe",
-                "framework_version": "0.31.0",
+                "framework_version": "0.33.0",
                 "gpu": "b300_sxm",
                 "interconnect": "nvswitch",
             },
@@ -514,7 +514,7 @@ _GLM_PRECISION = {
     "kv_cache_dtype": "bfloat16",
 }
 # The groups stand in for the runtime report, which always reports a grouped layout, names its groups
-# runtime_group_<i> and states each group's sliding_window. A real GLM probe on vLLM 0.31.0 also reports five state
+# runtime_group_<i> and states each group's sliding_window. A real GLM probe on vLLM 0.33.0 also reports state
 # groups; test_profile_from_observations_accepts_state_groups imports them.
 _RUNTIME_GROUP = {
     "name": "runtime_group_0",

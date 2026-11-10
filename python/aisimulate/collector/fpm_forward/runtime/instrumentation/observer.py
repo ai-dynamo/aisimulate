@@ -165,8 +165,8 @@ def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
     )
     tensor_fields = ("size", "shared_by", "block_stride", "offset")
     if hybrid_evidence:
-        # vLLM 0.31.0 token-state, MLA role and Mamba state spec fields
-        # (kv_cache_interface.py:504, :668, :1043-1052) and layer placement (:1418-1438).
+        # vLLM 0.33.0 token-state, MLA role and Mamba state spec fields
+        # (kv_cache_interface.py:569, :737, :1095-1101) and layer placement (:1490-1494).
         fields += (
             "mamba_cache_mode",
             "num_speculative_blocks",
@@ -177,9 +177,9 @@ def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
             "dtypes",
         )
         tensor_fields += ("layers", "layer_stride")
-    # A vLLM 0.31.0 UniformTypeKVCacheSpecs inherits the abstract KVCacheSpec.tokens_per_state, which
-    # raises NotImplementedError (kv_cache_interface.py:185-187, :1233-1333). The layer specs of its
-    # cache group record the value of each layer (fpm_memory_observer.py:476-485).
+    # A vLLM 0.33.0 UniformTypeKVCacheSpecs inherits the abstract KVCacheSpec.tokens_per_state, which
+    # raises NotImplementedError (kv_cache_interface.py:251-252, :1291-1389). The layer specs of its
+    # cache group record the value of each layer (fpm_memory_observer._layer_spec).
     uniform_fields = tuple(key for key in fields if key != "tokens_per_state")
     record = {
         "num_blocks": config.num_blocks,
@@ -203,7 +203,7 @@ def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
         ],
     }
     if hybrid_evidence and hasattr(config, "kv_cache_layout"):
-        # The layout name that the engine core resolves for every worker (engine/core.py:323-324).
+        # The layout name that the engine core resolves for every worker (engine/core.py:324-325).
         record["kv_cache_layout"] = _json(config.kv_cache_layout)
     return record
 
@@ -214,15 +214,15 @@ def _layer_specs(spec: Any) -> list[Any]:
 
 
 def _retention(spec: Any) -> tuple[Any, Any]:
-    # vLLM 0.31.0 SlidingWindowSpec and its subclasses declare extra_retained_tokens
-    # with the default 0 (kv_cache_interface.py:838); its absence there is an
+    # vLLM 0.33.0 SlidingWindowSpec and its subclasses declare extra_retained_tokens
+    # with the default 0 (kv_cache_interface.py:908); its absence there is an
     # incompatible runtime API. Other spec classes have no such field.
     window = legacy._class_name(spec).removeprefix(legacy._SPEC_MODULE) in legacy._WINDOW_SPECS
     return getattr(spec, "extra_retained_tokens", None if window else 0), getattr(spec, "attention_chunk_size", None)
 
 
 def _indexer(spec: Any) -> bool:
-    # The sparse MLA indexer (SparseCacheRole.INDEXER, kv_cache_interface.py:150-152, :668).
+    # The sparse MLA indexer (SparseCacheRole.INDEXER, kv_cache_interface.py:196-198, :737).
     return (
         legacy._class_name(spec) == legacy._SPEC_MODULE + "MLAAttentionSpec"
         and getattr(getattr(spec, "cache_role", None), "name", None) == "INDEXER"
@@ -250,7 +250,7 @@ def _block_pool_groups(cache: dict, config: Any, pool_id: str) -> None:
         ):
             errors.append(f"compressed cache storage is unsupported: {names}")
         # HiSparse places groups in a host pool or outside the transferable state
-        # (kv_cache_interface.py:1441-1465, v1/hisparse/layout.py). One device pool is modeled.
+        # (kv_cache_interface.py:1505-1522, v1/hisparse/layout.py). One device pool is modeled.
         host, role, transfer = (
             getattr(raw, "host_resident", None),
             _json(getattr(raw, "role", None)),
@@ -270,7 +270,7 @@ def _block_pool_groups(cache: dict, config: Any, pool_id: str) -> None:
 
 
 def _groups(cache: dict, config: Any, version: str, pool_id: str) -> None:
-    if version == "0.31.0":
+    if version == legacy.HYBRID_EVIDENCE_VERSION:
         _block_pool_groups(cache, config, pool_id)
         return
     errors = []
@@ -370,7 +370,7 @@ def _layer_views(owner: Any, cache: dict, source_files: dict, version: str) -> N
         storage_ids[(storage["device"], storage["pointer"])] = storage["storage_id"]
     for allocation in cache["tensor_allocations"]:
         # worker_memory proved that the layers of an allocation use one storage;
-        # a vLLM 0.31.0 Mamba layer binds a tuple of state views on it.
+        # a vLLM 0.33.0 Mamba layer binds a tuple of state views on it.
         # A layer-strided allocation names its layers; a vLLM 0.27.0 or 0.28.0 one names them in shared_by.
         names = allocation["layers"] if "layers" in allocation else allocation["shared_by"]
         (key,) = legacy._layer_storages(layers[names[0]].kv_cache)
@@ -382,7 +382,7 @@ def _layer_views(owner: Any, cache: dict, source_files: dict, version: str) -> N
         for group in attention_groups:
             spec = group.kv_cache_spec
             kernel = kernel_block_sizes[group.kv_cache_group_id]
-            if version == "0.31.0":
+            if version == legacy.HYBRID_EVIDENCE_VERSION:
                 block = cache["groups"][group.kv_cache_group_id]["block_size_tokens"]
                 kernel = _view_kernel_block(spec, kernel, block)
             else:
@@ -402,7 +402,7 @@ def _layer_views(owner: Any, cache: dict, source_files: dict, version: str) -> N
             backend_source = backend.__module__.replace(".", "/") + ".py"
             if backend_source not in source_files:
                 raise ValueError(f"selected backend source has not been audited: {backend_source}")
-            if version != "0.31.0":
+            if version != legacy.HYBRID_EVIDENCE_VERSION:
                 axis = backend.get_kv_cache_block_dim(kernel, spec.num_kv_heads, spec.head_size, cache_dtype_str=dtype)
                 if type(axis) is not int or axis < 0:
                     raise ValueError("backend returned an invalid cache block dimension")
@@ -417,7 +417,7 @@ def _layer_views(owner: Any, cache: dict, source_files: dict, version: str) -> N
             for name in group.layer_names:
                 if name in views:
                     raise ValueError(f"duplicate attention group layer: {name}")
-                if version == "0.31.0":
+                if version == legacy.HYBRID_EVIDENCE_VERSION:
                     blocks = cache["num_blocks"] * (block // kernel)
                     views[name] = _block_first_views(name, layers[name].kv_cache, storage_ids, kernel, blocks)
                     continue
@@ -499,9 +499,9 @@ def _hardware(owner: Any, gpu: str) -> dict:
 
 
 def _prefix_caching(owner: Any, cache: dict, kind: str) -> dict:
-    """The vLLM 0.31.0 prefix-caching settings of one process; None where absent.
+    """The vLLM 0.33.0 prefix-caching settings of one process; None where absent.
 
-    The scheduler adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
+    The scheduler adds its block size and hash block size (core/sched/scheduler.py:218, :348-350).
     """
     settings = owner.vllm_config.cache_config
     value = {key: _json(getattr(settings, key, None)) for key in ("enable_prefix_caching", "mamba_cache_mode")}
@@ -564,8 +564,8 @@ def observe(
         from fpm_runtime_instrumentation import observed_binding
 
         capture("instrumentation_binding", lambda: payload.update(instrumentation_binding=observed_binding()))
-    # Only vLLM 0.31.0 records carry the hybrid cache evidence; older records keep their keys.
-    hybrid = version == "0.31.0"
+    # Only vLLM 0.33.0 records carry the hybrid cache evidence; older records keep their keys.
+    hybrid = version == legacy.HYBRID_EVIDENCE_VERSION
     capture("runtime", lambda: _runtime(payload, manifest, version))
     capture("model_config_sha256", lambda: _loaded_config(owner, payload))
     capture("resolved_config", lambda: payload.update(resolved_config=_resolved(owner, hybrid_evidence=hybrid)))

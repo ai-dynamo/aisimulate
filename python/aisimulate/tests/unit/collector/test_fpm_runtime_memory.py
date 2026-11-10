@@ -100,7 +100,7 @@ def fake_runtime_offloader(monkeypatch):
 def _initialized(*, blocks=100, free=98, packed=False, layers=False):
     """Two physical buffers, five logical layer views and three retention groups.
 
-    With ``layers``, the allocation follows vLLM 0.31.0: one buffer backs every
+    With ``layers``, the allocation follows vLLM 0.33.0: one buffer backs every
     tensor, each tensor names its layers in ``layers`` with a ``layer_stride``,
     and the convolution layer's cache is a tuple of two views.
     """
@@ -289,12 +289,14 @@ def _mamba(**fields):
 
 def test_cache_groups_map_specs_by_class_and_record_state_evidence():
     full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
-    tail = _spec("KpoolTailSpec", block_size=4, page_size_bytes=71_808, sliding_window=4, dtype="torch.bfloat16")
+    tail = _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
     config = SimpleNamespace(
         kv_cache_groups=[_group(["attn.0"], full), _group(["tail.0"], tail), _group(["kda.0", "kda.1"], _mamba())]
     )
     # Without hybrid evidence the vLLM 0.27.0/0.28.0 allow-list stays.
-    with pytest.raises(ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.Kpool")):
+    with pytest.raises(
+        ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.CircularBufferSpec")
+    ):
         observer.cache_groups(config)
     attention, tail_group, mamba = observer.cache_groups(config, hybrid_evidence=True)
     keys = {"layer_names", "spec_type", "block_size_tokens", "spec_page_size_bytes", "sliding_window", "dtype"}
@@ -336,9 +338,12 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
             ),
             "attention",
         ),
-        **dict.fromkeys(("KpoolTailSpec", "CircularBufferSpec", "MambaSpec"), "state"),
+        **dict.fromkeys(("CircularBufferSpec", "MambaSpec"), "state"),
     }
     assert {name: observer.spec_kind(_spec(name)) for name in kinds} == kinds
+    # vLLM 0.33.0 has no KpoolTailSpec: the GLM tail is a CircularBufferSpec (models/glm5next/common/attention.py:170).
+    with pytest.raises(ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.Kpool")):
+        observer.spec_kind(_spec("KpoolTailSpec"))
 
 
 def test_uniform_type_groups_record_their_inner_specs():
@@ -427,11 +432,10 @@ def test_rswa_retention_is_reported_not_relabeled():
 
 
 def test_uniform_state_group_records_one_state_and_its_inner_specs():
-    # GLM-5.3-Flash G1 shape: KpoolTailSpec layers padded to the indexer page.
+    # A uniform group of GLM-5.3-Flash tail rings, each a CircularBufferSpec (glm5next/common/attention.py:170-179).
     names = ["layers.3.tail", "layers.4.tail"]
     tails = [
-        _spec("KpoolTailSpec", block_size=4, page_size_bytes=71_808, sliding_window=4, dtype="torch.bfloat16")
-        for _name in names
+        _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16") for _name in names
     ]
     uniform = _spec(
         "UniformTypeKVCacheSpecs",
@@ -443,7 +447,7 @@ def test_uniform_state_group_records_one_state_and_its_inner_specs():
     assert (group["kind"], group["state"], group["sliding_window"]) == ("state", {"blocks_per_request": 1}, None)
     assert (group["block_size_tokens"], group["spec_page_size_bytes"], group["dtype"]) == (4, 143_616, "torch.bfloat16")
     assert [spec["spec_type"] for spec in group["layer_specs"].values()] == [
-        "vllm.v1.kv_cache_interface.KpoolTailSpec"
+        "vllm.v1.kv_cache_interface.CircularBufferSpec"
     ] * 2
     assert [spec["page_size_bytes"] for spec in group["layer_specs"].values()] == [71_808, 71_808]
 
@@ -516,7 +520,7 @@ def test_state_group_keeps_its_kind_through_worker_memory():
     worker, _scheduler, cache = _initialized(layers=True)
     # The sliding-window attention layers become a one-block tail state group.
     cache.kv_cache_groups[1].kv_cache_spec = _spec(
-        "KpoolTailSpec", block_size=16, page_size_bytes=64, sliding_window=32, dtype="torch.bfloat16"
+        "CircularBufferSpec", block_size=16, page_size_bytes=64, dtype="torch.bfloat16"
     )
     groups = observer.worker_memory(worker, hybrid_evidence=True)["groups"]
     assert [group["kind"] for group in groups] == ["attention", "state", "convolution"]
@@ -603,7 +607,7 @@ def _json_bytes(value):
 
 
 def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
-    # Expected values are what the observer wrote before vLLM 0.31.0 support, for the same objects.
+    # Expected values are what the observer wrote before hybrid cache support, for the same objects.
     worker, scheduler, cache = _with_engine_core_values(*_initialized())
     resolved = {
         "model_config": {

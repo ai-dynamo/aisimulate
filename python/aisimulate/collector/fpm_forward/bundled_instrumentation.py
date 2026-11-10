@@ -9,6 +9,6 @@ from .runtime_instrumentation import InstrumentationBundle, load_instrumentation
 
 
 def bundled_instrumentation(version: str) -> InstrumentationBundle | None:
-    if version not in ("0.27.0", "0.31.0"):
+    if version not in ("0.27.0", "0.33.0"):
         return None
     return load_instrumentation(Path(__file__).parent / "runtime" / f"vllm-{version}.json", version)

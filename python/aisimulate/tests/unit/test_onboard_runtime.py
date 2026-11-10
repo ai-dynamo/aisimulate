@@ -127,7 +127,7 @@ def _campaign(
                     for allocation in cache["tensor_allocations"]:
                         allocation["size"] *= capacity_multiplier
                         if "layer_stride" in allocation:
-                            # A vLLM 0.31.0 layer-outer tensor keeps every block of one layer in one region, so its
+                            # A vLLM 0.33.0 layer-outer tensor keeps every block of one layer in one region, so its
                             # regions, and the views in them, move with the pool size.
                             for position, name in enumerate(allocation["layers"]):
                                 region = allocation["offset"] + position * allocation["layer_stride"]
@@ -136,7 +136,7 @@ def _campaign(
                             allocation["offset"] *= capacity_multiplier
                             allocation["layer_stride"] *= capacity_multiplier
                     for views in cache["layer_tensors"].values():
-                        # A vLLM 0.31.0 layer has a list of views; older records have one view per layer.
+                        # A vLLM 0.33.0 layer has a list of views; older records have one view per layer.
                         for view in views if isinstance(views, list) else [views]:
                             view["shape"][view["block_axis"]] *= capacity_multiplier
                     if page_bytes != 128:
@@ -149,8 +149,8 @@ def _campaign(
                 else:
                     cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
                     if "kv_cache_max_concurrency" in cache:
-                        # A vLLM 0.31.0 scheduler divides its pool blocks by the blocks of one request
-                        # (kv_cache_utils.py:1105-1116), so its concurrency grows with the pool.
+                        # A vLLM 0.33.0 scheduler divides its pool blocks by the blocks of one request
+                        # (kv_cache_utils.py:1076-1087), so its concurrency grows with the pool.
                         cache["kv_cache_max_concurrency"] *= capacity_multiplier
                 if block_tokens != (16, 16):
                     # The fixture gives both cache groups 16-token blocks, one kernel block per pool block.
