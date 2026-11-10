@@ -1,0 +1,66 @@
+{
+  "schema": "kimi-k31-union-schema-migration-validation/v1",
+  "original_union_artifact_version": "v1",
+  "original_union_schema_version": 2,
+  "original_union_admission": "FAILED R1: schema2 collection events carried a schema1-only classified_failures field. Previous strict Rust lookup success did not prove Python schema admission.",
+  "original_invalid_sidecar_sha256": "2c633defa7facc42b26b74f8e6a06a212940130b70631fbdb01209826ae3bbc8",
+  "original_root_manifest_sha256": "2b06c3a72759c297ed21ed292c27c20d5e6172b448b41f670f8403006262adbf",
+  "new_sidecar_sha256": "f2aefb51819140bea50c5fe2b5080db934fe2fee9ad9c881e0a146a4f728bc82",
+  "new_admission": "R1-R7 PASS",
+  "r1_r7_log_sha256": "117c54405cb05306092b99f5efd6a38197a953f91dc53961ee2f85564f4a634c",
+  "r1_r7_output": [
+    "[OK]   R1 sidecar coverage",
+    "[OK]   R2 reuse validity",
+    "[OK]   R3 comm exclusion",
+    "[OK]   R4 family placement",
+    "[OK]   R5 identity (manifest v2 resolution)",
+    "[OK]   R6 no legacy markers",
+    "[OK]   R7 attested collection events",
+    "",
+    "collector data check OK: all rules passed"
+  ],
+  "strict_native_rows": 96,
+  "measurement_parquet_bytes_unchanged": true,
+  "source_v1_sidecar_bytes_unchanged": true,
+  "migration_script_sha256": "f59bafc6b26c292be2e3e0e467df6d0e2108581bf71a52aa0b83c4eba1f1313a",
+  "negative_controls": [
+    {
+      "case": "nonzero",
+      "rejected": true,
+      "returncode": 1,
+      "log_sha256": "818ff1d8fd5bb49913bcf32d99e081356818b6f0ac56f108faf178d8acfecb4e"
+    },
+    {
+      "case": "bool",
+      "rejected": true,
+      "returncode": 1,
+      "log_sha256": "818ff1d8fd5bb49913bcf32d99e081356818b6f0ac56f108faf178d8acfecb4e"
+    },
+    {
+      "case": "negative",
+      "rejected": true,
+      "returncode": 1,
+      "log_sha256": "818ff1d8fd5bb49913bcf32d99e081356818b6f0ac56f108faf178d8acfecb4e"
+    },
+    {
+      "case": "string",
+      "rejected": true,
+      "returncode": 1,
+      "log_sha256": "818ff1d8fd5bb49913bcf32d99e081356818b6f0ac56f108faf178d8acfecb4e"
+    },
+    {
+      "case": "float",
+      "rejected": true,
+      "returncode": 1,
+      "log_sha256": "818ff1d8fd5bb49913bcf32d99e081356818b6f0ac56f108faf178d8acfecb4e"
+    },
+    {
+      "case": "null",
+      "rejected": true,
+      "returncode": 1,
+      "log_sha256": "818ff1d8fd5bb49913bcf32d99e081356818b6f0ac56f108faf178d8acfecb4e"
+    }
+  ],
+  "all_rejected": true,
+  "source_original_sidecars_unchanged": true
+}

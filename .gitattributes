@@ -11,3 +11,5 @@ pages/fpm-accuracy/assets/plotly.min.js -whitespace linguist-vendored=true
 scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch -whitespace
 # Native CSV evidence retains its original CRLF bytes and recorded SHA-256.
 benchmarks/evidence/collector/kimi-k31-dsa-expanded-20261109/x86/smoke/**/*.csv -text whitespace=cr-at-eol
+# ARM native CSV-formatted tables likewise retain their original CRLF bytes.
+benchmarks/evidence/collector/kimi-k31-dsa-expanded-20261109/arm/**/raw-formal/*.txt -text whitespace=cr-at-eol

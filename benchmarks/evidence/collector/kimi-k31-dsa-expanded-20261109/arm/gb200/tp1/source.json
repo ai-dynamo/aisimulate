@@ -1,0 +1,63 @@
+{
+  "schema": "kimi_k31_op_coverage_source_v1",
+  "source_head": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+  "base_head": "21b6c794896491c539d0ddde2c43ae31e4873ec3",
+  "source_clean": true,
+  "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+  "hashed_files_count": 476,
+  "platform_builds": {
+    "x86_64": "0.0.0.dev1+g41208373c.d20261104",
+    "aarch64": "0.0.0.dev1+ge79de62d2.d20261104"
+  },
+  "native_source_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
+  "image_index": "sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391",
+  "archive_sha256": "58ca0afb3b30d70ea7accb0270db59b7a50e2ae824a2dc1fde69d32f7cba9225",
+  "archive_bytes": 197060749,
+  "matrix_sha256": "80a1f1dfa5ad10f50e811d8b988242123bfa680c6e4e76a1f2ac66ce60ded05b",
+  "cpu_tests_sha256": "933ea3ee7efb52f6e284135da02d3d9b13d2e405bf0da029a9edaebf477c73ea",
+  "native_kernel_timing_changed": false,
+  "original_source_manifest_sha256": "3dfaae07874866a07c750b16dc7881bee4a8e17291064d7ab85c608ee6f4c80a",
+  "native_source_hashes": {
+    "benchmark/one_batch.py": "f98a8a74300544792d339885ed82d3c8b8d7df6d27534d8bd1b48148cf7669de",
+    "srt/models/kimi_k3.py": "50ca5d3203bf8115c19c84b3eb2297fa2a6b5b08a0f8c54e2259022698535912",
+    "srt/configs/kimi_linear.py": "7458d9c8160d40708beaab5b6e78645d6a086476ac7c2a8de12b6e0210960244",
+    "srt/model_executor/model_runner.py": "c1c39dbb96da0c5ff975b5c87c26cc226ac1a7906b12aa6c9ce964f1fde162b9",
+    "srt/model_executor/forward_batch_info.py": "59bff63e1ee22cb4cd8b8348b934bfa6725b11e1c786afb5e6484b1b3d064421",
+    "srt/managers/schedule_batch.py": "cdd055c2bde204c40f187a91b34eea2144c9982274171fc928bd94890c0fdf51",
+    "srt/mem_cache/memory_pool.py": "69e0f5515bf11d04ef1868507004509d1af6c1eb801d9b584b401820ca5023a8",
+    "srt/layers/quantization/mxfp4.py": "ec7e5b76889b8b55f14613eb50d95f8dd4d55cd0a639bdbb4e07e67fafc22fbf",
+    "srt/layers/moe/moe_runner/flashinfer_trtllm.py": "4e6ea37783b0fb008302eb4f27a1ed8a117ebebee86b5aeecd9cf18997569b7a",
+    "srt/configs/mamba_utils.py": "659d941b57b6960f1144e7c6a6e0449ea630b273ea69cb4f89312c10e0a8ff11",
+    "srt/layers/attention/linear/kda_backend.py": "9bfe054aefbe971f47212458983236cd69c213a7157f6c5a6b067286d8b77a7b",
+    "srt/layers/moe/moe_runner/flashinfer_cutlass.py": "23b5228a357e4aedbff32ad364bdd5c3b1aed7828a7d9f8bcdc491ac45a4bce0",
+    "srt/layers/moe/moe_runner/runner.py": "cf7974e72355bff82ca95002e823cf6fd42b8892f5bd6512cfea376fde15ca95"
+  },
+  "image_binding": {
+    "imports": [
+      {
+        "image_index_digest": "sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391",
+        "image_child_digest": "sha256:3c2b577c398ea3557009b2001fac542473443e86997deb8360bf85a980cda240",
+        "architecture": "arm64",
+        "sqsh_sha256": "95d89014a0493fada37ae8a4648821c95e128479fcdca604bb748626e93384d8",
+        "sqsh_bytes": 33019346944,
+        "verified_reuse_of_original_import": false,
+        "import_receipt_object_sha256": "fccd3398d60933b5feb0fcc542672d048f121a818f3d39c01536bbe81e4722ad"
+      }
+    ],
+    "new_image_rehash_performed_by_importer": false
+  },
+  "smoke_image_binding": {
+    "imports": [
+      {
+        "image_index_digest": "sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391",
+        "image_child_digest": "sha256:3c2b577c398ea3557009b2001fac542473443e86997deb8360bf85a980cda240",
+        "architecture": "arm64",
+        "sqsh_sha256": "95d89014a0493fada37ae8a4648821c95e128479fcdca604bb748626e93384d8",
+        "sqsh_bytes": 33019346944,
+        "verified_reuse_of_original_import": false,
+        "import_receipt_object_sha256": "fccd3398d60933b5feb0fcc542672d048f121a818f3d39c01536bbe81e4722ad"
+      }
+    ],
+    "new_image_rehash_performed_by_importer": false
+  }
+}

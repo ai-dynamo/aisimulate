@@ -1,0 +1,45 @@
+{
+  "system": "gb200",
+  "base_systems_snapshot_head": "d4ac7397475cbe882929a3846ba610a8681db37b",
+  "query_slot": "current",
+  "resolved_query_version": "0.5.21",
+  "measured_source_version": "0.0.0.dev1+ge79de62d2.d20261104",
+  "strict_provenance": true,
+  "database_mode": "SILICON",
+  "shared_layer_argument": "omitted (public default)",
+  "effective_shared_layer": true,
+  "native_sha256": "e2d4b9174491173f3f0f4690280c60f4f8b6bead1967f501aea45c298c0fe607",
+  "verification_script_sha256": "e91ff551b7256784c0fc782761a48a740d4f0f95e531747577a8f62e0d5615ad",
+  "query_versions_sha256": "6bb30d2beca0967eb94366db42e6a70364a5e0b02d6779499b3a9ad3de5a89e7",
+  "system_config_sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1",
+  "overlay_source_files": {
+    "collection_meta.yaml": "f2aefb51819140bea50c5fe2b5080db934fe2fee9ad9c881e0a146a4f728bc82",
+    "dsa_context_module_perf.parquet": "e48b9cf93f867e3623ee250d63373ea61a959b922718dc814800295a15571f93",
+    "dsa_generation_module_perf.parquet": "efe67b67e311b301c905fe15f2b4bfcf33aeacba0954b7f71a64466126efc585"
+  },
+  "checks": [
+    {
+      "phase": "context",
+      "tp": 8,
+      "batch_size": 1,
+      "isl": 128,
+      "step": 0,
+      "num_heads": 12,
+      "latency_ms": 1.2615,
+      "source": "silicon",
+      "source_table_sha256": "e48b9cf93f867e3623ee250d63373ea61a959b922718dc814800295a15571f93"
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "batch_size": 1,
+      "isl": 1,
+      "step": 2047,
+      "num_heads": 12,
+      "latency_ms": 2.0033,
+      "source": "silicon",
+      "source_table_sha256": "efe67b67e311b301c905fe15f2b4bfcf33aeacba0954b7f71a64466126efc585"
+    }
+  ],
+  "scope": "Normal public current query-slot backward-fill returns measured native source rows with strict provenance and exact SILICON latency. This does not qualify the resolved newer serving runtime or establish prediction accuracy."
+}

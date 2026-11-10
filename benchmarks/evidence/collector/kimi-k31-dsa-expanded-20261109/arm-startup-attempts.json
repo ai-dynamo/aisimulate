@@ -1,0 +1,60 @@
+{
+  "schema": "kimi-k31-arm-preformal-attempts/v1",
+  "scope": "These four attempts failed before native smoke/formal measurement. They produce no admitted performance rows and are not capacity skips. Original logs and output directories remain unchanged in the private audit archive.",
+  "original_archive_manifest_sha256": "4dc89c9d34ebff859a2292ac493bd004d492916d63489cdc9e029f50b9802469",
+  "native_measurement_or_frozen_case_changes": false,
+  "attempts": [
+    {
+      "system": "gb200",
+      "stage": "native import preflight",
+      "observed_failure": "FileNotFoundError while creating the native SGLang cache directory.",
+      "original_log": {
+        "name": "campaign-8796932.log",
+        "bytes": 7985,
+        "sha256": "a9b4a056016aa5229a6a80301d7b180763b24891910f741f368dc86a47b1817c"
+      },
+      "formal_rows": 0,
+      "gpu_oom_observed": false,
+      "later_launch_change": "Resolve allocation-private native cache paths inside the container before framework import."
+    },
+    {
+      "system": "gb200",
+      "stage": "fabric preflight",
+      "observed_failure": "The fabric validator rejected incorrect_configuration=N/A.",
+      "original_log": {
+        "name": "campaign-8797284.log",
+        "bytes": 750,
+        "sha256": "d787176c579570e1ecebe737819bd4090f6bfa14d477ea7db6db162a35b53d50"
+      },
+      "formal_rows": 0,
+      "gpu_oom_observed": false,
+      "later_launch_change": "Treat this specific unavailable diagnostic as unavailable, preserve all other fabric checks, and separately require the native eight-rank NCCL preflight. N/A is not evidence of healthy fabric."
+    },
+    {
+      "system": "gb300",
+      "stage": "source preflight",
+      "observed_failure": "FileNotFoundError while opening the container-visible source manifest.",
+      "original_log": {
+        "name": "campaign-1684779.log",
+        "bytes": 1859,
+        "sha256": "e5718fe949ca6f4e61ddd930e45b4a2d186029b983f265db3443651e7449fbcc"
+      },
+      "formal_rows": 0,
+      "gpu_oom_observed": false,
+      "later_launch_change": "Stage actual source-manifest and checkpoint metadata files inside the container-visible tree instead of host-absolute symlinks."
+    },
+    {
+      "system": "gb300",
+      "stage": "NCCL preflight",
+      "observed_failure": "The static TCP rendezvous port failed to bind with EADDRINUSE.",
+      "original_log": {
+        "name": "campaign-1685010.log",
+        "bytes": 3836,
+        "sha256": "7ada1bede950a687ff8653d85b19829291d344599b47ec40a6d474097713a742"
+      },
+      "formal_rows": 0,
+      "gpu_oom_observed": false,
+      "later_launch_change": "Observe an available port in the actual master container network namespace immediately before launch and share it across nodes. This is not a persistent reservation."
+    }
+  ]
+}

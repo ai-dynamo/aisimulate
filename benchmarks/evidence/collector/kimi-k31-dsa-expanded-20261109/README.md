@@ -16,6 +16,36 @@ The public matrix replaces only the original local selection-file locator with
 The original selection bytes, every configuration and all case hashes are preserved.
 Completing this subset does not mean the full structural grid is covered.
 
+## Completed coverage
+
+All **504/504 new formal points** completed, with **zero formal case failures
+and zero observed OOM skips**. Together with the unchanged 72 earlier B300
+points, the shipped tables contain **576 rows across 24 GPU/TP configurations**.
+Every system has 52 context and 44 generation rows at TP1/2/4/8.
+
+| GPU | Newly requested TP sizes | New rows | Total shipped rows |
+| --- | --- | ---: | ---: |
+| H100 | 1, 2, 4, 8 | 96 | 96 |
+| H200 | 1, 2, 4, 8 | 96 | 96 |
+| B200 | 1, 2, 4, 8 | 96 | 96 |
+| GB200 | 1, 2, 4, 8 | 96 | 96 |
+| GB300 | 1, 2, 4, 8 | 96 | 96 |
+| B300 | 8 | 24 | 96 |
+
+`coverage-inventory.json` binds every shipped table and metadata file by hash,
+checks the exact frozen case sets, and verifies that all columns of the earlier
+B300 rows remain unchanged. `x86/manifest.json` and `arm/manifest.json` bind the
+finite public evidence packages. Original raw CSV-formatted files preserve
+their CRLF bytes; source events and original table columns survive the unions.
+All campaign allocations have been released.
+
+The GB200 union explicitly migrates legacy schema-1 events to schema 2. The
+legacy integer-zero `classified_failures` key is omitted because schema 2 does
+not accept it; nonzero or malformed values are rejected.
+`arm/gb200/union/metadata-migration.json` records an invertible field mapping,
+while every original schema-1 sidecar remains byte-identical in its group.
+All other provenance fields and measured values are preserved.
+
 ## Measured boundary
 
 The source-pinned SGLang `KimiK3MLAAttention` and native `Indexer` execute with
@@ -29,7 +59,8 @@ this campaign.
 Execution is eager with BF16 projections, FP8 packed FlashMLA KV, CP=DCP=1,
 and speculation disabled. Each observation uses three warmups and ten CUDA-event
 samples per rank; the retained latency is the maximum of rank medians. The
-native builder provides synthetic token inputs. These component measurements
+collector persists that aggregate and the observation count, not individual
+per-rank sample arrays. The native builder provides synthetic token inputs. These component measurements
 do not verify a common input-token hash across TP ranks or establish numerical
 correctness. No prediction error is inferred from exact table queries.
 
@@ -82,6 +113,12 @@ after verifying the exact planned/attempted case set, original native logs,
 ten-sample observations, raw row identities and source bindings. The external
 driver receipts are not represented as `collect.py` checkpoints.
 
+The GB200 matrix is partitioned across three allocations: TP1 (24 points),
+TP2/4 (48 points), and TP8 (24 points), within the queue time limit. This is
+an exact partition of the original frozen 96-point matrix, with no selection
+based on observed latency. Each group retains its own qualification and source
+evidence. GB300 runs all 96 points in one allocation.
+
 Every admitted row is queried through the native Rust SILICON database with
 strict provenance and must return its exact stored latency. This establishes
 consumer compatibility and data integrity. It is not interpolation validation,
@@ -90,8 +127,10 @@ whole-model accuracy or a matched SemiAnalysis AgentX comparison.
 The exact development package versions above are measurement coordinates. The
 normal `current` query slot consumes them through the existing shared data layer,
 which fills missing architecture/coordinate rows from older source versions.
-H100/H200/B200/B300 context and decode controls passed this public query path with
-strict provenance and identical SILICON latencies. Explicitly disabling that
+H100/H200/B200/B300 and GB200/GB300 context and decode controls passed this
+public query path with strict provenance and identical SILICON latencies.
+The ARM controls use a complete committed systems snapshot plus the new tables;
+the source-isolated checks independently cover all 192 ARM rows. Explicitly disabling that
 shared layer restricts queries to the selected version's own rows. These checks
 do not qualify the newer query-slot runtime as a measured K3.1 serving backend.
 
@@ -101,6 +140,11 @@ missing coverage with their original case and log hashes. Environment, launch
 and transport failures remain separate failed attempts; they are not memory
 skips. Original failure records and source identities are retained even when a
 later attempt succeeds.
+
+`arm-startup-attempts.json` summarizes four earlier environment or NCCL-startup
+failures and binds each original log by hash. None reached native smoke/formal
+measurement or produced a capacity skip. Their launch/cache repairs do not
+change the native measurement boundary or frozen case matrix.
 
 Native default graph/overlap execution, CP/DCP greater than one and DFLASH/DSpark
 speculation remain outside this campaign. The separately frozen GB300 TP8

@@ -1,0 +1,502 @@
+{
+  "schema": "kimi-k31-arm-public-finalization-evidence/v1",
+  "system": "gb200",
+  "campaign": "tp24",
+  "actual_producer": "external Slurm driver calls unmodified native collector standalone API; not collect.py executor",
+  "source_receipt_sha256": "b459f94800db5638fe52e5c1a102d78fa499603b5eeffa85fa3003db4cdf79c0",
+  "smoke_receipt_sha256": "2c3f90ef04abfd31d4ec2523bb70f1819c265e2e6642f9ef9f975de9a642a6eb",
+  "derivation_sha256": "4c2ab1d29fd4c144d8b50321f5d4c82a25fbf46f9e439c53408cf1c040e2c08c",
+  "importer_sha256": "fd8f43c0b39cc9f3ddc9c1b20e06a6a1ce4d1afda771a73c3c9c2b6828e7825c",
+  "public_builder_sha256": "4e773cfc99f1516da46dd83b4fdd015764f906dfcfb2e276a0efa6bd0c066648",
+  "source_inputs": {
+    "dsa_context_module_perf.txt": "3bb4016a8ad97d3893d96756d4ba11fe7815ca6341bfb81849974b126ba3d567",
+    "dsa_generation_module_perf.txt": "56f0423b8810c997be6d62fefd9bbce1df872b1f9512163442a190dd7e3f9c75"
+  },
+  "source_log_hashes": {
+    "case-000.log": "a23da55d1e5b4d47d93c4417be7f2a928cc05097eeeb1369836ce366fe8615af",
+    "case-001.log": "8acee412818c846a35483533b0fc9a6af7f247b2398f1ee02da6bfa27ba70556",
+    "case-002.log": "d7526ed6fefbeb52d337dde4d8f29e87af3ebbedbe7cffe42a205bae97d3bba9",
+    "case-003.log": "4e9fc762b6f0b0054dea1836067b84e3d58741fe5b8c6bf74c2c88777cc51f5f",
+    "case-004.log": "a62f760334748c76e3cb087c81b4c2f4e8042115e34cc628f6b6af3dc901ed5e",
+    "case-005.log": "c430168324e8303f1e6987e8703f435434c0bc4ed486fa97e740b96ec2e49ab0",
+    "case-006.log": "f3b2b16978a394b0a0b38f97e290329c62b9c0fcdfb1fc2d0e8d54e3412321f9",
+    "case-007.log": "acf45de6b6892f674503ca5a8c8c3bedb406845c9d8ed1c1b22e99f713fef6c1",
+    "case-008.log": "9dfc53b8822db9b1f9e8b1310bbe56557ab2b268353071af1b17d5a54c4efb73",
+    "case-009.log": "dc6593fa914d5587f95cb43b4097e6b143b21d2a39a8ff65be6648772d11dd4e",
+    "case-010.log": "2c7b087d6ca073f6112791022b05fecd9b5b41221dd4cb5237285903a5e4247f",
+    "case-011.log": "d474e5a9467a2cbb9c9f331b59ef226cbe062e2c6300249adf55264572f217c0",
+    "case-012.log": "97b08349d7a6b125a566eabf2536a156ee76d0bc049f7309f100916ea7095f4e",
+    "case-013.log": "22e93fee75f5ad4dd397d4e0f7c8d66f027aa1da9aa739817a6633748bd94567",
+    "case-014.log": "9a15be32e9deef748d3c5cd00037b57a099353ebf0432faee63b62c8fda476f3",
+    "case-015.log": "031bd370eb54a3fee46259f3f9d96e418807f847e174742d7c80c378cb6c8d81",
+    "case-016.log": "9006d30bc87cb987bb1c0fba0ef95771d90048d3bf6f28bb27204545ee92914f",
+    "case-017.log": "b84d2817dabec985b63f839fa5bdc88722d0e3cb78edd19f0da33b34dc67fd7c",
+    "case-018.log": "73df131a58b6462ca23943c6e78024eb3178e808c7ff56585cf11ebcdf240658",
+    "case-019.log": "7d37e6112fd7fed626b7cd2b4ecab9f500c9da7f31c4602e0a37ab45433c0842",
+    "case-020.log": "72c9595a829e581dc619427f60386302d7a6928b5455224c7ecab04751913502",
+    "case-021.log": "c48d630d326273f18fdfffca61ee7e423e5ee60c3341eb93f9f2faf0d1c51213",
+    "case-022.log": "be1297d5a68675b8745c5c3486a2de404ca8f2c38b1aa8852eb6b35b7c9e7a3b",
+    "case-023.log": "d17b52e74358a59d975aa38dc957f1d3b192173d47f5f869783f7e0cfca8c86e",
+    "case-024.log": "d8a0a5d794b00b6bef674287dd7d7c9725163330773c3c931220389e81be04ad",
+    "case-025.log": "685e9d02da2b7337751f889b142eae9752955be954735b307b90a668bd20e430",
+    "case-026.log": "f1a1957bffe7a44052890063a37cce8b4d9eda74a856e2e2204aa83f71717ac9",
+    "case-027.log": "7fb4d46cbc690adb06d218755cc8db9336ada9d9497e4ca827c263f6ce66a132",
+    "case-028.log": "b907d9142a6550a5202835d48bac9fb589554a164ba88fc1b0a67d2a902e5efb",
+    "case-029.log": "195d990e6532ca9e0c1f042c5287059d380b2ead67046ba8e41d6fa9ef746e4d",
+    "case-030.log": "cb5fe75cd34b63c132a4841f773b662d9b78afbb77d24f5fe014d43e499012c8",
+    "case-031.log": "9dc883d24dbbbd7861ad31968745868a7e74228d82aba6469be2fdb55892db27",
+    "case-032.log": "e7c9d4eae996cbf7b801455e302690fe63c7b73963487726b2066a03daa269d6",
+    "case-033.log": "c65d2188f89ace2efb9b0e42cad01f6b98ebaef353336167f7f9727f33047c2b",
+    "case-034.log": "da1debfb747e3af0fc01e34b5cacd6ba692b13b2ef42c4b6c44e0db92afb5967",
+    "case-035.log": "6ab2820c7eda983e790b87532f2ea5cf41df69370d3e5b3d93e90b78546d7e0a",
+    "case-036.log": "f06412485f299cc2de1a1ede4d3bdf3f2668f9fa5a9e25fc62ede67fc7df6bd1",
+    "case-037.log": "25a6aa970d767c4363452555b1106d0adaa4434030e999e47f5f6af9e7f08b84",
+    "case-038.log": "5da2db58f74b8141854f27463d38888660734a280fb33ebc905a9c4f86a60e0e",
+    "case-039.log": "7b7c911de8fcb208e3e4ad3a124e221032d15c28bf2811509594af8a77e79bc9",
+    "case-040.log": "077d6e93e616cc614cc699b87904ecefeff5acf04efe0a4570a1ed0578c36f44",
+    "case-041.log": "15768ee4e91d009127cbd0b68d19bba7cc61f12a35dad42f1b3b0ce99c486038",
+    "case-042.log": "f5e6cbe260800212ff62fceaa55559d1104cad5c75c4e1e9158b600d30ad5efb",
+    "case-043.log": "633880b4036390bd6ae8652a38833fa257e319847c0afe5060018e5bda1db540",
+    "case-044.log": "48c874accb2cc6a6a3d1efcf6bece7be6eb4a464bee90ebd60519e2be4845e70",
+    "case-045.log": "2c685a79e24ab9dfe50689bc77143035c375c6f57378a30edc91121a0bb92394",
+    "case-046.log": "c8aee8a8a0ae727d42ad882c142ae9c4fbe820d2ee0e8922169401a7e0957068",
+    "case-047.log": "3320e2875ee18785b00537e8ef5850a2b7e7406df3d879dbf960a7005c74476e"
+  },
+  "preflight_sha256": [
+    "9906873efe2ad5b11c48d5d9965be12f10e0e502026086bdb15cdfce249a3310",
+    "c8140ee8c2cb3daa148352da878393078092c6f250f6255442c69e3e4fd3718d"
+  ],
+  "launch_bindings_sha256": "dd4792caf85db2ca8aa083e1bb191979601f742cdd0bc369572d75b16858e2b1",
+  "smoke_launch_bindings_sha256": "dd4792caf85db2ca8aa083e1bb191979601f742cdd0bc369572d75b16858e2b1",
+  "fabric_receipt_sha256": "448ed49bbc21dd6ba2bb597bce97b8271b4b8e1792c6157575ecb22f84dbbbf9",
+  "nccl_receipt_sha256": [
+    "c41de4cf907cb2ec5bf8c39c87b4e4eb773b578925c9177c563c99d36b402a9b",
+    "bcf57d7907a33ae1e7769372293c5df216fb2a94a69ed382f6fe1d32e8e5034e",
+    "349fca1ebbe8474bf377be4143f89cb4dbe66ddaa72aff3c6ad16da440a6f04a",
+    "960643c5823b400d5a0e22f18104b9e3990ec89097b58b966bb27858304a0c21",
+    "1df4eaab2f4605f2ebb1750cb6468bf7b5c5d4bd317da7a2a751d2bdcffaff10",
+    "cb333fa7656c11ffa9dc57edbf090c735820d99319c362d03f95e9c3a8cb0b01",
+    "a97af1607e0b52a5992dd3afb62b204af857e0c623d98d64c3d1b363ddb0e640",
+    "6069bc1466af8187180368f58ea62f7ea4f1cd60b81edc0265ad9bbc34357e96"
+  ],
+  "transport_binding": {
+    "preflight_hardware_nccl_hosts_match": true,
+    "unique_hardware_gpu_uuids": 8,
+    "nccl_receipts_per_host": 4,
+    "nccl_rank_device_uuid_observed": false,
+    "limitation": "NCCL preflight records host/rank and its source selects CUDA LOCAL_RANK; it does not emit a rank-to-device UUID map."
+  },
+  "rendezvous_receipt_count": 1,
+  "rendezvous_receipt_hashes": [
+    "99672de5bd495638b71488d94a7ce0cde15de23cdbc835cc59ceb0e1a743a9db"
+  ],
+  "verification_build_receipt_sha256": "991d1913a5ebebb43d887160b17efe05f7a50da855c08ad4ad27fed83a2d3812",
+  "verification_runtime_sha256": "e2d4b9174491173f3f0f4690280c60f4f8b6bead1967f501aea45c298c0fe607",
+  "raw_to_parquet_all_fields_verified": true,
+  "source_bytes_unchanged": true,
+  "planned_points": 48,
+  "measured_points": 48,
+  "smoke_points": 8,
+  "full_matrix_system_points": 96,
+  "partition": {
+    "split_plan_sha256": "76aea52edcd27a68e4de02a9a0c22c62f66e7e91a209b676a0e78a539ac898a3",
+    "group": "tp24",
+    "formal_tp_sizes": [
+      2,
+      4
+    ],
+    "smoke_tp_sizes": [
+      2,
+      4
+    ]
+  },
+  "smoke_reuse_scope": "fresh allocation smoke",
+  "actual_cuda_oom_skips": [],
+  "strict_exact_lookups": [
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2923
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.3531
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2967
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.0826
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.0847
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.4119
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.3329
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 3.4629
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.8064
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 2.8402
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 11.2359
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 5.5519
+    },
+    {
+      "phase": "context",
+      "heads": 48,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 11.9276
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2892
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2562
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2625
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.0017
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.0917
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2511
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.3034
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 3.1373
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.0835
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 3.0672
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 6.8941
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 4.318
+    },
+    {
+      "phase": "context",
+      "heads": 24,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 9.346
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.9543
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.0784
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.128
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.9555
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 2.0726
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 2.1066
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.968
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 2.0923
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 2.1131
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.9727
+    },
+    {
+      "phase": "generation",
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 2.0687
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.7294
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.7579
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.8369
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.7257
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.8182
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.821
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.7131
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.8452
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.8508
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.7073
+    },
+    {
+      "phase": "generation",
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.8508
+    }
+  ],
+  "scope": "Native isolated DSA module only. Complete means the selected 24 geometries per TP; no claim of full structural grid or full-model accuracy."
+}

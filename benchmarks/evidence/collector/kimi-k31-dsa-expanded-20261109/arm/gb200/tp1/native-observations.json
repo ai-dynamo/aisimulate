@@ -1,0 +1,1266 @@
+{
+  "formal": [
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        128,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.2754878997802734,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          128
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          128
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        128,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.254256010055542,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          128,
+          128,
+          128,
+          128
+        ],
+        "extend_prefix_lens": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "extend_seq_lens": [
+          128,
+          128,
+          128,
+          128
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        512,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.2256319522857666,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          512
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          512
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        512,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        2048
+      ],
+      "latency_ms": 2.246272087097168,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2560
+        ],
+        "extend_prefix_lens": [
+          2048
+        ],
+        "extend_seq_lens": [
+          512
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        512,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        32768
+      ],
+      "latency_ms": 2.375296115875244,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          33280
+        ],
+        "extend_prefix_lens": [
+          32768
+        ],
+        "extend_seq_lens": [
+          512
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        512,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.0383679866790771,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          512,
+          512,
+          512,
+          512
+        ],
+        "extend_prefix_lens": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "extend_seq_lens": [
+          512,
+          512,
+          512,
+          512
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.0953760147094727,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        8192
+      ],
+      "latency_ms": 2.969503879547119,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          10240
+        ],
+        "extend_prefix_lens": [
+          8192
+        ],
+        "extend_seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        2048,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 4.106256008148193,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048,
+          2048,
+          2048,
+          2048
+        ],
+        "extend_prefix_lens": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "extend_seq_lens": [
+          2048,
+          2048,
+          2048,
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        4096,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 5.504288196563721,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          4096
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          4096
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        4096,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 26.077713012695312,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          4096,
+          4096,
+          4096,
+          4096
+        ],
+        "extend_prefix_lens": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "extend_seq_lens": [
+          4096,
+          4096,
+          4096,
+          4096
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        8192,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 12.158991813659668,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        16384,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 27.06585693359375,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          16384
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          16384
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6037440299987793,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        2048,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.8045439720153809,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048,
+          2048,
+          2048,
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        2048,
+        16,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.76145601272583,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048,
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        8192,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.602944016456604,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        8192,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6610400676727295,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192,
+          8192,
+          8192,
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        8192,
+        16,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6856000423431396,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192,
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        32768,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6375200748443604,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          32768
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        32768,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6719200611114502,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          32768,
+          32768,
+          32768,
+          32768
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        32768,
+        16,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6971840858459473,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768,
+          32768
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        131072,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6214560270309448,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          131072
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        131072,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6752480268478394,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          131072,
+          131072,
+          131072,
+          131072
+        ]
+      }
+    }
+  ],
+  "smoke": [
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        128,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.149839997291565,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          128
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          128
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "case": [
+        4096,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 5.472784042358398,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          4096
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          4096
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.5662239789962769,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "case": [
+        8192,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.558784008026123,
+      "observations": 10,
+      "local_heads": 96,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "case": [
+        128,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.3110079765319824,
+      "observations": 10,
+      "local_heads": 48,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          128
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          128
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "case": [
+        4096,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 2.934959888458252,
+      "observations": 10,
+      "local_heads": 48,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          4096
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          4096
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "case": [
+        2048,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.9709440469741821,
+      "observations": 10,
+      "local_heads": 48,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "case": [
+        8192,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.991055965423584,
+      "observations": 10,
+      "local_heads": 48,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "case": [
+        128,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.32806396484375,
+      "observations": 10,
+      "local_heads": 24,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          128
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          128
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "case": [
+        4096,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 2.812592029571533,
+      "observations": 10,
+      "local_heads": 24,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          4096
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          4096
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "case": [
+        2048,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.7195520401000977,
+      "observations": 10,
+      "local_heads": 24,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "case": [
+        8192,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.6837599277496338,
+      "observations": 10,
+      "local_heads": 24,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "case": [
+        128,
+        1,
+        12,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 1.2648000717163086,
+      "observations": 10,
+      "local_heads": 12,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          128
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          128
+        ]
+      }
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "case": [
+        4096,
+        1,
+        12,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 2.9354238510131836,
+      "observations": 10,
+      "local_heads": 12,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          4096
+        ],
+        "extend_prefix_lens": [
+          0
+        ],
+        "extend_seq_lens": [
+          4096
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "case": [
+        2048,
+        1,
+        12,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 2.0233280658721924,
+      "observations": 10,
+      "local_heads": 12,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          2048
+        ]
+      }
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "case": [
+        8192,
+        1,
+        12,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "latency_ms": 2.0280160903930664,
+      "observations": 10,
+      "local_heads": 12,
+      "native_module": "KimiK3MLAAttention",
+      "native_indexer": "Indexer",
+      "output_gate": true,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "forward_batch": {
+        "seq_lens": [
+          8192
+        ]
+      }
+    }
+  ],
+  "scope": "Native isolated DSA module medians; each record reports ten observations. No full-model accuracy claim."
+}

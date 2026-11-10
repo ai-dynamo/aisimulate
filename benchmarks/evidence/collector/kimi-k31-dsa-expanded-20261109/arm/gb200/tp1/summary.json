@@ -1,0 +1,291 @@
+{
+  "schema": "kimi-k31-arm-public-finalization-evidence/v1",
+  "system": "gb200",
+  "campaign": "tp1",
+  "actual_producer": "external Slurm driver calls unmodified native collector standalone API; not collect.py executor",
+  "source_receipt_sha256": "fbadeb64b46fcc3422b23fc5549e920362f14ca8e6ef8ab64e481aafb66fb3f2",
+  "smoke_receipt_sha256": "e0476f474847b1dcab9a52e2ab0e8d30eabca010ecc872506919eb13c2bf7c4e",
+  "derivation_sha256": "2c3fcd7407608d3c6e04c96bfa4b06c4a712287b7e887ed2f3cfa192d9952ffa",
+  "importer_sha256": "fd8f43c0b39cc9f3ddc9c1b20e06a6a1ce4d1afda771a73c3c9c2b6828e7825c",
+  "public_builder_sha256": "4e773cfc99f1516da46dd83b4fdd015764f906dfcfb2e276a0efa6bd0c066648",
+  "source_inputs": {
+    "dsa_context_module_perf.txt": "cdcb17dd904d219029fa7b4ecac93db5d9eaf1bfbb11c3308e5f110ceb5e26d9",
+    "dsa_generation_module_perf.txt": "736a564dc0b7642b60009a4324f11c5750003edeb45731187e426d2229e4072e"
+  },
+  "source_log_hashes": {
+    "case-000.log": "23ec5836d1a45f8506f24d0b229155983accf22d8e95f9d6192eb0b29bee3a54",
+    "case-001.log": "0159c575331707163ebd992aa656054d3d4652f0269b5540348f3978e4db67f1",
+    "case-002.log": "384e36c582b6adcadfd4feb069b85b31f71fabe0690bc3f5eec381028e01eb91",
+    "case-003.log": "be35b2344b885b2e3be7d37bd8ea787355b5051815bd2af475604b592189499c",
+    "case-004.log": "cc8aa3b839ffda531b1054c5dd153ee0d80ae78ea0d167a1bfbb9445344816a8",
+    "case-005.log": "b342e5e88741b777fcc2ac98f9c23311df845e94fd0db87c1a225069a1fd5899",
+    "case-006.log": "08332cc158a3ff8211dfe48fa389df37deffe4da7f8824a78d2f3cb51c5d9cb2",
+    "case-007.log": "2188d9db1715592bcf208d628d4878126cd89568b650e0d1e059fcc2ac560d95",
+    "case-008.log": "11ae9e9e02fea060386346cd4ea5e739ef1cde8d139551258feaf86d675b4fc9",
+    "case-009.log": "87be3b9421181b1578cc4e45978a12910833d1924ebbf12b613c1f2a6b0da54f",
+    "case-010.log": "66ff5dec71f84e982a5f94b5dda3dc7e9b1a13c50c4f21ef0d740c4cb114aa09",
+    "case-011.log": "ce622c7e6ac5de1f1aeeb4e392a1a8991ccb50d8ddd7814acfc8e3089d9da295",
+    "case-012.log": "338e32c5cbb839919a21dc424c8122d75c92599b66ec57988b15bc33bf4eafaa",
+    "case-013.log": "3a14a16f15128db9f4018369a67e5eec161cb66aa69947741aa0f6a78ac6ef0e",
+    "case-014.log": "eb5ff7adeb2c5b5f34599afbc99cc92a44cc099c13c79b8494aca8777ddbc608",
+    "case-015.log": "5ef58e34a59afc11fc89f0c3347123c825850762ef1a4460f19688e380365587",
+    "case-016.log": "936b93d8bb5d35b2c1d54fa4809193eb7a36b4c544dcf8c4926718612e17c117",
+    "case-017.log": "cd0ff77ef5f9f90c21278f0da43b4a1373797a1d277fd7ccf7486fcaf176609f",
+    "case-018.log": "3402663cb1f10096c5f69d77cf4ae73be33b820a78f64e4c8e3c33c60e504612",
+    "case-019.log": "61940d18ef0f476ebc13177e066d48b45241a0200ace1d2e5c7c6f817fa42f63",
+    "case-020.log": "91eb1d84c83fb0e354f7321b173c3c8d78381ea75924b955eade5b0780cec722",
+    "case-021.log": "85c5237b9d76dc981dcdd71253986d31b316c832dfe24b00064f10da865e2073",
+    "case-022.log": "b711c549f7bd990587642b373b90daad3cd881120a8728fbe09d7605104d1990",
+    "case-023.log": "5a19f6739c208b646e8643eef8e4eb9db5a30f51a93374520fbb9c4b47875b08"
+  },
+  "preflight_sha256": [
+    "0c108b554384a39feb83d3d5f0336e63fd17517653192bfcec6753bebb4fc8b1",
+    "7061c43a03f0e3199bfdfd5f5687a27f9b7cb41e04f17b57e434e33fb7bd444b"
+  ],
+  "launch_bindings_sha256": "0f7cb07bcfded798de0b0ecbc0f66141216ac75788367635a84ab402af687db4",
+  "smoke_launch_bindings_sha256": "504f3a1b899cd389aa3268747d9b9f72a1f3b7a289e83ce667f1ad050a7f321f",
+  "fabric_receipt_sha256": "d4a5b717d780008f5064c5d5a5062130437125f6521577e5b60020ee5147cacb",
+  "nccl_receipt_sha256": [
+    "bc49275765c40f90a9ed78997aa77bcabb3ff8f64f273afca9f6429e94492410",
+    "5bb97649714acc58c279ccc0d6f377d32f3c3f24c2e6d396cc0ef1f1624e9522",
+    "cd9c552a4033c5548750648fcbdd85431197dd92762df2150cae31d0eddd3c37",
+    "ffc749a15aa6b0bd3c92c09f787fb67005d6e84e7b24433574b947dc20b5272e",
+    "439d007f611e1aaeb7a609546bed31135955f7437388922a37b573f21c85e962",
+    "5a54d5e92beed8dc1e7118564cb0b8b54d90d9ae570dc8bf3989857da1c50eeb",
+    "6aa491cf78ed77810dc615a57d08eb6321e685d12e1871a64fc15bf4d4fd3f83",
+    "9acff93939b1f1906f01e4d1640480e614ff78afa03fb9231e3afb198574aa39"
+  ],
+  "transport_binding": {
+    "preflight_hardware_nccl_hosts_match": true,
+    "unique_hardware_gpu_uuids": 8,
+    "nccl_receipts_per_host": 4,
+    "nccl_rank_device_uuid_observed": false,
+    "limitation": "NCCL preflight records host/rank and its source selects CUDA LOCAL_RANK; it does not emit a rank-to-device UUID map."
+  },
+  "rendezvous_receipt_count": 5,
+  "rendezvous_receipt_hashes": [
+    "603acfd6f0d0785b1219821d26649202f10f26ae66cfd5a608eb462acb882e40",
+    "6246dc69dbe9a8c378f5c2d5e020ab4b4fc25ef7b12cbe38f1402e3e56c72502",
+    "e1cee4f2040297a110c6c11a7ab009bef5e8b7789f43a6f87de3a6c0a9bfe64d",
+    "6ed80ddea73cd2207c9065cfd215ba81a28c059f427550f49ade179829d663d7",
+    "a159b9028c137690247669e8bb489026b6e71907092b8a5ebbe11d448b3b30e2"
+  ],
+  "verification_build_receipt_sha256": "991d1913a5ebebb43d887160b17efe05f7a50da855c08ad4ad27fed83a2d3812",
+  "verification_runtime_sha256": "e2d4b9174491173f3f0f4690280c60f4f8b6bead1967f501aea45c298c0fe607",
+  "raw_to_parquet_all_fields_verified": true,
+  "source_bytes_unchanged": true,
+  "planned_points": 24,
+  "measured_points": 24,
+  "smoke_points": 16,
+  "full_matrix_system_points": 96,
+  "partition": {
+    "split_plan_sha256": "76aea52edcd27a68e4de02a9a0c22c62f66e7e91a209b676a0e78a539ac898a3",
+    "group": "tp1",
+    "formal_tp_sizes": [
+      1
+    ],
+    "smoke_tp_sizes": [
+      1,
+      2,
+      4,
+      8
+    ]
+  },
+  "smoke_reuse_scope": "same allocation",
+  "actual_cuda_oom_skips": [],
+  "strict_exact_lookups": [
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2755
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2543
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2256
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.2463
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.3753
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.0384
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.0954
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 2.9695
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 4.1063
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 5.5043
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 26.0777
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 12.159
+    },
+    {
+      "phase": "context",
+      "heads": 96,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 27.0659
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.6037
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.8045
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.7615
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.6029
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.661
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.6856
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.6375
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.6719
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.6972
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.6215
+    },
+    {
+      "phase": "generation",
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.6752
+    }
+  ],
+  "scope": "Native isolated DSA module only. Complete means the selected 24 geometries per TP; no claim of full structural grid or full-model accuracy."
+}

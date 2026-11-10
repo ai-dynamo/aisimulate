@@ -1,0 +1,276 @@
+{
+  "schema": "kimi-k31-arm-finite-evidence/v2",
+  "systems": {
+    "gb200": {
+      "planned_points": 96,
+      "measured_points": 96
+    },
+    "gb300": {
+      "planned_points": 96,
+      "measured_points": 96
+    }
+  },
+  "scope": "Original measured DSA module latency coverage and strict data-consumer checks, not full-model accuracy.",
+  "files": [
+    {
+      "path": "gb200/tp1/manifest.json",
+      "bytes": 1659,
+      "sha256": "89ce94443d7a1001c0bfad4b3a60ca56525d61a4b1e90e2b92fdca41ea733f92"
+    },
+    {
+      "path": "gb200/tp1/native-observations.json",
+      "bytes": 27103,
+      "sha256": "ca37b23491d48fa551cf4de2113516e9e31c405903545198b5daf79a44595b5d"
+    },
+    {
+      "path": "gb200/tp1/raw-formal/dsa_context_module_perf.txt",
+      "bytes": 3144,
+      "sha256": "cdcb17dd904d219029fa7b4ecac93db5d9eaf1bfbb11c3308e5f110ceb5e26d9"
+    },
+    {
+      "path": "gb200/tp1/raw-formal/dsa_generation_module_perf.txt",
+      "bytes": 2699,
+      "sha256": "736a564dc0b7642b60009a4324f11c5750003edeb45731187e426d2229e4072e"
+    },
+    {
+      "path": "gb200/tp1/selection.json",
+      "bytes": 11955,
+      "sha256": "c4063ec27319edc5b9bcf67f0d2bedceaafa6700fca4daaaff6d2c9b47426616"
+    },
+    {
+      "path": "gb200/tp1/source.json",
+      "bytes": 3793,
+      "sha256": "139b44091e3d0074e9366768f7b7c3579a2cf76565a4cd966985b8bf257a1506"
+    },
+    {
+      "path": "gb200/tp1/summary.json",
+      "bytes": 9174,
+      "sha256": "99ac3d9102b6db704ab9134069bdf9c6b35f5b3f398fb5c6e17632ab9b2d35bd"
+    },
+    {
+      "path": "gb200/tp1/tables/collection_meta.yaml",
+      "bytes": 1254,
+      "sha256": "0de8343b04aeab39fc59f998a5cd4f5e81aa3777ad03b5756ef73e1fffbbe21a"
+    },
+    {
+      "path": "gb200/tp1/tables/dsa_context_module_perf.parquet",
+      "bytes": 5596,
+      "sha256": "63d96ffa48410403bd19cee48ee6cd1cacfce2391348e53b2ce41e558e72c71d"
+    },
+    {
+      "path": "gb200/tp1/tables/dsa_generation_module_perf.parquet",
+      "bytes": 5557,
+      "sha256": "ff111b3e16c49111d1a6da9bc6e61a32645e4544028f5818a62f66f9c11d5a16"
+    },
+    {
+      "path": "gb200/tp24/manifest.json",
+      "bytes": 1660,
+      "sha256": "f117b74735ac50472983b8308832b50e4b84eea3a196a578827a288915d0dbee"
+    },
+    {
+      "path": "gb200/tp24/native-observations.json",
+      "bytes": 38855,
+      "sha256": "6ac8aae740e42cb26539462cdc1376c7f76b1158a25e7bc3ea88d328ab3654dc"
+    },
+    {
+      "path": "gb200/tp24/raw-formal/dsa_context_module_perf.txt",
+      "bytes": 6136,
+      "sha256": "3bb4016a8ad97d3893d96756d4ba11fe7815ca6341bfb81849974b126ba3d567"
+    },
+    {
+      "path": "gb200/tp24/raw-formal/dsa_generation_module_perf.txt",
+      "bytes": 5250,
+      "sha256": "56f0423b8810c997be6d62fefd9bbce1df872b1f9512163442a190dd7e3f9c75"
+    },
+    {
+      "path": "gb200/tp24/selection.json",
+      "bytes": 16671,
+      "sha256": "983993660bc15c3389b43545f46e5f83dc079b4ad130be01e6e6f290f59a802b"
+    },
+    {
+      "path": "gb200/tp24/source.json",
+      "bytes": 3793,
+      "sha256": "139b44091e3d0074e9366768f7b7c3579a2cf76565a4cd966985b8bf257a1506"
+    },
+    {
+      "path": "gb200/tp24/summary.json",
+      "bytes": 14377,
+      "sha256": "eb1ac0636840b94b84e1c3c23cce700330884c21963dc4d00ea3aa6e7f72271a"
+    },
+    {
+      "path": "gb200/tp24/tables/collection_meta.yaml",
+      "bytes": 1254,
+      "sha256": "84cf4c213c3a17769fb74c6d661bd9daf64be99ac04776049156c1468a18d4ca"
+    },
+    {
+      "path": "gb200/tp24/tables/dsa_context_module_perf.parquet",
+      "bytes": 5748,
+      "sha256": "e1673aadeb3e4b19f3482a799a97a4e87fbbb0020b24f2760e2441146a1cd509"
+    },
+    {
+      "path": "gb200/tp24/tables/dsa_generation_module_perf.parquet",
+      "bytes": 5669,
+      "sha256": "f09a0595180cbcd5e4693214a49319fe2cee2a3352206b53b48ba4aaab3adf3b"
+    },
+    {
+      "path": "gb200/tp8/manifest.json",
+      "bytes": 1659,
+      "sha256": "c491f7ca552471bbb2f5bf2b66f6ee60f8cb1539c9c03fec3822d5346d6c966e"
+    },
+    {
+      "path": "gb200/tp8/native-observations.json",
+      "bytes": 19496,
+      "sha256": "9de60cdc234bcaf4581dfb59c5cde1ff6a5144b9861fb628fb5c40c460ee7dd4"
+    },
+    {
+      "path": "gb200/tp8/raw-formal/dsa_context_module_perf.txt",
+      "bytes": 3141,
+      "sha256": "5b41800c86eeba7b60f706be942408190d2b663aee81f96721fbdf0de0079315"
+    },
+    {
+      "path": "gb200/tp8/raw-formal/dsa_generation_module_perf.txt",
+      "bytes": 2699,
+      "sha256": "c9a75cc44804d2c7b70d2bc2e09f94cdec57cce6e47eef31a466eebfd677576f"
+    },
+    {
+      "path": "gb200/tp8/selection.json",
+      "bytes": 8430,
+      "sha256": "99a55f621fa197b6a15927de8b0b42e3119545da2f0a0900f3624a15d0c733c9"
+    },
+    {
+      "path": "gb200/tp8/source.json",
+      "bytes": 3793,
+      "sha256": "139b44091e3d0074e9366768f7b7c3579a2cf76565a4cd966985b8bf257a1506"
+    },
+    {
+      "path": "gb200/tp8/summary.json",
+      "bytes": 10876,
+      "sha256": "a4e90687f22bce3e216dee345600f0afa80957c33a9ed7dd5857a3791b92605b"
+    },
+    {
+      "path": "gb200/tp8/tables/collection_meta.yaml",
+      "bytes": 1254,
+      "sha256": "929754acb5cbd5e62ee1738d238e50c8fff0254af56617928bc182fd2c889bb2"
+    },
+    {
+      "path": "gb200/tp8/tables/dsa_context_module_perf.parquet",
+      "bytes": 5596,
+      "sha256": "c2ec3310fee1a167483997dee20cb97670ce3a77969e1a7aa5bf951d76e638a7"
+    },
+    {
+      "path": "gb200/tp8/tables/dsa_generation_module_perf.parquet",
+      "bytes": 5557,
+      "sha256": "1ffbb1c878d1ef3a4cc97fe980366998becab8d5d53576919f8d74001cfd6d12"
+    },
+    {
+      "path": "gb200/union/collection_meta.yaml",
+      "bytes": 2610,
+      "sha256": "f2aefb51819140bea50c5fe2b5080db934fe2fee9ad9c881e0a146a4f728bc82"
+    },
+    {
+      "path": "gb200/union/derivation.json",
+      "bytes": 2480,
+      "sha256": "0b715c2cd6f0e7d8613cc1f0c5a392130a2bcf3b98fc59c5182d7ddff976b277"
+    },
+    {
+      "path": "gb200/union/dsa_context_module_perf.parquet",
+      "bytes": 6018,
+      "sha256": "e48b9cf93f867e3623ee250d63373ea61a959b922718dc814800295a15571f93"
+    },
+    {
+      "path": "gb200/union/dsa_generation_module_perf.parquet",
+      "bytes": 5897,
+      "sha256": "efe67b67e311b301c905fe15f2b4bfcf33aeacba0954b7f71a64466126efc585"
+    },
+    {
+      "path": "gb200/union/manifest.json",
+      "bytes": 974,
+      "sha256": "95298c769f144bd87b08d11004f7db53881d5b4f1a67546d5af2341afcb2c655"
+    },
+    {
+      "path": "gb200/union/metadata-migration.json",
+      "bytes": 8095,
+      "sha256": "2539880c827f5582001c2979222096c27d5a15d08aa4265abc7e428799e8238f"
+    },
+    {
+      "path": "gb200/union/strict-consumer.json",
+      "bytes": 15719,
+      "sha256": "5237fe64645f696db4c674cf7f16d19455a6d55a71826bf48d274f37ae727b02"
+    },
+    {
+      "path": "gb300/tp1248/manifest.json",
+      "bytes": 1662,
+      "sha256": "f30adf64a7df087a9d37246a930e2d0d7a8ecafe1be04b25256368a06cc2b0c1"
+    },
+    {
+      "path": "gb300/tp1248/native-observations.json",
+      "bytes": 77553,
+      "sha256": "970ed7cfd04ffd03423e70c0bc3b047e0a71acbddc8586481e1f8a3577b5d4d7"
+    },
+    {
+      "path": "gb300/tp1248/raw-formal/dsa_context_module_perf.txt",
+      "bytes": 12124,
+      "sha256": "d630c4049755e6165aa803bcb40e0be0585df00a110b5dd8ae8b6dc824c7779e"
+    },
+    {
+      "path": "gb300/tp1248/raw-formal/dsa_generation_module_perf.txt",
+      "bytes": 10352,
+      "sha256": "ae7ce11769606b5c8758b5d4fde0c1cc88bafcb2e08b8d28315171d51a946a41"
+    },
+    {
+      "path": "gb300/tp1248/selection.json",
+      "bytes": 33153,
+      "sha256": "39d0fd362a5ca16ec797d6bfe8cfab0814b2cdc53ac411942cb309a483edfe90"
+    },
+    {
+      "path": "gb300/tp1248/source.json",
+      "bytes": 3791,
+      "sha256": "7f67ee5689751578c883bf03255af1578d8e53bd5e3f2373cd16d1311d588440"
+    },
+    {
+      "path": "gb300/tp1248/summary.json",
+      "bytes": 27173,
+      "sha256": "0447bd928096611d4f2032e20c70bf06ec544751417d454ff0f3cd55df11caf7"
+    },
+    {
+      "path": "gb300/tp1248/tables/collection_meta.yaml",
+      "bytes": 1254,
+      "sha256": "960fd4ffe73e54d7990b26fdc6d54d3217f9473e96cceec4304e4e9037e1550e"
+    },
+    {
+      "path": "gb300/tp1248/tables/dsa_context_module_perf.parquet",
+      "bytes": 6018,
+      "sha256": "80320366d22b4e2a983d89aeb58280c17f11b3a276d7a9c7941e806bc688129a"
+    },
+    {
+      "path": "gb300/tp1248/tables/dsa_generation_module_perf.parquet",
+      "bytes": 5905,
+      "sha256": "d79234bcf55ca77424a285fbe56ea93cca7b8ff50b527b94226be2df77e8fc6b"
+    },
+    {
+      "path": "query-slots/gb200.json",
+      "bytes": 1930,
+      "sha256": "7989e69abeebf3fcdcb79d0ead3054ec34729f0ec0c7b6a61f1739ad1e285e11"
+    },
+    {
+      "path": "query-slots/gb300.json",
+      "bytes": 1930,
+      "sha256": "f1ea0d5cfeb70a4b06c0d75154b4483587cc173a4560d396c94738aa61be6e34"
+    },
+    {
+      "path": "schema-migration-validation.json",
+      "bytes": 2446,
+      "sha256": "6367533c20d486ef7711adb78360a95eef9802c64676659342eb20edc6f33c95"
+    },
+    {
+      "path": "tools/merge_formal_tables.py",
+      "bytes": 6363,
+      "sha256": "f59bafc6b26c292be2e3e0e467df6d0e2108581bf71a52aa0b83c4eba1f1313a"
+    },
+    {
+      "path": "tools/verify_arm_current_slot.py",
+      "bytes": 5505,
+      "sha256": "e91ff551b7256784c0fc782761a48a740d4f0f95e531747577a8f62e0d5615ad"
+    }
+  ]
+}
