@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1"
-aisimulate-core = { package = "aisim-core", path = "../../core", features = ["python"] }
+aisim-core = { package = "aisim-core", path = "../../core", features = ["python"] }
 
 [dev-dependencies]
 serde = "1"
