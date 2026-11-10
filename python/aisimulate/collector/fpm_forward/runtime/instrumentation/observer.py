@@ -157,7 +157,7 @@ def _resolved(owner: Any) -> dict:
     return value
 
 
-def _raw_cache(config: Any) -> dict:
+def _raw_cache(config: Any, *, kimi_k31: bool = False) -> dict:
     fields = (
         "block_size",
         "storage_block_size",
@@ -178,15 +178,27 @@ def _raw_cache(config: Any) -> dict:
         "num_prefill_checkpoint_blocks",
         "prefill_checkpoint_alignment",
     )
+
+    def spec_fields(spec):
+        name = legacy._class_name(spec)
+        if kimi_k31 and name == "vllm.v1.kv_cache_interface.UniformTypeKVCacheSpecs":
+            # The pinned K3.1 kv_cache_interface.UniformTypeKVCacheSpecs
+            # exposes child specs and an aggregate page size. Its inherited
+            # state_content_size_bytes property is abstract, not optional.
+            return {
+                "spec_type": name,
+                "block_size": spec.block_size,
+                "page_size_bytes": spec.page_size_bytes,
+                "kv_cache_specs": {key: spec_fields(child) for key, child in spec.kv_cache_specs.items()},
+            }
+        return {"spec_type": name, **{key: _json(getattr(spec, key)) for key in fields if hasattr(spec, key)}}
+
     return {
         "num_blocks": config.num_blocks,
         "groups": [
             {
                 "layer_names": list(group.layer_names),
-                "spec_type": legacy._class_name(group.kv_cache_spec),
-                **{
-                    key: _json(getattr(group.kv_cache_spec, key)) for key in fields if hasattr(group.kv_cache_spec, key)
-                },
+                **spec_fields(group.kv_cache_spec),
             }
             for group in config.kv_cache_groups
         ],
@@ -440,7 +452,7 @@ def observe(
         config = cache_config
         memory_reader = kimi_k31.scheduler_memory if native_k31 else legacy.scheduler_memory
         capture("cache", lambda: payload.update(cache=memory_reader(owner, config)))
-    capture("raw_cache_config", lambda: payload.update(raw_cache_config=_raw_cache(config)))
+    capture("raw_cache_config", lambda: payload.update(raw_cache_config=_raw_cache(config, kimi_k31=native_k31)))
     if "cache" in payload:
         cache = payload["cache"]
         cache["pool_id"] = pool_id

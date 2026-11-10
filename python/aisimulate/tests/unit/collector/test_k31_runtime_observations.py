@@ -173,6 +173,38 @@ def test_native_uniform_wrapper_preserves_one_attention_block_table(monkeypatch)
         _physical_views(cache, scheduled, "fp8")
 
 
+def test_raw_uniform_wrapper_reads_children_without_abstract_scalar_property(monkeypatch):
+    _, _, worker = _native_fixture(monkeypatch, uniform=True)
+    observer = importlib.import_module("collector.fpm_forward.runtime.instrumentation.observer")
+    config = worker.model_runner.kv_cache_config
+
+    def abstract_state_content(_):
+        raise NotImplementedError
+
+    for group in config.kv_cache_groups:
+        monkeypatch.setattr(
+            type(group.kv_cache_spec), "state_content_size_bytes", property(abstract_state_content), raising=False
+        )
+    with pytest.raises(NotImplementedError):
+        observer._raw_cache(config)
+    raw = observer._raw_cache(config, kimi_k31=True)
+    assert raw["num_blocks"] == 10
+    assert raw["groups"][0]["page_size_bytes"] == 384
+    children = raw["groups"][0]["kv_cache_specs"]
+    assert set(children) == set(raw["groups"][0]["layer_names"])
+    assert children["mla.0"]["page_size_bytes"] == 128
+    assert children["indexer.0"]["page_size_bytes"] == 64
+    state = raw["groups"][1]["kv_cache_specs"]["kda.0"]
+    assert state["state_content_size_bytes"] == 48
+    assert state["dtypes"] == ["torch.bfloat16", "torch.float32"]
+    assert raw["tensor_allocations"][1]["offset"] == 256
+    child = config.kv_cache_groups[1].kv_cache_spec.kv_cache_specs["kda.0"]
+    del child.state_content_size_bytes
+    monkeypatch.setattr(type(child), "state_content_size_bytes", property(abstract_state_content), raising=False)
+    with pytest.raises(NotImplementedError):
+        observer._raw_cache(config, kimi_k31=True)
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
