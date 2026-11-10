@@ -176,6 +176,21 @@ linear-attention layers. It has no `sliding_window`, and no other kind accepts
   and
   [`single_type_kv_cache_manager.py:1658-1675`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py#L1658-L1675).
 
+A `state` group can also hold two optional fields from the runtime probe
+import. A profile imported before these fields existed has neither of them, and
+an absent field is left out of the serialized group. Sizing and replay do not
+read them yet.
+
+- `prefill_checkpoint_blocks` is the number of prefill checkpoint blocks of a
+  Mamba spec: 0 or 1. Only a `state` group can have it.
+- `prefill_checkpoint_alignment` is the token alignment of that checkpoint. It
+  must be positive, and it needs `prefill_checkpoint_blocks` of 1. In vLLM
+  0.33.0, a KDA layer that prefills with FlashKDA has one checkpoint block
+  with an alignment of 16 tokens. See vLLM v0.33.0
+  [`kda.py:168-176`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/models/glm5next/common/kda.py#L168-L176)
+  and
+  [`kda_checkpoint.py:9-10`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/model_executor/layers/mamba/kda_checkpoint.py#L9-L10).
+
 Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
 same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes
 `ForwardPassPerfModelConfig::estimate_cache_budget(&request)` and

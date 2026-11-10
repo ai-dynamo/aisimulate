@@ -44,6 +44,8 @@ fn group(name: &str, block: u32, bytes: u64, window: Option<u32>) -> FpmCacheGro
         page_size_bytes: bytes,
         sliding_window: window,
         blocks_per_request: None,
+        prefill_checkpoint_blocks: None,
+        prefill_checkpoint_alignment: None,
     }
 }
 
@@ -56,6 +58,8 @@ fn state(name: &str, bytes: u64, blocks: u32) -> FpmCacheGroup {
         page_size_bytes: bytes,
         sliding_window: None,
         blocks_per_request: Some(blocks),
+        prefill_checkpoint_blocks: None,
+        prefill_checkpoint_alignment: None,
     }
 }
 
