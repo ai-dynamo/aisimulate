@@ -19,6 +19,8 @@ pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
     vacant: Vec<NonZeroU32>,
+    /// Counts the times a block or a run was made the newest.
+    touches: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -39,6 +41,7 @@ impl Default for Lru {
                 newer: SENTINEL,
             }],
             vacant: Vec::new(),
+            touches: 0,
         }
     }
 }
@@ -54,6 +57,25 @@ impl Lru {
             None => *slot.insert(self.allocate(key)),
         };
         self.push_newest(node);
+        self.touches += 1;
+    }
+
+    /// Make the adjacent blocks from `oldest` through `newest` the newest,
+    /// keeping their order, as a [`Self::touch`] of each in that order does.
+    pub(crate) fn touch_run(&mut self, oldest: NonZeroU32, newest: NonZeroU32) {
+        let after = self.nodes[newest.get() as usize].newer;
+        if after == SENTINEL {
+            return;
+        }
+        let before = self.nodes[oldest.get() as usize].older;
+        self.nodes[before as usize].newer = after;
+        self.nodes[after as usize].older = before;
+        let last = self.nodes[SENTINEL as usize].older;
+        self.nodes[last as usize].newer = oldest.get();
+        self.nodes[oldest.get() as usize].older = last;
+        self.nodes[newest.get() as usize].newer = SENTINEL;
+        self.nodes[SENTINEL as usize].older = newest.get();
+        self.touches += 1;
     }
 
     pub(crate) fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
@@ -61,6 +83,13 @@ impl Lru {
             self.unlink(node);
             self.vacant.push(node);
         }
+    }
+
+    /// How many times a block or a run was made the newest. While the count
+    /// stands, the newest blocks are the same, in the same order, less any
+    /// removed.
+    pub(crate) fn touches(&self) -> u64 {
+        self.touches
     }
 
     /// Number of linked blocks.
@@ -156,7 +185,7 @@ mod tests {
         for _ in 0..20_000 {
             let index = rng.random_range(0..slots.len());
             let block = HostBlockKey::new(index as u64);
-            match rng.random_range(0..3) {
+            match rng.random_range(0..4) {
                 0 => {
                     lru.touch(&mut slots[index], block);
                     expected.retain(|key| *key != block);
@@ -165,6 +194,16 @@ mod tests {
                 1 => {
                     lru.remove(&mut slots[index]);
                     expected.retain(|key| *key != block);
+                }
+                2 => {
+                    // A run of adjacent blocks, from `block` on, moves as one.
+                    if let Some(start) = expected.iter().position(|key| *key == block) {
+                        let end = rng.random_range(start..expected.len());
+                        let node = |key: HostBlockKey| slots[key.sequence_hash() as usize].unwrap();
+                        lru.touch_run(node(expected[start]), node(expected[end]));
+                        let run: Vec<_> = expected.drain(start..=end).collect();
+                        expected.extend(run);
+                    }
                 }
                 _ => {
                     let count = rng.random_range(0..8);
