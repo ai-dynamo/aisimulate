@@ -9,6 +9,16 @@ runtime:
   image_digest: sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34
   source_commit: 5df63a7203cdb9328d824a27b682e77c7b9928be
 tables:
+  dsa_context_module_perf:
+    rows: 73120
+    status: complete
+    collections:
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+      case_plan_hash: sha256:c7b122bdf1dd4c527f32758bf63035d795fe87be7fb9083aea11b748de5024a2
+      collected_at: '2026-11-10'
+      rows: 73120
+      status: complete
   dsa_generation_module_perf:
     rows: 11400
     status: complete
