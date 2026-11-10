@@ -340,7 +340,7 @@ def _validate_record(
     # (runtime_memory._validate_scheduler_config).
     if (
         kind == "worker"
-        and runtime_memory._layer_strided(record["cache"])
+        and runtime_memory._hybrid_evidence(record["cache"])
         and model.get("config_format", "auto") not in ("auto", "hf")
     ):
         raise ValueError(f"loaded config format requires another source mapping: {model['config_format']}")
@@ -467,13 +467,17 @@ def _validate_import_binding(record: dict, expected: dict, bundle: Instrumentati
         raise ValueError("runtime instrumentation class module was not observed")
 
 
-def _validate_alias_ownership(views: list[tuple[dict[str, Any], int]], count: int) -> None:
-    """Prove disjoint pool-block ownership for the union of aliased views."""
+def _validate_alias_ownership(views: list[tuple[dict[str, Any], int, int]], count: int) -> None:
+    """Prove disjoint pool-block ownership for the union of aliased views.
+
+    Each view comes with its kernel blocks per pool block and the kernel blocks from one pool block to the next:
+    the same number, unless a vLLM 0.33.0 kernel-block view has a larger stride.
+    """
     ownership, block_span = None, 0
-    for view, ratio in views:
+    for view, ratio, pages in views:
         axis = view["block_axis"]
         strides = view["stride_bytes"]
-        step = ratio * strides[axis]
+        step = pages * strides[axis]
         within = view["element_size_bytes"] + (ratio - 1) * strides[axis]
         planes: list[tuple[int, int]] = []
         for stride, dimension in sorted(
@@ -545,24 +549,19 @@ def _check_element_size(item_size: int, precision: str) -> None:
         raise ValueError("tensor element size contradicts cache dtype")
 
 
-# The element bytes of the vLLM 0.31.0 Mamba state dtypes. MambaStateDtypeCalculator gives every state the model
-# dtype, a MambaDType choice (config/cache.py:61) or float32 (model_executor/layers/mamba/mamba_utils.py:53-158).
+# The element bytes of the vLLM 0.33.0 Mamba state dtypes. MambaStateDtypeCalculator gives every state the model
+# dtype, a MambaDType choice (config/cache.py:175) or float32 (model_executor/layers/mamba/mamba_utils.py:53-150).
 _STATE_DTYPE_BYTES = {"torch.float32": 4, "torch.float16": 2, "torch.bfloat16": 2}
 
 
 def _indexer(spec: dict[str, Any]) -> bool:
-    """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.31.0 kv_cache_interface.py:668).
+    """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.33.0 kv_cache_interface.py:737).
 
-    It stores uint8 keys at every KV precision (models/glm5next/common/attention.py:293-299).
+    It stores uint8 keys at every KV precision (models/glm5next/common/attention.py:260-262).
     """
     return (
         spec.get("spec_type") == "vllm.v1.kv_cache_interface.MLAAttentionSpec" and spec.get("cache_role") == "INDEXER"
     )
-
-
-# vLLM 0.31.0 MLAAttentionSpec and its one subclass (kv_cache_interface.py:662, :739): the classes whose storage
-# block, when they have one, is the kernel block of their views (worker/utils.py:449-450).
-_MLA_SPECS = frozenset(_SPEC_MODULE + name for name in ("MLAAttentionSpec", "HiddenStateCacheSpec"))
 
 
 def _layer_views(
@@ -576,34 +575,58 @@ def _layer_views(
     group: dict[str, Any],
     precision: str,
     group_kernel: int,
-) -> list[tuple[dict[str, Any], int]]:
-    """Check the views of one vLLM 0.31.0 layer, of any rank with the block axis first.
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Check the views of one vLLM 0.33.0 layer, of any rank with the block axis first.
 
     A layer views its pages as one tensor, or as one tensor per state that a Mamba layer
-    cuts from its page (kv_cache_interface.py:353-417, mamba/abstract.py:28-42). Each view
+    cuts from its page (kv_cache_interface.py:418-482, mamba/abstract.py:28-42). Each view
     starts and ends inside the layer's page of a block, the views of one layer do not
     overlap there, and together they hold at most that page, because pages share bytes only
     for the same block ID in different groups. A block-outer block also holds the pages of
     the tensor's other layers.
+
+    A layer of an attention group whose backend sets a kernel_block_size is bound to a view in kernel
+    blocks (v1/worker/utils.py:460-473): kernel block j of block b is b * kernel_block_stride + j, so the
+    view holds (count - 1) * stride + block // kernel of them, one kernel page apart (:419-430). With
+    stride 0, vLLM binds the manager view, which holds count * (block // kernel) of them (:402-403).
     """
     spec = group["layer_specs"][name]
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"physical layer views are missing: {name}")
+    if any(not isinstance(view, dict) or view.get("storage_id") != storage_id for view in entries):
+        raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
+    if any("kernel_block_stride" not in view for view in entries):
+        raise ValueError(f"layer view lacks its kernel block stride: {name}")
     block = group["block_size_tokens"]
+    # A Mamba layer keeps the group block, which both native runners also give its group (utils.py:677-679). vLLM
+    # maps only a cache with more than one token per state (utils.py:404-411), so any other layer keeps the
+    # runner's kernel block of its group and stride 0. Every view of one layer has one kernel block and stride.
+    kernel = (entries[0].get("kernel_block_size_tokens"), entries[0]["kernel_block_stride"])
+    tokens = spec.get("tokens_per_state")
+    if spec.get("spec_type") == _MAMBA_SPEC:
+        expected = (block, 0) if group_kernel == block else None
+    elif type(tokens) is not int or tokens <= 1:
+        expected = (group_kernel, 0)
+    else:
+        expected = kernel
+    if expected != kernel or any(
+        (view.get("kernel_block_size_tokens"), view["kernel_block_stride"]) != kernel for view in entries
+    ):
+        raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
     views, intervals, dense = [], [], 0
     for view in entries:
-        if not isinstance(view, dict) or view.get("storage_id") != storage_id:
-            raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
         start = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset") - region
         shape, strides, item_size = _view_shape(view)
         kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
+        stride = _nonnegative(view["kernel_block_stride"], "kernel block stride")
         ratio = block // kernel
-        if (
-            view.get("block_axis") != 0
-            or block % kernel
-            or shape[0] != count * ratio
-            or strides[0] * ratio != block_stride
-        ):
+        if view.get("block_axis") != 0 or block % kernel:
+            raise ValueError("kernel tensor block coverage contradicts pool block geometry")
+        if stride and stride < ratio:
+            raise ValueError("kernel block stride is below the kernel blocks of one block")
+        # The kernel blocks from one pool block to the next.
+        pages = stride or ratio
+        if shape[0] != (count - 1) * pages + ratio or strides[0] * pages != block_stride:
             raise ValueError("kernel tensor block coverage contradicts pool block geometry")
         _view_extent(shape, strides, item_size, region + start, size)
         within = item_size + (ratio - 1) * strides[0]
@@ -614,7 +637,7 @@ def _layer_views(
             _check_element_size(item_size, precision)
         intervals.append((start, start + within))
         dense += ratio * math.prod(shape[1:]) * item_size
-        views.append((view, ratio))
+        views.append((view, ratio, pages))
     intervals.sort()
     if any(end > following for (_, end), (following, _) in itertools.pairwise(intervals)):
         raise ValueError(f"views of one layer overlap inside the block: {name}")
@@ -650,20 +673,6 @@ def _layer_views(
             ]:
                 raise ValueError(f"layer views do not match the recorded state tensors: {name}")
             offset += item * math.prod(shape)
-    # The worker views a layer with the storage block of an MLA spec that has one (the indexer), a Mamba layer
-    # with the group block, and every other layer with the runner's kernel block of the group
-    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:294-306). Both native runners give a
-    # Mamba group its block as its kernel block (worker/utils.py:483-487, :500-502).
-    if spec.get("spec_type") in _MLA_SPECS and spec.get("storage_block_size") is not None:
-        kernel = spec["storage_block_size"]
-    else:
-        kernel = block if spec.get("spec_type") == _MAMBA_SPEC else group_kernel
-    if (
-        type(kernel) is not int
-        or any(view["kernel_block_size_tokens"] != kernel for view in entries)
-        or (spec.get("spec_type") == _MAMBA_SPEC and group_kernel != block)
-    ):
-        raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
     return views
 
 
@@ -676,13 +685,13 @@ def _layer_strided_views(
     precision: str,
     kernels: list[int],
 ) -> None:
-    """Check the vLLM 0.31.0 placement of every cache layer in one backing buffer.
+    """Check the vLLM 0.33.0 placement of every cache layer in one backing buffer.
 
     Block ``b`` of layer ``layers[l]`` starts at ``offset + l * layer_stride + b * block_stride``
-    (kv_cache_interface.py:1417-1438). The last page of the last layer bounds the region in
+    (kv_cache_interface.py:1475-1495). The last page of the last layer bounds the region in
     layer-outer and block-outer layouts. Tensors whose regions intersect overlay
-    cache groups, which is sound because a block ID belongs to one group at a time (:1428-1430).
-    The generic layouts start every group's tensors at byte 0 (kv_cache_utils.py:1775-1819), so
+    cache groups, which is sound because a block ID belongs to one group at a time (:1485-1487).
+    The generic layouts start every group's tensors at byte 0 (v1/core/kv_cache_planning.py:706-732), so
     overlapping tensors may differ in offset and layer count. The overlap check therefore compares pages:
     two pages may share bytes only when they hold one block ID for layers of different groups.
     """
@@ -691,7 +700,7 @@ def _layer_strided_views(
     ((storage_id, storage),) = storages.items()
     size = storage["size_bytes"]
     placements: list[tuple[list[str], int, int, int, int]] = []
-    views: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    views: dict[str, list[tuple[dict[str, Any], int, int]]] = {}
     for allocation in allocations:
         if (
             not isinstance(allocation, dict)
@@ -701,14 +710,15 @@ def _layer_strided_views(
         ):
             raise ValueError("allocation plan differs from actual backing storage")
         names = allocation.get("layers")
-        # The observer writes shared_by from the same list as layers (runtime/fpm_memory_observer.py:709-717).
+        # The observer writes a layer-strided allocation without shared_by (runtime/fpm_memory_observer.py,
+        # _layer_strided_allocations).
         if (
             not isinstance(names, list)
             or not names
             or any(not isinstance(name, str) or name not in layer_groups for name in names)
             or len(set(names)) != len(names)
             or views.keys() & set(names)
-            or allocation.get("shared_by") != names
+            or "shared_by" in allocation
         ):
             raise ValueError("allocation plan has missing, duplicate or unknown layers")
         offset = _nonnegative(allocation.get("offset"), "allocation byte offset")
@@ -771,15 +781,15 @@ def _physical_views(
         or scheduled["null_block_id"] not in reserved
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
-    strided = runtime_memory._layer_strided(cache)
-    # A vLLM 0.31.0 scheduler reserves only the null block (runtime/instrumentation/observer.py:446-452).
-    if strided and reserved != [scheduled["null_block_id"]]:
+    hybrid = runtime_memory._hybrid_evidence(cache)
+    # A vLLM 0.33.0 scheduler reserves only the null block (runtime/instrumentation/observer.py _reservations).
+    if hybrid and reserved != [scheduled["null_block_id"]]:
         raise ValueError("additional initialized reservations lack an audited permanent-reservation mapping")
     groups = runtime_memory._normalized_groups(cache, scheduled, page)
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
         # _normalized_groups accepts every table class, but vLLM 0.27.0 and 0.28.0 records hold only the legacy ones.
-        if not strided and group.get("spec_type") not in _LEGACY_SPECS:
+        if not hybrid and group.get("spec_type") not in _LEGACY_SPECS:
             raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")
         if group.get("pool_id") != pool:
             raise ValueError("cache group references another pool")
@@ -789,7 +799,7 @@ def _physical_views(
             or group.get("attention_chunk_size") is not None
         ):
             raise ValueError("unsupported or unresolved extra/chunk cache retention")
-        # A vLLM 0.31.0 uniform group can mix dtypes, so its layers are checked one by one. Only
+        # A vLLM 0.33.0 uniform group can mix dtypes, so its layers are checked one by one. Only
         # attention layers store KV at the requested precision; the sparse MLA indexer is exempt.
         dtypes = (
             [
@@ -797,7 +807,7 @@ def _physical_views(
                 for name in group["layer_names"]
                 if group["kind"] == "attention" and not _indexer(group["layer_specs"][name])
             ]
-            if strided
+            if hybrid
             else [group.get("dtype")]
         )
         for dtype in dtypes:
@@ -808,20 +818,10 @@ def _physical_views(
             # resolved cache precision establishes FP8; retain raw storage evidence.
             if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
                 raise ValueError("cache group dtype contradicts requested KV precision")
-        # Only the sparse MLA indexer stores its tokens in blocks other than the cache block
-        # (runtime/instrumentation/observer.py:237-243). In every group that a supported record can hold, every layer
-        # spec has the group's block size (kv_cache_interface.py:1297-1300, :1312-1313).
-        if strided and any(
-            spec.get("storage_block_size") is not None
-            and canonical_json(spec["storage_block_size"]) != canonical_json(group["block_size_tokens"])
-            and not _indexer(spec)
-            for spec in group["layer_specs"].values()
-        ):
-            raise ValueError(f"compressed cache storage is unsupported: {group['layer_names']}")
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
-        # The page of a vLLM 0.31.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1261-1263). In
-        # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py:544).
-        if strided:
+        # The page of a vLLM 0.33.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1319-1320). In
+        # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py cache_groups).
+        if hybrid:
             pages = [spec["page_size_bytes"] for spec in group["layer_specs"].values()]
             if any(
                 page != group["spec_page_size_bytes"]
@@ -845,7 +845,7 @@ def _physical_views(
         or not allocations
     ):
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
-    if strided:
+    if hybrid:
         # The runner's kernel block of every group, which the worker records before any view
         # (runtime/instrumentation/observer.py:355-359).
         runner = cache.get("model_runner")
@@ -930,7 +930,7 @@ def _physical_views(
                 if within_page > group["spec_page_size_bytes"]:
                     raise ValueError("packed tensor exceeds its declared per-slot page interval")
             _check_element_size(item_size, precision)
-            views.append((view, ratio))
+            views.append((view, ratio, ratio))
         _validate_alias_ownership(views, count)
         covered.update(names)
         used_storage.add(storage_id)
@@ -939,14 +939,14 @@ def _physical_views(
     return groups, accounting
 
 
-def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided: bool) -> dict[str, Any] | None:
-    """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for other records.
+def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, hybrid: bool) -> dict[str, Any] | None:
+    """The prefix-caching settings that one vLLM 0.33.0 process recorded; None for other records.
 
     vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key. A campaign-local adapter can add one;
-    the import reads it only when ``strided`` says that the phase holds vLLM 0.31.0 records. The scheduler
-    adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
+    the import reads it only when ``hybrid`` says that the phase holds vLLM 0.33.0 records. The scheduler
+    adds its block size and hash block size (core/sched/scheduler.py:218, :348-350).
     """
-    if not strided or "prefix_caching" not in cache:
+    if not hybrid or "prefix_caching" not in cache:
         return None
     value = cache["prefix_caching"]
     keys = {"enable_prefix_caching", "mamba_cache_mode"} | ({"block_size", "hash_block_size"} if scheduler else set())
@@ -967,23 +967,22 @@ def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided:
     return value
 
 
-# The vLLM 0.31.0 spec classes whose groups take no part in prefix caching (kv_cache_interface.py:920-922,
-# :1032-1034). A SlidingWindowMLASpec group takes part unless it replays a bounded window (:949-951), which no record
-# holds.
-_NO_PREFIX_CACHING_SPECS = frozenset(_SPEC_MODULE + name for name in ("CircularBufferSpec", "KpoolTailSpec"))
+# The vLLM 0.33.0 spec classes whose groups take no part in prefix caching (kv_cache_interface.py:998-1000). A
+# SlidingWindowMLASpec group takes part unless it replays a bounded window (:1015, :1027-1029), which no record holds.
+_NO_PREFIX_CACHING_SPECS = frozenset({_SPEC_MODULE + "CircularBufferSpec"})
 
 
 def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
-    """The hash block sizes that vLLM 0.31.0 can derive for a scheduler from its cache groups and cache settings.
+    """The hash block sizes that vLLM 0.33.0 can derive for a scheduler from its cache groups and cache settings.
 
-    The engine core resolves the hash block size from the scheduler copies of the cache groups (engine/core.py:164-176,
-    v1/core/kv_cache_utils.py:739-798). One group hashes in its own block size. Several groups hash in the scheduler
+    The engine core resolves the hash block size from the scheduler copies of the cache groups (engine/core.py:176-188,
+    v1/core/kv_cache_utils.py:816-891). One group hashes in its own block size. Several groups hash in the scheduler
     block size, the LCM of their block sizes, when prefix caching is off or a Mamba group is outside align mode. A KV
     connector would give them finer hashes without prefix caching, but every accepted record has no
     kv_transfer_config. Otherwise several groups hash in prefix_match_unit tokens, or in the GCD of the block sizes of
     the groups that take part in prefix caching, or of every group when none does. Each of these cases gives one size.
-    Each SlidingWindowMLASpec group takes part unless its spec replays a bounded window (kv_cache_interface.py:937,
-    :949-951), which no record holds. With such groups, each choice of the groups that take part gives one size.
+    Each SlidingWindowMLASpec group takes part unless its spec replays a bounded window (kv_cache_interface.py:1015,
+    :1027-1029), which no record holds. With such groups, each choice of the groups that take part gives one size.
     """
     groups, settings = record["cache"]["groups"], record["resolved_config"]["cache_config"]
     blocks = [_positive(group["block_size_tokens"], "cache block size") for group in groups]
@@ -1015,16 +1014,16 @@ def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
 
 
 def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
-    """Whether vLLM 0.31.0 starts with the hash block size of a scheduler and its cache groups.
+    """Whether vLLM 0.33.0 starts with the hash block size of a scheduler and its cache groups.
 
-    The engine core resolves the block sizes before it builds the scheduler (engine/core.py:164-176). With several
+    The engine core resolves the block sizes before it builds the scheduler (engine/core.py:176-188). With several
     groups that hash in prefix_match_unit tokens or in a GCD, resolve_kv_cache_block_sizes raises unless two rules hold
-    (v1/core/kv_cache_utils.py:785-832). The hash block size divides the block size of every group that takes part in
-    prefix caching, or of every group when none does (:792-805). A GCD always does, so only a unit can break this rule.
+    (v1/core/kv_cache_utils.py:885-917). The hash block size divides the block size of every group that takes part in
+    prefix caching, or of every group when none does (:885-898). A GCD always does, so only a unit can break this rule.
     The cache-hit alignment is a multiple of every int tokens_per_state above 1 of a spec in prefix caching
-    (:806-832). At the decode context parallel size of 1 that every accepted record has, the alignment is the hash
+    (:899-917). At the decode context parallel size of 1 that every accepted record has, the alignment is the hash
     block size when a Mamba group has a larger block, else the scheduler block size. The scheduler record holds the
-    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:2434-2440).
+    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:1110-1116).
 
     A SlidingWindowMLASpec group may or may not take part, so one choice of the groups that take part must give the
     recorded hash block size and meet both rules. With that hash block size, the alignment no longer depends on the
@@ -1075,15 +1074,15 @@ def _phase_prefix_caching(
     """The prefix-caching evidence of one phase, on which every rank of the phase agrees.
 
     The hash block size comes from the scheduler. Every MambaSpec takes the mode of its cache
-    config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode. A vLLM
-    0.31.0 record always carries the evidence. Every other record gives None.
+    config (mamba/abstract.py:83), so each Mamba state group reports the phase's mode. A vLLM
+    0.33.0 record always carries the evidence. Every other record gives None.
     """
     label = f"{phase} prefix-caching settings across ranks"
-    strided = any(runtime_memory._layer_strided(record["cache"]) for record in workers.values())
-    if strided and any("prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())):
+    hybrid = any(runtime_memory._hybrid_evidence(record["cache"]) for record in workers.values())
+    if hybrid and any("prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())):
         raise ValueError("runtime observation requires complete prefix-caching evidence")
     settings = [
-        _prefix_caching_settings(record["cache"], scheduler=True, strided=strided)
+        _prefix_caching_settings(record["cache"], scheduler=True, hybrid=hybrid)
         for _, record in sorted(schedulers.items())
     ]
     for value in settings[1:]:
@@ -1093,30 +1092,32 @@ def _phase_prefix_caching(
         None if scheduled is None else {key: scheduled[key] for key in ("enable_prefix_caching", "mamba_cache_mode")}
     )
     for _, record in sorted(workers.items()):
-        _same(_prefix_caching_settings(record["cache"], scheduler=False, strided=strided), shared, label)
+        _same(_prefix_caching_settings(record["cache"], scheduler=False, hybrid=hybrid), shared, label)
     if scheduled is None:
         return None
     for record in workers.values():
         for group in record["cache"]["groups"]:
             state = group.get("state")
-            # A vLLM 0.31.0 record holds the mode of every MambaSpec, also inside a uniform group
-            # (runtime/fpm_memory_observer.py:488-504). The scheduler copy of each group equals the worker group
+            # A vLLM 0.33.0 record holds the mode of every MambaSpec, also inside a uniform group
+            # (runtime/fpm_memory_observer.py _state). The scheduler copy of each group equals the worker group
             # (runtime_memory._normalized_groups), so it holds the mode too.
             if (
-                strided
-                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], strided)
+                hybrid
+                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], hybrid)
                 and "mamba_cache_mode" not in state
             ):
                 raise ValueError(f"runtime state cache group lacks Mamba cache mode evidence: {group['layer_names']}")
             if group.get("kind") == "state" and isinstance(state, dict) and "mamba_cache_mode" in state:
                 _same(state["mamba_cache_mode"], scheduled["mamba_cache_mode"], f"{phase} Mamba cache mode")
             # A MambaSpec takes the Mamba block size of its worker's cache config, which the worker resolves before it
-            # builds the specs (mamba/abstract.py:66-73). Grouping keeps that block: it pads a Mamba page rather than
-            # scale its block (v1/core/kv_cache_utils.py:1417-1426), and only the HiddenStateCacheSpec layers of a
-            # speculative run scale every group block (:2268-2297, :2369-2372). The import refuses speculative runs.
+            # builds the specs (mamba/abstract.py:72-91). Grouping keeps that block: the packed path never scales it
+            # (v1/core/kv_cache_planning.py:914-1041), the other path pads a Mamba page rather than scale its block
+            # (:380-389), and only HiddenStateCacheSpec layers scale every group block there (:1081-1110, :1179-1182).
+            # Those layers serve hidden-state extraction through a KV connector (:1089-1090), and the probe refuses a
+            # run with a KV transfer config.
             if (
-                strided
-                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], strided)
+                hybrid
+                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], hybrid)
                 and canonical_json(group["block_size_tokens"])
                 != canonical_json(record["resolved_config"]["cache_config"].get("mamba_block_size"))
             ):
@@ -1126,7 +1127,7 @@ def _phase_prefix_caching(
     # Each process reads this evidence from the cache config that it resolved
     # (runtime/instrumentation/observer.py:493-502). The launch-setting comparisons leave those resolved settings
     # out, so the evidence must equal them.
-    if strided:
+    if hybrid:
         names = ("enable_prefix_caching", "mamba_cache_mode")
         for record in (*schedulers.values(), *workers.values()):
             resolved = record["resolved_config"]["cache_config"]
@@ -1149,9 +1150,9 @@ def _phase_prefix_caching(
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
             # The scheduler block size is the LCM of the block sizes of the scheduler's cache groups, which a decode
-            # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:761-770, engine/core.py:164-176).
+            # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:860-863, engine/core.py:176-188).
             # The hash block size is one that vLLM can derive from those groups, and vLLM also refuses to start unless
-            # it fits them (v1/core/kv_cache_utils.py:792-832).
+            # it fits them (v1/core/kv_cache_utils.py:885-917).
             hash_blocks = {canonical_json(value) for value in _scheduler_hash_block_sizes(record)}
             if (
                 cache["block_size"] != math.lcm(*(group["block_size_tokens"] for group in cache["groups"]))
@@ -1166,21 +1167,21 @@ def _phase_prefix_caching(
     }
 
 
-# The vLLM 0.31.0 spec classes that vLLM's startup sizing counts as one block per request: the tail and the ring
-# (kv_cache_interface.py:868-877, :1019-1022, :904-907).
-_ONE_BLOCK_SPECS = frozenset(_SPEC_MODULE + name for name in ("KpoolTailSpec", "CircularBufferSpec"))
+# The vLLM 0.33.0 spec classes that vLLM's startup sizing counts as one block per request: the ring
+# (kv_cache_interface.py:982-985).
+_ONE_BLOCK_SPECS = frozenset({_SPEC_MODULE + "CircularBufferSpec"})
 
 
 def _validate_startup_concurrency(record: dict[str, Any]) -> None:
-    """Check the kv_cache_max_concurrency of a vLLM 0.31.0 scheduler against its cache groups.
+    """Check the kv_cache_max_concurrency of a vLLM 0.33.0 scheduler against its cache groups.
 
     vLLM divides the pool blocks by the blocks that its startup sizing counts for one request at max_model_len in the
-    scheduler's groups (v1/core/kv_cache_utils.py:1105-1116, v1/engine/core.py:333-351). It counts 2 + k + c blocks
-    for a MambaSpec group in align mode and 1 + k in mode none (kv_cache_interface.py:1083-1094), so this check sees
-    the align count that the steady blocks_per_request leaves out. It counts one block for the tail and the ring.
+    scheduler's groups (v1/core/kv_cache_utils.py:1076-1087, v1/engine/core.py:335-352). It counts 2 + k + c blocks
+    for a MambaSpec group in align mode and 1 + k in mode none (kv_cache_interface.py:1135-1141), so this check sees
+    the align count that the steady blocks_per_request leaves out. It counts one block for the ring (:982-985).
     Every other class of SPEC_KINDS but the windowed ones is FullAttentionSpec or a subclass of it. For these it counts
     cdiv(max_model_len, block_size) blocks at the decode context parallel size of 1 that every accepted record has
-    (:578-583). vLLM's count for a windowed group also covers the tokens in flight (:840-877), which this check does
+    (:643-648). vLLM's count for a windowed group also covers the tokens in flight (:918-944), which this check does
     not model, so a layout with one keeps the other checks only.
     """
     cache = record["cache"]
@@ -1215,7 +1216,7 @@ def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cache groups without the parts of a state group that follow the prefix-caching mode.
 
     A Mamba block holds the hybrid block in align mode and max_model_len in none mode
-    (models/config.py:663-675), and every MambaSpec records the mode (kv_cache_interface.py:1047).
+    (models/config.py:763-787), and every MambaSpec records the mode (kv_cache_interface.py:1099).
     No layer spec field follows the block size, so the layer specs stay compared.
     """
     result = copy.deepcopy(groups)
@@ -1330,13 +1331,13 @@ def _configuration(
                         "hardware across phases/ranks",
                     )
                 settings = copy.deepcopy(config)
-                # In a vLLM 0.31.0 record these settings follow the phase's prefix-caching mode or the engine core,
+                # In a vLLM 0.33.0 record these settings follow the phase's prefix-caching mode or the engine core,
                 # and provenance prefix_caching records the mode of every phase instead. Another record can hold
                 # them only from a campaign-local adapter, and its provenance keeps them, as finalized campaigns
                 # compare that provenance byte for byte.
                 removed = (
                     runtime_memory._PHASE_CACHE_SETTINGS
-                    if runtime_memory._layer_strided(record["cache"])
+                    if runtime_memory._hybrid_evidence(record["cache"])
                     else ("enable_prefix_caching",)
                 )
                 for name in removed:
@@ -1400,17 +1401,16 @@ def _configuration(
                 }
             )
         prefix_caching[phase] = _phase_prefix_caching(phase, workers, schedulers)
-        # Only vLLM 0.31.0 records hold prefix-caching evidence and the startup concurrency.
+        # Only vLLM 0.33.0 records hold prefix-caching evidence and the startup concurrency.
         if prefix_caching[phase] is not None:
             for _, scheduler in sorted(schedulers.items()):
                 _validate_startup_concurrency(scheduler)
-    if len({value is None for value in prefix_caching.values()}) > 1:
-        raise ValueError("runtime observation prefix-caching evidence across phases mismatch")
     # The record holds the prefix-caching values of the role's first collection phase that this validation covers.
     record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
-    # Only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
-    # layer-strided record must, and every phase agrees on that (checked above). The provenance of a vLLM 0.27.0
-    # or 0.28.0 import stays as it was, because finalized campaigns compare it byte for byte.
+    # Only vLLM 0.33.0 evidence adds these keys. Its records carry prefix caching, which every
+    # hybrid record must. The cache geometry comparison across phases includes layer_specs, so every phase
+    # agrees on hybrid evidence. The provenance of a vLLM 0.27.0 or 0.28.0 import stays as it was, because
+    # finalized campaigns compare it byte for byte.
     hybrid_evidence = (
         {
             "prefix_caching": {item: value for item, value in prefix_caching.items() if value is not None},

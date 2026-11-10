@@ -8,6 +8,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ import yaml
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support.fpm import fpm_cli_args
-from aisimulate.support.plan import request_id
+from aisimulate.support.plan import MEMORY_OBSERVATION_VERSIONS, check_plan, request_id
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -786,21 +787,20 @@ def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp
     assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
 
 
-# Collection observes pending memory on vLLM 0.27.0 (collector runner._observe_runtime_memory and
-# support/plan.py). The bundled vLLM 0.31.0 instrumentation observes it in runtime probes, and in a collection
-# bound to an accepted probe.
+# Collection observes pending memory on the vLLM versions of support/plan.py MEMORY_OBSERVATION_VERSIONS, also for a
+# grouped cache of full and sliding attention, whose specs the memory reader of the collection accepts. A draft whose
+# cache geometry is pending the runtime probe stops with the probe guidance before this review.
 _PENDING_MEMORY_LINES = {
     "0.27.0": [
-        "  Memory is observed during initialized vLLM 0.27.0 probes and collection.",
+        "  Memory is observed during initialized vLLM 0.27.0 collection.",
         "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
     ],
-    "0.31.0": [
-        "  Memory is observed during initialized vLLM 0.31.0 probes, "
-        "and again in collection bound to an accepted probe."
+    "0.33.0": [
+        "  Memory is observed during initialized vLLM 0.33.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
     ],
     "0.28.0": [
-        "  Memory observation needs a bundled or campaign-local instrumentation bundle for this vLLM version. "
-        "Without one, this version can collect timings only."
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
     ],
 }
 
@@ -1128,6 +1128,124 @@ def test_guided_review_keeps_unavailable_activation_memory_pending(tmp_path, mon
     review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1]
     assert "fmha_quant_mode: fp8" in review
     assert "No activation or non-KV byte estimate is required" in review
+
+
+_SYNCHRONOUS_POLICY = (
+    "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
+    "This is a collection policy, not the default for arbitrary vLLM serving."
+)
+_NATIVE_TIMING_POLICY = (
+    "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
+)
+# The pending-memory prerequisite that support plans saved before vLLM 0.32.0 support carry.
+_SAVED_PENDING_MEMORY_DETAIL = (
+    "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+    "initialization for supported vLLM 0.27.0 layouts; other versions can collect timings but leave memory "
+    "unresolved. No activation or non-KV byte declaration is required. Run onboard finalize after successful "
+    "collection, then review the resolved profile."
+)
+# The pending-memory prerequisites saved for the versions that gained memory observation. They must never change.
+_OBSERVED_PENDING_MEMORY_DETAILS = {
+    "0.32.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.32.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+    "0.33.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.33.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+}
+
+
+def _pending_support_plan(tmp_path, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources, framework_version=version)) == 0
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.memory_source == "pending"
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    return plan
+
+
+@pytest.mark.parametrize(
+    ("version", "policy", "detail"),
+    [
+        ("0.32.0", _SYNCHRONOUS_POLICY, _OBSERVED_PENDING_MEMORY_DETAILS["0.32.0"]),
+        ("0.31.0", _NATIVE_TIMING_POLICY, _SAVED_PENDING_MEMORY_DETAIL),
+    ],
+    ids=["0.32.0", "0.31.0"],
+)
+def test_pending_profile_plan_states_whether_the_runtime_version_observes_memory(tmp_path, version, policy, detail):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == policy
+    assert saved["prerequisites"][0]["status"] == "runtime_memory_pending"
+    assert saved["prerequisites"][0]["detail"] == detail
+
+
+@pytest.mark.parametrize(
+    ("version", "policy"),
+    [("0.27.0", _SYNCHRONOUS_POLICY), ("0.28.0", _NATIVE_TIMING_POLICY)],
+    ids=["0.27.0", "0.28.0"],
+)
+def test_pending_plan_saved_before_vllm_032_support_still_passes_check_plan(tmp_path, version, policy):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    # Write the two texts as the code before vLLM 0.32.0 support saved them; check_plan compares every byte.
+    saved["fpm"]["scheduling_policy"] = policy
+    saved["prerequisites"][0]["detail"] = _SAVED_PENDING_MEMORY_DETAIL
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", sorted(_OBSERVED_PENDING_MEMORY_DETAILS))
+def test_pending_plan_saved_with_its_observed_version_text_passes_check_plan(tmp_path, version):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    saved["fpm"]["scheduling_policy"] = _SYNCHRONOUS_POLICY
+    saved["prerequisites"][0]["detail"] = _OBSERVED_PENDING_MEMORY_DETAILS[version]
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", [version for version in MEMORY_OBSERVATION_VERSIONS if version != "0.27.0"])
+def test_observed_version_prerequisite_names_only_its_own_version(tmp_path, version):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    # Naming only its own version keeps the saved text the same when another version is added.
+    assert re.findall(r"\d+\.\d+\.\d+", saved["prerequisites"][0]["detail"]) == [version]
+
+
+def _guided_review_transcript(tmp_path, monkeypatch, capsys, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(output, source, resources, framework_version=version) + ["--interactive"]) == 0
+    return capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_guided_review_states_that_supported_versions_observe_memory(tmp_path, monkeypatch, capsys, version):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
+    assert f"  Memory is observed during initialized vLLM {version} collection." in lines
+    assert (
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
+    )
+    assert not any("this version can collect timings only" in line for line in lines)
+
+
+def test_guided_review_states_that_an_unsupported_version_collects_timings_only(tmp_path, monkeypatch, capsys):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.31.0")
+    assert (
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+        in lines
+    )
+    assert not any("Memory is observed during initialized vLLM" in line for line in lines)
+    assert not any(line.startswith("  Collection policy:") for line in lines)
 
 
 def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
@@ -1883,7 +2001,7 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     assert "model config did not produce a complete FPM profile" not in captured.err
     limit = (
         "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from vLLM "
-        "0.31.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
+        "0.33.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
         "unsupported runtime cache specs (guide: "
         "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
     )
@@ -2049,6 +2167,18 @@ def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monke
     assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
     assert "onboard probe-runtime" in stderr and "fmha_quant_mode: resolve" not in stderr
     assert explicit_topology or "explicit topology" in stderr
+    assert not out.exists()
+
+
+def test_runtime_resolved_interactive_stops_before_the_memory_review(tmp_path, monkeypatch, capsys):
+    # vLLM 0.33.0 has a bundled probe instrumentation, and the draft still stops with the probe guidance before the
+    # review that states where pending memory is observed.
+    _terminal(monkeypatch)
+    out = tmp_path / "request.yaml"
+    command = [*_ISSUE_ARGS, "--framework-version", "0.33.0", "--model-config", str(_GLM), *_glm_precision(tmp_path)]
+    stdout, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert "Review FPM profile before saving:" not in stdout + stderr
+    assert "Memory is observed" not in stdout + stderr
     assert not out.exists()
 
 

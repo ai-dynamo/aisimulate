@@ -57,8 +57,7 @@ from .glm53flash_points import (
 )
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
-from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
-from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
+from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS, MEMORY_SUPPORTED_VERSIONS
 from .types import KVWARM_STRATEGIES
 
 logger = logging.getLogger(__name__)
@@ -152,7 +151,7 @@ def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
     return (
         deployment is not None
         and deployment.resources.memory_source == "pending"
-        and getattr(plan, "runtime_backend_version", None) == MEMORY_OBSERVER_VERSION
+        and getattr(plan, "runtime_backend_version", None) in MEMORY_SUPPORTED_VERSIONS
     )
 
 
@@ -1591,7 +1590,7 @@ def _cell_generator_overrides(
     if observe_memory and policy_flags & {"--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
         raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
     if observe_memory and "--mamba-cache-mode" in policy_flags:
-        # The prefix-caching setting selects the Mamba mode (vLLM 0.31.0 models/config.py:640-675).
+        # The prefix-caching setting selects the Mamba mode (vLLM 0.33.0 models/config.py:763-787).
         raise ValueError("backend policy cannot select the Mamba cache mode for runtime memory observation")
     if observe_memory and any(
         str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args

@@ -729,8 +729,8 @@ def verify_collection_runtime(
             raise ValueError(f"{phase}: runtime prefix-caching settings differ from the accepted probe")
     # Import lets another phase differ from the first phase's groups only in state group block sizes, which it records
     # in phase_geometry_differences, and in the Mamba cache mode, which follows the prefix-caching settings compared
-    # above. Equal differences therefore give every phase the cache geometry of the accepted probe. Imports before
-    # vLLM 0.31.0 record no differences.
+    # above. Equal differences therefore give every phase the cache geometry of the accepted probe. Only an import
+    # of hybrid cache evidence, which vLLM 0.33.0 probe records hold, records differences.
     accepted_geometry = source["provenance"].get("phase_geometry_differences", [])
     formal_geometry = result["provenance"].get("phase_geometry_differences", [])
     for phase in request.collection_phases:

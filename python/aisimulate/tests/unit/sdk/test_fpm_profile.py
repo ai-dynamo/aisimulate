@@ -214,6 +214,30 @@ def test_profile_architecture_matches_collector_text_config_view(profile_dict, c
     assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
+@pytest.mark.parametrize("wrapper", ["NemotronH_Omni_Reasoning_V3", "InternVLChatModel"])
+def test_profile_architecture_matches_collector_llm_config_view(profile_dict, checkpoint_configs, wrapper):
+    checkpoint_configs[profile_dict["model"]] = {
+        "architectures": [wrapper],
+        "llm_config": {"architectures": [profile_dict["architecture"]]},
+    }
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
+@pytest.mark.parametrize("key", ["text_config", "llm_config"])
+@pytest.mark.parametrize("declared", ["absent", "null"])
+def test_profile_architecture_keeps_the_wrapper_for_a_decoder_without_architectures(
+    profile_dict, checkpoint_configs, key, declared
+):
+    # Intake and the collector read a null decoder architecture as absent, so onboarding writes the wrapper name.
+    wrapper = "UnknownForConditionalGeneration"
+    decoder = {"model_type": "example_text"}
+    if declared == "null":
+        decoder["architectures"] = None
+    profile_dict["architecture"] = wrapper
+    checkpoint_configs[profile_dict["model"]] = {"architectures": [wrapper], key: decoder}
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
 @pytest.mark.parametrize("metadata", [None, "not JSON"])
 def test_local_checkpoint_missing_or_invalid_config_fails_without_download(
     profile_dict, monkeypatch, tmp_path, metadata
@@ -866,6 +890,32 @@ def test_state_group_serialization_follows_the_rust_shape(grouped_profile):
     assert load_fpm_profile(profile).model_dump(mode="json") == profile.model_dump(mode="json")
 
 
+_CHECKPOINT_FIELDS = ("prefill_checkpoint_blocks", "prefill_checkpoint_alignment")
+
+
+def _saved_groups(profile):
+    return load_fpm_profile(profile).model_dump(mode="json")["deployments"][0]["resources"]["cache_groups"]
+
+
+def test_cache_group_omits_absent_checkpoint_fields(grouped_profile):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group())
+    plain = copy.deepcopy(groups)
+    # A profile without the two fields dumps without them, and an explicit null is not written back.
+    assert _saved_groups(grouped_profile) == plain
+    groups[-1].update(dict.fromkeys(_CHECKPOINT_FIELDS))
+    assert _saved_groups(grouped_profile) == plain
+    # Set fields round trip after the block count, in the Rust order, and native normalization keeps them.
+    groups[:] = copy.deepcopy(plain)
+    groups[-1].update(prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=16)
+    profile = load_fpm_profile(grouped_profile)
+    saved = profile.model_dump(mode="json")["deployments"][0]["resources"]["cache_groups"]
+    assert saved == groups
+    assert list(saved[-1])[-3:] == ["blocks_per_request", *_CHECKPOINT_FIELDS]
+    assert load_fpm_profile(profile).model_dump(mode="json") == profile.model_dump(mode="json")
+    assert _normalize(_request(grouped_profile))["fpm_profile"]["deployments"][0]["resources"]["cache_groups"] == groups
+
+
 @pytest.fixture
 def runtime_profile(profile_dict):
     resources = profile_dict["deployments"][0]["resources"]
@@ -1321,6 +1371,76 @@ def test_state_group_block_count_type_and_upper_bound(grouped_profile, blocks):
     groups[-1]["blocks_per_request"] = blocks
     with pytest.raises(ValidationError):
         load_fpm_profile(grouped_profile)
+
+
+_CHECKPOINT_BLOCKS = "prefill_checkpoint_blocks requires a state group and must be 0 or 1"
+_CHECKPOINT_ALIGNMENT = "prefill_checkpoint_alignment requires prefill_checkpoint_blocks=1 and must be positive"
+
+
+@pytest.mark.parametrize(
+    ("index", "changes", "message"),
+    [
+        # Group 0 is an attention group and group -1 a state group.
+        (0, {"prefill_checkpoint_blocks": 0}, _CHECKPOINT_BLOCKS),
+        (-1, {"prefill_checkpoint_blocks": 2}, _CHECKPOINT_BLOCKS),
+        (-1, {"prefill_checkpoint_blocks": -1}, _CHECKPOINT_BLOCKS),
+        (-1, {"prefill_checkpoint_alignment": 16}, _CHECKPOINT_ALIGNMENT),
+        (-1, {"prefill_checkpoint_blocks": 0, "prefill_checkpoint_alignment": 16}, _CHECKPOINT_ALIGNMENT),
+        (-1, {"prefill_checkpoint_blocks": 1, "prefill_checkpoint_alignment": 0}, _CHECKPOINT_ALIGNMENT),
+        # The kind checks run first, as in Rust.
+        (-1, {"blocks_per_request": 0, "prefill_checkpoint_blocks": 2}, _BLOCKS_REQUIRED),
+    ],
+)
+def test_cache_group_checkpoint_fields_follow_the_rust_rules(grouped_profile, index, changes, message):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=16))
+    load_fpm_profile(grouped_profile)  # One checkpoint block and its alignment are valid.
+    groups[-1] = _state_group()
+    groups[index].update(changes)
+    with pytest.raises(ValidationError, match=message):
+        load_fpm_profile(grouped_profile)
+    # The native entry point refuses the group too. It reports the text of this profile model, which checks first.
+    with pytest.raises(ValueError, match=message):
+        _normalize(_request(grouped_profile))
+
+
+def test_cache_group_rule_texts_match_the_rust_validator():
+    """Native entry points report the Python text first, so compare the literals of the Rust validator."""
+    rust_src = Path(__file__).resolve().parents[5] / "crates/core/src/perfmodel/fpm/resources.rs"
+    text = rust_src.read_text(encoding="utf-8")
+    validate = text.split("impl FpmCacheGroup {", 1)[1].split("pub fn block_range", 1)[0]
+    for message in (_CHECKPOINT_BLOCKS, _CHECKPOINT_ALIGNMENT):
+        assert f'"{message}"' in validate
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"prefill_checkpoint_blocks": True},
+        {"prefill_checkpoint_blocks": 1.0},
+        {"prefill_checkpoint_alignment": 2**32},
+    ],
+)
+def test_cache_group_checkpoint_field_types(grouped_profile, changes):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=2**32 - 1))
+    load_fpm_profile(grouped_profile)  # The valid values load, the alignment at the largest u32.
+    groups[-1].update(changes)
+    with pytest.raises(ValidationError) as error:
+        load_fpm_profile(grouped_profile)
+    # Only the changed field fails: a strict type or the u32 bound that Rust also has.
+    assert [item["loc"][-1] for item in error.value.errors()] == list(changes)
+
+
+def test_json_schema_states_the_checkpoint_bounds_that_the_validator_checks():
+    # The validator checks these lower bounds to give the Rust texts, so json_schema_extra puts them in the schema.
+    branches = fpm_profile.FpmCacheGroup.model_json_schema()["properties"]
+
+    def integer(name):
+        return next(branch for branch in branches[name]["anyOf"] if branch.get("type") == "integer")
+
+    assert integer("prefill_checkpoint_blocks") == {"type": "integer", "minimum": 0, "maximum": 1}
+    assert integer("prefill_checkpoint_alignment") == {"type": "integer", "exclusiveMinimum": 0, "maximum": 2**32 - 1}
 
 
 def test_grouped_budget_canonical_identity_and_bounds(grouped_profile):

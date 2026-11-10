@@ -36,7 +36,7 @@ from .config_profile import (
     validate_overrides,
 )
 from .fpm import run_fpm
-from .plan import create_plan, request_id
+from .plan import MEMORY_OBSERVATION_VERSIONS, create_plan, request_id
 from .schema import (
     AGENTX_REFERENCE_CONTEXT,
     CUDAGRAPH_MODES,
@@ -651,28 +651,18 @@ def _review_config_profile(
         memory = request.profile_deployment().resources
         print(f"  Memory source: {memory.memory_source}.")
         if not memory.memory_ready:
-            from collector.fpm_forward.bundled_instrumentation import bundled_instrumentation
-
             print("  No activation or non-KV byte estimate is required.")
             print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
-            version = request.identity.framework_version
-            # Collection observes pending memory on vLLM 0.27.0 (collector runner._observe_runtime_memory
-            # and support/plan.py). A probe-bound collection on another bundled version observes it per phase.
-            if version == "0.27.0":
-                print(f"  Memory is observed during initialized vLLM {version} probes and collection.")
+            if request.identity.framework_version in MEMORY_OBSERVATION_VERSIONS:
+                print(f"  Memory is observed during initialized vLLM {request.identity.framework_version} collection.")
                 print(
                     "  Collection policy: synchronous scheduling in both phases, "
                     "matching supported prefill benchmarking."
                 )
-            elif bundled_instrumentation(version) is not None:
-                print(
-                    f"  Memory is observed during initialized vLLM {version} probes, "
-                    "and again in collection bound to an accepted probe."
-                )
             else:
                 print(
-                    "  Memory observation needs a bundled or campaign-local instrumentation bundle for this vLLM "
-                    "version. Without one, this version can collect timings only."
+                    f"  Memory observation currently supports vLLM {', '.join(MEMORY_OBSERVATION_VERSIONS)}; "
+                    "this version can collect timings only."
                 )
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
@@ -944,7 +934,7 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
     if draft.layout_markers:
         lines.append(
             "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from "
-            "vLLM 0.31.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, "
+            "vLLM 0.33.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, "
             "as unsupported runtime cache specs (guide: "
             "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
         )

@@ -10,6 +10,28 @@ vllm/v1/worker/gpu_model_runner.py (initialize_kv_cache_tensors), and
 vllm/v1/core/{kv_cache_manager,block_pool}.py. Cache specs are read, not rebuilt.
 https://github.com/vllm-project/vllm/tree/4bdc8a788d2e2ce9165d552b3d4d8b72604626bf/vllm/v1
 
+The same reads were audited against vLLM 0.32.0, commit
+5df63a7203cdb9328d824a27b682e77c7b9928be, and 0.33.0, commit
+4ba787ec9959e566d3b587a796dff07673324da5. Lines are given as 0.32.0/0.33.0:
+- vllm/v1/worker/gpu_worker.py: determine_available_memory 634/641,
+  initialize_from_config 853/866, compile_or_warm_up_model 908/933, and the
+  runner choice in _make_model_runner 563-579/570-586.
+- vllm/v1/worker/gpu/model_runner.py (Model Runner V2): initialize_kv_cache
+  605/623, kv_caches 791-793/812-814.
+- vllm/v1/worker/gpu_model_runner.py (Model Runner V1):
+  initialize_kv_cache_tensors 6979/6914, initialize_kv_cache 7055/6990.
+- vllm/v1/worker/utils.py (identical at both tags): allocate_kv_cache 564-627,
+  bind_kv_cache_to_layers 868-885.
+- vllm/v1/worker/gpu/attn_utils.py: init_kv_cache 396-443/397-444.
+- vllm/v1/kv_cache_interface.py: KVCacheTensor 1409-1429/1475-1495,
+  KVCacheGroupSpec 1439-1456/1505-1522, create_kv_cache_views 377-441/418-482.
+- Layout: vllm/v1/core/kv_cache_utils.py:1588-1687 at 0.32.0 and
+  vllm/v1/core/kv_cache_planning.py:642-741 at 0.33.0.
+- vllm/v1/core/kv_cache_manager.py: block_pool 197/199, watermark_blocks 208/210.
+- vllm/v1/core/block_pool.py: null_block 187-188/191-192, get_num_free_blocks 868/912.
+https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1
+https://github.com/vllm-project/vllm/tree/4ba787ec9959e566d3b587a796dff07673324da5/vllm/v1
+
 Unsupported observation APIs write unresolved evidence. Exceptions from the
 runtime itself are never caught by these observation helpers or wrappers.
 """
@@ -21,6 +43,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import re
 import socket
 import threading
 from enum import Enum
@@ -29,19 +52,21 @@ from typing import Any
 
 SCHEMA_NAME = "aisimulate_fpm_runtime_memory"
 SCHEMA_VERSION = 1
-SUPPORTED_VERSION = "0.27.0"
-EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0", "0.31.0")
+MEMORY_SUPPORTED_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
+EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0", "0.32.0", "0.33.0")
+# The one vLLM version whose probe records carry the hybrid cache evidence. The probe compares the exact string.
+HYBRID_EVIDENCE_VERSION = "0.33.0"
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
 _UNIFORM_SPEC = _SPEC_MODULE + "UniformTypeKVCacheSpecs"
 _MAMBA_SPEC = _SPEC_MODULE + "MambaSpec"
 _CONV_CLASS = "vllm.models.inkling.nvidia.sconv_swa_attn.InklingConvState"
-# Cache spec classes of vllm/v1/kv_cache_interface.py at vLLM 0.31.0
-# (db9527a46873454610df6dbedf79a36d6bf1a7f6), keyed by class name. The table
-# maps by class, not by get_kv_cache_spec_kind: KpoolTailSpec reports a sliding
-# window (1394-1395) but holds one block per request (1019-1025). RSWASpec is
+# Cache spec classes of vllm/v1/kv_cache_interface.py at vLLM 0.33.0
+# (4ba787ec9959e566d3b587a796dff07673324da5), keyed by class name. The table
+# maps by class, not by get_kv_cache_spec_kind: CircularBufferSpec has no spec
+# kind (1421-1459) but holds one block per request (982-989). RSWASpec is
 # left out: its manager frees the blocks between the prompt and the decode
-# window (v1/core/single_type_kv_cache_manager.py:905-948), which no kind models.
+# window (v1/core/single_type_kv_cache_manager.py:900-943), which no kind models.
 SPEC_KINDS: dict[str, str] = {
     **dict.fromkeys(
         (
@@ -54,13 +79,13 @@ SPEC_KINDS: dict[str, str] = {
         ),
         "attention",
     ),
-    **dict.fromkeys(("KpoolTailSpec", "CircularBufferSpec", "MambaSpec"), "state"),
+    **dict.fromkeys(("CircularBufferSpec", "MambaSpec"), "state"),
 }
-# SlidingWindowSpec and its subclasses (831, 930, 1016) declare a positive window.
-_WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec", "KpoolTailSpec"))
-# The spec classes that records without hybrid evidence accept (vLLM 0.27.0 and 0.28.0).
+# SlidingWindowSpec and its subclass SlidingWindowMLASpec (901-902, 1008) declare a positive window.
+_WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec"))
+# The spec classes that records without hybrid evidence accept (vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0).
 _LEGACY_SPECS = frozenset((_SPEC_MODULE + "FullAttentionSpec", _SPEC_MODULE + "SlidingWindowSpec"))
-# Cache settings that only hybrid evidence records (vLLM 0.31.0 config/cache.py).
+# Cache settings that only hybrid evidence records (vLLM 0.33.0 config/cache.py:187-304).
 _HYBRID_CACHE_FIELDS = (
     "block_size",
     "mamba_cache_mode",
@@ -312,14 +337,15 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
     The same read-only interfaces were verified for vLLM 0.28.0 at:
     https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/gpu_model_runner.py#L7155
     https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/utils.py#L241
-    The same read-only interfaces were verified for vLLM 0.31.0 at db9527a46873454610df6dbedf79a36d6bf1a7f6.
-    The V1 runner declares attn_groups and fills it in initialize_attn_backend. The V2 runner takes it from
-    init_attn_backend. AttentionGroup declares backend, layer_names and kv_cache_group_id:
-    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L589
-    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L6961-L7064
-    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu/model_runner.py#L639-L690
-    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu/attn_utils.py#L193-L260
-    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/utils.py#L259-L263
+    They were also verified for vLLM 0.32.0, commit 5df63a7203cdb9328d824a27b682e77c7b9928be,
+    and 0.33.0, commit 4ba787ec9959e566d3b587a796dff07673324da5. AttentionGroup keeps these
+    fields (vllm/v1/worker/utils.py:261-266, identical at both tags). Model Runner V1 fills
+    attn_groups in initialize_attn_backend (vllm/v1/worker/gpu_model_runner.py 0.32.0:6688,
+    0.33.0:6623). Model Runner V2 assigns them from init_attn_backend
+    (vllm/v1/worker/gpu/model_runner.py 0.32.0:665-674, 0.33.0:689-698;
+    vllm/v1/worker/gpu/attn_utils.py 0.32.0:196, 0.33.0:197), which appends an empty list
+    for a cache group without layer views (attn_utils.py 0.32.0:220-222, 0.33.0:221-223).
+    An empty list adds no group.
     It does not infer a backend from requested flags or trace per-point dispatch.
 
     Ordinary serving can use FpmExecutionWorker with absolute
@@ -363,7 +389,7 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
             attention_groups=groups,
             graph_config=compilation_config(worker.vllm_config),
             resolved_config=execution_config(
-                worker.vllm_config, hybrid_evidence=payload["backend_version"] == "0.31.0"
+                worker.vllm_config, hybrid_evidence=payload["backend_version"] == HYBRID_EVIDENCE_VERSION
             ),
             status="observed",
         )
@@ -379,10 +405,46 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         raise RuntimeError(f"refusing duplicate runtime execution observation: {path}") from None
 
 
+def _cached_config_commit(model_config: Any) -> str | None:
+    """Return the Hub snapshot commit in the local path of the loaded config.json, else None.
+
+    File-system lookups only; nothing here may reach the network.
+    """
+    try:
+        source = getattr(model_config, "hf_config_path", None) or model_config.model
+        if os.path.isdir(source):
+            resolved = os.path.join(source, "config.json")
+            if not os.path.isfile(resolved):
+                return None
+        else:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Only a pinned commit is evidence: the current cache ref is not proof of the loaded commit
+            # (REVIEW.md lines 131-133). vLLM's ResolvedRevision.resolved holds it (huggingface_hub/_revision.py;
+            # vLLM v0.32.0 config/model.py lines 632-641, 672).
+            effective = getattr(model_config, "_hf_config_revision", None) or model_config.revision
+            pinned = getattr(effective, "resolved", None)
+            if not (isinstance(pinned, str) and re.fullmatch(r"[0-9a-f]{40}", pinned)):
+                pinned = effective
+            if not (isinstance(pinned, str) and re.fullmatch(r"[0-9a-f]{40}", pinned)):
+                return None
+            revision = str(pinned)
+            resolved = try_to_load_from_cache(source, "config.json", revision=revision)
+        if not isinstance(resolved, str):
+            return None
+        # Same rule as transformers' extract_commit_hash: first snapshots/<segment>/, lowercase commit.
+        match = re.search(r"snapshots/([^/]+)/", resolved.replace("\\", "/"))
+        if match and re.fullmatch(r"[0-9a-f]{40}", match.group(1)):
+            return match.group(1)
+    except Exception as error:
+        logging.getLogger(__name__).debug("loaded config commit lookup failed: %s", type(error).__name__)
+    return None
+
+
 def execution_config(config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
     """Read execution identity without requiring the memory-finalization APIs.
 
-    ``hybrid_evidence`` adds the vLLM 0.31.0 cache settings; without it the
+    ``hybrid_evidence`` adds the vLLM 0.33.0 cache settings; without it the
     record keeps the fields that 0.27.0 and 0.28.0 records have.
     """
     sections = (
@@ -399,17 +461,16 @@ def execution_config(config: Any, *, hybrid_evidence: bool = False) -> dict[str,
         for section, fields in sections.items()
         if getattr(config, section, None) is not None
     }
-    # Read the commit that the loaded config object holds itself. vLLM 0.31.0 Glm5NextConfig forwards the
-    # attribute read to its text config, whose _commit_hash is None for a Hub ID launch
-    # (transformers_utils/configs/glm5_next.py:385-392, :406-420).
     hf_config = getattr(config.model_config, "hf_config", None)
-    try:
-        attributes = object.__getattribute__(hf_config, "__dict__")
-    except AttributeError:
-        attributes = {}
-    commit = attributes.get("_commit_hash")
-    if commit is not None:
-        result["model_config"]["loaded_config_commit_hash"] = commit
+    if hf_config is not None and hasattr(hf_config, "_commit_hash"):
+        if hf_config._commit_hash is not None:
+            result["model_config"]["loaded_config_commit_hash"] = hf_config._commit_hash
+    elif hf_config is not None:
+        # transformers 5.19.0 (Dynamo 1.7.0-rc.1 image, configuration_utils.py line 366) discards
+        # `_commit_hash`; 5.17.0 and earlier keep it. Read the commit from the local cache path instead.
+        commit = _cached_config_commit(config.model_config)
+        if commit is not None:
+            result["model_config"]["loaded_config_commit_hash"] = commit
     quant = config.quant_config
     result["quantization_config"] = (
         {
@@ -496,29 +557,27 @@ def _layer_spec(spec: Any) -> dict[str, Any]:
         "spec_type": _class_name(spec),
         "page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
         "dtype": _spec_dtype(spec),
-        **{
-            key: _json_value(getattr(spec, key, None))
-            for key in ("tokens_per_state", "cache_role", "storage_block_size")
-        },
+        **{key: _json_value(getattr(spec, key, None)) for key in ("tokens_per_state", "cache_role")},
     }
 
 
 def _state(spec: Any) -> dict[str, Any]:
-    # KpoolTailSpec (1019-1025) and CircularBufferSpec (904-911) hold one block per request.
+    # A CircularBufferSpec holds one block per request (982-989).
     if _class_name(spec) != _MAMBA_SPEC:
         return {"blocks_per_request": 1}
     fields = (
         "mamba_cache_mode",
         "num_speculative_blocks",
         "num_prefill_checkpoint_blocks",
+        "prefill_checkpoint_alignment",
         "shapes",
         "dtypes",
         "real_page_size_bytes",
     )
     # The steady count: one state block plus the speculative blocks, held between block boundaries in both modes
-    # (1093-1094). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1089-1092). After a boundary, the
-    # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.31.0
-    # default (v1/core/single_type_kv_cache_manager.py:1658-1675).
+    # (1140-1141). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1135-1139). After a boundary, the
+    # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.33.0
+    # default (config/vllm.py:1685-1719, v1/core/single_type_kv_cache_manager.py:1640-1657).
     return {
         **{key: _json_value(getattr(spec, key)) for key in fields},
         "blocks_per_request": 1 + spec.num_speculative_blocks,
@@ -534,12 +593,12 @@ def _shared(values: list[Any], label: str) -> Any:
 def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False) -> list[dict[str, Any]]:
     """Record every cache group with its spec class, block, page, window and dtype.
 
-    ``hybrid_evidence`` maps the vLLM 0.31.0 spec classes of SPEC_KINDS and adds
+    ``hybrid_evidence`` maps the vLLM 0.33.0 spec classes of SPEC_KINDS and adds
     each group's kind, the spec of each layer and state evidence. A
     UniformTypeKVCacheSpecs group keeps one inner spec per layer; its layers share
     one window and one state, and the group dtype is None when layers differ.
     Without it, only FullAttentionSpec and SlidingWindowSpec groups are supported
-    and the record is the one vLLM 0.27.0 and 0.28.0 runtimes have.
+    and the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
     """
     groups = []
     all_names: set[str] = set()
@@ -551,6 +610,13 @@ def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False) -> list[di
             raise ValueError(f"unsupported runtime cache spec: {spec_type}")
         if getattr(group, "is_eagle_group", False):
             raise ValueError("speculative cache groups are unsupported")
+        # vLLM 0.32.0 KVCacheGroupSpec adds host_resident and role (v1/kv_cache_interface.py:1451, :1456;
+        # 0.33.0 :1517, :1522). A missing field means the 0.27.0 group: device-resident, role DEFAULT.
+        if getattr(group, "host_resident", False):
+            raise ValueError("host-resident cache groups are unsupported")
+        role = _json_value(getattr(group, "role", "DEFAULT"))
+        if role != "DEFAULT":
+            raise ValueError(f"unsupported cache group role: {role}")
         names = list(group.layer_names)
         if not names or any(not isinstance(name, str) or not name for name in names):
             raise ValueError("runtime cache groups require explicit layer names")
@@ -600,17 +666,12 @@ def _storage(tensor: Any) -> tuple[tuple[str, int], int]:
 def _layer_storages(kv_cache: Any) -> set[tuple[str, int]]:
     """Storage keys of one cache tensor, or of every tensor of a tuple or list.
 
-    A vLLM 0.31.0 Mamba layer binds a tuple of state views of one page.
+    A vLLM 0.33.0 Mamba layer binds a tuple of state views of one page (model_executor/layers/mamba/abstract.py:28-42).
     """
     tensors = kv_cache if isinstance(kv_cache, (tuple, list)) else (kv_cache,)
     if not tensors:
         raise ValueError("cache layer binds no tensors")
     return {_storage(tensor)[0] for tensor in tensors}
-
-
-def _tensor_layers(tensor: Any) -> list[str]:
-    """Layers of one allocation: vLLM 0.31.0 ``layers``, else ``shared_by``."""
-    return list(tensor.layers if hasattr(tensor, "layers") else tensor.shared_by)
 
 
 def _tensor_storages(tensors: Any) -> dict[tuple[str, int], int]:
@@ -687,23 +748,31 @@ def _shared_by_allocations(
 def _layer_strided_allocations(
     config: Any, groups: list[dict[str, Any]], layers: dict[str, Any], storages: dict[tuple[str, int], int]
 ) -> list[dict[str, Any]]:
-    """Check a vLLM 0.31.0 plan, where every tensor places its ``layers`` in one buffer.
+    """Check a vLLM 0.32.0 or 0.33.0 plan, where every tensor places its ``layers`` in one buffer.
 
     The page of layer l for block b starts at offset + l * layer_stride + b * block_stride
-    (kv_cache_interface.py:1422-1428), so the last page of the last layer bounds the
-    region in layer-outer and block-outer layouts. Overlapping tensors overlay cache
-    groups (:1428-1430); the importer checks how they overlap.
+    (v1/kv_cache_interface.py 0.32.0:1413-1415, 0.33.0:1479-1481), so the last page of the last
+    layer bounds the region in layer-outer and block-outer layouts. A layer's page is the spec
+    page of its group, or the page of its own spec when the group holds ``layer_specs``.
+    Tensors whose regions overlap alias the same bytes: cache groups overlay each other
+    (0.32.0:1419-1421, 0.33.0:1485-1487); the importer checks how they overlap.
     """
     num_blocks = _positive(config.num_blocks, "cache block count")
     layer_storages = {name: _layer_storages(layer.kv_cache) for name, layer in layers.items()}
     if set().union(*layer_storages.values()) != set(storages):
         raise ValueError("cache group layers do not account for every model-runner storage")
-    pages = {name: spec["page_size_bytes"] for group in groups for name, spec in group["layer_specs"].items()}
+    pages = {
+        name: group["layer_specs"][name]["page_size_bytes"] if "layer_specs" in group else group["spec_page_size_bytes"]
+        for group in groups
+        for name in group["layer_names"]
+    }
     expected: dict[tuple[str, int], int] = {}
     covered: set[str] = set()
     allocations = []
     for tensor in config.kv_cache_tensors:
-        names = _tensor_layers(tensor)
+        if getattr(tensor, "host_resident", False):
+            raise ValueError("host-resident cache tensors are unsupported")
+        names = list(tensor.layers)
         if not names or covered.intersection(names) or any(name not in layers for name in names):
             raise ValueError("runtime tensor allocation has missing or duplicate cache layers")
         keys = set().union(*(layer_storages[name] for name in names))
@@ -730,7 +799,6 @@ def _layer_strided_allocations(
         allocations.append(
             {
                 "size": size,
-                "shared_by": names,
                 "layers": list(names),
                 "layer_stride": layer_stride,
                 "block_stride": block_stride,
@@ -745,9 +813,9 @@ def _layer_strided_allocations(
 def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
     """Read the initialized cache groups, storage and allocation plan of one worker.
 
-    ``hybrid_evidence`` records the vLLM 0.31.0 evidence of ``cache_groups`` and
-    checks the 0.31.0 allocation plan; without it the record is the one vLLM
-    0.27.0 and 0.28.0 runtimes have.
+    ``hybrid_evidence`` records the vLLM 0.33.0 evidence of ``cache_groups``;
+    without it the groups are the ones vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0
+    runtimes have. The shape of the allocation record picks its reader.
     """
     if not getattr(worker, "_fpm_cache_initialized", False):
         raise ValueError("worker cache initialization was not observed")
@@ -759,10 +827,18 @@ def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, An
     storages = _tensor_storages(runner.kv_caches)
     context = worker.vllm_config.compilation_config.static_forward_context
     layers = {name: context[name] for group in groups for name in group["layer_names"]}
-    if hybrid_evidence:
+    # The record shape selects the reader. vLLM 0.27.0 names the aliases of each tensor in shared_by
+    # (v1/kv_cache_interface.py:952); 0.32.0 and 0.33.0 place layers by stride and have no shared_by
+    # (0.32.0:1424-1429, 0.33.0:1490-1495). Every other shape stays unresolved.
+    tensors = config.kv_cache_tensors
+    if all(
+        hasattr(item, "layers") and hasattr(item, "layer_stride") and not hasattr(item, "shared_by") for item in tensors
+    ):
         allocations = _layer_strided_allocations(config, groups, layers, storages)
-    else:
+    elif all(hasattr(item, "shared_by") and not hasattr(item, "layers") for item in tensors):
         allocations = _shared_by_allocations(config, layers, storages)
+    else:
+        raise ValueError("unsupported runtime cache tensor record")
     for group in groups:
         classes = {name: _class_name(layers[name]) for name in group["layer_names"]}
         conv = {value == _CONV_CLASS for value in classes.values()}
@@ -802,9 +878,9 @@ def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, An
 def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
     """Read the initialized block pool of one scheduler.
 
-    ``hybrid_evidence`` adds the vLLM 0.31.0 block sizes, Mamba cache mode and
+    ``hybrid_evidence`` adds the vLLM 0.33.0 block sizes, Mamba cache mode and
     startup capacity, and records the ``cache_groups`` evidence without the kind;
-    without it the record is the one vLLM 0.27.0 and 0.28.0 runtimes have.
+    without it the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
     """
     manager = scheduler.kv_cache_manager
     pool = manager.block_pool
@@ -829,8 +905,8 @@ def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = Fal
         "groups": cache_groups(config, hybrid_evidence=hybrid_evidence),
     }
     if hybrid_evidence:
-        # vLLM 0.31.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:198, :312);
-        # its BlockPool keeps the hash block size too (core/block_pool.py:170).
+        # vLLM 0.33.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:218, :350);
+        # its BlockPool keeps the hash block size too (core/block_pool.py:173).
         hash_block_size = getattr(scheduler, "hash_block_size", None)
         if hasattr(pool, "hash_block_size") and pool.hash_block_size != hash_block_size:
             raise ValueError("scheduler hash block size differs from its block pool")
@@ -839,7 +915,7 @@ def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = Fal
             block_size=_json_value(getattr(scheduler, "block_size", None)),
             hash_block_size=_json_value(hash_block_size),
             mamba_cache_mode=_json_value(getattr(cache, "mamba_cache_mode", None)),
-            # The engine core sets the startup capacity before it builds the scheduler (engine/core.py:351).
+            # The engine core sets the startup capacity before it builds the scheduler (engine/core.py:352).
             kv_cache_size_tokens=_json_value(getattr(cache, "kv_cache_size_tokens", None)),
             kv_cache_max_concurrency=_json_value(getattr(cache, "kv_cache_max_concurrency", None)),
             # The importer compares these groups with the worker groups without their kind.
@@ -870,9 +946,10 @@ def observe(
         "pp_rank": pp_rank,
     }
     try:
-        if payload["backend_version"] != SUPPORTED_VERSION:
+        if payload["backend_version"] not in MEMORY_SUPPORTED_VERSIONS:
             raise ValueError(
-                f"memory observation currently supports vLLM {SUPPORTED_VERSION}; found {payload['backend_version']}"
+                f"memory observation currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}; "
+                f"found {payload['backend_version']}"
             )
         if (
             getattr(owner.vllm_config, "speculative_config", None) is not None

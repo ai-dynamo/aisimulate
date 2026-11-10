@@ -603,10 +603,10 @@ def test_malformed_native_regime_remains_json_reportable(quality_case, regime):
 
 
 def _glm_smoke(tmp_path, monkeypatch):
-    """Write the smoke campaign of a probe-backed GLM-5.3-Flash collection plan, as a vLLM 0.31.0 runtime fills it.
+    """Write the smoke campaign of a probe-backed GLM-5.3-Flash collection plan, as a vLLM 0.33.0 runtime fills it.
 
     Each cell has its generated launch, the producer's rank artifact of the smoke points and one execution record per
-    TP rank, which the execution observer writes from a stand-in vLLM 0.31.0 configuration of that launch. The rank
+    TP rank, which the execution observer writes from a stand-in vLLM 0.33.0 configuration of that launch. The rank
     artifacts have no measurement protocol, benchmark measurement or warm-up evidence, because the producer's scheduler
     base, ai-dynamo 1.6.0.dev20261010, writes none. The profile names no probe provenance, so readiness does not bind
     the runtime memory to probe observations here. Return the request and the onboarding root.
@@ -676,7 +676,7 @@ def _glm_smoke(tmp_path, monkeypatch):
             pod / "collector-provenance.json", cell_id=cell.cell_id, plan_sha256=plan.sha256, attempt_id=attempt
         )
         provenance = json.loads((pod / "collector-provenance.json").read_text())
-        provenance["runtime"]["backend_version"] = "0.31.0"
+        provenance["runtime"]["backend_version"] = "0.33.0"
         (pod / "collector-provenance.json").write_text(json.dumps(provenance))
         payload = glm_native_payload(cell.workload_kind, points=points[cell.workload_kind])
         # The producer records the revision that the engine loaded and the runtime context of the launch.
@@ -685,7 +685,7 @@ def _glm_smoke(tmp_path, monkeypatch):
         write_glm_rank(pod, payload)
         with monkeypatch.context() as patch:
             patch.setattr(observer, "RESULTS_DIR", pod)
-            patch.setattr(observer.importlib.metadata, "version", lambda _name: "0.31.0")
+            patch.setattr(observer.importlib.metadata, "version", lambda _name: "0.33.0")
             for name in ("FPM_EXECUTION_OUTPUT_DIR", "FPM_EXECUTION_PROVENANCE_FILE"):
                 patch.delenv(name, raising=False)
             for tp_rank in range(cell.topology.tp):
@@ -731,7 +731,7 @@ def test_readiness_qualifies_a_glm_smoke_of_producer_artifacts(tmp_path, monkeyp
     for item in cells.values():
         assert (item["campaign"], item["status"], item["blockers"]) == ("smoke", "ready", [])
         assert item["kvwarm"]["method"] == "native_prefix_cache_real_seed"
-        # vLLM 0.31.0 execution is audited, and the observed configuration agrees with the plan and its launch.
+        # vLLM 0.33.0 execution is audited, and the observed configuration agrees with the plan and its launch.
         assert item["execution"]["failures"] == []
         assert [reason for reason in item["execution"]["missing_evidence"] if "unaudited" in reason] == []
         # The absent measurement evidence of the scheduler base is reported, and it does not block.

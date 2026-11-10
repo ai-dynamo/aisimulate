@@ -411,6 +411,47 @@ These source files are licensed under the Apache License, Version 2.0; see the
 
 ## vLLM
 
+Selected synchronous MTP scheduling, uniform full-attention KV allocation, and
+host-offload behaviors in the following repository-root paths are adapted and
+modified from vLLM `v0.32.0` at commit
+`5df63a7203cdb9328d824a27b682e77c7b9928be`:
+
+- `crates/core/src/engine/cache/vllm_block_pool.rs`
+- `crates/core/src/engine/kv_manager/vllm_backend.rs`
+- `crates/core/src/engine/kv_manager/g1_manager.rs`
+- `crates/core/src/engine/scheduler/vllm/core.rs`
+- `crates/core/src/engine/scheduler/vllm/policy.rs`
+- `crates/core/src/engine/scheduler/vllm/host_offload.rs`
+- `crates/core/src/engine/scheduler/vllm/tests.rs`
+- `crates/core/src/engine/scheduler/vllm/mtp_offload_tests.rs`
+- `crates/core/src/engine/scheduler/vllm/native_mtp_tests.rs`
+- `docs/replay/engine/kv-cache.md` (MTP with host offload)
+- `docs/replay/engine/speculation.md` (MTP with host offload)
+- `docs/replay/features.md` (MTP/G2 composition boundaries)
+
+Upstream source and regression scenarios:
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/tests/v1/kv_connector/unit/offloading_connector/test_scheduler.py
+
+Copyright contributors to the vLLM project.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at this revision is available at:
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+These are modified Rust simulation adaptations, not the upstream serving
+implementation. The scheduling baseline does not change the provenance or
+backend-version labels of AISimulate's measured performance data.
+
+No root NOTICE file is present at the identified revision. The repository's
+Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
+
 The grouped-cache config derivation and metadata regression tests in
 `src/aisimulate/support/config_profile.py`,
 `tests/unit/test_support_config_profile.py`, and
@@ -2043,3 +2084,22 @@ counts in performance keys while staging sentinel slots for native graph
 buckets. The evidence harness calls the installed native runner; it does not
 vendor its implementation. This source attribution does not assert separate
 OSRB approval.
+
+## AIPerf request metric compatibility
+
+- Derived files: the request metric populations in
+  `crates/core/src/replay/report.rs` and `crates/core/src/replay/report/bounded.rs`,
+  the selector names in `python/aisimulate/src/aisimulate/aiperf_metrics.py`, and
+  `tests/fixtures/aiperf_0.13.0_request_metrics.json`.
+- Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/v0.13.0),
+  release `v0.13.0` (commit `794f8bb75f8582f22e412d7e650fc71ca2a3d21a`).
+- Original paths: `src/aiperf/metrics/types/ttft_metric.py`,
+  `request_latency_metric.py`, `inter_token_latency_metric.py`,
+  `output_token_throughput_metrics.py`, and `src/aiperf/metrics/accumulator.py`.
+- Copyright: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+- License: Apache-2.0 (the repository's `LICENSE` includes the license text).
+- Modifications: independent implementation of the pinned request metric
+  definitions in native replay reporting, with nearest-rank percentiles.
+  The fixture holds values computed by the pinned AIPerf metric classes with
+  `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
+  No AIPerf runtime dependency or source files are bundled.

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import enum
 import hashlib
 import importlib.util
 import json
@@ -14,7 +15,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import cli, planner, runner, runtime_memory
+from collector.fpm_forward import cli, planner, repeatability, runner, runtime_memory
 from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
@@ -103,7 +104,7 @@ def fake_runtime_offloader(monkeypatch):
 def _initialized(*, blocks=100, free=98, packed=False, layers=False):
     """Two physical buffers, five logical layer views and three retention groups.
 
-    With ``layers``, the allocation follows vLLM 0.31.0: one buffer backs every
+    With ``layers``, the allocation follows vLLM 0.33.0: one buffer backs every
     tensor, each tensor names its layers in ``layers`` with a ``layer_stride``,
     and the convolution layer's cache is a tuple of two views.
     """
@@ -179,37 +180,71 @@ def _initialized(*, blocks=100, free=98, packed=False, layers=False):
     return worker, scheduler, cache_config
 
 
-def _evidence(tmp_path, monkeypatch):
+_Role = enum.Enum("KVCacheGroupRole", {"DEFAULT": "default", "HISPARSE_SOURCE": "hisparse_source"}, type=str)
+
+
+def _initialized_layer_strided(*, blocks=100, free=98, layout="layer_outer"):
+    """The groups and layers of _initialized in one buffer, as vLLM 0.32.0 places them.
+
+    v1/core/kv_cache_utils.py:1622-1687 sizes the buffer at bytes_per_block * num_blocks,
+    here 128 * blocks, and gives each group one tensor record from byte 0.
+    """
+    worker, scheduler, cache_config = _initialized(blocks=blocks, free=free)
+    storage = _Storage(100, blocks * 128)
+    layers = worker.vllm_config.compilation_config.static_forward_context
+    for layer in layers.values():
+        layer.kv_cache = _Tensor(storage)
+    worker.model_runner.kv_caches = [layer.kv_cache for layer in layers.values()]
+    layer_stride, block_stride = {"layer_outer": (64 * blocks, 64), "block_outer": (64, 128)}[layout]
+    cache_config.kv_cache_tensors = [
+        SimpleNamespace(
+            size=blocks * 128,
+            layers=list(group.layer_names),
+            layer_stride=layer_stride,
+            block_stride=block_stride,
+            offset=0,
+            host_resident=False,
+        )
+        for group in cache_config.kv_cache_groups
+    ]
+    for group in cache_config.kv_cache_groups:
+        group.host_resident, group.role = False, _Role.DEFAULT
+    return worker, scheduler, cache_config
+
+
+def _evidence(tmp_path, monkeypatch, *, version="0.27.0", initialized=None):
+    # None means the module's _initialized at call time, which a test may monkeypatch.
+    initialized = initialized or _initialized
     cell = replace(
         _cell(dp=2),
         topology=ParallelTopology(tp=2, pp=1, dp=2, moe_tp=1, moe_ep=4, cp=1),
         kv_cache_dtype="bfloat16",
         fmha_quant_mode="bfloat16",
     )
-    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.27.0")
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
     for dp in range(2):
         pod = tmp_path / f"pod-{dp}"
         pod.mkdir()
         _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
         provenance = json.loads((pod / "collector-provenance.json").read_text())
-        provenance["runtime"]["backend_version"] = "0.27.0"
+        provenance["runtime"]["backend_version"] = version
         (pod / "collector-provenance.json").write_text(json.dumps(provenance))
         (pod / "benchmark.json").write_text(json.dumps(_native_payload(phase="prefill", rank=dp, dp=2)))
         monkeypatch.setattr(observer, "RESULTS_DIR", pod)
         for tp in range(2):
-            worker, scheduler, config = _initialized(blocks=100 - dp * 10, free=98 - dp * 10)
+            worker, scheduler, config = initialized(blocks=100 - dp * 10, free=98 - dp * 10)
             observer.observe("worker", worker, dp_rank=dp, tp_rank=tp, pp_rank=0)
         observer.observe("scheduler", scheduler, dp_rank=dp, cache_config=config)
     return cell
 
 
-def _resolve(cell, root, **kwargs):
+def _resolve(cell, root, *, expected_backend_version="0.27.0", **kwargs):
     return runtime_memory.resolve_runtime_resources(
         cell,
         root,
         expected_plan_sha256="plan-sha",
         expected_attempt_id="attempt",
-        expected_backend_version="0.27.0",
+        expected_backend_version=expected_backend_version,
         expected_context_length=4096,
         expected_max_num_tokens=1024,
         expected_max_batch_size=64,
@@ -249,6 +284,7 @@ def _mamba(**fields):
         "mamba_cache_mode": "align",
         "num_speculative_blocks": 0,
         "num_prefill_checkpoint_blocks": 0,
+        "prefill_checkpoint_alignment": None,
         "shapes": ((6144, 3), (16, 128, 128)),
         "dtypes": ("torch.bfloat16", "torch.float32"),
         "real_page_size_bytes": 1_085_440,
@@ -256,14 +292,31 @@ def _mamba(**fields):
     return _spec("MambaSpec", **{**defaults, **fields})
 
 
+# The pool block of the hybrid groups of _hybrid_caches.
+PAGE = 1_114_112
+
+
+def _hybrid_caches(mamba):
+    """The worker and scheduler cache groups of a vLLM 0.33.0 record: one MLA group and the Mamba group ``mamba``."""
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=PAGE, sliding_window=None, dtype="torch.uint8")
+    config = SimpleNamespace(kv_cache_groups=[_group(["mla.0"], latent), _group(["kda.0", "kda.1"], mamba)])
+    groups = observer.cache_groups(config, hybrid_evidence=True)
+    classes = ("vllm.model_executor.layers.attention.MLAAttention", "vllm.models.glm5next.common.kda.KDA")
+    for group, layer_class in zip(groups, classes, strict=True):
+        group["layer_classes"] = dict.fromkeys(group["layer_names"], layer_class)
+    return {"groups": groups}, {"groups": [runtime_memory._scheduler_copy(group) for group in groups]}
+
+
 def test_cache_groups_map_specs_by_class_and_record_state_evidence():
     full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
-    tail = _spec("KpoolTailSpec", block_size=4, page_size_bytes=71_808, sliding_window=4, dtype="torch.bfloat16")
+    tail = _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
     config = SimpleNamespace(
         kv_cache_groups=[_group(["attn.0"], full), _group(["tail.0"], tail), _group(["kda.0", "kda.1"], _mamba())]
     )
     # Without hybrid evidence the vLLM 0.27.0/0.28.0 allow-list stays.
-    with pytest.raises(ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.Kpool")):
+    with pytest.raises(
+        ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.CircularBufferSpec")
+    ):
         observer.cache_groups(config)
     attention, tail_group, mamba = observer.cache_groups(config, hybrid_evidence=True)
     keys = {"layer_names", "spec_type", "block_size_tokens", "spec_page_size_bytes", "sliding_window", "dtype"}
@@ -277,7 +330,6 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
             "dtype": "torch.bfloat16",
             "tokens_per_state": None,
             "cache_role": None,
-            "storage_block_size": None,
         }
     }
     assert tail_group["state"] == {"blocks_per_request": 1}
@@ -287,6 +339,7 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
         "mamba_cache_mode": "align",
         "num_speculative_blocks": 0,
         "num_prefill_checkpoint_blocks": 0,
+        "prefill_checkpoint_alignment": None,
         "shapes": [[6144, 3], [16, 128, 128]],
         "dtypes": ["torch.bfloat16", "torch.float32"],
         "real_page_size_bytes": 1_085_440,
@@ -305,9 +358,63 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
             ),
             "attention",
         ),
-        **dict.fromkeys(("KpoolTailSpec", "CircularBufferSpec", "MambaSpec"), "state"),
+        **dict.fromkeys(("CircularBufferSpec", "MambaSpec"), "state"),
     }
     assert {name: observer.spec_kind(_spec(name)) for name in kinds} == kinds
+    # vLLM 0.33.0 has no KpoolTailSpec: the GLM tail is a CircularBufferSpec (models/glm5next/common/attention.py:170).
+    with pytest.raises(ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.Kpool")):
+        observer.spec_kind(_spec("KpoolTailSpec"))
+
+
+def test_cache_groups_record_the_prefill_checkpoint_of_a_flashkda_spec():
+    # With FlashKDA, a GLM KDA spec holds one checkpoint block aligned to 16 tokens
+    # (models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10).
+    config = SimpleNamespace(
+        kv_cache_groups=[_group(["kda.0"], _mamba(num_prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=16))]
+    )
+    (group,) = observer.cache_groups(config, hybrid_evidence=True)
+    state = group["state"]
+    assert (state["num_prefill_checkpoint_blocks"], state["prefill_checkpoint_alignment"]) == (1, 16)
+    assert state["blocks_per_request"] == 1
+
+
+@pytest.mark.parametrize(("count", "alignment"), [(1, 16), (0, None)])
+def test_import_carries_the_checkpoint_evidence_of_a_mamba_group(count, alignment):
+    cache, scheduler = _hybrid_caches(
+        _mamba(num_prefill_checkpoint_blocks=count, prefill_checkpoint_alignment=alignment)
+    )
+    (group,) = [item for item in runtime_memory._normalized_groups(cache, scheduler, PAGE) if item["kind"] == "state"]
+    assert group["blocks_per_request"] == 1
+    assert group["prefill_checkpoint_blocks"] == count
+    assert group.get("prefill_checkpoint_alignment") == alignment
+
+
+def test_import_accepts_a_mamba_group_without_checkpoint_blocks():
+    cache, scheduler = _hybrid_caches(_mamba(num_prefill_checkpoint_blocks=0, prefill_checkpoint_alignment=None))
+    runtime_memory._normalized_groups(cache, scheduler, PAGE)
+
+
+@pytest.mark.parametrize(
+    ("count", "alignment", "error"),
+    [
+        (2, 16, "mamba prefill checkpoint blocks must be 0 or 1"),
+        (1, None, "mamba prefill checkpoint evidence is inconsistent"),
+        (1, 0, "mamba prefill checkpoint evidence is inconsistent"),
+        (0, 16, "mamba prefill checkpoint evidence is inconsistent"),
+        (1, True, "mamba prefill checkpoint evidence is inconsistent"),
+        (1, -16, "mamba prefill checkpoint evidence is inconsistent"),
+        # A count that is not an integer is no count.
+        (True, 16, "runtime state cache group lacks prefill checkpoint evidence"),
+        (1.0, 16, "runtime state cache group lacks prefill checkpoint evidence"),
+        ("1", 16, "runtime state cache group lacks prefill checkpoint evidence"),
+    ],
+)
+def test_import_refuses_inconsistent_checkpoint_evidence(count, alignment, error):
+    cache, scheduler = _hybrid_caches(
+        _mamba(num_prefill_checkpoint_blocks=count, prefill_checkpoint_alignment=alignment)
+    )
+    with pytest.raises(ValueError, match=error):
+        runtime_memory._normalized_groups(cache, scheduler, PAGE)
 
 
 def test_uniform_type_groups_record_their_inner_specs():
@@ -321,9 +428,8 @@ def test_uniform_type_groups_record_their_inner_specs():
             dtype="torch.uint8",
             tokens_per_state=tokens,
             cache_role=cache_role,
-            storage_block_size=storage,
         )
-        for page, tokens, cache_role, storage in ((1_114_112, 1, role.SPARSE, None), (71_808, 4, role.INDEXER, 128))
+        for page, tokens, cache_role in ((1_114_112, 1, role.SPARSE), (71_808, 4, role.INDEXER))
     )
     names = ["layers.3.mla", "layers.3.indexer"]
     uniform = _spec(
@@ -346,7 +452,6 @@ def test_uniform_type_groups_record_their_inner_specs():
             "dtype": "torch.uint8",
             "tokens_per_state": 1,
             "cache_role": "SPARSE",
-            "storage_block_size": None,
         },
         "layers.3.indexer": {
             "spec_type": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
@@ -354,7 +459,6 @@ def test_uniform_type_groups_record_their_inner_specs():
             "dtype": "torch.uint8",
             "tokens_per_state": 4,
             "cache_role": "INDEXER",
-            "storage_block_size": 128,
         },
     }
     # A bf16 latent beside the uint8 indexer has no single group dtype; each layer keeps its own.
@@ -396,11 +500,10 @@ def test_rswa_retention_is_reported_not_relabeled():
 
 
 def test_uniform_state_group_records_one_state_and_its_inner_specs():
-    # GLM-5.3-Flash G1 shape: KpoolTailSpec layers padded to the indexer page.
+    # A uniform group of GLM-5.3-Flash tail rings, each a CircularBufferSpec (glm5next/common/attention.py:170-179).
     names = ["layers.3.tail", "layers.4.tail"]
     tails = [
-        _spec("KpoolTailSpec", block_size=4, page_size_bytes=71_808, sliding_window=4, dtype="torch.bfloat16")
-        for _name in names
+        _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16") for _name in names
     ]
     uniform = _spec(
         "UniformTypeKVCacheSpecs",
@@ -412,7 +515,7 @@ def test_uniform_state_group_records_one_state_and_its_inner_specs():
     assert (group["kind"], group["state"], group["sliding_window"]) == ("state", {"blocks_per_request": 1}, None)
     assert (group["block_size_tokens"], group["spec_page_size_bytes"], group["dtype"]) == (4, 143_616, "torch.bfloat16")
     assert [spec["spec_type"] for spec in group["layer_specs"].values()] == [
-        "vllm.v1.kv_cache_interface.KpoolTailSpec"
+        "vllm.v1.kv_cache_interface.CircularBufferSpec"
     ] * 2
     assert [spec["page_size_bytes"] for spec in group["layer_specs"].values()] == [71_808, 71_808]
 
@@ -451,14 +554,26 @@ def test_worker_memory_reads_layers_and_tuple_caches():
     assert isinstance(worker.vllm_config.compilation_config.static_forward_context["conv.0"].kv_cache, tuple)
     observed = observer.worker_memory(worker, hybrid_evidence=True)
     assert observed["allocated_cache_bytes"] == 100 * 128
-    assert [(item["layers"], item["shared_by"], item["layer_stride"]) for item in observed["tensor_allocations"]] == [
-        (["full.0", "slide.0", "conv.0"], ["full.0", "slide.0", "conv.0"], 0),
-        (["full.1", "slide.1"], ["full.1", "slide.1"], 0),
+    assert [(item["layers"], item["layer_stride"]) for item in observed["tensor_allocations"]] == [
+        (["full.0", "slide.0", "conv.0"], 0),
+        (["full.1", "slide.1"], 0),
     ]
+    assert all("shared_by" not in item for item in observed["tensor_allocations"])
     assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
     # Without hybrid evidence an allocation record keeps the vLLM 0.27.0/0.28.0 keys only.
     legacy = observer.worker_memory(_initialized()[0])
     assert [set(item) for item in legacy["tensor_allocations"]] == [{"size", "shared_by", "block_stride", "offset"}] * 2
+
+
+def test_cache_groups_that_mix_layer_spec_evidence_are_refused():
+    # A hybrid record holds layer_specs in every group. A record that holds them in one group only is malformed.
+    worker, scheduler, config = _initialized(layers=True)
+    cache = observer.worker_memory(worker, hybrid_evidence=True)
+    scheduled = observer.scheduler_memory(scheduler, config, hybrid_evidence=True)
+    del cache["groups"][1]["layer_specs"]
+    del scheduled["groups"][1]["layer_specs"]
+    with pytest.raises(ValueError, match="runtime memory cache lacks complete layer spec evidence"):
+        runtime_memory._normalized_groups(cache, scheduled, cache["groups"][0]["spec_page_size_bytes"])
 
 
 @pytest.mark.parametrize("empty", [(), []])
@@ -473,7 +588,7 @@ def test_state_group_keeps_its_kind_through_worker_memory():
     worker, _scheduler, cache = _initialized(layers=True)
     # The sliding-window attention layers become a one-block tail state group.
     cache.kv_cache_groups[1].kv_cache_spec = _spec(
-        "KpoolTailSpec", block_size=16, page_size_bytes=64, sliding_window=32, dtype="torch.bfloat16"
+        "CircularBufferSpec", block_size=16, page_size_bytes=64, dtype="torch.bfloat16"
     )
     groups = observer.worker_memory(worker, hybrid_evidence=True)["groups"]
     assert [group["kind"] for group in groups] == ["attention", "state", "convolution"]
@@ -482,7 +597,7 @@ def test_state_group_keeps_its_kind_through_worker_memory():
 
 def test_block_outer_tensor_region_ends_at_its_last_page():
     worker, _scheduler, cache = _initialized(layers=True)
-    # Block-outer (kv_cache_interface.py:1422-1428): each 128-byte block holds the
+    # Block-outer (kv_cache_interface.py:1479-1485): each 128-byte block holds the
     # 64-byte pages of both layers, so the last page ends exactly at the buffer end.
     tensor = cache.kv_cache_tensors[1]
     tensor.layer_stride, tensor.block_stride, tensor.offset = 64, 128, 0
@@ -502,7 +617,7 @@ def test_block_outer_tensor_region_ends_at_its_last_page():
         ("last_page", "exceed their backing allocation"),
         ("page", "page exceeds its block stride"),
         ("storage", "layer strides use multiple backing allocations"),
-        ("mixed", "invalid cache tensor layer stride"),
+        ("mixed", "unsupported runtime cache tensor record"),
     ],
 )
 def test_layer_strided_tensors_share_one_buffer_that_holds_every_region(change, match):
@@ -560,7 +675,7 @@ def _json_bytes(value):
 
 
 def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
-    # Expected values are what the observer wrote before vLLM 0.31.0 support, for the same objects.
+    # Expected values are what the observer wrote before hybrid cache support, for the same objects.
     worker, scheduler, cache = _with_engine_core_values(*_initialized())
     resolved = {
         "model_config": {
@@ -701,6 +816,79 @@ def test_hybrid_resolved_config_adds_the_cache_settings_but_not_the_startup_capa
     assert observer.execution_config(worker.vllm_config, hybrid_evidence=True)["cache_config"]["block_size"] is None
 
 
+@pytest.mark.parametrize("layout", ["layer_outer", "block_outer"])
+def test_layer_strided_allocation_charges_one_backing_pool(layout):
+    worker, scheduler, config = _initialized_layer_strided(layout=layout)
+    observed = observer.worker_memory(worker)
+    assert observed["allocated_cache_bytes"] == 12_800
+    assert len(observed["storages"]) == 1
+    assert [item["layers"] for item in observed["tensor_allocations"]] == [
+        ["full.0", "full.1"],
+        ["slide.0", "slide.1"],
+        ["conv.0"],
+    ]
+    assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
+    assert observer.scheduler_memory(scheduler, config)["reserved_blocks"] == 2
+
+
+@pytest.mark.parametrize("layout", ["layer_outer", "block_outer"])
+def test_layer_strided_records_carry_only_layer_strided_keys(layout):
+    worker, _scheduler, _config = _initialized_layer_strided(layout=layout)
+    records = observer.worker_memory(worker)["tensor_allocations"]
+    assert records
+    for record in records:
+        assert set(record) == {"size", "layers", "layer_stride", "block_stride", "offset"}
+
+
+def _break_layer_strided(worker, change):
+    """Make one unsupported change to the first cache group or the first tensor record."""
+    config = worker.model_runner.kv_cache_config
+    group, record = config.kv_cache_groups[0], config.kv_cache_tensors[0]
+    if change == "host_resident_tensor":
+        record.host_resident = True
+    elif change == "host_resident_group":
+        group.host_resident = True
+    elif change == "hisparse_role":
+        group.role = _Role.HISPARSE_SOURCE
+    elif change == "offset_beyond_allocation":
+        record.offset = 64
+    elif change == "block_stride_below_page":
+        record.block_stride = 32
+    elif change == "second_storage":
+        layer = worker.vllm_config.compilation_config.static_forward_context["conv.0"]
+        layer.kv_cache = _Tensor(_Storage(300, 100 * 128))
+        worker.model_runner.kv_caches.append(layer.kv_cache)
+    elif change == "mixed_record":
+        record.shared_by = vars(record).pop("layers")
+    elif change == "unknown_layer":
+        record.layers = ["full.0", "ghost"]
+    elif change == "uniform_wrapper":
+        spec = _typed("vllm.v1.kv_cache_interface", "UniformTypeKVCacheSpecs")
+        vars(spec).update(vars(group.kv_cache_spec))
+        group.kv_cache_spec = spec
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ("host_resident_tensor", "host-resident cache tensors"),
+        ("host_resident_group", "host-resident cache groups"),
+        ("hisparse_role", "unsupported cache group role"),
+        ("offset_beyond_allocation", "exceed their backing allocation"),
+        ("block_stride_below_page", "page exceeds its block stride"),
+        ("second_storage", "multiple backing allocations"),
+        ("mixed_record", "unsupported runtime cache tensor record"),
+        ("unknown_layer", "missing or duplicate cache layers"),
+        ("uniform_wrapper", "unsupported runtime cache spec"),
+    ],
+)
+def test_layer_strided_allocation_rejects_unsupported_records(change, match):
+    worker, _scheduler, _config = _initialized_layer_strided()
+    _break_layer_strided(worker, change)
+    with pytest.raises(ValueError, match=match):
+        observer.worker_memory(worker)
+
+
 def test_resolve_runtime_resources_requires_all_ranks_and_preserves_graph_evidence(tmp_path, monkeypatch):
     cell = _evidence(tmp_path, monkeypatch)
     result = _resolve(cell, tmp_path)
@@ -715,6 +903,14 @@ def test_resolve_runtime_resources_requires_all_ranks_and_preserves_graph_eviden
     assert "enable_prefix_caching" not in provenance["runtime_settings"]["cache_config"]
     assert len(provenance["artifacts"]) == 6
     assert provenance["artifacts"][-1]["evidence"]["cache"]["diagnostics"]["peak_activation_memory"] == 123
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_new_versions_observe_and_finalize_layer_strided_memory(tmp_path, monkeypatch, version):
+    cell = _evidence(tmp_path, monkeypatch, version=version, initialized=_initialized_layer_strided)
+    resolved = _resolve(cell, tmp_path, expected_backend_version=version)
+    assert [group["kind"] for group in resolved["cache_groups"]] == ["attention", "attention", "convolution"]
+    assert resolved["runtime_memory"]["kv_cache_bytes"] == 88 * 128
 
 
 @pytest.mark.parametrize("backend", ["uva", "prefetch"])
@@ -1060,6 +1256,22 @@ def test_unsupported_observation_records_unresolved_without_running_or_replacing
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_unaudited_runtime_version_errors_name_every_memory_version(tmp_path, monkeypatch):
+    worker, _scheduler, _config = _initialized()
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.31.0")
+    _write_provenance(tmp_path / "collector-provenance.json", cell_id="test")
+    observer.observe("worker", worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    payload = json.loads((tmp_path / "fpm-memory-worker-dp0-tp0-pp0.json").read_text())
+    assert payload["status"] == "unresolved"
+    assert payload["error"] == (
+        "ValueError: memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; found 0.31.0"
+    )
+    with pytest.raises(ValueError) as raised:
+        _resolve(_cell(), tmp_path, expected_backend_version="0.31.0")
+    assert str(raised.value) == "runtime memory conversion currently supports vLLM 0.27.0, 0.32.0, 0.33.0"
+
+
 @pytest.mark.parametrize("resolved_mode", ["PIECEWISE", "NONE"])
 @pytest.mark.parametrize("initialization_count", [1, 2])
 def test_worker_profile_time_graph_downgrade_resolves(tmp_path, monkeypatch, resolved_mode, initialization_count):
@@ -1290,6 +1502,90 @@ def test_ordinary_serving_worker_observes_initialized_runtime_without_dynamo(tmp
         observer.observe_execution(worker, dp_rank=0, tp_rank=2, pp_rank=0)
 
 
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_execution_observation_records_new_versions(tmp_path, monkeypatch, version):
+    provenance_path = tmp_path / "serving-provenance.json"
+    provenance_path.write_text(json.dumps({"run_id": f"serving-{version}", "purpose": "matched_serving_accuracy"}))
+    output = tmp_path / "observations"
+    monkeypatch.setenv("FPM_EXECUTION_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
+
+    class Worker:
+        def compile_or_warm_up_model(self):
+            self.model_runner.attn_groups = [
+                [
+                    SimpleNamespace(
+                        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+                        layer_names=["layer.0"],
+                        kv_cache_group_id=0,
+                    )
+                ]
+            ]
+            return "compiled"
+
+    monkeypatch.setitem(sys.modules, "fpm_memory_observer", observer)
+    for name, values in {
+        "vllm.distributed": {
+            "get_pp_group": lambda: SimpleNamespace(rank_in_group=0),
+            "get_tp_group": lambda: SimpleNamespace(rank_in_group=0),
+        },
+        "vllm.v1.worker.gpu_worker": {"Worker": Worker},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(values)
+        monkeypatch.setitem(sys.modules, name, module)
+    spec = importlib.util.spec_from_file_location(
+        "fpm_memory_worker", Path(observer.__file__).with_name("fpm_memory_worker.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    worker = module.FpmExecutionWorker()
+    worker.vllm_config = _vllm_config(tp=1, dp=1)
+    worker.vllm_config.parallel_config.data_parallel_rank = 0
+    worker.model_runner = SimpleNamespace(attn_groups=[])
+    assert worker.compile_or_warm_up_model() == "compiled"
+    result = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    assert result["status"] == "observed", result.get("error")
+    assert result["backend_version"] == version
+    assert result["attention_groups"][0]["backend_class"] == "actual.runtime.ResolvedBackend"
+
+
+def test_execution_observation_skips_empty_attention_group_lists(tmp_path, monkeypatch):
+    # Model Runner V2 appends [] for a cache group without layer views
+    # (vllm/v1/worker/gpu/attn_utils.py 0.32.0:220-222, 0.33.0:221-223).
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.32.0")
+    (tmp_path / "collector-provenance.json").write_text("{}")
+    group = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=["layer.0"],
+        kv_cache_group_id=1,
+    )
+    worker = SimpleNamespace(
+        vllm_config=_vllm_config(tp=1, dp=1), model_runner=SimpleNamespace(attn_groups=[[], [group]])
+    )
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    result = json.loads((tmp_path / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    assert result["status"] == "observed", result.get("error")
+    assert result["attention_groups"] == [
+        {"kv_cache_group_id": 1, "backend_class": "actual.runtime.ResolvedBackend", "layer_names": ["layer.0"]}
+    ]
+
+
+def test_worker_import_error_names_every_audited_version(monkeypatch):
+    monkeypatch.setitem(sys.modules, "fpm_memory_observer", observer)
+    monkeypatch.setitem(sys.modules, "vllm.distributed", None)
+    spec = importlib.util.spec_from_file_location(
+        "fpm_memory_worker", Path(observer.__file__).with_name("fpm_memory_worker.py")
+    )
+    with pytest.raises(RuntimeError) as raised:
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    assert str(raised.value).endswith(
+        "execution observation supports vLLM 0.27.0/0.28.0/0.32.0/0.33.0, memory supports 0.27.0/0.32.0/0.33.0"
+    )
+
+
 @pytest.mark.parametrize(
     "output,provenance",
     [
@@ -1337,8 +1633,8 @@ def _pending_plan(version="0.27.0"):
     return _plan(profile, collector_config={"runtime_backend_version": version})
 
 
-@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.31.0", "0.30.0"])
-def test_execution_observation_supports_vllm_0_31_0(tmp_path, monkeypatch, version):
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.33.0", "0.30.0"])
+def test_execution_observation_supports_vllm_0_33_0(tmp_path, monkeypatch, version):
     output = tmp_path / "observations"
     provenance_path = tmp_path / "serving-provenance.json"
     provenance_path.write_text(json.dumps({"run_id": "serving-123", "purpose": "matched_serving_accuracy"}))
@@ -1346,7 +1642,7 @@ def test_execution_observation_supports_vllm_0_31_0(tmp_path, monkeypatch, versi
     monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
     monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
     config = _vllm_config(tp=1, dp=1)
-    # The cache config holds the hybrid settings for every version here, and only a 0.31.0 record keeps them.
+    # The cache config holds the hybrid settings for every version here, and only a 0.33.0 record keeps them.
     vars(config.cache_config).update(mamba_cache_mode="align", prefix_match_unit=None)
     group = SimpleNamespace(
         backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
@@ -1359,22 +1655,22 @@ def test_execution_observation_supports_vllm_0_31_0(tmp_path, monkeypatch, versi
     if version == "0.30.0":
         # An unaudited version stays unresolved, and the error names the audited versions.
         assert record["status"] == "unresolved"
-        assert "0.31.0" in record["error"]
+        assert "0.33.0" in record["error"]
     else:
         assert record["status"] == "observed"
         assert record["backend_version"] == version
         assert record["attention_groups"][0]["kv_cache_group_id"] == 0
         cache = record["resolved_config"]["cache_config"]
-        if version == "0.31.0":
+        if version == "0.33.0":
             assert cache["mamba_cache_mode"] == "align"
             assert "prefix_match_unit" in cache
         else:
             assert {"mamba_cache_mode", "prefix_match_unit"}.isdisjoint(cache)
 
 
-@pytest.mark.parametrize("version", ["0.31.0", "0.30.0"])
+@pytest.mark.parametrize("version", ["0.33.0", "0.30.0"])
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_execution_inspection_audits_vllm_0_31_0(tmp_path, version):
+def test_execution_inspection_audits_vllm_0_33_0(tmp_path, version):
     from collector.fpm_forward.execution_evidence import inspect_execution_evidence
     from collector.fpm_forward.native_artifact import NativeCollection
 
@@ -1393,52 +1689,7 @@ def test_execution_inspection_audits_vllm_0_31_0(tmp_path, version):
     # Evidence version 1 skips the measurement evidence, which this audit does not read.
     missing = inspect_execution_evidence(cell, raw, collection, plan=plan, evidence_version=1)["missing_evidence"]
     unaudited = [item for item in missing if item.startswith("execution configuration inspection is unaudited")]
-    assert unaudited == ([] if version == "0.31.0" else ["execution configuration inspection is unaudited for 0.30.0"])
-
-
-@pytest.mark.usefixtures("no_models_or_timing_data")
-def test_runner_stages_the_execution_observer_for_0_31_0_without_a_bundle():
-    plan = replace(_pending_plan("0.31.0"), _fpm_profile_json=None)
-    assert plan.runtime_instrumentation is None
-    for cell in plan.cells:
-        assert not cell.execution_identity[0]
-        assert runner._observe_runtime_execution(plan, cell) is True
-        assert runner._observe_runtime_memory(plan, cell) is False
-        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
-        assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
-        assert args[args.index("--scheduler-cls") + 1] == "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler"
-
-
-def test_execution_config_reads_the_commit_from_the_config_object():
-    class Config:
-        # transformers PreTrainedConfig stores _commit_hash on every config that it builds.
-        def __init__(self, commit_hash):
-            self._commit_hash = commit_hash
-
-    class ForwardingConfig(Config):
-        # Like vLLM 0.31.0 Glm5NextConfig, it reads a key that its text config holds from the text config
-        # (transformers_utils/configs/glm5_next.py:406-420).
-        def __init__(self, commit_hash, text_commit_hash):
-            super().__init__(commit_hash)
-            self.text_config = Config(text_commit_hash)
-
-        def __getattribute__(self, key):
-            text = object.__getattribute__(self, "__dict__").get("text_config")
-            if text is not None and key in vars(text):
-                return getattr(text, key)
-            return object.__getattribute__(self, key)
-
-    def model_record(hf_config):
-        config = _vllm_config()
-        config.model_config.hf_config = hf_config
-        return observer.execution_config(config)["model_config"]
-
-    assert model_record(Config("a" * 40))["loaded_config_commit_hash"] == "a" * 40
-    # The commit of the loaded config is the one that it holds itself, and its text config holds None.
-    assert model_record(ForwardingConfig("e" * 40, None))["loaded_config_commit_hash"] == "e" * 40
-    # A commit that only the text config holds is not the commit of the loaded config.
-    assert "loaded_config_commit_hash" not in model_record(ForwardingConfig(None, "f" * 40))
-    assert "loaded_config_commit_hash" not in model_record(None)
+    assert unaudited == ([] if version == "0.33.0" else ["execution configuration inspection is unaudited for 0.30.0"])
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
@@ -1460,6 +1711,87 @@ def test_pending_memory_plans_without_model_and_renders_audited_hooks(tmp_path):
         assert "--worker-cls fpm_memory_worker.FpmResourceWorker" in script
         assert "--scheduler-cls fpm_memory_scheduler.FpmResourceInstrumentedScheduler" in script
         assert script.count("--no-async-scheduling") == 1
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_new_memory_versions_plan_audited_hooks(tmp_path, version):
+    plan = _pending_plan(version)
+    assert plan.to_dict()["runtime_memory_policy"] == {
+        "source": "vllm_initialization",
+        "supported_vllm_version": version,
+        "selected_vllm_version": version,
+        "observation": "enabled",
+        "evidence_schema_version": 1,
+        "async_scheduling": False,
+    }
+    for cell in plan.cells:
+        output = tmp_path / cell.cell_id
+        output.mkdir()
+        runner._render_cell(plan, cell, output, {})
+        script = (output / "run.sh").read_text()
+        assert "--worker-cls fpm_memory_worker.FpmResourceWorker" in script
+        assert "--scheduler-cls fpm_memory_scheduler.FpmResourceInstrumentedScheduler" in script
+        assert script.count("--no-async-scheduling") == 1
+
+
+@pytest.mark.parametrize("version", ["0.25.1", "0.28.0", "0.31.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_unaudited_memory_versions_keep_the_legacy_policy(version):
+    assert _pending_plan(version).to_dict()["runtime_memory_policy"] == {
+        "source": "vllm_initialization",
+        "supported_vllm_version": "0.27.0",
+        "selected_vllm_version": version,
+        "observation": "unavailable_for_runtime",
+        "evidence_schema_version": 1,
+        "async_scheduling": None,
+    }
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_plan_saved_before_the_new_memory_versions_stops_on_resume(tmp_path, monkeypatch):
+    # A pending 0.32.0 plan as main 2022b019 saves it: observation unavailable_for_runtime.
+    with monkeypatch.context() as patch:
+        patch.setattr(planner, "MEMORY_SUPPORTED_VERSIONS", ("0.27.0",))
+        saved = _pending_plan("0.32.0")
+        payload = saved.to_dict()
+    assert payload["runtime_memory_policy"]["observation"] == "unavailable_for_runtime"
+    runtime_memory.validate_saved_plan(payload)
+    current = _pending_plan("0.32.0").to_dict()
+    assert current["runtime_memory_policy"]["observation"] == "enabled"
+    assert {key for key in payload.keys() | current.keys() if payload.get(key) != current.get(key)} == {
+        "runtime_memory_policy",
+        "sha256",
+    }
+    artifacts, checkpoints = tmp_path / "artifacts", tmp_path / "checkpoints"
+    campaign = artifacts / saved.sha256[:16]
+    campaign.mkdir(parents=True)
+    (campaign / "collection-plan.json").write_text(json.dumps(payload))
+    checkpoints.mkdir()
+    checkpoint = {"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": saved.sha256, "cells": {}}
+    (checkpoints / "fpm_forward.json").write_text(json.dumps(checkpoint))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    # collect-fpm --resume plans again with the current code and checks the checkpoint before any cell renders.
+    with pytest.raises(ValueError, match="checkpoint does not match the current frozen plan"):
+        runner.run_collection(
+            _pending_plan("0.32.0"),
+            generator_overrides={},
+            checkpoint_dir=str(checkpoints),
+            artifact_root=str(artifacts),
+            resume=True,
+            retry_failed=False,
+        )
+    assert not list(artifacts.rglob("run.sh"))
+    # The repeatability loader recomputes the policy of a plan with a runtime version, so it cannot match the file.
+    with pytest.raises(ValueError, match="cannot be reconstructed exactly by this collector version"):
+        repeatability.load_repeatability_source(campaign)
+    assert {path: path.read_bytes() for path in before} == before
+    # Control: the same plan saved by the current code loads exactly.
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    (fresh / "collection-plan.json").write_text(json.dumps(current))
+    assert repeatability.load_repeatability_source(fresh).to_dict() == current
 
 
 @pytest.mark.parametrize(
@@ -1544,7 +1876,7 @@ def _glm_plan(
             {
                 "system": "b200_sxm",
                 "backend": "vllm",
-                "backend_version": "0.31.0",
+                "backend_version": "0.33.0",
                 "tp": 4,
                 "dp": 1,
                 "moe_tp": 4,
@@ -1826,7 +2158,7 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path):
         replace(listless, warmup_iterations=5),
         plan.capability,
         plan.cells,
-        SimpleNamespace(manifest={"runtime": {"version": "0.31.0"}}),
+        SimpleNamespace(manifest={"runtime": {"version": "0.33.0"}}),
         plan.sha256,
     )
     for cell in probe.cells:
@@ -1840,7 +2172,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=No
     """The GLM-5.3-Flash collection plan of guided collection, bound to the accepted runtime probe.
 
     The planner gets the inputs of the onboarding collector command: the case plan of the Hub ID, whose packaged
-    configuration is FP8 with 128 x 128 weight blocks, the limits of the request, a stand-in vLLM 0.31.0
+    configuration is FP8 with 128 x 128 weight blocks, the limits of the request, a stand-in vLLM 0.33.0
     instrumentation bundle, the pure-TP probe launch on GB300 (TP 4 unless ``tp`` says otherwise) with a stand-in
     Kubernetes deployment, and the profile that the probe import accepts, with the cache resources that the probe
     measured at TP 4. Another ``tp`` keeps those resources. ``precision`` replaces GEMM, MoE, FMHA and KV-cache labels
@@ -1855,7 +2187,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=No
 
     model, system = "zai-org/GLM-5.3-Flash", "gb300"
     manifest, declaration = _manifest(tmp_path)
-    declaration["runtime"]["version"] = "0.31.0"
+    declaration["runtime"]["version"] = "0.33.0"
     manifest.write_text(json.dumps(declaration))
     config = tmp_path / "config.json"
     config.write_bytes((_MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json").read_bytes())
@@ -1883,7 +2215,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=No
             {
                 "system": system,
                 "backend": "vllm",
-                "backend_version": "0.31.0",
+                "backend_version": "0.33.0",
                 **{name: topology[name] for name in ("tp", "dp", "moe_tp", "moe_ep")},
                 **precision,
                 "kv_cache_dtype": labels["kvcache_quant_mode"],
@@ -1913,8 +2245,8 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=No
             "model_revision": launch_revision or LOADED_REVISION,
             "model_kind": "moe",
             "framework": "vllm",
-            "framework_version": "0.31.0",
-            "runtime_framework_version": "0.31.0",
+            "framework_version": "0.33.0",
+            "runtime_framework_version": "0.33.0",
             "gpu": system,
             "interconnect": "nvlink",
         },
@@ -1974,7 +2306,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=No
         model_architecture=case_plan.model_architecture,
         has_model_cases=bool(case_plan.model_cases_paths),
         fpm_profile=profile,
-        collector_config={"runtime_backend_version": "0.31.0", "aic_database_version": "0.31.0"},
+        collector_config={"runtime_backend_version": "0.33.0", "aic_database_version": "0.33.0"},
         generator_overrides=overrides,
         runtime_instrumentation=str(manifest),
         runtime_launch=launch,
@@ -1988,7 +2320,7 @@ def test_probe_backed_glm_collection_renders_the_producer_launch(tmp_path):
     plan, _overrides = _probe_backed_glm_plan(tmp_path)
     revision = plan.runtime_launch["identity"]["model_revision"]
     assert re.fullmatch(r"[0-9a-f]{40}", revision)
-    assert (plan.runtime_backend_version, plan.options.benchmark_points_origin) == ("0.31.0", "glm53flash_grid_v1")
+    assert (plan.runtime_backend_version, plan.options.benchmark_points_origin) == ("0.33.0", "glm53flash_grid_v1")
     adapter = Path(runner.__file__).parent / "runtime/glm53flash/runtime-paths.json"
     producer_env = {
         "DYN_FPM_GLM53FLASH_REAL_KV": "1",

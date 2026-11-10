@@ -25,19 +25,19 @@ from .runtime.fpm_memory_observer import (
     _SPEC_MODULE,
     _UNIFORM_SPEC,
     _WINDOW_SPECS,
+    MEMORY_SUPPORTED_VERSIONS,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     SPEC_KINDS,
-    SUPPORTED_VERSION,
 )
 from .types import ParallelTopology
 
 _CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
 # The spec classes that the shared class table maps to FPM cache kinds, and the uniform wrapper of their inner specs.
 _SPEC_TYPES = frozenset({*(_SPEC_MODULE + name for name in SPEC_KINDS), _UNIFORM_SPEC})
-# vLLM 0.31.0 cache settings that follow the prefix-caching mode (models/config.py:640-675), the
+# vLLM 0.33.0 cache settings that follow the prefix-caching mode (models/config.py:763-787), the
 # user prefix-match unit, and the block size that the engine core resolves in its own process
-# (engine/core.py:341-350). Importers record the mode per phase instead of comparing them.
+# (engine/core.py:347-351). Importers record the mode per phase instead of comparing them.
 _PHASE_CACHE_SETTINGS = (
     "enable_prefix_caching",
     "mamba_cache_mode",
@@ -49,12 +49,10 @@ _PHASE_CACHE_SETTINGS = (
 _MAMBA_ALL_UNMODELED = "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
 
 
-def _layer_strided(cache: Any) -> bool:
-    """vLLM 0.31.0 allocation records place layers with ``layer_stride``; older records never do."""
-    allocations = cache.get("tensor_allocations") if isinstance(cache, dict) else None
-    return isinstance(allocations, list) and any(
-        isinstance(item, dict) and "layer_stride" in item for item in allocations
-    )
+def _hybrid_evidence(cache: Any) -> bool:
+    """A hybrid record holds the spec of every layer in ``layer_specs``; a plain record holds none."""
+    groups = cache.get("groups") if isinstance(cache, dict) else None
+    return isinstance(groups, list) and any(isinstance(group, dict) and "layer_specs" in group for group in groups)
 
 
 def _positive(value: Any, label: str) -> int:
@@ -395,8 +393,8 @@ def validate_requested_graph(payload: dict[str, Any], config: dict[str, Any], ex
 
 def _validate_scheduler_config(worker: dict[str, Any], scheduler: dict[str, Any]) -> None:
     actual, scheduled = (copy.deepcopy(item["resolved_config"]) for item in (worker, scheduler))
-    if _layer_strided(worker.get("cache")):
-        # vLLM 0.31.0 sets block_size in the engine-core process only, and the prefix-caching
+    if _hybrid_evidence(worker.get("cache")):
+        # vLLM 0.33.0 sets block_size in the engine-core process only (engine/core.py:347-351), and the prefix-caching
         # settings are compared as per-phase cache evidence instead.
         for config in (actual, scheduled):
             for name in _PHASE_CACHE_SETTINGS:
@@ -511,7 +509,7 @@ def _scheduler_copy(group: dict[str, Any]) -> dict[str, Any]:
     """The scheduler record that a worker cache group must have.
 
     The scheduler copy of a UniformTypeKVCacheSpecs group keeps only its first inner spec
-    (vLLM 0.31.0 kv_cache_utils.py:2434-2440). The record writer sorts keys, so the first spec
+    (vLLM 0.33.0 kv_cache_utils.py:1110-1116). The record writer sorts keys, so the first spec
     is the one of the first layer name. Every other group is the worker group
     without its kind and layer classes.
     """
@@ -534,17 +532,17 @@ def _scheduler_copy(group: dict[str, Any]) -> dict[str, Any]:
     return expected
 
 
-def _spec_classes(group: dict[str, Any], names: list[str], strided: bool) -> list[str]:
+def _spec_classes(group: dict[str, Any], names: list[str], hybrid: bool) -> list[str]:
     """The spec class of every layer of a group: the inner classes of a uniform group, else its own.
 
-    A vLLM 0.31.0 record keeps each layer's spec in ``layer_specs``; older records have none.
+    A vLLM 0.33.0 probe record keeps each layer's spec in ``layer_specs``; other records have none.
     """
     spec = group.get("spec_type")
     if spec not in _SPEC_TYPES:
         raise ValueError(f"unsupported runtime cache spec: {spec!r}")
     uniform = spec == _UNIFORM_SPEC
     specs = group.get("layer_specs")
-    if (strided or uniform) and (
+    if (hybrid or uniform) and (
         not isinstance(specs, dict)
         or set(specs) != set(names)
         or any(
@@ -572,7 +570,7 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
         raise ValueError("runtime memory evidence lacks cache groups")
     if len(raw_groups) != len(scheduler_groups):
         raise ValueError("worker and scheduler cache group counts disagree")
-    strided = _layer_strided(cache)
+    hybrid = _hybrid_evidence(cache)
     groups = []
     layer_names: set[str] = set()
     for index, (group, scheduled) in enumerate(zip(raw_groups, scheduler_groups, strict=True)):
@@ -593,7 +591,7 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
         kind, spec = group.get("kind"), group.get("spec_type")
         if kind not in {"attention", "convolution", "state"}:
             raise ValueError(f"runtime cache group kind is unsupported: {kind!r} ({spec})")
-        spec_classes = _spec_classes(group, names, strided)
+        spec_classes = _spec_classes(group, names, hybrid)
         # The shared class table gives the kind; Inkling convolution layers use a sliding-window spec.
         if {SPEC_KINDS[value.removeprefix(_SPEC_MODULE)] for value in spec_classes} != {
             "attention" if kind == "convolution" else kind
@@ -609,12 +607,12 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             raise ValueError("full-attention cache cannot declare sliding retention")
         if kind == "convolution" and window != 4:
             raise ValueError("runtime memory cache kind is unsupported")
-        # The observer refuses a vLLM 0.31.0 group whose layers disagree on the window or on the state evidence
-        # (runtime/fpm_memory_observer.py:545, :563). Only a window spec class has a window, and only a MambaSpec
+        # The observer refuses a vLLM 0.33.0 group whose layers disagree on the window or on the state evidence
+        # (runtime/fpm_memory_observer.py:630, :648). Only a window spec class has a window, and only a MambaSpec
         # has Mamba state fields, so a group cannot mix such a class with another.
-        if strided and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
+        if hybrid and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
             raise ValueError("cache group layers disagree on sliding window")
-        if strided and len({value == _MAMBA_SPEC for value in spec_classes}) > 1:
+        if hybrid and len({value == _MAMBA_SPEC for value in spec_classes}) > 1:
             raise ValueError("cache group layers disagree on state evidence")
         classes = group.get("layer_classes")
         if (
@@ -638,40 +636,55 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             # A state group holds a fixed number of pool blocks for every running request.
             state = group.get("state")
             blocks = state.get("blocks_per_request") if isinstance(state, dict) else None
-            # The vLLM 0.31.0 record of a MambaSpec group, also inside a uniform group, holds its speculative
-            # and prefill checkpoint blocks (kv_cache_interface.py:1048-1049). A missing count is not zero.
-            mamba = strided and _MAMBA_SPEC in spec_classes
+            # The vLLM 0.33.0 record of a MambaSpec group, also inside a uniform group, holds its speculative
+            # blocks and its prefill checkpoint count and alignment (kv_cache_interface.py:1100-1102). A missing
+            # count is not zero, and a missing alignment is not None.
+            mamba = hybrid and _MAMBA_SPEC in spec_classes
             if (
                 type(blocks) is not int
                 or blocks <= 0
-                or (
-                    mamba
-                    and any(
-                        type(state.get(name)) is not int
-                        for name in ("num_speculative_blocks", "num_prefill_checkpoint_blocks")
-                    )
-                )
+                or (mamba and type(state.get("num_speculative_blocks")) is not int)
             ):
                 raise ValueError(f"runtime state cache group lacks blocks_per_request evidence: {names}")
+            if mamba and (
+                type(state.get("num_prefill_checkpoint_blocks")) is not int
+                or "prefill_checkpoint_alignment" not in state
+            ):
+                raise ValueError(f"runtime state cache group lacks prefill checkpoint evidence: {names}")
             # The Mamba "all" mode is refused from the group itself, with or without prefix-caching evidence.
             if state.get("mamba_cache_mode") == "all":
                 raise ValueError(_MAMBA_ALL_UNMODELED)
-            checkpoint = state.get("num_prefill_checkpoint_blocks", 0)
-            if type(checkpoint) is not int or checkpoint != 0:
-                raise ValueError(f"mamba prefill checkpoint blocks are not modeled: {names}")
             # Grouped profiles hold no speculative state blocks, whatever the speculative marker says.
             if mamba and state["num_speculative_blocks"] != 0:
                 raise ValueError(f"mamba speculative blocks are not modeled: {names}")
-            # blocks_per_request is the steady count, held between block boundaries. A MambaSpec holds one state
-            # block and its speculative blocks in both modes (kv_cache_interface.py:1093-1094), and a KpoolTailSpec
-            # or CircularBufferSpec holds one block (:1019-1025, :904-911). So without speculative blocks every state
-            # spec class gives one block. For a MambaSpec in align mode, the count leaves out the 2 + k + c blocks that
-            # vLLM's startup sizing counts (:1089-1092). It also leaves out the previous state block, held for one or
-            # two steps after a boundary, two with async scheduling (single_type_kv_cache_manager.py:1658-1675). The
-            # observation import checks the startup count against the recorded concurrency.
+            checkpoint_fields = {}
+            if mamba:
+                # A KDA spec that prefills with FlashKDA holds one checkpoint block aligned to 16 tokens, and with
+                # Triton none and no alignment (models/glm5next/common/kda.py:168-176,
+                # model_executor/layers/mamba/kda_checkpoint.py:9-10). The profile keeps the count, and the
+                # alignment of one block.
+                checkpoint, alignment = state["num_prefill_checkpoint_blocks"], state["prefill_checkpoint_alignment"]
+                if checkpoint not in (0, 1):
+                    raise ValueError(f"mamba prefill checkpoint blocks must be 0 or 1: {names}")
+                if (checkpoint == 1) != (type(alignment) is int and alignment > 0) or (
+                    checkpoint == 0 and alignment is not None
+                ):
+                    raise ValueError(f"mamba prefill checkpoint evidence is inconsistent: {names}")
+                checkpoint_fields["prefill_checkpoint_blocks"] = checkpoint
+                if checkpoint == 1:
+                    checkpoint_fields["prefill_checkpoint_alignment"] = alignment
+            # blocks_per_request is the steady count, held between block boundaries. In vLLM 0.33.0, a MambaSpec
+            # holds one state block and its speculative blocks in both modes (kv_cache_interface.py:1140-1141), and
+            # a CircularBufferSpec holds one block (:982-989). So without speculative blocks every state spec class
+            # gives one block. For a MambaSpec in align mode, the count leaves out the 2 + k + c blocks that vLLM's
+            # startup sizing counts, c being the prefill checkpoint blocks (:1135-1139). It also leaves out the
+            # previous state block, held for one or two steps after a boundary, two with async scheduling
+            # (single_type_kv_cache_manager.py:1640-1657). The observation import checks the startup count against
+            # the recorded concurrency.
             if blocks != 1:
                 raise ValueError(f"runtime state cache group blocks_per_request contradicts its spec: {names}")
             normalized["blocks_per_request"] = blocks
+            normalized.update(checkpoint_fields)
         groups.append(normalized)
     return groups
 
@@ -762,8 +775,8 @@ def resolve_runtime_resources(
         raise ValueError("runtime memory GPU memory utilization must be in (0, 1]")
     if not expected_plan_sha256 or not expected_attempt_id:
         raise ValueError("runtime memory resolution requires exact plan and attempt identities")
-    if expected_backend_version != SUPPORTED_VERSION:
-        raise ValueError(f"runtime memory conversion currently supports vLLM {SUPPORTED_VERSION}")
+    if expected_backend_version not in MEMORY_SUPPORTED_VERSIONS:
+        raise ValueError(f"runtime memory conversion currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}")
     collection = validate_native_collection(
         cell, raw_root, expected_plan_sha256=expected_plan_sha256, expected_attempt_id=expected_attempt_id
     )
@@ -862,10 +875,10 @@ def resolve_runtime_resources(
         free = accounting["initial_free_blocks"]
         allocated = accounting["allocated_cache_bytes"]
         groups = _normalized_groups(cache, scheduled, allocated // count)
-        # _normalized_groups accepts a state group on any runtime, so this vLLM 0.27.0 path refuses every state group.
+        # _normalized_groups accepts a state group on any runtime, so this collection path refuses every state group.
         if any(group["kind"] == "state" for group in groups):
             raise ValueError("runtime memory cache kind is unsupported")
-        # This path also refuses every spec class outside the vLLM 0.27.0 allow-list: full and sliding-window attention.
+        # This path also refuses every spec class outside the plain-record allow-list: full and sliding attention.
         for group in cache["groups"]:
             if group.get("spec_type") not in _LEGACY_SPECS:
                 raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")
