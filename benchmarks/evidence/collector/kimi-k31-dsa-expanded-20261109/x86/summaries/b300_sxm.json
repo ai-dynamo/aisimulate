@@ -1,0 +1,48 @@
+{
+  "system": "b300_sxm",
+  "new_formal_cases": 24,
+  "new_successful_cases": 24,
+  "new_failed_cases": [],
+  "native_summary_files": [
+    {
+      "source": "tp8",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "fd9afa359729f697e9ce3425f9351180b3d93226fc3717a2b385df1e0d14021d",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-09T17:39:27.470758",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp8",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "62405d610e3c9fbc2ca0786cd8816abc7ead319f6195efcf63958e6b9ea02373",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-09T17:48:21.008230",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    }
+  ],
+  "source_bound_runtime": {
+    "framework": "sglang",
+    "version": "0.0.0.dev1+g41208373c.d20261104",
+    "platform": "x86_64",
+    "native_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
+    "image_index_digest": "sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391",
+    "image_child_digest": "sha256:4a098ad7414702a2271296ac148854448d10710ec3554ac93b57ef194999305a",
+    "model_revision": "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
+  },
+  "scope": "Native isolated one-layer dummy-weight DSA eager latency; not trained whole-model or numerical correctness validation."
+}

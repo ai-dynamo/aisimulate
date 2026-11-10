@@ -1,0 +1,138 @@
+{
+  "system": "h100_sxm",
+  "new_formal_cases": 96,
+  "new_successful_cases": 96,
+  "new_failed_cases": [],
+  "native_summary_files": [
+    {
+      "source": "tp1",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "093874c7b4ab7ab0e3c2d860cd5d90cb409f04ec237e121006f5367b3347cf64",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T01:31:23.239144",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp1",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "21f05977f7504e194aed51b6489a7faf1e2bc7c4ceb2534a552031b49c025fe1",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T01:36:04.648053",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp2",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "68df72c8bdd92921d1aa7c5835922ed79cc94b2d2f627911bf6bc423b3b2d70f",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T01:41:50.585087",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp2",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "7fd7beec1da33260c019ee22c77eb1078b08f61f0cb34b0380a833c319e9115d",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T01:46:48.269387",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp4",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "88f2badd1f0fb1d72e86ccc08aef5097e1155679725f3d71f9e225aa58a6df08",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T01:53:02.279692",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp4",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "791c72007d31ef74e474f55f7de9180159674b60b8a2a245bcaefdf3507fa303",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T01:58:24.479541",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp8",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "5a1301cfdfb3ad569885780f2da5c3a3795090112285093a134d82aeded11950",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T02:05:29.914040",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    },
+    {
+      "source": "tp8",
+      "file_name": "collection_summary_sglang.json",
+      "sha256": "eb1a196627ab5fb752b7e96fe50c38b3f85dd1157cccd41d9c1bfb7aacf4591a",
+      "summary": {
+        "backend": "sglang",
+        "version": "0.0.0.dev1+g41208373c.d20261104",
+        "timestamp": "2026-11-10T02:11:36.688867",
+        "total_errors": 0,
+        "errors_by_module": {},
+        "errors_by_type": {},
+        "errors_by_group": {}
+      },
+      "errors": []
+    }
+  ],
+  "source_bound_runtime": {
+    "framework": "sglang",
+    "version": "0.0.0.dev1+g41208373c.d20261104",
+    "platform": "x86_64",
+    "native_commit": "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae",
+    "image_index_digest": "sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391",
+    "image_child_digest": "sha256:4a098ad7414702a2271296ac148854448d10710ec3554ac93b57ef194999305a",
+    "model_revision": "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
+  },
+  "scope": "Native isolated one-layer dummy-weight DSA eager latency; not trained whole-model or numerical correctness validation."
+}

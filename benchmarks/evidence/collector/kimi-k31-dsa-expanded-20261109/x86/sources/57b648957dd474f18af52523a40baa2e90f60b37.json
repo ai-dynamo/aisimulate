@@ -1,0 +1,37 @@
+{
+  "source_head": "57b648957dd474f18af52523a40baa2e90f60b37",
+  "source_clean": true,
+  "collector_hash": "sha256:2bd04b4ea6486383663c69a7bb38ebe1ca6a698111ffec9fafff37523111f200",
+  "hashed_files_count": 476,
+  "parent_source_head": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+  "qualified_sms_at_freeze": [
+    90,
+    103
+  ],
+  "unverified_smoke_targets": [
+    100
+  ],
+  "native_functions_ast_identical_to_smoke_source": true,
+  "source_changes": "Registry SM90 maturity, observed FA3 label mapping/citation, comments/tests only",
+  "cpu_tests_passed": 238,
+  "cpu_tests_log_sha256": "3fa99c7838a10889f7146629804ffd25609561fdd0f3f601db529231376493f9",
+  "source_receipt_sha256": "03017c762e60e9d486d51b873e7d5039953dec01ee67b56fb4b1f65a45ea80d0",
+  "smoke_evidence": [
+    {
+      "system": "h100_sxm",
+      "selected": 16,
+      "passed": 16,
+      "results_sha256": "d039fcdc6581328de73fd45c859b54d056bf12fb0e48a28904bd79b0b530e7d8",
+      "validation_sha256": "ce1235f6fe4756d95f3f0375cda059f727e94e459e94b1fe04cface8b0e2862c",
+      "preflight_sha256": "a066b777106eaddf31e9eb6e8982f5bb7dc960acf22b1d854a7b1d6fab49e554"
+    },
+    {
+      "system": "h200_sxm",
+      "selected": 16,
+      "passed": 16,
+      "results_sha256": "79ef84ca1301d002768eaeaa026bb0b79e45c5db9e58ecde85b8b94a234cfdd8",
+      "validation_sha256": "0fd9fe611760aff0587d1f06e123fb4fcba97108d3a5f1aa352b3d700061ad1b",
+      "preflight_sha256": "365de9cc6dc33c59d4923b3b14784dbbabd232de745971de5eca6115f58f1c55"
+    }
+  ]
+}

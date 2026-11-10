@@ -10,7 +10,7 @@ runtime:
   source_commit: afcd7d6b487a9cbe73e25941971b4cc107e6f9ae
 tables:
   dsa_context_module_perf:
-    rows: 39
+    rows: 52
     status: complete
     collections:
     - collector_ref: 9718c10c8cc74f7901b10fd4dd2922a66409915b
@@ -25,8 +25,14 @@ tables:
       collected_at: '2026-11-09'
       rows: 38
       status: complete
+    - collector_ref: 57b648957dd474f18af52523a40baa2e90f60b37
+      collector_hash: sha256:2bd04b4ea6486383663c69a7bb38ebe1ca6a698111ffec9fafff37523111f200
+      case_plan_hash: sha256:6c63179e57609e07d9d7ca60926bbdea256ea3b96c0472d843fad06b1df25aa8
+      collected_at: '2026-11-09'
+      rows: 13
+      status: complete
   dsa_generation_module_perf:
-    rows: 33
+    rows: 44
     status: complete
     collections:
     - collector_ref: 9718c10c8cc74f7901b10fd4dd2922a66409915b
@@ -50,6 +56,12 @@ tables:
     - collector_ref: b0bcf4e28f7c0d2937469a8fb08a331de7b9e1f2
       collector_hash: sha256:45660e2327e37eb3231c00e1448d36cfa14cc92dacbb308e72cede5531d30ffc
       case_plan_hash: sha256:231cd268b3167a6dadeed563da21f99915a43116ed796c406acd6d01d460398c
+      collected_at: '2026-11-09'
+      rows: 11
+      status: complete
+    - collector_ref: 57b648957dd474f18af52523a40baa2e90f60b37
+      collector_hash: sha256:2bd04b4ea6486383663c69a7bb38ebe1ca6a698111ffec9fafff37523111f200
+      case_plan_hash: sha256:cc0abe0887902cf726ae80836b1616b6c88c3572a6a7532ee58cddc1ee7620c9
       collected_at: '2026-11-09'
       rows: 11
       status: complete

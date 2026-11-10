@@ -1,0 +1,31 @@
+{
+  "source_head": "2988c60fd407a64ea755401e2289e92204fb1af7",
+  "source_clean": true,
+  "collector_hash": "sha256:66120ba41d6440da2f1d487fc186d77dcd1d0c65ef7cb0d512a81a03fb819f23",
+  "hashed_files_count": 476,
+  "parent_source_head": "57b648957dd474f18af52523a40baa2e90f60b37",
+  "qualified_sms_at_freeze": [
+    90,
+    100,
+    103
+  ],
+  "native_functions_ast_identical_to_smoke_source": true,
+  "source_changes": "Registry SM100 maturity and scope comments/tests only; no native function or timing changes",
+  "cpu_tests_passed": 238,
+  "cpu_tests_log_sha256": "b5f8ad224b54974931251871b77e8d95e3ad14a11febbba7311daca5241214b1",
+  "source_receipt_sha256": "cf7e83b99f6879b5597ddcaa28a6e24ebfcce09ee034e37550a8f0994518c533",
+  "smoke_evidence": [
+    {
+      "system": "b200_sxm",
+      "tp_sizes": [
+        1,
+        2
+      ],
+      "selected": 8,
+      "passed": 8,
+      "results_sha256": "2d6db4679ffa6c503db0bb7e4875812cd16955f45e50fa56a228eb8ed1fbc23d",
+      "validation_sha256": "7ce9809583f7a364d75d1c393e2417269b4e41d23cb1a6ccb6a602dae263f009",
+      "preflight_sha256": "df02f77805184f22b3c4aa671e03bb6a1b20e6feed0435d55be5e9f8bd393635"
+    }
+  ]
+}

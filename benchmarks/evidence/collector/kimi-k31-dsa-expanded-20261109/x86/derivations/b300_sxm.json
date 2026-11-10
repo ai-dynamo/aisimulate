@@ -1,0 +1,82 @@
+{
+  "schema": "public-disjoint-native-row-union-v1",
+  "system": "b300_sxm",
+  "inputs": [
+    {
+      "label": "published-72",
+      "path": "original/b300_sxm/published-72",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "85ab7e801884bc32b0acef612be0b2fcc5ffd5a8155f9b019fca370c8fe8725a",
+          "bytes": 5917
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "491f3774aea5b614c0d6b5c7e0afa7fe2af1223b7e9335cc2527f38d62573a4c",
+          "bytes": 5846
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "2a473e1c155c6d90cd9569fad9f695e11103054d4909d3c56d0e8e49205dffa8",
+          "bytes": 2506
+        }
+      ],
+      "origin": {
+        "commit": "21b6c794896491c539d0ddde2c43ae31e4873ec3",
+        "evidence_directory": "benchmarks/evidence/collector/kimi-k31-dsa-b300-20261109",
+        "scope": "Previously published 72 native rows, preserved byte-for-byte as the union input."
+      }
+    },
+    {
+      "label": "tp8",
+      "path": "original/b300_sxm/tp8",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "8741f392a1b4dbd4168c1b6f0c5bfcae60bb62c83cf2b1f54927e8636c5dd760",
+          "bytes": 5632
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "d49e71383aa17445cc3f231b9dd453ebf88a373c28ac24ab33ad894b919f6c18",
+          "bytes": 5592
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "cfa516ef3ca58fb1286ad8a774eee37455cb04681d10ca1d2a99538bb64aa0ab",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "57b648957dd474f18af52523a40baa2e90f60b37",
+        "campaign": "new-tp8",
+        "scope": "New 24-point native formal campaign; four-path TP8 smoke precedes collection."
+      }
+    }
+  ],
+  "output_files": {
+    "collection_meta.yaml": "fe4961e53e7879ad21b0523250077cd9c529043f12ab8e258b8580c1786bcae7",
+    "dsa_context_module_perf.parquet": "2a48b18ee074e1d4bbfcf33633c463192119784bbc29ae9458c7eb2b5fe4bb66",
+    "dsa_generation_module_perf.parquet": "393a9454236207c6e22b8dd71a74d54187e426ac33468541a17af63b9c6672c0"
+  },
+  "counts": {
+    "dsa_context_module_perf": 52,
+    "dsa_generation_module_perf": 44
+  },
+  "validation": {
+    "all_column_rows_preserved": true,
+    "source_collection_events_preserved": true,
+    "disjoint_measurement_keys": true
+  },
+  "exact_event_multiset_verified": true,
+  "collection_event_counts": {
+    "dsa_context_module_perf": 3,
+    "dsa_generation_module_perf": 5
+  },
+  "original_derivation_sha256": "4374eaab95195c8264ac0e978a787e8a8eb81d2e3d533ae77a977d636089f0c1",
+  "executed_merge_script_sha256": "17b31c04fb75911b2464c8029ee6d54953c01e11e995d2344c70ac399d4c2dd2",
+  "portable_merge_script_sha256": "f1d60e80493cb6a96d1c74ac58540ac6b1312c9f8938bf753988bb2fbcdb8d8f",
+  "selected_cases_sha256": "30ec13991a609f89a710fd1094370055b44e40508458e1a2f0b632d0dd4709b2",
+  "scope": "No rows, latencies, kernel labels, or source events are synthesized or fitted."
+}

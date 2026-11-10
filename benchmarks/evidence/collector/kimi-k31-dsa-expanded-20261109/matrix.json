@@ -1,0 +1,247 @@
+{
+  "schema": "kimi_k31_expanded_op_coverage_v1",
+  "selection": "Original published B300 TP1/2/4 geometries are identical; retain all 24 geometries and extend only TP, system. Frozen without new timing data.",
+  "original_selection": "/home/harrli/.local/state/aisimulate/kimi-k31-20261105/op/campaign-20261109/plans/selected-cases.json",
+  "original_selection_sha256": "b676e3520f0589868a6fdb86720ec6e6009574c94f0a0e9928418e5014c48ef0",
+  "original_counts": {
+    "kimi_k31_dsa_context_module": 39,
+    "kimi_k31_dsa_generation_module": 33
+  },
+  "common_case_count": 96,
+  "configs": [
+    {
+      "system": "h100_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 1,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h100_sxm-tp1.json",
+      "selected_cases_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708"
+    },
+    {
+      "system": "h100_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 2,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h100_sxm-tp2.json",
+      "selected_cases_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874"
+    },
+    {
+      "system": "h100_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 4,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h100_sxm-tp4.json",
+      "selected_cases_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d"
+    },
+    {
+      "system": "h100_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 8,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h100_sxm-tp8.json",
+      "selected_cases_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855"
+    },
+    {
+      "system": "h200_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 1,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h200_sxm-tp1.json",
+      "selected_cases_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708"
+    },
+    {
+      "system": "h200_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 2,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h200_sxm-tp2.json",
+      "selected_cases_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874"
+    },
+    {
+      "system": "h200_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 4,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h200_sxm-tp4.json",
+      "selected_cases_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d"
+    },
+    {
+      "system": "h200_sxm",
+      "sm": 90,
+      "platform": "x86_64",
+      "tp_size": 8,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "h200_sxm-tp8.json",
+      "selected_cases_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855"
+    },
+    {
+      "system": "b200_sxm",
+      "sm": 100,
+      "platform": "x86_64",
+      "tp_size": 1,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "b200_sxm-tp1.json",
+      "selected_cases_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708"
+    },
+    {
+      "system": "b200_sxm",
+      "sm": 100,
+      "platform": "x86_64",
+      "tp_size": 2,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "b200_sxm-tp2.json",
+      "selected_cases_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874"
+    },
+    {
+      "system": "b200_sxm",
+      "sm": 100,
+      "platform": "x86_64",
+      "tp_size": 4,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "b200_sxm-tp4.json",
+      "selected_cases_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d"
+    },
+    {
+      "system": "b200_sxm",
+      "sm": 100,
+      "platform": "x86_64",
+      "tp_size": 8,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "b200_sxm-tp8.json",
+      "selected_cases_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855"
+    },
+    {
+      "system": "gb200",
+      "sm": 100,
+      "platform": "aarch64",
+      "tp_size": 1,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb200-tp1.json",
+      "selected_cases_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708"
+    },
+    {
+      "system": "gb200",
+      "sm": 100,
+      "platform": "aarch64",
+      "tp_size": 2,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb200-tp2.json",
+      "selected_cases_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874"
+    },
+    {
+      "system": "gb200",
+      "sm": 100,
+      "platform": "aarch64",
+      "tp_size": 4,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb200-tp4.json",
+      "selected_cases_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d"
+    },
+    {
+      "system": "gb200",
+      "sm": 100,
+      "platform": "aarch64",
+      "tp_size": 8,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb200-tp8.json",
+      "selected_cases_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855"
+    },
+    {
+      "system": "gb300",
+      "sm": 103,
+      "platform": "aarch64",
+      "tp_size": 1,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb300-tp1.json",
+      "selected_cases_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708"
+    },
+    {
+      "system": "gb300",
+      "sm": 103,
+      "platform": "aarch64",
+      "tp_size": 2,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb300-tp2.json",
+      "selected_cases_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874"
+    },
+    {
+      "system": "gb300",
+      "sm": 103,
+      "platform": "aarch64",
+      "tp_size": 4,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb300-tp4.json",
+      "selected_cases_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d"
+    },
+    {
+      "system": "gb300",
+      "sm": 103,
+      "platform": "aarch64",
+      "tp_size": 8,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "gb300-tp8.json",
+      "selected_cases_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855"
+    },
+    {
+      "system": "b300_sxm",
+      "sm": 103,
+      "platform": "x86_64",
+      "tp_size": 8,
+      "points": 24,
+      "context_points": 13,
+      "generation_points": 11,
+      "selected_cases": "b300_sxm-tp8.json",
+      "selected_cases_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855"
+    }
+  ],
+  "point_count": 504,
+  "smoke_policy": "SM90 and SM100 remain registry-unverified. Explicit native standalone smoke retains failures; qualification follows actual native results.",
+  "timing_policy": "Existing native one-layer DSA eager module, unchanged warmup and sampling."
+}

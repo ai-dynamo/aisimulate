@@ -1,0 +1,8 @@
+{
+  "source_head": "21b6c794896491c539d0ddde2c43ae31e4873ec3",
+  "source_clean": true,
+  "wheel_sha256": "795c0839156de08aae0407a0b270c3b7e51aae61bddcc662da144f8411f3f76a",
+  "native_sha256": "e2d4b9174491173f3f0f4690280c60f4f8b6bead1967f501aea45c298c0fe607",
+  "build_receipt_sha256": "991d1913a5ebebb43d887160b17efe05f7a50da855c08ad4ad27fed83a2d3812",
+  "scope": "Native data-integrity verification; no accuracy claim."
+}

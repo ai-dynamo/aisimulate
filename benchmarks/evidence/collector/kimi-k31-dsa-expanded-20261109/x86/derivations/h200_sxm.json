@@ -1,0 +1,134 @@
+{
+  "schema": "public-disjoint-native-row-union-v1",
+  "system": "h200_sxm",
+  "inputs": [
+    {
+      "label": "tp1",
+      "path": "original/h200_sxm/tp1",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "786e26f269751db3b4d72985c8a156bc9d86216f62b135c17f79830ab98d0ab1",
+          "bytes": 5574
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "2c6e1bae3cbb5e3d46838306b32e6e33104a96a4d8d7ba306c7ca383f6f5123d",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "bac6c59d263e0396e4855d343bdd2748b1048e169f3a218f5783c2e84fb48566",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "57b648957dd474f18af52523a40baa2e90f60b37",
+        "campaign": "new-tp1248",
+        "scope": "New 24-point native formal TP campaign; four-path smoke precedes collection."
+      }
+    },
+    {
+      "label": "tp2",
+      "path": "original/h200_sxm/tp2",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "41670b2c76e30752a795b333d2930a07b79a41d349a04f232aa9a7a30a77c401",
+          "bytes": 5574
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "8129fd6354b9bdf03a6f1ffcfd4681d38309a52641dd99237dc9c9376d9b50d1",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "966d2936efb76ece36a2a1edb337140ab10935718caf673def4f29c1a7dab125",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "57b648957dd474f18af52523a40baa2e90f60b37",
+        "campaign": "new-tp1248",
+        "scope": "New 24-point native formal TP campaign; four-path smoke precedes collection."
+      }
+    },
+    {
+      "label": "tp4",
+      "path": "original/h200_sxm/tp4",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "5443969d9afe1a96c541506daed7a8979b815fe91cd8398761c8b8147174acfe",
+          "bytes": 5574
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "2a02e5b36ccf39c87fe2babfb82b5d979c8dce79677c2229f9243c43f3b2fbf7",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "82af6a0d68a0163451f3a330d5f4cd2d0857c813851adba975e0ed89078fafed",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "57b648957dd474f18af52523a40baa2e90f60b37",
+        "campaign": "new-tp1248",
+        "scope": "New 24-point native formal TP campaign; four-path smoke precedes collection."
+      }
+    },
+    {
+      "label": "tp8",
+      "path": "original/h200_sxm/tp8",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "22f560f9e2b23563aa682bacab46a3dbd980e6076eb366c4dec75e3ef798746b",
+          "bytes": 5574
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "c88f9eb9a0354543022002716dbc6e678e721778b2ad08e2f94fe432aeabf6f3",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "acecdc279efdde3ae04034aee40a065ea125bd8bfa8cd18118f9e56baf2cddc7",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "57b648957dd474f18af52523a40baa2e90f60b37",
+        "campaign": "new-tp1248",
+        "scope": "New 24-point native formal TP campaign; four-path smoke precedes collection."
+      }
+    }
+  ],
+  "output_files": {
+    "collection_meta.yaml": "871d9da3aafd47d365e13ed5442c7cf0401eee0cd62b2ca52bd4553157fec6c7",
+    "dsa_context_module_perf.parquet": "25ac358df4c1ce77b933cd79b28f62eba1d514a21a2b47b782b2b842a2e1a2fe",
+    "dsa_generation_module_perf.parquet": "ca1d0dbcb167aa141cb6643ba268761bdcdcfb7d7fdc087db7de6400f0d9cc9c"
+  },
+  "counts": {
+    "dsa_context_module_perf": 52,
+    "dsa_generation_module_perf": 44
+  },
+  "validation": {
+    "all_column_rows_preserved": true,
+    "source_collection_events_preserved": true,
+    "disjoint_measurement_keys": true
+  },
+  "exact_event_multiset_verified": true,
+  "collection_event_counts": {
+    "dsa_context_module_perf": 4,
+    "dsa_generation_module_perf": 4
+  },
+  "original_derivation_sha256": "0dba90c0a6ae75903c4ec447df9d59889e96abd52a798ed69150ca0eb04c6dcb",
+  "executed_merge_script_sha256": "17b31c04fb75911b2464c8029ee6d54953c01e11e995d2344c70ac399d4c2dd2",
+  "portable_merge_script_sha256": "f1d60e80493cb6a96d1c74ac58540ac6b1312c9f8938bf753988bb2fbcdb8d8f",
+  "selected_cases_sha256": "30ec13991a609f89a710fd1094370055b44e40508458e1a2f0b632d0dd4709b2",
+  "scope": "No rows, latencies, kernel labels, or source events are synthesized or fitted."
+}
