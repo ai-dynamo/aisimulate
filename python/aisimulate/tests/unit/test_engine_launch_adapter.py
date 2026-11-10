@@ -227,3 +227,65 @@ def test_speculative_launch_and_mismatch_query_reject_unsupported_chain(local_ta
         RustForwardPassPerfModel.config_engine_launch_mismatches({"engine": engine}, config=timing)
     with pytest.raises(ValueError, match="speculative replay requires"):
         _native_launch(engine)
+
+
+@pytest.mark.parametrize("kind", ["ngram", "mtp", "eagle3"])
+@pytest.mark.parametrize("depth_input", ["omitted", "null", "explicit"])
+def test_canonical_depth_defaults_match_replay_role(local_target, kind, depth_input):
+    timing = {**_timing_config(local_target), "speculation": _speculative_cost(kind)}
+    engine = {
+        "backend": "vllm",
+        "worker_type": "decode",
+        "num_gpu_blocks": 64,
+        "aic_nextn_accept_rates": "1,1,0.4",
+        "timing_model": {"type": "external", "provider": "ais", "config": timing},
+    }
+    if depth_input != "omitted":
+        engine["aic_nextn"] = None if depth_input == "null" else 3
+    arguments = {"engine": engine, "num_gpu_blocks_is_explicit": True}
+    assert RustForwardPassPerfModel.config_engine_launch_mismatches(arguments, config=timing) == []
+    restored = _native_launch(engine)
+    assert restored["engine"]["aic_nextn"] == 3
+    assert restored["engine"]["timing_model"]["config"]["nextn"] == 0
+    assert _native_launch(restored["engine"]) == restored
+
+
+@pytest.mark.parametrize("rates", [None, "", "  ", "1,0.5,0.25"])
+def test_ngram_descriptor_preserves_native_acceptance_defaults(local_target, rates):
+    timing = {**_timing_config(local_target), "speculation": _speculative_cost("ngram")}
+    engine = {
+        "backend": "vllm",
+        "worker_type": "decode",
+        "num_gpu_blocks": 64,
+        "aic_nextn": None,
+        "timing_model": {"type": "external", "provider": "ais", "config": timing},
+    }
+    if rates is not None:
+        engine["aic_nextn_accept_rates"] = rates
+    arguments = {"engine": engine, "num_gpu_blocks_is_explicit": False}
+    assert RustForwardPassPerfModel.config_engine_launch_mismatches(arguments, config=timing) == []
+    restored = _native_launch(engine, explicit_capacity=False)
+    assert restored["engine"]["aic_nextn"] == 3
+    assert restored["engine"]["async_scheduling"] is False
+    expected = [1, 0.5, 0.25] if rates and rates.strip() else [0.85, 0.3, 0]
+    assert [float(rate) for rate in restored["engine"]["aic_nextn_accept_rates"].split(",")] == expected
+    assert restored["num_gpu_blocks_is_explicit"] is False
+
+
+@pytest.mark.parametrize("kind", ["ngram", "mtp", "eagle3"])
+def test_explicit_zero_depth_is_not_treated_as_omitted(local_target, kind):
+    timing = {**_timing_config(local_target), "speculation": _speculative_cost(kind)}
+    engine = {
+        "backend": "vllm",
+        "worker_type": "decode",
+        "num_gpu_blocks": 64,
+        "aic_nextn": 0,
+        "aic_nextn_accept_rates": "1,1,0.4",
+        "timing_model": {"type": "external", "provider": "ais", "config": timing},
+    }
+    with pytest.raises(ValueError, match="aic_nextn"):
+        _native_launch(engine)
+    with pytest.raises(ValueError, match="aic_nextn"):
+        RustForwardPassPerfModel.config_engine_launch_mismatches(
+            {"engine": engine, "num_gpu_blocks_is_explicit": True}, config=timing
+        )

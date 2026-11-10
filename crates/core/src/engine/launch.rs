@@ -76,7 +76,10 @@ impl EngineLaunchConfig {
             if value.get("dp_size").is_none() && config.attention_dp != UNKNOWN_SIZE {
                 result.dp_size = config.attention_dp;
             }
-            if value.pointer("/engine/aic_nextn").is_none() {
+            if value
+                .pointer("/engine/aic_nextn")
+                .is_none_or(Value::is_null)
+            {
                 result.derive_speculative_depth()?;
             }
         }
@@ -151,54 +154,15 @@ impl EngineLaunchConfig {
         if identity["worker_type"] != serde_json::to_value(self.worker_type)? {
             mismatches.push("AIS worker_type must match engine role".into());
         }
-        let depth = match &config.speculation {
-            Some(speculation) => {
-                let depth = speculation.replay_depth()?;
-                if depth > 0 {
-                    if identity["backend"] != serde_json::to_value(self.backend)? {
-                        mismatches.push("AIS backend must match engine backend".into());
-                    }
-                    if speculation.kind == "ngram"
-                        && self.backend == super::Backend::Vllm
-                        && self.async_scheduling == Some(true)
-                    {
-                        mismatches.push(
-                            "vLLM does not support async scheduling with ngram speculative decoding"
-                                .into(),
-                        );
-                    }
-                    if !matches!(
-                        config.backend,
-                        crate::BackendKind::Vllm | crate::BackendKind::Sglang
-                    ) {
-                        mismatches.push(
-                            "generic speculation requires backend=vllm or backend=sglang".into(),
-                        );
-                    }
-                    if !self
-                        .aic_nextn_accept_rates
-                        .as_deref()
-                        .is_some_and(|rates| !rates.trim().is_empty())
-                    {
-                        mismatches.push(
-                            "generic speculative replay requires explicit aic_nextn_accept_rates"
-                                .into(),
-                        );
-                    }
-                    if speculation.kind != "ngram"
-                        && !(self.num_gpu_blocks_is_explicit && self.num_gpu_blocks > 0)
-                    {
-                        mismatches.push(
-                            "generic speculation requires explicitly configured positive num_gpu_blocks"
-                                .into(),
-                        );
-                    }
-                }
-                depth
-            }
-            None => config.nextn,
-        };
-        if depth as usize != self.aic_nextn.unwrap_or(0) {
+        if let Some(speculation) = &config.speculation {
+            mismatches.extend(super::speculation::speculative_role_mismatches(
+                &self.engine,
+                &speculation.kind,
+                config.backend.as_str(),
+                speculation.replay_depth()?,
+                self.num_gpu_blocks_is_explicit,
+            ));
+        } else if config.nextn as usize != self.aic_nextn.unwrap_or(0) {
             mismatches
                 .push("canonical speculative depth conflicts with scheduler aic_nextn".into());
         }
@@ -249,14 +213,16 @@ impl EngineLaunchConfig {
     /// Validate launch inputs and normalize shared engine controls.
     pub fn normalized(mut self) -> Result<Self> {
         self.validate()?;
-        if self.backend == super::Backend::Vllm
-            && self.performance_config()?.is_some_and(|config| {
-                config
-                    .speculation
-                    .is_some_and(|speculation| speculation.kind == "ngram")
-            })
+        if let Some(config) = self.performance_config()?
+            && let Some(speculation) = &config.speculation
         {
-            self.async_scheduling = Some(false);
+            super::speculation::resolve_speculative_role(
+                &mut self.engine,
+                &speculation.kind,
+                config.backend.as_str(),
+                speculation.replay_depth()?,
+                self.num_gpu_blocks_is_explicit,
+            )?;
         }
         if let Some(nextn) = self.aic_nextn {
             let rates =
@@ -364,18 +330,33 @@ mod tests {
     }
 
     #[test]
-    fn canonical_launch_rejects_missing_acceptance_and_conflicting_depth() {
-        let mut missing = speculative_launch("ngram");
-        missing["engine"]
-            .as_object_mut()
-            .unwrap()
-            .remove("aic_nextn_accept_rates");
-        assert!(
-            EngineLaunchConfig::from_value(missing)
-                .unwrap_err()
-                .to_string()
-                .contains("explicit aic_nextn_accept_rates")
-        );
+    fn canonical_ngram_defaults_acceptance_and_rejects_conflicting_depth() {
+        for depth in [None, Some(Value::Null), Some(json!(3))] {
+            let mut value = speculative_launch("ngram");
+            value["engine"]
+                .as_object_mut()
+                .unwrap()
+                .remove("aic_nextn_accept_rates");
+            if let Some(depth) = depth {
+                value["engine"]["aic_nextn"] = depth;
+            }
+            let config = EngineLaunchConfig::from_value(value.clone()).unwrap();
+            assert_eq!(config.aic_nextn, Some(3));
+            assert_eq!(config.aic_nextn_accept_rates.as_deref(), Some("0.85,0.3,0"));
+            assert_eq!(config.async_scheduling, Some(false));
+            assert!(
+                EngineLaunchConfig::timing_config_mismatches(
+                    value,
+                    &config.performance_config().unwrap().unwrap(),
+                )
+                .unwrap()
+                .is_empty()
+            );
+            assert_eq!(
+                EngineLaunchConfig::from_value(serde_json::to_value(&config).unwrap()).unwrap(),
+                config,
+            );
+        }
         let mut conflicting = speculative_launch("ngram");
         conflicting["engine"]["aic_nextn"] = json!(2);
         conflicting["engine"]["aic_nextn_accept_rates"] = json!("1,0.5");
@@ -406,10 +387,7 @@ mod tests {
             EngineLaunchConfig::timing_config_mismatches(value.clone(), &timing).unwrap();
         assert_eq!(
             mismatches,
-            [
-                "generic speculative replay requires explicit aic_nextn_accept_rates",
-                "canonical speculative depth conflicts with scheduler aic_nextn",
-            ]
+            ["canonical speculative depth conflicts with scheduler aic_nextn"]
         );
         assert_eq!(
             EngineLaunchConfig::from_value(value)

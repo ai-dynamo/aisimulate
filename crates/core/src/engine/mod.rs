@@ -19,6 +19,7 @@ pub(crate) mod offload_transfer;
 mod protocol;
 mod runtime;
 mod scheduler;
+pub(crate) mod speculation;
 mod timing;
 mod trace;
 
