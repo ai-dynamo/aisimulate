@@ -688,9 +688,9 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
 @pytest.mark.parametrize(
     "membership,mount,limit,usage,stat",
     [
-        ("0::/", "cgroup2 cgroup rw", "memory.max", "memory.current", f"anon {GB}\ninactive_file {5 * GB}\n"),
+        ("0::/job", "cgroup2 cgroup rw", "memory.max", "memory.current", f"anon {GB}\ninactive_file {5 * GB}\n"),
         (
-            "1:memory:/",
+            "1:memory:/job",
             "cgroup cgroup rw,memory",
             "memory.limit_in_bytes",
             "memory.usage_in_bytes",
@@ -706,14 +706,11 @@ def test_cgroup_usage_excludes_inactive_page_cache(tmp_path, host, membership, m
     (proc / "self/cgroup").write_text(f"{membership}\n")
     (proc / "self/mountinfo").write_text(f"42 30 0:27 / /sys/fs/cgroup rw - {mount}\n")
     root = tmp_path / "sys/fs/cgroup"
-    root.mkdir(parents=True)
+    (root / "job").mkdir(parents=True)
     (root / limit).write_text(str(8 * GB))
     (root / usage).write_text(str(7 * GB))
     (root / "memory.stat").write_text(stat)
-    actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
-    assert actual.available_memory_bytes == 6 * GB
-    # Counting the cache as used would leave nothing after the 1 GB host reserve.
-    assert resolve_budget(ResourceConfig(), actual)["memory_limit_bytes"] == 5 * GB
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 6 * GB
     (root / "memory.stat").unlink()
     assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == GB
 

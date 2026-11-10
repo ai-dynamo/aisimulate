@@ -148,12 +148,8 @@ def constrain_to_cgroups(host: HostResources, *, proc: Path = Path("/proc"), roo
         if limit and limit.isdecimal():
             total = min(total, int(limit))
             # Missing usage must not make a finite cgroup appear entirely free.
-            if usage and usage.isdecimal():
-                # The working set, as container runtimes report it: a warm cache is not memory in use.
-                used = max(0, int(usage) - _inactive_file_bytes(directory, kind))
-                available = min(available, max(0, int(limit) - used))
-            else:
-                available = 0
+            used = int(usage) - _inactive_file_bytes(directory, kind) if usage and usage.isdecimal() else int(limit)
+            available = min(available, max(0, int(limit) - used))
         if len(cpu) == 2 and cpu[0] and cpu[1]:
             try:
                 quota, period = int(cpu[0]), int(cpu[1])
