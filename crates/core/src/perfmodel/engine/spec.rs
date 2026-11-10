@@ -29,8 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::ENGINE_SPEC_SCHEMA_VERSION;
 use crate::common::enums::EncoderParallel;
 use crate::common::error::AicError;
-use crate::perfmodel::EngineConfig;
-use crate::perfmodel::afd::plan::AfdExecutionPlan;
+use crate::perfmodel::{AfdExecutionPlan, EngineConfig};
 
 /// Public name for the serializable op. Aliases the crate's [`Op`] enum so
 /// the "OpSpec" surface exists without duplicating the definition.

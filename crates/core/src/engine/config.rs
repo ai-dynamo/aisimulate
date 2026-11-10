@@ -182,7 +182,7 @@ pub struct AfdEngineConfig {
     /// In-flight pipeline microbatches.
     pub num_microbatches: u32,
     #[serde(default)]
-    pub pipeline_layout: crate::perfmodel::afd::model::AfdPipelineLayout,
+    pub pipeline_layout: crate::AfdPipelineLayout,
     /// Applied exactly once, at pipeline evaluation, on the transfer terms;
     /// the measurement side stays 1.0.
     pub comm_overhead_factor: f64,

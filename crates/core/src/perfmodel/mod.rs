@@ -40,7 +40,11 @@ pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
 
-pub use afd::{AfdPoolRole, AfdRoutingLocation};
+pub use afd::{
+    AfdPoolRole, AfdRoutingLocation,
+    pipeline::AfdPipelineLayout,
+    plan::{AfdExecutionPlan, AfdLayerTemplate, AfdPhasePlan},
+};
 pub use common::{AicError, enums::DatabaseMode, enums::EncoderParallel};
 pub use engine::spec::{EncoderImageShape, VisionSpec};
 pub use perf_database::fpm_forward::{FpmSeedTargetNormalization, FpmSeedTargetRow};

@@ -508,9 +508,12 @@ def compile_engine(
     identity; profiles support CP1/PP1, with explicitly identified speculative
     rounds confined to direct interpolation.
 
-    Engine schema 29 adds the optional vision section on top of the schema-28
-    layout, which carries the GLM-5.3-Flash measured ops (28), decode context
-    parallelism (26), the FPM interpolation selector (25) and typed DCP (24).
+    Engine schema 30 adds native AFD communication ops and the source-ordered
+    ``afd_plan``, with its A/F role also stored in ``engine.extra.afd_pool_role``.
+    P2P fabric selectors and independent F-node width are part of the same
+    positional wire-format change. It builds on the optional vision section
+    (29), GLM-5.3-Flash measured ops (28), decode context parallelism (26), the
+    FPM interpolation selector (25) and typed DCP (24).
     Older binary specs require recompilation; default representations are
     therefore not byte-identical.
     """
