@@ -1,5 +1,5 @@
 {
-  "attempt_id": "77578660d9684098bad4503e4ddfdd8e",
+  "attempt_id": "615cd474711f4ed7896820588093db49",
   "attention_backend": [
     "DEEPSEEK_V32_INDEXER",
     "FLASHINFER_MLA_SPARSE",
@@ -131,7 +131,7 @@
       ]
     }
   ],
-  "bundle_sha256": "ec8b11144c4f8e3067a21b1cdeeb7db666ed6225355b224975082f27a086e270",
+  "bundle_sha256": "e26e917fb8c4c653e25947b531ae057a61a84eb68a56fd5421bbb79858de9b99",
   "cache": {
     "allocated_cache_bytes": 185139609600,
     "available_cache_bytes": 185140872090,
@@ -3016,7 +3016,7 @@
     "storages": [
       {
         "device": "cuda:2",
-        "pointer": 281139969261568,
+        "pointer": 281140506132480,
         "size_bytes": 185139609600,
         "storage_id": "storage-0"
       }
@@ -3154,10 +3154,10 @@
       }
     ]
   },
-  "configuration": "gb300-tp4-hub",
+  "configuration": "gb300-tp4-col",
   "cpu_affinity_observation": {
     "hostname": "node0000",
-    "pid": 4022537,
+    "pid": 961904,
     "status": "observed"
   },
   "dp_rank": 0,
@@ -3236,20 +3236,20 @@
     "mode": "NONE"
   },
   "instrumentation_binding": {
-    "attempt_id": "77578660d9684098bad4503e4ddfdd8e",
-    "bundle_sha256": "ec8b11144c4f8e3067a21b1cdeeb7db666ed6225355b224975082f27a086e270",
+    "attempt_id": "615cd474711f4ed7896820588093db49",
+    "bundle_sha256": "e26e917fb8c4c653e25947b531ae057a61a84eb68a56fd5421bbb79858de9b99",
     "classes": {
       "worker_class": "instrumentation.vllm_033.ObservedWorker"
     },
-    "configuration": "gb300-tp4-hub",
-    "expected_bundle_sha256": "ec8b11144c4f8e3067a21b1cdeeb7db666ed6225355b224975082f27a086e270",
+    "configuration": "gb300-tp4-col",
+    "expected_bundle_sha256": "e26e917fb8c4c653e25947b531ae057a61a84eb68a56fd5421bbb79858de9b99",
     "files": {
-      "fpm_memory_observer.py": "da24fb239330f93926e6066da0b8405c8c1e530071171bdf2e3278799b457dfa",
-      "instrumentation/README.md": "268cf3de6205f0dcb2ec4e8d92e2d78bf8b06ebee4626ac40232398f7ba0f1ab",
+      "fpm_memory_observer.py": "91c0fcc7aa1a9682e4efc6593d999a3006f547a88d7c0c155f64f3f6c893dfac",
+      "instrumentation/README.md": "2c43753946e7edb19c19626b23d792f463239ddb7480dbd1269d542cfb76b89e",
       "instrumentation/__init__.py": "39b67a3543de12fbe919327958818a53222b223688ef8ece33a12bc1e46d1f14",
       "instrumentation/hooks.py": "2323ea740d3c3c214bef01d52ed63908d16230f7d6d0876c9d59944d0e9f5d27",
       "instrumentation/observer.py": "8599bfd59f1b4fc93c98a354075b4fe7026c014003242fbe209c1d93c7225839",
-      "instrumentation/vllm-0.33.0.md": "26f41a1eb70ed2377f9033dad7f8d74fa2eacbcbf88093fa8cba9518eb4c4ab0",
+      "instrumentation/vllm-0.33.0.md": "bc344cb265bdab0f6e1fa3d8441441c1a51c43c20d7bae85b8b6ef71c6b04c37",
       "instrumentation/vllm_033.py": "059f68d424a47f87b22d91bfbbd7d20119acb49f5040d9ef047781a785074fc9"
     },
     "hostname": "node0000",
@@ -3257,7 +3257,7 @@
       "fpm_memory_observer": {
         "file": "fpm_memory_observer.py",
         "path": "/tmp/fpm-bench/runtime-instrumentation/fpm_memory_observer.py",
-        "sha256": "da24fb239330f93926e6066da0b8405c8c1e530071171bdf2e3278799b457dfa"
+        "sha256": "91c0fcc7aa1a9682e4efc6593d999a3006f547a88d7c0c155f64f3f6c893dfac"
       },
       "instrumentation": {
         "file": "instrumentation/__init__.py",
@@ -3282,7 +3282,7 @@
     },
     "loader_sha256": "9e8681b223839cf8a320626348bf9cc1bf5d220d3439845f87c8ae7e6aa862a8",
     "phase": "prefill",
-    "pid": 4022537,
+    "pid": 961904,
     "root": "/tmp/fpm-bench/runtime-instrumentation",
     "schema_version": "aisimulate-runtime-instrumentation-imports/v1",
     "status": "verified"
@@ -3298,13 +3298,13 @@
       "max_num_seqs": 256,
       "max_prefill_cudagraph_size": null,
       "prefill_cudagraph_policy": "runtime",
-      "warmup_iterations": 5
+      "warmup_iterations": 0
     },
     "deployment": {
       "container_mount": [
         "/models/zai-org_glm-5.3-flash/hf:/models/zai-org_glm-5.3-flash/hf:ro",
+        "/work/overlay:/opt/glm53flash-dynamo:ro",
         "/work/hf-hub:/work/hf-hub:ro",
-        "/work/overlays/dynamo-1.7.0.dev20261109:/opt/glm53flash-dynamo:ro",
         "/work/tools/etcd-from-dynamo-1.5.0-arm64/etcd:/usr/local/bin/etcd:ro",
         "/work/cache:/work/cache"
       ],
@@ -3331,7 +3331,7 @@
       "comm_quant_mode": "half",
       "enable_eplb": false,
       "enable_wideep": false,
-      "fmha_quant_mode": "bfloat16",
+      "fmha_quant_mode": "fp8",
       "gemm_quant_mode": "fp8_block",
       "kvcache_quant_mode": "fp8",
       "moe_backend": "auto",

@@ -1,58 +1,64 @@
 {
   "configurations": {
-    "gb300-tp4-hub": {
-      "active_attempt_id": "77578660d9684098bad4503e4ddfdd8e",
+    "gb300-tp4-col": {
+      "active_attempt_id": "615cd474711f4ed7896820588093db49",
       "attempts": [
         {
-          "attempt_id": "77578660d9684098bad4503e4ddfdd8e",
+          "attempt_id": "615cd474711f4ed7896820588093db49",
           "bundle": {
-            "manifest": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/instrumentation/manifest.json",
-            "sha256": "ec8b11144c4f8e3067a21b1cdeeb7db666ed6225355b224975082f27a086e270"
+            "manifest": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/instrumentation/manifest.json",
+            "sha256": "e26e917fb8c4c653e25947b531ae057a61a84eb68a56fd5421bbb79858de9b99"
           },
-          "completed_at": "2026-11-10T19:48:39.100454+00:00",
+          "completed_at": "2026-11-10T21:35:09.957854+00:00",
           "phases": {
             "prefill": {
               "artifacts": [
                 {
-                  "kind": "observation",
-                  "path": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/prefill/evidence-343cffc625a048209e2a0026f3ee7569/raw/node0000/runtime-observation-scheduler-dp0.json",
-                  "sha256": "6ab71ef9a7c8df9e98dc98385c417a6bfd602a30899a7ac2954746c289243a12",
-                  "size": 54005
+                  "kind": "runtime-artifact",
+                  "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/evidence-fce19f1ac49b490c82b077ea80f8019e/model-config.json",
+                  "sha256": "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f",
+                  "size": 69416
                 },
                 {
                   "kind": "observation",
-                  "path": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/prefill/evidence-343cffc625a048209e2a0026f3ee7569/raw/node0000/runtime-observation-worker-dp0-tp0-pp0.json",
-                  "sha256": "fe15e6892e0cfebcc231ffec144db0e0ed4d5d59e577ffb8fcf75b52392d978c",
-                  "size": 121237
+                  "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/evidence-fce19f1ac49b490c82b077ea80f8019e/raw/node0000/runtime-observation-scheduler-dp0.json",
+                  "sha256": "d7254211d1169f66c0da65baf3a04f1b9548a3d92df3c34e77d4c7f7ee71f782",
+                  "size": 53972
                 },
                 {
                   "kind": "observation",
-                  "path": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/prefill/evidence-343cffc625a048209e2a0026f3ee7569/raw/node0000/runtime-observation-worker-dp0-tp1-pp0.json",
-                  "sha256": "dfd0959a2a70249935d5fdae442fb3a5ce9f80f6b3b628068196460cbadde240",
-                  "size": 121237
+                  "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/evidence-fce19f1ac49b490c82b077ea80f8019e/raw/node0000/runtime-observation-worker-dp0-tp0-pp0.json",
+                  "sha256": "0c38a8059d644098652149f3eac96edf75d155372c0c3691c0d4a31bfef68ed0",
+                  "size": 121204
                 },
                 {
                   "kind": "observation",
-                  "path": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/prefill/evidence-343cffc625a048209e2a0026f3ee7569/raw/node0000/runtime-observation-worker-dp0-tp2-pp0.json",
-                  "sha256": "c468c1f90dcad838d5c4d410277627567a220c1813d8708e16aed6c3aa7a335f",
-                  "size": 121237
+                  "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/evidence-fce19f1ac49b490c82b077ea80f8019e/raw/node0000/runtime-observation-worker-dp0-tp1-pp0.json",
+                  "sha256": "d09b682f1e024f6966c58d75f364e526487d3d90c9cd77b2001265dd6b3893f4",
+                  "size": 121204
                 },
                 {
                   "kind": "observation",
-                  "path": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/prefill/evidence-343cffc625a048209e2a0026f3ee7569/raw/node0000/runtime-observation-worker-dp0-tp3-pp0.json",
-                  "sha256": "dadeb5cffa90f8342c1194184857bb2b44af01b84aef4d8c38a60601d8ed487a",
-                  "size": 121237
+                  "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/evidence-fce19f1ac49b490c82b077ea80f8019e/raw/node0000/runtime-observation-worker-dp0-tp2-pp0.json",
+                  "sha256": "f0eb9fae75c5ef0cf60078f320b220d5df330fe8a077f50786b7b0fc086c01fd",
+                  "size": 121204
+                },
+                {
+                  "kind": "observation",
+                  "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/evidence-fce19f1ac49b490c82b077ea80f8019e/raw/node0000/runtime-observation-worker-dp0-tp3-pp0.json",
+                  "sha256": "d75db352ffdc025935a432172da346b609dd02a1da02eecf30a4109825e72a00",
+                  "size": 121204
                 }
               ],
               "launch_manifest": {
-                "path": "attempts/gb300-tp4-hub-5b126d68/77578660d9684098bad4503e4ddfdd8e/prefill/runtime-probe-context.json",
-                "sha256": "732c8830dc8012fdcc04817f1aa2585cb1501d4b74777bd1c008851f667ed20d",
-                "size": 2848
+                "path": "attempts/gb300-tp4-col-43ca7402/615cd474711f4ed7896820588093db49/prefill/runtime-probe-context.json",
+                "sha256": "c75f790d256de7db11313eda6066a2151895816bf2f974c1ec5d0231aba6ed0e",
+                "size": 2817
               },
               "status": "completed"
             }
           },
-          "started_at": "2026-11-10T19:35:41.897120+00:00",
+          "started_at": "2026-11-10T21:27:42.554594+00:00",
           "status": "completed"
         }
       ],
@@ -66,13 +72,13 @@
           "max_num_seqs": 256,
           "max_prefill_cudagraph_size": null,
           "prefill_cudagraph_policy": "runtime",
-          "warmup_iterations": 5
+          "warmup_iterations": 0
         },
         "deployment": {
           "container_mount": [
             "/models/zai-org_glm-5.3-flash/hf:/models/zai-org_glm-5.3-flash/hf:ro",
+            "/work/overlay:/opt/glm53flash-dynamo:ro",
             "/work/hf-hub:/work/hf-hub:ro",
-            "/work/overlays/dynamo-1.7.0.dev20261109:/opt/glm53flash-dynamo:ro",
             "/work/tools/etcd-from-dynamo-1.5.0-arm64/etcd:/usr/local/bin/etcd:ro",
             "/work/cache:/work/cache"
           ],
@@ -99,7 +105,7 @@
           "comm_quant_mode": "half",
           "enable_eplb": false,
           "enable_wideep": false,
-          "fmha_quant_mode": "bfloat16",
+          "fmha_quant_mode": "fp8",
           "gemm_quant_mode": "fp8_block",
           "kvcache_quant_mode": "fp8",
           "moe_backend": "auto",

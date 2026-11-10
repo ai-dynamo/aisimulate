@@ -1,7 +1,7 @@
 {
-  "attempt_id": "77578660d9684098bad4503e4ddfdd8e",
-  "bundle_sha256": "ec8b11144c4f8e3067a21b1cdeeb7db666ed6225355b224975082f27a086e270",
-  "configuration": "gb300-tp4-hub",
+  "attempt_id": "615cd474711f4ed7896820588093db49",
+  "bundle_sha256": "e26e917fb8c4c653e25947b531ae057a61a84eb68a56fd5421bbb79858de9b99",
+  "configuration": "gb300-tp4-col",
   "expected_ranks": {
     "schedulers": [
       {
@@ -45,13 +45,13 @@
       "max_num_seqs": 256,
       "max_prefill_cudagraph_size": null,
       "prefill_cudagraph_policy": "runtime",
-      "warmup_iterations": 5
+      "warmup_iterations": 0
     },
     "deployment": {
       "container_mount": [
         "/models/zai-org_glm-5.3-flash/hf:/models/zai-org_glm-5.3-flash/hf:ro",
+        "/work/overlay:/opt/glm53flash-dynamo:ro",
         "/work/hf-hub:/work/hf-hub:ro",
-        "/work/overlays/dynamo-1.7.0.dev20261109:/opt/glm53flash-dynamo:ro",
         "/work/tools/etcd-from-dynamo-1.5.0-arm64/etcd:/usr/local/bin/etcd:ro",
         "/work/cache:/work/cache"
       ],
@@ -78,7 +78,7 @@
       "comm_quant_mode": "half",
       "enable_eplb": false,
       "enable_wideep": false,
-      "fmha_quant_mode": "bfloat16",
+      "fmha_quant_mode": "fp8",
       "gemm_quant_mode": "fp8_block",
       "kvcache_quant_mode": "fp8",
       "moe_backend": "auto",

@@ -3141,13 +3141,22 @@ FIXTURES = Path(__file__).with_name("fixtures")
 # (models/glm5next/common/kda.py:168-176, mamba/kda_checkpoint.py:9-10).
 LIVE_STATE_GROUPS = 5
 LIVE_KDA_GROUPS = {"runtime_group_0", "runtime_group_1", "runtime_group_2", "runtime_group_3"}
+# The probe staged the checkpoint's config.json, which is byte-identical to the bundled GLM-5.3-Flash config. The
+# fixture leaves it out, and the campaign copy takes the bundled file.
+LIVE_MODEL_CONFIG = _MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json"
 
 
 def _campaign_from_fixture(root, fixture):
-    """A copy of a live probe record: its observation index, its one configuration, launch and active attempt."""
+    """A copy of a live probe record: its observation index, its one configuration, launch and active attempt.
+
+    The copy stages the bundled model configuration where the record lists the staged model-config.json.
+    """
     shutil.copytree(fixture, root / fixture.name)
     path = root / fixture.name / "observations.json"
     ((label, saved),) = json.loads(path.read_text())["configurations"].items()
+    for reference in saved["attempts"][0]["phases"]["prefill"]["artifacts"]:
+        if Path(reference["path"]).name == "model-config.json":
+            shutil.copyfile(LIVE_MODEL_CONFIG, path.parent / reference["path"])
     return path, label, saved["launch"], saved["active_attempt_id"]
 
 
@@ -3192,3 +3201,36 @@ def test_import_accepts_the_live_glm53flash_record_of_vllm_0330(tmp_path):
     # vLLM counts 482 attention blocks, 1 tail block and 2 + 1 blocks of each of the 4 KDA groups for one request at
     # 1,048,576 tokens: 13,697 / 495 (kv_cache_utils.py:1076-1087, kv_cache_interface.py:1135-1141).
     assert scheduler["cache"]["kv_cache_max_concurrency"] == 27.67070707070707
+    # The launch labels FMHA with fp8, the checkpoint-native mode that the staged configuration of this FP8 checkpoint
+    # gives with an fp8 KV cache, and the import keeps that label.
+    path, label, launch, _ = campaign
+    assert hashlib.sha256(LIVE_MODEL_CONFIG.read_bytes()).hexdigest() == launch["model_config"]["sha256"]
+    assert result["provenance"]["launch"]["precision"]["fmha_quant_mode"] == "fp8"
+    assert result["provenance"]["launch"]["precision"]["kvcache_quant_mode"] == "fp8"
+    references = json.loads(path.read_text())["configurations"][label]["attempts"][0]["phases"]["prefill"]["artifacts"]
+    assert runtime_observations._staged_checkpoint_fmha(path.parent, references, launch, "fp8") == "fp8"
+
+
+def test_import_refuses_the_live_glm53flash_record_declared_with_bfloat16_attention(tmp_path):
+    # A copy of the live record whose launch, launch manifest and records declare bfloat16 FMHA. The staged model
+    # configuration names fp8 for this fp8 KV cache, so the import refuses the declared label.
+    path, label, launch, attempt_id = _campaign_from_fixture(tmp_path, FIXTURES / "glm53flash_vllm_0330_probe")
+    launch["precision"]["fmha_quant_mode"] = "bfloat16"
+    index = json.loads(path.read_text())
+    index["configurations"][label]["launch"] = launch
+    phase = index["configurations"][label]["attempts"][0]["phases"]["prefill"]
+    for reference in [phase["launch_manifest"], *phase["artifacts"]]:
+        artifact = path.parent / reference["path"]
+        if artifact.name == "model-config.json":
+            continue
+        value = json.loads(artifact.read_text())
+        value["launch"] = launch
+        artifact.write_text(json.dumps(value))
+        reference["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    path.write_text(json.dumps(index))
+    with pytest.raises(ValueError) as error:
+        _import((path, label, launch, attempt_id))
+    assert (
+        str(error.value)
+        == "FMHA precision 'bfloat16' differs from the checkpoint-native 'fp8' for KV-cache dtype 'fp8'"
+    )

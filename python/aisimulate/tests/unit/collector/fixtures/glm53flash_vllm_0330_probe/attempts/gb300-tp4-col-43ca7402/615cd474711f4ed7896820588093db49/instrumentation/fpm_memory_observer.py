@@ -538,7 +538,11 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         payload.update(
             attention_groups=groups,
             graph_config=compilation_config(worker.vllm_config),
-            resolved_config=execution_config(worker.vllm_config),
+            resolved_config=execution_config(
+                worker.vllm_config,
+                hybrid_evidence=payload["backend_version"] == HYBRID_EVIDENCE_VERSION
+                and _hybrid_cache_config(worker.model_runner.kv_cache_config),
+            ),
             status="observed",
         )
     except Exception as error:
@@ -551,6 +555,27 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         _write_execution_file(path, payload)
     except FileExistsError:
         raise RuntimeError(f"refusing duplicate runtime execution observation: {path}") from None
+
+
+def _hybrid_cache_config(cache_config: Any) -> bool:
+    """Tell whether an initialized KVCacheConfig holds a recurrent-state group.
+
+    Both vLLM 0.33.0 runners keep the initialized KVCacheConfig in kv_cache_config
+    (vllm/v1/worker/gpu_model_runner.py:7007, vllm/v1/worker/gpu/model_runner.py:632).
+    A recurrent-state group has a MambaSpec (vllm/v1/kv_cache_interface.py:1094) as its
+    spec, or a UniformTypeKVCacheSpecs whose layer specs in kv_cache_specs (:1291, :1298)
+    hold a MambaSpec, as the packed path builds it (vllm/v1/core/kv_cache_planning.py:1159,
+    :1026, :1037-1039). vLLM's has_mamba_layers reads the layer specs the same way
+    (vllm/v1/kv_cache_interface.py:1630-1635). Only such a cache configuration takes the
+    hybrid cache fields on vLLM 0.33.0. Every attention-only cache configuration keeps the
+    record without them, also one with MLAAttentionSpec or UniformTypeKVCacheSpecs groups.
+    """
+    for group in cache_config.kv_cache_groups:
+        spec = group.kv_cache_spec
+        specs = spec.kv_cache_specs.values() if _class_name(spec) == _UNIFORM_SPEC else (spec,)
+        if any(_class_name(item) == _MAMBA_SPEC for item in specs):
+            return True
+    return False
 
 
 def _cached_config_commit(model_config: Any) -> str | None:

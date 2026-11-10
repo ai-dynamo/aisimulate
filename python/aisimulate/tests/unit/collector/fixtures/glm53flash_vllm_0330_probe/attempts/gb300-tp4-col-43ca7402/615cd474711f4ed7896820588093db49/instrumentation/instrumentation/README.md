@@ -51,7 +51,7 @@ The supported representation is one shared HBM block pool with full/sliding rete
 
 Both logical K/V-plane-first and packed views retain their physical strides. The CPU importer independently checks affine byte bounds, pool/kernel block ratio, packed slot intervals, padding, declared aliases, reservations and compatible rank/phase settings. An adapter-supplied status cannot authorize import.
 
-Independent collection errors are kept in `unresolved_fields` and `error` with available raw data. Duplicate records fail instead of overwriting earlier evidence. Native initialization/warm-up exceptions propagate unchanged. Formal collection also emits the unchanged `fpm-execution-worker-*.json` evidence for existing execution-quality consumers.
+Independent collection errors are kept in `unresolved_fields` and `error` with available raw data. Duplicate records fail instead of overwriting earlier evidence. Native initialization/warm-up exceptions propagate unchanged. Formal collection also emits the `fpm-execution-worker-*.json` evidence for existing execution-quality consumers on vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0. The records of 0.27.0, 0.28.0 and 0.32.0 are unchanged, and so is a 0.33.0 record of a cache configuration without a recurrent-state group, for example one with `MLAAttentionSpec` groups. A 0.33.0 record of a cache configuration with a recurrent-state group, a `MambaSpec` group or a `UniformTypeKVCacheSpecs` group that holds a `MambaSpec` layer spec, adds the hybrid cache fields to `resolved_config.cache_config`, which those consumers do not check.
 
 ## Checks for a new campaign-local adapter
 
