@@ -9,6 +9,7 @@ from aisimulate_core.sdk.models.base import BaseModel, register_model
 from aisimulate_core.sdk.models.helpers import (
     _is_routing_expert_target,
     _normalize_mixed_precision_layer_algo,
+    modelopt_mixed_precision_targets,
     mtp_scale_factor,
     quant_exclude_patterns,
 )
@@ -32,10 +33,12 @@ def _qwen35_mixed_precision_gemm_modes(
 
     The GDN ``in_proj_a`` and ``in_proj_b`` projections run as one fused
     ``in_proj_ba`` GEMM. Its lane is BF16 when an exclusion pattern names
-    either projection, or when ``quantized_layers`` lists other attention
-    projections but not this pair (a ModelOpt MIXED_PRECISION export leaves an
-    unlisted module unquantized; see ``helpers.modelopt_mixed_precision_targets``).
-    Otherwise the pair follows the projection lane. The runtimes resolve the
+    either projection, or when a targets-only ModelOpt MIXED_PRECISION export
+    lists other attention projections but not this pair (such an export leaves
+    an unlisted module unquantized; see ``helpers.modelopt_mixed_precision_targets``).
+    An export that keeps a base lane quantizes an unlisted module through that
+    lane, so there the pair follows the default. Otherwise the pair follows the
+    projection lane. The runtimes resolve the
     fused module through its shards, so shards of two precisions are an error.
     """
     if not allow_checkpoint_split:
@@ -113,8 +116,11 @@ def _qwen35_mixed_precision_gemm_modes(
             "their fused in_proj_ba GEMM cannot mix precisions"
         )
     if "gdn_ba" not in explicit:
-        if "projection" in explicit or any("in_proj_a" in p or "in_proj_b" in p for p in exclusions):
+        targets_only = modelopt_mixed_precision_targets(raw_config) is not None
+        if any("in_proj_a" in p or "in_proj_b" in p for p in exclusions):
             modes["gdn_ba"] = common.GEMMQuantMode.bfloat16
+        elif "projection" in explicit:
+            modes["gdn_ba"] = common.GEMMQuantMode.bfloat16 if targets_only else default
         else:
             modes["gdn_ba"] = modes["projection"]
 

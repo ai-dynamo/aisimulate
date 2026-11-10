@@ -639,6 +639,50 @@ def test_qwen35_gdn_ba_pair_listed_precision_reaches_both_gemm_ops(shards, expec
         assert by_name[name]._quant_mode == expected, name
 
 
+def test_qwen35_gdn_ba_pair_unlisted_under_a_base_lane_takes_the_base_lane():
+    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    # An export that keeps a base lane (quant_method fp8 with a block size) is out of scope for the
+    # targets-only rule: an unlisted module quantizes through that lane, so the pair follows the
+    # default, not BF16. The targets-only header (quant_method modelopt) keeps the BF16 inference.
+    layers = {"model.language_model.layers.0.linear_attn.in_proj_qkv": {"quant_algo": "FP8"}}
+    base_lane = {
+        "quantization_config": {
+            "quant_algo": "MIXED_PRECISION",
+            "quant_method": "fp8",
+            "weight_block_size": [128, 128],
+            "quantized_layers": layers,
+        }
+    }
+    targets_only = {"quantization_config": {"quant_algo": "MIXED_PRECISION", "quantized_layers": layers}}
+
+    with_base = _qwen35_mixed_precision_gemm_modes(base_lane, common.GEMMQuantMode.fp8, allow_checkpoint_split=True)
+    without = _qwen35_mixed_precision_gemm_modes(targets_only, common.GEMMQuantMode.fp8, allow_checkpoint_split=True)
+    assert with_base[3] == common.GEMMQuantMode.fp8
+    assert without[3] == common.GEMMQuantMode.bfloat16
+
+
+def test_qwen35_gdn_ba_pair_unlisted_under_a_base_lane_reaches_both_gemm_ops(monkeypatch):
+    import aisimulate_core.sdk.models as core_models
+
+    # The same header through model construction: the bundled Qwen3.6 export lists in_proj_qkv but
+    # not the a/b pair; with a base lane in the header the two in_proj_ba GEMM ops leave BF16 for
+    # the model's default GEMM lane.
+    model_name = "nvidia/Qwen3.6-27B-NVFP4"
+    with _offline_bundle(monkeypatch):
+        model_info = copy.deepcopy(core_models._get_model_info(model_name))
+        quantization = model_info["raw_config"]["quantization_config"]
+        quantization["quant_method"] = "fp8"
+        quantization["weight_block_size"] = [128, 128]
+        monkeypatch.setattr(core_models, "_get_model_info", lambda _model_path: model_info)
+        model = get_model(model_name, _model_config(), backend_name="trtllm")
+
+    by_name = {op._name: op for op in _flatten_ops(model.context_ops + model.generation_ops)}
+    for name in ("context_gdn_in_proj_ba_gemm", "generation_gdn_in_proj_ba_gemm"):
+        assert by_name[name]._quant_mode != common.GEMMQuantMode.bfloat16, name
+        assert by_name[name]._quant_mode == model.config.gemm_quant_mode, name
+
+
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
     model = get_model("nvidia/Gemma-4-26B-A4B-NVFP4", _model_config(), backend_name="trtllm")
     by_name = {op._name: op for op in model.context_ops + model.generation_ops}
