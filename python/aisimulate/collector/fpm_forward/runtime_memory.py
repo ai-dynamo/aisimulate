@@ -49,12 +49,10 @@ _PHASE_CACHE_SETTINGS = (
 _MAMBA_ALL_UNMODELED = "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
 
 
-def _layer_strided(cache: Any) -> bool:
-    """vLLM 0.31.0 allocation records place layers with ``layer_stride``; older records never do."""
-    allocations = cache.get("tensor_allocations") if isinstance(cache, dict) else None
-    return isinstance(allocations, list) and any(
-        isinstance(item, dict) and "layer_stride" in item for item in allocations
-    )
+def _hybrid_evidence(cache: Any) -> bool:
+    """A hybrid record holds the spec of every layer in ``layer_specs``; a plain record holds none."""
+    groups = cache.get("groups") if isinstance(cache, dict) else None
+    return isinstance(groups, list) and any(isinstance(group, dict) and "layer_specs" in group for group in groups)
 
 
 def _positive(value: Any, label: str) -> int:
@@ -395,7 +393,7 @@ def validate_requested_graph(payload: dict[str, Any], config: dict[str, Any], ex
 
 def _validate_scheduler_config(worker: dict[str, Any], scheduler: dict[str, Any]) -> None:
     actual, scheduled = (copy.deepcopy(item["resolved_config"]) for item in (worker, scheduler))
-    if _layer_strided(worker.get("cache")):
+    if _hybrid_evidence(worker.get("cache")):
         # vLLM 0.31.0 sets block_size in the engine-core process only, and the prefix-caching
         # settings are compared as per-phase cache evidence instead.
         for config in (actual, scheduled):
@@ -534,7 +532,7 @@ def _scheduler_copy(group: dict[str, Any]) -> dict[str, Any]:
     return expected
 
 
-def _spec_classes(group: dict[str, Any], names: list[str], strided: bool) -> list[str]:
+def _spec_classes(group: dict[str, Any], names: list[str], hybrid: bool) -> list[str]:
     """The spec class of every layer of a group: the inner classes of a uniform group, else its own.
 
     A vLLM 0.31.0 record keeps each layer's spec in ``layer_specs``; older records have none.
@@ -544,7 +542,7 @@ def _spec_classes(group: dict[str, Any], names: list[str], strided: bool) -> lis
         raise ValueError(f"unsupported runtime cache spec: {spec!r}")
     uniform = spec == _UNIFORM_SPEC
     specs = group.get("layer_specs")
-    if (strided or uniform) and (
+    if (hybrid or uniform) and (
         not isinstance(specs, dict)
         or set(specs) != set(names)
         or any(
@@ -572,7 +570,7 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
         raise ValueError("runtime memory evidence lacks cache groups")
     if len(raw_groups) != len(scheduler_groups):
         raise ValueError("worker and scheduler cache group counts disagree")
-    strided = _layer_strided(cache)
+    hybrid = _hybrid_evidence(cache)
     groups = []
     layer_names: set[str] = set()
     for index, (group, scheduled) in enumerate(zip(raw_groups, scheduler_groups, strict=True)):
@@ -593,7 +591,7 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
         kind, spec = group.get("kind"), group.get("spec_type")
         if kind not in {"attention", "convolution", "state"}:
             raise ValueError(f"runtime cache group kind is unsupported: {kind!r} ({spec})")
-        spec_classes = _spec_classes(group, names, strided)
+        spec_classes = _spec_classes(group, names, hybrid)
         # The shared class table gives the kind; Inkling convolution layers use a sliding-window spec.
         if {SPEC_KINDS[value.removeprefix(_SPEC_MODULE)] for value in spec_classes} != {
             "attention" if kind == "convolution" else kind
@@ -612,9 +610,9 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
         # The observer refuses a vLLM 0.31.0 group whose layers disagree on the window or on the state evidence
         # (runtime/fpm_memory_observer.py:545, :563). Only a window spec class has a window, and only a MambaSpec
         # has Mamba state fields, so a group cannot mix such a class with another.
-        if strided and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
+        if hybrid and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
             raise ValueError("cache group layers disagree on sliding window")
-        if strided and len({value == _MAMBA_SPEC for value in spec_classes}) > 1:
+        if hybrid and len({value == _MAMBA_SPEC for value in spec_classes}) > 1:
             raise ValueError("cache group layers disagree on state evidence")
         classes = group.get("layer_classes")
         if (
@@ -640,7 +638,7 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             blocks = state.get("blocks_per_request") if isinstance(state, dict) else None
             # The vLLM 0.31.0 record of a MambaSpec group, also inside a uniform group, holds its speculative
             # and prefill checkpoint blocks (kv_cache_interface.py:1048-1049). A missing count is not zero.
-            mamba = strided and _MAMBA_SPEC in spec_classes
+            mamba = hybrid and _MAMBA_SPEC in spec_classes
             if (
                 type(blocks) is not int
                 or blocks <= 0
@@ -862,10 +860,10 @@ def resolve_runtime_resources(
         free = accounting["initial_free_blocks"]
         allocated = accounting["allocated_cache_bytes"]
         groups = _normalized_groups(cache, scheduled, allocated // count)
-        # _normalized_groups accepts a state group on any runtime, so this vLLM 0.27.0 path refuses every state group.
+        # _normalized_groups accepts a state group on any runtime, so this collection path refuses every state group.
         if any(group["kind"] == "state" for group in groups):
             raise ValueError("runtime memory cache kind is unsupported")
-        # This path also refuses every spec class outside the vLLM 0.27.0 allow-list: full and sliding-window attention.
+        # This path also refuses every spec class outside the plain-record allow-list: full and sliding attention.
         for group in cache["groups"]:
             if group.get("spec_type") not in _LEGACY_SPECS:
                 raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")

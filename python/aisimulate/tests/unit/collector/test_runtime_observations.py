@@ -130,7 +130,6 @@ def _v031_records(layout, *, prefix_caching, dp, max_model_len=4096):
         allocations.append(
             {
                 "storage_id": "s0",
-                "shared_by": names,
                 "layers": names,
                 "layer_stride": layer_stride,
                 "block_stride": block_stride,
@@ -1991,9 +1990,9 @@ def test_v031_records_must_hold_what_the_observer_guarantees(tmp_path, case, dia
             # Every process records the format. The observer hashes config.json only for auto and hf.
             record["resolved_config"]["model_config"]["config_format"] = "hf" if case.endswith("_hf") else "mistral"
         elif case == "allocation_shared_by" and worker:
-            # The observer writes shared_by and layers from one list.
+            # The observer writes a layer-strided allocation without shared_by.
             allocation = next(item for item in cache["tensor_allocations"] if item["layers"] == ["attn.0", "attn.1"])
-            allocation["shared_by"] = ["attn.0"]
+            allocation["shared_by"] = ["attn.0", "attn.1"]
         elif case == "scheduler_mamba_mode" and (record["phase"], record["kind"], record["dp_rank"]) == (
             "prefill",
             "scheduler",
@@ -2618,7 +2617,7 @@ def _make_layer_strided(record):
         # The fixture holds 16-token blocks and views that stride 128 bytes per block. Its two layers belong to two
         # groups, so they can overlay each other.
         (allocation,) = cache["tensor_allocations"]
-        allocation.update(layers=allocation["shared_by"], layer_stride=0, block_stride=128)
+        allocation.update(layers=allocation.pop("shared_by"), layer_stride=0, block_stride=128)
         cache["layer_tensors"] = {name: [view] for name, view in cache["layer_tensors"].items()}
         cache["model_runner"] = {
             "class": "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
@@ -2648,8 +2647,9 @@ def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, s
     path, launches = observation_fixture(tmp_path)
 
     def edit(record):
-        # Every phase holds the layer specs of a vLLM 0.31.0 group, so that the cache geometry of the phases agrees
-        # and only the prefix-caching evidence differs.
+        # Only a hybrid phase holds the layer specs of its groups; the other phase keeps its older record.
+        if record["phase"] not in strided:
+            return
         for group in record["cache"]["groups"]:
             group["layer_specs"] = {
                 name: {
@@ -2662,10 +2662,9 @@ def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, s
                 }
                 for name in group["layer_names"]
             }
-        if record["phase"] in strided:
-            _make_layer_strided(record)
+        _make_layer_strided(record)
 
-    # Only a layer-strided phase holds prefix-caching evidence, so phases that differ in that are refused. The role
+    # The layer specs are part of the cache geometry, so phases that differ in hybrid evidence are refused. The role
     # with both phases layer-strided shows that the edits build a valid layer-strided phase.
     _mutate(path, edit)
     result = validate_observations(path, launches)["tp2"]
@@ -2675,7 +2674,7 @@ def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, s
         assert result["provenance"]["prefix_caching"] == {"prefill": evidence, "decode": evidence}
         return
     assert result["status"] == "incomplete"
-    assert result["diagnostics"] == ["tp2: runtime observation prefix-caching evidence across phases mismatch"]
+    assert result["diagnostics"] == ["tp2: runtime observation cache geometry across phases/ranks mismatch"]
 
 
 @pytest.mark.parametrize(

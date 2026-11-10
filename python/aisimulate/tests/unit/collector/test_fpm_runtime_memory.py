@@ -493,6 +493,17 @@ def test_worker_memory_reads_layers_and_tuple_caches():
     assert [set(item) for item in legacy["tensor_allocations"]] == [{"size", "shared_by", "block_stride", "offset"}] * 2
 
 
+def test_cache_groups_that_mix_layer_spec_evidence_are_refused():
+    # A hybrid record holds layer_specs in every group. A record that holds them in one group only is malformed.
+    worker, scheduler, config = _initialized(layers=True)
+    cache = observer.worker_memory(worker, hybrid_evidence=True)
+    scheduled = observer.scheduler_memory(scheduler, config, hybrid_evidence=True)
+    del cache["groups"][1]["layer_specs"]
+    del scheduled["groups"][1]["layer_specs"]
+    with pytest.raises(ValueError, match="runtime memory cache lacks complete layer spec evidence"):
+        runtime_memory._normalized_groups(cache, scheduled, cache["groups"][0]["spec_page_size_bytes"])
+
+
 @pytest.mark.parametrize("empty", [(), []])
 def test_layer_without_cache_tensors_is_refused(empty):
     worker, _scheduler, _cache = _initialized(layers=True)

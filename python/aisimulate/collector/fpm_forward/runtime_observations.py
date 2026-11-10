@@ -291,7 +291,7 @@ def _validate_record(
     # (runtime_memory._validate_scheduler_config).
     if (
         kind == "worker"
-        and runtime_memory._layer_strided(record["cache"])
+        and runtime_memory._hybrid_evidence(record["cache"])
         and model.get("config_format", "auto") not in ("auto", "hf")
     ):
         raise ValueError(f"loaded config format requires another source mapping: {model['config_format']}")
@@ -645,14 +645,15 @@ def _layer_strided_views(
         ):
             raise ValueError("allocation plan differs from actual backing storage")
         names = allocation.get("layers")
-        # The observer writes shared_by from the same list as layers (runtime/fpm_memory_observer.py:709-717).
+        # The observer writes a layer-strided allocation without shared_by (runtime/fpm_memory_observer.py,
+        # _layer_strided_allocations).
         if (
             not isinstance(names, list)
             or not names
             or any(not isinstance(name, str) or name not in layer_groups for name in names)
             or len(set(names)) != len(names)
             or views.keys() & set(names)
-            or allocation.get("shared_by") != names
+            or "shared_by" in allocation
         ):
             raise ValueError("allocation plan has missing, duplicate or unknown layers")
         offset = _nonnegative(allocation.get("offset"), "allocation byte offset")
@@ -715,15 +716,15 @@ def _physical_views(
         or scheduled["null_block_id"] not in reserved
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
-    strided = runtime_memory._layer_strided(cache)
+    hybrid = runtime_memory._hybrid_evidence(cache)
     # A vLLM 0.31.0 scheduler reserves only the null block (runtime/instrumentation/observer.py:446-452).
-    if strided and reserved != [scheduled["null_block_id"]]:
+    if hybrid and reserved != [scheduled["null_block_id"]]:
         raise ValueError("additional initialized reservations lack an audited permanent-reservation mapping")
     groups = runtime_memory._normalized_groups(cache, scheduled, page)
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
         # _normalized_groups accepts every table class, but vLLM 0.27.0 and 0.28.0 records hold only the legacy ones.
-        if not strided and group.get("spec_type") not in _LEGACY_SPECS:
+        if not hybrid and group.get("spec_type") not in _LEGACY_SPECS:
             raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")
         if group.get("pool_id") != pool:
             raise ValueError("cache group references another pool")
@@ -741,7 +742,7 @@ def _physical_views(
                 for name in group["layer_names"]
                 if group["kind"] == "attention" and not _indexer(group["layer_specs"][name])
             ]
-            if strided
+            if hybrid
             else [group.get("dtype")]
         )
         for dtype in dtypes:
@@ -755,7 +756,7 @@ def _physical_views(
         # Only the sparse MLA indexer stores its tokens in blocks other than the cache block
         # (runtime/instrumentation/observer.py:237-243). In every group that a supported record can hold, every layer
         # spec has the group's block size (kv_cache_interface.py:1297-1300, :1312-1313).
-        if strided and any(
+        if hybrid and any(
             spec.get("storage_block_size") is not None
             and canonical_json(spec["storage_block_size"]) != canonical_json(group["block_size_tokens"])
             and not _indexer(spec)
@@ -765,7 +766,7 @@ def _physical_views(
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
         # The page of a vLLM 0.31.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1261-1263). In
         # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py:544).
-        if strided:
+        if hybrid:
             pages = [spec["page_size_bytes"] for spec in group["layer_specs"].values()]
             if any(
                 page != group["spec_page_size_bytes"]
@@ -789,7 +790,7 @@ def _physical_views(
         or not allocations
     ):
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
-    if strided:
+    if hybrid:
         # The runner's kernel block of every group, which the worker records before any view
         # (runtime/instrumentation/observer.py:355-359).
         runner = cache.get("model_runner")
@@ -883,14 +884,14 @@ def _physical_views(
     return groups, accounting
 
 
-def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided: bool) -> dict[str, Any] | None:
+def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, hybrid: bool) -> dict[str, Any] | None:
     """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for other records.
 
     vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key. A campaign-local adapter can add one;
-    the import reads it only when ``strided`` says that the phase holds vLLM 0.31.0 records. The scheduler
+    the import reads it only when ``hybrid`` says that the phase holds vLLM 0.31.0 records. The scheduler
     adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
     """
-    if not strided or "prefix_caching" not in cache:
+    if not hybrid or "prefix_caching" not in cache:
         return None
     value = cache["prefix_caching"]
     keys = {"enable_prefix_caching", "mamba_cache_mode"} | ({"block_size", "hash_block_size"} if scheduler else set())
@@ -1023,11 +1024,11 @@ def _phase_prefix_caching(
     0.31.0 record always carries the evidence. Every other record gives None.
     """
     label = f"{phase} prefix-caching settings across ranks"
-    strided = any(runtime_memory._layer_strided(record["cache"]) for record in workers.values())
-    if strided and any("prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())):
+    hybrid = any(runtime_memory._hybrid_evidence(record["cache"]) for record in workers.values())
+    if hybrid and any("prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())):
         raise ValueError("runtime observation requires complete prefix-caching evidence")
     settings = [
-        _prefix_caching_settings(record["cache"], scheduler=True, strided=strided)
+        _prefix_caching_settings(record["cache"], scheduler=True, hybrid=hybrid)
         for _, record in sorted(schedulers.items())
     ]
     for value in settings[1:]:
@@ -1037,7 +1038,7 @@ def _phase_prefix_caching(
         None if scheduled is None else {key: scheduled[key] for key in ("enable_prefix_caching", "mamba_cache_mode")}
     )
     for _, record in sorted(workers.items()):
-        _same(_prefix_caching_settings(record["cache"], scheduler=False, strided=strided), shared, label)
+        _same(_prefix_caching_settings(record["cache"], scheduler=False, hybrid=hybrid), shared, label)
     if scheduled is None:
         return None
     for record in workers.values():
@@ -1047,8 +1048,8 @@ def _phase_prefix_caching(
             # (runtime/fpm_memory_observer.py:488-504). The scheduler copy of each group equals the worker group
             # (runtime_memory._normalized_groups), so it holds the mode too.
             if (
-                strided
-                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], strided)
+                hybrid
+                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], hybrid)
                 and "mamba_cache_mode" not in state
             ):
                 raise ValueError(f"runtime state cache group lacks Mamba cache mode evidence: {group['layer_names']}")
@@ -1059,8 +1060,8 @@ def _phase_prefix_caching(
             # scale its block (v1/core/kv_cache_utils.py:1417-1426), and only the HiddenStateCacheSpec layers of a
             # speculative run scale every group block (:2268-2297, :2369-2372). The import refuses speculative runs.
             if (
-                strided
-                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], strided)
+                hybrid
+                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], hybrid)
                 and canonical_json(group["block_size_tokens"])
                 != canonical_json(record["resolved_config"]["cache_config"].get("mamba_block_size"))
             ):
@@ -1070,7 +1071,7 @@ def _phase_prefix_caching(
     # Each process reads this evidence from the cache config that it resolved
     # (runtime/instrumentation/observer.py:493-502). The launch-setting comparisons leave those resolved settings
     # out, so the evidence must equal them.
-    if strided:
+    if hybrid:
         names = ("enable_prefix_caching", "mamba_cache_mode")
         for record in (*schedulers.values(), *workers.values()):
             resolved = record["resolved_config"]["cache_config"]
@@ -1272,7 +1273,7 @@ def _configuration(
                 # compare that provenance byte for byte.
                 removed = (
                     runtime_memory._PHASE_CACHE_SETTINGS
-                    if runtime_memory._layer_strided(record["cache"])
+                    if runtime_memory._hybrid_evidence(record["cache"])
                     else ("enable_prefix_caching",)
                 )
                 for name in removed:
@@ -1345,7 +1346,7 @@ def _configuration(
     # The record holds the prefix-caching values of the role's first collection phase that this validation covers.
     record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
     # Only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
-    # layer-strided record must, and every phase agrees on that (checked above). The provenance of a vLLM 0.27.0
+    # hybrid record must, and every phase agrees on that (checked above). The provenance of a vLLM 0.27.0
     # or 0.28.0 import stays as it was, because finalized campaigns compare it byte for byte.
     hybrid_evidence = (
         {
