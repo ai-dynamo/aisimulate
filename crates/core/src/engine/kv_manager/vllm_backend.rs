@@ -663,9 +663,9 @@ impl VllmKvManager {
             .div_ceil(self.block_size)
             .min(lease.entries.len());
         if cumulative_tokens.div_ceil(self.block_size) <= previous_blocks {
-            // Most decode steps stay inside a block the lease already owns:
-            // there is no capacity to acquire or bind. Keep the watermark
-            // monotonic and report any pending write dependency again.
+            // Most decode steps stay inside a block the lease already owns.
+            // Same result as the slot path's `count == 0` case with nothing to
+            // bind, which is why the target is not clamped to `entries.len()`.
             lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
             return NativeAllocation::Ready {
                 value: 0,
