@@ -471,7 +471,15 @@ group type, the copy of a hit that ends inside a block, the cached partial-tail
 entry, the state retention and the block lifetimes of an allocation, with the
 checkpoint block of v0.32.0. From `kv_cache_manager.py`, it adapts the hit cap,
 the junction of a hit, the whole-prompt block count of an admission and the
-release of the skipped blocks before an allocation. From `sched/scheduler.py`,
+release of the skipped blocks before an allocation.
+From `kv_cache_manager.py`, `kv_cache_coordinator.py` and `sched/scheduler.py`,
+it also adapts the local prefix that a decode rank takes for a KV load: the
+full-attention hit of a model with Mamba layers unless another group hits
+deeper, and otherwise the hit that every group agrees on.
+From `single_type_kv_cache_manager.py`, it also adapts the count of a state
+group's own hit in both admission tests of a KV load. The decode rank then
+drops that hit block without holding it.
+From `sched/scheduler.py`,
 it adapts the align-mode prefill split, with the checkpoint branch of v0.32.0,
 and the release of a copied hit block at the end of its step. From
 `kv_cache_interface.py`, it adapts the admission cap of a sliding-window group
@@ -499,9 +507,14 @@ From `sched/scheduler.py` and `kv_cache_interface.py`, `grouped_prefix.rs` also
 adapts the rule that only a rank with a Mamba layer in align mode splits its
 prefill.
 `crates/core/src/engine/scheduler/vllm/core.rs` and `vllm_backend.rs` adapt the
-release of the skipped blocks of a completed source.
+release of the skipped blocks of an ending request on a prefill or decode rank,
+before the release of its other blocks.
 `vllm_backend.rs` also adapts the two admission tests of an async KV load and
-the reservation of the blocks that the loads in flight still need. `core.rs`
+the reservation of the blocks that the loads in flight still need, which
+`grouped_prefix.rs` counts by `_request_remaining_blocks` of
+`sched/scheduler.py` with the admission cap of a sliding-window group.
+`core.rs` also adapts the set of prefills in flight of `sched/scheduler.py`,
+so that a decode rank keeps free what its local prefills still need. `core.rs`
 also adapts the queue order that serves the requests that hold KV blocks first.
 
 - https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py

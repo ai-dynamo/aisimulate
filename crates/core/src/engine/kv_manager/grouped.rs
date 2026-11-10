@@ -20,9 +20,10 @@ pub(crate) struct GroupedLease {
     bytes: u64,
     /// The copies of every group in block mode.
     pub(crate) block_lease: Option<GroupedBlockLease>,
-    /// What the first pass of a destination load still takes: blocks in
-    /// block mode, bytes in byte mode. 0 once that pass has allocated, and
-    /// on every other lease.
+    /// What a destination load still needs for its whole prompt, as vLLM's
+    /// `_request_remaining_blocks` counts it: blocks in block mode, bytes in
+    /// byte mode. 0 once its first pass has allocated, and on every other
+    /// lease.
     pub(crate) first_pass_need: u64,
 }
 
@@ -395,10 +396,14 @@ impl GroupedKvPool {
         }
     }
 
-    /// Grows whenever the pool frees capacity or publishes a key, the two
-    /// changes that can let a waiting reservation succeed. A pass frees
-    /// blocks without completing a request, and an activation publishes
-    /// blocks that it keeps, so the active count alone misses both.
+    /// Grows whenever the pool releases a block, a request's held bytes
+    /// fall or the pool publishes a key. These are the pool's changes that
+    /// can let a waiting reservation succeed. A pass frees blocks without
+    /// completing a request, and an activation publishes blocks that it
+    /// keeps, so the active count alone misses both. In byte mode, a request
+    /// whose bytes grow can still free a window page, with no move of this
+    /// count. The scheduler also retries a waiting reservation when the
+    /// local prefills in flight need less.
     pub(crate) fn retry_epoch(&self) -> u64 {
         match &self.mode {
             GroupedMode::Bytes => self.retry_epoch,
@@ -448,6 +453,10 @@ impl GroupedKvPool {
             GroupedMode::Bytes => 0,
             GroupedMode::Blocks(blocks) => blocks.bytes(blocks.inactive_cached_blocks()),
         }
+    }
+
+    pub(crate) fn groups(&self) -> &[FpmCacheGroup] {
+        &self.groups
     }
 
     pub(crate) fn block_pool(&self) -> Option<&GroupedBlockPool> {
