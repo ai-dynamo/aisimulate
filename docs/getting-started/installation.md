@@ -95,11 +95,13 @@ aisim --help
 aisimulate --help
 ```
 
+AISim checks distribution metadata during import and CLI startup. If both `aisim` and `aisimulate` are installed, it raises an `ImportError` with repair commands before loading the native runtime. This check does not prevent pip from installing or overwriting shared files. An old distribution installed last can overwrite the legacy entry points and bypass the check through those old paths.
+
 Use that same ordering for upgrades. If both distributions have already been
 installed, uninstall `aisimulate` and use `pip install --force-reinstall` for
 the selected `aisim` wheel, because uninstalling the old distribution can remove
 files listed in both RECORDs. Both CLI names remain available after migration;
-Python imports stay `aisimulate` and `aisimulate_core`.
+Canonical Python imports are `aisim` and `aisim_core`; `aisimulate` and `aisimulate_core` remain forwarding aliases.
 
 Dynamo and other consumers must change their **distribution dependency** to
 `aisim` before sharing the new environment. Do not migrate the historical Dynamo
