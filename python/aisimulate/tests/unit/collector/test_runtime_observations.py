@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import math
+import shutil
 from pathlib import Path
 
 import pytest
@@ -2921,3 +2922,62 @@ def test_v033_worker_block_size_is_not_compared_with_the_scheduler(tmp_path, lay
         return
     assert result["status"] == "incomplete"
     assert "configurations differ between scheduler and worker" in " ".join(result["diagnostics"])
+
+
+FIXTURES = Path(__file__).with_name("fixtures")
+# The live record of GLM-5.3-Flash at TP 4 on GB300 with vLLM 0.33.0: 5 state groups, of which the 4 KDA groups hold
+# one prefill checkpoint block each, as vLLM gives with the FlashKDA prefill backend
+# (models/glm5next/common/kda.py:168-176, mamba/kda_checkpoint.py:9-10).
+LIVE_STATE_GROUPS = 5
+LIVE_KDA_GROUPS = {"runtime_group_0", "runtime_group_1", "runtime_group_2", "runtime_group_3"}
+
+
+def _campaign_from_fixture(root, fixture):
+    """A copy of a live probe record: its observation index, its one configuration, launch and active attempt."""
+    shutil.copytree(fixture, root / fixture.name)
+    path = root / fixture.name / "observations.json"
+    ((label, saved),) = json.loads(path.read_text())["configurations"].items()
+    return path, label, saved["launch"], saved["active_attempt_id"]
+
+
+def _import(campaign):
+    """Import the one phase that the live record holds."""
+    path, label, launch, attempt_id = campaign
+    return runtime_observations.validate_observation_phase(path, label, launch, phase="prefill", attempt_id=attempt_id)
+
+
+def test_import_accepts_the_live_glm53flash_record_of_vllm_0330(tmp_path):
+    campaign = _campaign_from_fixture(tmp_path, FIXTURES / "glm53flash_vllm_0330_probe")
+    result = _import(campaign)
+    assert result["status"] == "complete"
+    resources = result["resources"]
+    kinds = [group["kind"] for group in resources["cache_groups"]]
+    assert kinds.count("state") == LIVE_STATE_GROUPS
+    assert all(
+        group.get("prefill_checkpoint_blocks") == 1
+        for group in resources["cache_groups"]
+        if group["name"] in LIVE_KDA_GROUPS
+    )
+    # Every group page is one pool block, and the pool has 13,697 blocks, of which the null block is not usable.
+    assert {group["page_size_bytes"] for group in resources["cache_groups"]} == {13_516_800}
+    assert {capacity["num_blocks"] for capacity in result["provenance"]["rank_capacities"]} == {13_697}
+    assert resources["runtime_memory"]["kv_cache_bytes"] == 13_696 * 13_516_800 == 185_126_092_800
+    assert [
+        group.get("prefill_checkpoint_alignment")
+        for group in resources["cache_groups"]
+        if group["name"] in LIVE_KDA_GROUPS
+    ] == [16] * 4
+    records = [artifact["evidence"] for artifact in result["provenance"]["artifacts"]]
+    workers = [record for record in records if record["kind"] == "worker"]
+    (scheduler,) = [record for record in records if record["kind"] == "scheduler"]
+    assert len(workers) == 4
+    for worker in workers:
+        assert worker["raw_cache_config"]["kv_cache_layout"] == "BLHNC"
+        assert worker["cache"]["model_runner"]["kernel_block_sizes"] == [2176, 2176, 2176, 2176, 2176, 4]
+        # The indexer of the attention group reads its cache in kernel blocks of 128 tokens, 3,200 apart.
+        (indexer,) = worker["cache"]["layer_tensors"]["language_model.model.layers.3.self_attn.indexer.k_cache"]
+        assert (indexer["kernel_block_size_tokens"], indexer["kernel_block_stride"]) == (128, 3200)
+        assert indexer["shape"] == [43_827_217, 32, 132]
+    # vLLM counts 482 attention blocks, 1 tail block and 2 + 1 blocks of each of the 4 KDA groups for one request at
+    # 1,048,576 tokens: 13,697 / 495 (kv_cache_utils.py:1076-1087, kv_cache_interface.py:1135-1141).
+    assert scheduler["cache"]["kv_cache_max_concurrency"] == 27.67070707070707
