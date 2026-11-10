@@ -5,7 +5,7 @@
 
 use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct GroupedLease {
     /// Blocks that the request holds across every configured group. Expired
     /// window blocks are not counted. A state group counts its fixed blocks.
@@ -17,15 +17,31 @@ impl GroupedLease {
     pub(crate) fn blocks(&self) -> usize {
         self.blocks
     }
+
+    /// Adds the blocks each group holds for a forward from `computed` to
+    /// `target` tokens, or `None` when the bytes overflow.
+    fn charge(mut self, groups: &[FpmCacheGroup], computed: u64, target: u64) -> Option<Self> {
+        for group in groups {
+            // A forward must retain the history needed by its first query,
+            // together with every token in the scheduled chunk. Freeing to
+            // the final query's window here would undercount prefill storage.
+            let range = group.validated_block_range(computed, target);
+            let blocks = range.end - range.start;
+            self.bytes = self
+                .bytes
+                .checked_add(blocks.checked_mul(group.page_size_bytes)?)?;
+            self.blocks += blocks as usize;
+        }
+        Some(self)
+    }
 }
 
 pub(crate) struct GroupedKvPool {
     /// Attention and convolution groups. Their blocks follow the request length.
     groups: Vec<FpmCacheGroup>,
-    /// Blocks that the state groups hold for a request with a positive target.
-    state_blocks: usize,
-    /// Bytes of `state_blocks`, or `None` when they overflow.
-    state_bytes: Option<u64>,
+    /// What the state groups hold for every positive target, or `None` when
+    /// their bytes overflow.
+    state: Option<GroupedLease>,
     capacity_bytes: u64,
     used_bytes: u64,
     active_blocks: usize,
@@ -36,23 +52,12 @@ impl GroupedKvPool {
     /// `EngineConfig::validate` checks once. Projections do not repeat it.
     pub(crate) fn new(groups: Vec<FpmCacheGroup>, capacity_bytes: u64) -> Self {
         debug_assert!(groups.iter().all(|group| group.validate().is_ok()));
-        let (state, groups): (Vec<_>, Vec<_>) = groups
+        let (state_groups, groups): (Vec<_>, Vec<_>) = groups
             .into_iter()
             .partition(|group| group.kind == FpmCacheKind::State);
-        let mut state_blocks = 0;
-        let mut state_bytes = Some(0u64);
-        for group in &state {
-            // `validate` guarantees a positive count for state groups.
-            let blocks = group.blocks_per_request.map_or(0, u64::from);
-            state_blocks += blocks as usize;
-            state_bytes = blocks
-                .checked_mul(group.page_size_bytes)
-                .and_then(|bytes| state_bytes?.checked_add(bytes));
-        }
         Self {
             groups,
-            state_blocks,
-            state_bytes,
+            state: GroupedLease::default().charge(&state_groups, 0, 1),
             capacity_bytes,
             used_bytes: 0,
             active_blocks: 0,
@@ -63,26 +68,12 @@ impl GroupedKvPool {
         if computed_after < computed_before {
             return None;
         }
-        // A state group holds its fixed blocks for any positive target.
-        let mut projected = if computed_after == 0 {
+        let held = if computed_after == 0 {
             GroupedLease::default()
         } else {
-            GroupedLease {
-                blocks: self.state_blocks,
-                bytes: self.state_bytes?,
-            }
+            self.state.clone()?
         };
-        for group in &self.groups {
-            // A forward must retain the history needed by its first query,
-            // together with every token in the scheduled chunk. Freeing to
-            // the final query's window here would undercount prefill storage.
-            let range = group.validated_block_range(computed_before as u64, computed_after as u64);
-            let blocks = range.end - range.start;
-            let bytes = blocks.checked_mul(group.page_size_bytes)?;
-            projected.bytes = projected.bytes.checked_add(bytes)?;
-            projected.blocks += blocks as usize;
-        }
-        Some(projected)
+        held.charge(&self.groups, computed_before as u64, computed_after as u64)
     }
 
     pub(crate) fn required_bytes(
@@ -245,10 +236,16 @@ mod tests {
         assert!(pool.allocate(&mut lease, 0, 1));
         assert_eq!(pool.active_blocks(), 3);
 
-        // State bytes beyond u64 fail every positive target, as the sum per projection did.
-        let mut pool = GroupedKvPool::new(vec![state("huge", 1 << 53, 1 << 11)], 100);
-        assert_eq!(pool.required_bytes(0, 0), Some(0));
-        assert_eq!(pool.required_bytes(0, 1), None);
-        assert!(!pool.allocate(&mut None, 0, 1));
+        // State bytes beyond u64 fail every positive target: one group's
+        // product (2^64), or a sum of products that each fit (2^63 + 2^63).
+        for groups in [
+            vec![state("huge", 1 << 53, 1 << 11)],
+            vec![state("a", 1 << 53, 1 << 10), state("b", 1 << 53, 1 << 10)],
+        ] {
+            let mut pool = GroupedKvPool::new(groups, 100);
+            assert_eq!(pool.required_bytes(0, 0), Some(0));
+            assert_eq!(pool.required_bytes(0, 1), None);
+            assert!(!pool.allocate(&mut None, 0, 1));
+        }
     }
 }
