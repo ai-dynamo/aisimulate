@@ -57,7 +57,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core-public-api"
+name = "aisim-core-public-api"
 version = "0.0.0"
 dependencies = [
  "aisim-core",

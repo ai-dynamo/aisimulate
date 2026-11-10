@@ -8,8 +8,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use aisimulate_core::engine::{Backend, EngineConfig, NativeHostOffloadConfig, TimingModelConfig};
-use aisimulate_core::replay::loadgen::{
+use aisim_core::engine::{Backend, EngineConfig, NativeHostOffloadConfig, TimingModelConfig};
+use aisim_core::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticHashIdScope,
     AgenticLifecycleEventKind, AgenticMooncakeHeader, AgenticMooncakeRow, AgenticPlayStatus,
@@ -17,7 +17,7 @@ use aisimulate_core::replay::loadgen::{
     PreparedAgenticSnapshots, ValidatedAgenticGraph, WekaImporter, WorkloadDriver,
     load_agentic_mooncake, load_weka_agentic_graph,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     PerRequestRecord, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig,
     ReplayEngineFactory, ReplayReport, ReplayRuntimeInput, ReplaySpec, ReplayTerminalStatus,
     ReplayTopology, Replayer, WorkerPoolSpec,

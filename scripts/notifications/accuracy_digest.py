@@ -225,8 +225,8 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         summary += f" · {len(notes)} comparison note(s) in thread"
     lines = [
         f":rainbow: *Accuracy Weekly · {day}*",
-        "> " + links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
-        " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>",
+        "> " + links + " · <https://ai-dynamo.org/aisim/e2e-accuracy/|E2E overview>"
+        " · <https://ai-dynamo.org/aisim/fpm-accuracy/|FPM overview>",
     ]
     lines.extend("> " + escape("• " + (alert if len(alert) <= 240 else alert[:237] + "...")) for alert in alerts[:3])
     if len(alerts) > 3:

@@ -6,10 +6,10 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.config import CoreRecommendationConfig
-from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.sweeper import OptimizationTarget, SmartSearchConfig
-from aisimulate.sweeper.config import (
+from aisim.config import CoreRecommendationConfig
+from aisim.recommend import recommendation_to_sweeper
+from aisim.sweeper import OptimizationTarget, SmartSearchConfig
+from aisim.sweeper.config import (
     OptimizationGoal,
     SearchSpace,
     SLATarget,

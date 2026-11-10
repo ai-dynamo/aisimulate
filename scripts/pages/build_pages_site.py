@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build the explicitly allowlisted public AISimulate GitHub Pages artifact."""
+"""Build the explicitly allowlisted public AISim GitHub Pages artifact."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from scripts.pages import feature_support_matrix as feature_matrix
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGES_ROOT = Path("pages")
-SYSTEMS_ROOT = Path("python/aisimulate/src/aisimulate_core/systems")
+SYSTEMS_ROOT = Path("python/aisim/src/aisim_core/systems")
 
 # Directories are opt-in so adding internal documentation under docs/ never
 # publishes it accidentally. Every listed page is now part of the required
@@ -379,7 +379,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             snapshot.get("measurement_source_url") == measurement_source_url(snapshot["release_tag"]),
             "measurement source URL",
         )
-        require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
+        require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISim packages")
         for date in ("measurement_date_through", "aisimulate_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
@@ -396,7 +396,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             aic_source = snapshot.get("aic_source")
             require(
                 isinstance(aic_source, dict)
-                and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"
+                and aic_source.get("repository")
+                in {"https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"}
                 and isinstance(aic_source.get("branch"), str)
                 and isinstance(aic_source.get("commit_sha"), str)
                 and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))
@@ -404,7 +405,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                 and (
                     "cli_entry_point" not in aic_source
                     or aic_source["cli_entry_point"]
-                    in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main")
+                    in (
+                        "aiconfigurator.main:main",
+                        "aisim.legacy_cli.entrypoint:main",
+                        "aisimulate.legacy_cli.entrypoint:main",
+                    )
                 )
                 and (revision is None or all(aic_source[key] == revision[key] for key in ("branch", "commit_sha"))),
                 "legacy AIC CLI source",
@@ -511,7 +516,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
 
 def committed_accuracy(repo_root: Path, commit: str) -> tuple[str, str] | None:
     """Read current or pre-migration release data, never branch executable assets."""
-    for path in ("pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"):
+    for path in (
+        "pages/e2e-accuracy/summary.json",
+        "python/aisim/docs/e2e-accuracy/summary.json",
+        "python/aisimulate/docs/e2e-accuracy/summary.json",
+    ):
         entry = _git(repo_root, "ls-tree", commit, "--", path)
         if not entry:
             continue

@@ -25579,7 +25579,7 @@
     "predictions_sha256": "08c17d69203ad3abafbefd903c046400c58f3e26af15cdb16988f186f60010bc",
     "release_tag": "db-dump/2026-09-14"
   },
-  "title": "AISimulate E2E Accuracy Overview",
+  "title": "AISim E2E Accuracy Overview",
   "totals": {
     "aic": {
       "points": 807,

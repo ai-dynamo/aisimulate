@@ -45,7 +45,7 @@ permissions:
 jobs:
   wheel:
     name: Prepare exact accuracy wheel
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 120
     permissions:
       contents: read
@@ -112,7 +112,7 @@ jobs:
           if os.environ['NIGHTLY_RUN']:
               provenance = json.loads((directory / 'provenance.json').read_text())
               if (provenance['commit'] != os.environ['EXPECTED_SHA'] or
-                  provenance['repository'] != 'ai-dynamo/aisimulate' or
+                  provenance['repository'] != 'ai-dynamo/aisim' or
                   provenance['event'] != 'schedule' or provenance['ref'] != 'refs/heads/main' or
                   provenance['arch'] != 'amd64' or provenance['artifacts'][wheel.name] != digest):
                   raise SystemExit('nightly wheel provenance mismatch')
@@ -135,11 +135,11 @@ jobs:
   measurements:
     name: Prepare shared E2E measurements
     timeout-minutes: 120
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -189,13 +189,13 @@ jobs:
       max-parallel: 4
       matrix:
         shard: [0, 1, 2, 3]
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 360
     container:
       # The runner executes as non-root; use its sudo-enabled CI image.
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
@@ -313,11 +313,11 @@ jobs:
     name: Qualify E2E accuracy (${{ inputs.artifact_key }})
     needs: [wheel, shards]
     timeout-minutes: 30
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -397,12 +397,12 @@ jobs:
       max-parallel: 2
       matrix:
         shard: [0, 1]
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 360
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
@@ -485,12 +485,12 @@ jobs:
   qualify-agentx:
     name: Qualify AgentX accuracy (${{ inputs.artifact_key }})
     needs: agentx
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 30
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

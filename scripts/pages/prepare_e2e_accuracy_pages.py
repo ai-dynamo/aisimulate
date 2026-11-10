@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.pages.build_pages_site import _accuracy_summary, committed_accuracy
 
-REPO = "ai-dynamo/aisimulate"
+REPO = "ai-dynamo/aisim"
 WORKFLOW = ".github/workflows/e2e-accuracy.yml"
 CAMPAIGN_KEYS = {
     "schema_version",
@@ -118,10 +118,13 @@ def public_contract(summary):
     keys(snapshot["aic_source"], {"repository", "branch", "commit_sha", "cli_entry_point"})
     if "cli_entry_point" in snapshot["aic_source"] and snapshot["aic_source"]["cli_entry_point"] not in {
         "aiconfigurator.main:main",
+        "aisim.legacy_cli.entrypoint:main",
         "aisimulate.legacy_cli.entrypoint:main",
     }:
         raise ValueError("unsupported baseline entry point")
-    keys(snapshot["aisimulate_packages"], {"aisimulate"})
+    keys(snapshot["aisimulate_packages"], {"aisim", "aisimulate"})
+    if len(snapshot["aisimulate_packages"]) != 1:
+        raise ValueError("campaign must identify exactly one application distribution")
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
     keys(snapshot["campaign"], CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS)

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISimulate Full CI gate.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified as a reusable AISim Full CI gate.
 # Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 
 name: Collector Data Check
@@ -31,12 +31,12 @@ concurrency:
 jobs:
   check:
     name: Check collector data
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 20
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - name: Checkout code
@@ -78,13 +78,13 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
-      - name: Install AISimulate and development dependencies
-        run: python -m pip install './python/aisimulate[dev]'
+      - name: Install AISim and development dependencies
+        run: python -m pip install './python/aisim[dev]'
       - name: Check Collector V3 data invariants
-        working-directory: python/aisimulate
+        working-directory: python/aisim
         run: python tools/perf_database/check_collector_data.py
       - name: Check op-backend facts registry
-        working-directory: python/aisimulate
+        working-directory: python/aisim
         run: python tools/perf_database/backend_facts.py --check
       - name: Compute changed-operation manifest
         id: changed_ops
@@ -116,13 +116,13 @@ jobs:
 
   cross-backend-consistency:
     name: Perf data sanity (informational)
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 25
     continue-on-error: true
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - name: Checkout code
@@ -140,14 +140,14 @@ jobs:
       - name: Install check dependencies
         run: python -m pip install pandas pyarrow numpy pyyaml 'tqdm>=4.0.0'
       - name: Run cross-backend consistency checks
-        working-directory: python/aisimulate
+        working-directory: python/aisim
         run: |
           python tools/perf_database/check_cross_backend.py --workers 4 \
             --out-md cross-backend-consistency.md \
             --out-json cross-backend-consistency.json
       - name: Add triage summary
         if: always()
-        working-directory: python/aisimulate
+        working-directory: python/aisim
         run: |
           if [ -f cross-backend-consistency.md ]; then
             sed -n '/^# Perf data sanity/,/^## Layer 1/p' cross-backend-consistency.md \
@@ -159,7 +159,7 @@ jobs:
         with:
           name: cross-backend-consistency
           path: |
-            python/aisimulate/cross-backend-consistency.md
-            python/aisimulate/cross-backend-consistency.json
+            python/aisim/cross-backend-consistency.md
+            python/aisim/cross-backend-consistency.json
           if-no-files-found: ignore
           retention-days: 30

@@ -26,7 +26,7 @@ adaptation and correction requirements are documented in
 Explicit invalid configuration is not converted into a fallback estimator.
 
 Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
-use the NemotronH text model. AISimulate reads the nested `llm_config` and
+use the NemotronH text model. AISim reads the nested `llm_config` and
 accepts `linear_attention` and `full_attention` layer names. Inferred
 `W4A16_NVFP4` MoE precision selects the vLLM `nvfp4` execution lane.
 Explicit precision overrides retain their values. This recognition does not
@@ -34,7 +34,7 @@ add vision modeling or measured timing coverage.
 
 ## Published FPE matrix
 
-The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+The [FPE Support Matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/)
 is a **strict-native op-level** probe of `EngineHandle.compile` and representative
 forward queries. It does not call `best_available`, enable regression fallback,
 or rescue missing data with HYBRID. It is not a matrix of all estimator paths.
@@ -50,7 +50,7 @@ and query failures remain distinct.
 
 GLM-5.3-Flash build-time rejections of unsupported parallelism, non-native
 checkpoint precision, or backends outside vLLM/SGLang are `SDK_UNREPRESENTABLE`.
-The backend rejection describes AISimulate's modeling coverage; it does not
+The backend rejection describes AISim's modeling coverage; it does not
 establish that the backend itself cannot run the model.
 These rows retain their diagnostics and phases,
 with no latency or `PASS` status. Only recognized build-time diagnostics
@@ -74,9 +74,9 @@ Pages publication belong to [CI accuracy](../ci/accuracy.md).
 ## Versions the CLI accepts
 
 The matrix probes every backend version that has bundled performance data.
-`aisimulate predict` and `aisimulate recommend` accept only the queryable
+`aisim predict` and `aisim recommend` accept only the queryable
 versions of each GPU and backend, defined in
-[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+[`query_versions.yaml`](../../python/aisim/src/aisim_core/systems/query_versions.yaml):
 `current` (the newest completed full collection), `previous` (the full
 collection it replaced, when configured) and `next` (the in-development
 version: the highest version newer than `current` with any measurements
@@ -97,7 +97,7 @@ have replacement coverage. Primary measurements still take precedence.
 
 ## Accuracy and replay
 
-The [accuracy dashboards](https://ai-dynamo.org/aisimulate/) publish separate
+The [accuracy dashboards](https://ai-dynamo.org/aisim/) publish separate
 FPM and end-to-end comparisons. Interpret each result with its measured runtime,
 workload, source revision, and timing boundary. Separate passing prefill and
 decode engine probes do not establish disaggregated rate matching or queueing.

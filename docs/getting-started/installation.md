@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Install AISimulate
+# Install AISim
 
 Use Python **3.11–3.13** in an isolated environment. Simulation runs on the
 host CPU; `engine.hardware` selects the GPU being modeled. A GPU serving
@@ -16,16 +16,16 @@ predate a documented feature. Record your installed version before comparing
 results or reporting a problem:
 
 ```bash
-python -c 'import aisimulate; print(aisimulate.__version__)'
-python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
+python -c 'import aisim; print(aisim.__version__)'
+python -c 'import aisim, aisim._runtime; print(aisim.__file__); print(aisim._runtime.__file__)'
 ```
 
 ### Published packages
 
 The following example pins release `0.12.1`. Use its
-[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1). Check the
-[PyPI release files](https://pypi.org/project/aisimulate/#files) and
-[GitHub releases](https://github.com/ai-dynamo/aisimulate/releases) for newer
+[versioned documentation](https://github.com/ai-dynamo/aisim/tree/v0.12.1). Check the
+[PyPI release files](https://pypi.org/project/aisim/#files) and
+[GitHub releases](https://github.com/ai-dynamo/aisim/releases) for newer
 artifacts and use the documentation associated with the selected release.
 
 ```bash
@@ -33,19 +33,19 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install 'aisimulate==0.12.1'
-aisimulate --help
+aisim --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
-prereleases, use `python -m pip index versions --pre aisimulate`.
-`python -m pip install aisimulate` normally selects a stable release; `--pre`
+prereleases, use `python -m pip index versions --pre aisim`.
+`python -m pip install aisim` normally selects a stable release; `--pre`
 allows prereleases. Neither command requests the latest repository source or
 an internal nightly automatically.
 
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../../README.md#upgrade-from-standalone-aiconfigurator)
-in the environment you intend to use. The `aisimulate` wheel owns both console
-commands. Python imports use `aisimulate` and `aisimulate_core`; see
+in the environment you intend to use. The `aisim` wheel owns both console
+commands. Python imports use `aisim` and `aisim_core`; see
 [Python source migration](../aic-backward-compatibility/migration.md#python-imports-and-resources) for the breaking import change.
 
 ## Platform matrix
@@ -65,14 +65,14 @@ defines build validation. Check the filenames of the release you select;
 source build changes do not alter previously published wheels.
 
 On Linux, check `uname -m` and `ldd --version`; on macOS, check `uname -m` and
-`sw_vers`. To check wheel availability without compiling AISimulate:
+`sw_vers`. To check wheel availability without compiling AISim:
 
 ```bash
 python -m pip download --no-deps --only-binary=:all: \
   'aisimulate==0.12.1' --dest wheel-check
 ```
 
-This checks only AISimulate's wheel, not all transitive dependencies. A missing
+This checks only AISim's wheel, not all transitive dependencies. A missing
 wheel on an unlisted host does not establish source-build support there.
 
 ## Migrate to the renamed distribution
@@ -113,12 +113,12 @@ updating that requirement.
 For features documented on `main`, use a source checkout and record its commit:
 
 ```bash
-git clone https://github.com/ai-dynamo/aisimulate.git
-cd aisimulate
+git clone https://github.com/ai-dynamo/aisim.git
+cd aisim
 git rev-parse HEAD
-uv sync --project python/aisimulate --extra dev
-source python/aisimulate/.venv/bin/activate
-aisimulate --help
+uv sync --project python/aisim --extra dev
+source python/aisim/.venv/bin/activate
+aisim --help
 ```
 
 Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
@@ -163,23 +163,23 @@ The [artifact contract](../ci/release.md) describes wheel/crate versioning.
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
 same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.7.0.dev20261028` and
-`aisimulate==0.13.0.dev202610240000000082`, from the NVIDIA prerelease index.
+`aisim==0.13.0.dev202610240000000082`, from the NVIDIA prerelease index.
 Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
 prediction of the best candidate pass with Python 3.12 on Linux.
 
-The AISimulate wheel corresponds to source
-[`f3a3e3156530574f5e7a10446f19e571b82db871`](https://github.com/ai-dynamo/aisimulate/commit/f3a3e3156530574f5e7a10446f19e571b82db871)
-and [nightly run 40076769417](https://github.com/ai-dynamo/aisimulate/actions/runs/40076769417).
+The AISim wheel corresponds to source
+[`f3a3e3156530574f5e7a10446f19e571b82db871`](https://github.com/ai-dynamo/aisim/commit/f3a3e3156530574f5e7a10446f19e571b82db871)
+and [nightly run 40076769417](https://github.com/ai-dynamo/aisim/actions/runs/40076769417).
 The Dynamo wheel is the October 28 nightly build.
 This is a README simulation qualification, not a claim that Dynamo's entire
 nightly pipeline passed. Full CI README checks retest the installed artifacts
 when relevant files change.
 
-Keep this environment separate from a current AISimulate source checkout.
-Dynamo pins an exact AISimulate nightly; substituting TOT violates that package
+Keep this environment separate from a current AISim source checkout.
+Dynamo pins an exact AISim nightly; substituting TOT violates that package
 contract. Public Dynamo 1.4.2 lacks the modern stack registration, and 1.5.0 uses
-removed AISimulate imports when forced alongside TOT. Do not bypass dependency
-resolution with `--no-deps` or independently upgrade AISimulate in this pair.
+removed AISim imports when forced alongside TOT. Do not bypass dependency
+resolution with `--no-deps` or independently upgrade AISim in this pair.
 
 The [Dynamo deployment guide](../sweeper/deployment-generation.md)
 separately explains generated serving artifacts and runtime version pins.

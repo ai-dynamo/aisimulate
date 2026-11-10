@@ -1287,7 +1287,7 @@ pub(crate) fn predict_group_iteration_ms(
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
-/// provider without adding that dependency to `aisimulate-core`.
+/// provider without adding that dependency to `aisim-core`.
 pub trait TimingModel: Send + Sync {
     /// Validate actual (new tokens, cached prefix) pairs before a scheduler
     /// reduces them to means. Providers with nonlinear per-request execution

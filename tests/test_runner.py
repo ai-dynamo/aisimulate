@@ -11,20 +11,20 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
-import aisimulate
-from aisimulate import capacity as aic
-from aisimulate.cli_args import build_parser
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.config.traffic import SyntheticSource
-from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
-from aisimulate.runner import (
+import aisim
+from aisim import capacity as aic
+from aisim.cli_args import build_parser
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig
+from aisim.config.traffic import SyntheticSource
+from aisim.replay.config import ReplayCliConfig, ReplayOutputConfig
+from aisim.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
     InvalidRunnerError,
     _materialize_engine_role,
 )
-from aisimulate.sweeper import (
+from aisim.sweeper import (
     AdapterReplaySpec,
     BackendDeploymentSpec,
     ReplayOutputRequirements,
@@ -32,8 +32,8 @@ from aisimulate.sweeper import (
     ReplaySpec,
     RuntimeHookSpec,
 )
-from aisimulate.sweeper.config import Workload
-from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+from aisim.sweeper.config import Workload
+from aisim_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
 
 pytestmark = [
@@ -114,8 +114,8 @@ def _spec(*, deployment=None, workload=None, goal=None, concurrency=None, adapte
 
 
 def test_public_namespace_exports_engine_runner_contract():
-    assert aisimulate.EngineReplayRunner is EngineReplayRunner
-    assert aisimulate.EngineReplayRunnerFactory is EngineReplayRunnerFactory
+    assert aisim.EngineReplayRunner is EngineReplayRunner
+    assert aisim.EngineReplayRunnerFactory is EngineReplayRunnerFactory
 
 
 def test_legacy_replay_config_preserves_execution_mode() -> None:
@@ -218,7 +218,7 @@ def test_agentic_capabilities_allow_disabled_canonical_speculation():
 )
 @pytest.mark.parametrize("entrypoint", ["replay", "launch"])
 def test_native_replay_rejects_malformed_canonical_speculation(speculation, entrypoint):
-    from aisimulate.runner import materialize_engine_launch_config
+    from aisim.runner import materialize_engine_launch_config
 
     deployment = _canonical_speculation_deployment(speculation)
     with pytest.raises(ValueError, match="speculation.*must be a mapping"):
@@ -291,7 +291,7 @@ def test_public_runner_rejects_generic_trtllm_in_both_representations(location):
 
 
 def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy():
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
     args = {**deployment.agg_engine_args, "aic_nextn": 2, "aic_nextn_accept_rates": "1,0.5"}
@@ -319,7 +319,7 @@ def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy(
 
 @pytest.mark.parametrize("backend", ["vllm", "trtllm"])
 def test_native_replay_rejects_unsupported_images_without_restricting_text(backend):
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     payload = {
         "spec": {
@@ -364,7 +364,7 @@ def test_native_replay_rejects_unsupported_images_without_restricting_text(backe
 
 @pytest.mark.parametrize("failure", ["download", "validation"])
 def test_native_replay_preserves_checkpoint_failure_classification(monkeypatch, failure):
-    from aisimulate_core.sdk import engine, utils
+    from aisim_core.sdk import engine, utils
 
     path = "test-fixture/unavailable-draft"
     attempted_paths = []
@@ -1159,12 +1159,12 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
-    import aisimulate_core
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    import aisim_core
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     class Estimator:
         def __init__(self, config):
-            self.config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config = json.loads(aisim_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
             self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
 
         def diagnostics(self):
@@ -1881,7 +1881,7 @@ def test_direct_replay_normalizes_both_version_aliases_without_mutating_input():
     )
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
     actual = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]["backend_version"]
-    from aisimulate_core.sdk.perf_database import resolve_query_version
+    from aisim_core.sdk.perf_database import resolve_query_version
 
     assert actual == resolve_query_version("h200_sxm", "vllm", "current")
     assert timing["config"]["backend_version"] == "current"
@@ -2199,7 +2199,7 @@ def test_runner_rejects_unknown_forward_model(value):
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("worker_policy", [None, "SILICON", "SOL"])
 def test_public_replay_keeps_decoder_profile_and_database_policy(replay, worker_policy, monkeypatch):
-    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+    from aisim_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
     class ReadyEstimator:
         def __init__(self, config):
@@ -2282,7 +2282,7 @@ def test_replay_policy_alias_requires_a_boolean(field):
 
 
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
-    from aisimulate_core.sdk import memory
+    from aisim_core.sdk import memory
 
     calls = []
     estimate = {
@@ -2409,15 +2409,15 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
-    import aisimulate_core
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    import aisim_core
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     requested = []
 
     class Estimator:
         def __init__(self, config):
             requested.append(config)
-            self.config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config = json.loads(aisim_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
             self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
 
         def diagnostics(self):
@@ -2453,9 +2453,9 @@ def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
     class HostResourceError(RuntimeError):
         pass
 
-    resources = ModuleType("aisimulate.resources")
+    resources = ModuleType("aisim.resources")
     resources.ResourceLimitError = HostResourceError
-    monkeypatch.setitem(sys.modules, "aisimulate.resources", resources)
+    monkeypatch.setitem(sys.modules, "aisim.resources", resources)
 
     class LimitedRuntime:
         def run_replay_json(self, payload):
@@ -2487,14 +2487,14 @@ def test_native_report_memory_error_becomes_host_resource_failure(monkeypatch):
     ],
 )
 def test_runner_rejects_invalid_power_publication(watts, coverage):
-    from aisimulate.runner import _normalize_engine_replay_report
+    from aisim.runner import _normalize_engine_replay_report
 
     with pytest.raises(InvalidRunnerError):
         _normalize_engine_replay_report({"power_w": watts, "power_coverage": coverage}, include_native_report=False)
 
 
 def test_runner_rejects_overflowing_ordinary_metric():
-    from aisimulate.runner import _normalize_engine_replay_report
+    from aisim.runner import _normalize_engine_replay_report
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
@@ -2829,8 +2829,8 @@ def test_workload_driver_rejects_length_sampler_before_native_execution(source_t
 @pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "canonical_none", "canonical_fallback", "nested"])
 @pytest.mark.parametrize("version", ["", "next", "literal_next"])
 def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tmp_path, layout, version):
-    from aisimulate import _runtime
-    from aisimulate_core.sdk import perf_database
+    from aisim import _runtime
+    from aisim_core.sdk import perf_database
 
     slots = perf_database.get_version_slots("h200_sxm", "vllm")
     expected = slots["next" if version == "literal_next" else version or "current"]
@@ -2914,7 +2914,7 @@ def test_direct_replay_resolves_aliases_in_the_effective_systems_root(monkeypatc
 
     import yaml
 
-    from aisimulate_core.sdk import perf_database
+    from aisim_core.sdk import perf_database
 
     bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
     system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
@@ -3143,7 +3143,7 @@ def test_prediction_rejects_invalid_tokenization(tokenization) -> None:
 
 
 def test_recommendation_rejects_tokenization() -> None:
-    from aisimulate.config.engine import EngineRecommendationConfig
+    from aisim.config.engine import EngineRecommendationConfig
 
     with pytest.raises(ValidationError, match="tokenization"):
         EngineRecommendationConfig.model_validate(
@@ -3182,7 +3182,7 @@ def test_engine_runner_omits_tokenization_when_unset() -> None:
 
 
 def test_tokenization_requires_capability_and_offline_replay() -> None:
-    from aisimulate.sweeper import RunnerCapabilities
+    from aisim.sweeper import RunnerCapabilities
 
     deployment = _tokenization_deployment({"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}, 1)
     spec = _spec(deployment=deployment)
@@ -3215,7 +3215,7 @@ def test_native_replay_tokenizes_on_the_placed_worker() -> None:
 
 
 def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
-    from aisimulate.sweeper.replay import canonical_json
+    from aisim.sweeper.replay import canonical_json
 
     unset = json.loads(canonical_json(_spec()))
     assert "tokenization" not in unset["backend_deployment"]
@@ -3274,14 +3274,14 @@ def test_prediction_rejects_invalid_detokenization(detokenization) -> None:
 
 
 def test_zero_detokenization_costs_are_the_same_as_omitting_detokenization() -> None:
-    from aisimulate.config.engine import DetokenizationConfig
+    from aisim.config.engine import DetokenizationConfig
 
     assert not DetokenizationConfig(workers=4).active
     assert DetokenizationConfig(per_output_us=1).active
 
 
 def test_recommendation_rejects_detokenization() -> None:
-    from aisimulate.config.engine import EngineRecommendationConfig
+    from aisim.config.engine import EngineRecommendationConfig
 
     with pytest.raises(ValidationError, match="detokenization"):
         EngineRecommendationConfig.model_validate(
@@ -3315,7 +3315,7 @@ def test_engine_runner_sends_detokenization_in_the_execution_envelope() -> None:
 
 
 def test_detokenization_requires_capability_and_offline_replay() -> None:
-    from aisimulate.sweeper import RunnerCapabilities
+    from aisim.sweeper import RunnerCapabilities
 
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
     spec = _spec(deployment=_detokenization_deployment(detokenization, 1))

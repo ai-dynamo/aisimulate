@@ -13,15 +13,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aisimulate import _runtime
-from aisimulate import main as cli
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.runner import (
+from aisim import _runtime
+from aisim import main as cli
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig
+from aisim.runner import (
     EngineReplayRunnerFactory,
     _materialize_engine_execution_spec,
 )
-from aisimulate.sweeper.replay import AdapterReplaySpec, ReplayOutputRequirements, RuntimeHookSpec
+from aisim.sweeper.replay import AdapterReplaySpec, ReplayOutputRequirements, RuntimeHookSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 

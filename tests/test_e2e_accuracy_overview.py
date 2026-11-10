@@ -59,7 +59,7 @@ def _row(
         "dynamo_ttft_ms": aisimulate_ttft,
         "dynamo_tpot_ms": aisimulate_tpot,
         "aisimulate_status": status,
-        "aisimulate_runner": "aisimulate.engine_replay",
+        "aisimulate_runner": "aisim.engine_replay",
     }
 
 
@@ -134,7 +134,7 @@ def _inputs() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
             "failed": 1,
             "method": "randomized_synthetic_engine_replay",
             "completed_at": "2026-08-26T01:00:00Z",
-            "runtime": {"packages": {"aisimulate": "0.12.0", "aisimulate-core": "0.12.0"}},
+            "runtime": {"packages": {"aisimulate": "0.12.0", "aisim-core": "0.12.0"}},
         },
     }
     coverage = {
@@ -206,8 +206,8 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     run = {
         "status": "complete",
         "runtime": {
-            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisimulate"},
-            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
+            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisim"},
+            "cli_entry_point": "aisim.legacy_cli.entrypoint:main",
         },
     }
     for document in (predictions, metadata, coverage):
@@ -424,7 +424,7 @@ def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
     assert 'fetch("./branches.json")' in script
 
 
-def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
+def test_public_page_prioritizes_aisim_over_aic_baseline() -> None:
     public_dir = ROOT / "pages" / "e2e-accuracy"
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
@@ -560,9 +560,14 @@ def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
     assert all(len(item["points"]) == 1 for item in topologies)
 
 
+@pytest.mark.parametrize(
+    "repository", ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]
+)
 @pytest.mark.parametrize("branch", ["main", "release/a", "release/0.12.0", "release/0.13.0/rc1"])
-def test_branch_publication_records_evaluated_revision(branch: str) -> None:
+def test_branch_publication_records_evaluated_revision(branch: str, repository: str) -> None:
     predictions, metadata, coverage = _qualified_inputs(branch)
+    for document in (predictions, metadata, coverage):
+        document["aic_run"]["runtime"]["source_checkout"]["repository"] = repository
     result = OVERVIEW.build_summary(
         predictions,
         metadata,
@@ -573,7 +578,7 @@ def test_branch_publication_records_evaluated_revision(branch: str) -> None:
     )
     assert result["snapshot"]["evaluated_revision"] == {"branch": branch, "commit_sha": "d" * 40}
     assert result["snapshot"]["aic_source"] == {
-        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "repository": repository,
         "branch": branch,
         "commit_sha": "d" * 40,
     }
@@ -709,7 +714,7 @@ def test_branch_publication_rejects_invalid_prediction_run_shape(prediction_run:
 def test_successful_replay_rejects_zero_latency() -> None:
     predictions, metadata, coverage = _inputs()
     predictions["rows"][0]["dynamo_ttft_ms"] = 0
-    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISimulate latencies must be positive"):
+    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISim latencies must be positive"):
         OVERVIEW.build_summary(
             predictions,
             metadata,
@@ -730,6 +735,7 @@ def test_page_explains_cli_migration_and_aic_deprecation() -> None:
 @pytest.mark.parametrize(
     "entry,api,adapter",
     [
+        ("aisim.legacy_cli.entrypoint:main", "aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
         ("aisimulate.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
         ("aiconfigurator.main:main", "aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
     ],

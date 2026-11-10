@@ -32,7 +32,7 @@ metadata, while TRT-LLM and SGLang leave the scheduler limit unset.
 This is the simulator's normalized context-limit contract. It does not model
 backend-version-specific frontend validation margins or automatic prompt
 truncation. Successful replay alone does not establish silicon timing accuracy.
-See the [SGLang GPU parity observations](https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045)
+See the [SGLang GPU parity observations](https://github.com/ai-dynamo/aisim/pull/261#pullrequestreview-5250881045)
 for stricter boundary behavior; they do not establish a fixed token offset
 across versions or configurations.
 
@@ -77,7 +77,7 @@ but keep `memory_breakdown=None` because the other components are unavailable.
 The Rust `KvCacheEstimateRequest` exposes the same field. Engine replay accepts
 the value in its engine arguments and carries it through native AIC capacity
 rematerialization, so the Python estimator and native scheduler use the same
-rank-local KV capacity. The `aisimulate predict` YAML exposes it at
+rank-local KV capacity. The `aisim predict` YAML exposes it at
 `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes`. This API
 does not estimate the reservation; callers must supply a value from a source
 they trust.
@@ -91,8 +91,8 @@ for required source changes to request and memory-breakdown structs.
 FPM resources support `cache_layout: linear` with a positive
 `kv_bytes_per_token`, or `cache_layout: grouped` with a nonempty `cache_groups`
 list and no scalar token rate. Existing linear profiles keep their serialized
-shape. Python exports `FpmCacheGroup` from `aisimulate.fpm_profile` and
-`aisimulate_core.fpm_profile`; Rust exports it from `aisimulate_core::perfmodel`.
+shape. Python exports `FpmCacheGroup` from `aisim.fpm_profile` and
+`aisim_core.fpm_profile`; Rust exports it from `aisim_core::perfmodel`.
 
 Memory can be pending, declared, or observed at runtime. The four legacy fields
 `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes`, and

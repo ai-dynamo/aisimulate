@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate.afd_artifacts import (
+from aisim.afd_artifacts import (
     AFDQualificationError,
     build_afd_qualification,
     write_afd_qualification_artifacts,
 )
-from aisimulate.sweeper.afd_parallel import AFDParallelConfig, AFDTopology
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+from aisim.sweeper.afd_parallel import AFDParallelConfig, AFDTopology
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
 
 def _measurement(phase: str) -> dict:

@@ -5,13 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Third-Party Notices
 
-AISimulate contains source material derived from the projects identified below.
+AISim contains source material derived from the projects identified below.
 These notices apply only to the identified third-party material. Dependencies
 installed separately by package managers are governed by the license material
 distributed with those packages.
 
-Unless otherwise stated, AISimulate file paths in this document are relative
-to `python/aisimulate/` in the repository source tree.
+Unless otherwise stated, AISim file paths in this document are relative
+to `python/aisim/` in the repository source tree.
 
 ## AIPerf AgentX snapshot oracle
 
@@ -30,7 +30,7 @@ https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3
 and the full license is included in this repository as `LICENSE`.
 Modified by NVIDIA: executed the pinned sampler on a small synthetic corpus
 to freeze expected cuts, and documented its sequential recycling behavior.
-No upstream implementation is vendored; AISimulate consumes explicit cuts.
+No upstream implementation is vendored; AISim consumes explicit cuts.
 
 The live warmup policy in repository-root
 `crates/core/src/replay/loadgen/phase.rs` and
@@ -63,7 +63,7 @@ Apache-2.0 license apply; no upstream implementation is vendored.
 The repository-root `.coderabbit.yaml` is adapted and modified from
 AIConfigurator's `.coderabbit.yaml` at commit
 `13b5cf2697876692b0a52098266c81162add11fc`. The original imported policy is
-preserved at `python/aisimulate/.coderabbit.yaml` as migration provenance.
+preserved at `python/aisim/.coderabbit.yaml` as migration provenance.
 
 Upstream source:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
@@ -71,7 +71,7 @@ https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c811
 Pinned upstream collection and preserved-file SHA-256:
 `5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
 
-AISimulate-modified root overlay SHA-256:
+AISim-modified root overlay SHA-256:
 `a70a21425533b419feaafcec67b176b3048a0893c4833bb802f46dc6e9a8f57e`
 
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -81,25 +81,25 @@ at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
 The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
-`src/aisimulate_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+`src/aisim_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
 power measurements derived from AIConfigurator commit
 `915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Fourteen tables remain
 unmodified, byte-identical copies after the September 17-18 refresh. The
 context-MLA table was replaced with locally collected measurements, and the
 MoE table has locally refreshed MXFP4 rows with unavailable-power sentinels.
 The context-attention and
-generation-attention tables are modified derivatives: AISimulate preserves
+generation-attention tables are modified derivatives: AISim preserves
 newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
 to those local-only identities. Source paths, row counts, measured coverage,
 and merge details are recorded in
-`src/aisimulate_core/systems/data/b200_sxm/README.md`. The two unmodified
+`src/aisim_core/systems/data/b200_sxm/README.md`. The two unmodified
 upstream attention copies under
-`src/aisimulate_core/systems/data/b200_sxm/power_upstream/` support focused
+`src/aisim_core/systems/data/b200_sxm/power_upstream/` support focused
 import regression tests, which pin source and packaged SHA-256 digests.
 
 The corresponding energy expectations in the repository-root file
 `crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated
-derivatives of those measurements. AISimulate's native pinning workflow at
+derivatives of those measurements. AISim's native pinning workflow at
 commit `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74` produced the two case updates;
 the adjacent parity README records the reviewed energy-only delta.
 
@@ -127,7 +127,7 @@ lifecycle tests are original work for this change, with no external corpus.
 
 ## Dynamo GLM-5.3-Flash default-serving (prefix-cache) FPM adapter
 
-`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_prefix_scheduler.py`
+`python/aisim/collector/fpm_forward/runtime/glm53flash/glm53flash_prefix_scheduler.py`
 is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
 in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9
 (benchmark state machine on the native scheduler). Its prefix-cache real-seed staging
@@ -153,7 +153,7 @@ No upstream root NOTICE exists. vLLM and SGLang implementation files are not ven
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
 
-Derived AISimulate paths are under `python/aisimulate/src/aisimulate_core/sdk/`, `python/aisimulate/src/aisimulate/sdk/speculation/`, `python/aisimulate/src/aisimulate_core/sdk/speculation/`, `python/aisimulate/src/aisimulate/legacy_cli/`, `python/aisimulate/src/aisimulate/sdk/{speculative,task_v2}.py`, and `python/aisimulate/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's [synchronization provenance](https://github.com/ai-dynamo/aisimulate/blob/main/docs/ci/aic-sync.md#source-provenance) records import boundaries and links the current path mapping. Changes preserve AISimulate's current native contracts and strengthen configuration validation and regression coverage.
+Derived AISim paths are under `python/aisim/src/aisim_core/sdk/`, `python/aisim/src/aisim/sdk/speculation/`, `python/aisim/src/aisim_core/sdk/speculation/`, `python/aisim/src/aisim/legacy_cli/`, `python/aisim/src/aisim/sdk/{speculative,task_v2}.py`, and `python/aisim/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's [synchronization provenance](https://github.com/ai-dynamo/aisim/blob/main/docs/ci/aic-sync.md#source-provenance) records import boundaries and links the current path mapping. Changes preserve AISim's current native contracts and strengthen configuration validation and regression coverage.
 
 Upstream source:
 https://github.com/ai-dynamo/aiconfigurator/tree/6290c161a354da5250c391bd43372b2e9c6f4a51
@@ -167,7 +167,7 @@ This records provenance for NVIDIA-authored predecessor code, without implying o
 
 Selected CI definitions and a recommendation test were adapted from NVIDIA's
 AIConfigurator repository at commit
-`77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISimulate's
+`77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISim's
 unified package layout and Fast CI / Full CI execution model:
 
 - repository-root `.github/workflows/ci.yml` (selected jobs)
@@ -193,7 +193,7 @@ claim that AIConfigurator is owned by an unaffiliated third party.
 The `weka_seam_rekey_never_uses_a_future_parent` regression in repository-root
 `crates/core/src/replay/loadgen/weka.rs` is adapted and modified from NVIDIA
 Dynamo's `lib/mocker/src/loadgen/tests.rs` at immutable commit
-`b113ceae74da3f6754429ade750b0f5b0c8de5d6`. The adaptation uses AISimulate's public
+`b113ceae74da3f6754429ade750b0f5b0c8de5d6`. The adaptation uses AISim's public
 graph loader and adds assertions that the later continuation was selected while
 the earlier fork retains its original parent.
 
@@ -212,9 +212,9 @@ that Dynamo is owned by an unaffiliated third party.
 
 ## SGLang feed-forward/decode composition and quantization exclusions
 
-The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
+The dense-prefix composition and exclusion resolver in `src/aisim_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
 
-The vLLM copyright in `src/aisimulate_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISimulate.
+The vLLM copyright in `src/aisim_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISim.
 
 Upstream source:
 https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
@@ -225,7 +225,7 @@ https://gitlab-master.nvidia.com/dl/sglang/sglang/-/blob/02c5a855aceb968c310e6fb
 ## vLLM
 
 The grouped-cache config derivation and metadata regression tests in
-`src/aisimulate/support/config_profile.py`,
+`src/aisim/support/config_profile.py`,
 `tests/unit/test_support_config_profile.py`, and
 `tests/unit/test_support_topology.py` are adapted and modified from vLLM's
 Inkling cache layout, decoder state construction, and configuration defaults at
@@ -241,7 +241,7 @@ This material is licensed under Apache-2.0; the upstream license at the
 identified revision is available at:
 https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
 
-AISimulate modifies these contracts for metadata-only rank-local aggregate
+AISim modifies these contracts for metadata-only rank-local aggregate
 cache sizing and validation, without constructing runtime tensors or a model.
 The derived tests use original synthetic geometries and do not copy a
 checkpoint fixture. The derived files retain the upstream copyright and
@@ -358,9 +358,9 @@ Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
 This material is licensed under the Apache License 2.0.
 
 The Mistral3 projector topology modeled in
-`src/aisimulate_core/sdk/models/blocks/vit.py` and parsed in
-`src/aisimulate_core/sdk/utils.py`, and Pixtral image geometry and prompt-token
-accounting in `src/aisimulate_core/sdk/backends/base_backend.py`, with regression
+`src/aisim_core/sdk/models/blocks/vit.py` and parsed in
+`src/aisim_core/sdk/utils.py`, and Pixtral image geometry and prompt-token
+accounting in `src/aisim_core/sdk/backends/base_backend.py`, with regression
 coverage in `tests/unit/sdk/models/test_mistral3.py`, are adapted and modified for
 performance modeling from vLLM v0.24.0 at immutable commit
 `ee0da84ab9e04ac7610e28580af62c365e898389`:
@@ -654,8 +654,8 @@ SOFTWARE.
 ## SGLang DeepSeek-V4.1 serving contracts
 
 The V4.1 execution and performance-model logic in
-`src/aisimulate_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
-(with the same `src/aisimulate_core/` prefix), and repository-root
+`src/aisim_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
+(with the same `src/aisim_core/` prefix), and repository-root
 `crates/core/src/perfmodel/operators/dsv41.rs` is informed by and modified from
 SGLang's serving architecture at immutable commit
 `1aa0e962b206102b7c439a4a0c4981cfec6e87bc`:
@@ -691,7 +691,7 @@ and `docs/perf-model/models/deepseek-v41.md` are independently expressed, modifi
 analytical adaptations of those same pinned BF16 indexer contracts.
 
 The measured operator databases and adjacent documentation under
-`src/aisimulate_core/systems/profiles/dsv41/` contain AISimulate timings
+`src/aisim_core/systems/profiles/dsv41/` contain AISim timings
 and geometry adapted from the same serving contracts (modified). Their
 README and adjacent provenance identify the immutable collection runtime
 and source identities. The restored GB300 tables preserve their historical
@@ -700,15 +700,15 @@ B300 TP4 and TP2 tables are new native measurements with loaded-module dimension
 validation; they do not inherit that historical correction.
 
 The FPM table execution identities, geometry, collection sidecars and accompanying
-README under `src/aisimulate_core/systems/profiles/dsv41_fpm/`, including
-B300 TP2/TP4 and GB300 TP2 full/bounded measurements, are modified AISimulate
+README under `src/aisim_core/systems/profiles/dsv41_fpm/`, including
+B300 TP2/TP4 and GB300 TP2 full/bounded measurements, are modified AISim
 adaptations of the SGLang serving-contract paths and immutable commit
 listed above (Copyright 2023-2024 SGLang Team and SGLang contributors,
 Apache-2.0), and of `config.json`, `inference/model.py` and
 `DeepSeek_V41_Tech_Report.pdf` from
 `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d`
 (Copyright (c) 2023 DeepSeek, MIT; source and license below). The latencies are
-new AISimulate measurements; these files contain no upstream model execution
+new AISim measurements; these files contain no upstream model execution
 code. The SGLang source revision identifies the serving-contract reference,
 not the entire measured runtime image; the immutable image and captured source
 identities remain collection provenance.
@@ -718,7 +718,7 @@ Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2
 reproduced in the repository `LICENSE`. These are analytical adaptations,
 not a copy of the model execution implementation. The modified analytical
 scoring/storage adaptations and their independently written regression cases
-also appear in `python/aisimulate/tests/unit/sdk/models/test_deepseek_v41.py`,
+also appear in `python/aisim/tests/unit/sdk/models/test_deepseek_v41.py`,
 Rust operator/spec unit tests, `docs/perf-model/models/deepseek-v41.md`. They distinguish candidate masking from scoring
 and physical FlashMLA cache payload from logical FP4 values.
 
@@ -741,7 +741,7 @@ The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
   and of `disaggregation/encoder/{runtime,server,receiver,preprocessor}.py`
   (`EncoderScheduler`, `_assign_items_by_modality`, `zmq_to_scheduler`) as
   performance models, without copying the upstream implementation.
-- `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
+- `python/aisim/src/aisim/vl/collect/` instantiates the pinned
   upstream frontend objects unmodified on the serving host and times them from
   the outside; it does not copy or modify their implementations.
 
@@ -754,18 +754,18 @@ at https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349
 The following model configuration files are copied from, or formatting-only
 adaptations of, the named DeepSeek model repositories:
 
-| AISimulate file | Upstream revision |
+| AISim file | Upstream revision |
 | --- | --- |
-| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
-| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
-| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
-| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
-| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
-| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
 
-The V4.1 descriptor and performance formulas in `src/aisimulate_core/sdk/deepseek_v41.py`,
-`src/aisimulate_core/sdk/models/deepseek_v41.py`, and repository-root
-`crates/core/src/perfmodel/operators/dsv41.rs` are AISimulate performance-model
+The V4.1 descriptor and performance formulas in `src/aisim_core/sdk/deepseek_v41.py`,
+`src/aisim_core/sdk/models/deepseek_v41.py`, and repository-root
+`crates/core/src/perfmodel/operators/dsv41.rs` are AISim performance-model
 adaptations of the architecture described by `inference/model.py` and
 `DeepSeek_V41_Tech_Report.pdf` at the same V4.1 revision (modified; no model execution code).
 Source: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d
@@ -799,7 +799,7 @@ SOFTWARE.
 
 ## Meta Muse Glimmer model configuration
 
-`src/aisimulate_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+`src/aisim_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
 is an unmodified copy of `config.json` from the Meta Muse Glimmer model
 repository at immutable revision
 `f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
@@ -821,8 +821,8 @@ named Qwen model repositories at the immutable revisions shown:
 
 | Packaged file | Upstream revision |
 | --- | --- |
-| `aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
-| `aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
+| `aisim_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
+| `aisim_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
 
 Upstream repositories:
 https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B and
@@ -856,10 +856,10 @@ For any questions regarding this license, please contact model-business@notice.q
 The following bundled model configs are modified copies of Meta Llama 4
 checkpoint configuration files:
 
-- `src/aisimulate_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
+- `src/aisim_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
   from revision `92f3b1597a195b523d8d9e5700e57e4fbb8f20d3`:
   https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/92f3b1597a195b523d8d9e5700e57e4fbb8f20d3/config.json
-- `src/aisimulate_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
+- `src/aisim_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
   from revision `73d14711bcc77c16df3470856949c3764056b617`:
   https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/73d14711bcc77c16df3470856949c3764056b617/config.json
 
@@ -968,7 +968,7 @@ The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
 
 The Qwen VL `smart_resize` pixel-budget rule in
-`python/aisimulate/src/aisimulate_core/sdk/backends/base_backend.py`
+`python/aisim/src/aisim_core/sdk/backends/base_backend.py`
 (`_qwen_smart_resize`) is a modified adaptation of the Qwen2-VL image processor
 in Hugging Face Transformers at tag `v4.57.0`:
 
@@ -1200,7 +1200,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 ## Published FPM dataset pin manifests
 
 The `hf_dataset.json` manifests and adjacent attribution README files under
-`python/aisimulate/src/aisimulate_core/systems/profiles/` in
+`python/aisim/src/aisim_core/systems/profiles/` in
 `minimax_m27_fpm/`, `dsv4pro_fpm/`, `dsv4flash_fpm/`, `glm52_fpm/`,
 `kimi_k3_fpm/` and `inkling_fpm/` adapt published NVIDIA collection metadata
 into hash-pinned download indexes (modified). No external timing tables,
@@ -1218,7 +1218,7 @@ model weights or collection implementation are bundled in these directories.
   the Apache-2.0 terms are reproduced in this repository's `LICENSE`.
 - Modifications: separate deployment roots, explicit development/diagnostic
   admission, canonical loader targets and explicit references to installed
-  AISimulate hardware configurations. Source artifact bytes are unchanged when
+  AISim hardware configurations. Source artifact bytes are unchanged when
   downloaded.
 
 The dataset's root `THIRD_PARTY_NOTICES.md` is explicitly scoped to separate
@@ -1264,27 +1264,27 @@ and does not relicense model weights, producer code or their upstream projects.
 - The replay HTML renderer embeds the unmodified Plotly.js bundle supplied by
   the installed `plotly` Python dependency, preserving its version and copyright
   header. No Plotly.js source is vendored in the Python renderer.
-- `python/aisimulate/src/aisimulate/replay/plotly-js-LICENSE.txt` is an unmodified
+- `python/aisim/src/aisim/replay/plotly-js-LICENSE.txt` is an unmodified
   copy of the MIT license from https://github.com/plotly/plotly.js/blob/v3.4.0/LICENSE
   (immutable release tag `v3.4.0`, original path `LICENSE`). It is packaged and
   embedded in generated `report.html` files.
 - Copyright (c) 2012–2026 Plotly, Inc. The dashboard template and telemetry
-  transformations are AISimulate code; they do not modify Plotly.js.
+  transformations are AISim code; they do not modify Plotly.js.
 
 
 ## vLLM Kimi KDA state sizing
 
-`src/aisimulate_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
-`src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
+`src/aisim_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
+`src/aisim/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,
 `vllm/model_executor/models/kimi_linear.py`,
 `vllm/model_executor/layers/kda.py`,
 `vllm/platforms/interface.py`, `vllm/v1/kv_cache_interface.py`,
 `vllm/v1/attention/backends/mla/triton_mla.py`, and `vllm/config/cache.py`.
-The modified implementation reuses AISimulate's Kimi model for token KV geometry,
+The modified implementation reuses AISim's Kimi model for token KV geometry,
 resolves the requested block granularity to fit one state using CPU arithmetic,
-and adds AISimulate validation and diagnostics.
+and adds AISim validation and diagnostics.
 
 Source: https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
 
@@ -1301,8 +1301,8 @@ configuration files at the immutable revisions shown:
 
 | Packaged file | Upstream file and revision |
 | --- | --- |
-| `src/aisimulate_core/model_configs/zai-org--GLM-5.3_config.json` | `config.json` from `zai-org/GLM-5.3@ba32f8c19c8738e2c57c71798c601d477a7bf844` |
-| `src/aisimulate_core/model_configs/zai-org--GLM-5.3-BF16_config.json` | `config.json` from `zai-org/GLM-5.3-BF16@abf42e6c0e53bc29a875511301e7b7fcd220315b` |
+| `src/aisim_core/model_configs/zai-org--GLM-5.3_config.json` | `config.json` from `zai-org/GLM-5.3@ba32f8c19c8738e2c57c71798c601d477a7bf844` |
+| `src/aisim_core/model_configs/zai-org--GLM-5.3-BF16_config.json` | `config.json` from `zai-org/GLM-5.3-BF16@abf42e6c0e53bc29a875511301e7b7fcd220315b` |
 
 Upstream repositories:
 https://huggingface.co/zai-org/GLM-5.3 and
@@ -1346,7 +1346,7 @@ For any questions regarding this license, please contact glmlicense@z.ai.
 ## GLM-5.3-Flash configurations and analytical model
 
 Unmodified configurations are included at
-`src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json`,
+`src/aisim_core/model_configs/zai-org--GLM-5.3-Flash_config.json`,
 `nvidia--GLM-5.3-Flash-NVFP4_config.json`, and
 `nvidia--GLM-5.3-Flash-NVFP4_hf_quant_config.json` in the same directory.
 Sources are Z.AI's `config.json` at
@@ -1356,8 +1356,8 @@ https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/09b04e5e74bca08ca8549fc73
 Copyright (c) 2026 Z.AI Co., Ltd. MIT license; the full license is preserved
 in the adjacent distributed `GLM53FLASH_PROVENANCE.md`.
 
-The geometry in `src/aisimulate_core/sdk/glm53flash.py`,
-`src/aisimulate_core/sdk/models/glm53flash.py`, repository-root
+The geometry in `src/aisim_core/sdk/glm53flash.py`,
+`src/aisim_core/sdk/models/glm53flash.py`, repository-root
 `crates/core/src/perfmodel/operators/glm53flash.rs`, and their GLM tests is a
 modified analytical adaptation of those configurations. Execution boundaries
 and precision partitions are independently expressed adaptations of
@@ -1394,8 +1394,8 @@ configuration files at the immutable revision shown:
 
 | Packaged file | Upstream file and revision |
 | --- | --- |
-| `src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json` | `config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
-| `src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+| `src/aisim_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json` | `config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+| `src/aisim_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
 
 Upstream repository:
 https://huggingface.co/nvidia/GLM-5.3-NVFP4/tree/e3b8f9f2fad29727dfa95e766c5cac18ea1414bf
@@ -1416,19 +1416,19 @@ licensed under the GLM-5.3 License (Copyright (c) 2026 Z.AI), which ships in
 the upstream repository as `LICENSE`; the card states that the NVIDIA Open
 Model Agreement does not modify or supersede it. The full texts of both are
 preserved in the adjacent distributed
-`src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
+`src/aisim_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
 
 ## vLLM DeepSeek V4 cache sizing
 
-`src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
-control in `src/aisimulate/config/engine.py` are adapted and modified from vLLM
+`src/aisim_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
+control in `src/aisim/config/engine.py` are adapted and modified from vLLM
 commit `c5c116138267ac738bc262495326d28ffff834a2`. Original paths:
 `vllm/models/deepseek_v4/attention.py`, `vllm/models/deepseek_v4/compressor.py`,
 `vllm/v1/attention/backends/mla/sparse_swa.py`, `vllm/v1/kv_cache_interface.py`,
 `vllm/v1/core/kv_cache_utils.py`, `vllm/v1/core/single_type_kv_cache_manager.py`,
 and `vllm/config/attention.py`. The modified implementation computes DeepSeek V4
 cache pages, packed cache groups and resident sliding-window blocks with CPU
-arithmetic, maps them onto AISimulate's state cache, and adds AISimulate
+arithmetic, maps them onto AISim's state cache, and adds AISim
 validation and diagnostics.
 
 Source: https://github.com/vllm-project/vllm/tree/c5c116138267ac738bc262495326d28ffff834a2
@@ -1441,11 +1441,11 @@ https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834
 
 ## SemiAnalysis AgentX simulation-performance fixture
 
-`python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
+`python/aisim/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
 from `traces.jsonl` in the SemiAnalysis dataset
 https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
 at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
-`python/aisimulate/tools/simulation_perf_gate/fixtures/DATASET_CARD.md` is adapted
+`python/aisim/tools/simulation_perf_gate/fixtures/DATASET_CARD.md` is adapted
 from upstream `README.md` at the same revision. Modified by NVIDIA: omitted the
 distribution-plot section and added a source and scope note. The remaining
 upstream text and license declaration are retained.
@@ -1471,7 +1471,7 @@ Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
 Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
 The adaptation adds zero recurrent-state bytes to the legacy token-only DTO
-conversion for CI builds against the newer AISimulate handoff API. It preserves
+conversion for CI builds against the newer AISim handoff API. It preserves
 the upstream copyright header and marks the modified conversion in the output.
 
 ## NVIDIA Dynamo CI struct-literal compatibility
@@ -1494,15 +1494,15 @@ https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1
 Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
 Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
-The adaptation adds `None` for new optional AISimulate fields to the native
+The adaptation adds `None` for new optional AISim fields to the native
 request and offline KV-router placement struct literals for CI builds against
-newer AISimulate APIs. It also sets an empty image list for the pinned text-only
-request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
+newer AISim APIs. It also sets an empty image list for the pinned text-only
+request when AISim requires `images: Vec<ImageSpec>`, rejecting image inputs
 instead of adding multimodal support to Dynamo's adapter. Both offline replay
 specifications disable the encoder pool; the Python binding's synthetic trace
 explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
 rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
-The Weka import adapter retains the default recorded client when the AISimulate
+The Weka import adapter retains the default recorded client when the AISim
 API adds the client selection field.
 It preserves the upstream copyright headers and marks each modification in the output.
 
@@ -1536,7 +1536,7 @@ It preserves the upstream copyright header and marks the modified conversion
 in the output.
 
 The callback contract harness in `scripts/performance/check_dynamo_callback.py`
-compiles that entire adapted callback with the real AISimulate core. Its minimal
+compiles that entire adapted callback with the real AISim core. Its minimal
 trait interfaces are adapted from `lib/mocker/src/common/perf_model.rs` and
 `lib/kv-router/src/scheduling/prefill_load.rs` at the same immutable commit:
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/perf_model.rs
@@ -1549,7 +1549,7 @@ of the Dynamo scheduler; it does not replace callback or estimator behavior.
 ## SGLang simulator and HiSim feature definitions
 
 The per-request feature set of the learned forward-pass model
-(`REQUEST_FEATURE_NAMES` in `python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py` and
+(`REQUEST_FEATURE_NAMES` in `python/aisim/src/aisim_core/sdk/fpm_learned.py` and
 `REQUEST_FEATURE_NAMES` in `crates/core/src/perfmodel/fpm/learned.rs`,
 relative to the repository root) is a re-implementation of the 18 batch
 features defined by `MLTimePredictor.FEATURE_NAMES` in the SGLang simulator,
@@ -1568,7 +1568,7 @@ Both upstream licenses at the identified revisions:
 https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/LICENSE
 https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/LICENSE
 
-The AISimulate files are modified re-implementations, not verbatim copies.
+The AISim files are modified re-implementations, not verbatim copies.
 Both derived files carry the source URLs and revisions in their headers.
 
 ## SGLang v0.5.20 transferred-prompt publication at running admission and release on ready-queue cancellation
@@ -1591,7 +1591,7 @@ Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
 the upstream license is at
 https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
 and its full text is included in this repository as `LICENSE`.
-Modified for AISimulate request leases, physical page accounting and replay.
+Modified for AISim request leases, physical page accounting and replay.
 No serving implementation, production request content or upstream test fixture is vendored.
 
 ## SGLang v0.5.20 partial-edge access recency and reinsertion of an already cached prefix
@@ -1610,7 +1610,7 @@ Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
 the upstream license is at
 https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
 and its full text is included in this repository as `LICENSE`.
-Modified for AISimulate request leases, physical page accounting and replay.
+Modified for AISim request leases, physical page accounting and replay.
 No serving implementation, production request content or upstream test fixture is vendored.
 
 ## SGLang v0.5.20 stable length-policy retraction order and post-release cache eviction toward the survivor reserve
@@ -1631,7 +1631,7 @@ Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
 the upstream license is at
 https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
 and its full text is included in this repository as `LICENSE`.
-Modified for AISimulate request leases, physical page accounting and replay.
+Modified for AISim request leases, physical page accounting and replay.
 No serving implementation, production request content or upstream test fixture is vendored.
 
 ## SGLang v0.5.20 completed source-prompt publication before the transfer hold
@@ -1651,12 +1651,12 @@ Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
 the upstream license is at
 https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
 and its full text is included in this repository as `LICENSE`.
-Modified for AISimulate request leases, physical page accounting and replay.
+Modified for AISim request leases, physical page accounting and replay.
 No serving implementation, production request content or upstream test fixture is vendored.
 
 ## SGLang cache publication and KV event cadence
 
-The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/sglang_backend.rs`, `crates/core/src/engine/scheduler/sglang/core.rs`, `crates/core/src/engine/scheduler/sglang/decode.rs`, `crates/core/src/engine/scheduler/sglang/host_loop.rs`, and `crates/core/src/engine/scheduler/sglang/tests.rs` adapt the cache insert points and event queue/publish contract from SGLang v0.5.20, immutable commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`: `python/sglang/srt/mem_cache/radix_cache.py`, `python/sglang/srt/mem_cache/events.py`, `python/sglang/srt/managers/scheduler.py`, `python/sglang/srt/managers/scheduler_components/batch_result_processor.py`, and `python/sglang/srt/managers/scheduler_components/metrics_reporter.py`. Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e . Copyright 2023-2024 SGLang Team and contributors, Apache-2.0. The license text is included as `LICENSE`. Modified for AISimulate request leases, overlap observation, and physical page accounting. No production fixture is included.
+The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/sglang_backend.rs`, `crates/core/src/engine/scheduler/sglang/core.rs`, `crates/core/src/engine/scheduler/sglang/decode.rs`, `crates/core/src/engine/scheduler/sglang/host_loop.rs`, and `crates/core/src/engine/scheduler/sglang/tests.rs` adapt the cache insert points and event queue/publish contract from SGLang v0.5.20, immutable commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`: `python/sglang/srt/mem_cache/radix_cache.py`, `python/sglang/srt/mem_cache/events.py`, `python/sglang/srt/managers/scheduler.py`, `python/sglang/srt/managers/scheduler_components/batch_result_processor.py`, and `python/sglang/srt/managers/scheduler_components/metrics_reporter.py`. Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e . Copyright 2023-2024 SGLang Team and contributors, Apache-2.0. The license text is included as `LICENSE`. Modified for AISim request leases, overlap observation, and physical page accounting. No production fixture is included.
 
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time

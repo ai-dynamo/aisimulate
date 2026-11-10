@@ -614,7 +614,7 @@ impl ForwardPassPerfModel {
     ///
     /// Description: create a forward-pass model from an offline-trained learned
     /// artifact (`aic_fpm_learned_forward_perf` JSON written by the Python
-    /// `aisimulate_core.sdk.fpm_learned` trainer).
+    /// `aisim_core.sdk.fpm_learned` trainer).
     ///
     /// `source` is either a filesystem path or the artifact JSON text itself
     /// (detected by a leading `{`). The artifact binds the worker type and the
@@ -2685,7 +2685,7 @@ fn prepare_learned_iteration(
         return Err(AicError::InvalidForwardPassMetrics(
             "learned artifact uses per-request features but the iteration carries no aligned, \
              consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
-             per-request FPM hooks (aisimulate_core.fpm_hooks) or retrain with the default \
+             per-request FPM hooks (aisim_core.fpm_hooks) or retrain with the default \
              aggregate --features fpm5 (or v1)"
                 .to_string(),
         ));

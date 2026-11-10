@@ -2104,7 +2104,7 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
             Box::new(|m: &mut serde_json::Value| {
                 m["producer"]["aisimulate_core_version"] = "0.0.1".into()
             }),
-            "written by aisimulate-core 0.0.1",
+            "written by aisim-core 0.0.1",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
@@ -2138,7 +2138,7 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
                 m["producer"]["future_field"] = true.into();
                 m["future_field"] = true.into();
             }),
-            "written by aisimulate-core 99.0.0",
+            "written by aisim-core 99.0.0",
         ),
         (
             Box::new(|m: &mut serde_json::Value| m["producer"]["future_field"] = true.into()),
