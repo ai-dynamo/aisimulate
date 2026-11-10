@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1832,7 +1833,7 @@ def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -
     assert enabled["sglang"] == {"disaggregation_decode_enable_radix_cache": True}
 
 
-def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture() -> None:
+def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture(tmp_path) -> None:
     from aisimulate.compiler import _deployment, _swa_prefix_tails
 
     def engine(model="deepseek-ai/DeepSeek-V4-Flash", backend="sglang", **kv_cache):
@@ -1854,6 +1855,18 @@ def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture() -> None:
     assert tails(backend="vllm") is None
     with pytest.raises(ValueError, match="only for backend=sglang"):
         tails(backend="vllm", swa_prefix_tails=100)
+
+    # A local config is read only for its architecture, so a model without a performance model works.
+    def local(name, architectures):
+        path = tmp_path / name
+        path.mkdir()
+        (path / "config.json").write_text(json.dumps({"architectures": architectures}))
+        return str(path)
+
+    assert tails(model=local("custom", ["CustomForCausalLM"])) is None
+    assert tails(model=local("v4", ["DeepseekV4ForCausalLM"])) == 32
+    with pytest.raises(ValueError, match="architectures must be a list of strings"):
+        tails(model=local("malformed", "DeepseekV4ForCausalLM"))
 
     spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={}, afd_performance_model=None)
     assert spec.prefill_engine_args["sglang"]["swa_prefix_tails"] == 100

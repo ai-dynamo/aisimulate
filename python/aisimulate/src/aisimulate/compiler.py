@@ -11,7 +11,7 @@ from typing import Any
 
 from aisimulate_core.sdk.common import DefaultHFModels
 from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
-from aisimulate_core.sdk.utils import get_model_config_from_model_path
+from aisimulate_core.sdk.utils import _load_local_config, _load_pre_downloaded_hf_config
 
 from .capacity import (
     estimate_kv_bytes_per_token,
@@ -1019,10 +1019,18 @@ def _swa_prefix_tails(engine: EnginePredictionConfig, worker: WorkerPredictionCo
         return None
     if configured != "auto":
         return configured
-    # Bundled or local configs only: resolving any other model path would download it.
-    if engine.model not in DefaultHFModels and not os.path.isdir(engine.model):
+    # Bundled or local configs only: resolving any other model path would download it. Only the
+    # raw architecture is read, so a model without a performance model keeps SWA reuse off.
+    if os.path.isdir(engine.model):
+        raw = _load_local_config(engine.model)
+    elif engine.model in DefaultHFModels:
+        raw = _load_pre_downloaded_hf_config(engine.model)
+    else:
         return None
-    if get_model_config_from_model_path(engine.model)["architecture"] not in _SWA_PREFIX_ARCHITECTURES:
+    architectures = raw.get("architectures") or []
+    if not isinstance(architectures, list) or not all(isinstance(name, str) for name in architectures):
+        raise ValueError(f"{engine.model} config architectures must be a list of strings")
+    if not _SWA_PREFIX_ARCHITECTURES.intersection(architectures[:1]):
         return None
     return 4 * worker.scheduler.max_sequences
 

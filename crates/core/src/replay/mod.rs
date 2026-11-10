@@ -159,7 +159,7 @@ pub use protocol::{
 pub use protocol::{AuthoredKvHints, ForwardPassSnapshot};
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
-pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
+pub use replayer::{LoadBalanceMethod, ReplayComposition, Replayer, RoundRobinComposition};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{

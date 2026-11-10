@@ -1775,6 +1775,76 @@ mod tests {
     }
 
     #[test]
+    fn swa_window_stays_valid_on_the_host_and_cuts_back_a_fork_host_hit() {
+        let (mut manager, _) = hicache_manager(16, 0.0, 0.0);
+        manager.enable_swa_prefix(4);
+        let tokens = (0..24).collect::<Vec<_>>();
+        let cached = manager.allocate_for_request(&tokens[..16]).unwrap();
+        manager.finish(&tokens[..16], cached.lease);
+        manager.complete_host_boundary(0.0);
+        manager.evict(16);
+        assert_eq!(manager.cache.swa_window_count(), 1);
+        // The tail now lives on the host only; its window still serves a continuation.
+        let mut continuation = lease_with_hashes(&tokens, 4);
+        assert_eq!(
+            manager.admission_host_match(&mut continuation, 6),
+            HostPrefixMatch {
+                device_tokens: 0,
+                host_tokens: 16
+            }
+        );
+        assert_eq!(continuation.swa_fork_pages, None);
+        // A fork inside the cached sequence has no window, so its host hit is recomputed.
+        let fork_tokens = tokens[..8]
+            .iter()
+            .copied()
+            .chain(100..108)
+            .collect::<Vec<_>>();
+        let mut fork = lease_with_hashes(&fork_tokens, 4);
+        assert_eq!(
+            manager.admission_host_match(&mut fork, 4),
+            HostPrefixMatch {
+                device_tokens: 0,
+                host_tokens: 0
+            }
+        );
+        assert_eq!(fork.swa_fork_pages, Some(2));
+        assert!(!manager.has_host_work());
+    }
+
+    #[test]
+    fn swa_window_leaves_with_its_host_reclaimed_tail() {
+        let (mut manager, _) = hicache_manager(2, 0.0, 0.0);
+        manager.enable_swa_prefix(4);
+        let old = (0..8).collect::<Vec<_>>();
+        let cached = manager.allocate_for_request(&old).unwrap();
+        manager.finish(&old, cached.lease);
+        manager.complete_host_boundary(0.0);
+        manager.evict(8);
+        assert_eq!(manager.cache.swa_window_count(), 1);
+        // Backing up a new sequence reclaims the old host-only tail and its window.
+        let new = (100..112).collect::<Vec<_>>();
+        let allocated = manager.allocate_for_request(&new).unwrap();
+        manager.finish(&new, allocated.lease);
+        assert_eq!(
+            manager
+                .cache
+                .host_prefix_match(&manager.cache.page_hashes(&old))
+                .host_tokens,
+            0
+        );
+        assert_eq!(manager.cache.swa_window_count(), 1);
+        let mut continuation = lease_with_hashes(&new, 4);
+        assert_eq!(
+            manager
+                .admission_host_match(&mut continuation, 3)
+                .device_tokens,
+            12
+        );
+        assert!(!manager.has_host_work());
+    }
+
+    #[test]
     fn hicache_host_reclaim_is_non_atomic_when_a_new_edge_cannot_fit() {
         let (mut manager, _) = hicache_manager(2, 0.0, 0.0);
         let old = (0..8).collect::<Vec<_>>();

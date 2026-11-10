@@ -200,7 +200,9 @@ architecture `DeepseekV4ForCausalLM` or `DeepseekV41ForCausalLM`. Set a number
 to match a server that sized its SWA pool another way, or `null` to match full
 KV at any page. These are modeling assumptions: a window is tracked per radix
 node rather than per SWA page, and its pool shares no capacity with full KV.
-A decode worker's radix cache matches full KV as before.
+A decode worker's radix cache matches full KV as before. Native engine
+configurations set the resolved count as `sglang.swa_prefix_tails` (a positive
+integer, SGLang only; unset turns it off).
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

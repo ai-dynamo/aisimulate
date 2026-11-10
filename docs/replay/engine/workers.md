@@ -139,8 +139,10 @@ keep pricing each rank's own prefill and decode, so the pass ends with the
 slowest rank's own time.
 
 On the `engine` stack, requests are placed round-robin across workers and then
-across the ranks of each worker. A trace request that names a `dp_rank` keeps
-that rank. Worker counts are fixed for the whole run. The
+across the ranks of each worker by default. With
+`workers.decode.scheduler.load_balance_method: total_tokens`, an unpinned
+disaggregated decode request instead goes to the rank holding the fewest placed
+tokens. A trace request that names a `dp_rank` keeps that rank. Worker counts are fixed for the whole run. The
 [Dynamo stack](../dynamo.md) replaces placement with the KV Router and can scale
 worker counts with the Planner; `startup_seconds` then delays each added worker.
 
@@ -429,7 +431,7 @@ P/D handoff order also differs by backend; see
 
 ## Limitations
 
-- Placement on the `engine` stack is round-robin and ignores cache overlap.
+- Placement on the `engine` stack is round-robin (or token-balanced on a decode pool with `total_tokens`) and ignores cache overlap.
 - Worker counts are fixed unless the Dynamo Planner scales them.
 - Attention-DP ranks are synchronized per pass. Rank-to-rank communication time
   is part of the forward-pass estimate, not a separately modeled event.

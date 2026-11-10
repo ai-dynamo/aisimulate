@@ -117,3 +117,13 @@ def test_malformed_architectures_fail_loudly():
 
     with pytest.raises(ValueError, match="architectures must be a list of strings"):
         NaiveKVCacheEstimator.from_hf_config({"architectures": "DeepseekV4ForCausalLM"}, tp_size=1, pp_size=1)
+
+
+def test_unregistered_local_model_replays_with_fixed_timing_and_capacity(tmp_path):
+    # The default SWA detection reads only the architecture; no performance model is needed.
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["CustomForCausalLM"]}))
+    public = _public()
+    public["engine"]["model"] = str(tmp_path)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(public))
+    assert "swa_prefix_tails" not in spec.backend_deployment.prefill_engine_args["sglang"]
+    EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)

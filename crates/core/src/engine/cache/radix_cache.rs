@@ -292,6 +292,11 @@ impl RadixCache {
         });
     }
 
+    #[cfg(test)]
+    pub(crate) fn swa_window_count(&self) -> usize {
+        self.swa.as_ref().map_or(0, |swa| swa.stamps.len())
+    }
+
     fn is_swa_boundary(&self, id: NodeId) -> bool {
         self.swa
             .as_ref()
