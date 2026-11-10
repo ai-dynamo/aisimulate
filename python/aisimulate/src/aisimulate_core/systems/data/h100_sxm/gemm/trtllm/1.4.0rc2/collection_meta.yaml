@@ -12,16 +12,16 @@ tables:
     rows: 109150
     status: complete
     collections:
-    - collector_ref: 4de9941112a1c3929d599052c55f7ee558ea19a4
-      collector_hash: sha256:c2b79160db05c9edde8d68673b86d28a8030400cd7705b2cc2c99b1c532c6fe4
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
       case_plan_hash: sha256:9fdf603441974d82afb4380175f7f4232f9f3e76d77cf1979370f74dd74a28b2
-      collected_at: '2026-11-08'
+      collected_at: '2026-11-10'
       rows: 38258
       status: complete
-    - collector_ref: 4de9941112a1c3929d599052c55f7ee558ea19a4
-      collector_hash: sha256:c2b79160db05c9edde8d68673b86d28a8030400cd7705b2cc2c99b1c532c6fe4
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
       case_plan_hash: sha256:0076d9f519a28af2a5b7ad37eddaa7e52982202fa2bd4610491dde1ebb80c358
-      collected_at: '2026-11-08'
+      collected_at: '2026-11-10'
       rows: 37074
       status: complete
     - collector_ref: b7a79aa880384dc24ecd8e92f6b170aa69b4de83
