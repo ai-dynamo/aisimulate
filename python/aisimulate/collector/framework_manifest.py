@@ -105,6 +105,9 @@ def platform_runtime_version(runtime_spec: dict[str, Any]) -> str:
     if versions is None:
         return runtime_spec["version"]
     machine = platform.machine()
+    # Metadata and CPU-only planning also run on macOS/Windows, whose names
+    # differ for these same architectures. Native execution has its own gate.
+    machine = {"arm64": "aarch64", "AMD64": "x86_64"}.get(machine, machine)
     if machine not in versions:
         raise RuntimeError(f"Pinned runtime has no package build for platform {machine!r}")
     return versions[machine]

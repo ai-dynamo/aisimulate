@@ -11,6 +11,9 @@ B300 TP8. Each configuration has 13 context and 11 generation coordinates.
 The 21 new configurations therefore request 504 new measurements; the earlier
 72 B300 TP1/2/4 measurements remain separate source events when combined.
 `matrix.json` and the selected case files define the exact requested subset.
+The public matrix replaces only the original local selection-file locator with
+`plans/original-b300-tp124.json`; it records the original frozen matrix SHA-256.
+The original selection bytes, every configuration and all case hashes are preserved.
 Completing this subset does not mean the full structural grid is covered.
 
 ## Measured boundary
@@ -87,7 +90,7 @@ whole-model accuracy or a matched SemiAnalysis AgentX comparison.
 The exact development package versions above are measurement coordinates. The
 normal `current` query slot consumes them through the existing shared data layer,
 which fills missing architecture/coordinate rows from older source versions.
-H100/H200/B300 context and decode controls passed this public query path with
+H100/H200/B200/B300 context and decode controls passed this public query path with
 strict provenance and identical SILICON latencies. Explicitly disabling that
 shared layer restricts queries to the selected version's own rows. These checks
 do not qualify the newer query-slot runtime as a measured K3.1 serving backend.

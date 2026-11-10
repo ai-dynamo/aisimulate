@@ -1,0 +1,942 @@
+{
+  "kimi_k31_dsa_context_module": [
+    {
+      "case": [
+        128,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[128, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[512, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        2048
+      ],
+      "filter": "[512, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 2048]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        32768
+      ],
+      "filter": "[512, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 32768]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        8192
+      ],
+      "filter": "[2048, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 8192]"
+    },
+    {
+      "case": [
+        4096,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[4096, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        16384,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[16384, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        128,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[128, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[512, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        4096,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[4096, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        128,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[128, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[512, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        2048
+      ],
+      "filter": "[512, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 2048]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        32768
+      ],
+      "filter": "[512, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 32768]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        8192
+      ],
+      "filter": "[2048, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 8192]"
+    },
+    {
+      "case": [
+        4096,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[4096, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        16384,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[16384, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        128,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[128, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[512, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        4096,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[4096, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        128,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[128, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[512, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        2048
+      ],
+      "filter": "[512, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 2048]"
+    },
+    {
+      "case": [
+        512,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        32768
+      ],
+      "filter": "[512, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 32768]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        8192
+      ],
+      "filter": "[2048, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 8192]"
+    },
+    {
+      "case": [
+        4096,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[4096, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        16384,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[16384, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        128,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[128, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        512,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[512, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        4096,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[4096, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    }
+  ],
+  "kimi_k31_dsa_generation_module": [
+    {
+      "case": [
+        2048,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        131072,
+        1,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[131072, 1, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        131072,
+        4,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[131072, 4, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        16,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 16, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        16,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 16, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        16,
+        96,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 16, 96, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        131072,
+        1,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[131072, 1, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        131072,
+        4,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[131072, 4, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        16,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 16, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        16,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 16, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        16,
+        48,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 16, 48, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        131072,
+        1,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[131072, 1, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        131072,
+        4,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[131072, 4, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        2048,
+        16,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[2048, 16, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        8192,
+        16,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[8192, 16, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    },
+    {
+      "case": [
+        32768,
+        16,
+        24,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "moonshotai/Kimi-K3.1-Pro",
+        0
+      ],
+      "filter": "[32768, 16, 24, 'fp8', 'bfloat16', 'bfloat16', 'moonshotai/Kimi-K3.1-Pro', 0]"
+    }
+  ]
+}

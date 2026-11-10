@@ -31,6 +31,7 @@ import copy
 import importlib.metadata
 import json
 import logging
+import platform
 import statistics
 import subprocess
 import sys
@@ -229,6 +230,8 @@ def _run_native_case(case, device, perf_filename):
 
 
 def _assert_runtime() -> None:
+    if platform.system() != "Linux":
+        raise RuntimeError("native Kimi K3.1 collection requires Linux; CPU-only planning remains available")
     version = importlib.metadata.version("sglang")
     if version != RUNTIME_VERSION:
         raise RuntimeError(f"native Kimi K3.1 requires exactly {RUNTIME_VERSION}; found {version}")
