@@ -3,6 +3,7 @@
 
 """Manual G1 state-cache geometry reaches replay without AIC estimation."""
 
+import copy
 import json
 from dataclasses import replace
 
@@ -773,6 +774,22 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
     assert runtime.execution_spec["spec"]["engine"]["num_gpu_blocks_is_explicit"] is False
 
-    worker["kv_cache"]["capacity"] = {"memory_fraction": 0.8}
-    with pytest.raises(ValueError, match="memory_fraction must match"):
-        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    # Each setting that describes a pool other than the recorded one is rejected when the config is validated.
+    def cache(engine):
+        return engine["workers"]["aggregated"]["kv_cache"]
+
+    def resources(engine):
+        return engine["fpm_profile"]["deployments"][0]["resources"]
+
+    for match, change in (
+        ("memory_fraction must match", lambda e: cache(e).update(capacity={"memory_fraction": 0.8})),
+        (
+            "exceeds .* runtime_memory.max_model_len",
+            lambda e: resources(e)["runtime_memory"].update(max_model_len=2047),
+        ),
+        ("records runtime_memory", lambda e: resources(e).pop("runtime_memory")),
+    ):
+        invalid = copy.deepcopy(payload)
+        change(invalid["engine"])
+        with pytest.raises(ValueError, match=match):
+            CorePredictionConfig.model_validate(invalid)

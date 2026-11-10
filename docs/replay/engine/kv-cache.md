@@ -618,7 +618,8 @@ the profile was collected. With inferred state geometry (`state_cache` without
 `bytes_per_request`), leave `capacity` at `type: default`. Each rank's pool is
 then the recorded `runtime_memory.kv_cache_bytes` in whole blocks of the
 resolved geometry: `kv_cache_bytes // (block_size * bytes_per_token)`.
-`capacity.memory_fraction` must equal the recorded `gpu_memory_utilization`.
+`capacity.memory_fraction` must equal the recorded `gpu_memory_utilization`,
+and the context length must not exceed the recorded `max_model_len`.
 The block count follows the inferred row size, so it can differ from the count
 the backend logged when that build packs its cache groups differently.
 

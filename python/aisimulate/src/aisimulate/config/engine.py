@@ -1273,10 +1273,34 @@ def fpm_profile_deployment(engine, worker: WorkerPredictionConfig, role: str):
         worker_type=role,
         tp_size=parallel.tensor,
         pp_size=parallel.pipeline,
+        cp_size=parallel.prefill_context or 1,
         attention_dp_size=parallel.attention_data,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
     )
+
+
+def recorded_state_pool(engine, worker: WorkerPredictionConfig, role: str):
+    """The runtime memory an FPM profile recorded for a state-cache worker that sets no fixed capacity."""
+    from aisimulate.capacity import DEFAULT_GPU_MEMORY_UTILIZATION
+
+    runtime = None
+    if engine.fpm_profile is not None:
+        runtime = fpm_profile_deployment(engine, worker, role).resources.runtime_memory
+    if runtime is None:
+        raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
+    # The pool was recorded at one memory fraction and context limit; other values describe a different pool.
+    if (worker.kv_cache.capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
+        raise ValueError(
+            "kv_cache.capacity.memory_fraction must match the FPM profile's recorded "
+            f"runtime_memory.gpu_memory_utilization ({runtime.gpu_memory_utilization})"
+        )
+    context = worker.context_length or engine.context_length
+    if (engine.fpm_profile.context_length if context == "max" else context) > runtime.max_model_len:
+        raise ValueError(
+            f"context_length exceeds the FPM profile's recorded runtime_memory.max_model_len ({runtime.max_model_len})"
+        )
+    return runtime
 
 
 def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
@@ -1576,6 +1600,8 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
+        if worker.kv_cache.capacity.type != "fixed":
+            recorded_state_pool(engine, worker, role)
         roles.append(role)
         if (
             worker.kv_cache.prefix_match_unit is not None

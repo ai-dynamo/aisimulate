@@ -5,8 +5,8 @@
 
 from typing import Any
 
-from .capacity import DEFAULT_GPU_MEMORY_UTILIZATION, estimate_state_cache
-from .config.engine import EnginePredictionConfig, StateCacheConfig, WorkerPredictionConfig, fpm_profile_deployment
+from .capacity import estimate_state_cache
+from .config.engine import EnginePredictionConfig, StateCacheConfig, WorkerPredictionConfig, recorded_state_pool
 
 
 def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str) -> dict[str, Any]:
@@ -68,15 +68,4 @@ def runtime_memory_blocks(
     engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str, block_bytes: int
 ) -> int:
     """Whole blocks of the cache pool the FPM profile recorded for this worker (``resources.runtime_memory``)."""
-    runtime = None
-    if engine.fpm_profile is not None:
-        runtime = fpm_profile_deployment(engine, worker, role).resources.runtime_memory
-    if runtime is None:
-        raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
-    # The pool was recorded at one memory fraction; any other fraction describes a different pool.
-    if (worker.kv_cache.capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
-        raise ValueError(
-            "kv_cache.capacity.memory_fraction must match the FPM profile's recorded "
-            f"runtime_memory.gpu_memory_utilization ({runtime.gpu_memory_utilization})"
-        )
-    return runtime.kv_cache_bytes // block_bytes
+    return recorded_state_pool(engine, worker, role).kv_cache_bytes // block_bytes
