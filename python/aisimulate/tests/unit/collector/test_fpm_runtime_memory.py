@@ -277,15 +277,16 @@ def _group(names, spec):
 
 
 def _mamba(**fields):
-    # GLM-5.3-Flash KDA state at TP 4: bf16 convolution and fp32 SSM views, padded to the MLA page.
+    # GLM-5.3-Flash KDA state at TP 4 as in its live vLLM 0.33.0 record: bf16 convolution and fp32 SSM views, padded
+    # to the MLA page, and one FlashKDA prefill checkpoint block aligned to 16 tokens.
     defaults = {
         "block_size": 2176,
         "page_size_bytes": 1_114_112,
         "mamba_cache_mode": "align",
         "num_speculative_blocks": 0,
-        "num_prefill_checkpoint_blocks": 0,
-        "prefill_checkpoint_alignment": None,
-        "shapes": ((6144, 3), (16, 128, 128)),
+        "num_prefill_checkpoint_blocks": 1,
+        "prefill_checkpoint_alignment": 16,
+        "shapes": ((3, 6144), (16, 128, 128)),
         "dtypes": ("torch.bfloat16", "torch.float32"),
         "real_page_size_bytes": 1_085_440,
     }
@@ -309,7 +310,7 @@ def _hybrid_caches(mamba):
 
 def test_cache_groups_map_specs_by_class_and_record_state_evidence():
     full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
-    tail = _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
+    tail = _spec("CircularBufferSpec", block_size=4, page_size_bytes=2048, dtype="torch.bfloat16")
     config = SimpleNamespace(
         kv_cache_groups=[_group(["attn.0"], full), _group(["tail.0"], tail), _group(["kda.0", "kda.1"], _mamba())]
     )
@@ -338,9 +339,9 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
     assert mamba["state"] == {
         "mamba_cache_mode": "align",
         "num_speculative_blocks": 0,
-        "num_prefill_checkpoint_blocks": 0,
-        "prefill_checkpoint_alignment": None,
-        "shapes": [[6144, 3], [16, 128, 128]],
+        "num_prefill_checkpoint_blocks": 1,
+        "prefill_checkpoint_alignment": 16,
+        "shapes": [[3, 6144], [16, 128, 128]],
         "dtypes": ["torch.bfloat16", "torch.float32"],
         "real_page_size_bytes": 1_085_440,
         "blocks_per_request": 1,
@@ -502,22 +503,20 @@ def test_rswa_retention_is_reported_not_relabeled():
 def test_uniform_state_group_records_one_state_and_its_inner_specs():
     # A uniform group of GLM-5.3-Flash tail rings, each a CircularBufferSpec (glm5next/common/attention.py:170-179).
     names = ["layers.3.tail", "layers.4.tail"]
-    tails = [
-        _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16") for _name in names
-    ]
+    tails = [_spec("CircularBufferSpec", block_size=4, page_size_bytes=2048, dtype="torch.bfloat16") for _name in names]
     uniform = _spec(
         "UniformTypeKVCacheSpecs",
         block_size=4,
-        page_size_bytes=2 * 71_808,
+        page_size_bytes=2 * 2048,
         kv_cache_specs=dict(zip(names, tails, strict=True)),
     )
     (group,) = observer.cache_groups(SimpleNamespace(kv_cache_groups=[_group(names, uniform)]), hybrid_evidence=True)
     assert (group["kind"], group["state"], group["sliding_window"]) == ("state", {"blocks_per_request": 1}, None)
-    assert (group["block_size_tokens"], group["spec_page_size_bytes"], group["dtype"]) == (4, 143_616, "torch.bfloat16")
+    assert (group["block_size_tokens"], group["spec_page_size_bytes"], group["dtype"]) == (4, 4096, "torch.bfloat16")
     assert [spec["spec_type"] for spec in group["layer_specs"].values()] == [
         "vllm.v1.kv_cache_interface.CircularBufferSpec"
     ] * 2
-    assert [spec["page_size_bytes"] for spec in group["layer_specs"].values()] == [71_808, 71_808]
+    assert [spec["page_size_bytes"] for spec in group["layer_specs"].values()] == [2048, 2048]
 
 
 @pytest.mark.parametrize(
@@ -530,7 +529,7 @@ def test_uniform_state_group_records_one_state_and_its_inner_specs():
 )
 def test_uniform_group_layers_must_agree_on_names_retention_and_state(change, match):
     names = ["kda.0", "kda.1"]
-    specs = [_mamba(), _mamba(shapes=((6144, 4), (16, 128, 128))) if change == "state" else _mamba()]
+    specs = [_mamba(), _mamba(shapes=((4, 6144), (16, 128, 128))) if change == "state" else _mamba()]
     if change == "window":
         specs = [
             _spec("SlidingWindowSpec", block_size=16, page_size_bytes=64, sliding_window=window, dtype="torch.bfloat16")

@@ -959,29 +959,31 @@ def test_state_group_is_not_linear():
 
 
 def test_profile_from_observations_accepts_state_groups():
-    # The resources that observation import gives for the GLM-5.3-Flash TP4 probe fixture: one attention group and
-    # five state groups whose pages are one pool block each, and the prefill phase's prefix-caching settings.
+    # The resources that observation import gives for the live vLLM 0.33.0 record of GLM-5.3-Flash at TP 4: four KDA
+    # state groups with one prefill checkpoint block each, one attention group and the tail state group, whose pages
+    # are one pool block each, and the prefill phase's prefix-caching settings.
     groups = [
         {
             "name": f"runtime_group_{index}",
-            "kind": "attention" if index == 0 else "state",
+            "kind": "attention" if index == 4 else "state",
             "num_layers": layers,
-            "block_size_tokens": 4 if index == 1 else 2176,
-            "page_size_bytes": 13_045_120,
+            "block_size_tokens": 4 if index == 5 else 2176,
+            "page_size_bytes": 13_516_800,
             "sliding_window": None,
-            **({} if index == 0 else {"blocks_per_request": 1}),
+            **({} if index == 4 else {"blocks_per_request": 1}),
+            **({"prefill_checkpoint_blocks": 1, "prefill_checkpoint_alignment": 16} if index < 4 else {}),
         }
-        for index, layers in enumerate((22, 11, 9, 9, 8, 8))
+        for index, layers in enumerate((9, 9, 8, 8, 22, 11))
     ]
     observed = {
         "cache_layout": "grouped",
         "cache_groups": groups,
-        "max_num_tokens": 1024,
-        "max_batch_size": 64,
+        "max_num_tokens": 8192,
+        "max_batch_size": 256,
         "runtime_memory": {
-            "kv_cache_bytes": 7 * 13_045_120,
-            "gpu_memory_utilization": 0.9,
-            "max_model_len": 4096,
+            "kv_cache_bytes": 13_696 * 13_516_800,
+            "gpu_memory_utilization": 0.92,
+            "max_model_len": 1_048_576,
             "enable_prefix_caching": True,
             "mamba_cache_mode": "align",
             "hash_block_size_tokens": 2176,
