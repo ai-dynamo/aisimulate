@@ -182,6 +182,14 @@ def test_generic_speculation_requires_explicit_runner_capability(location, neste
         replace(capabilities, supports_generic_speculation=False).require_compatible(spec)
 
 
+def test_engine_runner_factory_declares_telemetry_support():
+    telemetry = ReplayOutputRequirements(capture_telemetry=True)
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    capabilities.require_output_support(telemetry)
+    with pytest.raises(ValueError, match="does not support replay telemetry"):
+        replace(capabilities, supports_telemetry=False).require_output_support(telemetry)
+
+
 @pytest.mark.parametrize("location", ["rank", "canonical"])
 @pytest.mark.parametrize("nested_rank", [False, True])
 def test_mtp_host_offload_requires_explicit_composition_capability(location, nested_rank):

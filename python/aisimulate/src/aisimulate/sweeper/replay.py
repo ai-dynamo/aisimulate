@@ -454,6 +454,7 @@ class RunnerCapabilities:
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
+    supports_telemetry: bool = False
     supports_deferred_encoder_overlay: bool = False
     supports_mtp_host_offload: bool = False
 
@@ -500,6 +501,16 @@ class RunnerCapabilities:
                 f"ReplaySpec API version {api_version} is incompatible with "
                 f"runner version {self.replay_spec_api_version}"
             )
+
+    def require_output_support(self, output_requirements: ReplayOutputRequirements) -> None:
+        """Raise before runner creation when a requested capture is never produced.
+
+        The runner still rejects finer combinations, such as telemetry on paths
+        without native samples.
+        """
+
+        if output_requirements.capture_telemetry and not self.supports_telemetry:
+            raise ValueError("runner does not support replay telemetry; use --stack engine")
 
     def require_compatible(self, spec: ReplaySpec) -> None:
         """Raise a clear error when this runner cannot execute ``spec``."""

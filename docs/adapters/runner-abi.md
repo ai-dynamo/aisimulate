@@ -85,6 +85,11 @@ including Dynamo, must opt in only after their runtime and dependency pins
 support the same composition. Generic speculation or G2 support alone does
 not enable it.
 
+`supports_telemetry` defaults to `False`; the built-in engine factory sets it
+to `True`. `run_prediction` calls `require_output_support(output_requirements)`
+before runner creation, so a stack without the flag refuses `capture_telemetry`
+before the replay starts.
+
 `require_compatible(spec)` checks versions and coarse combinations before
 execution. AgentX G2 additionally requires offline vLLM, static workers (one
 aggregated worker, 1P1D, or several aggregated workers with a `dp_rank_local`
