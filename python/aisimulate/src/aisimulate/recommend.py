@@ -919,6 +919,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.metrics:
+        payload["metric_constraints"] = [c.model_dump(mode="json") for c in config.optimization.constraints.metrics]
     if config.optimization.constraints.min_goodput_rps is not None:
         payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla

@@ -41,6 +41,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..aiperf_metrics import AIPerfMetric, NoSamplesError, metric_value
 from ..power import POWER_FIELDS, normalize_power_summary
 from ..resources import ResourceLimitError
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
@@ -1033,8 +1034,7 @@ def _score_prepared(
             report_metrics=report,
         )
     if goal.requires_aggregate_sla:
-        assert goal.sla is not None  # OptimizationGoal validates this invariant.
-        violations = aggregate_sla_violations(report, goal.sla)
+        violations = aggregate_sla_violations(report, goal.sla, goal.enforced_metric_constraints)
         if violations:
             return _EvalResult(
                 candidate=None,
@@ -1045,6 +1045,31 @@ def _score_prepared(
                 runner_metadata=replay_result.metadata,
                 report_metrics=report,
             )
+    # After the strict gate, so a constraint failure keeps its cacheable category.
+    for target in effective_targets:
+        if isinstance(target, AIPerfMetric):
+            try:
+                metric_value(report, target)
+            except NoSamplesError as exc:
+                return _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="infeasible",
+                    reason=str(exc),
+                    reason_category=ReasonCategory.NO_SAMPLES,
+                    runner_metadata=replay_result.metadata,
+                    report_metrics=report,
+                )
+            except ValueError as exc:
+                return _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="failed",
+                    reason=f"runner contract violation: {exc}",
+                    reason_category=ReasonCategory.INVALID_METRICS,
+                    runner_metadata=replay_result.metadata,
+                    report_metrics=report,
+                )
     load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
     if load_violations:
         measured_goodput = report.get("goodput_request_throughput_rps")

@@ -18,11 +18,12 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from aisimulate.legacy_cli.main import (
-    _execute_tasks as _execute_tasks_internal,
-)
-from aisimulate.legacy_cli.main import (
+    _default_support_version,
     build_default_tasks,
     build_experiment_tasks,
+)
+from aisimulate.legacy_cli.main import (
+    _execute_tasks as _execute_tasks_internal,
 )
 from aisimulate.legacy_cli.report_and_save import save_results
 from aisimulate.sdk.config import ModelConfig
@@ -75,12 +76,13 @@ def cli_support(
         model_path: HuggingFace model path (e.g., 'Qwen/Qwen3-32B') or local path.
         system: System name (GPU type), e.g., 'h200_sxm', 'b200_sxm'.
         backend: Optional backend name to filter by ('trtllm', 'sglang', 'vllm').
-        backend_version: Optional backend database version.
+        backend_version: Optional backend database version; defaults to the current
+            slot, or the latest model-relevant matrix version without slot policy.
 
     Returns:
         tuple[bool, bool]: (agg_supported, disagg_supported)
     """
-    from aisimulate.sdk.common import check_support
+    from aisimulate.sdk.common import SupportResult, check_support
     from aisimulate.sdk.utils import get_model_config_from_model_path
 
     try:
@@ -88,6 +90,13 @@ def cli_support(
         architecture = model_info["architecture"]
     except Exception:
         architecture = None
+
+    if not backend_version:
+        backend_version = _default_support_version(model_path, system, backend, architecture)
+        if backend_version is None:
+            return SupportResult(
+                agg_supported=False, disagg_supported=False, exact_match=False, architecture=architecture
+            )
 
     return check_support(model_path, system, backend, backend_version, architecture=architecture)
 

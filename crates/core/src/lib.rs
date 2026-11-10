@@ -15,6 +15,12 @@
 //! surface. Advanced engine and adapter contracts remain available through
 //! their explicit module paths.
 
+// jemalloc as the Rust global allocator. Its symbols are prefixed (`_rjem_`), so
+// CPython and C code keep the system allocator.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub mod engine;
 // The mirror contains compatibility and diagnostics helpers that are reached
 // only from the optional Python surface or parity harnesses.

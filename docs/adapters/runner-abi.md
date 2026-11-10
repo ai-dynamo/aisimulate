@@ -90,11 +90,18 @@ of MTP/NextN acceptance inputs; it does not establish support for EAGLE or other
 schemes' draft costs. A stack must explicitly declare generic speculation
 support and retain those costs through its timing provider.
 
+`supports_mtp_host_offload` defaults to `False` and declares the combined
+MTP + G2 contract. The built-in engine advertises it; existing external runners,
+including Dynamo, must opt in only after their runtime and dependency pins
+support the same composition. Generic speculation or G2 support alone does
+not enable it.
+
 `require_compatible(spec)` checks versions and coarse combinations before
 execution. AgentX G2 additionally requires offline vLLM, static workers (one
 aggregated worker, 1P1D, or several aggregated workers with a `dp_rank_local`
-G2 each), and DP1 on every role. G3 and speculation cannot be
-combined with AgentX G2. The [feature matrix](../replay/features.md) records the built-in
+G2 each), and DP1 on every role. G3 cannot be combined with AgentX G2.
+Speculation is limited to canonical MTP on a single aggregated worker with
+local G2, prefix caching and synchronous scheduling. The [feature matrix](../replay/features.md) records the built-in
 stack's actual boundary, including limitations stricter than a capability flag.
 
 If every backend/topology pair fails Sweeper preflight, `RunnerIncompatibleError`

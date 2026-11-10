@@ -56,8 +56,7 @@ Summary batch replay folds terminal requests after callbacks and spills exact
 latency samples beyond 4096 values per distribution to anonymous temporary
 files. Quantiles use the detailed report's rounded rank; counts and quantiles
 remain exact. Means and standard deviations may differ at floating-point
-roundoff due to accumulation order. Existing ITL/throughput sketches retain
-their 0.1% relative quantile error. Filesystem failure returns
+roundoff due to accumulation order. Filesystem failure returns
 `ReplayError::ResourceLimited`, not a partial success report.
 
 Detailed output keeps its ordered records without a request cap. Inputs, active

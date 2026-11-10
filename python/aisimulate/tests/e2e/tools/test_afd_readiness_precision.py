@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,44 @@ ROOT = Path(__file__).resolve().parents[5]
 
 def _raw():
     return yaml.safe_load((ROOT / "crates/core/parity_tests/perfmodel/configs/afd-predict-pure.yaml").read_text())
+
+
+def test_native_afd_reports_request_weighted_user_throughput(tmp_path):
+    from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
+
+    trace = tmp_path / "requests.jsonl"
+    trace.write_text(
+        "".join(
+            json.dumps({"timestamp": 0, "input_length": inputs, "output_length": outputs, "hash_ids": [index]}) + "\n"
+            for index, (inputs, outputs) in enumerate(((64, 3), (8192, 7)))
+        )
+    )
+    raw = _raw()
+    raw["engine"].update(database_mode="SOL", context_length=16384)
+    raw["traffic"]["source"] = {"type": "trace", "format": "mooncake", "paths": [str(trace)]}
+    raw["traffic"]["load"]["concurrency"] = 1
+    raw["traffic"]["stop"] = {}
+    replay = replace(
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)),
+        goal={"target": "output_token_throughput_per_user.avg"},
+    )
+    runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)
+    try:
+        report = runner.run(replay, output_requirements=ReplayOutputRequirements(capture_per_request=True))
+    finally:
+        runner.close()
+
+    records = report.metadata["native_report"]["per_request"]
+    assert len(records) == report.metrics["completed_requests"] == 2
+    assert {record["input_length"] for record in records} == {64, 8192}
+    itls = [record["itl_ms"] for record in records]
+    assert max(itls) > min(itls) > 0
+    # AIPerf averages each request's reciprocal ITL; the retired analytical
+    # runner used the reciprocal of mean ITL, which differs on these requests.
+    expected = sum(1000 / itl for itl in itls) / len(itls)
+    actual = metric_value(report.metrics, AIPerfMetric.USER_TPS_AVG)
+    assert actual == pytest.approx(expected)
+    assert actual > 1000 / (sum(itls) / len(itls))
 
 
 @pytest.mark.parametrize(

@@ -164,6 +164,7 @@ class EngineReplayRunnerFactory:
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
             supports_generic_speculation=True,
+            supports_mtp_host_offload=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
@@ -264,6 +265,15 @@ class EngineReplayRunner:
         if spec.backend_deployment.has_afd and spec.workload.get("images") is not None:
             raise InvalidRunnerError("image workloads are unsupported for AFD")
         self.capabilities.require_compatible(spec)
+        from .sweeper.config import OptimizationGoal
+
+        metric_goal = OptimizationGoal.model_validate(spec.goal)
+        if metric_goal.uses_aiperf_metrics and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or (spec.backend_deployment.encoder is not None and spec.backend_deployment.encoder.mode == "analytical")
+        ):
+            raise InvalidRunnerError("AIPerf metric selectors require native offline request replay")
         spec = resolve_afd_replay_identity(spec)
         encoder = spec.backend_deployment.encoder
         if (
@@ -1330,6 +1340,11 @@ def _materialize_engine_role(
     requested_rank = role_config.get("rank", role_config)
     _reject_role_pipeline_parallelism(parallel_config, role_config, role)
     if isinstance(requested_rank, Mapping):
+        requested_rank = dict(requested_rank)
+        if "rank" in role_config:
+            role_config["rank"] = requested_rank
+        else:
+            role_config = requested_rank
         timing = requested_rank.get("timing_model")
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
         canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
@@ -1339,6 +1354,21 @@ def _materialize_engine_role(
                 raise ValueError("speculation must be a mapping")
             if isinstance(spec, Mapping) and not isinstance(spec.get("params", {}), Mapping):
                 raise ValueError("speculation params must be a mapping")
+        # Normalize disabled depth before either state-cache/capacity path.
+        # Zero cannot override another authored speculation input. Resolve
+        # aliases first, preserving duplicate and bool/float validation.
+        legacy_nextn = _pop_alias(requested_rank, "aic_nextn", ("aic_nextn", "nextn"))
+        canonical_kind = canonical.get("kind") if isinstance(canonical, Mapping) else None
+        if (
+            type(legacy_nextn) is int
+            and legacy_nextn == 0
+            and requested_rank.get("speculation") is None
+            and canonical_kind in (None, "none")
+        ):
+            if isinstance(timing_config, Mapping) and timing_config.get("nextn") not in (None, 0):
+                raise ValueError(f"engine provider {role} aic_nextn=0 conflicts with timing_model.config.nextn")
+        elif legacy_nextn is not None:
+            requested_rank["aic_nextn"] = legacy_nextn
         if requested_rank.get("num_gpu_blocks") is None:
             for spec in selections:
                 if isinstance(spec, Mapping) and spec.get("kind") not in ("none", "ngram"):
@@ -1678,12 +1708,40 @@ def _materialize_engine_role(
         rank["aic_mtp_seed"] = speculation.seed
 
     kind = speculation.kind if speculation is not None else canonical_kind
+    if (
+        rank.get("native_host_offload") is not None
+        and kind in (None, "none")
+        and any(rank.get(key) is not None for key in ("aic_nextn", "nextn"))
+    ):
+        raise ValueError("native_host_offload with speculative decoding requires canonical mtp speculation")
     if kind not in (None, "none"):
         supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
-        if backend not in supported or rank.get("native_host_offload") is not None:
-            raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+        if backend not in supported:
+            raise ValueError(f"{kind} speculation requires a supported backend")
+        host_offload = rank.get("native_host_offload")
+        if host_offload is not None and not (
+            kind == "mtp"
+            and backend == "vllm"
+            and role == "aggregated"
+            and dp_size == 1
+            and rank.get("enable_prefix_caching", True) is True
+            and isinstance(host_offload, Mapping)
+            and host_offload.get("scope", "dp_rank_local") == "dp_rank_local"
+            and rank.get("g3_offload") is None
+            and rank.get("state_cache") is None
+            and rank.get("prefix_match_unit") is None
+            and not rank.get("kv_cache_groups")
+        ):
+            raise ValueError(
+                f"{kind} speculation with host_offload supports only aggregated vllm MTP, attention DP=1, "
+                "prefix caching, scope=dp_rank_local, and uniform G1/G2 without G3 or state cache"
+            )
     if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
         raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
+    if kind == "mtp" and rank.get("native_host_offload") is not None:
+        if rank.get("async_scheduling") is True:
+            raise ValueError("mtp speculation with host_offload requires async_scheduling=false")
+        rank["async_scheduling"] = False
     if kind == "ngram":
         # vLLM turns async scheduling off for ngram drafts and rejects it when
         # requested. Resolve that here, where the speculation kind is still
