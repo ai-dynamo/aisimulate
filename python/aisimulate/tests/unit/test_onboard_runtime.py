@@ -44,9 +44,15 @@ def _campaign(
     block_tokens=(16, 16),
     layout="attention",
     decode_prefix_caching=True,
+    checkpoint=(0, None),
 ):
     index, launches = observation_fixture(
-        tmp_path / "probe", dense=True, tp=tp, layout=layout, decode_prefix_caching=decode_prefix_caching
+        tmp_path / "probe",
+        dense=True,
+        tp=tp,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+        checkpoint=checkpoint,
     )
     launch = launches["tp2"]
     if cpu_policy:
@@ -855,7 +861,8 @@ def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, ca
 
 
 # The groups that the GLM-5.3-Flash TP4 probe fixture imports: the 11 MLA and 11 indexer layers, the 11 tail layers
-# and four KDA groups. Every page is one pool block of 13,045,120 bytes.
+# and four KDA groups. Every page is one pool block of 13,045,120 bytes. By default the KDA groups hold no prefill
+# checkpoint block.
 _GLM_GROUPS = [
     {
         "name": f"runtime_group_{index}",
@@ -865,6 +872,7 @@ _GLM_GROUPS = [
         "page_size_bytes": 13_045_120,
         "sliding_window": None,
         **({} if index == 0 else {"blocks_per_request": 1}),
+        **({"prefill_checkpoint_blocks": 0} if index > 1 else {}),
     }
     for index, layers in enumerate((22, 11, 9, 9, 8, 8))
 ]
@@ -906,6 +914,56 @@ def test_state_group_claim_must_match_blocks_per_request(tmp_path, capsys, block
         assert status == 1
         assert "resource_overrides.cache_groups" in diagnostics
         assert '"blocks_per_request":2' in diagnostics and "differs from the runtime probe's measured" in diagnostics
+
+
+# The cache group fields that only the runtime probe import writes.
+_PROBE_FIELDS = ("prefill_checkpoint_blocks", "prefill_checkpoint_alignment")
+
+
+@pytest.mark.parametrize(
+    ("stated", "accepted"),
+    [
+        # The documented claim gives the geometry only, without the fields that only the probe import writes.
+        ({}, True),
+        # Stated fields must match the probe, and here they do: each KDA group has one block aligned to 16 tokens.
+        (
+            {
+                "prefill_checkpoint_blocks": [None, None, 1, 1, 1, 1],
+                "prefill_checkpoint_alignment": [None, None, 16, 16, 16, 16],
+            },
+            True,
+        ),
+        # The alignment differs from the probe.
+        (
+            {
+                "prefill_checkpoint_blocks": [None, None, 1, 1, 1, 1],
+                "prefill_checkpoint_alignment": [None, None, 32, 32, 32, 32],
+            },
+            False,
+        ),
+        # A field stated for one group is compared on every group, and the other groups then differ.
+        ({"prefill_checkpoint_blocks": [None, None, 1, None, None, None]}, False),
+    ],
+)
+def test_cache_group_claim_compares_probe_fields_only_when_stated(tmp_path, capsys, stated, accepted):
+    claim = [{key: value for key, value in group.items() if key not in _PROBE_FIELDS} for group in _GLM_GROUPS]
+    for field, values in stated.items():
+        for group, value in zip(claim, values, strict=True):
+            if value is not None:
+                group[field] = value
+    # The KDA specs prefill with FlashKDA: one checkpoint block aligned to 16 tokens.
+    checkpoint, index, _ = _campaign(
+        tmp_path, tp=4, layout="glm_tp4", checkpoint=(1, 16), resource_overrides={"cache_groups": claim}
+    )
+    status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    diagnostics = "\n".join(json.loads(Path(result["validation"]).read_text())["diagnostics"])
+    if accepted:
+        assert (status, diagnostics) == (0, "")
+    else:
+        assert status == 1
+        assert "resource_overrides.cache_groups" in diagnostics
+        assert "differs from the runtime probe's measured" in diagnostics
 
 
 @pytest.mark.parametrize("claim", [False, True])

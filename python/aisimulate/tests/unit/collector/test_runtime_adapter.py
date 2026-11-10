@@ -413,6 +413,7 @@ def _v033_runtime(storage, layout, blocks):
         mamba_cache_mode="align",
         num_speculative_blocks=0,
         num_prefill_checkpoint_blocks=0,
+        prefill_checkpoint_alignment=None,
         shapes=((6144, 3), (16, 128, 128)),
         dtypes=("torch.bfloat16", "torch.float32"),
         real_page_size_bytes=1_085_440,
@@ -1305,6 +1306,15 @@ def test_v033_glm_worker_record_is_complete(tmp_path, monkeypatch):
             name: 4 if name.endswith(".indexer") else 1 for name in attention["layer_names"]
         }
         assert [group["tokens_per_state"] for group in raw_groups[2:]] == [-1] * 4
+        # The KDA specs record their prefill checkpoint count and alignment in the raw groups and the state.
+        checkpoints = [(0, None)] * 4
+        assert [
+            (group["num_prefill_checkpoint_blocks"], group["prefill_checkpoint_alignment"]) for group in raw_groups[2:]
+        ] == checkpoints
+        assert [
+            (group["state"]["num_prefill_checkpoint_blocks"], group["state"]["prefill_checkpoint_alignment"])
+            for group in cache["groups"][2:]
+        ] == checkpoints
         assert scheduler["raw_cache_config"]["groups"][0]["tokens_per_state"] == 4
         assert scheduler["cache"]["prefix_caching"] == {
             "enable_prefix_caching": True,

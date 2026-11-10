@@ -280,11 +280,27 @@ def _mamba(**fields):
         "mamba_cache_mode": "align",
         "num_speculative_blocks": 0,
         "num_prefill_checkpoint_blocks": 0,
+        "prefill_checkpoint_alignment": None,
         "shapes": ((6144, 3), (16, 128, 128)),
         "dtypes": ("torch.bfloat16", "torch.float32"),
         "real_page_size_bytes": 1_085_440,
     }
     return _spec("MambaSpec", **{**defaults, **fields})
+
+
+# The pool block of the hybrid groups of _hybrid_caches.
+PAGE = 1_114_112
+
+
+def _hybrid_caches(mamba):
+    """The worker and scheduler cache groups of a vLLM 0.33.0 record: one MLA group and the Mamba group ``mamba``."""
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=PAGE, sliding_window=None, dtype="torch.uint8")
+    config = SimpleNamespace(kv_cache_groups=[_group(["mla.0"], latent), _group(["kda.0", "kda.1"], mamba)])
+    groups = observer.cache_groups(config, hybrid_evidence=True)
+    classes = ("vllm.model_executor.layers.attention.MLAAttention", "vllm.models.glm5next.common.kda.KDA")
+    for group, layer_class in zip(groups, classes, strict=True):
+        group["layer_classes"] = dict.fromkeys(group["layer_names"], layer_class)
+    return {"groups": groups}, {"groups": [runtime_memory._scheduler_copy(group) for group in groups]}
 
 
 def test_cache_groups_map_specs_by_class_and_record_state_evidence():
@@ -319,6 +335,7 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
         "mamba_cache_mode": "align",
         "num_speculative_blocks": 0,
         "num_prefill_checkpoint_blocks": 0,
+        "prefill_checkpoint_alignment": None,
         "shapes": [[6144, 3], [16, 128, 128]],
         "dtypes": ["torch.bfloat16", "torch.float32"],
         "real_page_size_bytes": 1_085_440,
@@ -343,6 +360,51 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
     # vLLM 0.33.0 has no KpoolTailSpec: the GLM tail is a CircularBufferSpec (models/glm5next/common/attention.py:170).
     with pytest.raises(ValueError, match=re.escape("unsupported runtime cache spec: vllm.v1.kv_cache_interface.Kpool")):
         observer.spec_kind(_spec("KpoolTailSpec"))
+
+
+def test_cache_groups_record_the_prefill_checkpoint_of_a_flashkda_spec():
+    # With FlashKDA, a GLM KDA spec holds one checkpoint block aligned to 16 tokens
+    # (models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10).
+    config = SimpleNamespace(
+        kv_cache_groups=[_group(["kda.0"], _mamba(num_prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=16))]
+    )
+    (group,) = observer.cache_groups(config, hybrid_evidence=True)
+    state = group["state"]
+    assert (state["num_prefill_checkpoint_blocks"], state["prefill_checkpoint_alignment"]) == (1, 16)
+    assert state["blocks_per_request"] == 1
+
+
+@pytest.mark.parametrize(("count", "alignment"), [(1, 16), (0, None)])
+def test_import_carries_the_checkpoint_evidence_of_a_mamba_group(count, alignment):
+    cache, scheduler = _hybrid_caches(
+        _mamba(num_prefill_checkpoint_blocks=count, prefill_checkpoint_alignment=alignment)
+    )
+    (group,) = [item for item in runtime_memory._normalized_groups(cache, scheduler, PAGE) if item["kind"] == "state"]
+    assert group["blocks_per_request"] == 1
+    assert group["prefill_checkpoint_blocks"] == count
+    assert group.get("prefill_checkpoint_alignment") == alignment
+
+
+def test_import_accepts_a_mamba_group_without_checkpoint_blocks():
+    cache, scheduler = _hybrid_caches(_mamba(num_prefill_checkpoint_blocks=0, prefill_checkpoint_alignment=None))
+    runtime_memory._normalized_groups(cache, scheduler, PAGE)
+
+
+@pytest.mark.parametrize(
+    ("count", "alignment", "error"),
+    [
+        (2, 16, "mamba prefill checkpoint blocks must be 0 or 1"),
+        (1, None, "mamba prefill checkpoint evidence is inconsistent"),
+        (1, 0, "mamba prefill checkpoint evidence is inconsistent"),
+        (0, 16, "mamba prefill checkpoint evidence is inconsistent"),
+    ],
+)
+def test_import_refuses_inconsistent_checkpoint_evidence(count, alignment, error):
+    cache, scheduler = _hybrid_caches(
+        _mamba(num_prefill_checkpoint_blocks=count, prefill_checkpoint_alignment=alignment)
+    )
+    with pytest.raises(ValueError, match=error):
+        runtime_memory._normalized_groups(cache, scheduler, PAGE)
 
 
 def test_uniform_type_groups_record_their_inner_specs():

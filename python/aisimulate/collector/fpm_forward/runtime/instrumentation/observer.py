@@ -171,11 +171,12 @@ def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
     tensor_fields = ("size", "shared_by", "block_stride", "offset")
     if hybrid_evidence:
         # vLLM 0.33.0 token-state, MLA role and Mamba state spec fields
-        # (kv_cache_interface.py:569, :737, :1095-1101) and layer placement (:1490-1494).
+        # (kv_cache_interface.py:569, :737, :1095-1102) and layer placement (:1490-1494).
         fields += (
             "mamba_cache_mode",
             "num_speculative_blocks",
             "num_prefill_checkpoint_blocks",
+            "prefill_checkpoint_alignment",
             "tokens_per_state",
             "cache_role",
             "shapes",

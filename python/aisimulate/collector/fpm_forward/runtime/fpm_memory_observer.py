@@ -567,6 +567,7 @@ def _state(spec: Any) -> dict[str, Any]:
         "mamba_cache_mode",
         "num_speculative_blocks",
         "num_prefill_checkpoint_blocks",
+        "prefill_checkpoint_alignment",
         "shapes",
         "dtypes",
         "real_page_size_bytes",

@@ -182,9 +182,14 @@ an absent field is left out of the serialized group. Sizing and replay do not
 read them yet.
 
 - `prefill_checkpoint_blocks` is the number of prefill checkpoint blocks of a
-  Mamba spec: 0 or 1. Only a `state` group can have it.
+  Mamba spec: 0 or 1. Only a `state` group can have it. A vLLM 0.33.0 import
+  writes it for every Mamba group. It refuses a record with another count.
+  In `align` mode, vLLM's startup sizing counts these blocks as `c` in
+  `2 + k + c`.
 - `prefill_checkpoint_alignment` is the token alignment of that checkpoint. It
-  must be positive, and it needs `prefill_checkpoint_blocks` of 1. In vLLM
+  must be positive, and it needs `prefill_checkpoint_blocks` of 1. A vLLM
+  0.33.0 import writes it for a Mamba group with one checkpoint block. It
+  refuses a record whose alignment does not match the count. In vLLM
   0.33.0, a KDA layer that prefills with FlashKDA has one checkpoint block
   with an alignment of 16 tokens. See vLLM v0.33.0
   [`kda.py:168-176`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/models/glm5next/common/kda.py#L168-L176)

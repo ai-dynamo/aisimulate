@@ -636,17 +636,21 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             # A state group holds a fixed number of pool blocks for every running request.
             state = group.get("state")
             blocks = state.get("blocks_per_request") if isinstance(state, dict) else None
-            # The vLLM 0.31.0 record of a MambaSpec group, also inside a uniform group, holds its speculative
-            # and prefill checkpoint blocks (kv_cache_interface.py:1048-1049). A missing count is not zero.
+            # The vLLM 0.33.0 record of a MambaSpec group, also inside a uniform group, holds its speculative
+            # blocks and its prefill checkpoint count and alignment (kv_cache_interface.py:1100-1102). A missing
+            # count is not zero, and a missing alignment is not None.
             mamba = hybrid and _MAMBA_SPEC in spec_classes
             if (
                 type(blocks) is not int
                 or blocks <= 0
                 or (
                     mamba
-                    and any(
-                        type(state.get(name)) is not int
-                        for name in ("num_speculative_blocks", "num_prefill_checkpoint_blocks")
+                    and (
+                        any(
+                            type(state.get(name)) is not int
+                            for name in ("num_speculative_blocks", "num_prefill_checkpoint_blocks")
+                        )
+                        or "prefill_checkpoint_alignment" not in state
                     )
                 )
             ):
@@ -654,22 +658,37 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             # The Mamba "all" mode is refused from the group itself, with or without prefix-caching evidence.
             if state.get("mamba_cache_mode") == "all":
                 raise ValueError(_MAMBA_ALL_UNMODELED)
-            checkpoint = state.get("num_prefill_checkpoint_blocks", 0)
-            if type(checkpoint) is not int or checkpoint != 0:
-                raise ValueError(f"mamba prefill checkpoint blocks are not modeled: {names}")
             # Grouped profiles hold no speculative state blocks, whatever the speculative marker says.
             if mamba and state["num_speculative_blocks"] != 0:
                 raise ValueError(f"mamba speculative blocks are not modeled: {names}")
-            # blocks_per_request is the steady count, held between block boundaries. A MambaSpec holds one state
-            # block and its speculative blocks in both modes (kv_cache_interface.py:1093-1094), and a KpoolTailSpec
-            # or CircularBufferSpec holds one block (:1019-1025, :904-911). So without speculative blocks every state
-            # spec class gives one block. For a MambaSpec in align mode, the count leaves out the 2 + k + c blocks that
-            # vLLM's startup sizing counts (:1089-1092). It also leaves out the previous state block, held for one or
-            # two steps after a boundary, two with async scheduling (single_type_kv_cache_manager.py:1658-1675). The
-            # observation import checks the startup count against the recorded concurrency.
+            checkpoint_fields = {}
+            if mamba:
+                # A KDA spec that prefills with FlashKDA holds one checkpoint block aligned to 16 tokens, and with
+                # Triton none and no alignment (models/glm5next/common/kda.py:168-176,
+                # model_executor/layers/mamba/kda_checkpoint.py:9-10). The profile keeps the count, and the
+                # alignment of one block.
+                checkpoint, alignment = state["num_prefill_checkpoint_blocks"], state["prefill_checkpoint_alignment"]
+                if checkpoint not in (0, 1):
+                    raise ValueError(f"mamba prefill checkpoint blocks must be 0 or 1: {names}")
+                if (checkpoint == 1) != (type(alignment) is int and alignment > 0) or (
+                    checkpoint == 0 and alignment is not None
+                ):
+                    raise ValueError(f"mamba prefill checkpoint evidence is inconsistent: {names}")
+                checkpoint_fields["prefill_checkpoint_blocks"] = checkpoint
+                if checkpoint == 1:
+                    checkpoint_fields["prefill_checkpoint_alignment"] = alignment
+            # blocks_per_request is the steady count, held between block boundaries. In vLLM 0.33.0, a MambaSpec
+            # holds one state block and its speculative blocks in both modes (kv_cache_interface.py:1140-1141), and
+            # a CircularBufferSpec holds one block (:982-989). So without speculative blocks every state spec class
+            # gives one block. For a MambaSpec in align mode, the count leaves out the 2 + k + c blocks that vLLM's
+            # startup sizing counts, c being the prefill checkpoint blocks (:1135-1139). It also leaves out the
+            # previous state block, held for one or two steps after a boundary, two with async scheduling
+            # (single_type_kv_cache_manager.py:1640-1657). The observation import checks the startup count against
+            # the recorded concurrency.
             if blocks != 1:
                 raise ValueError(f"runtime state cache group blocks_per_request contradicts its spec: {names}")
             normalized["blocks_per_request"] = blocks
+            normalized.update(checkpoint_fields)
         groups.append(normalized)
     return groups
 

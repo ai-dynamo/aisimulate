@@ -70,7 +70,7 @@ def _write(path, payload):
 _V033_SPEC = "vllm.v1.kv_cache_interface."
 
 
-def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
+def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096, checkpoint=(0, None)):
     """The worker cache, scheduler cache and resolved config of one vLLM 0.33.0 rank.
 
     ``glm_tp4`` follows the GLM-5.3-Flash TP4 fake of ``test_runtime_adapter._v033_runtime``. As there, its
@@ -84,7 +84,9 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
     grouping of two attention and four Mamba layers: every group's tensor starts at byte 0
     (kv_cache_utils.py:1775-1819). Without prefix caching a Mamba block holds max_model_len
     tokens (models/config.py:674-675), and the scheduler block size is the LCM of the group
-    blocks (kv_cache_utils.py:770, :779-780).
+    blocks (kv_cache_utils.py:770, :779-780). ``checkpoint`` is the prefill checkpoint count and
+    alignment of every Mamba spec: (0, None) by default, as with the Triton KDA prefill backend, or
+    (1, 16) as with FlashKDA (models/glm5next/common/kda.py:168-176, mamba/kda_checkpoint.py:9-10).
     """
     mode = "align" if prefix_caching else "none"
     allocations, views = [], {}
@@ -121,7 +123,8 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
         return {
             "mamba_cache_mode": mode,
             "num_speculative_blocks": 0,
-            "num_prefill_checkpoint_blocks": 0,
+            "num_prefill_checkpoint_blocks": checkpoint[0],
+            "prefill_checkpoint_alignment": checkpoint[1],
             "shapes": shapes,
             "dtypes": dtypes,
             "real_page_size_bytes": real_page,
@@ -400,10 +403,11 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
 
     def reserved(item):
         # The startup count of one request at max_model_len in a group (kv_cache_interface.py:578-583, :1083-1094,
-        # :1019-1022): the context in attention blocks, 2 Mamba blocks in align mode and 1 in mode none, 1 tail block.
+        # :1019-1022): the context in attention blocks, 2 + c Mamba blocks in align mode and 1 in mode none, 1 tail
+        # block. c is the checkpoint count (vLLM 0.33.0 kv_cache_interface.py:1135-1141).
         if item["kind"] == "attention":
             return -(-max_model_len // item["block_size_tokens"])
-        return (2 if mode == "align" else 1) if "mamba_cache_mode" in item["state"] else 1
+        return (2 + checkpoint[0] if mode == "align" else 1) if "mamba_cache_mode" in item["state"] else 1
 
     # The engine-core startup capacity (kv_cache_utils.py:1105-1116, :2444-2452). Import checks the concurrency.
     concurrency = blocks / sum(reserved(item) for item in groups)
@@ -479,13 +483,14 @@ def observation_fixture(
     version=None,
     layout="attention",
     decode_prefix_caching=True,
+    checkpoint=(0, None),
 ):
     """Synthetic source, rank and runtime records; no GPU or runtime qualification.
 
     ``layout`` "attention" writes vLLM 0.28.0 records by default; "glm_tp4", "kernel_view", "mamba_hybrid",
     "layer_outer_short" and "block_outer_short" write vLLM 0.33.0 records (see
     ``_v033_records``), and ``decode_prefix_caching=False`` runs their decode phase without
-    prefix caching.
+    prefix caching. ``checkpoint`` is the prefill checkpoint count and alignment of their Mamba specs.
     """
     version = version or ("0.28.0" if layout == "attention" else "0.33.0")
     root.mkdir(parents=True, exist_ok=True)
@@ -574,7 +579,10 @@ def observation_fixture(
             None
             if layout == "attention"
             else _v033_records(
-                layout, prefix_caching=phase == "prefill" or decode_prefix_caching, dp=launch["topology"]["dp"]
+                layout,
+                prefix_caching=phase == "prefill" or decode_prefix_caching,
+                dp=launch["topology"]["dp"],
+                checkpoint=checkpoint,
             )
         )
         for rank in expected["workers"] + [{**r, "tp_rank": None, "pp_rank": None} for r in expected["schedulers"]]:
@@ -1257,7 +1265,10 @@ def _evidence(result):
 
 
 def glm_tp4_cache_groups():
-    """The imported cache groups of GLM-5.3-Flash at TP 4: every page is one 13,045,120-byte pool block."""
+    """The imported cache groups of GLM-5.3-Flash at TP 4: every page is one 13,045,120-byte pool block.
+
+    The four KDA groups hold no prefill checkpoint block, as the glm_tp4 records of ``_v033_records`` give by default.
+    """
     page = 13_045_120
     return [
         {
@@ -1286,6 +1297,7 @@ def glm_tp4_cache_groups():
                 "page_size_bytes": page,
                 "sliding_window": None,
                 "blocks_per_request": 1,
+                "prefill_checkpoint_blocks": 0,
             }
             for index, layers in zip(range(2, 6), (9, 9, 8, 8), strict=True)
         ),
@@ -1440,6 +1452,7 @@ def test_mamba_hybrid_observations_import_state_groups(tmp_path):
                 "page_size_bytes": 16_384,
                 "sliding_window": None,
                 "blocks_per_request": 1,
+                "prefill_checkpoint_blocks": 0,
             }
             for index in (1, 2)
         ),
@@ -1549,7 +1562,8 @@ def test_speculative_or_checkpoint_mamba_groups_are_incomplete(tmp_path, change)
                 # What a speculative run records: the marker and one more block per request.
                 state.update(num_speculative_blocks=1, blocks_per_request=2)
             else:
-                state["num_prefill_checkpoint_blocks"] = 1
+                # vLLM 0.33.0 gives a KDA spec at most one checkpoint block (models/glm5next/common/kda.py:174).
+                state.update(num_prefill_checkpoint_blocks=2, prefill_checkpoint_alignment=16)
         if change == "speculative" and record["kind"] == "worker":
             record["cache"]["semantics"]["speculative"] = True
 
@@ -1560,7 +1574,51 @@ def test_speculative_or_checkpoint_mamba_groups_are_incomplete(tmp_path, change)
     if change == "speculative":
         assert "supported allocation semantics" in diagnostics
     else:
-        assert "mamba prefill checkpoint blocks are not modeled: ['mamba.0', 'mamba.2']" in diagnostics
+        assert "mamba prefill checkpoint blocks must be 0 or 1: ['mamba.0', 'mamba.2']" in diagnostics
+
+
+def _concurrency_without_checkpoint(record):
+    """The kv_cache_max_concurrency of a scheduler record whose align-mode Mamba groups count no checkpoint block."""
+    cache = record["cache"]
+    mamba = sum("mamba_cache_mode" in group.get("state", {}) for group in cache["groups"])
+    reserved = cache["num_blocks"] / cache["kv_cache_max_concurrency"]
+    return cache["num_blocks"] / round(reserved - mamba)
+
+
+def test_startup_concurrency_counts_the_checkpoint_block_in_align_mode(tmp_path):
+    # vLLM sizes an align-mode Mamba group at 2 + k + c blocks (kv_cache_interface.py:1135-1139).
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4", checkpoint=(1, 16))
+    assert {record["cache"]["mamba_cache_mode"] for record in _phase_records(path, "prefill", "scheduler")} == {"align"}
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    groups = result["resources"]["cache_groups"]
+    assert [group.get("prefill_checkpoint_alignment") for group in groups] == [None, None, 16, 16, 16, 16]
+
+    def edit(record):
+        if record["kind"] == "scheduler":
+            record["cache"]["kv_cache_max_concurrency"] = _concurrency_without_checkpoint(record)
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    # Each request reserves 2 MLA blocks, 1 tail block and 3 blocks of each of the 4 KDA groups.
+    assert "which gives 11.000 blocks per request, but its cache groups reserve 15" in " ".join(result["diagnostics"])
+
+
+def test_import_refuses_workers_that_disagree_on_the_checkpoint_alignment(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4", checkpoint=(1, 16))
+
+    def edit(record):
+        if record["kind"] == "worker" and record["tp_rank"] == 1:
+            for group in record["cache"]["groups"]:
+                if "mamba_cache_mode" in group.get("state", {}):
+                    group["state"]["prefill_checkpoint_alignment"] = 32
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    # The worker of TP rank 1 no longer matches the scheduler copy of its groups.
+    assert result["diagnostics"] == ["tp2: worker and scheduler cache group geometry disagrees"]
 
 
 @pytest.mark.parametrize(
@@ -1589,7 +1647,9 @@ def test_state_group_blocks_per_request_must_follow_its_spec(tmp_path, layout, n
 
 
 @pytest.mark.parametrize("uniform", [False, True], ids=["mamba", "uniform"])
-@pytest.mark.parametrize("field", [None, "num_prefill_checkpoint_blocks", "num_speculative_blocks"])
+@pytest.mark.parametrize(
+    "field", [None, "num_prefill_checkpoint_blocks", "prefill_checkpoint_alignment", "num_speculative_blocks"]
+)
 def test_v033_mamba_state_groups_require_their_block_counts(tmp_path, field, uniform):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
 
