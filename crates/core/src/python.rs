@@ -41,27 +41,33 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
 
+/// Tells a configured payload (a `spec` key) from a legacy bare `ReplaySpec`
+/// without buffering the document: every value is skipped unread.
+#[derive(Deserialize)]
+struct ExecutionPayloadProbe {
+    #[serde(default)]
+    spec: Option<serde::de::IgnoredAny>,
+}
+
+/// The configured execution payload. It is parsed directly, not through an
+/// untagged enum, so a malformed field reports its own error.
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ExecutionPayload {
-    Configured {
-        spec: ReplaySpec,
-        #[serde(default)]
-        traffic: Option<Box<RuntimeTraffic>>,
-        #[serde(default)]
-        capture_performance_diagnostics: bool,
-        #[serde(default)]
-        capture_telemetry: bool,
-        #[serde(default = "default_telemetry_sample_interval_ms")]
-        telemetry_sample_interval_ms: f64,
-        #[serde(default)]
-        determinism: ReplayDeterminism,
-        #[serde(default)]
-        tokenization: Option<TokenizationPayload>,
-        #[serde(default)]
-        detokenization: Option<DetokenizationPayload>,
-    },
-    Legacy(ReplaySpec),
+struct ConfiguredExecutionPayload {
+    spec: ReplaySpec,
+    #[serde(default)]
+    traffic: Option<Box<RuntimeTraffic>>,
+    #[serde(default)]
+    capture_performance_diagnostics: bool,
+    #[serde(default)]
+    capture_telemetry: bool,
+    #[serde(default = "default_telemetry_sample_interval_ms")]
+    telemetry_sample_interval_ms: f64,
+    #[serde(default)]
+    determinism: ReplayDeterminism,
+    #[serde(default)]
+    tokenization: Option<TokenizationPayload>,
+    #[serde(default)]
+    detokenization: Option<DetokenizationPayload>,
 }
 
 fn default_telemetry_sample_interval_ms() -> f64 {
@@ -4256,35 +4262,43 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         determinism,
         serving_path,
         telemetry_sample_interval_ms,
-    ) = match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
-        ExecutionPayload::Configured {
-            spec,
-            traffic,
-            capture_performance_diagnostics,
-            capture_telemetry,
-            telemetry_sample_interval_ms,
-            determinism,
-            tokenization,
-            detokenization,
-        } => (
-            spec,
-            traffic.map(|t| *t),
-            capture_performance_diagnostics,
-            determinism,
-            ServingPath {
+    ) = {
+        let probe: ExecutionPayloadProbe =
+            serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
+        if probe.spec.is_some() {
+            let ConfiguredExecutionPayload {
+                spec,
+                traffic,
+                capture_performance_diagnostics,
+                capture_telemetry,
+                telemetry_sample_interval_ms,
+                determinism,
                 tokenization,
                 detokenization,
-            },
-            capture_telemetry.then_some(telemetry_sample_interval_ms),
-        ),
-        ExecutionPayload::Legacy(spec) => (
-            spec,
-            None,
-            false,
-            ReplayDeterminism::default(),
-            ServingPath::default(),
-            None,
-        ),
+            } = serde_json::from_str(payload).context("invalid AISimulate execution payload")?;
+            (
+                spec,
+                traffic.map(|t| *t),
+                capture_performance_diagnostics,
+                determinism,
+                ServingPath {
+                    tokenization,
+                    detokenization,
+                },
+                capture_telemetry.then_some(telemetry_sample_interval_ms),
+            )
+        } else {
+            let spec: ReplaySpec =
+                serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
+            (
+                spec,
+                None,
+                false,
+                ReplayDeterminism::default(),
+                ServingPath::default(),
+                None,
+            )
+        }
     };
     if let Some(interval_ms) = telemetry_sample_interval_ms {
         ensure!(
@@ -10230,6 +10244,25 @@ mod tests {
                     .to_string()
                     .contains("telemetry_sample_interval_ms must be finite and positive")
             );
+        }
+        for (field, value, expected) in [
+            (
+                "tokenization",
+                serde_json::json!({"workers": 1, "unknown": true}),
+                "unknown field `unknown`",
+            ),
+            (
+                "capture_telemetry",
+                serde_json::json!("yes"),
+                "invalid type",
+            ),
+        ] {
+            let payload = serde_json::json!({"spec": spec, field: value});
+            let error = format!(
+                "{:#}",
+                execute_json(&payload.to_string(), false).unwrap_err()
+            );
+            assert!(error.contains(expected), "{field}: {error}");
         }
 
         spec.requests.clear();
