@@ -2563,7 +2563,6 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-@pytest.mark.usefixtures("no_models_or_timing_data")
 def test_glm_smoke_with_prefill_checkpoint_blocks_stages_the_five_point_subset(tmp_path):
     plan = _glm_plan(tmp_path, kda_checkpoint_alignment=16)
     frozen = json.loads(plan.options.benchmark_points_json)
@@ -2599,6 +2598,7 @@ def test_glm_smoke_with_prefill_checkpoint_blocks_stages_the_five_point_subset(t
         }
 
 
+@pytest.mark.usefixtures("no_models_or_timing_data")
 def test_glm_smoke_of_a_one_sequence_request_stages_points_of_one_request(tmp_path):
     # A request with max_batch_size 1 reaches the collector as --fpm-max-num-seqs 1 and --fpm-max-prefill-batch-size 1.
     plan = _glm_plan(tmp_path, max_batch_size=1)
