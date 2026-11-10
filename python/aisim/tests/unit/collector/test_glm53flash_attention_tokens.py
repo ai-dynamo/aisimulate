@@ -12,6 +12,8 @@ import yaml
 from collector.glm53flash_attention_contract import build_plan
 from collector.glm53flash_attention_launch import prepare
 from collector.glm53flash_attention_tokens import (
+    DOMAIN,
+    GENERATOR_VERSION,
     SEED,
     TOKENIZER_JSON_SHA256,
     VOCAB_HIGH,
@@ -28,8 +30,8 @@ pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[3]
 SWEEP = ROOT / "collector/cases/base_ops/glm53flash_attention.yaml"
 CONFIG = ROOT / "src/aisim_core/model_configs/zai-org--GLM-5.3-Flash_config.json"
-GOLDEN_PREFIX = [11648, 121572, 142980, 148051, 2300, 54808, 50838, 78024]
-GOLDEN_SHA256 = "72df69eb7b1d7a8aafebf1957158b54abe599bb1157e5ac311f44ebad57a71c1"
+GOLDEN_PREFIX = [128853, 21508, 137158, 127048, 21610, 94766, 90907, 10587]
+GOLDEN_SHA256 = "2296ff1dd99d1fb1f6fea40c70c48b21d4a147b15b343d4cd0ef81bb3e7218b3"
 
 ADDED_IDS = tuple(range(VOCAB_HIGH, VOCAB_HIGH + 36))
 
@@ -54,8 +56,10 @@ def test_generator_is_deterministic_and_inside_the_ordinary_vocabulary():
     assert set(small) == {10, 11, 12}
 
 
-def test_generator_stream_is_pinned():
-    # Golden values: any change to the algorithm must bump GENERATOR_VERSION.
+def test_aisim_generator_v2_stream_is_pinned():
+    # Golden values independently recalculated for the AISim namespace.
+    assert GENERATOR_VERSION == 2
+    assert DOMAIN == b"aisim/glm53flash_attention/input_tokens\x00"
     tokens = generate(SEED, 4096, VOCAB_LOW, VOCAB_HIGH)
     assert tokens[:8] == GOLDEN_PREFIX
     assert hashlib.sha256(json.dumps(tokens).encode()).hexdigest() == GOLDEN_SHA256

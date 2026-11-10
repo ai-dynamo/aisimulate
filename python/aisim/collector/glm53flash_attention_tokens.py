@@ -8,7 +8,7 @@ text corpus, ids are drawn deterministically from a fixed seed with a
 standard-library SHA-256 counter stream, so the same seed yields the same ids
 on every Python, NumPy or framework version.
 
-Algorithm ``sha256_counter_rejection`` version 1: block ``b`` (0, 1, ...) is
+Algorithm ``sha256_counter_rejection`` version 2: block ``b`` (0, 1, ...) is
 ``sha256(DOMAIN || seed_u64_be || b_u64_be)``, read as four big-endian uint64
 values ``v``. A value is accepted iff ``v < 2**64 - 2**64 % span`` (rejection
 removes modulo bias) and maps to ``vocab_low + v % span``, where ``span =
@@ -30,10 +30,10 @@ import json
 from pathlib import Path
 
 GENERATOR = "sha256_counter_rejection"
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 SEED = 53
-# Compatibility identifier: changing it changes the frozen synthetic token stream.
-DOMAIN = b"aisimulate/glm53flash_attention/input_tokens\x00"
+# Version 2 uses the AISim namespace and intentionally produces a new token stream.
+DOMAIN = b"aisim/glm53flash_attention/input_tokens\x00"
 # zai-org/GLM-5.3-Flash@eb9eb208 and nvidia/GLM-5.3-Flash-NVFP4@09b04e5e.
 TOKENIZER_JSON_SHA256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
 VOCAB_LOW = 0

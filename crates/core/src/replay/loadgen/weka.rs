@@ -38,9 +38,9 @@ const NANOSECONDS_PER_MILLISECOND: f64 = 1_000_000.0;
 /// Changing these bytes intentionally changes every Weka source digest and,
 /// consequently, the persisted graph identity. Increment the algorithm
 /// version only when making an explicit provenance compatibility break.
-// Retain the legacy bytes: persisted identities are a compatibility contract.
-const WEKA_CORPUS_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-weka-corpus-v1\0";
-const WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2: &[u8] = b"aisimulate-weka-corpus-semantics-v2\0";
+// AISim namespace: changing these tags deliberately replaces legacy source identities.
+const WEKA_CORPUS_DIGEST_DOMAIN_V1: &[u8] = b"aisim-weka-corpus-v1\0";
+const WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2: &[u8] = b"aisim-weka-corpus-semantics-v2\0";
 
 #[derive(Default)]
 struct WekaGraphCache {
@@ -3540,10 +3540,12 @@ mod tests {
         );
 
         let direct = load_weka_agentic_graph(&source, Some(4)).unwrap();
+        // Independently recalculated from the fixture JSON and AISim domain tags.
         assert_eq!(
             direct.source().digest,
-            "ff95743508341ed9da894e7ed248d6ac0e3d7d939665ca45d308ad77f14cb1aa"
+            "edb42f58a6d8ebf1c138f4b1539aee09d94724dd7e1231b455ad41ed07f08999"
         );
+        // Namespace changes do not change the lowered graph contents.
         assert_eq!(
             direct.graph_digest(),
             "7e8753e35fcf0269a70f07884e4786987afa4c07cc0d65740a90493ceb6c3e3d"
