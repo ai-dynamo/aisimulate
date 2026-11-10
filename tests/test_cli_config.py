@@ -1867,6 +1867,9 @@ def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture(tmp_path) -
     assert tails(model=local("v4", ["DeepseekV4ForCausalLM"])) == 32
     with pytest.raises(ValueError, match="architectures must be a list of strings"):
         tails(model=local("malformed", "DeepseekV4ForCausalLM"))
+    # A local directory without a readable config leaves `auto` off.
+    (tmp_path / "empty").mkdir()
+    assert tails(model=str(tmp_path / "empty")) is None
 
     spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={}, afd_performance_model=None)
     assert spec.prefill_engine_args["sglang"]["swa_prefix_tails"] == 100

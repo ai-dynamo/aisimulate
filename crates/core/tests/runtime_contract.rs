@@ -1720,6 +1720,47 @@ fn round_robin_session_affinity_routes_turns_through_the_public_replayer() {
     }
 }
 
+#[test]
+fn total_tokens_placement_balances_the_decode_pool_through_the_public_replayer() {
+    // One long request and two short ones overlap. Round-robin alternates decode
+    // workers; `total_tokens` keeps both short requests off the loaded worker.
+    for (config, expected) in [
+        (serde_json::Value::Null, vec![Some(0), Some(1), Some(0)]),
+        (
+            serde_json::json!({"load_balance_method": "total_tokens"}),
+            vec![Some(0), Some(1), Some(1)],
+        ),
+    ] {
+        let requests = vec![
+            request("long", 0.0, 32, 16),
+            request("short-1", 1.0, 4, 2),
+            request("short-2", 2.0, 4, 2),
+        ];
+        let mut spec = aggregated_spec(Backend::Sglang, 1, 0.0, requests);
+        spec.topology = ReplayTopology::Disaggregated {
+            prefill: WorkerPoolSpec::default(),
+            decode: WorkerPoolSpec {
+                initial_workers: 2,
+                startup_delay_ms: 0.0,
+            },
+            handoff_latency_ms: 0.0,
+        };
+        spec.adapters.placement.config = config;
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 3);
+        let mut records: Vec<_> = report.per_request.iter().collect();
+        records.sort_by(|a, b| a.arrival_time_ms.total_cmp(&b.arrival_time_ms));
+        let workers: Vec<_> = records
+            .iter()
+            .map(|record| record.decode_worker_idx)
+            .collect();
+        assert_eq!(workers, expected);
+    }
+}
+
 #[rstest::rstest]
 fn session_affinity_survives_pool_retirement_and_growth(
     #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,

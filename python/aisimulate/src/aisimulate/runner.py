@@ -1704,6 +1704,9 @@ def _materialize_engine_role(
     role_config.pop("worker_type", None)
     role_config.pop("startup_time", None)
     load_balance_method = role_config.pop("load_balance_method", None)
+    nested = role_config.get("rank")
+    if isinstance(nested, Mapping) and "load_balance_method" in nested:
+        raise ValueError(f"{role} load_balance_method is a flat engine argument, not a rank field")
     if load_balance_method not in (None, "round_robin") and role != "decode":
         raise ValueError(f"{role} load_balance_method={load_balance_method!r} applies only to the decode role")
     model = role_config.pop("aic_model_path", None)

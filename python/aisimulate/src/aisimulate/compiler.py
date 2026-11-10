@@ -1021,11 +1021,15 @@ def _swa_prefix_tails(engine: EnginePredictionConfig, worker: WorkerPredictionCo
         return configured
     # Bundled or local configs only: resolving any other model path would download it. Only the
     # raw architecture is read, so a model without a performance model keeps SWA reuse off.
-    if os.path.isdir(engine.model):
-        raw = _load_local_config(engine.model)
-    elif engine.model in DefaultHFModels:
-        raw = _load_pre_downloaded_hf_config(engine.model)
-    else:
+    try:
+        if os.path.isdir(engine.model):
+            raw = _load_local_config(engine.model)
+        elif engine.model in DefaultHFModels:
+            raw = _load_pre_downloaded_hf_config(engine.model)
+        else:
+            return None
+    except (OSError, ValueError):
+        # An unreadable config is not a DeepSeek-V4 checkpoint `auto` can recognize.
         return None
     architectures = raw.get("architectures") or []
     if not isinstance(architectures, list) or not all(isinstance(name, str) for name in architectures):

@@ -94,6 +94,14 @@ def test_replay_spec_rejects_load_balance_method_outside_decode():
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
 
 
+def test_nested_rank_load_balance_method_names_the_flat_field():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public()))
+    decode = spec.backend_deployment.decode_engine_args
+    decode["rank"] = {"load_balance_method": "total_tokens"}
+    with pytest.raises(ValueError, match="flat engine argument, not a rank field"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
+
+
 def test_unaligned_token_budget_chunks_whole_pages():
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(prefill={"max_batched_tokens": 2049})))
     assert spec.backend_deployment.prefill_engine_args["sglang"]["chunked_prefill_size"] == 2048
