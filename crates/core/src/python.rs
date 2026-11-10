@@ -41,16 +41,78 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
 
-/// Tells a configured payload (a `spec` key, also `null`) from a legacy bare
-/// `ReplaySpec` without buffering the document: every value is skipped unread.
-#[derive(Deserialize)]
-struct ExecutionPayloadProbe {
-    #[serde(default, deserialize_with = "key_is_present")]
-    spec: bool,
+/// Counts the `spec` keys of a payload (also `null` ones) without buffering
+/// the document: every value is skipped unread. The sequence form of a
+/// legacy `ReplaySpec` has none.
+struct SpecKeyCount(usize);
+
+impl<'de> Deserialize<'de> for SpecKeyCount {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CountVisitor;
+        impl<'de> serde::de::Visitor<'de> for CountVisitor {
+            type Value = SpecKeyCount;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an AISimulate execution payload")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SpecKeyCount, A::Error> {
+                let mut count = 0;
+                while let Some(key) = map.next_key::<String>()? {
+                    count += usize::from(key == "spec");
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+                Ok(SpecKeyCount(count))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<SpecKeyCount, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(SpecKeyCount(0))
+            }
+        }
+        deserializer.deserialize_any(CountVisitor)
+    }
 }
 
-fn key_is_present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-    serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
+/// Whether any of the repeated `spec` keys holds a replay, which makes the
+/// payload an ambiguous configured envelope rather than legacy metadata.
+/// Only the `spec` values are buffered; the rest is skipped unread.
+struct RepeatedSpecHoldsReplay(bool);
+
+impl<'de> Deserialize<'de> for RepeatedSpecHoldsReplay {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ReplayVisitor;
+        impl<'de> serde::de::Visitor<'de> for ReplayVisitor {
+            type Value = RepeatedSpecHoldsReplay;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an AISimulate execution payload")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<RepeatedSpecHoldsReplay, A::Error> {
+                let mut holds_replay = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "spec" {
+                        let value = map.next_value::<serde_json::Value>()?;
+                        holds_replay |= serde_json::from_value::<ReplaySpec>(value).is_ok();
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(RepeatedSpecHoldsReplay(holds_replay))
+            }
+        }
+        deserializer.deserialize_map(ReplayVisitor)
+    }
 }
 
 /// Parses only the `spec` key of a payload, to tell whether it holds a replay.
@@ -4284,11 +4346,18 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 None,
             )
         };
-        // A probe failure (a repeated `spec` key, the sequence form of a
-        // ReplaySpec) leaves the legacy form to decide.
-        let has_spec =
-            serde_json::from_str::<ExecutionPayloadProbe>(payload).is_ok_and(|probe| probe.spec);
-        if !has_spec {
+        let spec_keys = serde_json::from_str::<SpecKeyCount>(payload)
+            .context("invalid AISimulate execution ReplaySpec")?
+            .0;
+        // Repeated `spec` keys are legacy metadata only when none holds a
+        // replay; otherwise the configured envelope is ambiguous.
+        ensure!(
+            spec_keys < 2
+                || !serde_json::from_str::<RepeatedSpecHoldsReplay>(payload)
+                    .is_ok_and(|probe| probe.0),
+            "invalid AISimulate execution payload: duplicate field `spec`"
+        );
+        if spec_keys != 1 {
             legacy(
                 serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?,
             )
@@ -10314,12 +10383,43 @@ mod tests {
             error.contains("invalid AISimulate execution payload: invalid type: null"),
             "{error}"
         );
-        // A repeated `spec` key fails the probe; the legacy form still runs.
+        // Repeated `spec` metadata on a bare ReplaySpec: the legacy form still runs.
         let bare = serde_json::to_string(&spec).unwrap();
         let repeated = format!(r#"{{"spec": 1, "spec": 2, {}"#, &bare[1..]);
         let output: serde_json::Value =
             serde_json::from_str(&execute_json(&repeated, false).unwrap()).unwrap();
         assert_eq!(output["completed_requests"], report["completed_requests"]);
+        // A nested replay with two requests next to a one-request top-level
+        // replay: one `spec` key runs the nested replay; a repeated
+        // replay-valued `spec` key is ambiguous and must not run either.
+        let mut nested = spec.clone();
+        let mut second = nested.requests[0].clone();
+        second.id = "second-id".into();
+        second.session_id = None;
+        second.turn_index = None;
+        nested.requests.push(second);
+        let nested = serde_json::to_string(&nested).unwrap();
+        let once = format!(
+            r#"{{"spec": {nested}, "capture_telemetry": true, {}"#,
+            &bare[1..]
+        );
+        let twice = format!(
+            r#"{{"spec": {nested}, "spec": {nested}, "capture_telemetry": true, {}"#,
+            &bare[1..]
+        );
+        for capture_artifacts in [false, true] {
+            let output: serde_json::Value =
+                serde_json::from_str(&execute_json(&once, capture_artifacts).unwrap()).unwrap();
+            let report = if capture_artifacts {
+                &output["report"]
+            } else {
+                &output
+            };
+            assert_eq!(report["completed_requests"], 2);
+            assert!(report["telemetry"].is_object());
+            let error = format!("{:#}", execute_json(&twice, capture_artifacts).unwrap_err());
+            assert!(error.contains("duplicate field `spec`"), "{error}");
+        }
         // When `spec` holds a replay, a bad field is reported even if the
         // top-level keys also form a replay.
         let mut ambiguous = serde_json::to_value(&spec).unwrap();
