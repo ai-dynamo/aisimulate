@@ -231,15 +231,19 @@ where
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.session_pins.retire(&worker.scheduler_ids);
-        self.workers.remove(&worker.worker_id);
+        // The engine may already have removed this worker and omitted its scheduler IDs.
+        if let Some(scheduler_ids) = self.workers.remove(&worker.worker_id) {
+            self.session_pins.retire(&scheduler_ids);
+        }
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.session_pins.retire(&worker.scheduler_ids);
-        self.workers.remove(&worker.worker_id);
+        // The engine may already have removed this worker and omitted its scheduler IDs.
+        if let Some(scheduler_ids) = self.workers.remove(&worker.worker_id) {
+            self.session_pins.retire(&scheduler_ids);
+        }
         self.hints.retire(worker.worker_id);
         self.counter.worker_removed(worker.worker_id);
         Ok(Vec::new())
@@ -392,15 +396,19 @@ where
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.session_pins.retire(&worker.scheduler_ids);
-        self.workers.remove(&worker.worker_id);
+        // The engine may already have removed this worker and omitted its scheduler IDs.
+        if let Some(scheduler_ids) = self.workers.remove(&worker.worker_id) {
+            self.session_pins.retire(&scheduler_ids);
+        }
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.session_pins.retire(&worker.scheduler_ids);
-        self.workers.remove(&worker.worker_id);
+        // The engine may already have removed this worker and omitted its scheduler IDs.
+        if let Some(scheduler_ids) = self.workers.remove(&worker.worker_id) {
+            self.session_pins.retire(&scheduler_ids);
+        }
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
@@ -549,7 +557,9 @@ mod tests {
 
     #[test]
     fn session_affinity_pins_dp_ranks_and_reassigns_retired_workers() {
-        for draining in [false, true] {
+        for (draining, include_scheduler_ids) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let worker = |worker_id| WorkerTopology {
                 worker_id,
                 scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
@@ -581,14 +591,19 @@ mod tests {
             assert_eq!(place(&mut policy, Some("b"), None).unwrap(), 20);
             assert_eq!(place(&mut policy, None, None).unwrap(), 10);
             assert_eq!(place(&mut policy, None, None).unwrap(), 21);
+            let mut retired = worker(1);
+            if !include_scheduler_ids {
+                retired.scheduler_ids.clear();
+            }
             if draining {
-                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
+                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, retired, 0.0)
                     .unwrap();
             } else {
-                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(1), 0.0)
+                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, retired, 0.0)
                     .unwrap();
             }
             assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 20);
+            assert_eq!(place(&mut policy, Some("b"), None).unwrap(), 20);
             PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(2), 0.0).unwrap();
             assert!(
                 place(&mut policy, Some("a"), None)
@@ -601,7 +616,9 @@ mod tests {
 
     #[test]
     fn pool_session_affinity_preserves_pins_until_worker_retirement() {
-        for draining in [false, true] {
+        for (draining, include_scheduler_ids) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             let worker = |worker_id| WorkerTopology {
                 worker_id,
                 scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
@@ -642,11 +659,15 @@ mod tests {
                     .contains("conflicts")
             );
             assert_eq!(place(&mut policy, None, None).unwrap(), 20);
+            let mut retired = worker(1);
+            if !include_scheduler_ids {
+                retired.scheduler_ids.clear();
+            }
             if draining {
-                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
+                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, retired, 0.0)
                     .unwrap();
             } else {
-                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(1), 0.0)
+                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, retired, 0.0)
                     .unwrap();
             }
             assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 21);

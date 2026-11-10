@@ -38,6 +38,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint, constraint_violations, metric_value
 from ..power import normalize_power_summary
 from .config import (
     Candidate,
@@ -72,6 +73,7 @@ _METRIC_KEYS = (
     "total_gpus",
     "encoder_latency_ms",
     "encoder_gpus",
+    *dict.fromkeys(key for metric in AIPerfMetric for key in (metric.report_key, metric.count_key)),
     "encoder_memory_gib",
     "encoder_power_coverage",
     "encoder_power_w",
@@ -107,8 +109,12 @@ def _avg_gpu(report: dict[str, float]) -> float:
     return gpu_hours / (duration_ms / 3_600_000.0)
 
 
-def objective_value(report: dict[str, float], target: OptimizationTarget, *, used_gpus: int | None = None) -> float:
+def objective_value(
+    report: dict[str, float], target: OptimizationTarget | AIPerfMetric, *, used_gpus: int | None = None
+) -> float:
     """The raw objective metric (NOT yet signed for direction)."""
+    if isinstance(target, AIPerfMetric):
+        return metric_value(report, target)
     if target is OptimizationTarget.MIN_GPUS:
         if type(used_gpus) is not int or used_gpus <= 0:
             raise ValueError("min_gpus requires a concrete positive provisioned GPU count")
@@ -142,7 +148,9 @@ def objective_value(report: dict[str, float], target: OptimizationTarget, *, use
     raise ValueError(f"unknown optimization target: {target!r}")
 
 
-def score_report(report: dict[str, float], target: OptimizationTarget, *, used_gpus: int | None = None) -> float:
+def score_report(
+    report: dict[str, float], target: OptimizationTarget | AIPerfMetric, *, used_gpus: int | None = None
+) -> float:
     """Objective normalized so **higher is better** (minimized targets negated)."""
     value = objective_value(report, target, used_gpus=used_gpus)
     return value if target.maximize else -value
@@ -173,7 +181,8 @@ def minimum_goodput_violations(report: Mapping[str, float], minimum: float | Non
 
 def aggregate_sla_violations(
     report: Mapping[str, float],
-    sla: SLATarget,
+    sla: SLATarget | None,
+    constraints: Sequence[MetricConstraint] = (),
 ) -> tuple[str, ...]:
     """Describe strict aggregate SLA violations using inclusive bounds.
 
@@ -181,12 +190,14 @@ def aggregate_sla_violations(
     absent qualifying samples fail closed instead of silently admitting an
     unqualified candidate.
     """
+    if sla is None:
+        return constraint_violations(report, constraints)
     checks = (
         ("ttft", "mean_ttft_ms", "num_ttft_samples", sla.ttft_ms),
         ("tpot", "mean_tpot_ms", "num_tpot_samples", sla.itl_ms),
         ("e2e", "mean_e2e_latency_ms", "num_e2e_latency_samples", sla.e2e_ms),
     )
-    violations: list[str] = []
+    violations: list[str] = list(constraint_violations(report, constraints))
     try:
         completed_requests = float(report["completed_requests"])
     except (KeyError, TypeError, ValueError):
@@ -230,13 +241,13 @@ def meets_aggregate_sla(
     return not aggregate_sla_violations(report, sla)
 
 
-def objective_vector(report: dict[str, float], objectives: list[OptimizationTarget]) -> dict[str, float]:
+def objective_vector(report: dict[str, float], objectives: list[OptimizationTarget | AIPerfMetric]) -> dict[str, float]:
     """Raw value (natural units, NOT signed) for each Pareto objective, keyed by target
     value. Dominance uses each objective's own direction (``target.maximize``)."""
     return {t.value: objective_value(report, t) for t in objectives}
 
 
-def _dominates(a: dict[str, float], b: dict[str, float], objectives: list[OptimizationTarget]) -> bool:
+def _dominates(a: dict[str, float], b: dict[str, float], objectives: list[OptimizationTarget | AIPerfMetric]) -> bool:
     """True iff ``a`` Pareto-dominates ``b``: at least as good on every objective (in that
     objective's own direction) and strictly better on at least one."""
     strictly_better = False
@@ -251,7 +262,7 @@ def _dominates(a: dict[str, float], b: dict[str, float], objectives: list[Optimi
     return strictly_better
 
 
-def pareto_front(candidates: list[Candidate], objectives: list[OptimizationTarget]) -> list[Candidate]:
+def pareto_front(candidates: list[Candidate], objectives: list[OptimizationTarget | AIPerfMetric]) -> list[Candidate]:
     """The non-dominated subset of ``candidates`` over ``objectives`` (each carrying an
     ``objectives`` vector), sorted by the **last** objective ascending — the x-axis — so the
     returned list traces the frontier left-to-right (e.g. low->high per-user throughput).
@@ -279,9 +290,9 @@ def pareto_front(candidates: list[Candidate], objectives: list[OptimizationTarge
 def make_candidate(
     config: dict,
     report: dict[str, float],
-    target: OptimizationTarget,
+    target: OptimizationTarget | AIPerfMetric,
     *,
-    pareto_objectives: list[OptimizationTarget] | None = None,
+    pareto_objectives: list[OptimizationTarget | AIPerfMetric] | None = None,
 ) -> Candidate:
     """Build a scored :class:`Candidate` from its config + replay report.
 
@@ -289,7 +300,7 @@ def make_candidate(
     ``pareto`` target, ``pareto_objectives`` must be given; the per-objective raw values are
     stored in ``Candidate.objectives`` (Pareto dominance reads these) and ``score`` carries
     the first objective's value as a headline number (it is not used for ranking)."""
-    metrics = {key: float(report[key]) for key in _METRIC_KEYS if key in report and report[key] is not None}
+    metrics = {key: float(value) for key, value in report.items() if key in _METRIC_KEYS and value is not None}
     metrics.update(normalize_power_summary(report))
     if target is OptimizationTarget.PARETO:
         if not pareto_objectives:
@@ -329,8 +340,11 @@ def analyze_candidates(
     """Apply strict SLA filtering before scalar ranking or Pareto dominance."""
     pool = list(candidates)
     if goal.requires_aggregate_sla:
-        assert goal.sla is not None  # OptimizationGoal validates this invariant.
-        pool = [candidate for candidate in pool if meets_aggregate_sla(candidate.metrics, goal.sla)]
+        pool = [
+            candidate
+            for candidate in pool
+            if not aggregate_sla_violations(candidate.metrics, goal.sla, goal.enforced_metric_constraints)
+        ]
     if goal.target is OptimizationTarget.MIN_GPUS:
         pool = [
             candidate for candidate in pool if not minimum_goodput_violations(candidate.metrics, goal.min_goodput_rps)

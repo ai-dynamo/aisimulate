@@ -1232,9 +1232,20 @@ def test_v031_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
     else:
         campaign.cache.kv_cache_tensors[0].host_resident = True
     name = "tensor placement for ['layers.3.mla']" if change == "tensor" else "group placement for ['layers.0.kda',"
+    # The memory observer refuses a host-resident group, a role other than DEFAULT and a host-resident tensor
+    # before the cache groups are read; the scheduler does not read the tensors.
+    early = {
+        "host_resident": "host-resident cache groups are unsupported",
+        "role": "unsupported cache group role: HISPARSE_SOURCE",
+        "tensor": "host-resident cache tensors are unsupported",
+    }
     for record in campaign.run():
-        assert "cache.groups" in record["unresolved_fields"]
-        assert name in record["error"]
+        if change in early and (change != "tensor" or record["kind"] == "worker"):
+            assert "cache" in record["unresolved_fields"]
+            assert early[change] in record["error"]
+        else:
+            assert "cache.groups" in record["unresolved_fields"]
+            assert name in record["error"]
 
 
 @pytest.mark.parametrize("runner_version", [1, 2])

@@ -25,10 +25,10 @@ from .runtime.fpm_memory_observer import (
     _SPEC_MODULE,
     _UNIFORM_SPEC,
     _WINDOW_SPECS,
+    MEMORY_SUPPORTED_VERSIONS,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     SPEC_KINDS,
-    SUPPORTED_VERSION,
 )
 from .types import ParallelTopology
 
@@ -762,8 +762,8 @@ def resolve_runtime_resources(
         raise ValueError("runtime memory GPU memory utilization must be in (0, 1]")
     if not expected_plan_sha256 or not expected_attempt_id:
         raise ValueError("runtime memory resolution requires exact plan and attempt identities")
-    if expected_backend_version != SUPPORTED_VERSION:
-        raise ValueError(f"runtime memory conversion currently supports vLLM {SUPPORTED_VERSION}")
+    if expected_backend_version not in MEMORY_SUPPORTED_VERSIONS:
+        raise ValueError(f"runtime memory conversion currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}")
     collection = validate_native_collection(
         cell, raw_root, expected_plan_sha256=expected_plan_sha256, expected_attempt_id=expected_attempt_id
     )

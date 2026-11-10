@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import enum
 import importlib.util
 import json
 import re
@@ -13,7 +14,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import planner, runner, runtime_memory
+from collector.fpm_forward import planner, repeatability, runner, runtime_memory
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.types import ParallelTopology
 
@@ -175,37 +176,71 @@ def _initialized(*, blocks=100, free=98, packed=False, layers=False):
     return worker, scheduler, cache_config
 
 
-def _evidence(tmp_path, monkeypatch):
+_Role = enum.Enum("KVCacheGroupRole", {"DEFAULT": "default", "HISPARSE_SOURCE": "hisparse_source"}, type=str)
+
+
+def _initialized_layer_strided(*, blocks=100, free=98, layout="layer_outer"):
+    """The groups and layers of _initialized in one buffer, as vLLM 0.32.0 places them.
+
+    v1/core/kv_cache_utils.py:1622-1687 sizes the buffer at bytes_per_block * num_blocks,
+    here 128 * blocks, and gives each group one tensor record from byte 0.
+    """
+    worker, scheduler, cache_config = _initialized(blocks=blocks, free=free)
+    storage = _Storage(100, blocks * 128)
+    layers = worker.vllm_config.compilation_config.static_forward_context
+    for layer in layers.values():
+        layer.kv_cache = _Tensor(storage)
+    worker.model_runner.kv_caches = [layer.kv_cache for layer in layers.values()]
+    layer_stride, block_stride = {"layer_outer": (64 * blocks, 64), "block_outer": (64, 128)}[layout]
+    cache_config.kv_cache_tensors = [
+        SimpleNamespace(
+            size=blocks * 128,
+            layers=list(group.layer_names),
+            layer_stride=layer_stride,
+            block_stride=block_stride,
+            offset=0,
+            host_resident=False,
+        )
+        for group in cache_config.kv_cache_groups
+    ]
+    for group in cache_config.kv_cache_groups:
+        group.host_resident, group.role = False, _Role.DEFAULT
+    return worker, scheduler, cache_config
+
+
+def _evidence(tmp_path, monkeypatch, *, version="0.27.0", initialized=None):
+    # None means the module's _initialized at call time, which a test may monkeypatch.
+    initialized = initialized or _initialized
     cell = replace(
         _cell(dp=2),
         topology=ParallelTopology(tp=2, pp=1, dp=2, moe_tp=1, moe_ep=4, cp=1),
         kv_cache_dtype="bfloat16",
         fmha_quant_mode="bfloat16",
     )
-    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.27.0")
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
     for dp in range(2):
         pod = tmp_path / f"pod-{dp}"
         pod.mkdir()
         _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
         provenance = json.loads((pod / "collector-provenance.json").read_text())
-        provenance["runtime"]["backend_version"] = "0.27.0"
+        provenance["runtime"]["backend_version"] = version
         (pod / "collector-provenance.json").write_text(json.dumps(provenance))
         (pod / "benchmark.json").write_text(json.dumps(_native_payload(phase="prefill", rank=dp, dp=2)))
         monkeypatch.setattr(observer, "RESULTS_DIR", pod)
         for tp in range(2):
-            worker, scheduler, config = _initialized(blocks=100 - dp * 10, free=98 - dp * 10)
+            worker, scheduler, config = initialized(blocks=100 - dp * 10, free=98 - dp * 10)
             observer.observe("worker", worker, dp_rank=dp, tp_rank=tp, pp_rank=0)
         observer.observe("scheduler", scheduler, dp_rank=dp, cache_config=config)
     return cell
 
 
-def _resolve(cell, root, **kwargs):
+def _resolve(cell, root, *, expected_backend_version="0.27.0", **kwargs):
     return runtime_memory.resolve_runtime_resources(
         cell,
         root,
         expected_plan_sha256="plan-sha",
         expected_attempt_id="attempt",
-        expected_backend_version="0.27.0",
+        expected_backend_version=expected_backend_version,
         expected_context_length=4096,
         expected_max_num_tokens=1024,
         expected_max_batch_size=64,
@@ -447,10 +482,11 @@ def test_worker_memory_reads_layers_and_tuple_caches():
     assert isinstance(worker.vllm_config.compilation_config.static_forward_context["conv.0"].kv_cache, tuple)
     observed = observer.worker_memory(worker, hybrid_evidence=True)
     assert observed["allocated_cache_bytes"] == 100 * 128
-    assert [(item["layers"], item["shared_by"], item["layer_stride"]) for item in observed["tensor_allocations"]] == [
-        (["full.0", "slide.0", "conv.0"], ["full.0", "slide.0", "conv.0"], 0),
-        (["full.1", "slide.1"], ["full.1", "slide.1"], 0),
+    assert [(item["layers"], item["layer_stride"]) for item in observed["tensor_allocations"]] == [
+        (["full.0", "slide.0", "conv.0"], 0),
+        (["full.1", "slide.1"], 0),
     ]
+    assert all("shared_by" not in item for item in observed["tensor_allocations"])
     assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
     # Without hybrid evidence an allocation record keeps the vLLM 0.27.0/0.28.0 keys only.
     legacy = observer.worker_memory(_initialized()[0])
@@ -498,7 +534,7 @@ def test_block_outer_tensor_region_ends_at_its_last_page():
         ("last_page", "exceed their backing allocation"),
         ("page", "page exceeds its block stride"),
         ("storage", "layer strides use multiple backing allocations"),
-        ("mixed", "invalid cache tensor layer stride"),
+        ("mixed", "unsupported runtime cache tensor record"),
     ],
 )
 def test_layer_strided_tensors_share_one_buffer_that_holds_every_region(change, match):
@@ -697,6 +733,79 @@ def test_hybrid_resolved_config_adds_the_cache_settings_but_not_the_startup_capa
     assert observer.execution_config(worker.vllm_config, hybrid_evidence=True)["cache_config"]["block_size"] is None
 
 
+@pytest.mark.parametrize("layout", ["layer_outer", "block_outer"])
+def test_layer_strided_allocation_charges_one_backing_pool(layout):
+    worker, scheduler, config = _initialized_layer_strided(layout=layout)
+    observed = observer.worker_memory(worker)
+    assert observed["allocated_cache_bytes"] == 12_800
+    assert len(observed["storages"]) == 1
+    assert [item["layers"] for item in observed["tensor_allocations"]] == [
+        ["full.0", "full.1"],
+        ["slide.0", "slide.1"],
+        ["conv.0"],
+    ]
+    assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
+    assert observer.scheduler_memory(scheduler, config)["reserved_blocks"] == 2
+
+
+@pytest.mark.parametrize("layout", ["layer_outer", "block_outer"])
+def test_layer_strided_records_carry_only_layer_strided_keys(layout):
+    worker, _scheduler, _config = _initialized_layer_strided(layout=layout)
+    records = observer.worker_memory(worker)["tensor_allocations"]
+    assert records
+    for record in records:
+        assert set(record) == {"size", "layers", "layer_stride", "block_stride", "offset"}
+
+
+def _break_layer_strided(worker, change):
+    """Make one unsupported change to the first cache group or the first tensor record."""
+    config = worker.model_runner.kv_cache_config
+    group, record = config.kv_cache_groups[0], config.kv_cache_tensors[0]
+    if change == "host_resident_tensor":
+        record.host_resident = True
+    elif change == "host_resident_group":
+        group.host_resident = True
+    elif change == "hisparse_role":
+        group.role = _Role.HISPARSE_SOURCE
+    elif change == "offset_beyond_allocation":
+        record.offset = 64
+    elif change == "block_stride_below_page":
+        record.block_stride = 32
+    elif change == "second_storage":
+        layer = worker.vllm_config.compilation_config.static_forward_context["conv.0"]
+        layer.kv_cache = _Tensor(_Storage(300, 100 * 128))
+        worker.model_runner.kv_caches.append(layer.kv_cache)
+    elif change == "mixed_record":
+        record.shared_by = vars(record).pop("layers")
+    elif change == "unknown_layer":
+        record.layers = ["full.0", "ghost"]
+    elif change == "uniform_wrapper":
+        spec = _typed("vllm.v1.kv_cache_interface", "UniformTypeKVCacheSpecs")
+        vars(spec).update(vars(group.kv_cache_spec))
+        group.kv_cache_spec = spec
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ("host_resident_tensor", "host-resident cache tensors"),
+        ("host_resident_group", "host-resident cache groups"),
+        ("hisparse_role", "unsupported cache group role"),
+        ("offset_beyond_allocation", "exceed their backing allocation"),
+        ("block_stride_below_page", "page exceeds its block stride"),
+        ("second_storage", "multiple backing allocations"),
+        ("mixed_record", "unsupported runtime cache tensor record"),
+        ("unknown_layer", "missing or duplicate cache layers"),
+        ("uniform_wrapper", "unsupported runtime cache spec"),
+    ],
+)
+def test_layer_strided_allocation_rejects_unsupported_records(change, match):
+    worker, _scheduler, _config = _initialized_layer_strided()
+    _break_layer_strided(worker, change)
+    with pytest.raises(ValueError, match=match):
+        observer.worker_memory(worker)
+
+
 def test_resolve_runtime_resources_requires_all_ranks_and_preserves_graph_evidence(tmp_path, monkeypatch):
     cell = _evidence(tmp_path, monkeypatch)
     result = _resolve(cell, tmp_path)
@@ -711,6 +820,14 @@ def test_resolve_runtime_resources_requires_all_ranks_and_preserves_graph_eviden
     assert "enable_prefix_caching" not in provenance["runtime_settings"]["cache_config"]
     assert len(provenance["artifacts"]) == 6
     assert provenance["artifacts"][-1]["evidence"]["cache"]["diagnostics"]["peak_activation_memory"] == 123
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_new_versions_observe_and_finalize_layer_strided_memory(tmp_path, monkeypatch, version):
+    cell = _evidence(tmp_path, monkeypatch, version=version, initialized=_initialized_layer_strided)
+    resolved = _resolve(cell, tmp_path, expected_backend_version=version)
+    assert [group["kind"] for group in resolved["cache_groups"]] == ["attention", "attention", "convolution"]
+    assert resolved["runtime_memory"]["kv_cache_bytes"] == 88 * 128
 
 
 @pytest.mark.parametrize("backend", ["uva", "prefetch"])
@@ -1056,6 +1173,22 @@ def test_unsupported_observation_records_unresolved_without_running_or_replacing
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_unaudited_runtime_version_errors_name_every_memory_version(tmp_path, monkeypatch):
+    worker, _scheduler, _config = _initialized()
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.31.0")
+    _write_provenance(tmp_path / "collector-provenance.json", cell_id="test")
+    observer.observe("worker", worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    payload = json.loads((tmp_path / "fpm-memory-worker-dp0-tp0-pp0.json").read_text())
+    assert payload["status"] == "unresolved"
+    assert payload["error"] == (
+        "ValueError: memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; found 0.31.0"
+    )
+    with pytest.raises(ValueError) as raised:
+        _resolve(_cell(), tmp_path, expected_backend_version="0.31.0")
+    assert str(raised.value) == "runtime memory conversion currently supports vLLM 0.27.0, 0.32.0, 0.33.0"
+
+
 @pytest.mark.parametrize("resolved_mode", ["PIECEWISE", "NONE"])
 @pytest.mark.parametrize("initialization_count", [1, 2])
 def test_worker_profile_time_graph_downgrade_resolves(tmp_path, monkeypatch, resolved_mode, initialization_count):
@@ -1286,6 +1419,90 @@ def test_ordinary_serving_worker_observes_initialized_runtime_without_dynamo(tmp
         observer.observe_execution(worker, dp_rank=0, tp_rank=2, pp_rank=0)
 
 
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_execution_observation_records_new_versions(tmp_path, monkeypatch, version):
+    provenance_path = tmp_path / "serving-provenance.json"
+    provenance_path.write_text(json.dumps({"run_id": f"serving-{version}", "purpose": "matched_serving_accuracy"}))
+    output = tmp_path / "observations"
+    monkeypatch.setenv("FPM_EXECUTION_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
+
+    class Worker:
+        def compile_or_warm_up_model(self):
+            self.model_runner.attn_groups = [
+                [
+                    SimpleNamespace(
+                        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+                        layer_names=["layer.0"],
+                        kv_cache_group_id=0,
+                    )
+                ]
+            ]
+            return "compiled"
+
+    monkeypatch.setitem(sys.modules, "fpm_memory_observer", observer)
+    for name, values in {
+        "vllm.distributed": {
+            "get_pp_group": lambda: SimpleNamespace(rank_in_group=0),
+            "get_tp_group": lambda: SimpleNamespace(rank_in_group=0),
+        },
+        "vllm.v1.worker.gpu_worker": {"Worker": Worker},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(values)
+        monkeypatch.setitem(sys.modules, name, module)
+    spec = importlib.util.spec_from_file_location(
+        "fpm_memory_worker", Path(observer.__file__).with_name("fpm_memory_worker.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    worker = module.FpmExecutionWorker()
+    worker.vllm_config = _vllm_config(tp=1, dp=1)
+    worker.vllm_config.parallel_config.data_parallel_rank = 0
+    worker.model_runner = SimpleNamespace(attn_groups=[])
+    assert worker.compile_or_warm_up_model() == "compiled"
+    result = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    assert result["status"] == "observed", result.get("error")
+    assert result["backend_version"] == version
+    assert result["attention_groups"][0]["backend_class"] == "actual.runtime.ResolvedBackend"
+
+
+def test_execution_observation_skips_empty_attention_group_lists(tmp_path, monkeypatch):
+    # Model Runner V2 appends [] for a cache group without layer views
+    # (vllm/v1/worker/gpu/attn_utils.py 0.32.0:220-222, 0.33.0:221-223).
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.32.0")
+    (tmp_path / "collector-provenance.json").write_text("{}")
+    group = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=["layer.0"],
+        kv_cache_group_id=1,
+    )
+    worker = SimpleNamespace(
+        vllm_config=_vllm_config(tp=1, dp=1), model_runner=SimpleNamespace(attn_groups=[[], [group]])
+    )
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    result = json.loads((tmp_path / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    assert result["status"] == "observed", result.get("error")
+    assert result["attention_groups"] == [
+        {"kv_cache_group_id": 1, "backend_class": "actual.runtime.ResolvedBackend", "layer_names": ["layer.0"]}
+    ]
+
+
+def test_worker_import_error_names_every_audited_version(monkeypatch):
+    monkeypatch.setitem(sys.modules, "fpm_memory_observer", observer)
+    monkeypatch.setitem(sys.modules, "vllm.distributed", None)
+    spec = importlib.util.spec_from_file_location(
+        "fpm_memory_worker", Path(observer.__file__).with_name("fpm_memory_worker.py")
+    )
+    with pytest.raises(RuntimeError) as raised:
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    assert str(raised.value).endswith(
+        "execution observation supports vLLM 0.27.0/0.28.0/0.32.0/0.33.0, memory supports 0.27.0/0.32.0/0.33.0"
+    )
+
+
 @pytest.mark.parametrize(
     "output,provenance",
     [
@@ -1352,6 +1569,87 @@ def test_pending_memory_plans_without_model_and_renders_audited_hooks(tmp_path):
         assert "--worker-cls fpm_memory_worker.FpmResourceWorker" in script
         assert "--scheduler-cls fpm_memory_scheduler.FpmResourceInstrumentedScheduler" in script
         assert script.count("--no-async-scheduling") == 1
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_new_memory_versions_plan_audited_hooks(tmp_path, version):
+    plan = _pending_plan(version)
+    assert plan.to_dict()["runtime_memory_policy"] == {
+        "source": "vllm_initialization",
+        "supported_vllm_version": version,
+        "selected_vllm_version": version,
+        "observation": "enabled",
+        "evidence_schema_version": 1,
+        "async_scheduling": False,
+    }
+    for cell in plan.cells:
+        output = tmp_path / cell.cell_id
+        output.mkdir()
+        runner._render_cell(plan, cell, output, {})
+        script = (output / "run.sh").read_text()
+        assert "--worker-cls fpm_memory_worker.FpmResourceWorker" in script
+        assert "--scheduler-cls fpm_memory_scheduler.FpmResourceInstrumentedScheduler" in script
+        assert script.count("--no-async-scheduling") == 1
+
+
+@pytest.mark.parametrize("version", ["0.25.1", "0.28.0", "0.31.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_unaudited_memory_versions_keep_the_legacy_policy(version):
+    assert _pending_plan(version).to_dict()["runtime_memory_policy"] == {
+        "source": "vllm_initialization",
+        "supported_vllm_version": "0.27.0",
+        "selected_vllm_version": version,
+        "observation": "unavailable_for_runtime",
+        "evidence_schema_version": 1,
+        "async_scheduling": None,
+    }
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_plan_saved_before_the_new_memory_versions_stops_on_resume(tmp_path, monkeypatch):
+    # A pending 0.32.0 plan as main 2022b019 saves it: observation unavailable_for_runtime.
+    with monkeypatch.context() as patch:
+        patch.setattr(planner, "MEMORY_SUPPORTED_VERSIONS", ("0.27.0",))
+        saved = _pending_plan("0.32.0")
+        payload = saved.to_dict()
+    assert payload["runtime_memory_policy"]["observation"] == "unavailable_for_runtime"
+    runtime_memory.validate_saved_plan(payload)
+    current = _pending_plan("0.32.0").to_dict()
+    assert current["runtime_memory_policy"]["observation"] == "enabled"
+    assert {key for key in payload.keys() | current.keys() if payload.get(key) != current.get(key)} == {
+        "runtime_memory_policy",
+        "sha256",
+    }
+    artifacts, checkpoints = tmp_path / "artifacts", tmp_path / "checkpoints"
+    campaign = artifacts / saved.sha256[:16]
+    campaign.mkdir(parents=True)
+    (campaign / "collection-plan.json").write_text(json.dumps(payload))
+    checkpoints.mkdir()
+    checkpoint = {"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": saved.sha256, "cells": {}}
+    (checkpoints / "fpm_forward.json").write_text(json.dumps(checkpoint))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    # collect-fpm --resume plans again with the current code and checks the checkpoint before any cell renders.
+    with pytest.raises(ValueError, match="checkpoint does not match the current frozen plan"):
+        runner.run_collection(
+            _pending_plan("0.32.0"),
+            generator_overrides={},
+            checkpoint_dir=str(checkpoints),
+            artifact_root=str(artifacts),
+            resume=True,
+            retry_failed=False,
+        )
+    assert not list(artifacts.rglob("run.sh"))
+    # The repeatability loader recomputes the policy of a plan with a runtime version, so it cannot match the file.
+    with pytest.raises(ValueError, match="cannot be reconstructed exactly by this collector version"):
+        repeatability.load_repeatability_source(campaign)
+    assert {path: path.read_bytes() for path in before} == before
+    # Control: the same plan saved by the current code loads exactly.
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    (fresh / "collection-plan.json").write_text(json.dumps(current))
+    assert repeatability.load_repeatability_source(fresh).to_dict() == current
 
 
 @pytest.mark.parametrize(

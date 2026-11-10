@@ -141,6 +141,14 @@ def _resolved(owner: Any, *, hybrid_evidence: bool = False) -> dict:
     return value
 
 
+def _worker_cache(owner: Any) -> dict:
+    cache = legacy.worker_memory(owner)
+    # This route reads shared_by with vLLM 0.27.0 meaning and has bundles for 0.27.0 and 0.28.0 only.
+    if any("layers" in item or "layer_stride" in item for item in cache.get("tensor_allocations", [])):
+        raise ValueError("layer-strided cache tensor records need an audited instrumentation adapter")
+    return cache
+
+
 def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
     fields = (
         "block_size",
@@ -256,9 +264,7 @@ def _block_pool_groups(cache: dict, config: Any, pool_id: str) -> None:
     for tensor in config.kv_cache_tensors:
         host = getattr(tensor, "host_resident", None)
         if host is not False:
-            errors.append(
-                f"unsupported cache tensor placement for {legacy._tensor_layers(tensor)}: host_resident={host!r}"
-            )
+            errors.append(f"unsupported cache tensor placement for {list(tensor.layers)}: host_resident={host!r}")
     if errors:
         raise ValueError("; ".join(errors))
 
@@ -365,7 +371,9 @@ def _layer_views(owner: Any, cache: dict, source_files: dict, version: str) -> N
     for allocation in cache["tensor_allocations"]:
         # worker_memory proved that the layers of an allocation use one storage;
         # a vLLM 0.31.0 Mamba layer binds a tuple of state views on it.
-        (key,) = legacy._layer_storages(layers[allocation["shared_by"][0]].kv_cache)
+        # A layer-strided allocation names its layers; a vLLM 0.27.0 or 0.28.0 one names them in shared_by.
+        names = allocation["layers"] if "layers" in allocation else allocation["shared_by"]
+        (key,) = legacy._layer_storages(layers[names[0]].kv_cache)
         allocation["storage_id"] = storage_ids[key]
     views = cache["layer_tensors"] = {}
     groups = []
@@ -567,7 +575,10 @@ def observe(
         capture("effective_offloader", lambda: payload.update(effective_offloader=legacy._offloader_type()))
         if hasattr(owner, "_fpm_initial_compilation_config"):
             payload["initial_compilation_config"] = owner._fpm_initial_compilation_config
-        capture("cache", lambda: payload.update(cache=legacy.worker_memory(owner, hybrid_evidence=hybrid)))
+        if hybrid:
+            capture("cache", lambda: payload.update(cache=legacy.worker_memory(owner, hybrid_evidence=True)))
+        else:
+            capture("cache", lambda: payload.update(cache=_worker_cache(owner)))
         config = getattr(getattr(owner, "model_runner", None), "kv_cache_config", None)
     else:
         config = cache_config

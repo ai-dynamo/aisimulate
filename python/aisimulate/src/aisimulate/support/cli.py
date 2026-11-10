@@ -36,7 +36,7 @@ from .config_profile import (
     validate_overrides,
 )
 from .fpm import run_fpm
-from .plan import create_plan, request_id
+from .plan import MEMORY_OBSERVATION_VERSIONS, create_plan, request_id
 from .schema import (
     AGENTX_REFERENCE_CONTEXT,
     CUDAGRAPH_MODES,
@@ -656,10 +656,8 @@ def _review_config_profile(
             print("  No activation or non-KV byte estimate is required.")
             print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
             version = request.identity.framework_version
-            # Collection observes pending memory only on vLLM 0.27.0 (collector runner._observe_runtime_memory
-            # and support/plan.py). Another bundled version observes pending memory in runtime probes only.
-            if version == "0.27.0":
-                print(f"  Memory is observed during initialized vLLM {version} probes and collection.")
+            if version in MEMORY_OBSERVATION_VERSIONS:
+                print(f"  Memory is observed during initialized vLLM {version} collection.")
                 print(
                     "  Collection policy: synchronous scheduling in both phases, "
                     "matching supported prefill benchmarking."
@@ -668,8 +666,8 @@ def _review_config_profile(
                 print(f"  Memory is observed during initialized vLLM {version} probes only.")
             else:
                 print(
-                    "  Memory observation needs a bundled or campaign-local instrumentation bundle for this vLLM "
-                    "version. Without one, this version can collect timings only."
+                    f"  Memory observation currently supports vLLM {', '.join(MEMORY_OBSERVATION_VERSIONS)}; "
+                    "this version can collect timings only."
                 )
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
