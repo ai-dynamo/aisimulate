@@ -47,7 +47,7 @@ tables:
       rows: 5518
       status: complete
   dsv4_csa_context_module_perf:
-    rows: 5834
+    rows: 10338
     status: complete
     collections:
     - collector_ref: 8f4f36c87b7a7f5b1a7efd6a0cc2e690d473152e
@@ -68,8 +68,14 @@ tables:
       collected_at: '2026-10-06'
       rows: 2068
       status: complete
+    - collector_ref: eb04c6888cf33ef4f48a995511a23429127f3baa
+      collector_hash: sha256:7b344d6a876f3bd922efc37fd75349a2451c97f74a4121fcf80dc18c5c5dcf46
+      case_plan_hash: sha256:83e0cf94d74e7d3032cae26f3708dadb8e0c96efddfbe26cffc46d5173e21a54
+      collected_at: '2026-11-04'
+      rows: 4504
+      status: complete
   dsv4_csa_generation_module_perf:
-    rows: 1544
+    rows: 3144
     status: complete
     collections:
     - collector_ref: 8f4f36c87b7a7f5b1a7efd6a0cc2e690d473152e
@@ -78,8 +84,14 @@ tables:
       collected_at: '2026-10-06'
       rows: 1544
       status: complete
+    - collector_ref: eb04c6888cf33ef4f48a995511a23429127f3baa
+      collector_hash: sha256:7b344d6a876f3bd922efc37fd75349a2451c97f74a4121fcf80dc18c5c5dcf46
+      case_plan_hash: sha256:b89227f11340c36e2cbe33f62c1f105b2eba13ed0a4f3aaacd9a3fff61fe3607
+      collected_at: '2026-11-04'
+      rows: 1600
+      status: complete
   dsv4_hca_context_module_perf:
-    rows: 5840
+    rows: 10344
     status: complete
     collections:
     - collector_ref: 8f4f36c87b7a7f5b1a7efd6a0cc2e690d473152e
@@ -100,8 +112,14 @@ tables:
       collected_at: '2026-10-06'
       rows: 2072
       status: complete
+    - collector_ref: eb04c6888cf33ef4f48a995511a23429127f3baa
+      collector_hash: sha256:7b344d6a876f3bd922efc37fd75349a2451c97f74a4121fcf80dc18c5c5dcf46
+      case_plan_hash: sha256:f0c339778597af6f52b02b957ec571bb72032ddb828e0d58913a964bf03e3898
+      collected_at: '2026-11-04'
+      rows: 4504
+      status: complete
   dsv4_hca_generation_module_perf:
-    rows: 1544
+    rows: 3144
     status: complete
     collections:
     - collector_ref: 8f4f36c87b7a7f5b1a7efd6a0cc2e690d473152e
@@ -109,4 +127,10 @@ tables:
       case_plan_hash: sha256:5635885b3a75207ffca5f7176da82c2fdd8c4a32706ba26653b669b6f04e86e4
       collected_at: '2026-10-06'
       rows: 1544
+      status: complete
+    - collector_ref: eb04c6888cf33ef4f48a995511a23429127f3baa
+      collector_hash: sha256:7b344d6a876f3bd922efc37fd75349a2451c97f74a4121fcf80dc18c5c5dcf46
+      case_plan_hash: sha256:ab71d6e3d6bffe93a94a4e4075b5e48f6fa19bc1785ac4c47a7397ecd62da23b
+      collected_at: '2026-11-04'
+      rows: 1600
       status: complete
