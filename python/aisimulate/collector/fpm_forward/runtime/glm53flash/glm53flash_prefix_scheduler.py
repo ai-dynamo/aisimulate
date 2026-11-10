@@ -304,6 +304,14 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             "need_mamba_block_aligned_split": bool(getattr(self, "need_mamba_block_aligned_split", False)),
             "cache_dtype": getattr(cache, "cache_dtype", None),
             "async_scheduling": bool(getattr(config.scheduler_config, "async_scheduling", False)),
+            # Whether vLLM 0.33.0 can save a prefill checkpoint inside the last chunk decides the planned points. It
+            # holds the alignment of the first Mamba group only with checkpoint blocks (scheduler.py:437-449).
+            "mamba_prefill_checkpoint": {
+                "blocks": bool(self.mamba_has_prefill_checkpoint_blocks),
+                "alignment": (
+                    int(self.mamba_prefill_checkpoint_alignment) if self.mamba_has_prefill_checkpoint_blocks else None
+                ),
+            },
         }
         expected_unit = os.environ.get("DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT")
         if expected_unit is not None and self._glm_serving["hash_block_size"] != int(expected_unit):

@@ -650,6 +650,7 @@ def validate_native_collection(
     run_identity: tuple[str, str] | None = None
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
+    checkpoint_seen: object = _KVWARM_UNSEEN
     input_provenance: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     seed_regimes: dict[int, str | None] = {}
@@ -690,6 +691,13 @@ def validate_native_collection(
             input_provenance = evidence
         elif _without_sidecar_names(evidence) != _without_sidecar_names(input_provenance):
             raise ValueError(f"native DP ranks disagree on input provenance: {path}")
+        # One launch shares one scheduler configuration, so the ranks must agree on the checkpoint evidence of it.
+        serving = payload.get("serving_config")
+        checkpoint = serving.get("mamba_prefill_checkpoint", _KVWARM_UNSEEN) if isinstance(serving, dict) else None
+        if checkpoint_seen is _KVWARM_UNSEEN:
+            checkpoint_seen = checkpoint
+        elif checkpoint != checkpoint_seen:
+            raise ValueError(f"native ranks disagree on serving_config.mamba_prefill_checkpoint: {path}")
         expected = coverage.get("expected_points")
         if (
             not isinstance(expected, int)

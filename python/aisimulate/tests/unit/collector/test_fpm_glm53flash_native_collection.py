@@ -177,6 +177,7 @@ def glm_native_payload(phase: str, *, points: list[dict], rank: int = 0, dp: int
             "need_mamba_block_aligned_split": True,
             "cache_dtype": "fp8_e4m3",
             "async_scheduling": False,
+            "mamba_prefill_checkpoint": {"blocks": True, "alignment": 16},
         },
         kvwarm={
             "enabled": True,
@@ -663,6 +664,18 @@ def test_glm_producer_dp_ranks_must_agree_on_input_provenance(tmp_path, tamper):
     tamper(payloads[1], artifacts[1].with_suffix(".repetitions.jsonl"))
     artifacts[1].write_text(json.dumps(payloads[1]))
     with pytest.raises(ValueError, match="native DP ranks disagree on input provenance"):
+        _validate(tmp_path, cell)
+
+
+def test_collection_refuses_ranks_that_disagree_on_the_checkpoint_evidence(tmp_path):
+    cell = glm_cell("prefill", dp=2)
+    pod = _pod(tmp_path, cell)
+    payloads = [glm_native_payload("prefill", points=[PREFILL_COLD], rank=rank, dp=2) for rank in range(2)]
+    artifacts = [write_glm_rank(pod, payload) for payload in payloads]
+    assert len(_validate(tmp_path, cell).points) == 1
+    payloads[1]["serving_config"]["mamba_prefill_checkpoint"] = {"blocks": False, "alignment": None}
+    artifacts[1].write_text(json.dumps(payloads[1]))
+    with pytest.raises(ValueError, match=r"native ranks disagree on serving_config\.mamba_prefill_checkpoint"):
         _validate(tmp_path, cell)
 
 

@@ -923,6 +923,10 @@ def init_scheduler(module, monkeypatch, *, model, checkpoint):
     scheduler = module.Glm53FlashPrefixSeedScheduler.__new__(module.Glm53FlashPrefixSeedScheduler)
     scheduler._bench_hash_block_size = scheduler.block_size = 2176
     scheduler.connector = scheduler.ec_connector = None
+    # The checkpoint attributes that vLLM 0.33.0's scheduler sets for a launch without a prefill checkpoint block
+    # (scheduler.py:437-449).
+    scheduler.mamba_has_prefill_checkpoint_blocks = False
+    scheduler.mamba_prefill_checkpoint_alignment = None
     scheduler._bench_explicit_points = object()
     scheduler._bench_config = types.SimpleNamespace(warmup_iterations=0, collect_imbalanced=True)
     config = types.SimpleNamespace(
@@ -977,6 +981,20 @@ def test_bench_init_reads_the_resolved_checkpoint(monkeypatch, tmp_path, launch)
         "runtime_context_length": 1048576,
         "native_admission_headroom": 7,
     }
+
+
+def test_producer_records_the_checkpoint_evidence_of_its_launch(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    scheduler, config, _ = init_scheduler(module, monkeypatch, model=str(tmp_path), checkpoint=tmp_path)
+    # Every Mamba group holds a checkpoint block (scheduler.py:445-449), and the first alignment is 16.
+    scheduler.mamba_has_prefill_checkpoint_blocks = True
+    scheduler.mamba_prefill_checkpoint_alignment = 16
+    scheduler._bench_init(config)
+    assert scheduler._glm_serving["mamba_prefill_checkpoint"] == {"blocks": True, "alignment": 16}
+    # A launch without checkpoint blocks records no alignment, whatever the first Mamba group declares.
+    scheduler.mamba_has_prefill_checkpoint_blocks = False
+    scheduler._bench_init(config)
+    assert scheduler._glm_serving["mamba_prefill_checkpoint"] == {"blocks": False, "alignment": None}
 
 
 def test_bench_init_refuses_an_unset_tokenizer_revision(monkeypatch, tmp_path):
