@@ -985,15 +985,21 @@ def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
     alignment is a multiple of its tokens per state. A SlidingWindowMLASpec group that passes it may take part whatever
     the other groups do. Every such group keeps the GCD a multiple of the hash block size, so the choice with all of
     them gives the smallest GCD.
+
+    With one group, vLLM raises when prefix_match_unit is neither None nor the block size times the decode context
+    parallel size, and prefix caching is on or a KV connector is set (v1/core/kv_cache_utils.py:840-858). The record
+    shows every part of that rule: the decode context parallel size is 1, every accepted record has no
+    kv_transfer_config, and the scheduler block size is that block size (:858).
     """
     cache, settings = record["cache"], record["resolved_config"]["cache_config"]
     groups, hash_block = cache["groups"], cache["hash_block_size"]
-    if (
-        len(groups) == 1
-        or not settings.get("enable_prefix_caching")
-        or any(
-            group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
+    if len(groups) == 1:
+        return not settings.get("enable_prefix_caching") or settings.get("prefix_match_unit") in (
+            None,
+            cache["block_size"],
         )
+    if not settings.get("enable_prefix_caching") or any(
+        group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
     ):
         return True
     partial = any(group["spec_type"] == _MAMBA_SPEC and group["block_size_tokens"] > hash_block for group in groups)

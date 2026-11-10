@@ -2407,6 +2407,36 @@ def test_v033_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layo
 
 
 @pytest.mark.parametrize(
+    "unit,prefix_caching,diagnostic",
+    [
+        # With one cache group and prefix caching on, vLLM refuses to start unless the unit is None or the block size
+        # (kv_cache_utils.py:840-858). The kernel_view layout has one group of 64-token blocks.
+        (32, True, _BLOCK_SIZES),
+        (None, True, None),
+        (64, True, None),
+        # Without prefix caching and without a KV connector, vLLM ignores the unit and starts.
+        (32, False, None),
+    ],
+    ids=["other_unit", "no_unit", "block_size_unit", "other_unit_without_prefix_caching"],
+)
+def test_v033_single_group_prefix_match_unit_follows_vllm(tmp_path, unit, prefix_caching, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout="kernel_view", decode_prefix_caching=prefix_caching)
+    # The decode phase of the fixture runs prefix caching only when asked, so it carries the unit.
+    _mutate(
+        path,
+        lambda record: record["resolved_config"]["cache_config"].update(prefix_match_unit=unit)
+        if record["phase"] == "decode"
+        else None,
+    )
+    result = validate_observations(path, launches)["tp2"]
+    if diagnostic is None:
+        assert result["status"] == "complete", result["diagnostics"]
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+@pytest.mark.parametrize(
     "layout,unit,diagnostic",
     [
         # 48 tokens divide none of the 64-token blocks of the groups in prefix caching (kv_cache_utils.py:892-898).
