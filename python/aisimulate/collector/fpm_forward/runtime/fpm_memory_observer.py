@@ -389,7 +389,9 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
             attention_groups=groups,
             graph_config=compilation_config(worker.vllm_config),
             resolved_config=execution_config(
-                worker.vllm_config, hybrid_evidence=payload["backend_version"] == HYBRID_EVIDENCE_VERSION
+                worker.vllm_config,
+                hybrid_evidence=payload["backend_version"] == HYBRID_EVIDENCE_VERSION
+                and _hybrid_cache_config(worker.model_runner.kv_cache_config),
             ),
             status="observed",
         )
@@ -403,6 +405,18 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         _write_execution_file(path, payload)
     except FileExistsError:
         raise RuntimeError(f"refusing duplicate runtime execution observation: {path}") from None
+
+
+def _hybrid_cache_config(cache_config: Any) -> bool:
+    """Tell whether an initialized KVCacheConfig holds a group that the plain cache reader refuses.
+
+    Both vLLM 0.33.0 runners keep the initialized KVCacheConfig in kv_cache_config
+    (vllm/v1/worker/gpu_model_runner.py:7007, vllm/v1/worker/gpu/model_runner.py:632).
+    A plain attention model has FullAttentionSpec or SlidingWindowSpec groups. A hybrid
+    model has others, for example the UniformTypeKVCacheSpecs groups of the packed path
+    (vllm/v1/core/kv_cache_planning.py:1159, :1026, :1037-1039).
+    """
+    return any(_class_name(group.kv_cache_spec) not in _LEGACY_SPECS for group in cache_config.kv_cache_groups)
 
 
 def _cached_config_commit(model_config: Any) -> str | None:

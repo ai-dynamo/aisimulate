@@ -674,10 +674,12 @@ def _json_bytes(value):
     return json.dumps(value, sort_keys=True, indent=2).encode()
 
 
-def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
-    # Expected values are what the observer wrote before hybrid cache support, for the same objects.
-    worker, scheduler, cache = _with_engine_core_values(*_initialized())
-    resolved = {
+def _main_execution_config():
+    """The execution record that main writes for the configuration of _initialized and _with_engine_core_values.
+
+    It holds no hybrid cache field, the same for vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0.
+    """
+    return {
         "model_config": {
             "model": "example/model",
             "revision": "immutable",
@@ -712,6 +714,14 @@ def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present(
             "type": "vllm.model_executor.layers.quantization.modelopt.ModelOptNvFp4Config",
             "quant_method": "NVFP4",
         },
+    }
+
+
+def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
+    # Expected values are what the observer wrote before hybrid cache support, for the same objects.
+    worker, scheduler, cache = _with_engine_core_values(*_initialized())
+    resolved = {
+        **_main_execution_config(),
         "offload_config": {
             "offload_backend": "auto",
             "uva": {"cpu_offload_gb": 0},
@@ -720,8 +730,7 @@ def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present(
     }
     for config in (worker.vllm_config, scheduler.vllm_config):
         assert _json_bytes(observer.resolved_config(config)) == _json_bytes(resolved)
-    execution = {key: value for key, value in resolved.items() if key != "offload_config"}
-    assert _json_bytes(observer.execution_config(worker.vllm_config)) == _json_bytes(execution)
+    assert _json_bytes(observer.execution_config(worker.vllm_config)) == _json_bytes(_main_execution_config())
     groups = [
         {
             "layer_names": names,
@@ -1543,7 +1552,9 @@ def test_execution_observation_records_new_versions(tmp_path, monkeypatch, versi
     worker = module.FpmExecutionWorker()
     worker.vllm_config = _vllm_config(tp=1, dp=1)
     worker.vllm_config.parallel_config.data_parallel_rank = 0
-    worker.model_runner = SimpleNamespace(attn_groups=[])
+    worker.model_runner = SimpleNamespace(
+        attn_groups=[], kv_cache_config=SimpleNamespace(kv_cache_groups=[_full_attention_group()])
+    )
     assert worker.compile_or_warm_up_model() == "compiled"
     result = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
     assert result["status"] == "observed", result.get("error")
@@ -1633,6 +1644,85 @@ def _pending_plan(version="0.27.0"):
     return _plan(profile, collector_config={"runtime_backend_version": version})
 
 
+def _full_attention_group():
+    # A plain attention model: every layer has one spec, so vLLM 0.33.0 makes one group of that spec
+    # (v1/core/kv_cache_planning.py:1138-1142).
+    full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
+    return _group(["layer.0", "layer.1"], full)
+
+
+def _uniform_group(specs):
+    # The packed path of vLLM 0.33.0 makes every group a UniformTypeKVCacheSpecs (v1/core/kv_cache_planning.py:1159,
+    # :1026, :1037-1039). The group takes the block and page of its inner specs.
+    first = next(iter(specs.values()))
+    uniform = _spec(
+        "UniformTypeKVCacheSpecs",
+        kv_cache_specs=specs,
+        block_size=first.block_size,
+        page_size_bytes=first.page_size_bytes,
+    )
+    return _group(list(specs), uniform)
+
+
+def _uniform_mla_group():
+    # The GLM-5.3-Flash sparse attention layers: MLA latent specs (models/glm5next/common/attention.py:112-179).
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=PAGE, sliding_window=None, dtype="torch.uint8")
+    return _uniform_group({"mla.0": latent, "mla.1": latent})
+
+
+def _mamba_group():
+    # The GLM-5.3-Flash KDA state layers (models/glm5next/common/kda.py:168-176).
+    return _uniform_group({"kda.0": _mamba(), "kda.1": _mamba()})
+
+
+def _observe_execution(tmp_path, monkeypatch, *, version, groups):
+    """Write the execution record of one worker whose initialized cache holds ``groups``; return the record.
+
+    The configuration is the one of _initialized and _with_engine_core_values. vLLM 0.33.0 sets Mamba align mode only
+    for a model with Mamba layers when prefix caching is on (model_executor/models/config.py:763-787), so the cache
+    configuration holds align mode only when ``groups`` holds a Mamba spec.
+    """
+    worker = _with_engine_core_values(*_initialized())[0]
+    mamba = any(
+        type(inner).__name__ == "MambaSpec"
+        for group in groups
+        for inner in getattr(group.kv_cache_spec, "kv_cache_specs", {}).values()
+    )
+    if mamba:
+        vars(worker.vllm_config.cache_config).update(mamba_cache_mode="align", mamba_block_size=2176)
+    attention = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=list(groups[0].layer_names),
+        kv_cache_group_id=0,
+    )
+    worker.model_runner = SimpleNamespace(
+        attn_groups=[[attention]], kv_cache_config=SimpleNamespace(kv_cache_groups=groups)
+    )
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
+    for name in ("FPM_EXECUTION_OUTPUT_DIR", "FPM_EXECUTION_PROVENANCE_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / "collector-provenance.json").write_text("{}")
+    path = tmp_path / "fpm-execution-worker-dp0-tp0-pp0.json"
+    path.unlink(missing_ok=True)
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    record = json.loads(path.read_text())
+    assert record["status"] == "observed", record.get("error")
+    return record
+
+
+def test_execution_record_adds_the_hybrid_cache_fields_only_for_a_hybrid_cache_configuration(tmp_path, monkeypatch):
+    hybrid = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_uniform_mla_group(), _mamba_group()])
+    plain = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_full_attention_group()])
+    assert hybrid["resolved_config"]["cache_config"]["mamba_cache_mode"] == "align"
+    assert "mamba_cache_mode" not in plain["resolved_config"]["cache_config"]
+
+
+def test_execution_record_of_a_plain_model_on_vllm_0330_keeps_the_bytes_of_main(tmp_path, monkeypatch):
+    record = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_full_attention_group()])
+    assert _json_bytes(record["resolved_config"]) == _json_bytes(_main_execution_config())
+
+
 @pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.33.0", "0.30.0"])
 def test_execution_observation_supports_vllm_0_33_0(tmp_path, monkeypatch, version):
     output = tmp_path / "observations"
@@ -1649,7 +1739,11 @@ def test_execution_observation_supports_vllm_0_33_0(tmp_path, monkeypatch, versi
         layer_names=["layer.0"],
         kv_cache_group_id=0,
     )
-    worker = SimpleNamespace(vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]]))
+    # A hybrid cache configuration of vLLM 0.33.0, which the other versions never build: only its groups decide.
+    cache = SimpleNamespace(kv_cache_groups=[_uniform_mla_group(), _mamba_group()])
+    worker = SimpleNamespace(
+        vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]], kv_cache_config=cache)
+    )
     observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
     record = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
     if version == "0.30.0":

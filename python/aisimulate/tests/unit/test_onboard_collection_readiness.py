@@ -626,7 +626,13 @@ def _glm_smoke(tmp_path, monkeypatch):
         write_glm_rank,
     )
     from .collector.test_fpm_runner import _write_provenance
-    from .collector.test_fpm_runtime_memory import _probe_backed_glm_plan, _typed, _vllm_config
+    from .collector.test_fpm_runtime_memory import (
+        _mamba_group,
+        _probe_backed_glm_plan,
+        _typed,
+        _uniform_mla_group,
+        _vllm_config,
+    )
 
     plan, overrides = _probe_backed_glm_plan(tmp_path)
     revision = plan.runtime_launch["identity"]["model_revision"]
@@ -663,7 +669,11 @@ def _glm_smoke(tmp_path, monkeypatch):
         layer_names=["model.layers.3.self_attn.attn"],
         kv_cache_group_id=0,
     )
-    worker = SimpleNamespace(vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]]))
+    # The packed GLM-5.3-Flash groups: sparse attention and KDA state, each a UniformTypeKVCacheSpecs group.
+    cache = SimpleNamespace(kv_cache_groups=[_uniform_mla_group(), _mamba_group()])
+    worker = SimpleNamespace(
+        vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]], kv_cache_config=cache)
+    )
     points = {"prefill": [PREFILL_COLD, PREFILL_CACHED], "decode": DECODE_POINTS}
     checkpoint = {"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}
     for cell in plan.cells:
