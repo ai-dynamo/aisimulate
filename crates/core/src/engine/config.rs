@@ -267,10 +267,11 @@ pub struct SglangConfig {
     /// Extra request rows for in-transfer PD decode requests. Unset uses
     /// twice the requested batch size for explicit limits at or below 32.
     pub disaggregation_decode_extra_slots: Option<usize>,
-    /// DeepSeek-V4 sliding-window prefix reuse: how many cached sequence tails keep their SWA
-    /// window (SGLang `swa_prefix_tails`). A prefix hit then ends where a whole window is still
-    /// cached: a finished sequence's tail, or a fork point an earlier request recomputed. Unset
-    /// reuses cached KV up to any page, as for full attention.
+    /// DeepSeek-V4 sliding-window prefix reuse: how many cached sequence tails the SWA pool has
+    /// room for (SGLang `swa_prefix_tails`, one window and one page of SWA KV each). A prefix
+    /// hit then ends on a page whose SWA KV is still cached: before a prefill chunk end, a
+    /// prompt end, or a fork point an earlier request recomputed. Unset reuses cached KV up to
+    /// any page, as for full attention.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub swa_prefix_tails: Option<usize>,
 }

@@ -1244,12 +1244,13 @@ fn destination_rejects_prompt_at_or_above_max_model_len(#[values(8, 9)] prompt_l
 }
 
 #[test]
-fn dsv4_swa_reuse_ends_at_a_cached_window_and_learns_the_fork() {
-    // DeepSeek-V4 on SGLang keeps a cached sequence's SWA window only at its tail. A request
-    // forking inside that sequence recomputes from scratch; the recompute leaves a window at
-    // the fork point, so the next request forking there reuses it.
+fn dsv4_swa_reuse_ends_on_a_cached_swa_page_and_learns_the_fork() {
+    // DeepSeek-V4 on SGLang keeps a cached sequence's SWA KV only on the 256-token pages
+    // before each insert end: two pages at a page-aligned end, one otherwise. A request forking
+    // elsewhere recomputes from the last such page; its recompute inserts at the fork point,
+    // so the next request forking there reuses it.
     let reused = |swa_prefix_tails| {
-        let mut args = test_args(64, 4, 64);
+        let mut args = test_args(64, 64, 4096);
         args.sglang.as_mut().unwrap().swa_prefix_tails = swa_prefix_tails;
         let mut core = SglangCore::new(args);
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1264,16 +1265,18 @@ fn dsv4_swa_reuse_ends_at_a_cached_window_and_learns_the_fork() {
             pass.admissions[0].reused_input_tokens
         };
         [
-            fork(0..0, 16),
-            fork(100..104, 16),
-            fork(200..208, 8),
-            fork(300..308, 8),
+            fork(0..0, 1024),
+            fork(10_000..10_064, 1024),
+            fork(20_000..20_064, 768),
+            fork(30_000..30_128, 448),
+            fork(40_000..40_064, 448),
+            fork(50_000..50_064, 192),
         ]
     };
-    assert_eq!(reused(Some(8)), [0, 16, 0, 8]);
+    assert_eq!(reused(Some(8)), [0, 1024, 768, 0, 256, 0]);
     assert_eq!(
         reused(None),
-        [0, 16, 8, 8],
+        [0, 1024, 768, 448, 448, 192],
         "full attention reuses any cached page"
     );
 }
@@ -1281,20 +1284,20 @@ fn dsv4_swa_reuse_ends_at_a_cached_window_and_learns_the_fork() {
 #[test]
 fn dsv4_swa_continuation_after_generated_output_reuses_the_prompt() {
     // Replay's generated tokens are not the next prompt's, so the next turn diverges where
-    // the previous output began; the window replay keeps at the prompt end lets it reuse
-    // the prompt, as SGLang reuses it through the real output.
-    let mut args = test_args(64, 4, 64);
+    // the previous output began; the SWA page replay keeps before the prompt end lets it
+    // reuse the prompt up to that page, as SGLang reuses it through the real output.
+    let mut args = test_args(64, 64, 4096);
     args.sglang.as_mut().unwrap().swa_prefix_tails = Some(8);
     let mut core = SglangCore::new(args);
     let mut collector = crate::engine::trace::TraceCollector::default();
-    core.receive(direct_request((0..16).collect(), 6));
+    core.receive(direct_request((0..600).collect(), 6));
     let mut now = 0.0;
     while !core.is_empty() {
         now = core.execute_pass(&mut collector, now).end_ms;
     }
-    core.receive(direct_request((0..16).chain(500..508).collect(), 0));
+    core.receive(direct_request((0..600).chain(5000..5128).collect(), 0));
     let pass = core.execute_pass(&mut collector, now);
-    assert_eq!(pass.admissions[0].reused_input_tokens, 16);
+    assert_eq!(pass.admissions[0].reused_input_tokens, 512);
 }
 
 #[test]

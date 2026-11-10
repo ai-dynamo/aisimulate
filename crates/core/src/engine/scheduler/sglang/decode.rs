@@ -248,8 +248,9 @@ fn cache_prefix_through_ready(
         );
     }
 
-    let sequence = &req.sequence_tokens[..aligned_tokens];
-    kv_manager.extend_cached_prefix(sequence, &mut req.kv_lease);
+    // The unaligned forward end tells the backend which SWA pages the insert leaves cached.
+    let forward_end = tokens.min(req.materialized_tokens);
+    kv_manager.extend_cached_prefix(&req.sequence_tokens[..forward_end], &mut req.kv_lease);
     if backup_ready {
         kv_manager.backup_cached_prefix(&mut req.kv_lease, aligned_tokens);
     }

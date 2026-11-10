@@ -42,6 +42,7 @@ pub(super) struct HiCache {
     backups: FxHashMap<TransferId, NodeId>,
     loads: FxHashMap<TransferId, (NodeId, usize)>,
     write_policy: SglangHiCacheWritePolicy,
+    host_blocks: usize,
     pass_load_end_ms: f64,
 }
 
@@ -72,7 +73,21 @@ impl HiCache {
             backups: FxHashMap::default(),
             loads: FxHashMap::default(),
             write_policy: config.write_policy,
+            host_blocks: config.num_host_blocks,
             pass_load_end_ms: 0.0,
+        }
+    }
+
+    /// SWA pages that stay valid given `device_pages` of device SWA room. SGLang sizes the
+    /// host SWA pool as it does the host full-KV pool, `device_blocks` being the device one.
+    /// A write-through host copy duplicates a device page; other policies add to it.
+    pub(super) fn swa_pages(&self, device_pages: usize, device_blocks: usize) -> usize {
+        let host_pages = (device_pages as u128 * self.host_blocks as u128
+            / device_blocks.max(1) as u128) as usize;
+        if self.write_policy == SglangHiCacheWritePolicy::WriteThrough {
+            device_pages.max(host_pages)
+        } else {
+            device_pages.saturating_add(host_pages)
         }
     }
 
