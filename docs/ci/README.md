@@ -622,6 +622,12 @@ The repository's canonical name is `ai-dynamo/aisim`, the product name is AISim,
 
 Serialized schema identifiers and v1 field names, historical measurements and release distribution identities, immutable upstream source citations, Hugging Face dataset identifiers, and Artifactory repository names remain compatibility/provenance contracts. This source rename does not migrate those external assets. Retained accuracy snapshots may record either GitHub repository URL. Dedicated runner selectors change to `prod-aisim-default-amd64-v1` and `prod-aisim-default-arm64-v1` together with [Velonix #882](https://github.com/ai-dynamo/velonix/pull/882).
 
+### Approved hash namespace change
+
+The team approved renaming the Weka corpus, Weka semantics, lifecycle, and synthetic token-generation hash domain tags from `aisimulate` to `aisim`. The pinned expectations were independently recalculated before testing. This intentionally changes source and lifecycle fingerprints and the generated token stream; the token generator records version 2 so saved manifests distinguish the new stream. The canonical graph-content digest remains unchanged for the pinned Weka fixture because its lowered graph contents are unchanged.
+
+Historical artifacts and measurement records retain their original identities. Regenerate derived artifacts and token manifests with the matching implementation when comparing the new namespace; changing test expectations does not migrate existing saved identities. The `aisimulate` Python imports and CLI compatibility aliases remain available.
+
 ### Replacement GitHub teams
 
 Create replacement teams rather than renaming the original teams. The replacements have been created and verified against the old teams for direct membership, member/maintainer roles, parent hierarchy, visibility, notifications, and effective repository permissions. The replacement parent remains under `access-nvidian`; its corresponding child teams remain under the replacement parent. Existing teams remain intact.
