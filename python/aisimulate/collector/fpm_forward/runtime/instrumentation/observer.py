@@ -157,6 +157,14 @@ def _resolved(owner: Any) -> dict:
     return value
 
 
+def _worker_cache(owner: Any) -> dict:
+    cache = legacy.worker_memory(owner)
+    # This route reads shared_by with vLLM 0.27.0 meaning and has bundles for 0.27.0 and 0.28.0 only.
+    if any("layers" in item or "layer_stride" in item for item in cache.get("tensor_allocations", [])):
+        raise ValueError("layer-strided cache tensor records need an audited instrumentation adapter")
+    return cache
+
+
 def _raw_cache(config: Any, *, kimi_k31: bool = False) -> dict:
     fields = (
         "block_size",
@@ -443,7 +451,7 @@ def observe(
         capture("effective_offloader", lambda: payload.update(effective_offloader=legacy._offloader_type()))
         if hasattr(owner, "_fpm_initial_compilation_config"):
             payload["initial_compilation_config"] = owner._fpm_initial_compilation_config
-        memory_reader = kimi_k31.worker_memory if native_k31 else legacy.worker_memory
+        memory_reader = kimi_k31.worker_memory if native_k31 else _worker_cache
         capture("cache", lambda: payload.update(cache=memory_reader(owner)))
         if native_k31:
             capture("initialized_moe", lambda: payload.update(initialized_moe=kimi_k31.initialized_moe(owner)))

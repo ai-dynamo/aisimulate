@@ -20,7 +20,7 @@ from .config import with_kv_warmup_defaults
 from .cpu_affinity import inspect_cpu_affinity
 from .native_artifact import NativeCollection, _rank_artifacts
 from .planner import FPMCell, FPMCollectionPlan, _canonical_hash
-from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
+from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS, audited_release
 from .runtime_memory import _dtype, _validate_graph, _validate_precision, _validate_revision
 
 _GRAPH_FIELDS = {"mode", "cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"}
@@ -431,6 +431,7 @@ def inspect_execution_evidence(
     actual_pin = getattr(plan, "runtime_backend_version", None)
     if actual_pin is not None and collection.backend_version != actual_pin:
         failures.append("observed backend version differs from the frozen plan")
+    release = audited_release(collection.backend_version, EXECUTION_SUPPORTED_VERSIONS)
     workers = []
     ranks = set()
     snapshot_models = None
@@ -462,6 +463,12 @@ def inspect_execution_evidence(
         if payload.get("status") != "observed":
             missing.append(f"worker {rank}: {payload.get('error', 'execution observation unresolved')}")
             continue
+        if (
+            release is not None
+            and release != collection.backend_version
+            and payload.get("audited_backend_version") != release
+        ):
+            failures.append(f"runtime execution evidence was not checked against audited vLLM {release}: {path}")
         groups = payload.get("attention_groups")
         if (
             not isinstance(groups, list)
@@ -483,7 +490,7 @@ def inspect_execution_evidence(
             model = {}
         native_worker = None
         if getattr(plan, "runtime_instrumentation", None) is not None and (
-            collection.backend_version not in EXECUTION_SUPPORTED_VERSIONS
+            release is None
             or model.get("quantization") == "mxfp4"
             or (
                 flags is not None
@@ -524,7 +531,7 @@ def inspect_execution_evidence(
         for tp in range(cell.topology.tp)
         for pp in range(cell.topology.pp)
     }
-    if collection.backend_version not in EXECUTION_SUPPORTED_VERSIONS and audited_runtime_ranks != expected:
+    if release is None and audited_runtime_ranks != expected:
         missing.append(f"execution configuration inspection is unaudited for {collection.backend_version}")
     if ranks - expected:
         raise ValueError("runtime execution observations contain unexpected worker ranks")
