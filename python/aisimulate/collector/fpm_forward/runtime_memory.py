@@ -35,9 +35,9 @@ from .types import ParallelTopology
 _CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
 # The spec classes that the shared class table maps to FPM cache kinds, and the uniform wrapper of their inner specs.
 _SPEC_TYPES = frozenset({*(_SPEC_MODULE + name for name in SPEC_KINDS), _UNIFORM_SPEC})
-# vLLM 0.31.0 cache settings that follow the prefix-caching mode (models/config.py:640-675), the
+# vLLM 0.33.0 cache settings that follow the prefix-caching mode (models/config.py:763-787), the
 # user prefix-match unit, and the block size that the engine core resolves in its own process
-# (engine/core.py:341-350). Importers record the mode per phase instead of comparing them.
+# (engine/core.py:347-351). Importers record the mode per phase instead of comparing them.
 _PHASE_CACHE_SETTINGS = (
     "enable_prefix_caching",
     "mamba_cache_mode",
@@ -394,7 +394,7 @@ def validate_requested_graph(payload: dict[str, Any], config: dict[str, Any], ex
 def _validate_scheduler_config(worker: dict[str, Any], scheduler: dict[str, Any]) -> None:
     actual, scheduled = (copy.deepcopy(item["resolved_config"]) for item in (worker, scheduler))
     if _hybrid_evidence(worker.get("cache")):
-        # vLLM 0.31.0 sets block_size in the engine-core process only, and the prefix-caching
+        # vLLM 0.33.0 sets block_size in the engine-core process only (engine/core.py:347-351), and the prefix-caching
         # settings are compared as per-phase cache evidence instead.
         for config in (actual, scheduled):
             for name in _PHASE_CACHE_SETTINGS:
@@ -509,7 +509,7 @@ def _scheduler_copy(group: dict[str, Any]) -> dict[str, Any]:
     """The scheduler record that a worker cache group must have.
 
     The scheduler copy of a UniformTypeKVCacheSpecs group keeps only its first inner spec
-    (vLLM 0.31.0 kv_cache_utils.py:2434-2440). The record writer sorts keys, so the first spec
+    (vLLM 0.33.0 kv_cache_utils.py:1110-1116). The record writer sorts keys, so the first spec
     is the one of the first layer name. Every other group is the worker group
     without its kind and layer classes.
     """
@@ -535,7 +535,7 @@ def _scheduler_copy(group: dict[str, Any]) -> dict[str, Any]:
 def _spec_classes(group: dict[str, Any], names: list[str], hybrid: bool) -> list[str]:
     """The spec class of every layer of a group: the inner classes of a uniform group, else its own.
 
-    A vLLM 0.31.0 record keeps each layer's spec in ``layer_specs``; older records have none.
+    A vLLM 0.33.0 probe record keeps each layer's spec in ``layer_specs``; other records have none.
     """
     spec = group.get("spec_type")
     if spec not in _SPEC_TYPES:
@@ -607,8 +607,8 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             raise ValueError("full-attention cache cannot declare sliding retention")
         if kind == "convolution" and window != 4:
             raise ValueError("runtime memory cache kind is unsupported")
-        # The observer refuses a vLLM 0.31.0 group whose layers disagree on the window or on the state evidence
-        # (runtime/fpm_memory_observer.py:545, :563). Only a window spec class has a window, and only a MambaSpec
+        # The observer refuses a vLLM 0.33.0 group whose layers disagree on the window or on the state evidence
+        # (runtime/fpm_memory_observer.py:630, :648). Only a window spec class has a window, and only a MambaSpec
         # has Mamba state fields, so a group cannot mix such a class with another.
         if hybrid and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
             raise ValueError("cache group layers disagree on sliding window")

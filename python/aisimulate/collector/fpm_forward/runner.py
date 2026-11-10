@@ -1500,7 +1500,7 @@ def _cell_generator_overrides(
     if observe_memory and policy_flags & {"--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
         raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
     if observe_memory and "--mamba-cache-mode" in policy_flags:
-        # The prefix-caching setting selects the Mamba mode (vLLM 0.31.0 models/config.py:640-675).
+        # The prefix-caching setting selects the Mamba mode (vLLM 0.33.0 models/config.py:763-787).
         raise ValueError("backend policy cannot select the Mamba cache mode for runtime memory observation")
     if observe_memory and any(
         str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args

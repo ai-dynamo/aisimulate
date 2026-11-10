@@ -593,7 +593,7 @@ def test_state_group_keeps_its_kind_through_worker_memory():
 
 def test_block_outer_tensor_region_ends_at_its_last_page():
     worker, _scheduler, cache = _initialized(layers=True)
-    # Block-outer (kv_cache_interface.py:1422-1428): each 128-byte block holds the
+    # Block-outer (kv_cache_interface.py:1479-1485): each 128-byte block holds the
     # 64-byte pages of both layers, so the last page ends exactly at the buffer end.
     tensor = cache.kv_cache_tensors[1]
     tensor.layer_stride, tensor.block_stride, tensor.offset = 64, 128, 0

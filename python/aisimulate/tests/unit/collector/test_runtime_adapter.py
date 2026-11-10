@@ -181,7 +181,7 @@ def _v033_runtime(storage, layout, blocks):
     runner's 64-token kernel block of the group. Its tail is the vLLM 0.33.0
     CircularBufferSpec (kv_cache_interface.py:968). The specs keep the static_forward_context order:
     a GLM layer builds its indexer caches before its MLA layer
-    (glm5next/common/attention.py:546, :581). Returns the worker and scheduler
+    (glm5next/common/attention.py:519, :554). Returns the worker and scheduler
     cache configs, the forward-context layers, the attention groups and the kernel
     block sizes.
     """
@@ -217,8 +217,8 @@ def _v033_runtime(storage, layout, blocks):
         return value
 
     def uniform_spec(**fields):
-        # UniformTypeKVCacheSpecs (kv_cache_interface.py:1233-1333) overrides none of the three
-        # abstract KVCacheSpec properties at :181-191, which raise NotImplementedError.
+        # UniformTypeKVCacheSpecs (kv_cache_interface.py:1290-1390) overrides none of the three
+        # abstract KVCacheSpec properties at :246-256, which raise NotImplementedError.
         def abstract(_self):
             raise NotImplementedError
 
@@ -383,7 +383,7 @@ def _v033_runtime(storage, layout, blocks):
         return cache, scheduler_cache, layers, attn, [64]
     mla = list(range(3, 45, 4))
     kda = [index for index in range(45) if index % 4 != 3]
-    # Round robin into cdiv(34, 11) = 4 Mamba groups of 9, 9, 8 and 8 layers (kv_cache_utils.py:1276-1286).
+    # Round robin into cdiv(34, 11) = 4 Mamba groups of 9, 9, 8 and 8 layers (vLLM 0.31.0 kv_cache_utils.py:1276-1286).
     mamba_groups = [[f"layers.{index}.kda" for index in kda[start::4]] for start in range(4)]
     latent = spec(
         "MLAAttentionSpec",
@@ -437,7 +437,7 @@ def _v033_runtime(storage, layout, blocks):
     for position, index in enumerate(mla):
         offset = position * 8_912_896
         tensors.append(tensor(f"layers.{index}.mla", 1_114_112, offset))
-        # MLA and the indexer bind the view with H squeezed (mla_attention.py:733-735, deepseek_v2.py:652-655).
+        # MLA and the indexer bind the view with H squeezed (mla_attention.py:748-750, deepseek_v2.py:653-656).
         layers[f"layers.{index}.mla"] = layer(
             "vllm.model_executor.layers.attention.mla_attention",
             "MLAAttention",
@@ -465,7 +465,7 @@ def _v033_runtime(storage, layout, blocks):
             tensors.append(tensor(f"layers.{index}.{name}", 71_808, offset))
             layers[f"layers.{index}.{name}"] = layer("vllm.models.glm5next.common.attention", cls, view)
     gdn = backend("vllm.v1.attention.backends.gdn_attn", "GDNAttentionBackend", "GDN_ATTN")
-    # init_attn_backend makes the attention groups in G0 layer order (gpu/attn_utils.py:222-249).
+    # init_attn_backend makes the attention groups in G0 layer order (gpu/attn_utils.py:230-265).
     # create_metadata_builders gives each G0 backend the runner's 64-token kernel block, which differs from the
     # 2,176-token spec block (v1/worker/utils.py:292-299). The layer-outer manager views already hold 64-token rows,
     # so map_kv_cache_to_kernel_blocks binds them unchanged and the stride stays 0 (utils.py:402-403).
@@ -500,7 +500,7 @@ def _v033_runtime(storage, layout, blocks):
     cache = SimpleNamespace(
         num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=tensors, kv_cache_layout="LBHNC"
     )
-    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:2434-2440):
+    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:1110-1116):
     # the first indexer for G0 and the first tail for G1.
     scheduler_cache = SimpleNamespace(
         num_blocks=blocks,
@@ -608,9 +608,9 @@ def _fake_campaign(
             # The probe launches GLM-5.3-Flash with an fp8_e4m3 cache, which its uint8 specs store.
             config.cache_config.cache_dtype = "fp8_e4m3"
         # The engine core sets the startup capacity in its own process, before it
-        # builds the scheduler (engine/core.py:346-351); workers keep None. One request at
+        # builds the scheduler (engine/core.py:347-352); workers keep None. One request at
         # 4,096 tokens counts as 2 attention, 4 x 2 KDA and 1 tail blocks of GLM in align mode,
-        # or 4096 / block_size blocks of the one attention group (kv_cache_utils.py:1105-1116).
+        # or 4096 / block_size blocks of the one attention group (kv_cache_utils.py:1076-1087).
         concurrency = blocks / (11 if layout == "glm_tp4" else 4096 // block_size)
         scheduler_config = SimpleNamespace(**vars(config))
         scheduler_config.cache_config = SimpleNamespace(
@@ -1122,7 +1122,7 @@ def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit, snapshot_c
     Once ``text_config`` is set, Glm5NextConfig reads each key of the text config's instance dictionary,
     or of the text config class's own dictionary, from the text config. It writes the keys of that
     instance dictionary there. Both rules skip the keys of ``_UNMIRRORED_KEYS``, and ``_commit_hash``
-    is not one of them (transformers_utils/configs/glm5_next.py:385-420).
+    is not one of them (v0.31.0 transformers_utils/configs/glm5_next.py:385-420).
     The base-class constructor runs first, so the top-level config keeps the ``_commit_hash`` that
     transformers gives it (:350-366). huggingface_hub is not installed in the test environment, so a
     stand-in module answers the cache lookups. ``snapshot_commit`` places the cached config.json in the
@@ -1296,7 +1296,7 @@ def test_v033_glm_worker_record_is_complete(tmp_path, monkeypatch):
         assert worker["raw_cache_config"]["kv_cache_layout"] == "LBHNC"
         assert worker["raw_cache_config"]["tensor_allocations"][0]["layer_stride"] == 8_912_896
         # A uniform group spec inherits the KVCacheSpec tokens_per_state, which raises NotImplementedError
-        # (kv_cache_interface.py:185-187), so its raw record leaves that field out. The layer specs of its
+        # (kv_cache_interface.py:250-252), so its raw record leaves that field out. The layer specs of its
         # group keep the value of each layer, and the raw records of other spec classes keep the field.
         raw_groups = worker["raw_cache_config"]["groups"]
         assert [set(group) for group in raw_groups[:2]] == [

@@ -913,7 +913,7 @@ def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = Fal
             block_size=_json_value(getattr(scheduler, "block_size", None)),
             hash_block_size=_json_value(hash_block_size),
             mamba_cache_mode=_json_value(getattr(cache, "mamba_cache_mode", None)),
-            # The engine core sets the startup capacity before it builds the scheduler (engine/core.py:351).
+            # The engine core sets the startup capacity before it builds the scheduler (engine/core.py:352).
             kv_cache_size_tokens=_json_value(getattr(cache, "kv_cache_size_tokens", None)),
             kv_cache_max_concurrency=_json_value(getattr(cache, "kv_cache_max_concurrency", None)),
             # The importer compares these groups with the worker groups without their kind.
