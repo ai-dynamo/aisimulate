@@ -361,7 +361,8 @@ class KvCachePredictionConfig(StrictModel):
             if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
-            if self.capacity.type != "fixed":
+            # Inferred geometry may leave capacity to an FPM profile's recorded runtime memory.
+            if self.capacity.type != "fixed" and not infer_state:
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
                 raise ValueError("state_cache supports G1 only; host_offload is not supported")
@@ -1261,6 +1262,23 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         return self
 
 
+def fpm_profile_deployment(engine, worker: WorkerPredictionConfig, role: str):
+    """The FPM profile deployment that matches one worker role's identity."""
+    parallel = worker.parallelism
+    return engine.fpm_profile.select(
+        model=engine.model,
+        system=worker.hardware or engine.hardware,
+        backend=engine.backend,
+        backend_version=requested_backend_version(engine.backend_version, "vllm"),
+        worker_type=role,
+        tp_size=parallel.tensor,
+        pp_size=parallel.pipeline,
+        attention_dp_size=parallel.attention_data,
+        moe_tp_size=parallel.moe_tensor,
+        moe_ep_size=parallel.moe_expert,
+    )
+
+
 def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
     profile = engine.fpm_profile
     if profile is None:
@@ -1292,19 +1310,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         if worker.timing.type != "default":
             raise ValueError("engine.fpm_profile requires default timing for every worker")
         if isinstance(worker, WorkerPredictionConfig):
-            parallel = worker.parallelism
-            deployment = profile.select(
-                model=engine.model,
-                system=worker.hardware or engine.hardware,
-                backend=engine.backend,
-                backend_version=backend_version,
-                worker_type=role,
-                tp_size=parallel.tensor,
-                pp_size=parallel.pipeline,
-                attention_dp_size=parallel.attention_data,
-                moe_tp_size=parallel.moe_tensor,
-                moe_ep_size=parallel.moe_expert,
-            )
+            deployment = fpm_profile_deployment(engine, worker, role)
             deployment.resources.validate_envelope(
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,

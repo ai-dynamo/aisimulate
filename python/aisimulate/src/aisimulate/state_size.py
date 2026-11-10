@@ -5,11 +5,11 @@
 
 from typing import Any
 
-from .capacity import estimate_state_cache
-from .config.engine import EnginePredictionConfig, StateCacheConfig, WorkerPredictionConfig
+from .capacity import DEFAULT_GPU_MEMORY_UTILIZATION, estimate_state_cache
+from .config.engine import EnginePredictionConfig, StateCacheConfig, WorkerPredictionConfig, fpm_profile_deployment
 
 
-def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionConfig) -> dict[str, Any]:
+def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str) -> dict[str, Any]:
     cache = worker.kv_cache
     sizing = cache.state_cache
     if sizing is None:
@@ -53,11 +53,30 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
     size = StateCacheConfig(bytes_per_request=result["bytes_per_request"])
     blocks = size.state_blocks(block_size, bytes_per_token)
     block_bytes = block_size * bytes_per_token
-    capacity = cache.capacity.blocks
-    if capacity is None:
+    if cache.capacity.type != "fixed":
+        capacity = runtime_memory_blocks(engine, worker, role, block_bytes)
+    elif (capacity := cache.capacity.blocks) is None:
         capacity = cache.capacity.bytes // block_bytes
     if not 0 < capacity <= (1 << 64) - 1:
         raise ValueError("fixed KV capacity must fit at least one block within u64")
     if capacity < blocks + 1:
         raise ValueError("state_cache capacity must fit one token block and one request state")
     return {**result, "state_blocks": blocks, "allocated_bytes_per_request": blocks * block_bytes}
+
+
+def runtime_memory_blocks(
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str, block_bytes: int
+) -> int:
+    """Whole blocks of the cache pool the FPM profile recorded for this worker (``resources.runtime_memory``)."""
+    runtime = None
+    if engine.fpm_profile is not None:
+        runtime = fpm_profile_deployment(engine, worker, role).resources.runtime_memory
+    if runtime is None:
+        raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
+    # The pool was recorded at one memory fraction; any other fraction describes a different pool.
+    if (worker.kv_cache.capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
+        raise ValueError(
+            "kv_cache.capacity.memory_fraction must match the FPM profile's recorded "
+            f"runtime_memory.gpu_memory_utilization ({runtime.gpu_memory_utilization})"
+        )
+    return runtime.kv_cache_bytes // block_bytes

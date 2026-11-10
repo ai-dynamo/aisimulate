@@ -1763,9 +1763,11 @@ def _materialize_engine_role(
         # role mappings may use the same shorthand.
         rank = role_config
 
+    # A state pool is explicit unless the compiler derived it from an FPM profile's recorded runtime memory.
+    state_pool_is_explicit = rank.pop("num_gpu_blocks_is_explicit", True) is not False
     state_cache = _manual_state_cache(rank, deployment_backend, role)
     if state_cache is not None:
-        num_gpu_blocks_is_explicit = True
+        num_gpu_blocks_is_explicit = state_pool_is_explicit
         rank["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
 
     nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)

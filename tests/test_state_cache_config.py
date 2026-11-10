@@ -736,3 +736,43 @@ def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid
         assert metrics["total_output_tokens"] == 4
         assert metrics["committed_prefill_tokens"] == 48600 - 24192
         assert metrics["prefix_cache_reused_ratio"] == pytest.approx(24192 / 48600)
+
+
+def _runtime_memory_profile(kv_cache_bytes):
+    def deployment(system, kv_cache_bytes):
+        runtime = {"kv_cache_bytes": kv_cache_bytes, "gpu_memory_utilization": 0.9, "max_model_len": 2048}
+        resources = {"kv_bytes_per_token": 3585, "cache_layout": "linear", "max_num_tokens": 8192}
+        return {
+            "system": system, "backend": "vllm", "backend_version": "0.25.1", "tp": 8, "pp": 1, "dp": 1,
+            "moe_tp": 8, "moe_ep": 1, "cp": 1, "gemm_quant_mode": "fp8_block", "moe_quant_mode": "fp8_block",
+            "fmha_quant_mode": "fp8", "comm_quant_mode": "half", "kv_cache_dtype": "fp8", "worker_type": "aggregated",
+            "resources": {**resources, "max_batch_size": 256, "provenance": "test"}
+            | {"runtime_memory": {**runtime, "provenance": "test"}},
+        }  # fmt: skip
+
+    return {
+        "schema_version": 1, "model": FLASH, "model_revision": "1" * 40, "architecture": "DeepseekV4ForCausalLM",
+        "context_length": 2048, "num_experts": 256, "provenance": "test",
+        # The other system's pool must not be read for this worker.
+        "deployments": [deployment("h200_sxm", kv_cache_bytes), deployment("b200_sxm", 1 << 40)],
+    }  # fmt: skip
+
+
+def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_payload, forbid_estimators):
+    payload = auto_dsv4_payload
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["kv_cache"]["state_cache"] = {"indexer_cache_dtype": "mxfp4"}
+    worker["kv_cache"].pop("capacity")
+    worker["timing"] = {"type": "default"}
+    worker["parallelism"]["moe_tensor"] = 8
+    payload["engine"].update(backend_version="0.25.1", fpm_profile=_runtime_memory_profile(256 * 3585 * 50 + 7))
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    # The recorded bytes in whole blocks of the resolved geometry: a derived, not a user-fixed, capacity.
+    assert spec.backend_deployment.agg_engine_args["num_gpu_blocks"] == 50
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["num_gpu_blocks_is_explicit"] is False
+
+    worker["kv_cache"]["capacity"] = {"memory_fraction": 0.8}
+    with pytest.raises(ValueError, match="memory_fraction must match"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
