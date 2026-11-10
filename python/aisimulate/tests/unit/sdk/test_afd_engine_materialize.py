@@ -381,14 +381,14 @@ def test_context_length_below_isl_plus_osl_is_rejected_loudly():
     # context_length, so a window that cannot hold the declared workload would
     # silently chunk the prompt (and undersize the derived KV capacity).
     spec = _spec(_deployment(_metadata(context_length=512)))
-    with pytest.raises(InvalidRunnerError, match="cannot hold isl\\+osl"):
+    with pytest.raises(InvalidRunnerError, match="cannot hold.*isl\\+osl"):
         _materialize_afd_engine_role(spec.backend_deployment, spec, spec.backend_deployment.afd_roles[0])
 
 
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 @pytest.mark.parametrize("fits", [False, True])
 def test_fixed_context_window_uses_the_role_token_requirement(role, fits):
-    minimum = 1025 if role == "prefill" else 1152
+    minimum = 1031 if role == "prefill" else 1154
     window = minimum if fits else minimum - 1
     metadata = _metadata(context_length=window)
     deployment = _deployment(metadata) if role == "aggregated" else _plus_pd_deployment(metadata, phase=role)

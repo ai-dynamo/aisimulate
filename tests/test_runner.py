@@ -121,6 +121,33 @@ def test_public_namespace_exports_engine_runner_contract():
     assert aisimulate.EngineReplayRunnerFactory is EngineReplayRunnerFactory
 
 
+def test_ordinary_null_rank_uses_flat_role_fields_through_runner():
+    args = {**_engine_args(), "rank": None}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+    )
+    assert deployment.afd_roles == ()
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["block_size"] == 4
+    assert rank["num_gpu_blocks"] == 16
+    assert rank["timing_model"] == {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0}
+
+
+@pytest.mark.parametrize("rank", [[], 0, "afd"])
+def test_malformed_rank_is_rejected_by_runner(rank):
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args={"rank": rank},
+        num_workers=1,
+    )
+    with pytest.raises(ValueError, match="rank config must be a mapping"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_legacy_replay_config_preserves_execution_mode() -> None:
     config = ReplayCliConfig(
         trace_files=(),

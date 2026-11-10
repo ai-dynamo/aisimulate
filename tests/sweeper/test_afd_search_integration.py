@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.runner import EngineReplayRunnerFactory, _materialize_engine_execution_spec
+from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError, _materialize_engine_execution_spec
 from aisimulate.sweeper.afd_parallel import AFDInfeasible
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerCapabilities
@@ -691,7 +691,7 @@ def test_native_afd_backend_is_validated_before_model_loading():
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
-@pytest.mark.parametrize("context_length", [None, 144, 2048])
+@pytest.mark.parametrize("context_length", [None, 146, 2048])
 @pytest.mark.parametrize("legacy", [False, True])
 def test_native_afd_memory_reserves_each_phase_without_promoting_derived_context(mode, context_length, legacy):
     import json
@@ -725,6 +725,41 @@ def test_native_afd_memory_reserves_each_phase_without_promoting_derived_context
             seq_len = context_length or 144
             expected_gib = reserved_batch * seq_len * kv_bytes_per_token / (1 << 30)
             assert memory[phase]["attention"]["components_gib_per_gpu"]["kvcache"] == expected_gib
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+@pytest.mark.parametrize("output_tokens", [3, 8])
+@pytest.mark.parametrize("at_limit", [False, True])
+def test_native_afd_context_boundaries_preserve_requested_output(role, output_tokens, at_limit):
+    # With ISL=16, SGLang admission needs 23 positions; complete generation
+    # needs 18+OSL. A prefill-only role hands off after its first output token.
+    minimum = {"aggregated": max(23, 18 + output_tokens), "prefill": 23, "decode": 18 + output_tokens}[role]
+    window = minimum if at_limit else minimum - 1
+    raw = prediction("aggregated" if role == "aggregated" else "disaggregated", (role,))
+    raw["traffic"]["source"].update(input_tokens=16, output_tokens=output_tokens)
+    raw["traffic"]["load"]["concurrency"] = 1
+    raw["traffic"]["stop"]["requests"] = 1
+    if role == "aggregated":
+        raw["engine"]["context_length"] = window
+    else:
+        raw["engine"]["workers"][role]["context_length"] = window
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)
+    try:
+        if not at_limit:
+            with pytest.raises(InvalidRunnerError, match=f"AFD {role} context_length=.*cannot hold"):
+                runner.run(spec)
+            return
+        report = runner.run(
+            spec, output_requirements=ReplayOutputRequirements(capture_per_request=True, include_raw_report=True)
+        )
+    finally:
+        runner.close()
+    assert report.metrics["completed_requests"] == 1
+    assert report.metrics["total_output_tokens"] == output_tokens
+    record = report.metadata["native_report"]["per_request"][0]
+    assert record["terminal_status"] == "completed"
+    assert record["output_length"] == output_tokens
 
 
 @pytest.mark.parametrize("afd_roles", [("prefill",), ("prefill", "decode")])
@@ -1174,7 +1209,7 @@ def test_available_memory_diagnostics_preserve_native_fit_status(mode, roles):
 
 def test_prefill_pool_budget_accepts_the_reported_two_a_four_f_geometry():
     raw = prediction("aggregated", ("aggregated",))
-    raw["engine"]["context_length"] = 4224
+    raw["engine"]["context_length"] = 4226
     raw["engine"]["workers"]["aggregated"]["afd"].update(n_a_nodes=2, n_f_nodes=4, a_batch_size=64, num_microbatches=3)
     raw["traffic"]["source"].update(input_tokens=4096, output_tokens=128)
     raw["traffic"]["stop"]["requests"] = 1
@@ -1182,6 +1217,7 @@ def test_prefill_pool_budget_accepts_the_reported_two_a_four_f_geometry():
         EngineReplayRunnerFactory().create(0).run(prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)))
     )
     assert report.metrics["completed_requests"] == 1
+    assert report.metrics["total_output_tokens"] == 128
 
 
 @pytest.mark.parametrize("batched_tokens", [None, 1, 32768])

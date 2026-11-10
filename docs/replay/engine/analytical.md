@@ -81,7 +81,7 @@ The AFD block has these fields:
 |---|---|---|---|
 | `engine.workers.<role>.afd.n_a_nodes`, `n_f_nodes`, `tp_a` | Required | Node counts within the GPU budget; A TP defaults to 1 | Positive; `tp_a` must divide GPUs per node and each active attention head group. A replica is one TP group. |
 | `engine.workers.<role>.afd.a_system`, `f_system` | `engine.hardware` | fixed | Per-pool hardware. Node width and HBM capacity are resolved independently from each selected system. All pools share `engine.backend_version`. |
-| `engine.workers.<role>.afd.a_batch_size` | Required | User-supplied domain | Positive batch size per A replica; sets scheduler capacity and the frozen measurement batch. |
+| `engine.workers.<role>.afd.a_batch_size` | Required | User-supplied domain | Positive batch size per A replica; sets scheduler capacity and memory sizing. Timing uses each pass's actual batch. |
 | `engine.workers.<role>.afd.f_moe_ep_size` | F GPU count | Pure EP | Omitted values resolve to `n_f_nodes * f_gpus_per_node`. Explicit values are preserved and must give MoE TP1. Recommend accepts positive integers, `f_gpu_count`, or `n_f_nodes`. |
 | `engine.workers.<role>.afd.num_microbatches` | `3` | `{choices: [2, 3, 4]}` | Positive, at most `a_batch_size`. Circulating microbatches for routed layers; the dense prefix runs once at the full A-replica batch. Actual batches bound the effective depth by the busiest replica population and retain short tails without padding. |
 | `engine.workers.<role>.afd.pipeline_layout` | `four_stage` | fixed | `four_stage`: independent A, A→F, F, F→A stages. `two_stage`: continuous A + A→F and F + F→A groups on two resources. Both layouts execute return restoration on A after F→A, sharing A with attention. |
@@ -140,13 +140,15 @@ without measured performance tables, while measured modes retain their data
 availability checks. The same pool memory limits apply in every mode.
 
 For synthetic traffic without an explicit context window, preflight reserves
-`isl + osl` for both prefill and decode. The scheduler request limit is
-`isl + osl`. An explicit `context_length`, or the model window resolved for
+`isl + osl` for both prefill and decode. An explicit `context_length`, or the model window resolved for
 trace/agentic traffic, remains a full KV reservation. Aggregated AFD checks both
 phases. See [worker context limits](workers.md#context-limits) for inheritance.
-For fixed-length synthetic traffic, an explicit prefill-only AFD window must
-cover `isl + 1`, through the first output token handed to Decode. Aggregated
-and decode AFD windows must cover `isl + osl`.
+For fixed-length synthetic traffic, an explicit AFD window must include
+SGLang's reserved positions: at least `isl + 7` for prefill, `isl + osl + 2`
+for decode, and `max(isl + 7, isl + osl + 2)` for aggregated workers.
+Prefill hands off after its first output token and need not reserve the full
+decode output. Smaller windows are rejected before replay instead of allowing
+the scheduler to truncate the requested output.
 
 Transient prefill activations and staging buffers share one pool-wide new-token
 budget per scheduler pass. Known input lengths times the admitted sequence cap

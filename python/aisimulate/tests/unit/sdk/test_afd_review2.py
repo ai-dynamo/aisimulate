@@ -101,7 +101,7 @@ def test_mixed_afd_companion_preserves_main_async_backend_validation():
 
 
 def test_mixed_afd_companion_rejects_native_pipeline_parallelism_before_pool_loading(monkeypatch):
-    from aisimulate import runner
+    from aisimulate import compiler
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.config import CorePredictionConfig
 
@@ -111,10 +111,17 @@ def test_mixed_afd_companion_rejects_native_pipeline_parallelism_before_pool_loa
     def unreachable(*args, **kwargs):
         raise AssertionError("ordinary PP must reject before AFD pool preparation")
 
-    monkeypatch.setattr(runner, "_materialize_afd_engine_role", unreachable)
+    monkeypatch.setattr(compiler, "validate_afd_model", unreachable)
     with pytest.raises(ValueError, match="pipeline parallelism"):
-        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-        runner._materialize_engine_execution_spec(spec, trace_block_size=512, record_per_request=False)
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+
+
+@pytest.mark.parametrize("role", ["a", "f"])
+def test_afd_pool_rejects_whole_forward_fpm_before_model_construction(role):
+    from aisimulate_core.sdk.engine import compile_engine
+
+    with pytest.raises(ValueError, match="AFD pool compilation requires op_level"):
+        compile_engine("Qwen/Qwen3-30B-A3B", "h200_sxm", "sglang", "0.5.14", afd_pool_role=role, forward_model="fpm")
 
 
 def test_main_detokenization_control_rejects_role_based_afd():

@@ -514,6 +514,10 @@ def compile_engine(
     Older binary specs require recompilation; default representations are
     therefore not byte-identical.
     """
+    if afd_pool_role is not None and (forward_model == "fpm" or fpm_profile is not None):
+        raise InvalidEngineConfigurationError(
+            "AFD pool compilation requires op_level estimation without an fpm_profile"
+        )
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
     if encoder_parallel not in (None, "tp", "dp"):

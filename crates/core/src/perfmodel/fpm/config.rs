@@ -1533,6 +1533,56 @@ mod tests {
     }
 
     #[test]
+    fn afd_pool_identity_requires_op_level_sglang_without_pipeline_or_context_parallelism() {
+        for role in ["a", "f"] {
+            for mode in ["auto", "op_level"] {
+                // Missing CP/DCP identities retain their existing effective width of one.
+                config(serde_json::json!({
+                    "afd_pool_role": role, "backend": "sglang", "estimation_mode": mode
+                }))
+                .validate()
+                .unwrap();
+            }
+            for mode in ["fpm_interpolation", "fpm_regression", "fpm_learned"] {
+                let mut value = serde_json::json!({
+                    "afd_pool_role": role, "backend": "sglang", "estimation_mode": mode
+                });
+                if mode == "fpm_learned" {
+                    value["estimator_config"] = serde_json::json!({
+                        "fpm_learned": {"artifact_path": "seed.json", "adaptation": "frozen"}
+                    });
+                }
+                assert!(
+                    config(value)
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("AFD pool compilation requires op_level")
+                );
+            }
+            for invalid in [
+                serde_json::json!({"backend": "vllm"}),
+                serde_json::json!({"pp": 2}),
+                serde_json::json!({"cp_size": 2}),
+                serde_json::json!({"dcp": 2}),
+            ] {
+                let mut value = serde_json::json!({"afd_pool_role": role, "backend": "sglang"});
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(invalid.as_object().unwrap().clone());
+                assert!(
+                    config(value)
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("AFD pool compilation requires SGLang, PP1, CP1 and DCP1")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn config_resolution_preserves_spline_defaults_and_registration_contract() {
         use super::super::estimator::{SplineFitConfig, SplineSearchConfig};
 

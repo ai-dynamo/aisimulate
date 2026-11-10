@@ -521,6 +521,8 @@ def _roles_with_afd_deployment(engine, *, workload):
     roles = ("aggregated",) if engine.mode == "aggregated" else ("prefill", "decode")
     for role in roles:
         worker = getattr(engine.workers, role)
+        if not is_afd_worker(worker):
+            reject_pipeline_parallelism(role, worker.parallelism.pipeline)
         if not is_afd_worker(worker) and (_prefill_cp(worker.parallelism) != 1 or _decode_cp(worker.parallelism) != 1):
             raise ValueError(f"AFD companion ({role}) workers do not support context parallelism; set both to 1")
     validate_afd_model(engine.model)

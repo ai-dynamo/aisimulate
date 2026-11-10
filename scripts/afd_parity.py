@@ -214,6 +214,7 @@ def _write_build_snapshot(output: Path) -> dict:
 
     files = {name: _sha256(ROOT / name) for name in sorted(_source_inputs())}
     native_inventory = _verify_native_build(files)
+    workspace_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
     output.parent.mkdir(parents=True, exist_ok=True)
     archive = output.with_suffix(".source.tar.gz")
     # Stable tar/gzip headers make identical snapshots byte-identical.
@@ -231,7 +232,7 @@ def _write_build_snapshot(output: Path) -> dict:
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     manifest = {
         "source_kind": "workspace_snapshot",
-        "workspace_dirty": True,
+        "workspace_dirty": workspace_dirty,
         "source_commit": revision,
         "source_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True).strip(),
         "source_files": files,

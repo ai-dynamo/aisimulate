@@ -28,7 +28,6 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(_REPO_ROOT / "python/aisimulate/src"))
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
 GOLDEN_DIR = Path(__file__).resolve().parent / "goldens"

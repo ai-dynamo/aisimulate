@@ -1059,10 +1059,9 @@ fn zero_output_disagg_does_not_count_a_source_token(#[case] engine_type: EngineT
     assert_eq!(report.request_counts.total_output_tokens, 0);
 }
 
-/// Probe: the afd provider reaches an AFD-role rank through
+/// Probe: fixed external timing reaches ordinary SGLang ranks through
 /// `PerfModel::External`, injected per role via `ReplayEngineFactory`. Confirm
-/// the generic two-pool handoff semantics AFD roles inherit, with no
-/// AFD-specific hook:
+/// the generic two-pool handoff semantics:
 /// (a) token accounting — the source emits exactly one first-token signal
 ///     (TTFT/conformance marking, excluded from report totals) while the
 ///     destination produces all osl tokens after activation;
@@ -1123,7 +1122,7 @@ fn external_role_conformance(
 #[case::provider_on_decode(crate::replay::WorkerStage::Decode, false)]
 #[case::provider_on_prefill(crate::replay::WorkerStage::Prefill, false)]
 #[case::provider_on_decode_with_transfer_delay(crate::replay::WorkerStage::Decode, true)]
-fn external_timed_afd_role_preserves_handoff_semantics(
+fn external_timed_role_preserves_handoff_semantics(
     #[case] provider_on: crate::replay::WorkerStage,
     #[case] handoff_delay: bool,
 ) {

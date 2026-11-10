@@ -691,13 +691,15 @@ def _materialize_afd_engine_role(
             if metadata.get(name) is not None
         },
     }
-    # Prefill hands off after the first output token; only aggregated/decode
-    # roles need room for the full output. The declared window also sizes KV.
+    # SGLang reserves one request position and five admission positions, then
+    # rejects prompts at the input limit. Decode reserves two positions beyond
+    # prompt + output. Prefill hands off after its first output token, so only
+    # aggregated/decode roles need room for the full output. This also sizes KV.
     # Variable-length traffic uses runtime admission instead of this fixed bound.
     declared_window = int(context_length or 0)
-    required_window = isl + (1 if role == "prefill" else osl)
+    required_window = {"prefill": isl + 7, "decode": isl + osl + 2, "aggregated": max(isl + 7, isl + osl + 2)}[role]
     if declared_window and not variable_length_traffic and declared_window < required_window:
-        requirement = "isl+1" if role == "prefill" else "isl+osl"
+        requirement = {"prefill": "isl+7", "decode": "isl+osl+2", "aggregated": "max(isl+7, isl+osl+2)"}[role]
         raise InvalidRunnerError(
             f"AFD {role} context_length={declared_window} cannot hold {requirement}={required_window}. "
             f"Raise context_length to at least {required_window}, or use 'max'."

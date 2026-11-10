@@ -544,7 +544,10 @@ impl AfdFCollectiveOp {
         db: &PerfDatabase,
         elements: f64,
     ) -> Result<PerformanceResult, AicError> {
-        if elements == 0.0 || self.f_gpus_in_node() <= 1 {
+        if elements == 0.0
+            || self.f_gpus_in_node() <= 1
+            || self.rank_mapping != AfdRankMapping::OneToOne
+        {
             return Ok(empirical_zero());
         }
         let twin = NcclOp {
@@ -979,6 +982,24 @@ mod tests {
         op.rank_mapping = AfdRankMapping::OneToOne;
         op.f_rank_count = 1; // f_local = 1
         assert_empirical_zero(&op.query(&db, 56).unwrap());
+    }
+
+    #[test]
+    fn token_partitioned_collectives_are_zero_for_broadcast() {
+        let (_tmp, db) = fixture_db();
+        for mut op in [
+            AfdFCollectiveOp::all_gather("g", 1.0),
+            AfdFCollectiveOp::reduce_scatter("r", 1.0),
+        ] {
+            op.hidden_size = 5120;
+            op.a_replica_count = 4;
+            op.f_rank_count = 16;
+            assert!(op.query_token_partitioned(&db, 56, 1).unwrap().latency_ms > 0.0);
+            // Broadcast already gives each F rank the tokens; neither local
+            // collective performs additional work, regardless of token partitioning.
+            op.rank_mapping = AfdRankMapping::Broadcast;
+            assert_empirical_zero(&op.query_token_partitioned(&db, 56, 1).unwrap());
+        }
     }
 
     #[test]

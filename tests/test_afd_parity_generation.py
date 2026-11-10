@@ -4,7 +4,9 @@
 
 import importlib.util
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +15,34 @@ import pytest
 _spec = importlib.util.spec_from_file_location("afd_generation", Path(__file__).parents[1] / "scripts/afd_parity.py")
 parity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(parity)
+
+
+@pytest.mark.parametrize("module", ["test_afd_parity.py", "test_afd_execution_plan_parity.py"])
+def test_standalone_parity_import_keeps_the_installed_package_first(tmp_path, module):
+    # Model a non-editable wheel: its runtime lives beside its __init__.py,
+    # while the checkout is only the source of the parity tests and scripts.
+    package = tmp_path / "site-packages/aisimulate"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from . import _runtime\n")
+    (package / "_runtime.py").write_text("installed = True\n")
+    target = parity.ROOT / "crates/core/parity_tests/perfmodel" / module
+    code = (
+        "import runpy, sys\n"
+        "from pathlib import Path\n"
+        "target, installed = map(Path, sys.argv[1:])\n"
+        "sys.path.insert(0, str(target.parent))\n"
+        "runpy.run_path(str(target))\n"
+        "import aisimulate\n"
+        "assert Path(aisimulate.__file__).parent == installed\n"
+        "assert aisimulate._runtime.installed\n"
+    )
+    subprocess.run(
+        [sys.executable, "-c", code, str(target), str(package)],
+        env={**os.environ, "PYTHONPATH": str(package.parent)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 @pytest.mark.parametrize("stale", ["source", "binary"])
@@ -192,6 +222,7 @@ def built_workspace(tmp_path, monkeypatch):
 
     root = tmp_path.resolve()
     contents = {
+        ".gitignore": "runtime.so\n",
         "Cargo.toml": "workspace manifest",
         "Cargo.lock": "resolved dependencies",
         "crates/core/Cargo.toml": "crate manifest",
@@ -220,13 +251,20 @@ def built_workspace(tmp_path, monkeypatch):
     return root, runtime
 
 
-@pytest.mark.parametrize("change", ["none", "python"])
+@pytest.mark.parametrize("change", ["none", "python", "staged", "untracked"])
 def test_snapshot_accepts_matching_build_and_current_python(built_workspace, change):
     root, _ = built_workspace
-    if change == "python":
+    if change in {"python", "staged"}:
         (root / "python/aisimulate/src/aisimulate/current.py").write_text("value = 2")
+        if change == "staged":
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    elif change == "untracked":
+        (root / "python/aisimulate/src/aisimulate/new.py").write_text("value = 3")
     output = root / "evidence/manifest.json"
     manifest = parity._write_build_snapshot(output)
+    assert manifest["workspace_dirty"] is (change != "none")
+    # The new untracked evidence must not change the recorded pre-snapshot state.
+    assert "?? evidence/" in subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True)
     verified = parity._verified_build(output)
     assert verified["native_source_inventory_sha256"] == manifest["native_source_inventory_sha256"]
     parity._verify_snapshot(manifest, output)

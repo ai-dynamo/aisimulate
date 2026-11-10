@@ -219,15 +219,19 @@ class BackendDeploymentSpec:
 
     @property
     def afd_roles(self) -> tuple[str, ...]:
-        return tuple(
-            role
-            for role, args in (
-                ("aggregated", self.agg_engine_args),
-                ("prefill", self.prefill_engine_args),
-                ("decode", self.decode_engine_args),
-            )
-            if isinstance(args, Mapping) and "afd" in args.get("rank", args)
-        )
+        roles = []
+        for role, args in (
+            ("aggregated", self.agg_engine_args),
+            ("prefill", self.prefill_engine_args),
+            ("decode", self.decode_engine_args),
+        ):
+            if isinstance(args, Mapping):
+                rank = args.get("rank")
+                if rank is None:
+                    rank = args
+                if isinstance(rank, Mapping) and "afd" in rank:
+                    roles.append(role)
+        return tuple(roles)
 
     @property
     def has_afd(self) -> bool:

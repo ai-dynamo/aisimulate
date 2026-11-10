@@ -2341,7 +2341,7 @@ impl PyForwardPassPerfModel {
         };
         let config = crate::ForwardPassPerfModelConfig {
             afd_routing_location: None,
-            afd_pool_role: None,
+            afd_pool_role: request.afd_pool_role,
             model: request.model_path,
             system: request.system,
             backend: legacy.backend,

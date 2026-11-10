@@ -139,7 +139,7 @@ _REMOVED_AFD_TASK_KEYS = frozenset(
     }
 )
 _AFD_MIGRATION_HINT = (
-    "Use `aisimulate recommend` with an `workers.<role>.afd` block, then `aisimulate predict`. "
+    "Use `aisimulate recommend` with a `workers.<role>.afd` block, then `aisimulate predict`. "
     "See docs/aic-backward-compatibility/migration.md#afd-translation."
 )
 _warned_removed_afd_keys = False
