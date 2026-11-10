@@ -23,7 +23,7 @@ use super::vllm_backend::{
     DestinationReservation as VllmDestinationReservation,
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
-pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
+pub(crate) use super::vllm_backend::{NativeAllocation, SourceReleaseOrder, SourceReuseDependency};
 use super::{AllocationRequirement, DestinationReservationMode, G1Acquire, GroupedKvPool};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
@@ -90,8 +90,8 @@ impl G1Manager {
 
     /// Hold each G1 block a host store reads until its copy completes, instead
     /// of letting a new owner write it behind a fence.
-    pub(crate) fn hold_native_store_sources(&mut self) {
-        self.inner.hold_store_sources();
+    pub(crate) fn hold_native_store_sources(&mut self, order: SourceReleaseOrder) {
+        self.inner.hold_store_sources(order);
     }
 
     pub(crate) fn new_with_event_sink(

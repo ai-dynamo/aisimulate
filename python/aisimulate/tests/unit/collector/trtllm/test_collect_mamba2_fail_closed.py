@@ -8,7 +8,7 @@ Until 2026-10-12 every benchmark_with_power call in collector/trtllm/collect_mam
 passed allow_graph_fail=True, each (batch, seq) cell sat in a bare
 `except Exception: continue`, and neither SSM kernel received the caller-owned
 `out` buffer TRT-LLM requires (ssd_chunk_scan.py:667, selective_state_update.py
-`out.dim()` @1.3.0rc20/rc29). The shipped rc20 mamba2 tables of all eight
+`out.dim`/rc29). The shipped rc20 mamba2 tables of all eight
 systems and the rc29 b200 package contain only the causal_conv1d lanes: the
 mamba_chunk_scan_combined / selective_state_update lanes vanished with zero
 failure records. Capture failures now raise, every failed cell is counted, the
@@ -287,8 +287,8 @@ def test_generation_runner_builds_dt_only_through_the_serving_layout_helper():
 
 def test_decode_dt_is_an_fp32_per_head_tensor_broadcast_over_head_dim():
     # FlashInfer's binding requires dt.stride(1) == 1 and dt.stride(2) == 0
-    # (csrc/selective_state_update.cu:187-188 @v0.6.18); serving gets there with
-    # fp32 (batch, nheads) + einops.repeat "b h -> b h p" (mamba2_mixer.py:764 @rc29).
+    # (csrc/selective_state_update.cu:187-188); serving gets there with
+    # fp32 (batch, nheads) + einops.repeat "b h -> b h p" (mamba2_mixer.py:764).
     seen = {}
 
     def randn(*shape, dtype=None, device=None):

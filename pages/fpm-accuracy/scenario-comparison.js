@@ -123,7 +123,7 @@
       : "Precomputed results at 10% steps. B distributes training within each workload; B+C uses a chronological prefix. A, C, and A+C stay unchanged."
     get("scenario-code").textContent = scenarios[scenario].code
     get("scenario-description").textContent = partition(scenario)
-    const protocolLabel = "fpm-scenarios-v13 · Strict C · One observation per five-second tick, including warmup"
+    const protocolLabel = (data?.protocol_id || "fpm-scenarios-v14") + " · Strict C · One observation per five-second tick, including warmup"
     get("protocol-label").textContent = data ? protocolLabel : "No scenario artifact loaded"
     get("protocol-version-note").textContent = data ? protocolLabel : "Strict C protocol · Waiting for a qualified evaluation artifact."
     get("gbdt-note").textContent = "GBDT uses the AISim public performance-model API. A and B freeze the offline fit. C, A+C, and B+C enable structural tree adaptation from admitted feedback; C starts with no offline data. The evidence panel records the fitted recipe and native diagnostics."
@@ -303,6 +303,22 @@
       values.push(["Input artifact ID", typeof artifact === "string" ? artifact : artifact.id || artifact.artifact_id || "Unavailable"])
       if (object(artifact)) values.push(["Input artifact path", artifact.path || "Unavailable"], ["Input artifact SHA-256", artifact.sha256 || "Unavailable"])
     } else values.push(["Self-benchmark artifact", ["a", "ac"].includes(evidence.scenario) ? "Unavailable" : "Not used by this scenario"])
+    const normalization = result?.seed_target_normalization
+    if (normalization) {
+      get("evidence-count-note").textContent += " Seed targets describe existing profile rows, not additional measured observations."
+      values.push(
+        ["Seed normalization policy", normalization.policies.join(", ")],
+        ["Seed replacement enabled", normalization.replacement_enabled ? "Yes" : "No"],
+        ["Marked source rows", number(normalization.marked_source_rows)],
+        ["Replaced source rows", number(normalization.replaced_source_rows)],
+        ["Retained source rows", number(normalization.kept_source_rows)],
+        ["Replicated seed rows", number(normalization.replicated_seed_rows)],
+        ["Seed source Parquet SHA-256", normalization.source_parquet_sha256.join(", ")],
+        ["Seed source metadata SHA-256", normalization.source_metadata_sha256.join(", ")],
+        ["Effective seed targets SHA-256", normalization.effective_targets_sha256],
+        ["Seed target scope", normalization.target_scope],
+      )
+    }
     if (result?.training_population_sha256) values.push([blockedChronology ? "Nominal training selection SHA-256" : "Training selection SHA-256", result.training_population_sha256])
     if (result?.scoring_population_sha256) values.push([blockedChronology ? "Nominal test selection SHA-256" : "Test selection SHA-256", result.scoring_population_sha256])
     get("evidence-values").innerHTML = values.map(([label, value]) => `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join("")
@@ -348,10 +364,35 @@
   }
 
 
+  function validateSeedNormalization(value, scenarioId, method, version) {
+    if (!("seed_target_normalization" in value)) return
+    const require = (condition, message) => { if (!condition) throw new Error("Invalid seed normalization: " + message) }
+    require(version === 14 && ["a", "ac"].includes(scenarioId) && !["warmup", "nowarmup"].includes(method)
+      && !unsupportedCombination(method, scenarioId) && value.status !== "not_applicable", "unexpected seed normalization")
+    const details = value.seed_target_normalization
+    const fields = ["policies", "source_parquet_sha256", "source_metadata_sha256", "marked_source_rows", "replaced_source_rows", "kept_source_rows", "replicated_seed_rows", "replacement_enabled", "effective_targets_sha256", "target_scope"]
+    require(object(details) && Object.keys(details).length === fields.length && fields.every(field => Object.hasOwn(details, field)), "unexpected or missing public fields")
+    require(Array.isArray(details.policies) && details.policies.length === 1 && details.policies[0] === "same_cell_batch_real_kv_extrapolation_v1", "invalid seed normalization policy")
+    require(object(value.artifact), "seed normalization requires an original artifact")
+    const sha = value => typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+    for (const [field, artifactField] of [["source_parquet_sha256", "sha256"], ["source_metadata_sha256", "metadata_sha256"]]) {
+      require(Array.isArray(details[field]) && details[field].length === 1 && sha(details[field][0]) && details[field][0] === value.artifact[artifactField], "seed normalization source mismatch")
+    }
+    const count = value => Number.isInteger(value) && value >= 0
+    require(count(value.training_count) && ["marked_source_rows", "replaced_source_rows", "kept_source_rows", "replicated_seed_rows"].every(field => count(details[field])), "invalid scenario count")
+    require(details.marked_source_rows > 0, "seed normalization has no marked source rows")
+    require(details.marked_source_rows === details.replaced_source_rows + details.kept_source_rows, "seed normalization row count mismatch")
+    require(details.marked_source_rows <= details.replicated_seed_rows && details.replicated_seed_rows <= value.training_count, "seed normalization replication count mismatch")
+    require(typeof details.replacement_enabled === "boolean", "invalid seed normalization flag")
+    require(details.replacement_enabled || details.replaced_source_rows === 0, "disabled seed replacement changed targets")
+    require(sha(details.effective_targets_sha256), "invalid SHA")
+    require(details.target_scope === "native_profile_seed_targets_not_additional_measurements", "invalid seed target scope")
+  }
+
   function validate(result, branch, summary) {
     const ids = entries => Array.isArray(entries) ? entries.map(entry => typeof entry === "string" ? entry : entry?.id) : null
-    if (!object(result) || result.schema_version !== 13 || result.protocol_id !== "fpm-scenarios-v13") {
-      throw new Error("This page requires the strict five-second protocol (v13); earlier warmup results are not comparable")
+    if (!object(result) || ![13, 14].includes(result.schema_version) || result.protocol_id !== "fpm-scenarios-v" + result.schema_version) {
+      throw new Error("This page requires the strict five-second protocol (v13 or v14); earlier warmup results are not comparable")
     }
     if (JSON.stringify(ids(result.methods)) !== JSON.stringify(METHODS) || JSON.stringify(ids(result.scenarios)) !== JSON.stringify(SCENARIOS)
       || !Array.isArray(result.rows)) throw new Error("Invalid scenario artifact")
@@ -370,6 +411,7 @@
         for (const [method, value] of Object.entries(collection)) {
           if (!METHODS.includes(method) || (value !== null && !object(value))) throw new Error("Invalid method result")
           if (!value) continue
+          validateSeedNormalization(value, id, method, result.schema_version)
           if (id === "c" && value.training_count !== 0) throw new Error("Strict C cannot contain offline training data")
           if (onlineScenarios.includes(id)) {
             const schedule = value.online_schedule

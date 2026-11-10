@@ -74,6 +74,7 @@
 /tests/test_cli_config.py                                @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                               @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_shared_g2_cli.py                             @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_aiperf_metrics.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_g3_offload_cli.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_power_contract.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                           @ai-dynamo/aisimulate-replay-codeowners
@@ -87,11 +88,13 @@
 /tests/fixtures/power-contract-v1.json                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_output_adapter_discovery.py                  @ai-dynamo/aisimulate-replay-codeowners
+/tests/fixtures/aiperf_0.13.0_request_metrics.json       @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
 /crates/core/src/engine/                                 @ai-dynamo/aisimulate-mocker-codeowners
 
 # === infra  (@ai-dynamo/aisimulate-infra-codeowners) ===
+/.cargo/                                                 @ai-dynamo/aisimulate-infra-codeowners
 /.github/                                                @ai-dynamo/aisimulate-infra-codeowners
 /scripts/                                                @ai-dynamo/aisimulate-infra-codeowners
 /deny.toml                                               @ai-dynamo/aisimulate-infra-codeowners
@@ -109,10 +112,15 @@
 /tests/test_pages_site.py                                @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_release_fpe.py                               @ai-dynamo/aisimulate-infra-codeowners
 /tests/e2e_accuracy_source/                              @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_agentx_curves.py                             @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_agentx_inputs.py                             @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_agentx_accuracy.py                           @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_ui.mjs                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                         @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_benchmark_features.py                        @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_hf_measurements.py                       @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_simulation_features.py                       @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_nightly.py                      @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_workflow_contracts.py                     @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_overview.py                     @ai-dynamo/aisimulate-infra-codeowners
@@ -190,14 +198,18 @@
 /crates/core/src/perfmodel/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/                              @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/e2e_accuracy_source/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_agentx_curves.py                             @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_agentx_inputs.py                             @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_shared_g2_cli.py                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/tests/perfmodel/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pytest.ini                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_aiperf_metrics.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_g3_offload_cli.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_resources.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_power_contract.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /benchmarks/reports/perf-data/                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_agentx_accuracy.py                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_stack_discovery.py                           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_accuracy_ui.mjs                          @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                          @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -210,11 +222,13 @@
 /python/aisimulate/.gitattributes                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pyproject.toml                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_agentx_live_warmup.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_benchmark_features.py                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_fpm_query_evidence.py                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_resource_scheduler.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_state_cache_config.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/reference/local-resources.md                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_hf_measurements.py                       @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_simulation_features.py                       @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_weka_host_resources.py                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/tests/public-api/Cargo.toml                      @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.coderabbit.yaml                      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -253,6 +267,7 @@
 /python/aisimulate/src/aisimulate/resources.py           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/tools/simulation_perf_gate/           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/supervision.py         @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/fixtures/aiperf_0.13.0_request_metrics.json       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/workflows/codeowners.yml      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/resource_worker.py     @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/perf-model/schemas/power-metrics-v1.schema.json    @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain

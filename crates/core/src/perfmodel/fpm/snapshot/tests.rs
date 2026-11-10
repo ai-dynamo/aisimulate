@@ -304,7 +304,7 @@ fn check_round_trip(
         .unwrap();
     assert_state_files(&root.join("resaved"), &before);
 
-    let mut resumed = load(continue_config(pinned)).unwrap();
+    let mut resumed = load(continue_config(pinned.clone())).unwrap();
     for chunk in next.chunks(7) {
         original.tune_with_fpms(chunk).unwrap();
         resumed.tune_with_fpms(chunk).unwrap();
@@ -337,7 +337,65 @@ fn check_round_trip(
         &root.join("resumed-final"),
         &state_files(&root.join("original-final")),
     );
+    check_relocation(&root.join("saved"), &pinned, load, queries, &expected);
     dir
+}
+
+/// The saved `config.json` of the snapshot directory `dir`, naming `dir`:
+/// what `best_available(state_snapshot=dir)` passes to construction.
+fn config_at(dir: &Path) -> ForwardPassPerfModelConfig {
+    let mut config: ForwardPassPerfModelConfig =
+        serde_json::from_slice(&std::fs::read(dir.join(CONFIG_FILE)).unwrap()).unwrap();
+    config
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = dir.to_path_buf();
+    config
+}
+
+/// Copy `saved`, take the original away and restore the copy through its
+/// `config.json` and through the returned configuration renamed to the copy;
+/// both still name the original's owned paths. The original is put back
+/// afterwards.
+fn check_relocation(
+    saved: &Path,
+    pinned: &ForwardPassPerfModelConfig,
+    load: Loader<'_>,
+    queries: &[Iteration],
+    expected: &str,
+) {
+    let moved = saved.with_file_name("moved");
+    copy_dir(saved, &moved);
+    let away = saved.with_file_name("original-away");
+    std::fs::rename(saved, &away).unwrap();
+    let config = config_at(&moved);
+    let resolved = config.clone().resolve().unwrap();
+    let source = resolved.estimator_config.state_snapshot.as_ref().unwrap();
+    assert_eq!(source.path, snapshot::normalized_absolute(&moved).unwrap());
+    let pinned_source = pinned.estimator_config.state_snapshot.as_ref().unwrap();
+    assert_eq!(
+        (&source.sha256, source.on_tune),
+        (&pinned_source.sha256, pinned_source.on_tune)
+    );
+    let mut restored = load(config).unwrap();
+    assert_eq!(observables(&restored, queries), expected);
+    if let Some(provenance) = restored.provenance() {
+        assert_eq!(provenance.config, resolved);
+    }
+    let error = restored.flush_updates().unwrap_err();
+    assert!(error.to_string().contains("on_tune='reject'"), "{error}");
+    let mut renamed = pinned.clone();
+    renamed
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved.clone();
+    assert_eq!(observables(&load(renamed).unwrap(), queries), expected);
+    std::fs::rename(&away, saved).unwrap();
+    std::fs::remove_dir_all(&moved).unwrap();
 }
 
 fn assert_state_files(dir: &Path, expected: &[(String, Vec<u8>)]) {
@@ -394,6 +452,98 @@ fn check_regression(
 fn regression_linear_round_trips_for_dedicated_and_aggregated_roles() {
     check_regression(DECODE, false, |_| {});
     check_regression(AGG, false, |_| {});
+}
+
+/// A Dynamo planner's identity: facts it did not know are `"unknown"`, the
+/// limits it recorded are known.
+fn unknown_identity(config: &mut ForwardPassPerfModelConfig) {
+    config.system = crate::UNKNOWN_IDENTITY.into();
+    config.backend_version = Some(crate::UNKNOWN_IDENTITY.into());
+    (config.tp, config.pp, config.attention_dp) = (
+        crate::UNKNOWN_SIZE,
+        crate::UNKNOWN_SIZE,
+        crate::UNKNOWN_SIZE,
+    );
+    (config.moe_tp_size, config.moe_ep_size) = (Some(crate::UNKNOWN_SIZE), Some(4));
+    config.gemm_quant_mode = Some(crate::UNKNOWN_IDENTITY.into());
+    config.attention_backend = Some(crate::UNKNOWN_IDENTITY.into());
+    config.deployment_limits = Some(crate::DeploymentLimits {
+        num_gpus: crate::DeploymentLimit::Known(8),
+        max_num_batched_tokens: crate::DeploymentLimit::Known(8192),
+        max_kv_tokens: crate::DeploymentLimit::Known(1 << 20),
+        ..Default::default()
+    });
+}
+
+#[test]
+fn regression_with_unknown_identity_round_trips_and_pins_it_exactly() {
+    check_regression(AGG, false, unknown_identity);
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = best(regression_config(AGG, unknown_identity)).unwrap();
+    model
+        .tune_with_fpms(&stream(AGG, 101, 80, true, false))
+        .unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .unwrap();
+    // The literal is what the manifest, config.json and inspection record.
+    let identity = &read_json(&dir.path().join("snap").join(MANIFEST_FILE))["identity"];
+    for field in [
+        "system",
+        "backend_version",
+        "tp",
+        "pp",
+        "attention_dp",
+        "moe_tp_size",
+    ] {
+        assert_eq!(identity[field], "unknown", "{field}");
+    }
+    assert_eq!(identity["moe_ep_size"], 4);
+    assert_eq!(
+        identity["deployment_limits"],
+        serde_json::json!({
+            "num_gpus": 8, "max_num_batched_tokens": 8192, "max_num_seqs": "unknown",
+            "max_kv_tokens": 1 << 20, "context_length": "unknown"
+        })
+    );
+    assert_eq!(
+        read_json(&dir.path().join("snap").join(CONFIG_FILE))["tp"],
+        "unknown"
+    );
+    let summary = ForwardPassPerfModel::inspect_state_snapshot(dir.path().join("snap")).unwrap();
+    let topology = serde_json::to_value(summary.topology.unwrap()).unwrap();
+    assert_eq!(
+        (&topology["tp"], &topology["moe_ep_size"]),
+        (&"unknown".into(), &4.into())
+    );
+    // Restoration compares every recorded fact and limit exactly.
+    for (edit, field) in [
+        (
+            Box::new(|config: &mut ForwardPassPerfModelConfig| config.tp = 2)
+                as Box<dyn Fn(&mut ForwardPassPerfModelConfig)>,
+            "tp",
+        ),
+        (
+            Box::new(|config| config.system = "h200_sxm".into()),
+            "system",
+        ),
+        (
+            Box::new(|config| config.deployment_limits = None),
+            "deployment_limits",
+        ),
+        (
+            Box::new(|config| {
+                config.deployment_limits.as_mut().unwrap().max_num_seqs =
+                    crate::DeploymentLimit::Known(256)
+            }),
+            "deployment_limits.max_num_seqs",
+        ),
+    ] {
+        let mut changed = pinned.clone();
+        edit(&mut changed);
+        expect_error(changed, &format!("pinned identity at {field}"));
+    }
+    best(pinned).unwrap();
 }
 
 #[test]
@@ -843,6 +993,15 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
         predictions(&load(reference.clone()).unwrap(), &queries),
         expected
     );
+    // The parquet's location is environment, but whether one is configured
+    // is identity.
+    let mut dropped = reference.clone();
+    dropped.estimator_config.fpm_interpolation.fpm_parquet_path = None;
+    expect_load_error(
+        &load,
+        dropped,
+        "pinned identity at estimator_config.fpm_interpolation.fpm_parquet_path",
+    );
 
     // Changing the parquet or its sidecar after load invalidates the
     // reference snapshot and any further save from this process.
@@ -893,6 +1052,307 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
             .to_string()
             .contains("no load-time performance-data fingerprint"),
         "{error}"
+    );
+}
+
+/// Rewrite a snapshot in the path-pinned version 1 form, which recorded the
+/// owned inputs of its identity as absolute paths below the save location,
+/// with the matching `config.json`.
+fn as_version_1(config: &ForwardPassPerfModelConfig) -> ForwardPassPerfModelConfig {
+    let root = config
+        .estimator_config
+        .state_snapshot
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
+    let legacy = repin(config, |manifest| {
+        manifest["schema_version"] = 1.into();
+        for pointer in [
+            "/identity/systems_paths/0",
+            "/identity/estimator_config/fpm_interpolation/fpm_parquet_path",
+            "/identity/estimator_config/op_level/execution_profile/path",
+            "/identity/estimator_config/fpm_learned/artifact_path",
+            "/identity/estimator_config/fpm_learned/checkpoint_path",
+        ] {
+            if let Some(value) = manifest.pointer_mut(pointer) {
+                let absolute = value
+                    .as_str()
+                    .filter(|path| Path::new(path).is_relative())
+                    .map(|path| root.join(path).to_str().unwrap().to_owned());
+                if let Some(absolute) = absolute {
+                    *value = absolute.into();
+                }
+            }
+        }
+    });
+    std::fs::write(
+        root.join(CONFIG_FILE),
+        serde_json::to_vec_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    legacy
+}
+
+fn expect_load_error(load: Loader<'_>, config: ForwardPassPerfModelConfig, needle: &str) {
+    let error = load(config).unwrap_err().to_string();
+    assert!(error.contains(needle), "expected {needle:?} in {error}");
+}
+
+/// A packed FPM-interpolation snapshot owns two inputs (systems root and
+/// external parquet). Version 1 recorded both below the save location;
+/// relocation recovers that location from their fixed suffixes.
+#[test]
+fn version_1_snapshots_relocate_from_their_recorded_save_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("systems");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("b200_sxm.yaml"), "data_dir: data/b200_sxm\n").unwrap();
+    let parquet = dir.path().join("measured/fpm.parquet");
+    std::fs::create_dir_all(parquet.parent().unwrap()).unwrap();
+    std::fs::write(&parquet, b"rows").unwrap();
+    let mut config = native_config(&root, CorrectionMode::Fixed);
+    config.estimation_mode = EstimationMode::FpmInterpolation;
+    config.estimator_config.fpm_interpolation.fpm_parquet_path = Some(parquet.clone());
+    let mut model = native_select(fixture_engine())(config.resolve().unwrap(), None).unwrap();
+    model
+        .tune_with_fpms(&native_stream(&model, 47, 30))
+        .unwrap();
+    let saved = dir.path().join("saved");
+    let pinned = model
+        .save_state_snapshot(
+            &saved,
+            &StateSnapshotOptions {
+                include_perf_db: true,
+            },
+        )
+        .unwrap();
+    // Version 2 names owned inputs relative to the snapshot; config.json
+    // keeps the absolute configuration at the save location.
+    let identity = read_json(&saved.join(MANIFEST_FILE))["identity"].clone();
+    assert_eq!(
+        identity["systems_paths"],
+        serde_json::json!([perf_db::PACKED_SYSTEMS_DIR])
+    );
+    assert_eq!(
+        identity["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"],
+        "perf_db/fpm/fpm.parquet"
+    );
+    assert_eq!(
+        pinned.systems_paths,
+        vec![saved.join(perf_db::PACKED_SYSTEMS_DIR)]
+    );
+
+    let legacy = as_version_1(&pinned);
+    let moved = dir.path().join("moved");
+    copy_dir(&saved, &moved);
+    for gone in [&saved, &root, &parquet.parent().unwrap().to_path_buf()] {
+        std::fs::remove_dir_all(gone).unwrap();
+    }
+    let load = native_load_with(fixture_engine());
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+    let config = config_at(&moved).resolve().unwrap();
+    assert_eq!(
+        config.systems_paths,
+        vec![moved.join(perf_db::PACKED_SYSTEMS_DIR)]
+    );
+    assert_eq!(
+        config.estimator_config.fpm_interpolation.fpm_parquet_path,
+        Some(moved.join("perf_db/fpm/fpm.parquet"))
+    );
+    assert_eq!(
+        predictions(&load(config.clone()).unwrap(), &queries),
+        expected
+    );
+    let mut renamed = legacy;
+    renamed
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved.clone();
+    assert_eq!(predictions(&load(renamed).unwrap(), &queries), expected);
+    let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
+    assert_eq!(
+        summary.identity.unwrap().systems_paths,
+        config.systems_paths
+    );
+
+    // Owned inputs that do not share one save location, or that do not end
+    // with their fixed layout, cannot be relocated.
+    let split = repin(&config, |manifest| {
+        manifest["identity"]["systems_paths"][0] = "/elsewhere/perf_db/systems".into()
+    });
+    expect_load_error(&load, split, "below different directories");
+    let foreign = repin(&config, |manifest| {
+        manifest["identity"]["systems_paths"][0] = "/elsewhere/systems".into()
+    });
+    expect_load_error(&load, foreign, "cannot be relocated");
+
+    // Whether an owned parquet is configured stays identity, and a different
+    // saved model is reported before any owned input is relocated or read.
+    let mut config = config_at(&moved);
+    config = repin(&config, |manifest| {
+        manifest["identity"]["systems_paths"][0] = saved
+            .join(perf_db::PACKED_SYSTEMS_DIR)
+            .to_str()
+            .unwrap()
+            .into()
+    });
+    config.estimator_config.fpm_interpolation.fpm_parquet_path = None;
+    expect_load_error(
+        &load,
+        config.clone(),
+        "pinned identity at estimator_config.fpm_interpolation.fpm_parquet_path",
+    );
+    config.estimation_mode = EstimationMode::OpLevel;
+    expect_load_error(&load, config, "differs from the saved model");
+}
+
+#[test]
+fn relocated_snapshots_verify_content_and_take_systems_roots_from_the_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fake_systems_root(dir.path());
+    let mut model = native_model(&root, CorrectionMode::Hybrid);
+    model
+        .tune_with_fpms(&native_stream(&model, 49, 30))
+        .unwrap();
+    let load = native_load_with(fixture_engine());
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+
+    // Identical data under another root restores: where the referenced data
+    // lives is environment, verified by content.
+    let reference = model
+        .save_state_snapshot(
+            dir.path().join("reference"),
+            &StateSnapshotOptions::default(),
+        )
+        .unwrap();
+    let copy = dir.path().join("copy/systems");
+    copy_dir(&root, &copy);
+    let mut elsewhere = reference.clone();
+    elsewhere.systems_paths = vec![copy.clone()];
+    let restored = load(elsewhere).unwrap();
+    assert_eq!(predictions(&restored, &queries), expected);
+    assert_eq!(
+        restored.provenance().unwrap().config.systems_paths,
+        vec![copy.clone()]
+    );
+    std::fs::write(
+        copy.join("data/b200_sxm/vllm/0.24.0/gemm_perf.parquet"),
+        b"other rows",
+    )
+    .unwrap();
+    let mut changed = reference.clone();
+    changed.systems_paths = vec![copy];
+    expect_load_error(&load, changed, "differs from the snapshot fingerprint");
+    // A missing external root is a configuration error, not snapshot I/O.
+    let mut absent = reference.clone();
+    absent.systems_paths = vec![dir.path().join("absent")];
+    expect_load_error(
+        &load,
+        absent,
+        "is not a directory; a snapshot saved without include_perf_db",
+    );
+    // Semantic fields remain identity.
+    let mut resized = reference.clone();
+    resized.kv_block_size = Some(resized.kv_block_size.unwrap_or(16) * 2);
+    expect_load_error(&load, resized, "pinned identity at kv_block_size");
+
+    // A packed snapshot reads only its own data, whatever root is supplied.
+    let packed = model
+        .save_state_snapshot(
+            dir.path().join("packed"),
+            &StateSnapshotOptions {
+                include_perf_db: true,
+            },
+        )
+        .unwrap();
+    let moved = dir.path().join("moved");
+    copy_dir(&dir.path().join("packed"), &moved);
+    let mut ignored = packed.clone();
+    ignored.systems_paths = vec![dir.path().join("missing")];
+    let restored = load(ignored).unwrap();
+    assert_eq!(predictions(&restored, &queries), expected);
+    assert_eq!(
+        restored.provenance().unwrap().config.systems_paths,
+        packed.systems_paths
+    );
+    // Engine launch validates an external timing configuration without
+    // constructing it; a moved snapshot's configuration passes.
+    let mut renamed = packed.clone();
+    renamed
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved.clone();
+    std::fs::rename(dir.path().join("packed"), dir.path().join("packed-away")).unwrap();
+    assert_eq!(
+        crate::engine::EngineLaunchConfig::timing_config_mismatches(
+            serde_json::json!({}),
+            &renamed
+        )
+        .unwrap(),
+        Vec::<String>::new()
+    );
+    // A stale original that still exists with different data is never read.
+    std::fs::rename(dir.path().join("packed-away"), dir.path().join("packed")).unwrap();
+    std::fs::write(
+        dir.path()
+            .join("packed")
+            .join(perf_db::PACKED_SYSTEMS_DIR)
+            .join("b200_sxm.yaml"),
+        "data_dir: data/b200_sxm\n# stale\n",
+    )
+    .unwrap();
+    assert_eq!(predictions(&load(renamed).unwrap(), &queries), expected);
+    // Owned inputs must use their fixed relative layout.
+    for recorded in [
+        "/elsewhere/perf_db/systems",
+        "perf_db/../perf_db/systems",
+        "../packed/perf_db/systems",
+    ] {
+        let tampered = repin(&packed, |manifest| {
+            manifest["identity"]["systems_paths"][0] = recorded.into()
+        });
+        expect_load_error(&load, tampered, "instead of the snapshot's");
+    }
+
+    // A copy is verified like the original: tampered state or packed data,
+    // or a config.json from another snapshot, is rejected.
+    let config = config_at(&moved);
+    assert_eq!(
+        predictions(&load(config.clone()).unwrap(), &queries),
+        expected
+    );
+    std::fs::write(
+        moved
+            .join(perf_db::PACKED_SYSTEMS_DIR)
+            .join("b200_sxm.yaml"),
+        "data_dir: data/b200_sxm\n# edit\n",
+    )
+    .unwrap();
+    expect_load_error(
+        &load,
+        config.clone(),
+        "differs from the snapshot fingerprint",
+    );
+    let mut state = std::fs::read(moved.join(STATE_FILE)).unwrap();
+    state[0] ^= 1;
+    std::fs::write(moved.join(STATE_FILE), state).unwrap();
+    expect_load_error(&load, config, "does not match its manifest size or SHA-256");
+    std::fs::copy(
+        dir.path().join("reference").join(CONFIG_FILE),
+        moved.join(CONFIG_FILE),
+    )
+    .unwrap();
+    expect_load_error(
+        &load,
+        config_at(&moved),
+        "sha256 does not match manifest.json",
     );
 }
 
@@ -1601,12 +2061,38 @@ fn identity_and_estimator_control_mismatches_are_rejected_with_their_location() 
 }
 
 #[test]
+fn snapshots_that_read_no_performance_data_ignore_their_systems_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fake_systems_root(dir.path());
+    let mut model = best(regression_config(AGG, |config| {
+        config.systems_paths = vec![root.clone()]
+    }))
+    .unwrap();
+    model
+        .tune_with_fpms(&stream(AGG, 103, 80, true, false))
+        .unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .unwrap();
+    assert_eq!(pinned.systems_paths, vec![root.clone()]);
+    // The recorded root may be gone on the restoring host, or be another one.
+    std::fs::remove_dir_all(&root).unwrap();
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+    let restored = best(config_at(&dir.path().join("snap"))).unwrap();
+    assert_eq!(predictions(&restored, &queries), expected);
+    let mut elsewhere = pinned;
+    elsewhere.systems_paths = vec![dir.path().join("other")];
+    assert_eq!(predictions(&best(elsewhere).unwrap(), &queries), expected);
+}
+
+#[test]
 fn incompatible_versions_and_manifest_shapes_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let pinned = saved_regression(dir.path());
     for (edit, needle) in [
         (
-            Box::new(|m: &mut serde_json::Value| m["schema_version"] = 2.into())
+            Box::new(|m: &mut serde_json::Value| m["schema_version"] = 3.into())
                 as Box<dyn FnOnce(&mut serde_json::Value)>,
             "unsupported manifest schema",
         ),
@@ -1633,11 +2119,11 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
         // A newer release may add fields; its versions are reported first.
         (
             Box::new(|m: &mut serde_json::Value| {
-                m["schema_version"] = 2.into();
+                m["schema_version"] = 3.into();
                 m["future_field"] = true.into();
                 m["kind"] = "future_kind".into();
             }),
-            "unsupported manifest schema aisimulate_fpm_state_snapshot version 2",
+            "unsupported manifest schema aisimulate_fpm_state_snapshot version 3",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
@@ -3078,7 +3564,7 @@ fn state_layout_v2_matches_an_independent_decoder() {
     );
     let manifest = read_json(&dir.path().join("regression").join(MANIFEST_FILE));
     assert_eq!(manifest["schema"], "aisimulate_fpm_state_snapshot");
-    assert_eq!(manifest["schema_version"], 1);
+    assert_eq!(manifest["schema_version"], 2);
     assert_eq!(manifest["producer"]["state_encoding"], "bincode1_fixint");
     assert_eq!(
         manifest["producer"]["aisimulate_core_version"],

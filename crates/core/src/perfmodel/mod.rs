@@ -41,6 +41,7 @@ pub(crate) mod session;
 
 pub use common::{AicError, enums::DatabaseMode, enums::EncoderParallel};
 pub use engine::spec::{EncoderImageShape, VisionSpec};
+pub use perf_database::fpm_forward::{FpmSeedTargetNormalization, FpmSeedTargetRow};
 // Forward-pass perf model (PR #1152): a forward-pass latency model with online
 // correction, regression fallback, diagnostics, and readiness, built on the
 // compiled [`engine::Engine`]. Re-exported so Rust embedders (the Dynamo
@@ -63,6 +64,7 @@ pub use fpm::{
     RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
     SplineSearchConfig, UnrecordedFpmQuantMode,
 };
+pub use fpm::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
 pub use fpm::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
     ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
@@ -71,7 +73,7 @@ pub use fpm::{
 };
 pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
+    FpmCacheLayout, FpmMambaCacheMode, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing

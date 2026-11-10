@@ -442,10 +442,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             if (
                 config.traffic is not None
-                and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+                and config.traffic.load.agentic_warmup_policy != "repeated_prefixes"
                 and (args.stack != "engine" or (args.command == "predict" and args.online))
             ):
-                raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
+                raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
             encoder = config.engine.workers.encoder
             if encoder is not None:
                 if args.command == "predict" and (args.stack != "engine" or args.online or adapter_raw):
@@ -526,7 +526,10 @@ def supervised_recommendation(config, kwargs):
                 if main_path and not Path(main_path).is_file():
                     preparation.pop("init_main_from_path")
                 pickle.dump(preparation, target)
-                pickle.dump((config.model_dump(mode="json"), kwargs), target)
+                from .recommend import recommendation_payload
+
+                raw_config, unset = recommendation_payload(config)
+                pickle.dump((raw_config, kwargs, unset), target)
             except (TypeError, AttributeError, pickle.PicklingError) as exc:
                 raise ValueError("supervised recommendation requires pickleable factories and providers") from exc
         report = run_process(

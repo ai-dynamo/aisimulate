@@ -4,14 +4,12 @@
 """SGLang dense attention collector.
 
 Builds lightweight RadixAttention/ForwardBatch mocks to benchmark context and
-generation attention without launching a full SGLang server. Shared attention
-shape intent should live in YAML; this file owns SGLang backend construction,
-KV-cache setup, backend dispatch, and perf logging for the SGLang runtime.
+generation attention without launching a full SGLang server. The cases and
+the backend each runs on come from the shared attention plan
+(collector/op_plans.py); this file owns SGLang backend construction, KV-cache
+setup and perf logging for the SGLang runtime.
 """
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import math
@@ -21,12 +19,9 @@ from types import SimpleNamespace
 from typing import NamedTuple
 
 import torch
-from collector.case_generator import (
-    get_attention_context_shape_sweeps,
-    get_attention_generation_shape_sweeps,
-    get_attention_head_configs,
-)
+from collector.case_generator import sglang_default_attention_backend
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
 from sglang.srt.layers.radix_attention import RadixAttention
@@ -44,7 +39,7 @@ class Timing(NamedTuple):
 
 # Mock objects to satisfy RadixAttention dependencies
 class MockModelConfig:
-    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 (triton_backend.py:255)
         return int(self.num_attention_heads)
 
     def __init__(
@@ -109,7 +104,7 @@ class MockModelConfig:
         self.hf_text_config = self.hf_config
         self.dtype = torch.bfloat16
 
-    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 @0.5.21 adds dcp_size (DCP replicates KV)
+    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 adds dcp_size (DCP replicates KV)
         return self.num_key_value_heads // tp_size
 
 
@@ -170,11 +165,11 @@ class MockModelRunner:
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
         # sglang 0.5.21 TRTLLMHAAttnBackend (the dense backend sglang picks on SM100/103) reads
         # model_runner.prefill_attention_backend_str / decode_attention_backend_str to decide its
-        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke 2026-10-04:
+        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke
         # AttributeError 'MockModelRunner' object has no attribute 'prefill_attention_backend_str').
         self.prefill_attention_backend_str = attn_backend_name
         self.decode_attention_backend_str = attn_backend_name
-        # trtllm_mha_backend.py:310@0.5.21 scans model_runner.model.modules() for ENCODER_ONLY attention
+        # trtllm_mha_backend.py:310 scans model_runner.model.modules for ENCODER_ONLY attention
         # layers (expanded TARGET_VERIFY metadata); the collector has no model — an empty Module
         # declares none, which is the dense-decoder answer.
         self.model = torch.nn.Module()
@@ -271,178 +266,12 @@ def create_req_to_token_pool(batch_size, total_len, page_size, torch_device, dev
     return pool, token_matrix.contiguous()
 
 
-def _int_list(values):
-    return [int(value) for value in values]
-
-
 def get_context_attention_test_cases():
-    test_cases = []
-
-    # FP8 KV-cache cases follow the FP8 hardware floor (SM89+, Ada — see
-    # cases/capabilities.yaml dtype_min_sm.fp8). SGLang 0.5.14 puts no SM
-    # gate on --kv-cache-dtype fp8_e4m3 (server_args.py:596-600) and the
-    # flashinfer backend passes kv_cache_dtype straight into its plan calls
-    # (flashinfer_backend.py:1151, 1377-1397); any backend-level rejection
-    # surfaces as a classified runtime failure, not a generation-time skip.
-    sm_version = get_sm_version()
-    skip_fp8 = sm_version < 89
-
-    for shape_sweep in get_attention_context_shape_sweeps("sglang"):
-        batch_sizes = _int_list(shape_sweep["batch_sizes"])
-        sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-        max_tokens_self_attention = int(shape_sweep["max_tokens_self_attention"])
-        max_tokens_grouped_query_attention = int(shape_sweep["max_tokens_grouped_query_attention"])
-        max_batch_size_self_attention = int(shape_sweep["max_batch_size_self_attention"])
-        max_kv_elements = int(shape_sweep["max_kv_elements"])
-
-        for head_config in get_attention_head_configs(
-            shape_sweep,
-            phase="context",
-            backend="sglang",
-            sm_version=sm_version,
-        ):
-            n = head_config.num_heads
-            num_kv_heads = head_config.num_kv_heads
-            head_dim = head_config.head_dim
-            window_size = head_config.window_size
-            for s in sorted(sequence_lengths, reverse=True):
-                for b in sorted(batch_sizes, reverse=True):
-                    if num_kv_heads == n:
-                        if b * s > max_tokens_self_attention or b > max_batch_size_self_attention:
-                            continue
-                    else:
-                        if b * s > max_tokens_grouped_query_attention:
-                            continue
-                    if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
-                        continue
-                    for precision_case in shape_sweep["precision_cases"]:
-                        use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
-                        use_fp8_context_fmha = bool(precision_case["fp8_context_fmha"])
-                        if skip_fp8 and use_fp8_kv_cache:
-                            continue
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                num_kv_heads,
-                                head_dim,
-                                use_fp8_kv_cache,
-                                use_fp8_context_fmha,
-                                True,
-                                window_size,
-                                head_config.v_head_dim,
-                                head_config.runtime_window_size,
-                                head_config.attention_chunk_size,
-                                head_config.has_attention_sink,
-                                head_config.scaling,
-                                head_config.kernel_source,
-                                head_config.architecture,
-                            ]
-                        )
-
-    return test_cases
-
-
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, head_dim, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens // s // num_heads * 128 // head_dim
-        for b in sorted(batch_sizes):
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+    return plan_cases("attention_context", "sglang", get_sm_version())
 
 
 def get_generation_attention_test_cases():
-    test_cases = []
-
-    # FP8 KV-cache cases follow the FP8 hardware floor (SM89+, Ada); see the
-    # context getter for the framework citations.
-    sm_version = get_sm_version()
-    skip_fp8 = sm_version < 89
-
-    for shape_sweep in get_attention_generation_shape_sweeps("sglang"):
-        batch_sizes = _int_list(shape_sweep["batch_sizes"])
-        sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
-        for head_config in get_attention_head_configs(
-            shape_sweep,
-            phase="generation",
-            backend="sglang",
-            sm_version=sm_version,
-        ):
-            n = head_config.num_heads
-            n_kv = head_config.num_kv_heads
-            head_dim = head_config.head_dim
-            window_size = head_config.window_size
-            max_tokens = (
-                int(shape_sweep["max_mha_tokens_per_step"])
-                if n == n_kv
-                else int(shape_sweep["max_xqa_tokens_per_step"])
-            )
-            b_s_dict = _generation_target_sequence_lengths(
-                batch_sizes,
-                sequence_lengths,
-                n,
-                head_dim,
-                max_tokens,
-                shape_sweep,
-            )
-            for b, s_list_limited in b_s_dict.items():
-                target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
-                for s in target_s_list:
-                    for precision_case in shape_sweep["precision_cases"]:
-                        use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
-                        if skip_fp8 and use_fp8_kv_cache:
-                            continue
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                n_kv,
-                                head_dim,
-                                use_fp8_kv_cache,
-                                False,
-                                False,
-                                window_size,
-                                head_config.v_head_dim,
-                                head_config.runtime_window_size,
-                                head_config.attention_chunk_size,
-                                head_config.has_attention_sink,
-                                head_config.scaling,
-                                head_config.kernel_source,
-                                head_config.architecture,
-                            ]
-                        )
-    return test_cases
-
-
-def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str | None:
-    """SGLang's default dense-attention backend per SM (the table run_attention_torch documents
-    above its call site); None for SMs outside the supported set."""
-    return {
-        89: "triton" if has_attention_sink else "flashinfer",
-        90: "fa3",
-        100: "trtllm_mha",
-        103: "trtllm_mha",
-        120: "triton" if has_attention_sink else "flashinfer",
-    }.get(sm_version)
+    return plan_cases("attention_generation", "sglang", get_sm_version())
 
 
 _FLASHINFER_WORKSPACE_MIN_BYTES = 4 << 30
@@ -551,60 +380,21 @@ def run_attention_torch(
         runtime_window_size = window_size or -1
 
     if attn_backend_name is None:
+        # The plan names the backend in every row; a direct call takes SGLang's default.
         sm_version = get_sm_version()
-        # Mirrors SGLang 0.5.14 server_args._get_default_attn_backend (MHA),
-        # python/sglang/srt/server_args.py:4407-4455 at image source 49e384ce:
-        # SM90 Hopper+CUDA>=12.3 -> fa3 (line 4437); SM100/103 -> trtllm_mha
-        # (is_sm100_supported() matches major 10, lines 4438-4446); other
-        # supported CUDA SMs -> flashinfer unless the model has attention
-        # sinks (FlashInfer rejects sinks, lines 4451-4454) -> triton.
-        # Per-model deviations (Qwen3.5 hybrid-GDN -> triton on SM100,
-        # server_args.py:4188-4211; NemotronH -> flashinfer,
-        # arg_groups/nemotron_h_hook.py:60-62) arrive through the profile's
-        # sglang_backends map as an explicit attn_backend_name, never through
-        # this default table. SM80/86 are outside the
-        # supported platform set {89, 90, 100, 103, 120} and fail closed below.
-        attn_backend_name = default_attention_backend(sm_version, has_attention_sink)
+        attn_backend_name = sglang_default_attention_backend(sm_version, has_attention_sink)
         if attn_backend_name is None:
-            raise ValueError(f"No SGLang 0.5.14 attention backend mapping for SM{sm_version}")
+            raise ValueError(f"No SGLang attention backend for SM{sm_version}")
     if page_size is None:
         page_size = 64 if attn_backend_name == "trtllm_mha" else 1
 
-    # Label prefill rows by the compute dtype the backend actually uses in
-    # SGLang 0.5.21 — the input dtype is an API contract, not the compute
-    # dtype:
-    #   - fa3 (SM90): whenever the KV cache is FP8 and head_dim <= 256 it
-    #     casts Q to the KV dtype itself (flashattention_backend.py:1322-1332),
-    #     so FP8-KV prefill IS FP8 FMHA compute.
-    #   - trtllm_mha (TRTLLM-GEN on SM100/103): takes BF16 inputs and casts Q
-    #     to FP8 itself when the KV cache is FP8 (trtllm_mha_backend.py:1600-1609).
-    #     Feed BF16 and let the backend quantize; an external FP8 cast would
-    #     break its input contract without changing the (already FP8) compute.
-    #   - flashinfer: the prefill wrapper plans BF16 Q against the FP8 KV cache
-    #     (flashinfer_backend.py:1833-1834) and reads it with descales
-    #     (:1388-1389); there is no FP8 prefill compute path, so an fp8-labeled
-    #     row would be a lie.
-    # Consequence: on fa3/trtllm_mha a "BF16-compute prefill on FP8 KV"
-    # combo does not exist — the backend force-quantizes Q — so collecting
-    # it would record FP8 compute under a bfloat16 label. Both refusals run
-    # here, before the model runner and tensors are built; the cases stay
-    # queued and land in the failure log as kernel_limit.
-    if is_context_phase:
-        if use_fp8_context_fmha and attn_backend_name == "flashinfer":
-            raise ValueError(
-                "FIXME(kernel-limit): SGLang flashinfer has no FP8 prefill compute path "
-                "(flashinfer_backend.py:1833-1834 @0.5.21 plans BF16 Q against the FP8 KV cache)"
-            )
-        if (
-            not use_fp8_context_fmha
-            and use_fp8_kv_cache
-            and (attn_backend_name == "trtllm_mha" or (attn_backend_name == "fa3" and head_dim <= 256))
-        ):
-            raise ValueError(
-                f"FIXME(kernel-limit): SGLang {attn_backend_name} quantizes Q to FP8 internally when the KV cache "
-                "is FP8, so a BF16-compute prefill on an FP8 KV cache does not exist; this "
-                "combination is the fp8_context_fmha case"
-            )
+    # Prefill rows are labeled with the compute dtype the backend actually uses;
+    # the input dtype is an API contract. fa3 (head_dim <= 256) and trtllm_mha
+    # quantize Q to FP8 themselves when the KV cache is FP8, and the flashinfer
+    # prefill computes BF16 against an FP8 KV cache, so the plan leaves out the
+    # combinations that do not exist (collector/skips.py). trtllm_mha takes BF16
+    # inputs: an external FP8 cast would break its input contract without
+    # changing the (already FP8) compute.
 
     model_runner = MockModelRunner(
         torch_device,

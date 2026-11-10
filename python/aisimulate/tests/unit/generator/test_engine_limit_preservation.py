@@ -78,15 +78,104 @@ def test_externally_evaluated_engine_limits_are_preserved(backend: str, rule: st
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
-def test_preserved_unaligned_budget_is_rounded_with_a_warning(backend, caplog):
-    """A Sweeper candidate simulated at 5000 tokens deploys 5056; the change is logged, not silent."""
+@pytest.mark.parametrize("key", ["max_num_tokens", "max_prefill_tokens"])
+@pytest.mark.parametrize("budget", [32, 5000])
+def test_preserved_unaligned_budget_is_rejected(backend, key, budget):
     params = _params(preserve=True, rule="benchmark")
-    params["params"]["prefill"]["max_num_tokens"] = 5000
-    params["params"]["prefill"]["max_prefill_tokens"] = 5000
-    with caplog.at_level(logging.WARNING):
-        result = apply_rule_plugins(copy.deepcopy(params), backend)
-    assert result["params"]["prefill"]["max_num_tokens"] == 5056
-    assert "prefill max_num_tokens=5000 was evaluated by the caller; the deployment uses 5056" in caplog.text
+    params["params"]["prefill"][key] = budget
+
+    with pytest.raises(ValueError, match=rf"Cannot preserve evaluated prefill\.{key}={budget}.*Re-evaluate"):
+        apply_rule_plugins(params, backend)
+
+    assert params["params"]["prefill"][key] == budget
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_render_retry_after_correcting_evaluated_budget_preserves_input(backend, rule):
+    params = _params(preserve=True, rule=rule)
+    params["DynConfig"] = {"mode": "agg"}
+    params["WorkerConfig"] = {"agg_workers": 1}
+    params["params"] = {"agg": params["params"]["prefill"]}
+    worker = params["params"]["agg"]
+    worker["max_num_tokens"] = 32
+    worker["max_prefill_tokens"] = 64
+    worker["context_parallel_size"] = 2 if backend == "sglang" else 1
+    original = copy.deepcopy(params)
+
+    with pytest.raises(ValueError, match=r"Cannot preserve evaluated agg\.max_num_tokens=32"):
+        render_backend_templates(params, backend)
+
+    assert params == original
+    worker["max_num_tokens"] = 64
+    corrected = copy.deepcopy(params)
+    expected = render_backend_templates(copy.deepcopy(corrected), backend)
+    retried = render_backend_templates(params, backend)
+
+    assert retried == expected
+    assert params == corrected
+    if backend == "sglang":
+        cli = shlex.split(retried["cli_args_agg"])
+        assert cli[cli.index("--tensor-parallel-size") + 1] == "2"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("budget, aligned", [(5000, 5120), (5056, 5120), (5120, None)])
+def test_preserved_trtllm_budget_respects_explicit_block_size(rule, budget, aligned):
+    params = _params(preserve=True, rule=rule)
+    params["params"]["prefill"].update(max_num_tokens=budget, tokens_per_block=128)
+
+    if aligned is not None:
+        with pytest.raises(ValueError, match=rf"multiples of 128.*e\.g\. {aligned}"):
+            render_backend_templates(params, "trtllm")
+    else:
+        artifacts = render_backend_templates(params, "trtllm")
+        engine = yaml.safe_load(artifacts["extra_engine_args_prefill.yaml"])
+        assert engine["max_num_tokens"] == budget
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("target, version", [("dynamo-j2", None), ("dynamo-j2", "1.0.0"), ("dynamo-python", None)])
+@pytest.mark.parametrize(
+    "budget, extra, invalid_yaml, invalid_cli",
+    [
+        (5056, {"kv_cache_config": {"tokens_per_block": 128}}, True, True),
+        (8192, {"max_num_tokens": 5056, "kv_cache_config": {"tokens_per_block": 128}}, True, False),
+        (8192, {"max_num_tokens": 5000}, True, False),
+        (5120, {"kv_cache_config": {"tokens_per_block": 128}}, False, False),
+        (5056, {"kv_cache_config": {"free_gpu_memory_fraction": 0.8}}, False, False),
+    ],
+    ids=["block-override", "budget-and-block-override", "budget-override", "aligned", "override-drops-block"],
+)
+def test_preserved_trtllm_budget_checks_effective_engine_overrides(
+    tmp_path, rule, target, version, budget, extra, invalid_yaml, invalid_cli
+):
+    params = _params(preserve=True, rule=rule)
+    worker = params["params"]["prefill"]
+    worker["max_num_tokens"] = budget
+    worker["extra_engine_args"] = copy.deepcopy(extra)
+    if version == "1.0.0" and "max_num_tokens" in extra:
+        worker["extra_engine_args"]["build_config"] = {
+            "max_num_tokens": worker["extra_engine_args"].pop("max_num_tokens")
+        }
+    output_dir = tmp_path / "deployment"
+    invalid = invalid_cli if target == "dynamo-python" else invalid_yaml
+    if invalid:
+        with pytest.raises(ValueError, match=r"Cannot preserve evaluated prefill\.max_num_tokens"):
+            generate_backend_artifacts(
+                params, "trtllm", backend_version=version, deployment_target=target, output_dir=str(output_dir)
+            )
+        assert not output_dir.exists()
+    else:
+        artifacts = generate_backend_artifacts(params, "trtllm", backend_version=version, deployment_target=target)
+        engine = yaml.safe_load(artifacts["extra_engine_args_prefill.yaml"])
+        if target == "dynamo-python":
+            cli = shlex.split(artifacts["cli_args_prefill"])
+            effective_budget = int(cli[cli.index("--max-num-tokens") + 1])
+        else:
+            effective_budget = engine.get("build_config", engine)["max_num_tokens"]
+        assert effective_budget == budget
+        assert effective_budget % engine.get("kv_cache_config", {}).get("tokens_per_block", 64) == 0
 
 
 def test_default_vllm_rules_still_resize_unpinned_requests():

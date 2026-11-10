@@ -25,10 +25,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
@@ -36,7 +37,7 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode, _validate_replay_estimation_mode
+from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
 
 
 class OptimizationTarget(str, Enum):
@@ -120,12 +121,14 @@ class OptimizationGoal(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target: OptimizationTarget = OptimizationTarget.THROUGHPUT
+    target: OptimizationTarget | AIPerfMetric = OptimizationTarget.THROUGHPUT
+    # Aggregate AIPerf metric constraints, enforced only with strict_sla.
+    metric_constraints: list[MetricConstraint] = Field(default_factory=list)
     # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
     sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
-    pareto_objectives: list[OptimizationTarget] | None = None
+    pareto_objectives: list[OptimizationTarget | AIPerfMetric] | None = None
     # Preserve replay goodput's per-request SLA semantics by default. When
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
@@ -133,11 +136,21 @@ class OptimizationGoal(BaseModel):
     min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @property
+    def uses_aiperf_metrics(self) -> bool:
+        targets = self.resolved_pareto_objectives if self.is_pareto else [self.target]
+        return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
+
+    @property
+    def enforced_metric_constraints(self) -> list[MetricConstraint]:
+        # min_gpus forces the mean SLA gate, but metric constraints stay opt-in via strict_sla.
+        return self.metric_constraints if self.strict_sla else []
+
+    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
-    def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
+    def resolved_pareto_objectives(self) -> list[OptimizationTarget | AIPerfMetric]:
         """The effective Pareto objective list: the configured one, or the default pair only
         when unset (``None``). An explicitly-supplied empty/short list is kept as-is so the
         validator's ``len < 2`` guard rejects it (rather than silently using the default).
@@ -172,8 +185,8 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and not has_sla:
-            raise ValueError("strict_sla requires at least one SLA bound")
+        if self.strict_sla and not has_sla and not self.metric_constraints:
+            raise ValueError("strict_sla requires at least one SLA bound or metric constraint")
         if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
             raise ValueError("min_gpus requires at least one SLA bound")
         if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
@@ -309,11 +322,12 @@ class Workload(BaseModel):
     trace_block_size: int | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
+    weka_client: Literal["recorded", "agentx"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
-    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"] = "repeated_prefixes"
     agentic_profile: AgenticProfileOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
@@ -440,12 +454,18 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.weka_client is not None and (
+            self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
+        ):
+            raise ValueError("weka_client requires Weka trace input")
         if self.agentic_warmup and self.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
         if self.agentic_warmup_policy == "live_trajectory_v1" and (
             not self.agentic_warmup or self.agentic_profile is None
         ):
             raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if self.agentic_warmup_policy == "primers_only" and not self.agentic_warmup:
+            raise ValueError("primers_only requires agentic_warmup")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if (
@@ -653,7 +673,8 @@ class SearchSpace(BaseModel):
     # pinned
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
-    decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_enable_prefix_caching: bool = False
+    decode_radix_cache: bool = False  # SGLang --disaggregation-decode-enable-radix-cache
     decode_kv_bytes_per_token: int | str = "auto"
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
@@ -696,12 +717,17 @@ class SearchSpace(BaseModel):
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
+    # Validated snapshots of roles whose estimator controls name one.
+    _state_snapshots: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_estimator_selection(cls, value):
+        from .state_snapshot import derive_snapshot_roles, reject_engine_wide_snapshot
+
         if not isinstance(value, dict):
             return value
+        reject_engine_wide_snapshot(value)
         modes = value.get("deployment_mode")
         if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
             "encoder"
@@ -723,13 +749,13 @@ class SearchSpace(BaseModel):
                     "estimation_mode", "fpm_interpolation" if legacy == "fpm" else "op_level"
                 )
         value["role_estimator_controls"] = controls
-        return value
+        # Roles timed by a state snapshot take their engine identity from it
+        # before any field is validated or defaulted.
+        return derive_snapshot_roles(value)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
-        for controls in self.role_estimator_controls.values():
-            _validate_replay_estimation_mode(controls.get("estimation_mode"))
         if self.fpm_profile is not None:
             from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
@@ -835,7 +861,15 @@ class SearchSpace(BaseModel):
         raise ValueError(f"unknown engine role {role!r}")
 
     def systems_paths_for(self, role: str) -> list[str] | None:
+        snapshot = self._state_snapshots.get(role)
+        if snapshot is not None and snapshot.packed_root is not None:
+            return [snapshot.packed_root]
         return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
+
+    def state_snapshot_role(self, role: str) -> Any:
+        """The validated state snapshot timing ``role``, if its estimator controls name one."""
+
+        return self._state_snapshots.get(role)
 
     @field_validator(
         "afd_tp_a_candidates",
@@ -883,6 +917,8 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_afd_contract(self) -> SearchSpace:
         afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if afd_modes and self.decode_radix_cache:
+            raise ValueError("decode_radix_cache is unsupported for AFD")
         if self.afd_phase not in {"prefill", "decode", "both"}:
             raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
         if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
@@ -999,6 +1035,33 @@ class SearchSpace(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _bind_state_snapshots(self) -> SearchSpace:
+        """Keep each snapshot role's validated snapshot for estimator construction."""
+        from .forward_pass_estimator import resolve_systems_paths
+        from .state_snapshot import load_snapshot_role, state_snapshot_reference
+
+        if self._uses_legacy_estimator_provider():
+            return self
+        roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
+            {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
+        )
+        self._state_snapshots = {
+            role: load_snapshot_role(role, reference)
+            for role, controls in self.role_estimator_controls.items()
+            if role in roles and (reference := state_snapshot_reference(controls)) is not None
+        }
+        for role, snapshot in self._state_snapshots.items():
+            # Regression and learned models read no performance data.
+            if snapshot.fitted:
+                continue
+            if snapshot.packed_root is None and len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
+                raise ValueError(
+                    f"{snapshot.describe()} references performance data outside the snapshot; give the "
+                    f"{role} role exactly one systems root holding that data"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_backend_versions(self) -> SearchSpace:
         configured = list(dict.fromkeys(self.backend))
         if isinstance(self.backend_version, str):
@@ -1026,6 +1089,13 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_engine_controls(self):
+        if self.decode_radix_cache and "sglang" not in self.backend:
+            raise ValueError("decode_radix_cache requires a search with backend=sglang")
+        if self.decode_radix_cache and "disagg" in self.deployment_mode:
+            if not self.decode_enable_prefix_caching:
+                raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
+            if self.aic_nextn or self.speculation is not None:
+                raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
         if self.enable_chunked_prefill is not None and any(
             mode not in {"agg", "disagg"} for mode in self.deployment_mode
         ):

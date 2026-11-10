@@ -8,7 +8,8 @@ use crate::perfmodel::FpmCacheGroup;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct GroupedLease {
     /// Absolute logical block ranges, one per configured group. Full-history
-    /// groups start at zero; expired window blocks are absent.
+    /// groups start at zero; expired window blocks are absent. A state
+    /// group's range `0..n` counts the blocks that the request holds.
     ranges: Vec<std::ops::Range<usize>>,
     bytes: u64,
 }
@@ -40,7 +41,10 @@ impl GroupedKvPool {
         if computed_after < computed_before {
             return None;
         }
-        let mut projected = GroupedLease::default();
+        let mut projected = GroupedLease {
+            ranges: Vec::with_capacity(self.groups.len()),
+            bytes: 0,
+        };
         for group in &self.groups {
             // A forward must retain the history needed by its first query,
             // together with every token in the scheduled chunk. Freeing to
@@ -124,6 +128,7 @@ mod tests {
                     block_size_tokens: 4,
                     page_size_bytes: 8,
                     sliding_window: None,
+                    blocks_per_request: None,
                 },
                 FpmCacheGroup {
                     name: "window".into(),
@@ -132,6 +137,7 @@ mod tests {
                     block_size_tokens: 2,
                     page_size_bytes: 6,
                     sliding_window: Some(3),
+                    blocks_per_request: None,
                 },
             ],
             42,
@@ -152,6 +158,44 @@ mod tests {
         assert_eq!(pool.used_bytes(), 36);
         pool.release(&mut first);
         pool.release(&mut first);
+        assert_eq!(pool.used_bytes(), 0);
+        assert_eq!(pool.active_blocks(), 0);
+    }
+
+    #[test]
+    fn state_group_reserves_constant_bytes_and_releases_them() {
+        let mut pool = GroupedKvPool::new(
+            vec![
+                FpmCacheGroup {
+                    name: "full".into(),
+                    kind: FpmCacheKind::Attention,
+                    num_layers: 1,
+                    block_size_tokens: 4,
+                    page_size_bytes: 8,
+                    sliding_window: None,
+                    blocks_per_request: None,
+                },
+                FpmCacheGroup {
+                    name: "kda".into(),
+                    kind: FpmCacheKind::State,
+                    num_layers: 1,
+                    block_size_tokens: 4,
+                    page_size_bytes: 10,
+                    sliding_window: None,
+                    blocks_per_request: Some(2),
+                },
+            ],
+            100,
+        );
+        let mut lease = None;
+        assert!(pool.allocate(&mut lease, 0, 4)); // 8 + 2 * 10 = 28
+        assert_eq!(lease.as_ref().unwrap().ranges, vec![0..1, 0..2]);
+        assert_eq!(pool.used_bytes(), 28);
+        assert!(pool.allocate(&mut lease, 4, 8)); // 2 * 8 + 2 * 10 = 36
+        assert_eq!(lease.as_ref().unwrap().ranges, vec![0..2, 0..2]);
+        assert_eq!(pool.used_bytes(), 36);
+        assert_eq!(pool.active_blocks(), 4);
+        pool.release(&mut lease);
         assert_eq!(pool.used_bytes(), 0);
         assert_eq!(pool.active_blocks(), 0);
     }

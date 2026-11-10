@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+// HiCache residency adapts SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 
 //! Radix-tree KV cache for SGLang engine simulation.
 //!
@@ -17,6 +18,10 @@ use slotmap::{SlotMap, new_key_type};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::time::Instant;
+
+mod hicache;
+use hicache::HostNodes;
+pub(crate) use hicache::HostPrefixMatch;
 
 new_key_type! {
     /// Stable identifier for a tree node inside the [`RadixCache`].
@@ -171,7 +176,7 @@ pub struct TreeNode {
     /// Consequently, as in router-side indexing, hash collisions are treated
     /// as identical pages rather than guarded by an exact-token comparison.
     pub key: Vec<LocalBlockHash>,
-    /// One physical page ID per key. Length = `key.len()`.
+    /// One physical page ID per key, or empty for a host-only HiCache edge.
     pub value: Vec<KvPageId>,
     /// Walk-to-root reference count (protected when > 0).
     pub lock_ref: usize,
@@ -203,6 +208,7 @@ pub struct RadixCache {
     /// and O(1) oldest-victim lookup.
     evictable_leaves: BTreeSet<(Instant, NodeId)>,
     belady: Option<BeladyLeaves>,
+    hicache: Option<HostNodes>,
     /// Total token count in evictable nodes.
     pub evictable_size: usize,
     /// Total token count in protected (locked) nodes.
@@ -250,12 +256,14 @@ impl RadixCache {
             test_now: None,
             evictable_leaves: BTreeSet::new(),
             belady: None,
+            hicache: None,
             evictable_size: 0,
             protected_size: 0,
         }
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
+        assert!(self.hicache.is_none(), "HiCache requires LRU eviction");
         assert_eq!(
             self.nodes.len(),
             1,
@@ -343,7 +351,19 @@ impl RadixCache {
     }
 
     fn is_evictable_leaf(&self, id: NodeId) -> bool {
-        id != self.root && self.nodes[id].lock_ref == 0 && self.is_leaf(id)
+        id != self.root
+            && !self.nodes[id].value.is_empty()
+            && self.nodes[id].lock_ref == 0
+            && self.is_device_leaf(id)
+    }
+
+    fn is_device_leaf(&self, id: NodeId) -> bool {
+        self.nodes[id].children.is_empty()
+            || (self.hicache.is_some()
+                && self.nodes[id]
+                    .children
+                    .values()
+                    .all(|child| self.nodes[*child].value.is_empty()))
     }
 
     fn insert_evictable_leaf(&mut self, id: NodeId) {
@@ -388,18 +408,21 @@ impl RadixCache {
 
     fn touch_node(&mut self, id: NodeId, now: Instant) {
         let was_indexed = self.remove_evictable_leaf(id);
+        self.remove_host_candidate(id);
         self.nodes[id].last_access_time = now;
         if was_indexed {
             self.insert_evictable_leaf(id);
         }
+        self.insert_host_candidate(id);
     }
 
     #[cfg(test)]
     fn debug_assert_evictable_index(&self) {
+        self.assert_host_index();
         let expected = self
             .nodes
             .iter()
-            .filter(|(id, node)| *id != self.root && node.lock_ref == 0 && node.children.is_empty())
+            .filter(|(id, _)| self.is_evictable_leaf(*id))
             .map(|(id, node)| (node.last_access_time, id))
             .collect::<BTreeSet<_>>();
         assert_eq!(
@@ -506,6 +529,10 @@ impl RadixCache {
                 Some(id) => id,
                 None => break,
             };
+
+            if self.nodes[child_id].value.is_empty() {
+                break;
+            }
 
             if let Some(id) = pending_touch.take() {
                 self.touch_node(id, now);
@@ -619,6 +646,9 @@ impl RadixCache {
             };
 
             let child_key = &self.nodes[child_id].key;
+            if self.nodes[child_id].value.is_empty() {
+                break;
+            }
             let common_len = Self::key_match(child_key, &page_keys[matched_pages..]);
 
             if common_len < child_key.len() {
@@ -775,6 +805,7 @@ impl RadixCache {
 
         while key_offset < page_keys.len() {
             let can_extend_leaf = current != self.root
+                && self.hicache.is_none()
                 && self.nodes[current].children.is_empty()
                 && (self.nodes[current].lock_ref == 0
                     || (allow_locked_tail_extension
@@ -815,11 +846,23 @@ impl RadixCache {
             self.touch_node(child_id, now);
 
             if common_len == child_len {
+                if self.nodes[child_id].value.is_empty() {
+                    self.restore_device_pages(
+                        child_id,
+                        page_ids[key_offset..key_offset + common_len].to_vec(),
+                    );
+                }
                 key_offset += common_len;
                 current = child_id;
             } else {
                 if common_len > 0 {
                     let intermediate = self.split_node(child_id, common_len);
+                    if self.nodes[intermediate].value.is_empty() {
+                        self.restore_device_pages(
+                            intermediate,
+                            page_ids[key_offset..key_offset + common_len].to_vec(),
+                        );
+                    }
                     key_offset += common_len;
                     if key_offset < page_keys.len() {
                         return self.create_child(
@@ -881,7 +924,11 @@ impl RadixCache {
             let child_parent = child.parent;
             let original_ck = child.key[0];
             let prefix_key = split_edge_prefix(&mut child.key, split_pos);
-            let prefix_value = split_edge_prefix(&mut child.value, split_pos);
+            let prefix_value = if child.value.is_empty() {
+                Vec::new()
+            } else {
+                split_edge_prefix(&mut child.value, split_pos)
+            };
             let suffix_ck = child.key[0];
             (
                 child_parent,
@@ -907,6 +954,13 @@ impl RadixCache {
             edge_version: 0,
         };
         let inter_id = self.nodes.insert(intermediate);
+        if let Some(host) = &mut self.hicache
+            && let Some(mut state) = host.nodes.get(&child_id).cloned()
+        {
+            state.identity = None;
+            state.duplicate_order = None;
+            host.nodes.insert(inter_id, state);
+        }
 
         let child = &mut self.nodes[child_id];
         child.parent = Some(inter_id);
@@ -914,6 +968,8 @@ impl RadixCache {
         if let Some(parent_id) = child_parent {
             self.nodes[parent_id].children.insert(original_ck, inter_id);
         }
+
+        self.register_host_duplicate(inter_id);
 
         // Both size totals are unchanged: the intermediate and suffix split
         // the original edge without changing its lock state or token count.
@@ -973,11 +1029,12 @@ impl RadixCache {
                 break;
             }
             let was_unlocked = self.nodes[id].lock_ref == 0;
+            self.remove_host_candidate(id);
             if was_unlocked && !(is_terminal && terminal_unindexed) {
                 self.remove_evictable_leaf(id);
             }
             let node = &mut self.nodes[id];
-            let tokens = node.key.len() * self.page_size;
+            let tokens = node.value.len() * self.page_size;
             node.lock_ref += 1;
             if was_unlocked {
                 self.evictable_size -= tokens;
@@ -1003,12 +1060,13 @@ impl RadixCache {
             }
             node.lock_ref -= 1;
             if node.lock_ref == 0 {
-                let tokens = node.key.len() * self.page_size;
+                let tokens = node.value.len() * self.page_size;
                 self.protected_size -= tokens;
                 self.evictable_size += tokens;
-                if self.is_leaf(id) {
+                if self.is_evictable_leaf(id) {
                     self.insert_evictable_leaf(id);
                 }
+                self.insert_host_candidate(id);
             }
             current = self.nodes[id].parent;
         }
@@ -1019,6 +1077,9 @@ impl RadixCache {
     /// Evict eligible leaf pages using the selected policy, rounding to full pages.
     /// Returns `(num_tokens_evicted, evicted_page_ids)`.
     pub fn evict(&mut self, num_tokens: usize) -> (usize, Vec<KvPageId>) {
+        if self.hicache.is_some() {
+            return self.evict_hicache_device(num_tokens);
+        }
         self.sync_belady_priorities();
         let mut evicted = 0;
         let mut evicted_indices =

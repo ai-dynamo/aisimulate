@@ -11,6 +11,10 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.release.package_identity import core_package
+
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
 REPLAY_ADAPTER_SHA256 = "2d03eb4fe0d62f2dd09521fc3cb1e5e97f6d956ef9efd2fb43eabc48d2318af3"
 
@@ -128,7 +132,7 @@ class LiteralSite(NamedTuple):
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
 # Adds `field: None` for new optional AISimulate fields and empty images for the
-# pinned text-only Request; Dynamo behavior is otherwise unchanged.
+# pinned text-only Request; retain the recorded Weka client behavior.
 OPTIONAL_FIELD_LITERALS = (
     LiteralSite(
         "lib/mocker/src/grouped_scheduler/compatibility.rs",
@@ -164,6 +168,13 @@ OPTIONAL_FIELD_LITERALS = (
         "fn build_synthetic_workload(",
         "SyntheticTraceSpec",
         "src/replay/loadgen/types.rs",
+    ),
+    LiteralSite(
+        "lib/bindings/python/rust/llm/replay.rs",
+        "5f0f5910a77f6bb1bd315c67b75e161d792dddc8fd6381ea35e2046855470f41",
+        "fn parse_weka_import_options(",
+        "WekaImportOptions",
+        "src/replay/loadgen/weka.rs",
     ),
 )
 _OPTION_TYPE = re.compile(r"(?:(?:std|core)::option::)?Option\s*<.*>", re.DOTALL)
@@ -248,9 +259,14 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     defaults = {
         "ReplaySpec": {"encoder": ((True, "Option<EncoderSpec>"), "None")},
         "SyntheticTraceSpec": {"images": ((True, "Option<SyntheticImages>"), "None")},
+        "WekaImportOptions": {"client": ((True, "WekaClient"), "WekaImportOptions::default().client")},
         "SglangConfig": {
+            "hicache": ((True, "Option<SglangHiCacheConfig>"), "None"),
             "host_loop": ((True, "bool"), "false"),
             "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),
+            "disaggregation_decode_enable_radix_cache": ((True, "bool"), "false"),
+            "num_reserved_decode_tokens": ((True, "usize"), "SglangConfig::default().num_reserved_decode_tokens"),
+            "disaggregation_decode_extra_slots": ((True, "Option<usize>"), "None"),
         },
     }.get(site.struct)
     if defaults is not None:
@@ -411,6 +427,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
         raise ValueError("unexpected Dynamo revision")
     subprocess.run(["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"], check=True)
     core = source / "crates/core"
+    package = core_package(core)
     handoff_compatibility = patch_handoff_timing(core, dynamo)
     literal_compatibility = patch_optional_literal_fields(core, dynamo)
     speculation_compatibility = patch_speculation_depth(dynamo)
@@ -422,7 +439,9 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
     ):
         text, count = re.subn(
             r"^aisimulate-core = .*",
-            lambda _: f"aisimulate-core = {{ path = {json.dumps(str(core))}{options} }}",
+            lambda _: (
+                f"aisimulate-core = {{ package = {json.dumps(package)}, path = {json.dumps(str(core))}{options} }}"
+            ),
             manifest.read_text(),
             flags=re.MULTILINE,
         )
@@ -438,7 +457,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
             cwd=bindings,
         )
     )
-    linked = [p["manifest_path"] for p in metadata["packages"] if p["name"] == "aisimulate-core"]
+    linked = [p["manifest_path"] for p in metadata["packages"] if p["name"] == package]
     if linked != [str(core / "Cargo.toml")]:
         raise ValueError(f"Dynamo resolved a different AISimulate core: {linked}")
     subprocess.run(

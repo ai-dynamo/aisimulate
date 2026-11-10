@@ -15,12 +15,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from build_simulation_dynamo import (
     SPECULATION_DEPTH_NEW,
     SPECULATION_DEPTH_OLD,
     SPECULATION_DEPTH_PATH,
     SPECULATION_DEPTH_SHA256,
 )
+
+from scripts.release.package_identity import core_package
 
 # Minimal interface scaffolding adapted from NVIDIA Dynamo, Apache-2.0:
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/perf_model.rs
@@ -93,7 +96,8 @@ def check(source: Path, dynamo: Path) -> None:
             '[package]\nname = "dynamo-callback-contract"\nversion = "0.0.0"\nedition = "2024"\n'
             '[lib]\npath = "lib.rs"\n[features]\ndefault = ["ais-forward-pass"]\nais-forward-pass = []\n'
             "[dependencies]\n"
-            f'aisimulate-core = {{ path = {json.dumps(str(core))}, features = ["embed-python"] }}\n'
+            f"aisimulate-core = {{ package = {json.dumps(core_package(core))}, "
+            f'path = {json.dumps(str(core))}, features = ["embed-python"] }}\n'
             'pyo3 = { version = "0.23.4", features = ["auto-initialize", "abi3-py311"] }\n'
             'serde_json = "1"\nanyhow = "1"\n[profile.dev]\ndebug = 0\n[profile.test]\ndebug = 0\n'
         )
