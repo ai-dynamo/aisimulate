@@ -89,7 +89,8 @@ def _loaded_config(owner: Any, payload: dict) -> None:
         # another config during observation or hash a caller-supplied host copy.
         # Read the commit that the loaded config object holds itself. A config that
         # forwards attribute reads to a nested text config can report that config's
-        # _commit_hash, which is None, so only the own instance dictionary counts.
+        # _commit_hash, which is the commit of another configuration, not of the loaded
+        # one, so only the own instance dictionary counts.
         # transformers 5.19.0 sets no _commit_hash at all; then take the commit of the
         # pinned snapshot that holds the loaded config.json.
         hf_config = getattr(model, "hf_config", None)
@@ -146,8 +147,8 @@ def _resolved(owner: Any, *, hybrid_evidence: bool = False) -> dict:
 
 def _worker_cache(owner: Any) -> dict:
     cache = legacy.worker_memory(owner)
-    # Only a version without hybrid evidence reaches this route; it reads shared_by with vLLM 0.27.0 meaning,
-    # and the audited bundles of such versions are for 0.27.0 and 0.28.0 (0.28.0 as a campaign-local example manifest).
+    # Only a version without hybrid evidence reaches this route; it reads shared_by with vLLM 0.27.0 meaning.
+    # Of such versions only 0.27.0 has an audited bundle; 0.28.0 has an example campaign-local manifest.
     if any("layers" in item or "layer_stride" in item for item in cache.get("tensor_allocations", [])):
         raise ValueError("layer-strided cache tensor records need an audited instrumentation adapter")
     return cache

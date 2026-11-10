@@ -1123,12 +1123,14 @@ def test_probe_reads_the_commit_of_a_config_without_commit_hash_from_the_pinned_
 
 def test_probe_refuses_a_hub_config_without_commit_hash_and_without_a_pinned_revision(tmp_path, monkeypatch):
     campaign = _glm_campaign(tmp_path, monkeypatch)
-    _hub_loaded_config(campaign, monkeypatch, commit=None, text_commit=None)
+    _, lookups = _hub_loaded_config(campaign, monkeypatch, commit=None, text_commit=None)
     del campaign.config.model_config.hf_config.__dict__["_commit_hash"]
     campaign.config.model_config.revision = None
     for record in campaign.run():
         assert "model_config_sha256" in record["unresolved_fields"]
         assert "loaded remote config has no immutable cache commit" in record["error"]
+    # An absent revision is not resolved through the cache.
+    assert lookups == []
 
 
 def _glm_campaign(tmp_path, monkeypatch):
