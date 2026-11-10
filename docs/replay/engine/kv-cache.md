@@ -173,6 +173,9 @@ flag; verify both capabilities when deploying an older SGLang version.
 
 ## SGLang Mamba checkpoints
 
+The [measured before/after comparison](mamba-cache-accuracy.md) covers 95 captured
+Qwen requests, including the remaining TTFT/TPOT error and reproduction commands.
+
 For a hybrid model such as Qwen3.5, matching attention KV tokens is insufficient:
 the same prefix must also own a recurrent-state checkpoint. Set
 `engine.workers.aggregated.kv_cache.mamba_cache` to model SGLang's non-lazy,

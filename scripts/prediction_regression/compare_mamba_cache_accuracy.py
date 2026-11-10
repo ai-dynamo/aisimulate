@@ -127,6 +127,26 @@ def first_native_prefills(path: Path) -> dict[str, dict[str, Any]]:
     return first
 
 
+def validate_prompt_binding(trace_hashes: dict[str, str], prompts_path: Path) -> None:
+    expected = digest(prompts_path)
+    if not trace_hashes:
+        raise ValueError("captured replay must identify its trace inputs")
+    for name, expected_trace_hash in trace_hashes.items():
+        path = Path(name)
+        if digest(path) != expected_trace_hash:
+            raise ValueError("trace changed after replay")
+        with path.open() as stream:
+            header = json.loads(next(stream))
+        if header.get("source", {}).get("native_prompt_map_sha256") != expected:
+            raise ValueError("replay trace is not bound to the supplied native prompt capture")
+
+
+def validate_first_geometry(reference: dict[str, Any], prompt_length: int, chunk: int) -> None:
+    cached = reference["cached_tokens"]
+    if not 0 <= cached < prompt_length or reference["extend_tokens"] != min(prompt_length - cached, chunk):
+        raise ValueError("native first-prefill geometry does not satisfy the singleton chunk scoring contract")
+
+
 def forest_prediction(forest: dict[str, Any], extend: int, past: int) -> float:
     values = {
         "req_batch_size": 1,
@@ -218,6 +238,7 @@ def compare(args: argparse.Namespace) -> None:
     for side, report in reports.items():
         if len(records[side]) != len(report["per_request"]):
             raise ValueError(f"duplicate replay request IDs: {side}")
+    validate_prompt_binding(manifests["before"]["trace_sha256"], args.native_prompts)
     native = first_native_prefills(args.native_canonical)
     prompt_rows = read_jsonl(args.native_prompts)
     prompts = {row["request_labels"]["x_request_id"]: row for row in prompt_rows}
@@ -245,6 +266,7 @@ def compare(args: argparse.Namespace) -> None:
     rows = []
     for request_id, reference in native.items():
         prompt_length = prompts[request_id]["prompt_length"]
+        validate_first_geometry(reference, prompt_length, chunk)
         if len(prompts[request_id]["prompt_token_ids"]) != prompt_length:
             raise ValueError(f"native prompt length disagrees with captured tokens: {request_id}")
         row = {"request_id": request_id, "prompt_tokens": prompt_length, "native": reference}

@@ -126,3 +126,27 @@ def test_repeat_control_excludes_only_host_cost_and_preserves_simulated_time():
     canonical = metric.canonical_report(report)
     assert canonical == {"per_request": [{"ttft_ms": 12.3}], "duration_ms": 100}
     assert report["wall_time_ms"] == 123
+
+
+def test_prompt_binding_rejects_same_length_different_capture(tmp_path):
+    prompts = tmp_path / "prompts.jsonl"
+    prompts.write_text('{"prompt_token_ids":[1,2,3]}\n')
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        json.dumps({"source": {"native_prompt_map_sha256": metric.digest(prompts)}})
+        + "\n"
+    )
+    trace_hashes = {str(trace): metric.digest(trace)}
+    metric.validate_prompt_binding(trace_hashes, prompts)
+    prompts.write_text('{"prompt_token_ids":[3,2,1]}\n')
+    with pytest.raises(ValueError, match="not bound"):
+        metric.validate_prompt_binding(trace_hashes, prompts)
+
+
+def test_conditional_score_rejects_other_native_chunk_or_batch_budget():
+    metric.validate_first_geometry({"cached_tokens": 64, "extend_tokens": 32}, 100, 32)
+    metric.validate_first_geometry({"cached_tokens": 96, "extend_tokens": 4}, 100, 32)
+    with pytest.raises(ValueError, match="singleton chunk scoring contract"):
+        metric.validate_first_geometry(
+            {"cached_tokens": 64, "extend_tokens": 16}, 100, 32
+        )

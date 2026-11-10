@@ -1,0 +1,267 @@
+{
+  "schema": "aisimulate.mamba_cache_accuracy_summary.v1",
+  "source_capture": {
+    "run_id": "qwen-tp4-c1-source24-5563558",
+    "measurement": "native GPU capture, not published benchmark aggregate values",
+    "model": "Qwen/Qwen3.5-397B-A17B-FP8",
+    "hardware": "4xB200",
+    "backend": "sglang",
+    "native_revision": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+    "tensor_parallel": 4,
+    "attention_data_parallel": 1,
+    "lanes": 1,
+    "page_size": 64,
+    "chunked_prefill_size": 16384,
+    "speculation": "disabled",
+    "host_offload": "disabled",
+    "source_trace_count": 24,
+    "requests": 95,
+    "warmup_requests": 1,
+    "profiling_requests": 94,
+    "dataset_kind": "derived short diagnostic windows",
+    "output_token_cap": 128,
+    "inter_request_gap_cap_seconds": 1,
+    "benchmark_submission_eligible": false
+  },
+  "comparison": {
+    "baseline_revision": "4ff7bd2ab8748c4c843db8a1755eb0bc59c8a0c6",
+    "candidate_behavior_revision": "93a9c551555331b0b9825b9f6c332bcc1819abfe",
+    "changed_configuration": "sglang.mamba_cache only; no checkpoint or per-request cached-prefix oracle input",
+    "mamba_cache": {
+      "prefill_checkpoint_interval": 64,
+      "decode_checkpoint_interval": 256,
+      "max_states": 994
+    },
+    "execution_api": "run_replay_json",
+    "completed_requests_each": 95,
+    "runner_sha256": "3006fd591947a17785b75cc7f859d2ce8152e4fd35537460ef57a7b361e26e37",
+    "baseline_runtime_sha256": "44c3ec70eb34ace4ae44ec63de2a98aae854b2a3263366d157022689cd8f7c79",
+    "candidate_runtime_sha256": "cc36c2a2f3619cc51153ba0d18c1f8448251b7f71eb5831db78aa70b866bb1d7",
+    "build": {
+      "rustc": "1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "1.99.0 (5f94df478 2026-08-27)",
+      "profile": "release",
+      "features": [
+        "extension-module"
+      ],
+      "command": "cargo +1.99.0 build --release --locked -p aisim-core --features extension-module",
+      "platform": "x86_64-unknown-linux-gnu",
+      "comparison_host": "same host for both revisions",
+      "gpu_collection": "none during this comparison; uses preserved native GPU capture"
+    }
+  },
+  "inputs_sha256": {
+    "input_execution": "1e522ce7a584eab502981177f2960df272ad198b55eed2e47d1be87bddcefa62",
+    "observed_agentic_trace": "5168560e6fcdf4a116a3135b3bbc2e8853b04d1ad41c23e3b53cf953f09c7203",
+    "frozen_forest": "55c447c5468124d5870c1323cae0e1030ec23577225a68e56f33a5805557f2d9",
+    "native_canonical_fpm": "5587e697429d953ed6fdc72c34cc0fb0517f082d61bac2e42041f3cb78f1b66c",
+    "native_prompt_map": "0801f499a4fb322547144802987fd61b059fbab1d8b724324b7f024a697b5b4f",
+    "native_client_metrics": "10e46ece97e20db1d449bd254c521aeaf6a9d03300f51b7bd3774db5853c1ce0"
+  },
+  "forest": {
+    "feature_dimensions": 10,
+    "train_rows": {
+      "pure_decode": 11401,
+      "pure_prefill": 210
+    },
+    "independent_test_rows": 0,
+    "adaptation": "frozen"
+  },
+  "all_requests": {
+    "before": {
+      "requests": 95,
+      "cache_exact_matches": 77,
+      "cache_exact_match_pct": 81.05263157894737,
+      "cache_token_mae": 663.578947368421,
+      "cache_token_max_abs_error": 14656,
+      "uncached_prefill_token_wape_pct": 2.620479060485096,
+      "conditional_first_prefill_step_mape_pct": 7.389035095451119
+    },
+    "after": {
+      "requests": 95,
+      "cache_exact_matches": 95,
+      "cache_exact_match_pct": 100.0,
+      "cache_token_mae": 0,
+      "cache_token_max_abs_error": 0,
+      "uncached_prefill_token_wape_pct": 0.0,
+      "conditional_first_prefill_step_mape_pct": 0.023921544630102553
+    }
+  },
+  "profiling_requests": {
+    "before": {
+      "requests": 94,
+      "cache_exact_matches": 76,
+      "cache_exact_match_pct": 80.85106382978724,
+      "cache_token_mae": 670.6382978723404,
+      "cache_token_max_abs_error": 14656,
+      "uncached_prefill_token_wape_pct": 2.6410947471792783,
+      "conditional_first_prefill_step_mape_pct": 7.455747184583721
+    },
+    "after": {
+      "requests": 94,
+      "cache_exact_matches": 94,
+      "cache_exact_match_pct": 100.0,
+      "cache_token_mae": 0,
+      "cache_token_max_abs_error": 0,
+      "uncached_prefill_token_wape_pct": 0.0,
+      "conditional_first_prefill_step_mape_pct": 0.012281361945460506
+    }
+  },
+  "client_timing_diagnostic": {
+    "before": {
+      "profiling_requests": 94,
+      "ttft_mape_pct": 50.86303364532421,
+      "ttft_native_mean_ms": 919.0178232234042,
+      "ttft_replay_mean_ms": 676.6960036276627,
+      "tpot_mape_pct": 2.6444127070624366,
+      "tpot_native_mean_ms": 5.218220307820759,
+      "tpot_replay_mean_ms": 5.086729101718666
+    },
+    "after": {
+      "profiling_requests": 94,
+      "ttft_mape_pct": 47.129015729510336,
+      "ttft_native_mean_ms": 919.0178232234042,
+      "ttft_replay_mean_ms": 692.5637616595762,
+      "tpot_mape_pct": 2.644412707062714,
+      "tpot_native_mean_ms": 5.218220307820759,
+      "tpot_replay_mean_ms": 5.086729101718652
+    }
+  },
+  "first_baseline_cache_mismatch": {
+    "request_id": "3d3a962a-26ec-4d69-8cc6-d6d9fd90a8ec",
+    "prompt_tokens": 46462,
+    "native": {
+      "cached_tokens": 44736,
+      "extend_tokens": 1726,
+      "duration_ms": 66.45938873291016,
+      "phase": "profiling",
+      "source_trace_id": "1493faffdc8942e99daa22277f44871a40b8"
+    },
+    "native_client": {
+      "request_id": "3d3a962a-26ec-4d69-8cc6-d6d9fd90a8ec",
+      "source_trace_id": "1493faffdc8942e99daa22277f44871a40b8",
+      "source_outer_idx": 2,
+      "source_subagent_idx": null,
+      "status": "recorded",
+      "output_tokens": 128,
+      "ttft_ms": 195.550021,
+      "tpot_visible_span_ms": 5.172629448818898,
+      "published_itl_ms": 5.172629448818897,
+      "request_latency_ms": 852.4739609999999,
+      "cached_prompt_tokens": 44736,
+      "prompt_tokens": 46462
+    },
+    "before": {
+      "cached_tokens": 46400,
+      "uncached_prefill_tokens": 62,
+      "first_step_extend_tokens": 62,
+      "conditional_first_step_prediction_ms": 34.06761550903447,
+      "conditional_first_step_ape_pct": 48.739198240376744,
+      "replay_ttft_ms": 34.06761600000027,
+      "replay_tpot_ms": 5.036506653543198
+    },
+    "after": {
+      "cached_tokens": 44736,
+      "uncached_prefill_tokens": 1726,
+      "first_step_extend_tokens": 1726,
+      "conditional_first_step_prediction_ms": 66.45938873291067,
+      "conditional_first_step_ape_pct": 7.697795292750511e-13,
+      "replay_ttft_ms": 66.45938899999965,
+      "replay_tpot_ms": 5.036506653543198
+    }
+  },
+  "controls": {
+    "baseline_repeat": {
+      "status": "pass",
+      "excluded_host_runtime_fields": [
+        "processed_output_tokens_per_s",
+        "processed_tokens_per_s",
+        "wall_time_ms"
+      ],
+      "canonical_report_sha256": "e9678b462dad4f2cc88813d50538830b801f5692fdd388b3ca2d0b62ae31556f",
+      "run_report_sha256": [
+        "e4335663254a61e6e34c303b8c3bea2156bd222896593fb160f145e001697607",
+        "4f77539ca1f3c9b6e76b1aaa1ee8ac4333fd5b447f6c48ed9b782659bf21d5b6"
+      ]
+    },
+    "candidate_repeat": {
+      "status": "pass",
+      "excluded_host_runtime_fields": [
+        "processed_output_tokens_per_s",
+        "processed_tokens_per_s",
+        "wall_time_ms"
+      ],
+      "canonical_report_sha256": "70ab012f1f72c37e740638931a8decf885bccb28bfb3f15c2cbaa265fe369c99",
+      "run_report_sha256": [
+        "8a506bc230cbb9e11709cd488f8a8f94b105bcc0be22601fc05813daca524aac",
+        "d6ab579a3c3f46595a43518e23bfc420f32a4ee4819c5e844c67e0713f402d07"
+      ]
+    },
+    "candidate_without_mamba_matches_baseline": {
+      "status": "pass",
+      "excluded_host_runtime_fields": [
+        "processed_output_tokens_per_s",
+        "processed_tokens_per_s",
+        "wall_time_ms"
+      ],
+      "canonical_report_sha256": "e9678b462dad4f2cc88813d50538830b801f5692fdd388b3ca2d0b62ae31556f",
+      "run_report_sha256": [
+        "e4335663254a61e6e34c303b8c3bea2156bd222896593fb160f145e001697607",
+        "5191608ab1b49fe1d935b2e09dc12d2a1c43b2e10c356546f96925a39165799b"
+      ]
+    },
+    "forest_interpreter": {
+      "status": "pass",
+      "all_native_prefill_steps": 210,
+      "max_absolute_difference_ms": 0.0,
+      "scope": "Independent scorer interpretation of frozen forest compared with saved native training predictions; excludes decode."
+    },
+    "metric_scalar_tests": {
+      "passed": 7,
+      "file": "tests/test_mamba_cache_accuracy_metrics.py"
+    },
+    "input_binding": "trace header native_prompt_map_sha256 equals actual native prompt capture SHA256",
+    "conditional_geometry": "all95 native first-prefill observations are singleton batches with extend=min(prompt-cached,16384)"
+  },
+  "full_per_request_report_sha256": "7b0960e7ce229214be36d674e8194be69d0aed9c9518acf29b23589feced62f9",
+  "run_manifests_with_resolved_revisions": {
+    "before": {
+      "runtime_sha256": "44c3ec70eb34ace4ae44ec63de2a98aae854b2a3263366d157022689cd8f7c79",
+      "source_revision": "4ff7bd2ab8748c4c843db8a1755eb0bc59c8a0c6",
+      "input_execution_sha256": "1e522ce7a584eab502981177f2960df272ad198b55eed2e47d1be87bddcefa62",
+      "executed_payload_sha256": "7743c1ee2d3318f72a952520b408f3bbafb58add0f647462de7178fbda8ecd5f",
+      "forest_sha256": "55c447c5468124d5870c1323cae0e1030ec23577225a68e56f33a5805557f2d9",
+      "mamba_cache": null,
+      "runner_sha256": "3006fd591947a17785b75cc7f859d2ce8152e4fd35537460ef57a7b361e26e37",
+      "status": "executed",
+      "execution_api": "run_replay_json",
+      "completed_requests": 95,
+      "report_sha256": "e4335663254a61e6e34c303b8c3bea2156bd222896593fb160f145e001697607"
+    },
+    "after": {
+      "runtime_sha256": "cc36c2a2f3619cc51153ba0d18c1f8448251b7f71eb5831db78aa70b866bb1d7",
+      "source_revision": "93a9c551555331b0b9825b9f6c332bcc1819abfe",
+      "input_execution_sha256": "1e522ce7a584eab502981177f2960df272ad198b55eed2e47d1be87bddcefa62",
+      "executed_payload_sha256": "74361033860d526ea0d9527f1a9d88d3301d09ead6aa475c367befaf17447b12",
+      "forest_sha256": "55c447c5468124d5870c1323cae0e1030ec23577225a68e56f33a5805557f2d9",
+      "mamba_cache": {
+        "prefill_checkpoint_interval": 64,
+        "decode_checkpoint_interval": 256,
+        "max_states": 994
+      },
+      "runner_sha256": "3006fd591947a17785b75cc7f859d2ce8152e4fd35537460ef57a7b361e26e37",
+      "status": "executed",
+      "execution_api": "run_replay_json",
+      "completed_requests": 95,
+      "report_sha256": "8a506bc230cbb9e11709cd488f8a8f94b105bcc0be22601fc05813daca524aac"
+    }
+  },
+  "limitations": [
+    "Frozen FPM trained on this capture; independent test rows are zero.",
+    "Conditional step prediction changes only cache-derived input geometry; it does not assert aligned post-divergence whole batches.",
+    "Both sides use the same closed-loop diagnostic trace; native arrival times and client-visible timing boundaries remain different.",
+    "Native generated output token IDs and complete live checkpoint inventory were not captured.",
+    "Opt-in aggregated DP1/STP hybrid cache; state/KV eviction pressure fails explicitly rather than being scored.",
+    "The client TTFT residual is unresolved; this result does not establish full end-to-end accuracy."
+  ]
+}
