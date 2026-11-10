@@ -324,7 +324,8 @@ def _v033_runtime(storage, layout, blocks):
                 ),
             )
         ]
-        # Block-outer: the tensor of each spec starts at its page in the block (v1/core/kv_cache_planning.py:914-918).
+        # Block-outer: the tensor of each spec starts at its page in the block, and its block stride is the bytes
+        # per block (v1/core/kv_cache_planning.py:679, :685-694, :720-732).
         tensors = [
             SimpleNamespace(
                 size=storage.size,
@@ -1338,6 +1339,20 @@ def test_v033_glm_records_import_complete(tmp_path, monkeypatch):
         "align",
         2176,
     )
+
+
+def test_v033_kernel_view_records_import_complete(tmp_path, monkeypatch):
+    from collector.fpm_forward.runtime_observations import validate_observations
+
+    # The records with an indexer view in kernel blocks go through the importer unchanged.
+    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.33.0", runner_version=2, layout="kernel_view")
+    for phase in ("prefill", "decode"):
+        records = campaign.run(phase)
+        assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+    result = validate_observations(tmp_path / "observations.json", {"worker": campaign.launch})["worker"]
+    assert result["status"] == "complete", result["diagnostics"]
+    (group,) = result["resources"]["cache_groups"]
+    assert (group["kind"], group["num_layers"], group["block_size_tokens"]) == ("attention", 2, 64)
 
 
 def test_v033_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):

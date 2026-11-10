@@ -73,7 +73,10 @@ _V033_SPEC = "vllm.v1.kv_cache_interface."
 def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
     """The worker cache, scheduler cache and resolved config of one vLLM 0.33.0 rank.
 
-    ``glm_tp4`` follows the live GLM-5.3-Flash TP4 fake of ``test_runtime_adapter._v033_runtime``:
+    ``glm_tp4`` follows the GLM-5.3-Flash TP4 fake of ``test_runtime_adapter._v033_runtime``. As there, its
+    specs, kernel blocks and views follow vLLM 0.33.0, while the layer-outer placement and offsets, the regions
+    that overlay each other, the tail page padded to the 71,808-byte indexer page, the 13,045,120-byte pool block
+    and the capacity that follows from them are still the vLLM 0.31.0 layout. In it,
     G0 lists each indexer before its MLA latent layer, the scheduler copy of G0 is
     the first indexer spec, MLA and indexer views are 3-D, KDA layer i of every Mamba group
     overlays the region of MLA layer i and cuts its two states from that page, and tail layer i
@@ -1970,6 +1973,21 @@ def test_v033_runner_kernel_blocks_must_cover_every_cache_group(tmp_path, change
     result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "incomplete"
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+@pytest.mark.parametrize("field,value", [("kernel_block_size_tokens", 32), ("kernel_block_stride", 1)])
+def test_v033_views_of_one_layer_must_share_a_kernel_block_and_stride(tmp_path, field, value):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        # Only the SSM state view of mamba.0 changes; its convolution state view keeps the group block and stride 0.
+        if record["kind"] == "worker":
+            record["cache"]["layer_tensors"]["mamba.0"][1][field] = value
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: layer view kernel block contradicts its cache spec: mamba.0"]
 
 
 def _edit_view(path, name, **change):
