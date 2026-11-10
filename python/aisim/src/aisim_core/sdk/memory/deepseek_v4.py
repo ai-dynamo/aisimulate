@@ -161,5 +161,10 @@ def deepseek_v4_state_cache(
         "kv_cache_dtype": "fp8_ds_mla",
         "indexer_cache_dtype": indexer,
         "num_speculative_tokens": num_speculative_tokens,
+        # vLLM drops the MTP block in the group holding the last (MTP) layer
+        # (v0.32.0 kv_cache_utils._annotate_eagle_groups). That layer has no
+        # compressor (models/deepseek_v4/attention.py), so its group is a
+        # sliding-window KV group of _SWA_BLOCK_SIZE-token blocks.
+        "sliding_window_lookahead_tokens": _SWA_BLOCK_SIZE,
         "backend_revision": VLLM_REVISION,
     }

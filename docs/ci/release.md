@@ -59,6 +59,88 @@ do not create a separate licensing boundary. `scripts/ci/check_packaged_legal_fi
 fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
+### Bundled model configuration provenance
+
+Python and Cargo dependency inventories do not describe model configuration files
+copied into the wheel. `scripts/ci/bundled_configs.json` records each configuration's
+packaged path, SHA256, origin, upstream file URL and immutable commit, modification
+status, license, copyright owner and canonical notice reference. The checker
+validates the complete referenced license text against its recorded digest;
+whitespace-only reflow is ignored. License identifiers are bound to registered
+legal-text digests, so a custom agreement cannot accidentally be labelled MIT
+without changing the license registry too. Explicit required attribution is checked
+in notice prose outside the agreement itself. Canonical attribution remains in the root legal
+files and their byte-identical packaging copies.
+
+Fast CI runs `scripts/ci/check_bundled_configs.py` against source files. Full CI,
+platform-wheel jobs (including macOS), and nightly builds check the exact repaired
+wheel before it is staged or its runtime dependencies execute. These checks do not
+import the wheel. New files without an inventory entry, changed bytes without
+updated provenance, missing source/license information, incomplete notices, and
+unexpected or missing wheel configurations fail validation. Inventory and checker
+changes use the repository's existing code-owner review process; metadata is a
+declaration to review, not proof of legal clearance.
+
+The enforced scope is configuration files under `model_configs/`, plus JSON model
+descriptors with top-level `architectures` or `model_type` found elsewhere in the
+packaged source and wheel. This detects a Hugging Face config copied to another
+package directory, but does not infer arbitrary copied data's origin from numbers
+or detect every possible third-party asset. Project-authored files require an
+explicit origin and description; generated files also require recorded inputs.
+
+For an existing file whose provenance has not been individually established,
+`origin: legacy_unresolved` and `license: UNKNOWN` preserve that uncertainty in
+the report. This exception is limited to exact path/hash pairs in
+`scripts/ci/bundled_config_legacy.json`, frozen at the recorded bootstrap commit.
+The checker pins the baseline file's digest. Adding a file or editing its bytes
+cannot use this exception, even if its inventory hash is updated. Resolving an
+entry replaces it with verified source/license metadata; do not label unknown
+content Apache-2.0 to make CI pass. The baseline is not an OSRB approval.
+
+To validate and collect evidence locally:
+
+```bash
+python scripts/ci/check_bundled_configs.py check --output-dir /tmp/bundled-config-source
+python scripts/ci/check_bundled_configs.py extract --check --wheel dist/*.whl \
+  --output-dir /tmp/bundled-config-wheel
+```
+
+The `extract` subcommand unpacks the detected configurations and legal files
+without importing or installing the wheel. Files retain their archive-relative
+paths beneath `files/`; `extracted-files.json` records the wheel SHA256 and each
+file's size, hash, and kind. Legal files include the wheel's `.dist-info/licenses/`
+contents and conventional LICENSE, LICENCE, COPYING, NOTICE, and
+THIRD_PARTY_NOTICES filenames. Use a new or empty output directory.
+
+For inspection of an unrecorded or historical wheel, omit `--check`. Extraction
+alone does not validate provenance or produce a compliance assessment. An
+explicit `--inventory` can include declared configurations outside the usual
+model-config locations. With `--check`, the same invocation applies the existing
+source/wheel policy and writes the reports below; a failed check leaves no
+extracted output. Existing invocations without a subcommand still mean `check`.
+
+CI uses `extract --check` and retains only `bundled-deps.csv`,
+`bundled-provenance.json`, and `extracted-files.json` as report artifacts. The raw
+configuration and license copies remain in the runner's temporary directory.
+
+The generated `bundled-deps.csv` uses the existing OSRB columns
+`dependency_type,name,version,spdx_license`; each config has type
+`bundled_model_config` and a content SHA256 as its version. Content changes
+therefore appear in the existing nightly added/removed diff. The accompanying
+`bundled-provenance.json` retains the upstream revision, complete metadata,
+unresolved entries, and the exact wheel SHA256. Custom licenses keep their
+`LicenseRef-*` identifiers and are not silently classified as permissive. These
+checks establish inventory coverage and notice integrity, not contractual
+compliance or automatic license approval.
+
+Nightly CI uploads each architecture's report and includes both in the combined
+`license-artifacts/deps.csv` and diff. Missing architecture reports fail evidence
+generation. Historical source builds without their own inventory can use an
+explicit trusted inventory with `--allow-subset`: every configuration actually
+present must still match a catalog path/hash and its notices. A historical file
+with different or unrecorded bytes fails; backport its provenance rather than
+silently skipping the check.
+
 Nightly builds stamp a dev suffix with `scripts/release/apply_dev_version.py` before
 building: the wheel becomes `0.14.0.devYYYYMMDD` (PEP 440) and the crate
 `0.14.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the

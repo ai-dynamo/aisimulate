@@ -2447,7 +2447,15 @@ def test_nightly_dependency_execution_cannot_modify_staged_artifacts_or_inherit_
 
 
 def _nightly_license_report(
-    tmp_path, crates, prior=None, lookup_error=None, workspace_members=(), manual_prior=None, artifact_pages=None
+    tmp_path,
+    crates,
+    prior=None,
+    lookup_error=None,
+    workspace_members=(),
+    manual_prior=None,
+    artifact_pages=None,
+    bundled=None,
+    bundled_arches=("amd64", "arm64"),
 ):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
@@ -2455,6 +2463,25 @@ def _nightly_license_report(
     # be deduplicated, while concurrent versions of a crate must survive.
     for arch in ("amd64", "arm64"):
         (inventories / f"{arch}-3.12.csv").write_text("Name,Version,License\nprettytable,3.16.0,BSD-3-Clause\n")
+    bundled_root = tmp_path / "bundled"
+    if bundled_root.exists():
+        shutil.rmtree(bundled_root)
+    if bundled is None:
+        bundled = [
+            {
+                "dependency_type": "bundled_model_config",
+                "name": "aisimulate_core/model_configs/example.json",
+                "version": "sha256:" + "a" * 64,
+                "spdx_license": "LicenseRef-Example",
+            }
+        ]
+    for arch in bundled_arches:
+        directory = bundled_root / f"bundled-configs-nightly-{arch}"
+        directory.mkdir(parents=True)
+        with (directory / "bundled-deps.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=["dependency_type", "name", "version", "spdx_license"])
+            writer.writeheader()
+            writer.writerows(bundled)
     (tmp_path / "cargo-metadata.json").write_text(
         json.dumps(
             {
@@ -2545,7 +2572,7 @@ def _nightly_license_report(
 def test_nightly_license_diff_preserves_concurrent_versions_and_license_changes(tmp_path):
     original = [("0.2.17", "MIT"), ("0.3.4", "MIT"), ("0.4.3", "MIT")]
     inventory, difference = _nightly_license_report(tmp_path, original)
-    assert len(inventory) == len(difference) == 4
+    assert len(inventory) == len(difference) == 5
     assert {r["version"] for r in difference if r["dependency_type"] == "crate"} == {"0.2.17", "0.3.4", "0.4.3"}
     assert all(r["change"] == "added" for r in difference)
     assert _nightly_license_report(tmp_path, original, inventory)[1] == []
@@ -2571,7 +2598,7 @@ def test_nightly_license_baseline_ignores_newer_manual_staging(tmp_path):
 
 def test_nightly_license_first_run_uses_empty_baseline(tmp_path, capsys):
     inventory, difference = _nightly_license_report(tmp_path, [("0.2.17", "MIT")])
-    assert len(inventory) == len(difference) == 2
+    assert len(inventory) == len(difference) == 3
     assert all(row["change"] == "added" for row in difference)
     assert "No prior scheduled license evidence" in capsys.readouterr().out
 
@@ -2600,6 +2627,121 @@ def test_nightly_license_inventory_excludes_workspace_packages(tmp_path):
 def test_nightly_license_inventory_rejects_conflicting_metadata(tmp_path):
     with pytest.raises(SystemExit, match="conflicting license metadata"):
         _nightly_license_report(tmp_path, [("0.2.17", "MIT"), ("0.2.17", "GPL-3.0-only")])
+
+
+def test_nightly_osrb_reports_include_bundled_configs_once_and_diff_byte_changes(tmp_path):
+    before, _ = _nightly_license_report(tmp_path, [])
+    bundled = [row for row in before if row["dependency_type"] == "bundled_model_config"]
+    assert len(bundled) == 1
+    assert bundled[0]["spdx_license"] == "LicenseRef-Example"
+    updated = [{**bundled[0], "version": "sha256:" + "b" * 64}]
+    _, difference = _nightly_license_report(tmp_path, [], before, bundled=updated)
+    assert {row["change"] for row in difference} == {"added", "removed"}
+    assert all(row["dependency_type"] == "bundled_model_config" for row in difference)
+    unknown = [{**bundled[0], "spdx_license": "UNKNOWN"}]
+    inventory, _ = _nightly_license_report(tmp_path, [], bundled=unknown)
+    assert (
+        next(row for row in inventory if row["dependency_type"] == "bundled_model_config")["spdx_license"] == "UNKNOWN"
+    )
+
+
+@pytest.mark.parametrize("arches", [(), ("amd64",), ("arm64",), ("amd64", "other")])
+def test_nightly_osrb_reports_require_both_architecture_inventories(tmp_path, arches):
+    with pytest.raises(SystemExit, match="architecture-specific bundled configuration"):
+        _nightly_license_report(tmp_path, [], bundled_arches=arches)
+
+
+def test_nightly_osrb_reports_reject_empty_bundled_inventory(tmp_path):
+    with pytest.raises(SystemExit, match="invalid bundled configuration inventory"):
+        _nightly_license_report(tmp_path, [], bundled=[])
+
+
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+@pytest.mark.parametrize("kind", ["application", "platform", "nightly"])
+def test_bundled_config_gate_selects_current_and_historical_wheels(tmp_path, package, kind):
+    if kind == "platform":
+        action = yaml.load((ACTION_ROOT / "build-platform-wheel/action.yml").read_text(), Loader=yaml.BaseLoader)
+        steps = action["runs"]["steps"]
+        directory = "wheelhouse"
+    else:
+        workflow, job, directory = (
+            ("ci.yml", "application-test-wheel", "application-test-dist")
+            if kind == "application"
+            else ("nightly-ci.yml", "build-artifacts", "nightly-dist")
+        )
+        steps = _workflow(workflow)["jobs"][job]["steps"]
+    command = next(s["run"] for s in steps if s.get("name") == "Check exact wheel configuration provenance")
+    wheel_dir = tmp_path / directory
+    wheel_dir.mkdir()
+    (wheel_dir / f"{package}-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl").touch()
+    capture = """
+python() {
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--wheel" ]; then
+            test -f "$2"
+            return
+        fi
+        shift
+    done
+    return 1
+}
+"""
+    tools = tmp_path / "tools/venv-build/bin"
+    tools.mkdir(parents=True)
+    executable = tools / "python"
+    executable.write_text("#!/bin/bash\n" + capture + '\npython "$@"\n')
+    executable.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-c", capture + command],
+        cwd=tmp_path,
+        env={**os.environ, "DIST_DIR": directory, "TOOLS_DIR": str(tmp_path / "tools"), "RUNNER_TEMP": str(tmp_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_bundled_config_gates_run_before_wheel_publication_or_installation():
+    policy = _workflow("fast-ci.yml")["jobs"]["policy"]
+    assert "scripts/ci/check_bundled_configs.py" in _run_commands(policy)
+    assert "tests/test_bundled_configs.py" in _run_commands(policy)
+    application = _workflow("ci.yml")["jobs"]["application-test-wheel"]["steps"]
+    check = next(
+        i for i, step in enumerate(application) if step.get("name") == "Check exact wheel configuration provenance"
+    )
+    upload = next(
+        i
+        for i, step in enumerate(application)
+        if step.get("with", {}).get("name", "").startswith("application-test-wheel-")
+    )
+    assert check < upload
+    assert "check_bundled_configs.py extract --check" in application[check]["run"]
+    action = yaml.load((ACTION_ROOT / "build-platform-wheel/action.yml").read_text(), Loader=yaml.BaseLoader)
+    steps = action["runs"]["steps"]
+    check = next(i for i, step in enumerate(steps) if step.get("name") == "Check exact wheel configuration provenance")
+    install = next(i for i, step in enumerate(steps) if step.get("name") == "Verify installed unified wheel")
+    assert check < install
+    assert "check_bundled_configs.py extract --check" in steps[check]["run"]
+    assert "if" not in steps[check]  # Both Linux architectures and native macOS.
+    steps = _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
+    check = next(i for i, step in enumerate(steps) if step.get("name") == "Check exact wheel configuration provenance")
+    stage = next(i for i, step in enumerate(steps) if step.get("name") == "Stage to Artifactory")
+    assert check < stage
+    assert "check_bundled_configs.py extract --check" in steps[check]["run"]
+    assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
+    for collection in (application, action["runs"]["steps"], steps):
+        upload_report = next(
+            step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
+        )
+        paths = upload_report["with"]["path"].splitlines()
+        assert {path.rsplit("/", 1)[-1] for path in paths} == {
+            "bundled-deps.csv",
+            "bundled-provenance.json",
+            "extracted-files.json",
+        }
+    tooling = next(step for step in steps if step.get("with", {}).get("path") == "release-tooling")
+    for file in ["check_bundled_configs.py", "bundled_configs.json", "bundled_config_legacy.json"]:
+        assert "/scripts/ci/" + file in tooling["with"]["sparse-checkout"]
 
 
 @pytest.mark.parametrize(

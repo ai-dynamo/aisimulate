@@ -797,6 +797,25 @@ impl NativeHostOffloadConfig {
 pub struct StateCacheConfig {
     /// Bytes occupied by one physical working state or snapshot.
     pub bytes_per_request: usize,
+    /// Present when the state is a sliding window (DeepSeek V4) rather than a
+    /// recurrent state: vLLM can then resume at any retained aligned boundary
+    /// the request passed, not only where a step ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliding_window: Option<SlidingWindowStateConfig>,
+}
+
+/// vLLM's prefix-cache retention for sliding-window groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlidingWindowStateConfig {
+    /// `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`: unset keeps every block
+    /// boundary, `0` only the prompt's replay boundaries, a positive multiple
+    /// of `block_size` additionally one boundary per interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_interval: Option<usize>,
+    /// Block size of the sliding-window group holding the MTP layer. With
+    /// speculative decoding a boundary also needs this many tokens after it.
+    pub lookahead_tokens: usize,
 }
 
 impl StateCacheConfig {
@@ -1234,6 +1253,22 @@ impl EngineConfig {
                     || self.aic_nextn.is_none(),
                 "sub-block prefix_match_unit does not support speculative decoding"
             );
+            if let Some(window) = &state_cache.sliding_window {
+                ensure!(
+                    self.prefix_match_unit.is_none(),
+                    "sliding-window state_cache does not support prefix_match_unit"
+                );
+                ensure!(
+                    window
+                        .retention_interval
+                        .is_none_or(|interval| interval.is_multiple_of(self.block_size)),
+                    "state_cache retention_interval must be a multiple of block_size"
+                );
+                ensure!(
+                    window.lookahead_tokens < self.block_size,
+                    "state_cache lookahead_tokens must be smaller than block_size"
+                );
+            }
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
                 .ok_or_else(|| anyhow::anyhow!("state_cache requires kv_cache_bytes_per_token"))?;
@@ -1760,6 +1795,7 @@ mod tests {
         assert_eq!(
             StateCacheConfig {
                 bytes_per_request: usize::MAX,
+                sliding_window: None,
             }
             .state_blocks(2, 1)
             .unwrap(),
