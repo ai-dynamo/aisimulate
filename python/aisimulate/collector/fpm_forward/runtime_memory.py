@@ -19,7 +19,7 @@ from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION
 from .model_capability import ResolvedModelConfig
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import BackendPolicy, FPMCell, _canonical_hash
-from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, SCHEMA_NAME, SCHEMA_VERSION
+from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, SCHEMA_NAME, SCHEMA_VERSION, audited_release
 from .types import ParallelTopology
 
 _CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
@@ -609,7 +609,8 @@ def resolve_runtime_resources(
         raise ValueError("runtime memory GPU memory utilization must be in (0, 1]")
     if not expected_plan_sha256 or not expected_attempt_id:
         raise ValueError("runtime memory resolution requires exact plan and attempt identities")
-    if expected_backend_version not in MEMORY_SUPPORTED_VERSIONS:
+    release = audited_release(expected_backend_version, MEMORY_SUPPORTED_VERSIONS)
+    if release is None:
         raise ValueError(f"runtime memory conversion currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}")
     collection = validate_native_collection(
         cell, raw_root, expected_plan_sha256=expected_plan_sha256, expected_attempt_id=expected_attempt_id
@@ -653,6 +654,8 @@ def resolve_runtime_resources(
             raise ValueError(f"runtime memory backend version mismatch: {path}")
         if payload.get("status") != "resolved":
             raise ValueError(f"runtime memory remains unresolved: {path}: {payload.get('error')}")
+        if release != expected_backend_version and payload.get("audited_backend_version") != release:
+            raise ValueError(f"runtime memory evidence was not checked against audited vLLM {release}: {path}")
         config = _validate_config(
             payload,
             cell,
@@ -733,6 +736,8 @@ def resolve_runtime_resources(
         "scope": "physical memory allocated by the complete collection worker; "
         "text-only timing does not subtract other loaded components",
     }
+    if release != expected_backend_version:
+        provenance["audited_backend_version"] = release
     return {
         "max_num_tokens": expected_max_num_tokens,
         "max_batch_size": expected_max_batch_size,
