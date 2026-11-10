@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import os
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +99,17 @@ def _framework_key(framework: str, workload: str) -> str:
     return normalized
 
 
+def platform_runtime_version(runtime_spec: dict[str, Any]) -> str:
+    """Resolve one exact package build within a pinned multi-architecture image."""
+    versions = runtime_spec.get("platform_versions")
+    if versions is None:
+        return runtime_spec["version"]
+    machine = platform.machine()
+    if machine not in versions:
+        raise RuntimeError(f"Pinned runtime has no package build for platform {machine!r}")
+    return versions[machine]
+
+
 def _runtime_from_spec(
     framework_key: str,
     spec: dict[str, Any],
@@ -110,7 +122,7 @@ def _runtime_from_spec(
     source_repo = spec.get("source_repo") or (manifest["frameworks"].get(base, {}).get("source_repo") if base else None)
     return CollectorRuntime(
         framework=framework_key,
-        version=runtime_spec["version"],
+        version=platform_runtime_version(runtime_spec),
         images=dict(runtime_spec["images"]),
         source_commit=runtime_spec.get("source_commit"),
         abi=dict(runtime_spec["abi"]) if runtime_spec.get("abi") else None,
@@ -306,8 +318,10 @@ def require_collector_runtime(
     except InvalidVersion as error:
         raise RuntimeError(f"Invalid installed {framework} version {installed_version!r}") from error
 
-    expected_public = Version(runtime.version).public
-    if installed_public != expected_public:
+    expected = Version(runtime.version)
+    # A manifest that names a local package build pins that build exactly.
+    # Release pins without local metadata still accept their CUDA/XPU wheels.
+    if installed_public != expected.public or (expected.local is not None and Version(installed_version) != expected):
         workload = "WideEP" if runtime.workload == "wideep" else "stock"
         raise RuntimeError(
             f"{framework} {workload} collector requires exactly {runtime.version}, found {installed_version}; "
@@ -393,6 +407,24 @@ def _validate_runtime_spec(name: str, spec: object) -> None:
         raise TypeError(f"{name} must be a mapping")
     if not isinstance(spec.get("version"), str) or not spec["version"]:
         raise ValueError(f"{name}.version is required")
+    platform_versions = spec.get("platform_versions")
+    if platform_versions is not None:
+        if (
+            not isinstance(platform_versions, dict)
+            or not platform_versions
+            or not all(
+                isinstance(machine, str) and machine and isinstance(version, str) and version
+                for machine, version in platform_versions.items()
+            )
+        ):
+            raise ValueError(f"{name}.platform_versions must map machine names to exact package versions")
+        if spec["version"] not in platform_versions.values() or not spec.get("source_commit"):
+            raise ValueError(f"{name}.platform_versions require the default version and an immutable source_commit")
+        for version in platform_versions.values():
+            try:
+                Version(version)
+            except InvalidVersion as error:
+                raise ValueError(f"{name}.platform_versions contains an invalid exact version") from error
     images = spec.get("images")
     if not isinstance(images, dict) or not images.get("default"):
         raise ValueError(f"{name}.images.default is required")

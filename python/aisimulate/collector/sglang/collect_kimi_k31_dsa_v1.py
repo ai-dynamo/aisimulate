@@ -36,15 +36,21 @@ import sys
 import tempfile
 from pathlib import Path
 
+from collector.framework_manifest import platform_runtime_version
 from collector.helper import get_sm_version, log_perf
 from collector.op_plans import ModuleCase, plan_cases
-
-__compat__ = "sglang==0.0.0.dev1+g41208373c.d20261104"
 
 MODEL = "moonshotai/Kimi-K3.1-Pro"
 MODEL_REVISION = "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
 ARCHITECTURE = "KimiK31ForConditionalGeneration"
-RUNTIME_VERSION = "0.0.0.dev1+g41208373c.d20261104"
+# Exact package builds of the same audited official source/image index. Keep
+# this startup guard independent of externally supplied runtime manifests.
+RUNTIME_VERSIONS = {
+    "x86_64": "0.0.0.dev1+g41208373c.d20261104",
+    "aarch64": "0.0.0.dev1+ge79de62d2.d20261104",
+}
+RUNTIME_VERSION = platform_runtime_version({"platform_versions": RUNTIME_VERSIONS})
+__compat__ = f"sglang=={RUNTIME_VERSION}"
 SOURCE_COMMIT = "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae"
 NATIVE_HEADS = 96
 HISTORY_CHUNK_TOKENS = 8192

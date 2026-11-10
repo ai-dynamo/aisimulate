@@ -64,6 +64,12 @@ frameworks:
       # initial plan activates only the two native K31 DSA operations.
       "moonshotai/Kimi-K3.1-Pro":
         version: "0.0.0.dev1+g41208373c.d20261104"
+        # Audited package METADATA differs between the two platform children;
+        # both have the same source marker and native DSA source-file hashes.
+        # These are exact build identities, not interchangeable version ranges.
+        platform_versions:
+          x86_64: "0.0.0.dev1+g41208373c.d20261104"
+          aarch64: "0.0.0.dev1+ge79de62d2.d20261104"
         source_commit: "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae"
         images:
           default: "lmsysorg/sglang:dev-kimi-k31-pro@sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391"
