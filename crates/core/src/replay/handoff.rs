@@ -597,6 +597,11 @@ pub fn validate_transfer_timing(transfer_timing: HandoffTransferTiming) -> Resul
     {
         bail!("invalid handoff transfer bandwidth {bandwidth_gb_s}");
     }
+    // The fill also reaches the unpriced fallback delay, so check it on its own.
+    let fill_ms = transfer_timing.pipeline_fill_ms;
+    if !fill_ms.is_finite() || fill_ms < 0.0 {
+        bail!("invalid handoff pipeline fill {fill_ms}");
+    }
     validate_transfer_delay_ms(transfer_timing.full_prompt_delay_ms())
 }
 
@@ -683,6 +688,15 @@ mod tests {
             ..missing
         };
         assert_eq!(start_transfer_delay(filled, 7.5), 9.5);
+
+        // An unpriced transfer still rejects a fill the fallback would add.
+        for fill_ms in [f64::NAN, f64::INFINITY, -1.0] {
+            let invalid = HandoffTransferTiming {
+                pipeline_fill_ms: fill_ms,
+                ..missing
+            };
+            assert!(validate_transfer_timing(invalid).is_err(), "{fill_ms}");
+        }
     }
 
     #[test]
