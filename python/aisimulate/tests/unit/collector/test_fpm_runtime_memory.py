@@ -1723,7 +1723,7 @@ def test_execution_record_of_a_plain_model_on_vllm_0330_keeps_the_bytes_of_main(
     assert _json_bytes(record["resolved_config"]) == _json_bytes(_main_execution_config())
 
 
-@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.33.0", "0.30.0"])
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.32.0", "0.33.0", "0.30.0"])
 def test_execution_observation_supports_vllm_0_33_0(tmp_path, monkeypatch, version):
     output = tmp_path / "observations"
     provenance_path = tmp_path / "serving-provenance.json"
@@ -1784,6 +1784,20 @@ def test_execution_inspection_audits_vllm_0_33_0(tmp_path, version):
     missing = inspect_execution_evidence(cell, raw, collection, plan=plan, evidence_version=1)["missing_evidence"]
     unaudited = [item for item in missing if item.startswith("execution configuration inspection is unaudited")]
     assert unaudited == ([] if version == "0.33.0" else ["execution configuration inspection is unaudited for 0.30.0"])
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_runner_stages_only_the_execution_observer_for_an_execution_only_version_without_a_profile():
+    # vLLM 0.28.0 is audited for execution observation, not for memory observation.
+    plan = replace(_pending_plan("0.28.0"), _fpm_profile_json=None)
+    assert plan.runtime_instrumentation is None
+    for cell in plan.cells:
+        assert not cell.execution_identity[0]
+        assert runner._observe_runtime_execution(plan, cell) is True
+        assert runner._observe_runtime_memory(plan, cell) is False
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
+        assert args[args.index("--scheduler-cls") + 1] == "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler"
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")

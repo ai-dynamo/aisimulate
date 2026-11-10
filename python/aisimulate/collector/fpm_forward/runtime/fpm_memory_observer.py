@@ -412,9 +412,11 @@ def _hybrid_cache_config(cache_config: Any) -> bool:
 
     Both vLLM 0.33.0 runners keep the initialized KVCacheConfig in kv_cache_config
     (vllm/v1/worker/gpu_model_runner.py:7007, vllm/v1/worker/gpu/model_runner.py:632).
-    A plain attention model has FullAttentionSpec or SlidingWindowSpec groups. A hybrid
-    model has others, for example the UniformTypeKVCacheSpecs groups of the packed path
-    (vllm/v1/core/kv_cache_planning.py:1159, :1026, :1037-1039).
+    A cache configuration whose groups are all FullAttentionSpec or SlidingWindowSpec
+    keeps the record without the hybrid cache fields. Any other cache configuration takes
+    them on vLLM 0.33.0, for example one with an MLAAttentionSpec group
+    (vllm/v1/kv_cache_interface.py:729) or with the UniformTypeKVCacheSpecs groups of the
+    packed path (vllm/v1/core/kv_cache_planning.py:1159, :1026, :1037-1039).
     """
     return any(_class_name(group.kv_cache_spec) not in _LEGACY_SPECS for group in cache_config.kv_cache_groups)
 
