@@ -408,17 +408,24 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
 
 
 def _hybrid_cache_config(cache_config: Any) -> bool:
-    """Tell whether an initialized KVCacheConfig holds a group that the plain cache reader refuses.
+    """Tell whether an initialized KVCacheConfig holds a recurrent-state group.
 
     Both vLLM 0.33.0 runners keep the initialized KVCacheConfig in kv_cache_config
     (vllm/v1/worker/gpu_model_runner.py:7007, vllm/v1/worker/gpu/model_runner.py:632).
-    A cache configuration whose groups are all FullAttentionSpec or SlidingWindowSpec
-    keeps the record without the hybrid cache fields. Any other cache configuration takes
-    them on vLLM 0.33.0, for example one with an MLAAttentionSpec group
-    (vllm/v1/kv_cache_interface.py:729) or with the UniformTypeKVCacheSpecs groups of the
-    packed path (vllm/v1/core/kv_cache_planning.py:1159, :1026, :1037-1039).
+    A recurrent-state group has a MambaSpec (vllm/v1/kv_cache_interface.py:1094) as its
+    spec, or a UniformTypeKVCacheSpecs whose layer specs in kv_cache_specs (:1291, :1298)
+    hold a MambaSpec, as the packed path builds it (vllm/v1/core/kv_cache_planning.py:1159,
+    :1026, :1037-1039). vLLM's has_mamba_layers reads the layer specs the same way
+    (vllm/v1/kv_cache_interface.py:1630-1635). Only such a cache configuration takes the
+    hybrid cache fields on vLLM 0.33.0. Every attention-only cache configuration keeps the
+    record without them, also one with MLAAttentionSpec or UniformTypeKVCacheSpecs groups.
     """
-    return any(_class_name(group.kv_cache_spec) not in _LEGACY_SPECS for group in cache_config.kv_cache_groups)
+    for group in cache_config.kv_cache_groups:
+        spec = group.kv_cache_spec
+        specs = spec.kv_cache_specs.values() if _class_name(spec) == _UNIFORM_SPEC else (spec,)
+        if any(_class_name(item) == _MAMBA_SPEC for item in specs):
+            return True
+    return False
 
 
 def _cached_config_commit(model_config: Any) -> str | None:

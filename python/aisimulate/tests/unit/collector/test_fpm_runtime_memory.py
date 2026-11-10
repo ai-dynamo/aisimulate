@@ -1675,18 +1675,20 @@ def _mamba_group():
     return _uniform_group({"kda.0": _mamba(), "kda.1": _mamba()})
 
 
-def _observe_execution(tmp_path, monkeypatch, *, version, groups):
+def _observe_execution(tmp_path, monkeypatch, *, version, groups, cache_settings=None):
     """Write the execution record of one worker whose initialized cache holds ``groups``; return the record.
 
-    The configuration is the one of _initialized and _with_engine_core_values. vLLM 0.33.0 sets Mamba align mode only
-    for a model with Mamba layers when prefix caching is on (model_executor/models/config.py:763-787), so the cache
-    configuration holds align mode only when ``groups`` holds a Mamba spec.
+    The configuration is the one of _initialized and _with_engine_core_values, updated with ``cache_settings``.
+    vLLM 0.33.0 sets Mamba align mode only for a model with Mamba layers when prefix caching is on
+    (model_executor/models/config.py:763-787), so the cache configuration holds align mode only when ``groups`` holds
+    a Mamba spec, as a group spec or as a layer spec of a uniform group.
     """
     worker = _with_engine_core_values(*_initialized())[0]
+    vars(worker.vllm_config.cache_config).update(cache_settings or {})
     mamba = any(
         type(inner).__name__ == "MambaSpec"
         for group in groups
-        for inner in getattr(group.kv_cache_spec, "kv_cache_specs", {}).values()
+        for inner in getattr(group.kv_cache_spec, "kv_cache_specs", {"": group.kv_cache_spec}).values()
     )
     if mamba:
         vars(worker.vllm_config.cache_config).update(mamba_cache_mode="align", mamba_block_size=2176)
@@ -1711,11 +1713,55 @@ def _observe_execution(tmp_path, monkeypatch, *, version, groups):
     return record
 
 
-def test_execution_record_adds_the_hybrid_cache_fields_only_for_a_hybrid_cache_configuration(tmp_path, monkeypatch):
-    hybrid = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_uniform_mla_group(), _mamba_group()])
-    plain = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_full_attention_group()])
-    assert hybrid["resolved_config"]["cache_config"]["mamba_cache_mode"] == "align"
-    assert "mamba_cache_mode" not in plain["resolved_config"]["cache_config"]
+def _mla_group():
+    # An MLA-only model gets one MLAAttentionSpec group (v1/core/kv_cache_planning.py:1138-1142, :314-327, :206-214).
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=PAGE, sliding_window=None, dtype="torch.uint8")
+    return _group(["mla.0", "mla.1"], latent)
+
+
+def _glm53_flash_groups():
+    """The GLM-5.3-Flash cache groups of a layout whose block axis is not outermost.
+
+    The packed path then returns None (v1/core/kv_cache_planning.py:931-932), and the path that groups layers by
+    spec gives each group one spec (:1176, :556, :206-214). The sparse attention layers give MLAAttentionSpec
+    (models/glm5next/common/attention.py:112-119), the tail rings CircularBufferSpec (:170-179) and the KDA layers
+    MambaSpec (models/glm5next/common/kda.py:168-176).
+    """
+    tail = _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
+    kda = [_group([f"kda.{index}"], _mamba()) for index in range(4)]
+    return [_mla_group(), _group(["tail.0"], tail), *kda]
+
+
+_HYBRID_CACHE_CONFIGURATIONS = {
+    "full_attention": ([_full_attention_group()], False),
+    "mla": ([_mla_group()], False),
+    # A packed attention-only cache: UniformTypeKVCacheSpecs groups whose layer specs are attention specs.
+    "uniform_attention": ([_uniform_mla_group()], False),
+    "direct_mamba": ([_full_attention_group(), _group(["kda.0", "kda.1"], _mamba())], True),
+    "uniform_mamba": ([_uniform_mla_group(), _mamba_group()], True),
+    "glm53_flash": (_glm53_flash_groups(), True),
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "case"),
+    [("0.33.0", case) for case in _HYBRID_CACHE_CONFIGURATIONS] + [("0.32.0", "glm53_flash")],
+)
+def test_execution_record_adds_the_hybrid_cache_fields_only_with_a_recurrent_state_group(
+    tmp_path, monkeypatch, version, case
+):
+    groups, recurrent = _HYBRID_CACHE_CONFIGURATIONS[case]
+    # The cache configuration holds every plain and every hybrid cache setting, so only the groups decide.
+    record = _observe_execution(
+        tmp_path, monkeypatch, version=version, groups=groups, cache_settings={"num_gpu_blocks_override": None}
+    )
+    cache = record["resolved_config"]["cache_config"]
+    plain = observer._CONFIG_FIELDS["cache_config"]
+    if recurrent and version == "0.33.0":
+        assert sorted(cache) == sorted([*plain, *observer._HYBRID_CACHE_FIELDS])
+        assert cache["mamba_cache_mode"] == "align"
+    else:
+        assert sorted(cache) == sorted(plain)
 
 
 def test_execution_record_of_a_plain_model_on_vllm_0330_keeps_the_bytes_of_main(tmp_path, monkeypatch):
