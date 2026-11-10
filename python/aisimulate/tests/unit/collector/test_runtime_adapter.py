@@ -49,6 +49,25 @@ def test_bundled_instrumentation_serves_vllm_0330_and_not_0310(tmp_path):
     assert bundled_instrumentation("0.28.0") is None
 
 
+def test_patch_release_gets_no_bundled_probe_observer(tmp_path):
+    from collector.fpm_forward import runtime_probe
+
+    # The collection route accepts a patch release with unchanged audited files; the probe bundles do not.
+    assert bundled_instrumentation("0.33.1") is None
+    pinned = {"selected": {"identity": {"framework_version": "0.33.1", "runtime_framework_version": "0.33.1"}}}
+    with pytest.raises(
+        ValueError, match=r"^no bundled runtime observer for vLLM 0\.33\.1; provide campaign-local --instrumentation$"
+    ):
+        runtime_probe.probe_runtime(pinned, output_dir=tmp_path / "pinned")
+    # A literal framework version selects a bundle only when one exists for it.
+    literal = {"selected": {"identity": {"framework_version": "0.33.1"}}}
+    preview = runtime_probe.probe_runtime(literal, output_dir=tmp_path / "preview")
+    assert preview["status"] == "pending_runtime_version"
+    detection = "^runtime probe requires target-container version detection before execution$"
+    with pytest.raises(ValueError, match=detection):
+        runtime_probe.probe_runtime(literal, output_dir=tmp_path / "execute", execute=True)
+
+
 @pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.33.0"])
 def test_frozen_scheduler_export_preserves_native_benchmark_contract(tmp_path, monkeypatch, version):
     import importlib

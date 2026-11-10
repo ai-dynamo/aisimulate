@@ -2301,6 +2301,24 @@ def _import_diagnostics(path, launches):
     return result["diagnostics"]
 
 
+@pytest.mark.parametrize("version", ["0.33.1", "0.28.0"])
+@pytest.mark.parametrize("layout", ["mamba_hybrid", "glm_tp4"])
+def test_import_refuses_hybrid_evidence_of_another_vllm_version(tmp_path, layout, version):
+    # The vLLM 0.33.0 records of _v033_records under a campaign-local bundle that pins another version. The bundled
+    # observer writes hybrid evidence only for vLLM 0.33.0 (runtime/instrumentation/observer.py _runtime), but a
+    # campaign-local bundle ships its own observer code.
+    path, launches = observation_fixture(tmp_path, layout=layout, version=version)
+    diagnostics = " ".join(_import_diagnostics(path, launches))
+    assert f"hybrid cache evidence requires vLLM 0.33.0; the record names vLLM {version}" in diagnostics
+
+
+def test_import_keeps_plain_records_of_a_patch_release(tmp_path):
+    # A record without hybrid evidence imports as before, whatever exact version its campaign-local bundle pins.
+    path, launches = observation_fixture(tmp_path, layout="attention", version="0.33.1")
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+
+
 def test_import_accepts_the_kernel_block_view_of_the_indexer(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="kernel_view")
     result = validate_observations(path, launches)["tp2"]
@@ -3052,7 +3070,8 @@ def _make_layer_strided(record):
     ids=["prefill_strided", "decode_strided", "both_strided_control"],
 )
 def test_v033_role_phases_cannot_mix_hybrid_and_plain_records(tmp_path, hybrid, complete):
-    path, launches = observation_fixture(tmp_path)
+    # Hybrid evidence imports only from vLLM 0.33.0 records, so the attention fixture pins that version.
+    path, launches = observation_fixture(tmp_path, version="0.33.0")
 
     def edit(record):
         # Only a hybrid phase holds the layer specs of its groups; the other phase keeps its older record.

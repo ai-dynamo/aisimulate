@@ -29,6 +29,7 @@ from .runtime.fpm_memory_observer import (
     SCHEMA_NAME,
     SCHEMA_VERSION,
     SPEC_KINDS,
+    audited_release,
 )
 from .types import ParallelTopology
 
@@ -775,7 +776,8 @@ def resolve_runtime_resources(
         raise ValueError("runtime memory GPU memory utilization must be in (0, 1]")
     if not expected_plan_sha256 or not expected_attempt_id:
         raise ValueError("runtime memory resolution requires exact plan and attempt identities")
-    if expected_backend_version not in MEMORY_SUPPORTED_VERSIONS:
+    release = audited_release(expected_backend_version, MEMORY_SUPPORTED_VERSIONS)
+    if release is None:
         raise ValueError(f"runtime memory conversion currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}")
     collection = validate_native_collection(
         cell, raw_root, expected_plan_sha256=expected_plan_sha256, expected_attempt_id=expected_attempt_id
@@ -819,6 +821,8 @@ def resolve_runtime_resources(
             raise ValueError(f"runtime memory backend version mismatch: {path}")
         if payload.get("status") != "resolved":
             raise ValueError(f"runtime memory remains unresolved: {path}: {payload.get('error')}")
+        if release != expected_backend_version and payload.get("audited_backend_version") != release:
+            raise ValueError(f"runtime memory evidence was not checked against audited vLLM {release}: {path}")
         config = _validate_config(
             payload,
             cell,
@@ -908,6 +912,8 @@ def resolve_runtime_resources(
         "scope": "physical memory allocated by the complete collection worker; "
         "text-only timing does not subtract other loaded components",
     }
+    if release != expected_backend_version:
+        provenance["audited_backend_version"] = release
     return {
         "max_num_tokens": expected_max_num_tokens,
         "max_batch_size": expected_max_batch_size,
