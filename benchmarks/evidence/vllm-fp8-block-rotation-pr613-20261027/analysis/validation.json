@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "scenario": "valid",
+      "result": "accepted; all samples retained",
+      "outliers": 0
+    },
+    {
+      "scenario": "missing",
+      "result": "rejected",
+      "reason": "Missing rows"
+    },
+    {
+      "scenario": "duplicate",
+      "result": "rejected",
+      "reason": "Duplicate measurement: ('base', 0, (16, 6144, 2560), 0)"
+    },
+    {
+      "scenario": "negative",
+      "result": "rejected",
+      "reason": "Nonpositive or nonfinite timing"
+    },
+    {
+      "scenario": "wrong_kernel",
+      "result": "rejected",
+      "reason": "Kernel dispatch changed between arms: (16, 6144, 2560): ['FlashInferFp8BlockScaledMMKernel', 'intentionally_incorrect_kernel']"
+    },
+    {
+      "scenario": "outlier",
+      "result": "accepted; all samples retained",
+      "outliers": 1
+    }
+  ],
+  "raw_measurements_modified": false
+}

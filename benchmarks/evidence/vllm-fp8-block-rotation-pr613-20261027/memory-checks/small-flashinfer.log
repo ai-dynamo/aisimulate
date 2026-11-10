@@ -1,0 +1,11 @@
+INFO 10-27 18:27:56 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 10-27 18:27:56 [vllm.py:1006] Asynchronous scheduling is enabled.
+INFO 10-27 18:27:56 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+INFO 10-27 18:27:56 [parallel_state.py:1588] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/aic-vllm-rendezvous-0l271stu/store backend=nccl
+INFO 10-27 18:27:56 [parallel_state.py:1923] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank 0, EPLB rank N/A
+INFO 10-27 18:27:57 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+INFO 10-27 18:27:57 [__init__.py:563] Selected FlashInferFp8DeepGEMMDynamicBlockScaledKernel for Fp8LinearMethod
+INFO 10-27 18:27:57 [deep_gemm.py:175] deep_gemm not found in site-packages, trying vendored vllm.third_party.deep_gemm
+INFO 10-27 18:27:57 [deep_gemm.py:202] DeepGEMM PDL enabled on vllm.third_party.deep_gemm.
+INFO 10-27 18:27:57 [deep_gemm.py:120] DeepGEMM E8M0 enabled on current platform.
+{"result": "passed", "limit_bytes": 27917287424, "copies": 6, "latency_ms": 0.058890665570894875, "power_stats": null, "throttled": false, "num_runs_executed": 6, "used_cuda_graph": true, "kernel_source": "FlashInferFp8BlockScaledMMKernel", "published_latency_ms": 0.009815110928482479, "peak_allocated_bytes": 396887552}

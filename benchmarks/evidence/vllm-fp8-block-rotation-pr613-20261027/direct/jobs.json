@@ -1,0 +1,116 @@
+[
+  {
+    "arm": "base",
+    "replicate": 0,
+    "command": [
+      "/tmp/aisimulate-forward-ab/venv/bin/python",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+      "--worker",
+      "base",
+      "--replicate",
+      "0",
+      "--repo",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+      "--output",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+    ],
+    "started_unix": 1793125393.3609657,
+    "finished_unix": 1793125418.8857136,
+    "exit_code": 0
+  },
+  {
+    "arm": "head",
+    "replicate": 0,
+    "command": [
+      "/tmp/aisimulate-forward-ab/venv/bin/python",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+      "--worker",
+      "head",
+      "--replicate",
+      "0",
+      "--repo",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+      "--output",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+    ],
+    "started_unix": 1793125418.8864434,
+    "finished_unix": 1793125434.0885172,
+    "exit_code": 0
+  },
+  {
+    "arm": "head",
+    "replicate": 1,
+    "command": [
+      "/tmp/aisimulate-forward-ab/venv/bin/python",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+      "--worker",
+      "head",
+      "--replicate",
+      "1",
+      "--repo",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+      "--output",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+    ],
+    "started_unix": 1793125434.0890117,
+    "finished_unix": 1793125449.2112272,
+    "exit_code": 0
+  },
+  {
+    "arm": "base",
+    "replicate": 1,
+    "command": [
+      "/tmp/aisimulate-forward-ab/venv/bin/python",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+      "--worker",
+      "base",
+      "--replicate",
+      "1",
+      "--repo",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+      "--output",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+    ],
+    "started_unix": 1793125449.2117524,
+    "finished_unix": 1793125461.5097861,
+    "exit_code": 0
+  },
+  {
+    "arm": "base",
+    "replicate": 2,
+    "command": [
+      "/tmp/aisimulate-forward-ab/venv/bin/python",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+      "--worker",
+      "base",
+      "--replicate",
+      "2",
+      "--repo",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+      "--output",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+    ],
+    "started_unix": 1793125461.5103,
+    "finished_unix": 1793125473.8696222,
+    "exit_code": 0
+  },
+  {
+    "arm": "head",
+    "replicate": 2,
+    "command": [
+      "/tmp/aisimulate-forward-ab/venv/bin/python",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+      "--worker",
+      "head",
+      "--replicate",
+      "2",
+      "--repo",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+      "--output",
+      "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate/benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+    ],
+    "started_unix": 1793125473.870236,
+    "finished_unix": 1793125489.2613149,
+    "exit_code": 0
+  }
+]

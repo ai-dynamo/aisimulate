@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "purpose": "Compare actual log_perf latencies from the base and PR collectors without changing their timing or allocation policies.",
+  "base_revision": "cd6efc5e3cac59d7a6d63c32e32210077d6c7d58",
+  "head_revision": "64489fe6d79008fdffa474571404c74dc2597520",
+  "framework": "vllm==0.24.0",
+  "torch": "2.11.0+cu130",
+  "device_name": "NVIDIA H100 NVL",
+  "replicates": 3,
+  "samples_per_shape": 7,
+  "seed": 27613,
+  "timing": {
+    "num_warmups": 3,
+    "num_runs": 6,
+    "repeat_n": 1,
+    "use_cuda_graph": true,
+    "allow_graph_fail": false,
+    "measure_power": false
+  },
+  "shapes_m_n_k": [
+    [
+      1,
+      6144,
+      2560
+    ],
+    [
+      1,
+      2560,
+      4096
+    ],
+    [
+      1,
+      19456,
+      2560
+    ],
+    [
+      1,
+      2560,
+      9728
+    ],
+    [
+      16,
+      6144,
+      2560
+    ],
+    [
+      16,
+      2560,
+      4096
+    ],
+    [
+      16,
+      19456,
+      2560
+    ],
+    [
+      16,
+      2560,
+      9728
+    ],
+    [
+      64,
+      6144,
+      2560
+    ],
+    [
+      64,
+      19456,
+      2560
+    ],
+    [
+      1,
+      8448,
+      8192
+    ],
+    [
+      16,
+      16384,
+      8192
+    ]
+  ],
+  "ordering": "Alternating arm order across independent process starts; identical seeded shape order and first-weight inputs within each paired replicate.",
+  "statistics": "Median of seven published latencies within each start, then median across three starts. Keep every sample.",
+  "anomaly_checks": "Require complete unique keys, finite positive latencies, CUDA graph replay, six timed runs, consistent kernel_source, distinct weight storage and correct publication normalization. Flag samples more than 15% from their within-start median; do not exclude them.",
+  "outlier_relative_threshold": 0.15,
+  "scope": "Isolated collector row latency in milliseconds. This is not a model accuracy experiment or a fixed-operation-count graph benchmark."
+}
