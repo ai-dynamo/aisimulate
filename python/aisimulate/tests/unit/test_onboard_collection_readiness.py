@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 # ruff: noqa: F811
+import copy
 import hashlib
 import json
 import shutil
+import statistics
 from dataclasses import replace
 
 import pytest
@@ -602,7 +604,7 @@ def test_malformed_native_regime_remains_json_reportable(quality_case, regime):
     assert json.loads(json.dumps(report, sort_keys=True))["status"] == "blocked"
 
 
-def _glm_smoke(tmp_path, monkeypatch):
+def _glm_smoke(tmp_path, monkeypatch, shape=None):
     """Write the smoke campaign of a probe-backed GLM-5.3-Flash collection plan, as a vLLM 0.33.0 runtime fills it.
 
     Each cell has its generated launch, the producer's rank artifact of the smoke points and one execution record per
@@ -610,7 +612,8 @@ def _glm_smoke(tmp_path, monkeypatch):
     artifacts have no measurement protocol, benchmark measurement or warm-up evidence, as a scheduler base that writes
     none, such as ai-dynamo 1.6.0.dev20261010, leaves them. The producer's scheduler base, ai-dynamo 1.7.0.dev20261109,
     writes them. The profile names no probe provenance, so readiness does not bind the runtime memory to probe
-    observations here. Return the request and the onboarding root.
+    observations here. ``shape``, if given, rewrites each rank artifact before it is written. Return the request and
+    the onboarding root.
     """
     from types import SimpleNamespace
 
@@ -693,6 +696,8 @@ def _glm_smoke(tmp_path, monkeypatch):
         # The producer records the revision that the engine loaded and the runtime context of the launch.
         payload["input_provenance"]["tokenizer_revision"] = revision
         payload["context_policy"]["runtime_context_length"] = plan.options.vllm_max_model_len
+        if shape is not None:
+            shape(cell.workload_kind, payload)
         write_glm_rank(pod, payload)
         with monkeypatch.context() as patch:
             patch.setattr(observer, "RESULTS_DIR", pod)
@@ -745,5 +750,135 @@ def test_readiness_qualifies_a_glm_smoke_of_producer_artifacts(tmp_path, monkeyp
         # vLLM 0.33.0 execution is audited, and the observed configuration agrees with the plan and its launch.
         assert item["execution"]["failures"] == []
         assert [reason for reason in item["execution"]["missing_evidence"] if "unaudited" in reason] == []
-        # The absent measurement evidence of the scheduler base is reported, and it does not block.
+        # A rank artifact without measurement evidence, as a scheduler base older than Dynamo 1.7 writes it, is
+        # reported as legacy, and it does not block.
         assert legacy <= set(item["execution"]["missing_evidence"])
+
+
+def _glm_producer_shape(tmp_path, breakage=None):
+    """Rewrite a GLM-5.3-Flash rank artifact into the shape that the producer writes on Dynamo 1.7.
+
+    The fake of the native scheduler runs the producer once for each phase. Its measurement protocol and the
+    ``benchmark_sample`` of its first measured repetition are the templates. Each point then gets the record of the
+    native save as the producer rewrites it: ten raw samples of the point's own FPM, each with its own timing
+    interval, and the repetition median as the retained wall time. With no global warm-up, Dynamo records an empty
+    warm-up list. ``breakage`` moves the timing interval of one raw sample (``interval``) or moves the retained wall
+    time to the slowest repetition (``median``), in the first point of each artifact.
+    """
+    from collector.fpm_forward.measurement_evidence import _content_key
+
+    from .collector.test_fpm_glm53flash_prefix_seed import (
+        Engine,
+        Point,
+        _run_prefill_point,
+        load_producer,
+        make_scheduler,
+    )
+    from .collector.test_fpm_glm53flash_prefix_seed import run as run_producer
+
+    templates = {}
+    with pytest.MonkeyPatch.context() as patch:
+        module = load_producer(patch)
+        for phase, point in (
+            ("prefill", Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])),
+            ("decode", Point("decode", 1, 3, 0, 3 * 201)),
+        ):
+            (tmp_path / f"producer-{phase}").mkdir(parents=True)
+            scheduler = make_scheduler(module, tmp_path / f"producer-{phase}", [point])
+            if phase == "prefill":
+                _run_prefill_point(scheduler, measured_walls=[0.4] * 10)
+            else:
+                run_producer(scheduler, Engine(scheduler), "decode")
+            ((produced,),) = [result.fpms for result in scheduler._bench_results]
+            measurement = produced["benchmark_measurement"]
+            assert (measurement["expected_internal_samples"], measurement["estimate"]["method"]) == (
+                10,
+                "repetition_median",
+            )
+            templates[phase] = measurement["raw_fpms"][0]["benchmark_sample"]
+        protocol = scheduler._bench_measurement_protocol()
+
+    def shape(phase, payload):
+        payload["measurement_protocol"] = copy.deepcopy(protocol)
+        payload["warmup_evidence"] = {"status": "recorded", "records": []}
+        forward = 0
+        for position, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
+            fpm = group["rank_results"][0]["fpms"][0]
+            assert row["fpms"][0] is fpm
+            walls = [fpm["wall_time"] * (1 + 0.01 * (index - 4)) for index in range(10)]
+            tokens = row["point"]["total_prefill_tokens"] or row["point"]["batch_size"]
+            samples = []
+            for index, wall in enumerate(walls):
+                sample = copy.deepcopy(templates[phase])
+                start = 100.0 * position + index
+                sample["forward_index"] = forward
+                sample["timing"].update(start_monotonic=start, end_monotonic=start + wall)
+                sample["cudagraph"].update(num_unpadded_tokens=tokens, num_padded_tokens=tokens, num_paddings=0)
+                # A decode repetition records two FPMs, and the second is its steady sample.
+                forward += 2 if phase == "decode" else 1
+                raw = {**copy.deepcopy(fpm), "wall_time": wall, "benchmark_sample": sample}
+                if phase == "decode":
+                    raw["kvwarm_steady_sample"] = True
+                samples.append(raw)
+            if phase == "decode":
+                fpm["kvwarm_steady_sample"] = True
+            fpm["wall_time"] = group["wall_time"] = statistics.median(walls)
+            fpm["benchmark_measurement"] = {
+                "schema_version": 1,
+                "point_key": _content_key(row["point"]),
+                "dp_rank": 0,
+                # The producer injects no prompt hashes.
+                "prompts": {"status": "unavailable", "sha256": None, "requests": []},
+                "preparation": {
+                    "grid_digest": payload["grid_digest"],
+                    "completed_points_before": position,
+                    "kv_seed_regime": row["kv_seed_regime"],
+                    "warmup_records_before": 0,
+                },
+                "expected_internal_samples": 10,
+                "raw_fpms": samples,
+                "estimate": {"method": "repetition_median", "raw_sample_indices": list(range(10))},
+            }
+        first = payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]
+        if breakage == "interval":
+            first["benchmark_measurement"]["raw_fpms"][3]["benchmark_sample"]["timing"]["start_monotonic"] -= 0.1
+        elif breakage == "median":
+            # The slowest repetition instead of the median.
+            first["wall_time"] = max(sample["wall_time"] for sample in first["benchmark_measurement"]["raw_fpms"])
+            payload["iteration_groups"][0]["wall_time"] = first["wall_time"]
+        groups = payload["iteration_groups"]
+        payload["timing"]["measured_iteration_seconds"] = sum(group["wall_time"] for group in groups)
+
+    return shape
+
+
+def test_readiness_qualifies_a_glm_smoke_of_dynamo_17_producer_artifacts(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_glm_producer_shape(tmp_path))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert report["blockers"] == []
+    assert report["ready_for_full_collection"]
+    cells = {item["cell"]["workload_kind"]: item for item in report["selected_cells"]}
+    assert set(cells) == {"prefill", "decode"}
+    for item in cells.values():
+        assert (item["campaign"], item["status"], item["blockers"]) == ("smoke", "ready", [])
+        assert item["execution"]["failures"] == []
+        # The measurement record of every point is read, so no legacy note remains.
+        missing = item["execution"]["missing_evidence"]
+        assert not [reason for reason in missing if "legacy" in reason or "warmup evidence is unreported" in reason]
+
+
+@pytest.mark.parametrize(
+    ("breakage", "message"),
+    [
+        ("interval", "benchmark_sample contradicts its local timing interval"),
+        # The artifact's timing totals stay consistent, so the reduction check of the measurement record refuses it.
+        ("median", "benchmark_measurement reduction disagrees with retained timing"),
+    ],
+)
+def test_readiness_blocks_a_glm_smoke_with_a_broken_producer_record(tmp_path, monkeypatch, breakage, message):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_glm_producer_shape(tmp_path, breakage))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
