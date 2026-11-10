@@ -310,7 +310,6 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
             "dtype": "torch.bfloat16",
             "tokens_per_state": None,
             "cache_role": None,
-            "storage_block_size": None,
         }
     }
     assert tail_group["state"] == {"blocks_per_request": 1}
@@ -357,9 +356,8 @@ def test_uniform_type_groups_record_their_inner_specs():
             dtype="torch.uint8",
             tokens_per_state=tokens,
             cache_role=cache_role,
-            storage_block_size=storage,
         )
-        for page, tokens, cache_role, storage in ((1_114_112, 1, role.SPARSE, None), (71_808, 4, role.INDEXER, 128))
+        for page, tokens, cache_role in ((1_114_112, 1, role.SPARSE), (71_808, 4, role.INDEXER))
     )
     names = ["layers.3.mla", "layers.3.indexer"]
     uniform = _spec(
@@ -382,7 +380,6 @@ def test_uniform_type_groups_record_their_inner_specs():
             "dtype": "torch.uint8",
             "tokens_per_state": 1,
             "cache_role": "SPARSE",
-            "storage_block_size": None,
         },
         "layers.3.indexer": {
             "spec_type": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
@@ -390,7 +387,6 @@ def test_uniform_type_groups_record_their_inner_specs():
             "dtype": "torch.uint8",
             "tokens_per_state": 4,
             "cache_role": "INDEXER",
-            "storage_block_size": 128,
         },
     }
     # A bf16 latent beside the uint8 indexer has no single group dtype; each layer keeps its own.

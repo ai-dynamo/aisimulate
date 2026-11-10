@@ -411,13 +411,17 @@ def _validate_import_binding(record: dict, expected: dict, bundle: Instrumentati
         raise ValueError("runtime instrumentation class module was not observed")
 
 
-def _validate_alias_ownership(views: list[tuple[dict[str, Any], int]], count: int) -> None:
-    """Prove disjoint pool-block ownership for the union of aliased views."""
+def _validate_alias_ownership(views: list[tuple[dict[str, Any], int, int]], count: int) -> None:
+    """Prove disjoint pool-block ownership for the union of aliased views.
+
+    Each view comes with its kernel blocks per pool block and the kernel blocks from one pool block to the next:
+    the same number, unless a vLLM 0.33.0 kernel-block view has a larger stride.
+    """
     ownership, block_span = None, 0
-    for view, ratio in views:
+    for view, ratio, pages in views:
         axis = view["block_axis"]
         strides = view["stride_bytes"]
-        step = ratio * strides[axis]
+        step = pages * strides[axis]
         within = view["element_size_bytes"] + (ratio - 1) * strides[axis]
         planes: list[tuple[int, int]] = []
         for stride, dimension in sorted(
@@ -504,11 +508,6 @@ def _indexer(spec: dict[str, Any]) -> bool:
     )
 
 
-# vLLM 0.31.0 MLAAttentionSpec and its one subclass (kv_cache_interface.py:662, :739): the classes whose storage
-# block, when they have one, is the kernel block of their views (worker/utils.py:449-450).
-_MLA_SPECS = frozenset(_SPEC_MODULE + name for name in ("MLAAttentionSpec", "HiddenStateCacheSpec"))
-
-
 def _layer_views(
     name: str,
     entries: Any,
@@ -520,34 +519,58 @@ def _layer_views(
     group: dict[str, Any],
     precision: str,
     group_kernel: int,
-) -> list[tuple[dict[str, Any], int]]:
-    """Check the views of one vLLM 0.31.0 layer, of any rank with the block axis first.
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Check the views of one vLLM 0.33.0 layer, of any rank with the block axis first.
 
     A layer views its pages as one tensor, or as one tensor per state that a Mamba layer
-    cuts from its page (kv_cache_interface.py:353-417, mamba/abstract.py:28-42). Each view
+    cuts from its page (kv_cache_interface.py:418-482, mamba/abstract.py:28-42). Each view
     starts and ends inside the layer's page of a block, the views of one layer do not
     overlap there, and together they hold at most that page, because pages share bytes only
     for the same block ID in different groups. A block-outer block also holds the pages of
     the tensor's other layers.
+
+    A layer of an attention group whose backend sets a kernel_block_size is bound to a view in kernel
+    blocks (v1/worker/utils.py:460-473): kernel block j of block b is b * kernel_block_stride + j, so the
+    view holds (count - 1) * stride + block // kernel of them, one kernel page apart (:419-430). With
+    stride 0, vLLM binds the manager view, which holds count * (block // kernel) of them (:402-403).
     """
     spec = group["layer_specs"][name]
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"physical layer views are missing: {name}")
+    if any(not isinstance(view, dict) or view.get("storage_id") != storage_id for view in entries):
+        raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
+    if any("kernel_block_stride" not in view for view in entries):
+        raise ValueError(f"layer view lacks its kernel block stride: {name}")
     block = group["block_size_tokens"]
+    # A Mamba layer keeps the group block, which both native runners also give its group (utils.py:677-679). vLLM
+    # maps only a cache with more than one token per state (utils.py:404-411), so any other layer keeps the
+    # runner's kernel block of its group and stride 0. Every view of one layer has one kernel block and stride.
+    kernel = (entries[0].get("kernel_block_size_tokens"), entries[0]["kernel_block_stride"])
+    tokens = spec.get("tokens_per_state")
+    if spec.get("spec_type") == _MAMBA_SPEC:
+        expected = (block, 0) if group_kernel == block else None
+    elif type(tokens) is not int or tokens <= 1:
+        expected = (group_kernel, 0)
+    else:
+        expected = kernel
+    if expected != kernel or any(
+        (view.get("kernel_block_size_tokens"), view["kernel_block_stride"]) != kernel for view in entries
+    ):
+        raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
     views, intervals, dense = [], [], 0
     for view in entries:
-        if not isinstance(view, dict) or view.get("storage_id") != storage_id:
-            raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
         start = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset") - region
         shape, strides, item_size = _view_shape(view)
         kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
+        stride = _nonnegative(view["kernel_block_stride"], "kernel block stride")
         ratio = block // kernel
-        if (
-            view.get("block_axis") != 0
-            or block % kernel
-            or shape[0] != count * ratio
-            or strides[0] * ratio != block_stride
-        ):
+        if view.get("block_axis") != 0 or block % kernel:
+            raise ValueError("kernel tensor block coverage contradicts pool block geometry")
+        if stride and stride < ratio:
+            raise ValueError("kernel block stride is below the kernel blocks of one block")
+        # The kernel blocks from one pool block to the next.
+        pages = stride or ratio
+        if shape[0] != (count - 1) * pages + ratio or strides[0] * pages != block_stride:
             raise ValueError("kernel tensor block coverage contradicts pool block geometry")
         _view_extent(shape, strides, item_size, region + start, size)
         within = item_size + (ratio - 1) * strides[0]
@@ -558,7 +581,7 @@ def _layer_views(
             _check_element_size(item_size, precision)
         intervals.append((start, start + within))
         dense += ratio * math.prod(shape[1:]) * item_size
-        views.append((view, ratio))
+        views.append((view, ratio, pages))
     intervals.sort()
     if any(end > following for (_, end), (following, _) in itertools.pairwise(intervals)):
         raise ValueError(f"views of one layer overlap inside the block: {name}")
@@ -594,20 +617,6 @@ def _layer_views(
             ]:
                 raise ValueError(f"layer views do not match the recorded state tensors: {name}")
             offset += item * math.prod(shape)
-    # The worker views a layer with the storage block of an MLA spec that has one (the indexer), a Mamba layer
-    # with the group block, and every other layer with the runner's kernel block of the group
-    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:294-306). Both native runners give a
-    # Mamba group its block as its kernel block (worker/utils.py:483-487, :500-502).
-    if spec.get("spec_type") in _MLA_SPECS and spec.get("storage_block_size") is not None:
-        kernel = spec["storage_block_size"]
-    else:
-        kernel = block if spec.get("spec_type") == _MAMBA_SPEC else group_kernel
-    if (
-        type(kernel) is not int
-        or any(view["kernel_block_size_tokens"] != kernel for view in entries)
-        or (spec.get("spec_type") == _MAMBA_SPEC and group_kernel != block)
-    ):
-        raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
     return views
 
 
@@ -635,7 +644,7 @@ def _layer_strided_views(
     ((storage_id, storage),) = storages.items()
     size = storage["size_bytes"]
     placements: list[tuple[list[str], int, int, int, int]] = []
-    views: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    views: dict[str, list[tuple[dict[str, Any], int, int]]] = {}
     for allocation in allocations:
         if (
             not isinstance(allocation, dict)
@@ -753,16 +762,6 @@ def _physical_views(
             # resolved cache precision establishes FP8; retain raw storage evidence.
             if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
                 raise ValueError("cache group dtype contradicts requested KV precision")
-        # Only the sparse MLA indexer stores its tokens in blocks other than the cache block
-        # (runtime/instrumentation/observer.py:237-243). In every group that a supported record can hold, every layer
-        # spec has the group's block size (kv_cache_interface.py:1297-1300, :1312-1313).
-        if hybrid and any(
-            spec.get("storage_block_size") is not None
-            and canonical_json(spec["storage_block_size"]) != canonical_json(group["block_size_tokens"])
-            and not _indexer(spec)
-            for spec in group["layer_specs"].values()
-        ):
-            raise ValueError(f"compressed cache storage is unsupported: {group['layer_names']}")
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
         # The page of a vLLM 0.33.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1319-1320). In
         # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py cache_groups).
@@ -875,7 +874,7 @@ def _physical_views(
                 if within_page > group["spec_page_size_bytes"]:
                     raise ValueError("packed tensor exceeds its declared per-slot page interval")
             _check_element_size(item_size, precision)
-            views.append((view, ratio))
+            views.append((view, ratio, ratio))
         _validate_alias_ownership(views, count)
         covered.update(names)
         used_storage.add(storage_id)

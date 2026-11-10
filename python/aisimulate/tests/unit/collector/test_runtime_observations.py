@@ -86,14 +86,13 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
     mode = "align" if prefix_caching else "none"
     allocations, views = [], {}
 
-    def spec(name, page, dtype, tokens, role=None, storage=None):
+    def spec(name, page, dtype, tokens, role=None):
         return {
             "spec_type": _V033_SPEC + name,
             "page_size_bytes": page,
             "dtype": dtype,
             "tokens_per_state": tokens,
             "cache_role": role,
-            "storage_block_size": storage,
         }
 
     def group(names, name, block, page, specs, kind, dtype, classes, state=None):
@@ -137,7 +136,7 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
             }
         )
 
-    def view(offset, shape, strides, element, kernel):
+    def view(offset, shape, strides, element, kernel, kernel_stride=0):
         return {
             "storage_id": "s0",
             "storage_offset_bytes": offset,
@@ -146,6 +145,7 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
             "element_size_bytes": element,
             "block_axis": 0,
             "kernel_block_size_tokens": kernel,
+            "kernel_block_stride": kernel_stride,
         }
 
     def scheduled(record, **first_spec):
@@ -159,7 +159,7 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
         # Round robin into four Mamba groups of 9, 9, 8 and 8 layers (kv_cache_utils.py:1276-1286).
         members = [[f"layers.{index}.kda" for index in kda[start::4]] for start in range(4)]
         latent = spec("MLAAttentionSpec", 1_114_112, "torch.uint8", 1, "SPARSE")
-        indexer = spec("MLAAttentionSpec", 71_808, "torch.uint8", 4, "INDEXER", 128)
+        indexer = spec("MLAAttentionSpec", 71_808, "torch.uint8", 4, "INDEXER")
         tail = spec("CircularBufferSpec", 71_808, "torch.bfloat16", 1)
         attention = [name for index in mla for name in (f"layers.{index}.indexer", f"layers.{index}.mla")]
         tails = [f"layers.{index}.tail" for index in mla]
@@ -234,10 +234,50 @@ def _v033_records(layout, *, prefix_caching, dp, max_model_len=4096):
         for position, index in enumerate(mla):
             offset = 98_041_856 + position * 574_464
             place([f"layers.{index}.indexer"], offset, 574_464, 71_808)
-            views[f"layers.{index}.indexer"] = [view(offset, [136, 32, 132], [4224, 132, 1], 1, 128)]
+            # The indexer view in the group's 64-token kernel blocks: 34 of 16 x 132 bytes per 71,808-byte page.
+            views[f"layers.{index}.indexer"] = [view(offset, [272, 16, 132], [2112, 132, 1], 1, 64)]
             place([f"layers.{index}.tail"], offset, 574_464, 71_808)
             views[f"layers.{index}.tail"] = [view(offset, [8, 2, 4, 128], [71_808, 1024, 256, 2], 2, 4)]
         kernels = [64, 4, *[mamba_block] * 4]
+    elif layout == "kernel_view":
+        # test_runtime_adapter._v033_runtime("kernel_view"): one uniform group of 64-token blocks in the block-outer
+        # layout. Each 4,096-byte block holds the 3,840-byte page of a bf16 latent layer and the 256-byte page of an
+        # indexer. The indexer view is in 32-token kernel blocks: kernel block j of block b is the 128-byte page
+        # b * 32 + j (v1/worker/utils.py:419-430).
+        blocks, free, page, block, hash_block = 8, 7, 4096, 64, 64
+        mamba_block = block if prefix_caching else max_model_len
+        latent = spec("MLAAttentionSpec", 3840, "torch.bfloat16", 1, "SPARSE")
+        indexer = spec("MLAAttentionSpec", 256, "torch.uint8", 4, "INDEXER")
+        names = ["latent.0", "indexer.0"]
+        groups = [
+            group(
+                names,
+                "UniformTypeKVCacheSpecs",
+                block,
+                4096,
+                {"latent.0": latent, "indexer.0": indexer},
+                "attention",
+                None,
+                {
+                    "latent.0": "vllm.model_executor.layers.attention.mla_attention.MLAAttention",
+                    "indexer.0": "vllm.models.glm5next.common.attention.Glm5NextIndexerCache",
+                },
+            )
+        ]
+        scheduler_groups = [
+            scheduled(
+                groups[0],
+                spec_type=latent["spec_type"],
+                spec_page_size_bytes=3840,
+                dtype="torch.bfloat16",
+                layer_specs=dict.fromkeys(names, latent),
+            )
+        ]
+        place(["latent.0"], 0, 3840, 4096)
+        views["latent.0"] = [view(0, [8, 64, 30], [4096, 60, 2], 2, 64)]
+        place(["indexer.0"], 3840, 256, 4096)
+        views["indexer.0"] = [view(3840, [226, 8, 16], [128, 16, 1], 1, 32, 32)]
+        kernels = [64]
     elif layout == "block_outer_short":
         # Generic block-outer layout: one tensor per (group, spec), every group from byte 0, the
         # layer stride is the spec page and the block stride the largest group's bytes per block
@@ -439,7 +479,7 @@ def observation_fixture(
 ):
     """Synthetic source, rank and runtime records; no GPU or runtime qualification.
 
-    ``layout`` "attention" writes vLLM 0.28.0 records by default; "glm_tp4", "mamba_hybrid",
+    ``layout`` "attention" writes vLLM 0.28.0 records by default; "glm_tp4", "kernel_view", "mamba_hybrid",
     "layer_outer_short" and "block_outer_short" write vLLM 0.33.0 records (see
     ``_v033_records``), and ``decode_prefix_caching=False`` runs their decode phase without
     prefix caching.
@@ -1835,22 +1875,6 @@ def test_v033_prefix_caching_evidence_must_match_the_scheduler_block_sizes(tmp_p
     assert result["diagnostics"] == ["tp2: runtime prefix-caching evidence contradicts the scheduler block sizes"]
 
 
-def test_v033_compressed_storage_outside_the_indexer_is_incomplete(tmp_path):
-    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
-
-    def edit(record):
-        # Every worker records a storage block on a sparse MLA latent spec. The scheduler copy of G0 holds the first
-        # indexer spec only (kv_cache_utils.py:2434-2440), so the copies still agree.
-        if record["kind"] == "worker":
-            record["cache"]["groups"][0]["layer_specs"]["layers.3.mla"]["storage_block_size"] = 128
-
-    _mutate(path, edit)
-    result = validate_observations(path, launches)["tp2"]
-    assert result["status"] == "incomplete"
-    names = [name for index in range(3, 45, 4) for name in (f"layers.{index}.indexer", f"layers.{index}.mla")]
-    assert result["diagnostics"] == [f"tp2: compressed cache storage is unsupported: {names}"]
-
-
 @pytest.mark.parametrize(
     "case,layout,names",
     [
@@ -1891,13 +1915,13 @@ def test_v033_cache_group_page_must_follow_its_layer_specs(tmp_path, case, layou
 @pytest.mark.parametrize(
     "layout,name,kernel,shape,strides",
     [
-        # The indexer view with the group's kernel block of 64 tokens instead of its 128-token storage block:
-        # 34 kernel blocks of 16 x 132 bytes per 71,808-byte page (worker/utils.py:449-450).
-        ("glm_tp4", "layers.3.indexer", 64, [272, 16, 132], [2112, 132, 1]),
+        # A Mamba state view with 32-token kernel blocks: vLLM gives a Mamba layer its group block
+        # (v1/worker/utils.py:677-679). The kernel rule comes before the geometry of each view.
+        ("mamba_hybrid", "mamba.0", 32, None, None),
         # An attention view with 32-token kernel blocks while the runner gives the group 16-token ones.
         ("mamba_hybrid", "attn.0", 32, [20, 2, 32, 32], [4096, 2048, 64, 2]),
     ],
-    ids=["indexer", "attention"],
+    ids=["mamba", "attention"],
 )
 def test_v033_layer_view_kernel_block_must_follow_its_cache_spec(tmp_path, layout, name, kernel, shape, strides):
     path, launches = observation_fixture(tmp_path, layout=layout)
@@ -1905,8 +1929,10 @@ def test_v033_layer_view_kernel_block_must_follow_its_cache_spec(tmp_path, layou
     def edit(record):
         # The view keeps its bytes and pool block geometry; only its kernel block contradicts the spec.
         if record["kind"] == "worker":
-            (view,) = record["cache"]["layer_tensors"][name]
-            view.update(kernel_block_size_tokens=kernel, shape=shape, stride_bytes=strides)
+            for view in record["cache"]["layer_tensors"][name]:
+                view["kernel_block_size_tokens"] = kernel
+                if shape is not None:
+                    view.update(shape=shape, stride_bytes=strides)
 
     _mutate(path, edit)
     result = validate_observations(path, launches)["tp2"]
@@ -1944,6 +1970,71 @@ def test_v033_runner_kernel_blocks_must_cover_every_cache_group(tmp_path, change
     result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "incomplete"
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+def _edit_view(path, name, **change):
+    """Change the one view of layer ``name`` in every worker record."""
+
+    def edit(record):
+        if record["kind"] == "worker":
+            (view,) = record["cache"]["layer_tensors"][name]
+            view.update(change)
+
+    _mutate(path, edit)
+
+
+def _import_diagnostics(path, launches):
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    return result["diagnostics"]
+
+
+def test_import_accepts_the_kernel_block_view_of_the_indexer(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="kernel_view")
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    (group,) = result["resources"]["cache_groups"]
+    assert (group["kind"], group["num_layers"], group["block_size_tokens"]) == ("attention", 2, 64)
+
+
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        # 226 kernel blocks are (8 - 1) * 32 + 2, not (8 - 1) * 31 + 2.
+        ({"kernel_block_stride": 31}, "kernel tensor block coverage contradicts pool block geometry"),
+        # Two kernel blocks of one block cannot start one page apart.
+        (
+            {"kernel_block_stride": 1, "shape": [9, 8, 16], "stride_bytes": [4096, 16, 1]},
+            "kernel block stride is below the kernel blocks of one block",
+        ),
+        # Without a stride, the view would hold 8 * 2 kernel blocks of 2,048 bytes.
+        ({"kernel_block_stride": 0}, "kernel tensor block coverage contradicts pool block geometry"),
+    ],
+    ids=["other_stride", "below_one_block", "no_stride"],
+)
+def test_import_refuses_a_kernel_block_stride_below_the_blocks_of_one_block(tmp_path, change, error):
+    path, launches = observation_fixture(tmp_path, layout="kernel_view")
+    _edit_view(path, "indexer.0", **change)
+    assert _import_diagnostics(path, launches) == [f"tp2: {error}"]
+
+
+def test_import_refuses_a_kernel_block_of_a_layer_that_stores_one_state_per_token(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="kernel_view")
+    # vLLM maps only a cache with more than one token per state (v1/worker/utils.py:404-411).
+    _edit_view(path, "latent.0", kernel_block_size_tokens=32, kernel_block_stride=32, shape=[226, 8, 16])
+    assert _import_diagnostics(path, launches) == ["tp2: layer view kernel block contradicts its cache spec: latent.0"]
+
+
+def test_import_refuses_a_hybrid_view_without_a_kernel_block_stride(tmp_path):
+    # A record of the removed 0.31.0 bundle has no such key.
+    path, launches = observation_fixture(tmp_path, layout="kernel_view")
+
+    def edit(record):
+        if record["kind"] == "worker":
+            del record["cache"]["layer_tensors"]["indexer.0"][0]["kernel_block_stride"]
+
+    _mutate(path, edit)
+    assert _import_diagnostics(path, launches) == ["tp2: layer view lacks its kernel block stride: indexer.0"]
 
 
 def _uniform(record, index, name, spec_type):
@@ -2618,7 +2709,9 @@ def _make_layer_strided(record):
         # groups, so they can overlay each other.
         (allocation,) = cache["tensor_allocations"]
         allocation.update(layers=allocation.pop("shared_by"), layer_stride=0, block_stride=128)
-        cache["layer_tensors"] = {name: [view] for name, view in cache["layer_tensors"].items()}
+        cache["layer_tensors"] = {
+            name: [{**view, "kernel_block_stride": 0}] for name, view in cache["layer_tensors"].items()
+        }
         cache["model_runner"] = {
             "class": "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
             "kernel_block_sizes": [16] * len(cache["groups"]),
@@ -2658,7 +2751,6 @@ def test_v033_role_phases_cannot_mix_hybrid_and_plain_records(tmp_path, hybrid, 
                     "dtype": group["dtype"],
                     "tokens_per_state": None,
                     "cache_role": None,
-                    "storage_block_size": None,
                 }
                 for name in group["layer_names"]
             }

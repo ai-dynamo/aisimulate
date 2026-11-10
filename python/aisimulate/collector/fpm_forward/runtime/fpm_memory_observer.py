@@ -555,10 +555,7 @@ def _layer_spec(spec: Any) -> dict[str, Any]:
         "spec_type": _class_name(spec),
         "page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
         "dtype": _spec_dtype(spec),
-        **{
-            key: _json_value(getattr(spec, key, None))
-            for key in ("tokens_per_state", "cache_role", "storage_block_size")
-        },
+        **{key: _json_value(getattr(spec, key, None)) for key in ("tokens_per_state", "cache_role")},
     }
 
 
