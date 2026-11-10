@@ -46,7 +46,7 @@ engine:
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
-| `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts. See [vLLM async scheduling](#vllm-async-scheduling). |
+| `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts or MTP + G2 | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts or MTP + G2. See [vLLM async scheduling](#vllm-async-scheduling). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
 | `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
@@ -278,8 +278,9 @@ that window. Behavior follows vLLM at commit
 ### vLLM async scheduling
 
 `async_scheduling` mirrors vLLM's `--async-scheduling` and
-`--no-async-scheduling`. Unset, replay turns it on, except with ngram drafts,
-which turn it off. vLLM v0.28.0 resolves the same default for the
+`--no-async-scheduling`. Unset, replay turns it on, except with ngram drafts
+or [MTP with G2 host offload](speculation.md#registered-schemes), which turn it
+off and reject an explicit `true`. vLLM v0.28.0 resolves the same default for the
 configurations replay models; it also turns async scheduling off for pooling
 models, some speculative and executor settings and ROCm DeepEP DBO, so set it
 explicitly to match such a deployment.

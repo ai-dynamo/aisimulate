@@ -797,6 +797,25 @@ impl NativeHostOffloadConfig {
 pub struct StateCacheConfig {
     /// Bytes occupied by one physical working state or snapshot.
     pub bytes_per_request: usize,
+    /// Present when the state is a sliding window (DeepSeek V4) rather than a
+    /// recurrent state: vLLM can then resume at any retained aligned boundary
+    /// the request passed, not only where a step ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sliding_window: Option<SlidingWindowStateConfig>,
+}
+
+/// vLLM's prefix-cache retention for sliding-window groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlidingWindowStateConfig {
+    /// `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`: unset keeps every block
+    /// boundary, `0` only the prompt's replay boundaries, a positive multiple
+    /// of `block_size` additionally one boundary per interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_interval: Option<usize>,
+    /// Block size of the sliding-window group holding the MTP layer. With
+    /// speculative decoding a boundary also needs this many tokens after it.
+    pub lookahead_tokens: usize,
 }
 
 impl StateCacheConfig {
@@ -1146,6 +1165,34 @@ impl Default for EngineConfig {
 }
 
 impl EngineConfig {
+    /// The public G2 exception requires the complete canonical cost identity;
+    /// flat draft fields alone cannot select this composition.
+    pub(crate) fn has_canonical_mtp_timing(&self) -> bool {
+        matches!(&self.timing_model, TimingModelConfig::External { provider, config }
+            if provider == "aic"
+                && config.get("speculation").and_then(|s| s.get("kind")).and_then(|v| v.as_str()) == Some("mtp")
+                && config.get("nextn").is_none_or(|v| v.as_u64() == Some(0)))
+    }
+
+    pub(crate) fn validate_host_offload_speculation(&self) -> anyhow::Result<()> {
+        let timing_speculative = match &self.timing_model {
+            TimingModelConfig::External { config, .. } => {
+                config.get("nextn").is_some_and(|v| v.as_u64() != Some(0))
+                    || config.get("speculation").is_some_and(|s| {
+                        !s.is_null() && s.get("kind").and_then(|v| v.as_str()) != Some("none")
+                    })
+            }
+            _ => false,
+        };
+        ensure!(
+            self.native_host_offload.is_none()
+                || (self.aic_nextn.is_none() && !timing_speculative)
+                || self.has_canonical_mtp_timing(),
+            "native_host_offload with speculative decoding requires canonical mtp speculation"
+        );
+        Ok(())
+    }
+
     /// Construct a configuration with the selected backend's native defaults.
     ///
     /// In particular, this selects [`Backend::default_block_size`] instead of
@@ -1162,7 +1209,10 @@ impl EngineConfig {
     /// two with async scheduling and one without. Engine replay does not model
     /// pipeline parallelism, which would raise this depth.
     pub(crate) fn max_concurrent_batches(&self) -> usize {
-        if self.backend == Backend::Vllm && self.async_scheduling != Some(false) {
+        if self.backend == Backend::Vllm
+            && self.async_scheduling != Some(false)
+            && !(self.native_host_offload.is_some() && self.aic_nextn.is_some())
+        {
             2
         } else {
             1
@@ -1203,6 +1253,22 @@ impl EngineConfig {
                     || self.aic_nextn.is_none(),
                 "sub-block prefix_match_unit does not support speculative decoding"
             );
+            if let Some(window) = &state_cache.sliding_window {
+                ensure!(
+                    self.prefix_match_unit.is_none(),
+                    "sliding-window state_cache does not support prefix_match_unit"
+                );
+                ensure!(
+                    window
+                        .retention_interval
+                        .is_none_or(|interval| interval.is_multiple_of(self.block_size)),
+                    "state_cache retention_interval must be a multiple of block_size"
+                );
+                ensure!(
+                    window.lookahead_tokens < self.block_size,
+                    "state_cache lookahead_tokens must be smaller than block_size"
+                );
+            }
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
                 .ok_or_else(|| anyhow::anyhow!("state_cache requires kv_cache_bytes_per_token"))?;
@@ -1421,6 +1487,7 @@ impl EngineConfig {
                 "kvcr supports aggregated and prefill workers only"
             );
         }
+        self.validate_host_offload_speculation()?;
         if let Some(host_offload) = &self.native_host_offload {
             host_offload.validate()?;
             ensure!(
@@ -1437,10 +1504,30 @@ impl EngineConfig {
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
             );
-            ensure!(
-                self.aic_nextn.is_none(),
-                "native_host_offload does not support aic_nextn in the initial implementation"
-            );
+            if self.aic_nextn.is_some() {
+                ensure!(
+                    self.async_scheduling != Some(true),
+                    "native_host_offload with MTP requires async_scheduling=false"
+                );
+                ensure!(
+                    self.worker_type == WorkerType::Aggregated,
+                    "native_host_offload with aic_nextn requires worker_type=aggregated"
+                );
+                ensure!(
+                    host_offload.scope == G2Scope::DpRankLocal,
+                    "native_host_offload with aic_nextn requires dp_rank_local scope"
+                );
+                ensure!(
+                    self.g3_offload.is_none(),
+                    "native_host_offload with aic_nextn does not support g3_offload"
+                );
+                ensure!(
+                    self.state_cache.is_none()
+                        && self.kv_cache_groups.is_empty()
+                        && self.prefix_match_unit.is_none(),
+                    "native_host_offload with aic_nextn requires a scalar uniform FullAttention KV pool"
+                );
+            }
             let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
                 anyhow::anyhow!(
                     "native_host_offload requires kv_cache_bytes_per_token to derive the physical host block size"
@@ -1708,6 +1795,7 @@ mod tests {
         assert_eq!(
             StateCacheConfig {
                 bytes_per_request: usize::MAX,
+                sliding_window: None,
             }
             .state_blocks(2, 1)
             .unwrap(),
@@ -2142,6 +2230,59 @@ mod tests {
         }
     }
 
+    fn set_canonical_mtp(config: &mut EngineConfig, depth: usize) {
+        config.aic_nextn = Some(depth);
+        config.timing_model = TimingModelConfig::External {
+            provider: "aic".into(),
+            config: serde_json::json!({"speculation": {"kind": "mtp", "params": {"depth": depth}}}),
+        };
+    }
+
+    #[test]
+    fn host_offload_rejects_legacy_depth_for_every_timing_kind() {
+        for timing in [
+            TimingModelConfig::Polynomial,
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"nextn": 2}),
+            },
+            TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"speculation": {"kind": "eagle3"}}),
+            },
+        ] {
+            let mut config = native_host_offload_config();
+            config.aic_nextn = Some(2);
+            config.timing_model = timing;
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires canonical mtp")
+            );
+        }
+    }
+
+    #[test]
+    fn native_host_offload_accepts_supported_mtp_depths() {
+        for depth in [1, 2, 5] {
+            let mut config = native_host_offload_config();
+            set_canonical_mtp(&mut config, depth);
+            config.validate().unwrap();
+            assert_eq!(config.max_concurrent_batches(), 1);
+            let decoded: EngineConfig =
+                serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+            decoded.validate().unwrap();
+            assert_eq!(decoded.aic_nextn, Some(depth));
+            assert_eq!(decoded.native_host_offload, config.native_host_offload);
+        }
+    }
+
     #[test]
     fn native_host_offload_rejects_unsupported_scheduler_modes() {
         let cases: &[InvalidHostConfigCase] = &[
@@ -2171,8 +2312,37 @@ mod tests {
                 "enable_prefix_caching=true",
             ),
             (
-                |config| config.aic_nextn = Some(1),
-                "does not support aic_nextn",
+                |config| {
+                    set_canonical_mtp(config, 2);
+                    config.async_scheduling = Some(true);
+                },
+                "requires async_scheduling=false",
+            ),
+            (
+                |config| {
+                    set_canonical_mtp(config, 1);
+                    config.worker_type = WorkerType::Decode;
+                },
+                "requires worker_type=aggregated",
+            ),
+            (
+                |config| {
+                    set_canonical_mtp(config, 2);
+                    let host = config.native_host_offload.as_mut().unwrap();
+                    host.scope = G2Scope::ClusterShared;
+                    host.kv_layout_id = Some("test-layout".into());
+                },
+                "requires dp_rank_local scope",
+            ),
+            (
+                |config| {
+                    set_canonical_mtp(config, 2);
+                    config.g3_offload = serde_json::from_value(serde_json::json!(
+                        {"scope": "worker_local", "num_g3_blocks": 1}
+                    ))
+                    .unwrap();
+                },
+                "with aic_nextn does not support g3_offload",
             ),
             (
                 |config| {
