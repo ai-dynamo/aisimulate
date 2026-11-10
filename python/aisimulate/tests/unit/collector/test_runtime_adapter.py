@@ -1004,7 +1004,7 @@ def test_missing_model_sidecar_keeps_primary_config_evidence_unresolved(tmp_path
         assert record["model_config_sha256"] == campaign.launch["model_config"]["sha256"]
 
 
-def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit):
+def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit, snapshot_commit=None):
     """Load the campaign's model by Hub ID through a config that forwards like vLLM 0.31.0 Glm5NextConfig.
 
     Once ``text_config`` is set, Glm5NextConfig reads each key of the text config's instance dictionary,
@@ -1013,7 +1013,9 @@ def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit):
     is not one of them (transformers_utils/configs/glm5_next.py:385-420).
     The base-class constructor runs first, so the top-level config keeps the ``_commit_hash`` that
     transformers gives it (:350-366). huggingface_hub is not installed in the test environment, so a
-    stand-in module answers the cache lookups. Returns the cached config.json and the lookups.
+    stand-in module answers the cache lookups. ``snapshot_commit`` places the cached config.json in the
+    ``snapshots/<commit>/`` directory of a Hugging Face cache and pins the model revision to it.
+    Returns the cached config.json and the lookups.
     """
     import sys
     from types import ModuleType
@@ -1056,7 +1058,10 @@ def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit):
     model = campaign.config.model_config
     model.model, model.hf_config = "zai-org/GLM-5.3-Flash", ForwardingConfig()
     cached = campaign.root / "hf-cache" / "config.json"
-    cached.parent.mkdir()
+    if snapshot_commit is not None:
+        cached = campaign.root / "hf-cache" / "snapshots" / snapshot_commit / "config.json"
+        model.revision = snapshot_commit
+    cached.parent.mkdir(parents=True)
     cached.write_text('{"model_type":"glm5_next"}')
     lookups = []
 
@@ -1096,7 +1101,34 @@ def test_hub_loaded_config_without_its_own_commit_is_unresolved(tmp_path, monkey
         assert record["unresolved_fields"] == ["model_config_sha256"]
         assert "loaded remote config has no immutable cache commit" in record["error"]
         assert "model_config_sha256" not in record
-    assert lookups == []
+    # Only the pinned revision of the model is looked up, never the commit of the text config, and the
+    # path that the lookup returns holds no snapshot commit.
+    assert lookups == [("zai-org/GLM-5.3-Flash", "config.json", "d" * 40)] * 2
+
+
+def test_probe_reads_the_commit_of_a_config_without_commit_hash_from_the_pinned_snapshot(tmp_path, monkeypatch):
+    import hashlib
+
+    commit = "edf8030" + "0" * 33
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    snapshot, _ = _hub_loaded_config(campaign, monkeypatch, commit=None, text_commit=None, snapshot_commit=commit)
+    # transformers 5.19.0 sets no _commit_hash on a loaded config.
+    del campaign.config.model_config.hf_config.__dict__["_commit_hash"]
+    digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    for record in campaign.run():
+        assert "model_config_sha256" not in record["unresolved_fields"], record.get("error")
+        assert record["loaded_model_config"]["path"] == str(snapshot.resolve())
+        assert record["model_config_sha256"] == digest
+
+
+def test_probe_refuses_a_hub_config_without_commit_hash_and_without_a_pinned_revision(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    _hub_loaded_config(campaign, monkeypatch, commit=None, text_commit=None)
+    del campaign.config.model_config.hf_config.__dict__["_commit_hash"]
+    campaign.config.model_config.revision = None
+    for record in campaign.run():
+        assert "model_config_sha256" in record["unresolved_fields"]
+        assert "loaded remote config has no immutable cache commit" in record["error"]
 
 
 def _glm_campaign(tmp_path, monkeypatch):

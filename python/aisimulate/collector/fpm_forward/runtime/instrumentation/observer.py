@@ -87,10 +87,11 @@ def _loaded_config(owner: Any, payload: dict) -> None:
     elif not candidate.is_file():
         # Resolve only the already-loaded immutable HF revision. Never download
         # another config during observation or hash a caller-supplied host copy.
-        # Read the commit that the loaded config object holds itself. vLLM 0.31.0
-        # Glm5NextConfig forwards the attribute read to its text config, whose
-        # _commit_hash is None when config.json nests text_config
-        # (transformers_utils/configs/glm5_next.py:359-360, :385-392, :406-420).
+        # Read the commit that the loaded config object holds itself. A config that
+        # forwards attribute reads to a nested text config can report that config's
+        # _commit_hash, which is None, so only the own instance dictionary counts.
+        # transformers 5.19.0 sets no _commit_hash at all; then take the commit of the
+        # pinned snapshot that holds the loaded config.json.
         hf_config = getattr(model, "hf_config", None)
         try:
             attributes = object.__getattribute__(hf_config, "__dict__")
@@ -98,6 +99,8 @@ def _loaded_config(owner: Any, payload: dict) -> None:
             attributes = {}
         commit = attributes.get("_commit_hash")
         if not isinstance(commit, str) or len(commit) != 40:
+            commit = legacy._cached_config_commit(model)
+        if commit is None:
             raise ValueError("loaded remote config has no immutable cache commit")
         from huggingface_hub import try_to_load_from_cache
 
@@ -143,7 +146,8 @@ def _resolved(owner: Any, *, hybrid_evidence: bool = False) -> dict:
 
 def _worker_cache(owner: Any) -> dict:
     cache = legacy.worker_memory(owner)
-    # This route reads shared_by with vLLM 0.27.0 meaning and has bundles for 0.27.0 and 0.28.0 only.
+    # Only a version without hybrid evidence reaches this route; it reads shared_by with vLLM 0.27.0 meaning,
+    # and the audited bundles of such versions are for 0.27.0 and 0.28.0 (0.28.0 as a campaign-local example manifest).
     if any("layers" in item or "layer_stride" in item for item in cache.get("tensor_allocations", [])):
         raise ValueError("layer-strided cache tensor records need an audited instrumentation adapter")
     return cache
