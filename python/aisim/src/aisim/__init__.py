@@ -12,6 +12,20 @@ try:
     __version__ = version("aisim")
 except PackageNotFoundError:
     __version__ = "0+unknown"
+else:
+    try:
+        version("aisimulate")
+    except PackageNotFoundError:
+        pass
+    else:
+        raise ImportError(
+            "aisim and aisimulate are both installed and own overlapping files. "
+            "Use a fresh environment, or repair this one with:\n"
+            "  python -m pip uninstall -y aisimulate\n"
+            "  python -m pip install --force-reinstall /path/to/your/selected/aisim.whl\n"
+            "Uninstalling aisimulate can remove shared files, so reinstall aisim even if it is already installed. "
+            "Update dependencies that still require aisimulate before migrating."
+        )
 
 _LAZY_EXPORTS = {
     "AFDCompanionPerformanceModel": ("aisim.runner", "AFDCompanionPerformanceModel"),

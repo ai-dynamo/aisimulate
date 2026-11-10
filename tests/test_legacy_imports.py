@@ -90,3 +90,67 @@ def test_onboarding_revision_flag_preserves_its_saved_field(flag):
     add_support_parser(parser.add_subparsers(dest="command"))
     arguments = parser.parse_args(["onboard", "init", "--output-dir", "unused", flag, "a" * 40])
     assert arguments.aisimulate_revision == "a" * 40
+
+
+@pytest.mark.parametrize("module", ["aisim", "aisim_core", "aisimulate", "aisimulate_core"])
+@pytest.mark.parametrize("order", [("aisimulate", "aisim"), ("aisim", "aisimulate")])
+def test_overlapping_distributions_fail_before_loading_runtime(tmp_path, module, order):
+    for name in order:
+        metadata = tmp_path / f"{name}-0.14.0.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 0.14.0\n")
+    source = Path(__file__).resolve().parents[1] / "python/aisim/src"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            f"""
+import importlib
+import sys
+try:
+    importlib.import_module({module!r})
+except ImportError as error:
+    assert 'aisim._runtime' not in sys.modules
+    assert 'aisim_core._native' not in sys.modules
+    print(error)
+    sys.exit(23)
+raise AssertionError('mixed distributions must be rejected')
+""",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(source), str(tmp_path)))},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 23, result.stdout + result.stderr
+    assert "aisim and aisimulate are both installed" in result.stdout
+    assert "pip uninstall -y aisimulate" in result.stdout
+    assert "pip install --force-reinstall" in result.stdout
+
+
+@pytest.mark.parametrize("installed", [(), ("aisim",), ("aisimulate",)])
+def test_distribution_guard_allows_single_distribution_and_source_checkout(tmp_path, installed):
+    for name in installed:
+        metadata = tmp_path / f"{name}-0.14.0.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 0.14.0\n")
+    source = Path(__file__).resolve().parents[1] / "python/aisim/src"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "import sys, aisim, aisim_core, aisimulate, aisimulate_core; "
+            "assert aisimulate is aisim; assert aisimulate_core is aisim_core; "
+            "assert 'aisim._runtime' not in sys.modules; "
+            f"assert aisim.__version__ == {('0.14.0' if 'aisim' in installed else '0+unknown')!r}",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(source), str(tmp_path)))},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
