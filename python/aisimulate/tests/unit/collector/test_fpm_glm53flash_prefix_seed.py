@@ -211,7 +211,13 @@ class FakeBase:
             "raw_fpms": raw_fpms,
             "estimate": {"method": reduction, "raw_sample_indices": sample_indices},
         }
-        assert self._bench_fpm_validation_failure(point, local_fpms[0]) is None
+        # :7558-7560 and :7613-7628: a kept FPM that fails the shape validation skips the point and saves no result.
+        reason = self._bench_fpm_validation_failure(point, local_fpms[0])
+        if reason is not None:
+            self._bench_skip_point(point, reason)
+            self._bench_current_point = None
+            self._bench_current_fpms = []
+            return
         rank_results = [{"dp_rank": 0, "fpms": local_fpms}]
         self._bench_results.append(types.SimpleNamespace(point=point, fpms=local_fpms))
         self._bench_iteration_groups.append(
@@ -225,6 +231,13 @@ class FakeBase:
         self.saved.append((point, local_fpms))
         self._bench_current_point = None
         self._bench_current_fpms = []
+
+    def _bench_skip_point(self, point, reason):
+        # instrumented_scheduler.py:7723-7745: an explicit point that fails aborts the run; another one is recorded as
+        # skipped. The eager warm-up replicas of :7729-7742 do not occur, because the producer plans none.
+        if "explicit" in point.sample_reasons:
+            raise RuntimeError(f"benchmark_id={point.benchmark_id}: explicit benchmark point failed: {reason}")
+        self._bench_skipped_points.append(types.SimpleNamespace(point=point, reason=reason))
 
     def _update_from_output(self, output, model_output):
         # instrumented_scheduler.py:2437-2503 and :2526-2532: every benchmark step takes a forward index. A recorded
@@ -452,6 +465,7 @@ def make_scheduler(module, tmp_path, points):
     s._bench_active_req_ids, s._bench_seq = set(), 0
     s._bench_current_point, s._bench_current_fpms = None, []
     s._bench_results, s._bench_iteration_groups, s._bench_warmup_evidence = [], [], []
+    s._bench_skipped_points = []
     s._bench_forward_index, s.monotonic = 0, 1000.0
     s._bench_grid = collections.deque(points)
     s._bench_phase = "prefill"
@@ -605,6 +619,64 @@ def test_producer_decode_point_keeps_the_steady_sample_of_each_repetition(monkey
     assert fpm["wall_time"] == statistics.median(rep["fpms"][-1]["wall_time"] for rep in measured)
     assert fpm["kvwarm_steady_sample"] is True and "benchmark_sample" not in fpm
     assert s._bench_iteration_groups[0]["wall_time"] == fpm["wall_time"]
+
+
+def test_producer_point_leaves_a_rejected_measured_repetition_out_of_its_record(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    s = make_scheduler(module, tmp_path, [Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])])
+    native_check = s._bench_fpm_validation_failure
+    rejected = []
+
+    def validation(point, fpm):
+        # The native shape validation fails once, for the third measured repetition.
+        if s._glm_stage == "measure" and len(s._glm_repetitions) == module.WARMUP_REPEATS + 2 and not rejected:
+            rejected.append(fpm["benchmark_sample"]["forward_index"])
+            return "prefill mismatch"
+        return native_check(point, fpm)
+
+    s._bench_fpm_validation_failure = validation
+    walls = [0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
+    fpm = _run_prefill_point(s, measured_walls=walls)["fpms"][0]
+    measurement = fpm["benchmark_measurement"]
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    # The sidecar records the rejection as before: its reason, its attempt and the FPM it recorded.
+    ((rejection),) = record["rejected_repetitions"]
+    assert rejection["rejection_reason"] == "prefill mismatch" and rejection["attempt"] == module.WARMUP_REPEATS + 2
+    assert [sample["benchmark_sample"]["forward_index"] for sample in rejection["fpms"]] == rejected
+    # The record holds the ten accepted measured repetitions, not the rejected one.
+    measured = [rep for rep in record["repetitions"] if rep["role"] == "measurement"]
+    assert len(measured) == 10 and measurement["raw_fpms"] == [rep["fpms"][0] for rep in measured]
+    assert rejected[0] not in [raw["benchmark_sample"]["forward_index"] for raw in measurement["raw_fpms"]]
+    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    assert measurement["expected_internal_samples"] == 10
+    assert [raw["wall_time"] for raw in measurement["raw_fpms"]] == walls
+    assert fpm["wall_time"] == statistics.median(walls) == 0.455
+
+
+@pytest.mark.parametrize("origin", ["explicit", "imbalance"])
+def test_producer_point_that_the_native_save_refuses_has_no_record(monkeypatch, tmp_path, origin):
+    module = load_producer(monkeypatch)
+    point = Point("prefill", 1, 1, 32, 120, rows=[[32, 120]], sample_reasons=[origin])
+    s = make_scheduler(module, tmp_path, [point])
+    native_check = s._bench_fpm_validation_failure
+    # Every repetition passes the producer's check. The native save's check of the kept FPM fails.
+    s._bench_fpm_validation_failure = (
+        lambda p, fpm: "prefill mismatch" if s._glm_stage is None else native_check(p, fpm)
+    )
+    if origin == "explicit":
+        # The native save aborts the run for a point of the manifest.
+        with pytest.raises(RuntimeError, match="benchmark_id=1: explicit benchmark point failed: prefill mismatch"):
+            run(s, Engine(s), "prefill")
+        assert not s._bench_skipped_points
+    else:
+        # A point that Dynamo planned itself is skipped. The producer has no saved point to rewrite and goes on.
+        run(s, Engine(s), "prefill")
+        ((skipped),) = s._bench_skipped_points
+        assert skipped.point is point and skipped.reason == "prefill mismatch"
+        record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+        assert len(record["repetitions"]) == 15 and s._glm_point is None
+        assert all("benchmark_measurement" not in fpm for rep in record["repetitions"] for fpm in rep["fpms"])
+    assert not s._bench_results and not s._bench_iteration_groups and not s.saved
 
 
 def test_producer_protocol_names_its_repetitions_and_seeded_tokens(monkeypatch, tmp_path):
