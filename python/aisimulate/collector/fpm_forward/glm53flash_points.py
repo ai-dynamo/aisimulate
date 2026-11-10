@@ -240,6 +240,8 @@ def glm_plan_manifest(
     # vLLM 0.33.0 saves a prefill checkpoint inside a chunk only if every Mamba group holds a checkpoint block, and it
     # uses the alignment of the first one (scheduler.py:437-449). The import writes the checkpoint fields for each Mamba
     # state group, so a deployment whose groups do not all hold a block takes no internal checkpoint.
+    # The plan's one point list serves every cell, so a deployment without an internal checkpoint cannot share it with
+    # one that has it.
     alignments, checkpoint_groups = set(), 0
     for deployment in deployments:
         mamba = [group for group in deployment.resources.cache_groups if group.prefill_checkpoint_blocks is not None]
@@ -249,6 +251,10 @@ def glm_plan_manifest(
             alignments.update(group.prefill_checkpoint_alignment for group in holding)
         else:
             alignments.add(None)
+    if None in alignments and len(alignments) > 1:
+        raise ValueError(
+            "GLM-5.3-Flash collection requires the same prefill checkpoint setting across the accepted deployments"
+        )
     if len(alignments) != 1:
         raise ValueError(
             "GLM-5.3-Flash collection requires one prefill checkpoint alignment across the accepted deployments"

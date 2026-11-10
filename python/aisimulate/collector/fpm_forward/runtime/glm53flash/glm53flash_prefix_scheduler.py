@@ -504,7 +504,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                     f"GLM-5.3-Flash collection does not model this launch in its align-mode rule: {field}={value}"
                 )
         # vLLM 0.33.0 saves a prefill checkpoint inside the last chunk only if every Mamba group holds a checkpoint
-        # block (scheduler.py:593-604).
+        # block (scheduler.py:445-449, :593-604).
         alignment = self.mamba_prefill_checkpoint_alignment if self.mamba_has_prefill_checkpoint_blocks else None
         hash_block = self.hash_block_size
         # vLLM 0.33.0 splits prefill chunks only in Mamba align mode (scheduler.py:432-434, :860-861, :1350-1351), on

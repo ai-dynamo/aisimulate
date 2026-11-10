@@ -39,8 +39,9 @@ _TP4_LIMITS = {
     "page_size_bytes": 13_045_120,
     "state_groups": 5,
 }
-# With the default KDA backend of vLLM 0.33.0 on bf16 Hopper and Blackwell GPUs, each of the four KDA state groups holds
-# one prefill checkpoint block with an alignment of 16 tokens.
+# vLLM 0.33.0 prefills KDA with FlashKDA by default on SM90, SM10x and SM12x with bf16, head_dim 128 and a bounded
+# gate (models/glm5next/common/kda.py:137-160). Then each of the four KDA state groups holds one prefill checkpoint
+# block with an alignment of 16 tokens (kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10).
 _TP4 = {**_TP4_LIMITS, "checkpoint_alignment": 16, "checkpoint_groups": 4}
 
 
@@ -140,6 +141,18 @@ def test_tp4_prefill_points_run_in_one_align_mode_step():
         if glm_align_stop(start, end, 2176, hash_block=2176, checkpoint_alignment=16) is not None:
             split.append(point)
     assert split == []
+    # The closed form of the vLLM 0.33.0 cut for a start of k whole blocks B and n new tokens, without the rule. The
+    # last cache position is kB + (n - 1) // B * B, strictly inside the chunk exactly when n > B. With an alignment that
+    # divides B, the checkpoint at that position is valid whenever n > B, so no stop remains. With the same capacity
+    # term, the list with the 16-token alignment holds every candidate, and the list without a checkpoint holds exactly
+    # its points of at most one block of new tokens.
+    with_checkpoint, dropped = glm_points(**_TP4_LIMITS, checkpoint_alignment=16, checkpoint_groups=0)
+    without, _ = glm_points(**_TP4_LIMITS, checkpoint_alignment=None, checkpoint_groups=0)
+    assert dropped["prefill"]["mamba_align_split"] == dropped["prefill"]["cache_capacity"] == 0
+    assert len(with_checkpoint["prefill"]) == dropped["prefill"]["candidates"]
+    assert without["prefill"] == [
+        point for point in with_checkpoint["prefill"] if point["total_prefill_tokens"] // point["batch_size"] <= 2176
+    ]
 
 
 def test_point_list_is_deterministic():
@@ -624,7 +637,8 @@ def _deployment(*state_groups: tuple[int | None, int | None]) -> SimpleNamespace
     memory = SimpleNamespace(hash_block_size_tokens=2176, kv_cache_bytes=_TP4_LIMITS["kv_cache_bytes"])
     groups = [
         SimpleNamespace(kind="attention", page_size_bytes=PAGE, prefill_checkpoint_blocks=None),
-        # The state group of the 4-token blocks is no Mamba group, so the import writes no checkpoint fields for it.
+        # The state group of the 4-token blocks is no Mamba group. The import writes the checkpoint fields only for a
+        # MambaSpec group (collector/fpm_forward/runtime_memory.py:642, :661-675), so this group has none.
         SimpleNamespace(kind="state", page_size_bytes=PAGE, prefill_checkpoint_blocks=None),
         *(
             SimpleNamespace(
@@ -662,18 +676,22 @@ def test_plan_manifest_reads_the_checkpoint_of_the_accepted_profile(groups, alig
 
 
 @pytest.mark.parametrize(
-    "deployments",
+    ("deployments", "text"),
     [
-        [[(1, 16)] * 4, [(1, 32)] * 4],
+        (
+            [[(1, 16)] * 4, [(1, 32)] * 4],
+            "GLM-5.3-Flash collection requires one prefill checkpoint alignment across the accepted deployments",
+        ),
         # The plan's one point list serves every cell, and a deployment without a checkpoint block would cut the
         # prefill that the other one runs in one step.
-        [[(1, 16)] * 4, [(0, None)] * 4],
+        (
+            [[(1, 16)] * 4, [(0, None)] * 4],
+            "GLM-5.3-Flash collection requires the same prefill checkpoint setting across the accepted deployments",
+        ),
     ],
     ids=["two-alignments", "checkpoint-and-none"],
 )
-def test_plan_manifest_refuses_deployments_with_different_checkpoint_alignments(deployments):
+def test_plan_manifest_refuses_deployments_with_different_checkpoint_alignments(deployments, text):
     with pytest.raises(ValueError) as error:
         glm_plan_manifest(_OPTIONS, [_deployment(*groups) for groups in deployments])
-    assert str(error.value) == (
-        "GLM-5.3-Flash collection requires one prefill checkpoint alignment across the accepted deployments"
-    )
+    assert str(error.value) == text

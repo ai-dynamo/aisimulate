@@ -1949,6 +1949,7 @@ def _glm_plan(
     max_batch_size=256,
     max_num_tokens=8192,
     model_revision=_GLM_REVISION,
+    kda_checkpoint_alignment=None,
     **changes,
 ):
     """A GLM-5.3-Flash TP 4 collection plan with the cache resources that the runtime probe measured.
@@ -1956,10 +1957,20 @@ def _glm_plan(
     The config is a small stand-in with the hybrid layer types. The options are the limits that onboarding passes:
     ``max_num_tokens`` tokens, ``max_batch_size`` sequences and a 1,048,576-token context. The profile records the
     same token and sequence limits, because accepted runtime memory is exact for its scheduler settings. The producer
-    runs no global warm-up iterations. ``changes`` replace option fields before planning.
+    runs no global warm-up iterations. ``changes`` replace option fields before planning. With a
+    ``kda_checkpoint_alignment``, each of the four KDA groups holds one prefill checkpoint block of that alignment, as
+    the import writes it for a launch that prefills KDA with FlashKDA.
     """
     from .test_runtime_observations import glm_tp4_cache_groups
 
+    cache_groups = glm_tp4_cache_groups()
+    if kda_checkpoint_alignment is not None:
+        # A FlashKDA prefill gives each KDA spec one checkpoint block aligned to 16 tokens (vLLM 0.33.0
+        # models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10), and the import
+        # keeps the count and the alignment of a MambaSpec group (collector/fpm_forward/runtime_memory.py:661-675).
+        for group in cache_groups:
+            if "prefill_checkpoint_blocks" in group:
+                group.update(prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=kda_checkpoint_alignment)
     architecture = "Glm5NextForConditionalGeneration"
     path = _mixed_attention_config(tmp_path, architecture, True)
     memory = {
@@ -1997,7 +2008,7 @@ def _glm_plan(
                 "resources": {
                     "runtime_memory": memory,
                     "cache_layout": "grouped",
-                    "cache_groups": glm_tp4_cache_groups(),
+                    "cache_groups": cache_groups,
                     "max_num_tokens": max_num_tokens,
                     "max_batch_size": max_batch_size,
                     "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
@@ -2086,6 +2097,37 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
     )
     for other in (_pending_plan(), deepseek):
         assert "benchmark_points" not in other.to_dict()["options"]
+
+
+def test_glm_collection_plan_with_prefill_checkpoint_blocks_keeps_every_prefill(tmp_path):
+    from collector.fpm_forward.glm53flash_points import glm_point_manifest
+
+    # The KDA groups of a FlashKDA launch hold one prefill checkpoint block aligned to 16 tokens. vLLM 0.33.0 then saves
+    # the checkpoint inside every planned prefill chunk, so the align rule drops no point.
+    plan = _glm_plan(tmp_path, kda_checkpoint_alignment=16)
+    _, canonical, digest = glm_point_manifest(
+        hash_block_size=2176,
+        token_budget=8192,
+        prefill_batch_limit=256,
+        decode_batch_limit=256,
+        measured_context=131072,
+        kv_cache_bytes=180_218_332_800,
+        page_size_bytes=13_045_120,
+        state_groups=5,
+        checkpoint_alignment=16,
+        checkpoint_groups=4,
+    )
+    saved = plan.to_dict()
+
+    assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
+    assert digest == "2c81f2f524251c18a5a0c33607544695042c48f8151f2b9c3f067d983fa4cbc6"
+    assert saved["point_generation"]["planned_point_count"] == 577
+    # The capacity term counts the four checkpoint blocks of each request, and the cache still holds every point.
+    assert saved["point_generation"]["dropped_points"] == {
+        "prefill": {"candidates": 496, "mamba_align_split": 0, "cache_capacity": 0},
+        "decode": {"candidates": 97, "token_budget": 16, "cache_capacity": 0},
+    }
+    runtime_memory.validate_saved_plan(saved)
 
 
 def test_glm_collection_plan_records_the_points_that_each_rule_drops(tmp_path):
@@ -2521,6 +2563,42 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_with_prefill_checkpoint_blocks_stages_the_five_point_subset(tmp_path):
+    plan = _glm_plan(tmp_path, kda_checkpoint_alignment=16)
+    frozen = json.loads(plan.options.benchmark_points_json)
+
+    for cell in plan.cells:
+        directory = tmp_path / f"smoke-{cell.workload_kind}"
+        directory.mkdir()
+        [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+        subset = path.read_bytes()
+        # With an internal checkpoint, the list holds the prefill of two hash blocks after one block of prefix, so the
+        # smoke takes it as its third prefill point.
+        assert json.loads(subset) == {
+            "schema_version": 3,
+            "prefill": [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
+            ],
+            "decode": [
+                {"batch_size": 1, "total_kv_read_tokens": 4096},
+                {"batch_size": 2, "total_kv_read_tokens": 8192},
+            ],
+        }
+        assert hashlib.sha256(subset).hexdigest() == "35060cd4787dc7cb14fb00480359fa5c63a907bd514692e0397f839315c018fd"
+        for phase in ("prefill", "decode"):
+            assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
+        assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+            "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+            "requested_point_count": {"prefill": 3, "decode": 2}[cell.workload_kind],
+            "smoke_manifest": "glm53flash_grid_v1_smoke",
+            **policy,
+        }
+
+
 def test_glm_smoke_of_a_one_sequence_request_stages_points_of_one_request(tmp_path):
     # A request with max_batch_size 1 reaches the collector as --fpm-max-num-seqs 1 and --fpm-max-prefill-batch-size 1.
     plan = _glm_plan(tmp_path, max_batch_size=1)
