@@ -32,9 +32,10 @@ The same reads were audited against vLLM 0.32.0, commit
 https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1
 https://github.com/vllm-project/vllm/tree/4ba787ec9959e566d3b587a796dff07673324da5/vllm/v1
 
-A final patch release of 0.32 or 0.33, such as 0.33.1, is accepted only when every file in
-SOURCE_MANIFESTS for its audited release (0.32.0 or 0.33.0) is installed once and byte-identical
-to that release. Its records carry audited_backend_version. Any other version is refused.
+A final patch release of 0.32 or 0.33, such as 0.33.1, is accepted only when the imported vllm
+package reports the same version as the package metadata and every file in SOURCE_MANIFESTS for its
+audited release (0.32.0 or 0.33.0) is installed once and byte-identical to that release. Its
+records carry audited_backend_version. Any other version is refused.
 
 Unsupported observation APIs write unresolved evidence. Exceptions from the
 runtime itself are never caught by these observation helpers or wrappers.
@@ -181,13 +182,20 @@ def _source_problem(release: str) -> str | None:
 
 
 def _check_release(payload: dict[str, Any], audited: tuple[str, ...], refusal: str) -> None:
-    """Refuse an unaudited vLLM; accept a patch release only when its audited files are unchanged."""
+    """Refuse an unaudited vLLM; accept a patch release only from its own package with unchanged audited files."""
     version = payload["backend_version"]
     release = audited_release(version, audited)
     if release is None:
         raise ValueError(refusal)
     if release != version:
         payload["audited_backend_version"] = release
+        # The file check reads the imported package, so that package must be the release the metadata names.
+        imported = getattr(importlib.import_module("vllm"), "__version__", None)
+        if imported != version:
+            raise ValueError(
+                f"vLLM package metadata reports {version}, but the imported vllm package reports "
+                f"{imported or 'no version'}"
+            )
         problem = _source_problem(release)
         if problem:
             raise ValueError(f"installed vLLM {version} does not match audited vLLM {release}: {problem}")

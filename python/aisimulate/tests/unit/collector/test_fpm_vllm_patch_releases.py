@@ -99,6 +99,7 @@ def fake_vllm(tmp_path_factory, monkeypatch):
     (root / "v1" / "core" / "kv_cache_utils.py").write_text("utils = 1\n")
     module = ModuleType("vllm")
     module.__path__ = [str(root)]
+    module.__version__ = "0.33.1"  # matches the 0.33.1 metadata of the patch-release tests; exact versions ignore it
     monkeypatch.setitem(sys.modules, "vllm", module)
     manifest = {_CACHE: _sha("cache = 1\n"), _UTILS: _sha("utils = 1\n")}
     monkeypatch.setattr(observer, "SOURCE_MANIFESTS", {"0.32.0": dict(manifest), "0.33.0": dict(manifest)})
@@ -232,13 +233,32 @@ def test_changed_file_leaves_patch_records_unresolved(fake_vllm, tmp_path, monke
         assert record["audited_backend_version"] == "0.33.0"
 
 
-def test_audited_versions_skip_the_source_check(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("imported", "shown"), [("0.33.0", "0.33.0"), ("dev", "dev"), (None, "no version")])
+def test_patch_release_from_another_vllm_package_leaves_records_unresolved(
+    fake_vllm, tmp_path, monkeypatch, imported, shown
+):
+    if imported is None:
+        monkeypatch.delattr(sys.modules["vllm"], "__version__")
+    else:
+        monkeypatch.setattr(sys.modules["vllm"], "__version__", imported)
+    memory, execution = _observe_both(tmp_path, monkeypatch, "0.33.1")
+    error = f"ValueError: vLLM package metadata reports 0.33.1, but the imported vllm package reports {shown}"
+    for record in (memory, execution):
+        assert record["status"] == "unresolved"
+        assert record["error"] == error
+        assert record["audited_backend_version"] == "0.33.0"
+    assert observer._SOURCE_PROBLEMS == {}
+
+
+def test_audited_versions_skip_the_package_and_source_checks(fake_vllm, tmp_path, monkeypatch):
     def fail(_release):
         raise AssertionError("source check must not run")
 
     monkeypatch.setattr(observer, "_source_problem", fail)
+    monkeypatch.setattr(sys.modules["vllm"], "__version__", "dev")
     memory, execution = _observe_both(tmp_path, monkeypatch, "0.33.0")
     assert memory["status"] == "resolved", memory.get("error")
+    assert execution["status"] == "observed", execution.get("error")
     assert "audited_backend_version" not in memory
     assert "audited_backend_version" not in execution
 
