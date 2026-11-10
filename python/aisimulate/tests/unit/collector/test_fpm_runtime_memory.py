@@ -397,6 +397,12 @@ def test_import_accepts_a_mamba_group_without_checkpoint_blocks():
         (1, None, "mamba prefill checkpoint evidence is inconsistent"),
         (1, 0, "mamba prefill checkpoint evidence is inconsistent"),
         (0, 16, "mamba prefill checkpoint evidence is inconsistent"),
+        (1, True, "mamba prefill checkpoint evidence is inconsistent"),
+        (1, -16, "mamba prefill checkpoint evidence is inconsistent"),
+        # A count that is not an integer is no count.
+        (True, 16, "runtime state cache group lacks prefill checkpoint evidence"),
+        (1.0, 16, "runtime state cache group lacks prefill checkpoint evidence"),
+        ("1", 16, "runtime state cache group lacks prefill checkpoint evidence"),
     ],
 )
 def test_import_refuses_inconsistent_checkpoint_evidence(count, alignment, error):

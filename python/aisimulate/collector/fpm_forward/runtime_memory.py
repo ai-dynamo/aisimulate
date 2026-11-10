@@ -643,18 +643,14 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             if (
                 type(blocks) is not int
                 or blocks <= 0
-                or (
-                    mamba
-                    and (
-                        any(
-                            type(state.get(name)) is not int
-                            for name in ("num_speculative_blocks", "num_prefill_checkpoint_blocks")
-                        )
-                        or "prefill_checkpoint_alignment" not in state
-                    )
-                )
+                or (mamba and type(state.get("num_speculative_blocks")) is not int)
             ):
                 raise ValueError(f"runtime state cache group lacks blocks_per_request evidence: {names}")
+            if mamba and (
+                type(state.get("num_prefill_checkpoint_blocks")) is not int
+                or "prefill_checkpoint_alignment" not in state
+            ):
+                raise ValueError(f"runtime state cache group lacks prefill checkpoint evidence: {names}")
             # The Mamba "all" mode is refused from the group itself, with or without prefix-caching evidence.
             if state.get("mamba_cache_mode") == "all":
                 raise ValueError(_MAMBA_ALL_UNMODELED)

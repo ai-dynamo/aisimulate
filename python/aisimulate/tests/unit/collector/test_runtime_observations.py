@@ -1621,6 +1621,32 @@ def test_import_refuses_workers_that_disagree_on_the_checkpoint_alignment(tmp_pa
     assert result["diagnostics"] == ["tp2: worker and scheduler cache group geometry disagrees"]
 
 
+@pytest.mark.parametrize(("ranks", "complete"), [((0, 1), True), ((1,), False)], ids=["both", "one"])
+def test_import_refuses_a_dp_rank_that_disagrees_on_the_checkpoint_count(tmp_path, ranks, complete):
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
+
+    def edit(record):
+        if record["dp_rank"] not in ranks:
+            return
+        # Every record of the rank holds one FlashKDA checkpoint block per KDA group. Its schedulers count it at
+        # startup in align mode (kv_cache_interface.py:1135-1139), so their concurrency follows.
+        cache = record["cache"]
+        mamba = [group for group in cache["groups"] if "mamba_cache_mode" in group.get("state", {})]
+        for group in mamba:
+            group["state"].update(num_prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=16)
+        if record["kind"] == "scheduler":
+            reserved = round(cache["num_blocks"] / cache["kv_cache_max_concurrency"]) + len(mamba)
+            cache["kv_cache_max_concurrency"] = cache["num_blocks"] / reserved
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if complete:
+        assert result["status"] == "complete", result["diagnostics"]
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: runtime observation cache geometry across phases/ranks mismatch"]
+
+
 @pytest.mark.parametrize(
     "layout,names",
     [
@@ -1671,9 +1697,9 @@ def test_v033_mamba_state_groups_require_their_block_counts(tmp_path, field, uni
         assert result["status"] == "complete", result["diagnostics"]
         return
     assert result["status"] == "incomplete"
-    assert result["diagnostics"] == [
-        "tp2: runtime state cache group lacks blocks_per_request evidence: ['mamba.0', 'mamba.2']"
-    ]
+    evidence = "blocks_per_request" if field == "num_speculative_blocks" else "prefill checkpoint"
+    names = "['mamba.0', 'mamba.2']"
+    assert result["diagnostics"] == [f"tp2: runtime state cache group lacks {evidence} evidence: {names}"]
 
 
 def test_v033_mamba_speculative_blocks_are_refused_without_the_speculative_marker(tmp_path):
