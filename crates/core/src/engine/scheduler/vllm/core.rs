@@ -4272,6 +4272,7 @@ mod state_cache_tests {
             .kv_cache_bytes_per_token(Some(16))
             .state_cache(Some(StateCacheConfig {
                 bytes_per_request: 64,
+                sliding_window: None,
             }))
             .build()
             .unwrap()
@@ -4487,6 +4488,7 @@ mod state_cache_tests {
         config.block_size = 64;
         config.state_cache = Some(StateCacheConfig {
             bytes_per_request: 1500,
+            sliding_window: None,
         });
         let mut core = VllmCore::new(config);
         let ids = (0..3)
