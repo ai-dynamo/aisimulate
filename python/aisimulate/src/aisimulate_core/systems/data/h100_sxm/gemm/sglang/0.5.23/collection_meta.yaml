@@ -12,21 +12,21 @@ tables:
     rows: 111518
     status: complete
     collections:
-    - collector_ref: 4de9941112a1c3929d599052c55f7ee558ea19a4
-      collector_hash: sha256:c2b79160db05c9edde8d68673b86d28a8030400cd7705b2cc2c99b1c532c6fe4
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
       case_plan_hash: sha256:9ccb439ced2ab3a3e419c021b02331b56ddf34065e2cedde10bffb072ed6cc83
-      collected_at: '2026-11-08'
+      collected_at: '2026-11-10'
       rows: 38258
       status: complete
-    - collector_ref: 4de9941112a1c3929d599052c55f7ee558ea19a4
-      collector_hash: sha256:c2b79160db05c9edde8d68673b86d28a8030400cd7705b2cc2c99b1c532c6fe4
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
       case_plan_hash: sha256:c0ddad7b9969fc1f8791b46093f3a25e494f9264ba8cc833da53b820292e9e78
-      collected_at: '2026-11-08'
+      collected_at: '2026-11-10'
       rows: 38258
       status: complete
-    - collector_ref: 4de9941112a1c3929d599052c55f7ee558ea19a4
-      collector_hash: sha256:c2b79160db05c9edde8d68673b86d28a8030400cd7705b2cc2c99b1c532c6fe4
+    - collector_ref: e22b5faed
+      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
       case_plan_hash: sha256:64967a939b09429125c86825a5f9c02dd2ee7e61aacbb28403bcad6f8306d737
-      collected_at: '2026-11-08'
+      collected_at: '2026-11-10'
       rows: 35002
       status: complete
