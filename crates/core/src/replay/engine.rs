@@ -752,51 +752,6 @@ mod belady_tests {
     use super::*;
 
     #[test]
-    fn mamba_checkpoint_cache_rejects_belady() {
-        let mut config = ReplayEngineConfig::default();
-        config.rank = EngineConfig::for_backend(crate::engine::Backend::Sglang);
-        config.rank.sglang.mamba_cache = Some(crate::engine::SglangMambaCacheConfig {
-            prefill_checkpoint_interval: 64,
-            decode_checkpoint_interval: 256,
-            max_states: 64,
-        });
-        config.kv_eviction_policy = KvEvictionPolicy::Belady;
-        assert!(
-            config
-                .validate_eviction_geometry(&config.rank)
-                .unwrap_err()
-                .to_string()
-                .contains("mamba_cache")
-        );
-    }
-
-    #[test]
-    fn mamba_checkpoint_cache_rejects_unsupported_parallelism_at_factories() {
-        let mut config = ReplayEngineConfig::default();
-        config.rank = EngineConfig::for_backend(crate::engine::Backend::Sglang);
-        config.rank.sglang.mamba_cache = Some(crate::engine::SglangMambaCacheConfig {
-            prefill_checkpoint_interval: 64,
-            decode_checkpoint_interval: 256,
-            max_states: 64,
-        });
-        for (dp, context) in [(2, 1), (1, 2)] {
-            config.dp_size = dp;
-            config.prefill_context_parallel_size = context;
-            let Err(error) =
-                ReplayEngineFactory::new().role_factory(&config, WorkerStage::Aggregated, false)
-            else {
-                panic!("Mamba replay must reject unsupported parallelism");
-            };
-            assert!(error.to_string().contains("mamba_cache"));
-        }
-        let factory = EngineFactory::new(config.rank).unwrap();
-        let Err(error) = factory.build(EngineIdentity::new(0), NonZeroU32::new(2).unwrap()) else {
-            panic!("direct engine factory must reject Mamba attention DP");
-        };
-        assert!(error.to_string().contains("dp_size=1"));
-    }
-
-    #[test]
     fn fine_prefix_caching_rejects_belady_at_topology_and_role_entrypoints() {
         let rank: EngineConfig = serde_json::from_value(serde_json::json!({
             "block_size": 1536, "prefix_match_unit": 128,

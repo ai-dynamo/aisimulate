@@ -397,7 +397,6 @@ class EngineReplayRunnerFactory:
             supports_tokenization=True,
             supports_detokenization=True,
             supports_sglang_host_loop=True,
-            supports_sglang_mamba_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",

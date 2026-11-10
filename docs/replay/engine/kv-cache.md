@@ -53,7 +53,6 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `capacity.bytes` | Unset | predict only | G1 bytes per attention-DP rank, instead of `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, unless `state_cache: {}` infers them. |
 | `host_offload` | Unset (off) | fixed | G2 block; see [host offload](#host-offload-g2). |
 | `hicache` | Unset (off) | Rejected | SGLang host KV cache for aggregated prediction; see [SGLang HiCache](#sglang-hicache). |
-| `mamba_cache` | Unset (off) | Rejected | Explicit SGLang hybrid checkpoint cache; see [Mamba checkpoints](#sglang-mamba-checkpoints). |
 | `g3_offload` | Unset (off) | Rejected | G3 block; see [G3 offload](#g3-offload). |
 | `kvcr` | Unset (off) | Rejected | KVCR block; see [KVCR peer fetch](#kvcr-peer-fetch). |
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
@@ -170,54 +169,6 @@ a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
 This is a simulator contract pinned to SGLang v0.5.22. AISimulate does not check
 the installed serving runtime's support for `cache_salt` or the decode radix
 flag; verify both capabilities when deploying an older SGLang version.
-
-## SGLang Mamba checkpoints
-
-The [measured before/after comparison](mamba-cache-accuracy.md) covers 95 captured
-Qwen requests, including the remaining TTFT/TPOT error and reproduction commands.
-
-For a hybrid model such as Qwen3.5, matching attention KV tokens is insufficient:
-the same prefix must also own a recurrent-state checkpoint. Set
-`engine.workers.aggregated.kv_cache.mamba_cache` to model SGLang's non-lazy,
-non-speculative `extra_buffer` checkpoint lifecycle. A branch created by splitting
-a cached token prefix has no checkpoint until a forward pass creates one there.
-Ordinary full-attention caching remains the default when this field is absent.
-
-```yaml
-kv_cache:
-  block_size: 64
-  prefix_caching: true
-  mamba_cache:
-    prefill_checkpoint_interval: 64
-    decode_checkpoint_interval: 256
-    max_states: 994
-```
-
-Use the effective native runtime configuration for these values; `994` is the
-observed capacity of the measured Qwen deployment, not a default for other servers.
-The prefill interval is the least common multiple of native `mamba_cache_chunk_size`
-and radix page size; the decode interval additionally includes `mamba_track_interval`.
-`max_states` corresponds to native `max_mamba_cache_size`, including active request
-slots. The public compiler maps the worker's `scheduler.max_batched_tokens` to
-SGLang's chunk size. Native JSON places the checkpoint fields under
-`engine.rank.sglang.mamba_cache`.
-
-This implementation supports aggregated attention-DP1, pipeline-parallel1,
-non-speculative HBM replay. It publishes completed prefill/chunk checkpoints,
-tracks decode checkpoints, and releases private state on cancellation or retraction.
-As in native SGLang, cancellation of a running request can publish its last tracked
-state; retraction and cancellation before running do not publish pending state.
-It reserves three state slots per active request, matching the native overlap
-extra-buffer layout, plus a transient replacement slot before unfinished publication.
-State-pool pressure and KV eviction pressure return explicit errors: the separate
-native state LRU and hybrid KV eviction are not modeled yet. P/D, HiCache, host/G3
-offload, Belady, KV events, and recommendation are unsupported.
-
-The behavior is adapted from SGLang commit
-[`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt),
-particularly `mem_cache/mamba_radix_cache.py`, `managers/schedule_batch.py` and
-`managers/scheduler_components/batch_result_processor.py` (Copyright 2023-2024
-SGLang Team and contributors, Apache-2.0; modified simulation contract).
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

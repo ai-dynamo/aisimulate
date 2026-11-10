@@ -2066,29 +2066,17 @@ OSRB approval.
 
 ## SGLang extra-buffer hybrid prefix checkpoints
 
-Checkpoint ownership, prefill/decode tracking, and lifecycle rules in these
-repository-root files are adapted and modified from SGLang at immutable commit
-`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`:
-
-- `crates/core/src/engine/cache/radix_cache.rs`
-- `crates/core/src/engine/kv_manager/sglang_backend.rs`
-- `crates/core/src/engine/scheduler/sglang/{config,core,decode,prefill,tests}.rs`
-- `crates/core/src/engine/{config,mod}.rs`
-- `crates/core/src/engine/common/protocols.rs`
-- `crates/core/src/engine/scheduler/rank.rs`
-- `python/aisimulate/src/aisimulate/config/engine.py`
-- `docs/replay/engine/kv-cache.md`
-
-Original paths under `python/sglang/srt/`: `mem_cache/mamba_radix_cache.py`,
-`mem_cache/memory_pool.py`, `runtime_context.py`, `managers/schedule_batch.py`,
-`managers/scheduler.py`, and `managers/scheduler_components/batch_result_processor.py`.
+Modified checkpoint ownership/tracking contracts in repository-root
+`crates/core/src/engine/cache/radix_cache.rs`, `engine/kv_manager/sglang_backend.rs`,
+`engine/scheduler/sglang/{config,core,decode,prefill}.rs`, and their configuration
+plumbing (`engine/{config,mod}.rs`, `engine/common/protocols.rs`, `engine/scheduler/rank.rs`;
+all abbreviated engine paths are under `crates/core/src/`) derive from SGLang
+commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original paths under `python/sglang/srt/`: `mem_cache/{mamba_radix_cache,memory_pool}.py`,
+`runtime_context.py`, `managers/{schedule_batch,scheduler}.py`, and
+`managers/scheduler_components/batch_result_processor.py`.
 Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt
-
-Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under the
-Apache License, Version 2.0; the full license is included as `LICENSE`.
+Copyright 2023-2024 SGLang Team and contributors; Apache-2.0 (included in `LICENSE`).
 Upstream license: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
-
-These are modified Rust/Python simulation contracts and independently authored
-synthetic regression cases. The scoped implementation rejects state/KV eviction
-pressure; it does not copy the native GPU allocator or claim full Mamba LRU parity.
-No production prompt contents or external trace fixture is distributed in this change.
+The simulation adaptation rejects state/KV eviction pressure; no upstream GPU
+allocator, production prompts, or external trace fixtures are included.

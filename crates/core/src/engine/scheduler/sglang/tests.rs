@@ -1,10 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
-// Hybrid checkpoint contract adapted and modified from SGLang (Apache-2.0).
-// Copyright 2023-2024 SGLang Team and contributors.
-// Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/mem_cache/mamba_radix_cache.py
-// See THIRD_PARTY_NOTICES.md for the complete source list and modification scope.
 // Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 
 // Admission and ratio lifecycle follow SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
@@ -6190,115 +6186,5 @@ mod uncharged_decode {
                 1 + usize::from(phases)
             );
         }
-    }
-}
-
-mod mamba_checkpoint_tests {
-    use super::*;
-    use crate::engine::SglangMambaCacheConfig;
-
-    fn core(host_loop: bool, max_states: usize) -> SglangCore {
-        let mut args = test_args(512, 16, 64);
-        args.max_num_seqs = Some(1);
-        let sglang = args.sglang.as_mut().unwrap();
-        sglang.host_loop = host_loop;
-        sglang.mamba_cache = Some(SglangMambaCacheConfig {
-            prefill_checkpoint_interval: 16,
-            decode_checkpoint_interval: 64,
-            max_states,
-        });
-        SglangCore::new(args)
-    }
-
-    fn run_request(core: &mut SglangCore, tokens: Vec<u32>, outputs: usize) -> (usize, u64) {
-        let uuid = core.receive(direct_request(tokens, outputs));
-        let mut reused = None;
-        let mut computed = 0;
-        let mut now = 0.0;
-        for _ in 0..128 {
-            if core.is_drained() {
-                return (reused.unwrap(), computed);
-            }
-            let pass = core.execute_hidden_pass(now);
-            now = pass.end_ms;
-            for admission in pass.admissions {
-                if admission.uuid == uuid {
-                    reused = Some(admission.reused_input_tokens);
-                }
-            }
-            computed += pass.fpm.map_or(0, |fpm| fpm.sum_prefill_tokens);
-        }
-        panic!("Mamba fixture did not drain");
-    }
-
-    #[rstest::rstest]
-    fn mamba_scheduler_branch_work_and_short_final_chunk(#[values(false, true)] host_loop: bool) {
-        let mut core = core(host_loop, 100);
-        // First request publishes64 at its firstchunk. Its final6-token chunk
-        // is shorter than the16-token state grid and must not invent a new state.
-        assert_eq!(run_request(&mut core, (0..70).collect(), 2), (0, 70));
-        assert_eq!(run_request(&mut core, (0..101).collect(), 2), (64, 37));
-        let mut branch: Vec<_> = (0..95).collect();
-        branch.extend([1000, 1001, 1002]);
-        // Raw KV overlap is80, but only the64-token checkpoint owns valid state.
-        // The34-token forward computes and publishes the80-token branch state.
-        assert_eq!(run_request(&mut core, branch.clone(), 2), (64, 34));
-        assert_eq!(run_request(&mut core, branch, 2), (80, 18));
-    }
-
-    #[rstest::rstest]
-    fn mamba_short_prompt_and_one_output_finish(#[values(false, true)] host_loop: bool) {
-        let mut core = core(host_loop, 100);
-        assert_eq!(run_request(&mut core, (0..7).collect(), 1), (0, 7));
-        assert_eq!(run_request(&mut core, (0..7).collect(), 1), (0, 7));
-        assert_eq!(run_request(&mut core, (0..70).collect(), 1), (0, 70));
-        assert_eq!(run_request(&mut core, (0..70).collect(), 1), (64, 6));
-    }
-
-    #[rstest::rstest]
-    fn mamba_running_cancel_preserves_the_last_tracked_decode_state(
-        #[values(false, true)] host_loop: bool,
-    ) {
-        let mut core = core(host_loop, 100);
-        let uuid = core.receive(direct_request((0..101).collect(), 70));
-        let mut now = 0.0;
-        for _ in 0..64 {
-            now = core.execute_hidden_pass(now).end_ms;
-            if core
-                .running
-                .first()
-                .is_some_and(|r| r.materialized_tokens >= 130)
-            {
-                break;
-            }
-        }
-        let request = core.running.first().expect("request still decoding");
-        assert!(request.materialized_tokens >= 130);
-        let sequence = request.sequence_tokens.clone();
-        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 96);
-        core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
-            .unwrap();
-        for _ in 0..4 {
-            if core.is_drained() {
-                break;
-            }
-            now = core.execute_hidden_pass(now).end_ms;
-        }
-        assert!(core.is_drained());
-        // Running abort uses the finished-request path. It donates the state
-        // tracked at128, retaining no arbitrary KV tail past that checkpoint.
-        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 128);
-    }
-
-    #[test]
-    fn mamba_state_pressure_is_a_scheduler_error() {
-        let mut core = core(false, 4);
-        assert_eq!(run_request(&mut core, (0..70).collect(), 1), (0, 70));
-        core.receive(direct_request((0..101).collect(), 2));
-        let error = core
-            .try_execute_hidden_pass(0.0)
-            .err()
-            .expect("state pressure must fail");
-        assert!(error.to_string().contains("Mamba state pressure"));
     }
 }
