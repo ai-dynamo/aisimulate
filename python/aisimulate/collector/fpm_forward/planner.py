@@ -38,7 +38,7 @@ from .config import (
     with_kv_warmup_defaults,
 )
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
-from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS
+from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, audited_release
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
 
@@ -60,16 +60,24 @@ def _runtime_memory_policy(
         deployment.resources.memory_source == "pending" for deployment in profile.deployments
     ):
         return None
-    available = backend_version in MEMORY_SUPPORTED_VERSIONS
-    return {
+    release = audited_release(backend_version, MEMORY_SUPPORTED_VERSIONS)
+    available = release is not None
+    policy: dict[str, object] = {
         "source": "vllm_initialization",
         # Other versions keep the 0.27.0 value, so the hashes of their saved plans do not change.
         "supported_vllm_version": backend_version if available else "0.27.0",
         "selected_vllm_version": backend_version,
-        "observation": "enabled" if available else "unavailable_for_runtime",
-        "evidence_schema_version": 1,
-        "async_scheduling": False if available else None,
     }
+    if available and release != backend_version:
+        policy["audited_vllm_version"] = release
+    policy.update(
+        {
+            "observation": "enabled" if available else "unavailable_for_runtime",
+            "evidence_schema_version": 1,
+            "async_scheduling": False if available else None,
+        }
+    )
+    return policy
 
 
 _INSTALLED_DISTRIBUTION = "aisim"
