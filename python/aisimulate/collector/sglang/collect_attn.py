@@ -198,15 +198,39 @@ class MockModelRunner:
         self.gpu_id = 0  # model_runner.py:366; triton_backend.py:315 reads its SM count
 
 
-# The model a base-grid row (no architecture) is checked against. Qwen3ForCausalLM
+# The model a row is checked against when its architecture has no override of
+# its own (and a base-grid row, which has no architecture). Qwen3ForCausalLM
 # has no provider under arg_groups/model_overrides/ and no MODEL_OVERRIDES entry
 # (arg_groups/model_override_base.py:18-22), no attention sinks and equal K and V
 # widths, so serving resolves get_default_attn_backend's choice for a plain MHA
 # model (model_override_base.py:277-334).
 DEFAULT_BACKEND_MODEL = "Qwen/Qwen3-32B"
 
-# architecture (None: the base grid) -> ((prefill, decode) or None, the model resolved), or the failure.
+# What the check found, once per process. _RESOLVED: the architecture resolved
+# (None: the default model) -> ((prefill, decode) or None, the model), or the
+# exception. _SERVING_BACKENDS: a row's architecture (None: the base grid) ->
+# its resolution, or _UNRESOLVED when the resolution could not run.
+_RESOLVED: dict = {}
 _SERVING_BACKENDS: dict = {}
+_UNRESOLVED = object()
+
+
+def has_override_provider(architecture: str) -> bool:
+    """Whether SGLang registers a model override for an architecture.
+
+    Reads the three registries serving collects a model's declarations from
+    (collect_model_override_declarations, arg_groups/overrides.py:277-302):
+    the MODEL_OVERRIDES constants, the per-architecture providers and the
+    predicate-keyed providers (arg_groups/model_override_base.py:18-30).
+    Importing arg_groups.overrides registers the providers (:306).
+    """
+    from sglang.srt.arg_groups import model_override_base, overrides  # noqa: F401
+
+    return (
+        architecture in model_override_base.MODEL_OVERRIDES
+        or architecture in model_override_base._MODEL_OVERRIDE_FNS
+        or any(predicate(architecture) for predicate, _provider in model_override_base._PREDICATE_OVERRIDE_FNS)
+    )
 
 
 def _architecture_model(architecture: str | None) -> str:
@@ -256,21 +280,45 @@ def resolve_serving_attention_backends(model: str) -> tuple[str, str] | None:
     return prefill, decode
 
 
-def serving_attention_backends(architecture: str | None) -> tuple[tuple[str, str] | None, str]:
-    """An architecture's resolved (prefill, decode) backends and the model they were resolved for, once per process."""
-    if architecture not in _SERVING_BACKENDS:
+def _resolve_architecture(architecture: str | None):
+    """Resolve an architecture through its first model (None: the default model), once; an exception is kept."""
+    if architecture not in _RESOLVED:
         try:
             model = _architecture_model(architecture)
-            _SERVING_BACKENDS[architecture] = (resolve_serving_attention_backends(model), model)
+            _RESOLVED[architecture] = (resolve_serving_attention_backends(model), model)
         except Exception as exc:
-            _SERVING_BACKENDS[architecture] = (
-                f"cannot resolve the attention backend SGLang serves {architecture or 'a model without an override'} "
-                f"on: {type(exc).__name__}: {exc}"
+            _RESOLVED[architecture] = exc
+    return _RESOLVED[architecture]
+
+
+def serving_attention_backends(architecture: str | None):
+    """What serving resolves for a row's architecture, once per process: ((prefill, decode) or None, model).
+
+    Only an architecture with an override provider can differ from the
+    default, so only it is resolved through its own model; every other
+    architecture, and the base grid, is resolved through DEFAULT_BACKEND_MODEL.
+
+    ``_UNRESOLVED`` when the resolution could not run, with one warning per
+    architecture: a bundled directory holds config.json only, so a model whose
+    config class ships as remote code in its checkpoint cannot be built here.
+    That is a limit of the check, not a finding about the row.
+    """
+    if architecture not in _SERVING_BACKENDS:
+        try:
+            own = architecture is not None and has_override_provider(architecture)
+            resolution = _resolve_architecture(architecture if own else None)
+        except Exception as exc:
+            resolution = exc
+        if isinstance(resolution, Exception):
+            print(
+                f"WARNING: cannot resolve the attention backend SGLang serves "
+                f"{architecture or 'a model without an override'} on; its rows run on the plan's dispatch "
+                f"unchecked: {type(resolution).__name__}: {resolution}",
+                flush=True,
             )
-    resolved = _SERVING_BACKENDS[architecture]
-    if isinstance(resolved, str):
-        raise RuntimeError(resolved)
-    return resolved
+            resolution = _UNRESOLVED
+        _SERVING_BACKENDS[architecture] = resolution
+    return _SERVING_BACKENDS[architecture]
 
 
 def check_dispatch_is_servings(attn_backend_name: str, architecture: str | None, is_context_phase: bool) -> None:
@@ -279,9 +327,14 @@ def check_dispatch_is_servings(attn_backend_name: str, architecture: str | None,
     The plan picks the backend from case_generator.SGLANG_ATTENTION_BACKENDS and
     the default table, which a person keeps in step with SGLang's overrides;
     this is the check against the framework. Context rows time prefill and
-    generation rows decode, which serving may put on different backends.
+    generation rows decode, which serving may put on different backends. A row
+    whose resolution could not run is not checked and runs on the plan's
+    dispatch.
     """
-    backends, model = serving_attention_backends(architecture)
+    resolution = serving_attention_backends(architecture)
+    if resolution is _UNRESOLVED:
+        return
+    backends, model = resolution
     if backends is None:
         return
     phase, served = ("prefill", backends[0]) if is_context_phase else ("decode", backends[1])

@@ -165,7 +165,11 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "SERVING_MAX_NUM_SEQS": 1024,
         "current_platform": Platform(),
         "AttentionBackendEnum": {"FLASH_ATTN": object()},
-        "create_standard_kv_cache_spec": lambda *_args: SimpleNamespace(dtype=UINT8 if use_fp8_kv_cache else BF16),
+        "create_standard_kv_cache_spec": lambda *_args, **kwargs: (
+            calls.setdefault("spec", kwargs),
+            SimpleNamespace(dtype=UINT8 if use_fp8_kv_cache else BF16),
+        )[1],
+        "MODELS_CONFIG_MAP": {},
         "create_common_attn_metadata": create_metadata,
         "create_kv_cache_and_block_mappings": lambda **_kwargs: (FakeTensor(), history_slot_mapping),
         "set_kv_cache_layout": lambda _layout: None,
@@ -186,6 +190,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
     _load_function(ATTN_SOURCE, "match_serving_fa_aot_schedule", namespace)
     _load_function(ATTN_SOURCE, "select_attention_backend", namespace)
+    _load_function(ATTN_SOURCE, "models_with_config_hook", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
     with ExitStack() as stack:
         run(
@@ -206,6 +211,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     assert calls["config"]["model_name"] == str(ATTN_SOURCE.parent / "fake_hf_model")
     assert (calls["config"]["head_dim"], calls["config"]["num_heads"], calls["config"]["num_kv_heads"]) == (128, 8, 2)
     assert calls["config"]["sliding_window"] is None
+    assert calls["spec"] == {"sliding_window": None}
     # serving's scheduler bound, not the case's batch of 2 (CUDA-graph capture sizes)
     assert calls["config"]["max_num_seqs"] == 1024
     assert calls["selector"] == ((128, BF16, "fp8" if use_fp8_kv_cache else "auto"), {"has_sliding_window": False})
@@ -231,6 +237,10 @@ class _AttentionConfig:
 
     def __repr__(self):
         return self.text
+
+
+HOOKED = "HookedForCausalLM"  # an architecture the stubbed MODELS_CONFIG_MAP has a hook for
+PLAIN = "PlainForCausalLM"  # one it has none for
 
 
 def _model_row_world(resolutions):
@@ -278,14 +288,25 @@ def _model_row_world(resolutions):
         "_resolve_local_model_path": lambda model: f"bundled:{model}",
         "set_attention_layer_of_model": set_attention_layer_of_model,
         "SERVING_MAX_NUM_SEQS": 1024,
+        "AttentionBackendEnum": {"FLASH_ATTN": object(), "TRITON_ATTN": object()},
+        # vLLM's own map, stubbed: only its keys matter to the gate.
+        "MODELS_CONFIG_MAP": {HOOKED: object(), "AnotherHookedForCausalLM": object()},
+        # Ends a generic row where a model row ends, once the config and the selection are settled.
+        "framework_kv_block_size": lambda _backend_cls: (_ for _ in ()).throw(_StopAfterShape()),
     }
-    for name in ("select_attention_backend", "model_attention_selection", "require_one_attention_selection"):
+    for name in (
+        "select_attention_backend",
+        "models_with_config_hook",
+        "model_attention_selection",
+        "require_one_attention_selection",
+    ):
         _load_function(ATTN_SOURCE, name, namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
     return run, events, ExitStack
 
 
-def _run_model_row(run, stack_cls, models, **overrides):
+def _run_model_row(run, stack_cls, models, *, architecture=HOOKED, **overrides):
+    """Run a row whose owners are ``models``, each of ``architecture`` (or an explicit ``owners``)."""
     case = dict(
         batch_size=2,
         input_len=4096,
@@ -295,7 +316,7 @@ def _run_model_row(run, stack_cls, models, **overrides):
         use_fp8_kv_cache=False,
         is_context_phase=True,
         window_size=1024,
-        models=models,
+        owners=[[architecture, model] for model in models],
         perf_filename="context_attention_perf.txt",
     )
     case.update(overrides)
@@ -323,21 +344,94 @@ def test_a_model_row_builds_its_config_from_the_rows_model_and_shapes_the_layer_
     kinds = [event[0] for event in events]
     assert kinds[-3:] == ["memo_cleared", "select", "layer"]
     assert events[-2] == ("select", "bundled:org/model-a", (256, BF16, "auto"), {"has_sliding_window": True})
+    # The layer's window is not written into the model's config: it goes to the spec and the impl.
     assert events[-1] == (
         "layer",
         "bundled:org/model-a",
-        {"max_model_len": 4096, "sliding_window": 1024, "head_dim": 256, "num_heads": 8, "num_kv_heads": 4},
+        {"max_model_len": 4096, "head_dim": 256, "num_heads": 8, "num_kv_heads": 4},
     )
     # Every selection starts from a cleared memo: the worker holds many models.
     assert kinds.count("memo_cleared") == kinds.count("select")
 
 
-def test_a_full_attention_layer_of_a_windowed_model_clears_the_models_window():
+def test_a_full_attention_layer_of_a_windowed_model_leaves_the_models_window_alone():
+    """Transformers types a model's sliding_window as an int and rejects None (Gemma 4 and
+    GPT-OSS global layers), so the layer's window reaches the spec and the impl as arguments."""
     run, events, stack_cls = _model_row_world({})
     with pytest.raises(_StopAfterShape):
         _run_model_row(run, stack_cls, ["org/model-a"], head_dim=512, window_size=0)
-    assert events[-1][2]["sliding_window"] is None
+    assert "sliding_window" not in events[-1][2]
     assert events[-2][2:] == ((512, BF16, "auto"), {"has_sliding_window": False})
+
+    tree = ast.parse(ATTN_SOURCE.read_text(), filename=str(ATTN_SOURCE))
+    run_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_attention_torch")
+    calls = {
+        call.func.id: {keyword.arg: ast.unparse(keyword.value) for keyword in call.keywords}
+        for call in ast.walk(run_node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    layer_window = "layer_shape['sliding_window']"
+    assert calls["create_standard_kv_cache_spec"]["sliding_window"] == layer_window
+    assert calls["impl_cls"]["sliding_window"] == layer_window
+    assert "get_sliding_window" not in ast.unparse(run_node)
+
+
+def test_a_row_whose_owners_have_no_config_hook_runs_on_the_generic_config():
+    """vLLM decides nothing for such a model, so its row is a base-grid row: same config
+    arguments, same selection, no model config built."""
+    run, base_events, stack_cls = _model_row_world({})
+    with pytest.raises(_StopAfterShape):
+        _run_model_row(run, stack_cls, [])
+    run, events, stack_cls = _model_row_world({})
+    with pytest.raises(_StopAfterShape):
+        _run_model_row(run, stack_cls, ["org/model-a", "org/model-b"], architecture=PLAIN)
+
+    assert events == base_events
+    (config,) = [kwargs for kind, *rest in events if kind == "config" for kwargs in rest]
+    assert config["model_name"] == str(ATTN_SOURCE.parent / "fake_hf_model")
+    assert (config["head_dim"], config["num_heads"], config["num_kv_heads"]) == (256, 8, 4)
+    assert config["sliding_window"] == 1024 and config["max_model_len"] == 4096
+    assert "dtype" not in config
+    assert [event[0] for event in events] == ["config", "memo_cleared", "select"]
+
+
+def test_only_owners_with_a_config_hook_are_built_and_must_agree():
+    different = {
+        "bundled:org/hooked": ("TRITON_ATTN", "AttentionConfig(backend=TRITON_ATTN)"),
+        "bundled:org/plain": ("FLASH_ATTN", "AttentionConfig()"),
+    }
+    run, events, stack_cls = _model_row_world(different)
+    with pytest.raises(_StopAfterShape):
+        _run_model_row(run, stack_cls, [], owners=[[PLAIN, "org/plain"], [HOOKED, "org/hooked"]])
+
+    # The un-hooked owner is never built, although vLLM would resolve it differently here.
+    assert {event[1]["model_name"] for event in events if event[0] == "config"} == {"bundled:org/hooked"}
+    assert events[-1][:2] == ("layer", "bundled:org/hooked")
+
+
+def test_the_gate_reads_vllms_own_hook_map():
+    namespace = {"MODELS_CONFIG_MAP": {HOOKED: object()}}
+    hooked = _load_function(ATTN_SOURCE, "models_with_config_hook", namespace)
+    assert hooked([[PLAIN, "org/a"], [HOOKED, "org/b"], [HOOKED, "org/c"]]) == ("org/b", "org/c")
+    assert hooked([[PLAIN, "org/a"]]) == () and hooked(()) == ()
+
+    tree = ast.parse(ATTN_SOURCE.read_text(), filename=str(ATTN_SOURCE))
+    (imported,) = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "MODELS_CONFIG_MAP" for alias in node.names)
+    ]
+    assert imported.module == "vllm.model_executor.models.config"
+    # The collector never builds or rebinds the map.
+    stores = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "MODELS_CONFIG_MAP" and isinstance(node.ctx, ast.Store)
+    ]
+    assert not stores
+    gate = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "models_with_config_hook")
+    literals = {n.value for n in ast.walk(gate) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert literals == {ast.get_docstring(gate, clean=False)}
 
 
 def test_models_that_share_a_shape_and_agree_are_measured_once_under_the_first():
@@ -415,12 +509,12 @@ def test_the_attention_collector_names_no_model_and_holds_no_backend_table():
             assert not [e for e in elements if isinstance(e, ast.Constant) and e.value in backend_names]
 
     run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_attention_torch")
-    assert "models" in [arg.arg for arg in run.args.args]
+    assert "owners" in [arg.arg for arg in run.args.args]
     # The run never compares a model or architecture name, and never names a backend enum member.
     for node in ast.walk(run):
         if isinstance(node, ast.Compare):
             names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-            assert "models" not in names and "architecture" not in names
+            assert not names & {"models", "owners", "architecture"}
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             assert node.value.id != "AttentionBackendEnum"
 
@@ -461,10 +555,20 @@ def test_the_layer_shape_is_written_through_one_helper_before_or_after_the_hooks
     narrowed to the layer by set_attention_layer_of_model on the built config."""
     calls = []
 
+    class TextConfig:
+        """A Transformers config that types sliding_window as an int, as Gemma 4's and GPT-OSS's do."""
+
+        def __setattr__(self, name, value):
+            if name == "sliding_window" and not isinstance(value, int):
+                raise TypeError(f"Field 'sliding_window' expected int, got {type(value).__name__}")
+            super().__setattr__(name, value)
+
     def model_config():
+        text_config = TextConfig()
+        text_config.sliding_window = 1024
         return SimpleNamespace(
             hf_config=SimpleNamespace(),
-            hf_text_config=SimpleNamespace(sliding_window=1024),
+            hf_text_config=text_config,
             model_arch_config=SimpleNamespace(
                 head_size=512, total_num_attention_heads=16, total_num_kv_heads=8, is_deepseek_mla=True
             ),
@@ -477,16 +581,24 @@ def test_the_layer_shape_is_written_through_one_helper_before_or_after_the_hooks
     of_model = _load_function(UTILS_SOURCE, "set_attention_layer_of_model", namespace)
 
     config = model_config()
-    of_model(config, sliding_window=None, head_dim=256, num_heads=8, num_kv_heads=4, max_model_len=4096)
+    of_model(config, head_dim=256, num_heads=8, num_kv_heads=4, max_model_len=4096)
     arch = config.model_arch_config
     assert (arch.head_size, arch.total_num_attention_heads, arch.total_num_kv_heads) == (256, 8, 4)
-    assert config.hf_text_config.sliding_window is None  # a full-attention layer of a windowed model
+    assert config.hf_text_config.sliding_window == 1024  # the model's own, never rewritten
     assert arch.is_deepseek_mla is False and config.max_model_len == 4096
     assert calls == [{"head_dim": 256, "num_heads": 8, "num_kv_heads": 4}]
 
     untouched = model_config()
     shape(untouched)
     assert vars(untouched.model_arch_config) == vars(model_config().model_arch_config)
+    of_model_source = ast.unparse(
+        next(
+            node
+            for node in ast.parse(UTILS_SOURCE.read_text()).body
+            if isinstance(node, ast.FunctionDef) and node.name == "set_attention_layer_of_model"
+        ).body[1:]
+    )
+    assert "sliding_window" not in of_model_source
 
     tree = ast.parse(UTILS_SOURCE.read_text(), filename=str(UTILS_SOURCE))
     create = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "create_vllm_config")
@@ -738,6 +850,7 @@ def test_standard_kv_cache_spec_matches_vllm_contract(use_fp8, window, expected_
         "SlidingWindowSpec": SlidingWindowSpec,
         "get_kv_quant_mode": lambda dtype: ("quant", dtype),
         "kv_cache_dtype_str_to_dtype": lambda dtype, _model: BF16 if dtype == "auto" else UINT8,
+        "_MODEL_WINDOW": object(),
     }
     create_spec = _load_function(UTILS_SOURCE, "create_standard_kv_cache_spec", namespace)
     config = SimpleNamespace(
@@ -759,3 +872,8 @@ def test_standard_kv_cache_spec_matches_vllm_contract(use_fp8, window, expected_
     assert spec.kv_quant_mode == ("quant", cache_dtype)
     if window is not None:
         assert spec.sliding_window == window
+
+    # A layer's own window replaces the model-wide one in either direction.
+    assert type(create_spec(config, use_fp8, sliding_window=None)) is FullAttentionSpec
+    layer = create_spec(config, use_fp8, sliding_window=512)
+    assert type(layer) is SlidingWindowSpec and layer.sliding_window == 512

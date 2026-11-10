@@ -143,10 +143,19 @@ def get_attention_backend(backend_name: AttentionBackendEnum):
     return backend_class.get_builder_cls(), backend_class.get_impl_cls()
 
 
+_MODEL_WINDOW = object()
+
+
 def create_standard_kv_cache_spec(
-    vllm_config: VllmConfig, use_fp8_kv_cache: bool = False
+    vllm_config: VllmConfig, use_fp8_kv_cache: bool = False, *, sliding_window=_MODEL_WINDOW
 ) -> FullAttentionSpec | SlidingWindowSpec:
-    """Create the KV-cache spec used by vLLM's production attention layer."""
+    """Create the KV-cache spec used by vLLM's production attention layer.
+
+    ``sliding_window`` is the layer's window, None for full attention; left
+    out, it is the model-wide one. Serving's layer takes its own window from
+    the model (``per_layer_sliding_window``, model_executor/layers/attention/
+    attention.py:265-273 at v0.32.0) and builds its spec from it (:606-622).
+    """
     spec_kwargs = dict(
         block_size=vllm_config.cache_config.block_size,
         num_kv_heads=vllm_config.model_config.get_num_kv_heads(vllm_config.parallel_config),
@@ -155,7 +164,8 @@ def create_standard_kv_cache_spec(
         dtype=kv_cache_dtype_str_to_dtype(vllm_config.cache_config.cache_dtype, vllm_config.model_config),
         kv_quant_mode=get_kv_quant_mode(vllm_config.cache_config.cache_dtype),
     )
-    sliding_window = vllm_config.model_config.get_sliding_window()
+    if sliding_window is _MODEL_WINDOW:
+        sliding_window = vllm_config.model_config.get_sliding_window()
     if sliding_window is not None:
         return SlidingWindowSpec(sliding_window=sliding_window, **spec_kwargs)
     return FullAttentionSpec(**spec_kwargs)
@@ -193,7 +203,6 @@ def set_attention_layer_shape(
 def set_attention_layer_of_model(
     model_config: ModelConfig,
     *,
-    sliding_window: int | None,
     head_dim: int,
     num_heads: int,
     num_kv_heads: int,
@@ -201,21 +210,22 @@ def set_attention_layer_of_model(
 ) -> None:
     """Narrow a real model's ModelConfig to one dense attention layer, after its config hooks ran.
 
-    Besides the head shape, a real model carries three model-wide values the
+    Besides the head shape, a real model carries two model-wide values the
     builders and specs read for every layer:
 
-    - ``hf_text_config.sliding_window`` (ModelConfig.get_sliding_window,
-      config/model.py:1612-1614): the layer's own window replaces it, None for
-      a full-attention layer of a model that also has windowed ones.
     - ``model_arch_config.is_deepseek_mla``: an MLA model reports one KV head
-      for every layer (ModelConfig.get_num_kv_heads, :1650-1670, through
-      use_mla, :2050-2063); the layer under test is dense.
+      for every layer (ModelConfig.get_num_kv_heads, config/model.py:1650-1670
+      at v0.32.0, through use_mla, :2050-2063); the layer under test is dense.
     - ``max_model_len``: the FlashInfer builder sizes its per-request page
       table from it (flashinfer.py:774). The harness passes the length of the
       case it times, which may exceed what the model's config allows.
+
+    The model-wide sliding window (``hf_text_config.sliding_window``) stays:
+    the Transformers config classes type it as an int and reject None, and no
+    builder reads it. A layer's window goes to the consumers that take one per
+    layer, the KV-cache spec and the impl.
     """
     set_attention_layer_shape(model_config, head_dim=head_dim, num_heads=num_heads, num_kv_heads=num_kv_heads)
-    model_config.hf_text_config.sliding_window = sliding_window
     model_config.model_arch_config.is_deepseek_mla = False
     model_config.max_model_len = max_model_len
 

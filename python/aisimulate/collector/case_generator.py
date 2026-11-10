@@ -364,12 +364,11 @@ SGLANG_ATTENTION_BACKENDS: dict[str, dict[int, str]] = {
     # reshape '[-1, 4, 192]' on the 128-wide V pool, decode paged K/V stride
     # check 768 vs 512). SM90 is the default.
     "MiMoV2FlashForCausalLM": {89: "triton", 100: "fa4", 103: "fa4", 120: "triton"},
-    # nemotron_h.py _nemotron_h_overrides:123-148 declares trtllm_mha when
-    # is_sm100 without speculative decoding, which is the default. The plan
-    # keeps these rows on flashinfer until a GPU run settles the entry: the
-    # worker's check against serving fails them where serving resolves
-    # trtllm_mha.
-    "NemotronHForCausalLM": {100: "flashinfer", 103: "flashinfer"},
+    # The default. nemotron_h.py _nemotron_h_overrides:123-148 declares
+    # trtllm_mha when is_sm100 without speculative decoding, which is the
+    # default there, and nothing on the other platforms: SM120 is Blackwell
+    # but not is_sm100, SM90 is not Blackwell.
+    "NemotronHForCausalLM": {},
     # qwen3_5.py _qwen3_5_hybrid_overrides:26-49: on is_sm100, trtllm_mha when
     # that is the default and the Mamba cache keeps an extra buffer, the radix
     # cache is off or speculative decoding is on; triton otherwise. Under

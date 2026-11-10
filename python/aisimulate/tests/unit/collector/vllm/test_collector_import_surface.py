@@ -487,6 +487,9 @@ _ATTN_UTILS = {
 VLLM_0320_ATTN_SURFACE = {
     "vllm.version": {"__version__": "0.0.0"},
     "vllm.config": {"set_current_vllm_config": _null_context},
+    # The per-architecture config hooks serving applies (config/vllm.py:2629-2658);
+    # the collector builds a model's config only for an architecture with one.
+    "vllm.model_executor.models.config": {"MODELS_CONFIG_MAP": {}},
     "vllm.platforms": {"current_platform": _Dummy()},
     "vllm.utils.torch_utils": {"set_random_seed": _dummy},
     "vllm.v1.attention.backends.registry": {"AttentionBackendEnum": _FakeBackendEnum},

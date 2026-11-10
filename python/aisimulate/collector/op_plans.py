@@ -2181,8 +2181,8 @@ def _attention_owners(phase: str, case: AttentionCase) -> tuple[AttentionOwner, 
 def _sglang_attention_dispatch(phase: str) -> Callable[[AttentionCase, int | None], tuple[str, ...]]:
     """The SGLang backends serving runs a case on: one per model that plans the shape.
 
-    A shape two models serve on different backends (Nemotron-H on flashinfer,
-    the generic grid on trtllm_mha) is measured on both.
+    A shape two models serve on different backends (on SM100, Qwen3.5 on
+    triton and Qwen3.8 on trtllm_mha) is measured on both.
     """
 
     def dispatch(case: AttentionCase, sm_version: int | None) -> tuple[str, ...]:
@@ -2288,12 +2288,16 @@ def _vllm_attention_rows(phase: str):
     # path, where serving runs V=128 on FLASH_ATTN_DIFFKV or TRITON_ATTN_DIFFKV
     # (vllm model_executor/models/mimo_v2.py:300-321), and GPT-OSS's rows
     # without attention sinks.
-    # A shape that model profiles plan names their models as a last argument:
-    # the collector builds its VllmConfig from each model's config, so vLLM's
-    # own per-architecture hook (model_executor/models/config.py
-    # MODELS_CONFIG_MAP, applied by VllmConfig.try_verify_and_update_config,
-    # config/vllm.py:2629-2658 at v0.32.0) decides the backend as in serving.
-    # A shape only the base grid plans names none and keeps the generic config.
+    # A shape that model profiles plan names them as a last argument, one
+    # [architecture, model] pair per profile. vLLM applies a model's own
+    # attention decisions through a per-architecture config hook
+    # (model_executor/models/config.py MODELS_CONFIG_MAP, applied by
+    # VllmConfig.try_verify_and_update_config, config/vllm.py:2629-2658 at
+    # v0.32.0); for the owners that have one, the collector builds its
+    # VllmConfig from the model's config so the hook decides as in serving
+    # (vllm/collect_attn.py models_with_config_hook). A shape only the base
+    # grid plans names none and keeps the generic config, as do owners
+    # without a hook.
     def rows(case: AttentionCase, sm_version: int | None, runner: str | None) -> list[list]:
         row = [
             case.batch_size,
@@ -2306,10 +2310,10 @@ def _vllm_attention_rows(phase: str):
             case.window_size,
         ]
         owners = [owner for owner in _attention_owners(phase, case) if owner.from_model]
-        if any(owner.model_path is None for owner in owners):
-            raise ValueError(f"an attention profile that plans {case} names no model_path")
-        models = list(dict.fromkeys(owner.model_path for owner in owners))
-        return [[*row, models]] if models else [row]
+        if any(owner.model_path is None or owner.architecture is None for owner in owners):
+            raise ValueError(f"an attention profile that plans {case} names no architecture or no model_path")
+        named = [list(pair) for pair in dict.fromkeys((owner.architecture, owner.model_path) for owner in owners)]
+        return [[*row, named]] if named else [row]
 
     return rows
 

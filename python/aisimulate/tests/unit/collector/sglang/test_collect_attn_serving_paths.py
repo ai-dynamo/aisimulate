@@ -210,7 +210,17 @@ def attn(monkeypatch):
     monkeypatch.setattr(module, "benchmark_with_power", benchmark_with_power)
     monkeypatch.setattr(module, "log_perf", log_perf)
     monkeypatch.setattr(module, "_dist_version", lambda name: "0.5.23")
+    # The architectures SGLang registers an override provider for (the registries are faked;
+    # the real ones are read in test_the_provider_gate_reads_sglangs_own_registries).
+    world.providers = {
+        "Gemma4ForConditionalGeneration",
+        "GptOssForCausalLM",
+        "KimiK3ForConditionalGeneration",
+        "NemotronHForCausalLM",
+        "Qwen3VLForConditionalGeneration",
+    }
     monkeypatch.setattr(module, "resolve_serving_attention_backends", resolve_serving_attention_backends)
+    monkeypatch.setattr(module, "has_override_provider", lambda architecture: architecture in world.providers)
     monkeypatch.setattr(module, "_resolve_local_model_path", lambda model: f"bundled:{model}")
     module._world = world
     return module, world, torch
@@ -385,20 +395,135 @@ def test_an_mla_models_dense_rows_are_not_checked_against_its_own_attention_back
     assert world.resolved == ["moonshotai/Kimi-K3"] and len(world.perf_rows) == 1
 
 
-def test_a_resolution_that_fails_fails_every_row_of_the_architecture_without_retrying(attn, monkeypatch):
+def test_an_architecture_without_a_provider_is_checked_against_the_default_model(attn):
+    """MiMoForCausalLM has no override provider at v0.5.23, so serving resolves the default for
+    it; its own config (remote code in the checkpoint) is never built."""
+    module, world, _ = attn
+    world.serving[module.DEFAULT_BACKEND_MODEL] = ("fa3", "fa3")
+    _run_context(module, 90, "fa3", architecture="MiMoForCausalLM")
+    _run_context(module, 90, "fa3", architecture="Qwen3MoeForCausalLM")
+    _run_context(module, 90, "fa3")
+    assert world.resolved == [module.DEFAULT_BACKEND_MODEL]
+    assert len(world.perf_rows) == 3
+
+    with pytest.raises(RuntimeError) as error:
+        _run_context(module, 90, "flashinfer", architecture="MiMoForCausalLM")
+    assert "the plan dispatches MiMoForCausalLM prefill attention on flashinfer" in str(error.value)
+    assert f"resolves fa3 for {module.DEFAULT_BACKEND_MODEL}" in str(error.value)
+
+
+def test_a_resolution_that_cannot_run_warns_once_and_the_row_runs_on_the_plans_dispatch(attn, monkeypatch, capsys):
+    """A model whose config class ships as remote code cannot be built from a bundled
+    config.json; that is a limit of the check, so the row runs unchecked."""
     module, world, _ = attn
     attempts = []
 
     def broken(model):
         attempts.append(model)
-        raise ValueError("config not recognized")
+        raise ValueError("The checkpoint you are trying to load has model type 'x' but Transformers does not ...")
 
     monkeypatch.setattr(module, "resolve_serving_attention_backends", broken)
-    for _ in range(2):
-        with pytest.raises(RuntimeError, match="cannot resolve the attention backend SGLang serves .*config not recog"):
-            _run_context(module, 90, "fa3", architecture="Llama4ForConditionalGeneration")
-    assert attempts == ["meta-llama/Llama-4-Scout-17B-16E-Instruct"]
-    assert world.perf_rows == []
+    for _ in range(3):
+        _run_context(module, 90, "fa3", architecture="Gemma4ForConditionalGeneration")
+    _run_context(module, 90, "fa3", architecture="Gemma4ForConditionalGeneration", is_context=True)
+
+    assert attempts == ["google/gemma-4-26B-A4B"]
+    assert [row["kernel_source"] for row in world.perf_rows] == ["fa3"] * 4
+    warnings = [line for line in capsys.readouterr().out.splitlines() if line.startswith("WARNING")]
+    assert len(warnings) == 1
+    assert "Gemma4ForConditionalGeneration" in warnings[0] and "ValueError: The checkpoint" in warnings[0]
+    assert "run on the plan's dispatch unchecked" in warnings[0]
+
+
+def test_an_unresolvable_default_model_warns_once_per_architecture_and_fails_no_row(attn, monkeypatch, capsys):
+    module, world, _ = attn
+    attempts = []
+
+    def broken(model):
+        attempts.append(model)
+        raise OSError("no config")
+
+    monkeypatch.setattr(module, "resolve_serving_attention_backends", broken)
+    for architecture in ("MiMoForCausalLM", None, "MiMoForCausalLM", "LlamaForCausalLM", None):
+        _run_context(module, 90, "fa3", architecture=architecture)
+
+    assert attempts == [module.DEFAULT_BACKEND_MODEL]  # resolved once, the failure kept
+    assert len(world.perf_rows) == 5
+    warnings = [line for line in capsys.readouterr().out.splitlines() if line.startswith("WARNING")]
+    assert len(warnings) == 3
+    assert [
+        ("MiMoForCausalLM" in w, "a model without an override" in w, "LlamaForCausalLM" in w) for w in warnings
+    ] == [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ]
+
+
+def test_a_provider_lookup_that_fails_does_not_fail_the_row(attn, monkeypatch, capsys):
+    module, world, _ = attn
+
+    def broken(architecture):
+        raise ImportError("sglang.srt.arg_groups.overrides")
+
+    monkeypatch.setattr(module, "has_override_provider", broken)
+    _run_context(module, 90, "fa3", architecture="NemotronHForCausalLM")
+    _run_context(module, 90, "fa3", architecture="NemotronHForCausalLM")
+    assert len(world.perf_rows) == 2 and world.resolved == []
+    assert capsys.readouterr().out.count("WARNING") == 1
+
+
+def test_a_mismatch_still_fails_after_another_architecture_could_not_be_resolved(attn, monkeypatch):
+    module, world, _ = attn
+    world.serving["nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"] = ("trtllm_mha", "trtllm_mha")
+
+    def resolve(model):
+        if model == "google/gemma-4-26B-A4B":
+            raise ValueError("config not recognized")
+        return world.serving[model]
+
+    monkeypatch.setattr(module, "resolve_serving_attention_backends", resolve)
+    _run_context(module, 100, "triton", architecture="Gemma4ForConditionalGeneration")
+    with pytest.raises(RuntimeError, match="NemotronHForCausalLM prefill attention on flashinfer.*trtllm_mha"):
+        _run_context(module, 100, "flashinfer", architecture="NemotronHForCausalLM")
+    _run_context(module, 100, "trtllm_mha", architecture="NemotronHForCausalLM")
+    assert [row["kernel_source"] for row in world.perf_rows] == ["triton", "trtllm_mha"]
+
+
+def test_the_provider_gate_reads_sglangs_own_registries(attn, monkeypatch):
+    """has_override_provider asks the three registries collect_model_override_declarations
+    reads (arg_groups/overrides.py:277-302 @v0.5.23); it holds no architecture list."""
+    module, world, _ = attn
+    monkeypatch.undo()  # the real function, over fake registries
+
+    def provider(server_args, hf_config):
+        return {}
+
+    base = types.ModuleType("sglang.srt.arg_groups.model_override_base")
+    base.MODEL_OVERRIDES = {"ConstantForCausalLM": {"dtype": "bfloat16"}}
+    base._MODEL_OVERRIDE_FNS = {"RegisteredForCausalLM": [provider]}
+    base._PREDICATE_OVERRIDE_FNS = [(lambda architecture: "Step3p5ForCausalLM" in architecture, provider)]
+    overrides = types.ModuleType("sglang.srt.arg_groups.overrides")
+    package = types.ModuleType("sglang.srt.arg_groups")
+    package.model_override_base, package.overrides = base, overrides
+    monkeypatch.setitem(sys.modules, "sglang.srt.arg_groups", package)
+    monkeypatch.setitem(sys.modules, "sglang.srt.arg_groups.model_override_base", base)
+    monkeypatch.setitem(sys.modules, "sglang.srt.arg_groups.overrides", overrides)
+
+    assert module.has_override_provider("ConstantForCausalLM")
+    assert module.has_override_provider("RegisteredForCausalLM")
+    assert module.has_override_provider("Step3p5ForCausalLM")
+    assert not module.has_override_provider("MiMoForCausalLM")
+    assert not module.has_override_provider("Step3p7FlashForCausalLM")
+
+    tree = ast.parse((COLLECTOR_DIR / "sglang" / "collect_attn.py").read_text(encoding="utf-8"))
+    gate = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "has_override_provider")
+    literals = {n.value for n in ast.walk(gate) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert literals == {ast.get_docstring(gate, clean=False)}
+    # The registration side effect: arg_groups.overrides imports the model_overrides package.
+    (imports,) = [n for n in ast.walk(gate) if isinstance(n, ast.ImportFrom)]
+    assert imports.module == "sglang.srt.arg_groups"
+    assert {alias.name for alias in imports.names} == {"model_override_base", "overrides"}
 
 
 def test_an_architecture_is_resolved_through_its_first_model_with_a_config(attn, monkeypatch):
@@ -416,8 +541,8 @@ def test_an_architecture_is_resolved_through_its_first_model_with_a_config(attn,
     monkeypatch.setattr(
         module, "_resolve_local_model_path", lambda model: (_ for _ in ()).throw(FileNotFoundError(model))
     )
-    with pytest.raises(RuntimeError, match="no model of Mistral3ForConditionalGeneration has a config"):
-        _run_context(module, 90, "fa3", architecture="Mistral3ForConditionalGeneration")
+    with pytest.raises(FileNotFoundError, match="no model of Gemma4ForConditionalGeneration has a config"):
+        module._architecture_model("Gemma4ForConditionalGeneration")
 
 
 def test_serving_is_resolved_by_servings_own_pipeline_on_the_models_config(attn, monkeypatch):

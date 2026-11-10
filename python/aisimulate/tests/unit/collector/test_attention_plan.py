@@ -20,7 +20,7 @@ from collector.case_generator import (
     get_attention_shapes,
     sglang_default_attention_backend,
 )
-from collector.helper import _resolve_local_model_path
+from collector.helper import _AIC_MODEL_CONFIG_DIR, _resolve_local_model_path
 from collector.op_plans import OP_PLANS, AttentionCase, _attention_points, plan
 
 pytestmark = pytest.mark.unit
@@ -175,8 +175,9 @@ def test_sglang_rows_carry_each_models_attention_properties(monkeypatch):
     assert {row["runtime_window_size"] for row in muse[(32, 2, 128, 0)]} == {-1}
     assert not any(row["has_attention_sink"] for rows in muse.values() for row in rows)
 
+    # nemotron_h.py _nemotron_h_overrides declares trtllm_mha on SM100/103, the default.
     nemotron = _sglang_rows(monkeypatch, "nvidia/Nemotron-H-56B-Base-8K", 100)
-    assert {row["attn_backend_name"] for row in nemotron} == {"flashinfer"}
+    assert {row["attn_backend_name"] for row in nemotron} == {"trtllm_mha"}
     qwen35 = _sglang_rows(monkeypatch, "Qwen/Qwen3.5-27B", 100)
     assert {row["attn_backend_name"] for row in qwen35} == {"triton"}
 
@@ -234,7 +235,7 @@ _SGLANG_BACKENDS_BY_SM = {
     "KimiK3ForConditionalGeneration": ("flashinfer", "fa3", "trtllm_mha", "trtllm_mha", "flashinfer"),
     "Llama4ForConditionalGeneration": ("triton", "fa3", "trtllm_mha", "trtllm_mha", "triton"),
     "MiMoV2FlashForCausalLM": ("triton", "fa3", "fa4", "fa4", "triton"),
-    "NemotronHForCausalLM": ("flashinfer", "fa3", "flashinfer", "flashinfer", "flashinfer"),
+    "NemotronHForCausalLM": ("flashinfer", "fa3", "trtllm_mha", "trtllm_mha", "flashinfer"),
     "Qwen3_5ForConditionalGeneration": ("flashinfer", "fa3", "triton", "triton", "flashinfer"),
     "Qwen3_5MoeForCausalLM": ("flashinfer", "fa3", "trtllm_mha", "trtllm_mha", "flashinfer"),
     "Qwen3_5MoeForConditionalGeneration": ("flashinfer", "fa3", "triton", "triton", "flashinfer"),
@@ -246,6 +247,7 @@ def test_the_sglang_backend_table_has_every_architecture_that_declared_one():
     assert set(SGLANG_ATTENTION_BACKENDS) == set(_SGLANG_BACKENDS_BY_SM)
     assert {name for name, backends in SGLANG_ATTENTION_BACKENDS.items() if not backends} == {
         "KimiK3ForConditionalGeneration",
+        "NemotronHForCausalLM",
         "Qwen3_5MoeForCausalLM",
     }
     for architecture, backends in SGLANG_ATTENTION_BACKENDS.items():
@@ -300,7 +302,7 @@ def test_the_sglang_backend_table_cites_the_override_of_every_entry():
 
 
 def test_vllm_rows_name_the_models_that_plan_a_shape():
-    """A model-planned shape runs under its models' configs; a base-grid shape names none."""
+    """A model-planned shape names each profile's [architecture, model]; a base-grid shape names none."""
     for phase in ("context", "generation"):
         shapes = get_attention_shapes(phase)
         rows = plan(f"attention_{phase}", "vllm", 90).rows
@@ -310,7 +312,9 @@ def test_vllm_rows_name_the_models_that_plan_a_shape():
             owners = [owner for owner in shapes[shape] if owner.from_model]
             if owners:
                 assert len(row) == len(VLLM_FIELDS) + 1, row
-                assert row[-1] == list(dict.fromkeys(owner.model_path for owner in owners))
+                assert row[-1] == [
+                    list(pair) for pair in dict.fromkeys((owner.architecture, owner.model_path) for owner in owners)
+                ]
             else:
                 assert len(row) == len(VLLM_FIELDS), row
             seen.add(shape)
@@ -320,19 +324,45 @@ def test_vllm_rows_name_the_models_that_plan_a_shape():
 
 
 def test_vllm_gemma_4_rows_name_the_gemma_4_models():
+    architecture = "Gemma4ForConditionalGeneration"
     gemma = {"google/gemma-4-26B-A4B", "nvidia/Gemma-4-31B-IT-NVFP4"}
     for op in ("attention_context", "attention_generation"):
         rows = plan(op, "vllm", 89).rows
         gemma_rows = [row for row in rows if (row[4], row[7]) in {(256, 1024), (512, 0)}]
         assert gemma_rows
-        assert all(set(row[-1]) <= gemma for row in gemma_rows)
-        assert {tuple(row[-1]) for row in gemma_rows if row[2] == 16} == {tuple(sorted(gemma))}
-        assert {tuple(row[-1]) for row in gemma_rows if row[2] == 32} == {("nvidia/Gemma-4-31B-IT-NVFP4",)}
-        # No other shape runs under a Gemma 4 config.
+        assert all({name for name, _model in row[-1]} == {architecture} for row in gemma_rows)
+        assert {tuple(model for _name, model in row[-1]) for row in gemma_rows if row[2] == 16} == {
+            tuple(sorted(gemma))
+        }
+        assert {tuple(model for _name, model in row[-1]) for row in gemma_rows if row[2] == 32} == {
+            ("nvidia/Gemma-4-31B-IT-NVFP4",)
+        }
+        # No other shape names a Gemma 4 model.
         others = [row for row in rows if (row[4], row[7]) not in {(256, 1024), (512, 0)}]
-        assert not any(gemma & set(row[-1]) for row in others if len(row) > len(VLLM_FIELDS))
+        assert not any(
+            name == architecture for row in others if len(row) > len(VLLM_FIELDS) for name, _model in row[-1]
+        )
     for model in gemma:
         assert Path(_resolve_local_model_path(model), "config.json").exists()
+
+
+def test_vllm_rows_name_an_architecture_that_is_its_models_own():
+    """The worker gates on the architecture: it must be the one in the model's config."""
+    configs = Path(_AIC_MODEL_CONFIG_DIR)
+    named = {
+        tuple(pair)
+        for row in plan("attention_context", "vllm", 90).rows
+        if len(row) > len(VLLM_FIELDS)
+        for pair in row[-1]
+    }
+    assert named
+    checked = 0
+    for architecture, model in named:
+        config = configs / f"{model.replace('/', '--')}_config.json"
+        if config.exists():
+            assert yaml.safe_load(config.read_text(encoding="utf-8"))["architectures"] == [architecture], model
+            checked += 1
+    assert checked > 25
 
 
 def test_vllm_rows_keep_the_case_and_only_grow_by_the_models():
@@ -357,7 +387,7 @@ def test_a_model_profile_without_a_model_path_cannot_name_its_vllm_config(model_
     profile = _profile("ModelA")
     del profile["model_case_values"]["attention"][0]["model_path"]
     model_files(profile)
-    with pytest.raises(ValueError, match="names no model_path"):
+    with pytest.raises(ValueError, match="names no architecture or no model_path"):
         _ = plan("attention_context", "vllm", 90).rows
 
 
@@ -390,14 +420,20 @@ def test_a_dispatch_entry_leaves_a_case_out_on_that_kernel_only():
     runs = dict(zip(sm100.cases, sm100.dispatches, strict=True))
 
     def case(kv_cache_dtype, attn_dtype):
-        return AttentionCase(1, 1024, 32, 2, 128, 0, kv_cache_dtype, attn_dtype)
+        return AttentionCase(1, 1024, 4, 1, 256, 0, kv_cache_dtype, attn_dtype)
 
-    # Nemotron-H serves (32, 2) on flashinfer, the other models and the generic grid on trtllm_mha.
-    assert set(runs[case("bfloat16", "bfloat16")]) == {"flashinfer", "trtllm_mha"}
-    # trtllm_mha quantizes Q itself on an FP8 KV cache; flashinfer has no FP8 compute.
-    assert runs[case("fp8", "bfloat16")] == ("flashinfer",)
+    # Qwen3.5 serves (4, 1) at head_dim 256 on triton, Qwen3.8 on trtllm_mha.
+    assert set(runs[case("bfloat16", "bfloat16")]) == {"triton", "trtllm_mha"}
+    # trtllm_mha quantizes Q itself on an FP8 KV cache; triton has no FP8 compute.
+    assert runs[case("fp8", "bfloat16")] == ("triton",)
     assert runs[case("fp8", "fp8")] == ("trtllm_mha",)
     assert sm100.removed_runs
+
+    # A shape every owner serves on trtllm_mha has no BF16-compute prefill on an FP8 KV cache.
+    nemotron = AttentionCase(1, 1024, 32, 2, 128, 0, "fp8", "bfloat16")
+    assert nemotron not in runs
+    assert runs[nemotron._replace(attn_dtype="fp8")] == ("trtllm_mha",)
+    assert "flashinfer" not in sm100.by_dispatch
 
 
 def test_bf16_prefill_on_fp8_kv_never_reaches_a_backend_that_quantizes_q():

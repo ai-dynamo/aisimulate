@@ -46,6 +46,7 @@ from collector.vllm.utils import (
     with_exit_stack,
 )
 from vllm.config import set_current_vllm_config
+from vllm.model_executor.models.config import MODELS_CONFIG_MAP
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -182,6 +183,24 @@ def select_attention_backend(head_dim, use_fp8_kv_cache, has_sliding_window):
     )
 
 
+def models_with_config_hook(owners):
+    """The models, among a row's (architecture, model) owners, that vLLM has a config hook for.
+
+    Serving applies a model's own decisions through one hook, looked up by
+    architecture in vLLM's MODELS_CONFIG_MAP (VllmConfig.
+    try_verify_and_update_config, config/vllm.py:2629-2658; the retry through
+    ModelRegistry._normalize_arch, model_executor/models/registry.py:1297-1321,
+    only maps a pooling or classification architecture missing from the
+    registry onto its base model). An architecture without an entry gets no
+    model-level attention decision, so the generic config selects what the
+    model's own would, and its row needs no model config. A hybrid model also
+    gets HybridAttentionMambaModelConfig (config/vllm.py:2660-2661), which sets
+    the Mamba cache mode and Mamba block size only (model_executor/models/
+    config.py:507-521, :672-706).
+    """
+    return tuple(model for architecture, model in owners if architecture in MODELS_CONFIG_MAP)
+
+
 @functools.cache
 def model_attention_selection(model, head_dim, use_fp8_kv_cache, has_sliding_window):
     """What vLLM resolves for one attention layer of a model: the backend and the attention config.
@@ -234,7 +253,7 @@ def run_attention_torch(
     use_fp8_kv_cache,
     is_context_phase,
     window_size=0,
-    models=(),
+    owners=(),
     *,
     perf_filename,
     device="cuda:0",
@@ -290,13 +309,15 @@ def run_attention_torch(
         num_kv_heads=num_kv_heads,
     )
     layer_len = max(batch_spec.seq_lens)
+    models = models_with_config_hook(owners)
     if models:
-        # A shape that models plan runs under the config vLLM builds for the
-        # model, its hook included (model_attention_selection). The model keeps
-        # its own shape and length until the backend is selected: a hook reads
-        # them (Gemma4Config compares the head sizes of the model's layers).
-        # The compute dtype is the row's, BF16, as with --dtype bfloat16.
-        require_one_attention_selection(tuple(models), head_dim, use_fp8_kv_cache, window_size > 0)
+        # A shape planned by a model vLLM has a config hook for runs under the
+        # config vLLM builds for that model, its hook included
+        # (model_attention_selection). The model keeps its own shape and
+        # length until the backend is selected: a hook reads them
+        # (Gemma4Config compares the head sizes of the model's layers). The
+        # compute dtype is the row's, BF16, as with --dtype bfloat16.
+        require_one_attention_selection(models, head_dim, use_fp8_kv_cache, window_size > 0)
         vllm_config = create_vllm_config(
             model_name=_resolve_local_model_path(models[0]),
             max_model_len=None,
@@ -304,8 +325,8 @@ def run_attention_torch(
             **serving_config,
         )
     else:
-        # A shape only the base grid plans has no model: a generic config
-        # (Qwen3, no config hook) shaped as the layer.
+        # A shape the base grid plans, or models without a config hook: a
+        # generic config (Qwen3, no config hook) shaped as the layer.
         vllm_config = create_vllm_config(
             model_name=os.path.join(os.path.dirname(__file__), "fake_hf_model"),
             max_model_len=layer_len,
@@ -339,7 +360,13 @@ def run_attention_torch(
     # layer the composite's routing can read (composite.py:90-95).
     backend_cls = select_attention_backend(head_dim, use_fp8_kv_cache, window_size > 0)
     if models:
-        set_attention_layer_of_model(vllm_config.model_config, max_model_len=layer_len, **layer_shape)
+        set_attention_layer_of_model(
+            vllm_config.model_config,
+            max_model_len=layer_len,
+            head_dim=head_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+        )
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
 
@@ -354,7 +381,9 @@ def run_attention_torch(
     block_size = framework_kv_block_size(backend_cls)
     vllm_config.cache_config.block_size = block_size
 
-    kv_cache_spec = create_standard_kv_cache_spec(vllm_config, use_fp8_kv_cache)
+    kv_cache_spec = create_standard_kv_cache_spec(
+        vllm_config, use_fp8_kv_cache, sliding_window=layer_shape["sliding_window"]
+    )
 
     # Ensure the KV cache has enough blocks for all sequences.
     required_blocks = 1 + sum((s_len + block_size - 1) // block_size for s_len in batch_spec.seq_lens)
@@ -473,8 +502,9 @@ def run_attention_torch(
             common_attn_metadata=common_attn_metadata,
         )
 
-    # Instantiate implementation
-    sliding_window = vllm_config.model_config.get_sliding_window()
+    # Instantiate implementation. The window is the layer's, as serving's
+    # layer hands its own to the impl (attention.py:265-273, :420-426): a real
+    # model's config carries one window for every layer.
     scale = 1.0 / (head_dim**0.5)
     impl = impl_cls(
         num_heads=num_heads,
@@ -482,7 +512,7 @@ def run_attention_torch(
         scale=scale,
         num_kv_heads=num_kv_heads,
         alibi_slopes=None,
-        sliding_window=sliding_window,
+        sliding_window=layer_shape["sliding_window"],
         kv_cache_dtype="fp8" if use_fp8_kv_cache else "auto",
     )
 

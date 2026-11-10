@@ -142,10 +142,13 @@ that model profile.
 A profile declares no attention backend. SGLang's backend per architecture and
 SM is `SGLANG_ATTENTION_BACKENDS` in `collector/case_generator.py`, each entry
 citing the SGLang override that makes the choice; the plan reads it for the
-dispatch and the SGLang worker checks it against what serving resolves for the
-architecture on the device. vLLM rows of a model-planned shape name the models
-that plan it, and the vLLM worker selects the backend under each model's own
-config.
+dispatch and the SGLang worker checks it against what serving resolves on the
+device, through the architecture's own model when SGLang registers an override
+for it and through a model without one otherwise. vLLM rows of a model-planned
+shape name the `[architecture, model]` of each profile that plans it; the vLLM
+worker builds a model's own config, and selects under it, only for an
+architecture vLLM has a config hook for, and runs every other row on the
+generic config.
 
 ## Base Op Files
 
