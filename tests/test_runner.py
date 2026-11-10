@@ -1596,6 +1596,21 @@ def test_sglang_prefill_pipeline_width_reaches_the_default_aic_timing(monkeypatc
     assert rank["timing_model"]["config"]["pp"] == 4
     with pytest.raises(ValueError, match="prefill pipeline widths conflict"):
         _materialize_engine_role("sglang", "test", {"prefill_pp": 4}, {**args, "aic_pp_size": 2}, "prefill")
+    # A nested rank that states no width inherits it inside the rank.
+    outer = ("worker_type", "engine_type", "aic_backend", "aic_model_path", "aic_system")
+    nested = {key: args[key] for key in outer}
+    nested["rank"] = {key: value for key, value in args.items() if key not in outer}
+    rank = _materialize_engine_role("sglang", "test", {"prefill_pp": 4}, nested, "prefill")["rank"]
+    assert rank["timing_model"]["config"]["pp"] == 4
+
+
+@pytest.mark.parametrize("width", [[4], 4.0, "4", True])
+def test_sglang_prefill_pipeline_width_must_be_a_positive_integer(monkeypatch, width):
+    _forbid_capacity(monkeypatch)
+    args = _engine_args(role="prefill", backend="sglang")
+    args.pop("timing_model")
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        _materialize_engine_role("sglang", "test", {"prefill_pp": 4}, {**args, "aic_pp_size": width}, "prefill")
 
 
 def test_sglang_pd_prefill_compiles_pipeline_stages():

@@ -1582,13 +1582,15 @@ def _reject_role_pipeline_parallelism(
         return None
     # The AIC timing width must agree with the deployment's, which it inherits when unstated.
     deployment = parallel_config.get("pp" if role == "aggregated" else f"{role}_pp")
+    if deployment is not None:
+        deployment = _positive_int(deployment, f"{role} pipeline width")
     stated = {
-        value
-        for value in (
-            role_config.get("aic_pp_size"),
-            rank.get("aic_pp_size"),
-            timing_config.get("pp"),
-            timing_config.get("pp_size"),
+        _positive_int(value, f"{role} {name}")
+        for name, value in (
+            ("aic_pp_size", role_config.get("aic_pp_size")),
+            ("rank aic_pp_size", rank.get("aic_pp_size")),
+            ("timing pp", timing_config.get("pp")),
+            ("timing pp_size", timing_config.get("pp_size")),
         )
         if value is not None and value != UNKNOWN_IDENTITY
     }
@@ -1615,7 +1617,8 @@ def _materialize_engine_role(
     # Ngram/NextN capacity paths unchanged.
     requested_rank = role_config.get("rank", role_config)
     pipeline = _reject_role_pipeline_parallelism(parallel_config, role_config, role, deployment_backend)
-    if pipeline is not None:
+    # A nested rank carries the inherited width itself; the flat form and `rank: null` keep it on the role.
+    if pipeline is not None and not isinstance(role_config.get("rank"), Mapping):
         role_config["aic_pp_size"] = pipeline
     if isinstance(requested_rank, Mapping):
         requested_rank = dict(requested_rank)

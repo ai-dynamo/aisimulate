@@ -2191,6 +2191,66 @@ mod source_holds {
     }
 
     #[test]
+    fn host_loop_pp_prefill_fill_follows_the_final_chunk_forward() {
+        // A 24-token prompt runs as a 16-token chunk and an 8-token chunk with
+        // different forward times; the fill uses the chunk that finished the prompt.
+        let mut core = SglangCore::new(
+            MockEngineArgs::builder()
+                .engine_type(EngineType::Sglang)
+                .num_gpu_blocks(16)
+                .block_size(4)
+                .max_num_seqs(Some(2))
+                .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                .speedup_ratio(1.0)
+                .pipeline_fill_passes(3.0)
+                .sglang(Some(SglangArgs {
+                    page_size: Some(4),
+                    chunked_prefill_size: Some(16),
+                    host_loop: true,
+                    ..Default::default()
+                }))
+                .build()
+                .unwrap(),
+        );
+        let request_id = Uuid::from_u128(313);
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id: HandoffId::from(Uuid::from_u128(413)),
+            request: DirectRequest {
+                tokens: (0..24).collect(),
+                max_output_tokens: 1,
+                ..request(request_id)
+            },
+        })
+        .unwrap();
+
+        let mut now_ms = 0.0;
+        let mut forwards = Vec::new();
+        let held = loop {
+            assert!(forwards.len() < 8, "the prompt never held its source");
+            let pass = execute(&mut core, now_ms);
+            let held = pass.lifecycle_events.iter().find_map(|event| match event {
+                SchedulerLifecycleEvent::SourceHeld {
+                    request_id: held,
+                    transfer_timing,
+                    ..
+                } if *held == request_id => Some(*transfer_timing),
+                _ => None,
+            });
+            if let Some(held) = held {
+                break held;
+            }
+            forwards.push(core.last_forward_ms().unwrap());
+            now_ms = pass.end_ms;
+        };
+        let (first, last) = (forwards[0], *forwards.last().unwrap());
+        assert!(
+            forwards.len() >= 2 && (first - last).abs() > 1e-9,
+            "{forwards:?}"
+        );
+        assert!((held.pipeline_fill_ms - 3.0 * last).abs() < 1e-9);
+    }
+
+    #[test]
     fn host_loop_prefill_rank_hands_off_when_the_next_iteration_observes_the_extend() {
         // Replay caps a prefill-rank request at one output token; under the host
         // loop the finished extend joins SGLang's inflight queue instead of the

@@ -2395,6 +2395,50 @@ fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
 }
 
 #[test]
+fn pp_prefill_fill_delays_linked_handoffs_without_holding_the_links() {
+    // Two prompts finish in one PP4 prefill forward and share one sending and one
+    // receiving link. Each handoff waits the fill once; the fill must not be link
+    // work, so the linked delay grows by the same fill as an unlinked handoff.
+    let last_handoff_ms = |linked: bool, fill_passes: f64| {
+        let mut config = sglang_disagg_config();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        config.prefill_args.pipeline_fill_passes = fill_passes;
+        if linked {
+            config.prefill_args.kv_transfer_bandwidth = Some(1.0);
+            config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
+        }
+        let requests = (0..2u32)
+            .map(|i| DirectRequest {
+                tokens: (1000 * i..1000 * i + 128).collect(),
+                ..request(u128::from(i) + 1, 128, 2, 0.0)
+            })
+            .collect();
+        let (_, stats) = run_trace_collect(&config, requests, None, 1.0);
+        (1..=2u128)
+            .map(|uuid| stats.handoff_ms[&Uuid::from_u128(uuid)])
+            .fold(f64::MIN, f64::max)
+    };
+    let unlinked_fill = last_handoff_ms(false, 3.0) - last_handoff_ms(false, 0.0);
+    let linked_fill = last_handoff_ms(true, 3.0) - last_handoff_ms(true, 0.0);
+    assert!(unlinked_fill > 0.0);
+    assert!(
+        (linked_fill - unlinked_fill).abs() < 1e-9,
+        "linked={linked_fill} unlinked={unlinked_fill}"
+    );
+}
+
+#[test]
+fn a_transfer_with_only_pipeline_fill_completes_when_the_fill_ends() {
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    let handoff_id = HandoffId::new(Uuid::from_u128(1));
+    links.submit(handoff_id, 0.0, 0, 0, 0.0, 3.0);
+    assert_eq!(links.next_event_ms(), Some(3.0));
+    links.complete_due(3.0);
+    assert_eq!(links.completed, [handoff_id]);
+}
+
+#[test]
 fn same_instant_transfers_compute_rates_once() {
     let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
     links.submit(HandoffId::new(Uuid::from_u128(1)), 1.0, 0, 0, 0.0, 0.0);
