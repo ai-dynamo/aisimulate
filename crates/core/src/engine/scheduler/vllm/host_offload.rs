@@ -48,8 +48,8 @@ use crate::engine::common::sequence::RequestSequence;
 use crate::engine::config::ConnectorRules;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
-    HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
-    StoreOutcome, TransferId,
+    HostOffloadObservationData, HostStoreBlockMapping, HostTier, HostTierHandle, LoadOutcome,
+    Lookup, StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
@@ -116,6 +116,31 @@ impl RestoreRounds {
     }
 }
 
+/// What a request's last prompt touch found, for the next one to reuse while
+/// the host tier has not changed in a way that could alter it.
+#[derive(Default)]
+struct PromptTouch {
+    /// The tier's LRU touch count after the touch. While it stands, the
+    /// prompt's evictable blocks are still the newest, in order.
+    lru_touches: Option<u64>,
+    /// `(admitted, blocks)`: when the tier had admitted `admitted` blocks, it
+    /// held no block of the prompt from index `blocks` on.
+    absent_from: Option<(u64, usize)>,
+}
+
+impl PromptTouch {
+    /// The request's own store admitted blocks, all before index `end`,
+    /// taking the tier's count from `before` to `after`.
+    fn admitted_own(&mut self, before: u64, after: u64, end: usize) {
+        if let Some((admitted, blocks)) = &mut self.absent_from
+            && *admitted == before
+        {
+            *admitted = after;
+            *blocks = (*blocks).max(end);
+        }
+    }
+}
+
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
@@ -143,6 +168,8 @@ pub(super) struct VllmHostRequestState {
     /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
+    /// With `touches_prompt`: what the latest prompt touch found.
+    prompt_touch: PromptTouch,
 }
 
 impl VllmHostRequestState {
@@ -193,7 +220,29 @@ impl VllmHostRequestState {
             confirmed_tokens: 0,
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
+            prompt_touch: PromptTouch::default(),
         }
+    }
+
+    /// `touches_prompt`: make the prompt's evictable blocks the newest, its
+    /// first block newest of all, as touching every prompt key in reverse
+    /// does. When nothing was touched since this request's last touch, its
+    /// blocks are still the newest and nothing moves; blocks the tier lacked
+    /// are skipped until it admits more.
+    fn touch_prompt(&mut self, tier: &mut HostTier) {
+        if self.prompt_touch.lru_touches == Some(tier.lru_touches()) {
+            return;
+        }
+        let admitted = tier.admitted_blocks();
+        let end = match self.prompt_touch.absent_from {
+            Some((seen, blocks)) if seen == admitted => blocks,
+            _ => self.prompt_blocks,
+        };
+        let present = tier.touch_reversed(&self.block_keys[..end]);
+        self.prompt_touch = PromptTouch {
+            lru_touches: Some(tier.lru_touches()),
+            absent_from: Some((admitted, present)),
+        };
     }
 
     /// Append the keys (and router identities) of blocks the lease completed
@@ -536,13 +585,7 @@ impl VllmHostOffloadAdapter {
         if rules.touches_prompt {
             // vLLM 0.24 passes this ordered logical list after lookup to
             // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
-            for key in request.block_keys[..request.prompt_blocks]
-                .iter()
-                .rev()
-                .copied()
-            {
-                tier.touch(key);
-            }
+            request.touch_prompt(&mut tier);
         }
         if rules.pins_hits
             && let HostLookup::Hit(hit) = &outcome
@@ -919,6 +962,7 @@ impl VllmHostOffloadAdapter {
                 request.block_meta.as_deref().map(|meta| &meta[start..end]),
             )
         };
+        let admitted = tier.admitted_blocks();
         match tier.prepare_store(self.host.id(), uuid, keys, meta, now_ms) {
             StoreOutcome::AlreadyPresent => request.next_store_block = end,
             StoreOutcome::RetryCapacity { .. } => {}
@@ -953,13 +997,12 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = resume;
                 if rules.touches_prompt {
-                    for key in request.block_keys[..request.prompt_blocks]
-                        .iter()
-                        .rev()
-                        .copied()
-                    {
-                        tier.touch(key);
-                    }
+                    request.prompt_touch.admitted_own(
+                        admitted,
+                        tier.admitted_blocks(),
+                        end.min(request.prompt_blocks),
+                    );
+                    request.touch_prompt(&mut tier);
                 }
             }
         }
@@ -1338,6 +1381,78 @@ mod tests {
         core.execute_pass(&mut collector, now_ms);
 
         assert_eq!(evictions.take(), vec![a]);
+    }
+
+    #[test]
+    fn prompt_touch_matches_touching_every_prompt_key_in_reverse() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        // Two requests with the same 12-block prompt, one that shares its
+        // first four blocks and one that shares none, so a request's skipped
+        // tail can be stored by another.
+        let prompts: [Vec<u32>; 4] = [
+            (1..=48).collect(),
+            (1..=48).collect(),
+            (1..=16).chain(101..=132).collect(),
+            (201..=248).collect(),
+        ];
+        let hosts = || {
+            let owners = (1..).map(Uuid::from_u128);
+            let hosts = prompts.iter().zip(owners);
+            hosts
+                .map(|(tokens, owner)| request(owner, tokens.clone()).2)
+                .collect::<Vec<_>>()
+        };
+        // `reusing` touches prompts as the connector does; `each` touches
+        // every prompt key. 24 blocks hold two prompts, so stores evict.
+        let (reusing, each) = (adapter(24), adapter(24));
+        let (mut reusing_hosts, mut each_hosts) = (hosts(), hosts());
+        let mut rng = StdRng::seed_from_u64(13);
+        let mut now = 0.0;
+        for _ in 0..4_000 {
+            now += f64::from(rng.random_range(0..3u8));
+            let request = rng.random_range(0..prompts.len());
+            let start = rng.random_range(0..12);
+            let end = rng.random_range(start..12) + 1;
+            let action = rng.random_range(0..4);
+            for (adapter, host) in [
+                (&reusing, &mut reusing_hosts[request]),
+                (&each, &mut each_hosts[request]),
+            ] {
+                let mut tier = adapter.host.lock();
+                tier.tick(C, now);
+                let blocks = &host.block_keys[start..end];
+                match action {
+                    0 => {
+                        tier.schedule_load(C, host.owner, blocks, now, now);
+                        continue;
+                    }
+                    1 => {
+                        let admitted = tier.admitted_blocks();
+                        let stored = tier.prepare_store(C, host.owner, blocks, None, now);
+                        tier.submit_prepared_stores(C, now);
+                        if !matches!(stored, StoreOutcome::Prepared { .. }) {
+                            continue;
+                        }
+                        host.prompt_touch
+                            .admitted_own(admitted, tier.admitted_blocks(), end);
+                    }
+                    _ => {}
+                }
+                if std::ptr::eq(adapter, &reusing) {
+                    host.touch_prompt(&mut tier);
+                } else {
+                    for key in host.block_keys.iter().rev() {
+                        tier.touch(*key);
+                    }
+                }
+            }
+            assert_eq!(
+                reusing.host.lock().lru_order(),
+                each.host.lock().lru_order()
+            );
+        }
     }
 
     #[test]

@@ -303,6 +303,9 @@ pub(crate) struct HostTier {
     entries: FxHashMap<HostBlockKey, Entry>,
     /// Includes pinned residents; pending destinations count only in `entries`.
     resident_blocks: usize,
+    /// Blocks ever admitted to `entries`: while it stands, an absent block
+    /// is still absent.
+    admitted_blocks: u64,
     /// Resident, currently unpinned blocks, or every present block of a
     /// [`HostPolicy::Ranked`] tier. Under [`HostPolicy::CohortLru`], blocks a
     /// framework operation makes evictable together are one cohort because
@@ -357,6 +360,7 @@ impl HostTier {
             config,
             entries: FxHashMap::default(),
             resident_blocks: 0,
+            admitted_blocks: 0,
             lru: Lru::default(),
             transfers: FxHashMap::default(),
             transport,
@@ -583,6 +587,7 @@ impl HostTier {
         }
 
         let transfer_id = self.allocate_transfer_id();
+        self.admitted_blocks += missing.len() as u64;
         for key in &missing {
             let mut entry = Entry {
                 state: EntryState::PendingStore { transfer_id },
@@ -1113,6 +1118,60 @@ impl HostTier {
         {
             self.lru.touch(&mut entry.lru_slot, key);
         }
+    }
+
+    /// [`Self::touch`] each of `keys` from the last to the first, so the
+    /// first ends up the newest. Blocks that already lie in that order, as an
+    /// earlier call left them, move as one run instead of one at a time.
+    ///
+    /// Returns the length of `keys` up to its last present block: the tier
+    /// holds none of the keys after it.
+    pub(crate) fn touch_reversed(&mut self, keys: &[HostBlockKey]) -> usize {
+        let mut present = 0;
+        let mut index = keys.len();
+        while index > 0 {
+            index -= 1;
+            let key = keys[index];
+            let Some(entry) = self.entries.get_mut(&key) else {
+                continue;
+            };
+            if present == 0 {
+                present = index + 1;
+            }
+            if self.config.policy != HostPolicy::Ranked
+                && (entry.state != EntryState::Resident || entry.load_pins != 0)
+            {
+                continue;
+            }
+            let Some(oldest) = entry.lru_slot else {
+                self.lru.touch(&mut entry.lru_slot, key);
+                continue;
+            };
+            // The blocks just newer are the next keys' while they match: a
+            // linked block is one a touch moves, so the run needs no lookups.
+            let mut newest = oldest;
+            for (node, newer) in self.lru.oldest_after(Some(oldest)) {
+                if index == 0 || newer != keys[index - 1] {
+                    break;
+                }
+                newest = node;
+                index -= 1;
+            }
+            self.lru.touch_run(oldest, newest);
+        }
+        present
+    }
+
+    /// Blocks ever admitted, by a store or an external reservation. A block
+    /// the tier lacked is still absent while this count stands.
+    pub(crate) fn admitted_blocks(&self) -> u64 {
+        self.admitted_blocks
+    }
+
+    /// How many times a block or a run of blocks was made the newest. While
+    /// the count stands, the newest blocks keep their order.
+    pub(crate) fn lru_touches(&self) -> u64 {
+        self.lru.touches()
     }
 
     /// Make blocks that became evictable together the newest: in key order,
@@ -2101,6 +2160,57 @@ pub(crate) mod tests {
         // the completion cohort, not a framework policy claim.
         assert_eq!(tier.lookup(key(1)), Lookup::Miss);
         assert!(tier.is_resident(key(2)));
+    }
+
+    #[test]
+    fn touch_reversed_matches_touching_each_key_in_reverse() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(11);
+        // Four 12-block prompts that share their first four blocks.
+        let prompts: Vec<Vec<_>> = (1..=4)
+            .map(|prompt| {
+                (0..12)
+                    .map(|block| {
+                        key(if block < 4 {
+                            block
+                        } else {
+                            100 * prompt + block
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        // The first tier touches a prompt as runs, the second key by key.
+        // 24 blocks hold two prompts, so stores evict, and transfers take a
+        // millisecond per block, so touches also meet pending and pinned blocks.
+        let mut tiers = [tier(24), tier(24)];
+        let mut now = 0.0;
+        for _ in 0..4_000 {
+            now += f64::from(rng.random_range(0..3u8));
+            let prompt = &prompts[rng.random_range(0..prompts.len())];
+            let start = rng.random_range(0..prompt.len());
+            let blocks = &prompt[start..=rng.random_range(start..prompt.len())];
+            let action = rng.random_range(0..4);
+            for (index, tier) in tiers.iter_mut().enumerate() {
+                tier.tick(C, now);
+                match action {
+                    0 => {
+                        tier.prepare_store(C, request_id(), blocks, None, now);
+                        tier.submit_prepared_stores(C, now);
+                    }
+                    1 => {
+                        tier.schedule_load(C, request_id(), blocks, now, now);
+                    }
+                    _ if index == 0 => {
+                        tier.touch_reversed(prompt);
+                    }
+                    _ => prompt.iter().rev().for_each(|key| tier.touch(*key)),
+                }
+            }
+            assert_eq!(tiers[0].lru_order(), tiers[1].lru_order());
+        }
     }
 
     #[test]
