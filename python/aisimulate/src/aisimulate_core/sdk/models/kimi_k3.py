@@ -923,9 +923,13 @@ class KimiK3Model(BaseModel):
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         # Same single-elastic-budget assumption as
         # get_kvcache_bytes_per_sequence — see the note there.
+        return self.get_kvcache_batch_capacity(kv_budget_bytes, 1)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Reserve fixed KDA state for every scheduler slot before sizing KV."""
         per_token = self._paged_cache_bytes_per_token()
-        budget = kv_budget_bytes - self._kda_state_bytes_per_request()
-        if budget <= 0 or per_token <= 0:
+        budget = float(kv_budget_bytes) - max_batch_size * self._kda_state_bytes_per_request()
+        if max_batch_size <= 0 or budget <= 0 or per_token <= 0:
             return 0
         return int(budget // per_token)
 
@@ -933,13 +937,17 @@ class KimiK3Model(BaseModel):
     # per-request and rank-local (every rank runs the full recurrence on its
     # own KDA head shard), so it must be reserved whole BEFORE the stripe.
     def get_kvcache_rank_bytes_per_sequence(self, seq_len: int) -> float:
-        token_bytes = max(0, seq_len) * self._paged_cache_bytes_per_token()
-        return token_bytes / self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request()
+        return max(0, seq_len) * self.get_kvcache_rank_bytes_per_token() + self._kda_state_bytes_per_request()
+
+    def get_kvcache_rank_bytes_per_token(self) -> float:
+        """Token-linear latent/indexer KV only; KDA state is per request."""
+        return self._paged_cache_bytes_per_token() / self._cp_kv_memory_divisor()
 
     def get_kvcache_rank_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
-        token_budget = float(kv_budget_bytes) - self._kda_state_bytes_per_request()
+        state_budget = max_batch_size * self._kda_state_bytes_per_request()
+        token_budget = float(kv_budget_bytes) - state_budget
         if token_budget <= 0:
             return 0
         return self.get_kvcache_batch_capacity(
-            token_budget * self._cp_kv_memory_divisor() + self._kda_state_bytes_per_request(), max_batch_size
+            token_budget * self._cp_kv_memory_divisor() + state_budget, max_batch_size
         )

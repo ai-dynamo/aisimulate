@@ -544,12 +544,22 @@ def estimate_kv_bytes_per_token(
     backend: str = "vllm",
     backend_version: str | None = None,
     attention_dp_size: int = 1,
+    attention_backend: str | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
 ) -> int:
-    """Derive per-rank KV bytes/token from the resolved Hugging Face config."""
+    """Derive token-only KV bytes/rank, preserving the model's physical layout.
+
+    Kimi's hybrid model owns its token/state split and packed DSA layout. A
+    generic MLA formula cannot represent it; fixed recurrent state is excluded
+    from this token rate and must be configured separately in Replay.
+    """
 
     if fpm_profile is not None:
         from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
+        if dcp_size != 1:
+            raise ValueError("FPM profile KV geometry does not support decode context parallelism")
         deployment = load_fpm_profile(fpm_profile).select(
             model=model_name,
             worker_type=worker_type,
@@ -561,23 +571,48 @@ def estimate_kv_bytes_per_token(
             attention_dp_size=attention_dp_size,
             moe_tp_size=moe_tp_size,
             moe_ep_size=moe_ep_size,
+            cp_size=cp_size,
         )
-        deployment.validate_overrides(kvcache_quant_mode=kvcache_quant_mode)
+        deployment.validate_overrides(kvcache_quant_mode=kvcache_quant_mode, attention_backend=attention_backend)
         if deployment.resources.cache_layout == "grouped":
             raise ValueError("grouped FPM cache has no scalar bytes per token; use its cache groups and byte budget")
         return deployment.resources.kv_bytes_per_token
 
+    from aisimulate_core.sdk.common import ARCHITECTURE_TO_MODEL_FAMILY
     from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
 
-    estimator = NaiveKVCacheEstimator.from_model_path(
-        model_name,
+    raw_config = NaiveKVCacheEstimator._load_config(model_name, allow_hf_config_download=True)
+    if raw_config is None:
+        raise ValueError(f"insufficient model metadata: no HF config for {model_name!r}")
+    architectures = raw_config.get("architectures") or []
+    architecture = architectures[0] if architectures else None
+    kvcache_quant_mode = _quant_mode_name("kvcache", kvcache_quant_mode)
+    if ARCHITECTURE_TO_MODEL_FAMILY.get(architecture) == "KIMIK3":
+        from aisimulate_core.sdk.config_builders import build_model_config
+        from aisimulate_core.sdk.models import get_model
+
+        model_config = build_model_config(
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+            kvcache_quant_mode=kvcache_quant_mode,
+            attention_backend=attention_backend,
+            cp_size=cp_size,
+            dcp_size=dcp_size,
+        )
+        model_config.language_only = True
+        model = get_model(model_name, model_config, backend)
+        return int(model.get_kvcache_rank_bytes_per_token())
+
+    estimator = NaiveKVCacheEstimator.from_hf_config(
+        raw_config,
         tp_size=tp_size,
         pp_size=pp_size,
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
-        allow_hf_config_download=True,
     )
-    kvcache_quant_mode = _quant_mode_name("kvcache", kvcache_quant_mode)
     if kvcache_quant_mode is not None:
         from aisimulate_core.sdk.common import KVCacheQuantMode
 

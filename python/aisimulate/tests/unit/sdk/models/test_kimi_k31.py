@@ -5,10 +5,11 @@
 
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, common, config, engine
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, common, config, engine, memory
 from aisimulate_core.sdk.config_builders import resolve_dspark_nextn, resolve_nextn_auto
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import attention_op_keys, resolve_kimi_k3_moe_arch_mode
@@ -126,6 +127,114 @@ def test_k31_cache_retains_history_and_adds_indexer(tmp_path, k31_config, kv_qua
         assert model.get_kvcache_rank_bytes_per_sequence(length) == budget
         assert model.get_kvcache_max_tokens(budget) == length
         assert model.get_kvcache_rank_batch_capacity(budget, 1) == length
+
+
+@pytest.mark.parametrize("tp,state_bytes", [(1, 2_246_860_800), (2, 1_123_430_400), (4, 561_715_200), (8, 280_857_600)])
+@pytest.mark.parametrize(
+    "kv_quant,backend,token_bytes",
+    [
+        (common.KVCacheQuantMode.bfloat16, None, 30_816),
+        (common.KVCacheQuantMode.fp8, "trtllm_mla", 16_992),
+        (common.KVCacheQuantMode.fp8, "flashmla", 18_912),
+    ],
+)
+@pytest.mark.parametrize("batch_size", [1, 8])
+def test_k31_capacity_reserves_state_for_every_request(
+    tmp_path, k31_config, tp, state_bytes, kv_quant, backend, token_bytes, batch_size
+):
+    model = get_model(
+        _write_checkpoint(tmp_path, k31_config),
+        config.ModelConfig(
+            tp_size=tp,
+            moe_tp_size=1,
+            moe_ep_size=tp,
+            kvcache_quant_mode=kv_quant,
+            attention_backend=backend,
+        ),
+        "sglang",
+    )
+    # Hand-counted: 69 KDA layers, 96/TP heads, 128x128 FP32 state,
+    # three BF16 Q/K/V conv windows of width three, and the existing five-slot
+    # proxy. Paged bytes are 24 * (latent entry + 132 indexer bytes), with
+    # latent entries 1152 BF16, 576 raw FP8, or 656 FlashMLA packed FP8 bytes.
+    assert model.get_kvcache_bytes_per_sequence(0) == state_bytes
+    assert model.get_kvcache_rank_bytes_per_token() == token_bytes
+    state_budget = batch_size * state_bytes
+    total_tokens = batch_size * 2048
+    budget = state_budget + total_tokens * token_bytes
+    assert model.get_kvcache_bytes_per_sequence(2048) * batch_size == budget
+    for capacity in (model.get_kvcache_batch_capacity, model.get_kvcache_rank_batch_capacity):
+        assert capacity(budget, batch_size) == total_tokens
+        assert capacity(budget - 1, batch_size) == total_tokens - 1
+        assert capacity(state_budget + token_bytes, batch_size) == 1
+        for insufficient in (0, -1, state_budget - 1, state_budget, state_budget + token_bytes - 1):
+            assert capacity(insufficient, batch_size) == 0
+        assert capacity(budget, 0) == 0
+    if batch_size == 1:
+        assert model.get_kvcache_max_tokens(budget) == 2048
+
+
+def test_k31_native_capacity_metadata_excludes_fixed_state(tmp_path, k31_config, monkeypatch):
+    path = _write_checkpoint(tmp_path, k31_config)
+    # Eight TP8 requests, each with 2048 tokens: 8 * 280857600 fixed state
+    # bytes + 16384 * 18912 paged bytes = 2556715008 bytes. Synthetic backend
+    # overhead isolates the real model's capacity/metadata contract.
+    budget = 2_556_715_008
+    monkeypatch.setattr(
+        memory,
+        "get_backend",
+        lambda _: SimpleNamespace(_get_memory_usage=lambda *_a, **_k: dict(weights=0, activations=0, others=0, nccl=0)),
+    )
+    monkeypatch.setattr(
+        memory.perf_database,
+        "get_database",
+        lambda *_a, **_k: SimpleNamespace(version="0.5.21", system_spec={"gpu": {"mem_capacity": budget}}),
+    )
+    result = memory.estimate_kv_cache(
+        path,
+        "test_gpu",
+        "sglang",
+        max_num_tokens=8192,
+        max_batch_size=8,
+        tp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        kvcache_quant_mode="fp8",
+        attention_backend="flashmla",
+        memory_fraction_kind="of_total",
+        memory_fraction_value=1.0,
+    )
+    assert result["source"] == "native"
+    assert result["total_kv_size_bytes"] == budget
+    assert result["kv_size_per_token_bytes"] == 18_912
+    assert result["total_kv_size_tokens"] == 16_384
+
+
+@pytest.mark.parametrize("backend", [None, "default", "fa3"])
+def test_k31_bad_fp8_layout_cannot_fall_back_to_naive_capacity(tmp_path, k31_config, monkeypatch, backend):
+    path = _write_checkpoint(tmp_path, k31_config)
+    monkeypatch.setattr(
+        memory.perf_database,
+        "get_database",
+        lambda *_a, **_k: SimpleNamespace(version="0.5.21", system_spec={"gpu": {"mem_capacity": 200 * 1024**3}}),
+    )
+    with pytest.raises(ValueError, match="Kimi K3|K3.1"):
+        memory.estimate_kv_cache(
+            path,
+            "test_gpu",
+            "sglang",
+            max_num_tokens=8192,
+            max_batch_size=8,
+            tp_size=8,
+            moe_tp_size=1,
+            moe_ep_size=8,
+            kvcache_quant_mode="fp8",
+            attention_backend=backend,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=True,
+            gpu_memory_capacity_bytes_override=200 * 1024**3,
+        )
 
 
 @pytest.mark.parametrize("backend", ["flashmla", "trtllm_mla"])
