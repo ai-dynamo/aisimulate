@@ -353,6 +353,7 @@ impl TransferLinks {
         self.transfers.next_event()
     }
 
+    /// Queue `delay_ms` of link work that starts at `ready_ms` (no earlier than `now_ms`).
     fn submit(
         &mut self,
         handoff_id: HandoffId,
@@ -360,14 +361,16 @@ impl TransferLinks {
         source: usize,
         destination: usize,
         now_ms: f64,
+        ready_ms: f64,
     ) {
+        debug_assert!(ready_ms >= now_ms);
         self.advance(now_ms);
         let id = self.next_job;
         self.next_job += 1;
         self.transfers.submit(Job {
             id,
             direction: Direction::Write,
-            ready: now_ms,
+            ready: ready_ms,
             bytes: delay_ms,
             links: [
                 Link {
@@ -863,6 +866,9 @@ impl DisaggFlowState {
         let state = self.state(uuid)?;
         let handoff_id = state.handoff_id;
         let ranks = (state.prefill_worker_idx(), state.decode_worker_idx());
+        // A PP prefill's later stages are compute, not link work: the KV
+        // occupies the shared links only once they finish.
+        let fill_ms = state.coordinator.pipeline_fill_ms().min(delay_ms);
         if delay_ms > 0.0 {
             let Some(links) = &mut self.links else {
                 return Ok(TransferStart::Scheduled(ScheduledTransfer {
@@ -873,7 +879,14 @@ impl DisaggFlowState {
             let (Some(source), Some(destination)) = ranks else {
                 bail!("offline disagg transfer for {uuid} has no prefill or decode rank");
             };
-            links.submit(handoff_id, delay_ms, source, destination, now_ms);
+            links.submit(
+                handoff_id,
+                delay_ms - fill_ms,
+                source,
+                destination,
+                now_ms,
+                now_ms + fill_ms,
+            );
             return Ok(TransferStart::Linked);
         }
         self.apply_handoff_fact(

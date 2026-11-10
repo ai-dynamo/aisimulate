@@ -271,6 +271,14 @@ impl HandoffCoordinatorCore {
         Self::new_with_fallback(handoff_id, order, 0.0)
     }
 
+    /// The part of the transfer delay the source still spends in later
+    /// pipeline stages (zero before the source is held).
+    pub(crate) fn pipeline_fill_ms(&self) -> f64 {
+        self.source
+            .transfer_timing
+            .map_or(0.0, |timing| timing.pipeline_fill_ms)
+    }
+
     pub fn new_with_fallback(
         handoff_id: HandoffId,
         order: HandoffOrder,

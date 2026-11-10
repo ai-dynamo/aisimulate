@@ -1587,6 +1587,17 @@ def test_sglang_prefill_pipeline_needs_an_aic_timing_model(monkeypatch, source):
         _materialize_engine_role("sglang", "test", parallel, args, "prefill")
 
 
+def test_sglang_prefill_pipeline_width_reaches_the_default_aic_timing(monkeypatch):
+    _forbid_capacity(monkeypatch)
+    args = _engine_args(role="prefill", backend="sglang")
+    args.pop("timing_model")
+    # The deployment width is the timing width when the rank does not state one.
+    rank = _materialize_engine_role("sglang", "test", {"prefill_pp": 4}, args, "prefill")["rank"]
+    assert rank["timing_model"]["config"]["pp"] == 4
+    with pytest.raises(ValueError, match="prefill pipeline widths conflict"):
+        _materialize_engine_role("sglang", "test", {"prefill_pp": 4}, {**args, "aic_pp_size": 2}, "prefill")
+
+
 def test_sglang_pd_prefill_compiles_pipeline_stages():
     config = CorePredictionConfig.model_validate(
         {

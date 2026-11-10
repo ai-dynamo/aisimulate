@@ -1541,13 +1541,14 @@ def materialize_engine_launch_config(
 
 def _reject_role_pipeline_parallelism(
     parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str, backend: str
-) -> None:
+) -> int | None:
+    """Reject unpriced pipeline widths; return a deployment width the rank does not state yet."""
     # `rank: null` falls back to the flat role fields during materialization.
     rank = role_config.get("rank")
     if rank is None:
         rank = role_config
     if not isinstance(rank, Mapping):
-        return
+        return None
     timing = rank.get("timing_model")
     timing_config = timing.get("config") if isinstance(timing, Mapping) else None
     if not isinstance(timing_config, Mapping):
@@ -1578,6 +1579,24 @@ def _reject_role_pipeline_parallelism(
         if any(width not in (None, 1) for width in widths):
             kind = timing.get("type") if isinstance(timing, Mapping) else timing
             raise ValueError(f"pipeline parallelism on {role} requires an AIC timing model, not {kind!r} timing")
+        return None
+    # The AIC timing width must agree with the deployment's, which it inherits when unstated.
+    deployment = parallel_config.get("pp" if role == "aggregated" else f"{role}_pp")
+    stated = {
+        value
+        for value in (
+            role_config.get("aic_pp_size"),
+            rank.get("aic_pp_size"),
+            timing_config.get("pp"),
+            timing_config.get("pp_size"),
+        )
+        if value is not None and value != UNKNOWN_IDENTITY
+    }
+    if len(stated | ({deployment} if deployment is not None else set())) > 1:
+        raise ValueError(
+            f"{role} pipeline widths conflict: deployment {deployment!r}, timing {sorted(stated, key=repr)!r}"
+        )
+    return deployment if deployment not in (None, 1) and not stated else None
 
 
 def _materialize_engine_role(
@@ -1595,9 +1614,13 @@ def _materialize_engine_role(
     # New generic schemes use caller-authored capacity; leave the existing
     # Ngram/NextN capacity paths unchanged.
     requested_rank = role_config.get("rank", role_config)
-    _reject_role_pipeline_parallelism(parallel_config, role_config, role, deployment_backend)
+    pipeline = _reject_role_pipeline_parallelism(parallel_config, role_config, role, deployment_backend)
+    if pipeline is not None:
+        role_config["aic_pp_size"] = pipeline
     if isinstance(requested_rank, Mapping):
         requested_rank = dict(requested_rank)
+        if pipeline is not None:
+            requested_rank["aic_pp_size"] = pipeline
         if "rank" in role_config:
             role_config["rank"] = requested_rank
         else:
