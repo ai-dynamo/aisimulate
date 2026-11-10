@@ -53,6 +53,13 @@ fn key_is_present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<b
     serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
 }
 
+/// Parses only the `spec` key of a payload, to tell whether it holds a replay.
+#[derive(Deserialize)]
+struct ConfiguredSpecOnly {
+    #[allow(dead_code)]
+    spec: ReplaySpec,
+}
+
 /// The configured execution payload. It is parsed directly, not through an
 /// untagged enum, so a malformed field reports its own error.
 #[derive(Debug, Deserialize)]
@@ -4277,9 +4284,11 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 None,
             )
         };
-        let probe: ExecutionPayloadProbe =
-            serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?;
-        if !probe.spec {
+        // A probe failure (a repeated `spec` key, the sequence form of a
+        // ReplaySpec) leaves the legacy form to decide.
+        let has_spec =
+            serde_json::from_str::<ExecutionPayloadProbe>(payload).is_ok_and(|probe| probe.spec);
+        if !has_spec {
             legacy(
                 serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?,
             )
@@ -4306,14 +4315,18 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     capture_telemetry.then_some(telemetry_sample_interval_ms),
                 ),
                 // A bare ReplaySpec ignores unknown keys, so it may carry its
-                // own `spec` key. Report the configured error only when the
-                // legacy form does not parse either.
-                Err(error) => match serde_json::from_str::<ReplaySpec>(payload) {
-                    Ok(spec) => legacy(spec),
-                    Err(_) => {
+                // own `spec` key. Fall back to it only when `spec` holds no
+                // replay: otherwise the payload is a configured one, and its
+                // field error must not run the top-level replay instead.
+                Err(error) => {
+                    if serde_json::from_str::<ConfiguredSpecOnly>(payload).is_err()
+                        && let Ok(spec) = serde_json::from_str::<ReplaySpec>(payload)
+                    {
+                        legacy(spec)
+                    } else {
                         return Err(error).context("invalid AISimulate execution payload");
                     }
-                },
+                }
             }
         }
     };
@@ -10301,6 +10314,22 @@ mod tests {
             error.contains("invalid AISimulate execution payload: invalid type: null"),
             "{error}"
         );
+        // A repeated `spec` key fails the probe; the legacy form still runs.
+        let bare = serde_json::to_string(&spec).unwrap();
+        let repeated = format!(r#"{{"spec": 1, "spec": 2, {}"#, &bare[1..]);
+        let output: serde_json::Value =
+            serde_json::from_str(&execute_json(&repeated, false).unwrap()).unwrap();
+        assert_eq!(output["completed_requests"], report["completed_requests"]);
+        // When `spec` holds a replay, a bad field is reported even if the
+        // top-level keys also form a replay.
+        let mut ambiguous = serde_json::to_value(&spec).unwrap();
+        ambiguous["spec"] = serde_json::to_value(&spec).unwrap();
+        ambiguous["tokenization"] = serde_json::json!({"unknown": true});
+        let error = format!(
+            "{:#}",
+            execute_json(&ambiguous.to_string(), false).unwrap_err()
+        );
+        assert!(error.contains("unknown field `unknown`"), "{error}");
 
         spec.requests.clear();
         for record_per_request in [false, true] {
