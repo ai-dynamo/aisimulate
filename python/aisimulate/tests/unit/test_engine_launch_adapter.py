@@ -289,3 +289,18 @@ def test_explicit_zero_depth_is_not_treated_as_omitted(local_target, kind):
         RustForwardPassPerfModel.config_engine_launch_mismatches(
             {"engine": engine, "num_gpu_blocks_is_explicit": True}, config=timing
         )
+
+
+def test_ngram_launch_and_mismatch_query_reject_explicit_async_scheduling(local_target):
+    timing = {**_timing_config(local_target), "speculation": _speculative_cost("ngram")}
+    engine = {
+        "backend": "vllm",
+        "worker_type": "decode",
+        "num_gpu_blocks": 64,
+        "async_scheduling": True,
+        "timing_model": {"type": "external", "provider": "ais", "config": timing},
+    }
+    message = "vLLM does not support async scheduling with ngram speculative decoding"
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _native_launch(engine)
+    assert RustForwardPassPerfModel.config_engine_launch_mismatches({"engine": engine}, config=timing) == [message]
