@@ -124,6 +124,16 @@ def _cgroup_directories(proc: Path, root: Path) -> list[tuple[Path, str]]:
     return list(dict.fromkeys(result))
 
 
+def _inactive_file_bytes(directory: Path, kind: str) -> int:
+    """Page cache that cgroup usage counts although the kernel reclaims it on demand."""
+    key = "inactive_file" if kind == "cgroup2" else "total_inactive_file"
+    for line in (_read_text(directory / "memory.stat") or "").splitlines():
+        name, _, value = line.partition(" ")
+        if name == key and value.isdecimal():
+            return int(value)
+    return 0
+
+
 def constrain_to_cgroups(host: HostResources, *, proc: Path = Path("/proc"), root: Path = Path("/")) -> HostResources:
     total, available, cpus = host.total_memory_bytes, host.available_memory_bytes, host.cpu_count
     for directory, kind in _cgroup_directories(proc, root):
@@ -138,7 +148,12 @@ def constrain_to_cgroups(host: HostResources, *, proc: Path = Path("/proc"), roo
         if limit and limit.isdecimal():
             total = min(total, int(limit))
             # Missing usage must not make a finite cgroup appear entirely free.
-            available = min(available, max(0, int(limit) - int(usage)) if usage and usage.isdecimal() else 0)
+            if usage and usage.isdecimal():
+                # The working set, as container runtimes report it: a warm cache is not memory in use.
+                used = max(0, int(usage) - _inactive_file_bytes(directory, kind))
+                available = min(available, max(0, int(limit) - used))
+            else:
+                available = 0
         if len(cpu) == 2 and cpu[0] and cpu[1]:
             try:
                 quota, period = int(cpu[0]), int(cpu[1])
