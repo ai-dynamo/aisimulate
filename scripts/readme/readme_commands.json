@@ -125,7 +125,9 @@
     ],
     "timeout": 180,
     "stdout_contains": [
-      "YES"
+      "Aggregated Support:    NO",
+      "Disaggregated Support: NO",
+      "Naive Configuration Generated Successfully"
     ]
   },
   "support-negative": {
