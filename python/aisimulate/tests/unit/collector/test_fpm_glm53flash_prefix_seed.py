@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 from collector import glm53flash_attention_tokens as seeded
+from collector.fpm_forward.glm53flash_points import glm_align_stop
 
 from aisimulate_core.sdk import utils as sdk_utils
 
@@ -246,26 +247,40 @@ class BudgetEngine(Engine):
     """Schedules like vLLM v0.31.0 with a token budget per step, on hash blocks of ``unit`` tokens.
 
     Running requests go first, then waiting requests in order (scheduler.py:630, :1073). A prefill chunk that ends
-    before the prompt end is cut to a block boundary when the block fits the budget. Mamba align mode also stops a chunk
-    at the last block boundary of the prompt (scheduler.py:444, :526). A chunk that the cut empties waits:
-    a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:473-480, :724-742,
-    :1134-1135). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2089-2091, :3719-3722),
-    so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill request
-    (output.py:189-191, instrumented_scheduler.py:2078-2085 at ai-dynamo/dynamo@395f0240).
+    before the prompt end is cut to a block boundary when the block fits the budget. Mamba align mode of vLLM 0.33.0
+    also stops a chunk at the last cacheable block boundary before the prompt end and, after a start inside a block, at
+    the next boundary. A prompt's last chunk that can save a prefill checkpoint of ``alignment`` inside it takes neither
+    stop (vLLM 0.33.0 scheduler.py:579-606, :644-661, kv_cache_interface.py:1169-1210). A chunk that the cut empties
+    waits: a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:473-480,
+    :724-742, :1134-1135). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2089-2091,
+    :3719-3722), so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill
+    request (output.py:189-191, instrumented_scheduler.py:2078-2085 at ai-dynamo/dynamo@395f0240).
     """
 
-    def __init__(self, scheduler, *, budget, unit):
+    def __init__(self, scheduler, *, budget, unit, alignment=None):
         super().__init__(scheduler, unit=unit)
         self.budget = budget
+        self.alignment = alignment
 
     def chunk(self, request, tokens):
-        end = request.computed + tokens
-        if end < len(request.prompt) and self.unit <= self.budget:
-            end = end // self.unit * self.unit
-        last = len(request.prompt) - len(request.prompt) % self.unit
-        if request.computed < last < end:
-            end = last
-        return max(end - request.computed, 0)
+        start, prompt, unit = request.computed, len(request.prompt), self.unit
+        end = start + tokens
+        # Without hash lookahead tokens and EAGLE block drop, the checkpoint position is the last cache position.
+        last = (prompt - 1) // unit * unit
+        internal = (
+            self.alignment is not None
+            and end >= prompt
+            and start % unit == 0
+            and -(-end // unit) - 2 > (start - 1) // unit
+            and start + unit <= last
+            and start < last < end
+            and (last - start) % self.alignment == 0
+        )
+        if end < prompt and unit <= self.budget:
+            end = end // unit * unit
+        stops = (0 if internal else last, (start // unit + 1) * unit if start % unit and not internal else 0)
+        end = min((stop for stop in stops if start < stop < end), default=end)
+        return max(end - start, 0)
 
     def step(self):
         s = self.s
@@ -346,6 +361,15 @@ def make_scheduler(module, tmp_path, points):
     # With prefix caching, vLLM runs GLM-5.3-Flash in Mamba align mode. The block is the hash block of this fake.
     s.need_mamba_block_aligned_split = True
     s.cache_config = types.SimpleNamespace(block_size=4)
+    # The launch state that vLLM 0.33.0's scheduler reads in its align-mode chunk rule: no EAGLE block drop, no hash
+    # lookahead tokens, no partial hash hits and no prefill checkpoint block (scheduler.py:218, :331, :342, :350,
+    # :437-456).
+    s.block_size = s.hash_block_size = 4
+    s.use_eagle_block_drop = False
+    s.num_hash_lookahead_tokens = 0
+    s.mamba_partial_cache_hit = False
+    s.mamba_has_prefill_checkpoint_blocks = False
+    s.mamba_prefill_checkpoint_alignment = None
     s._glm_stage_deadline = 0.0
     s.wall = lambda output: 0.001 * (1 + output.metrics.num_prefill_requests) + 1e-6 * s.clock
     return s
@@ -526,7 +550,8 @@ def test_dynamo_runtime_pins_match_the_ai_dynamo_1_6_0_dev20261010_build():
 
 def test_native_warmup_planning_never_runs_under_the_producer(monkeypatch, tmp_path):
     module = load_producer(monkeypatch)
-    points = [Point("prefill", 1, 1, 32, 0, rows=[[32, 0]])]
+    # One block of new tokens, which vLLM's Mamba align mode runs in one step without a prefill checkpoint.
+    points = [Point("prefill", 1, 1, 4, 0, rows=[[4, 0]])]
     s = make_scheduler(module, tmp_path, points)
     s._bench_explicit_points = points
     s._bench_build_grid()
@@ -675,46 +700,94 @@ def test_two_requests_whose_suffixes_exceed_the_budget_are_never_in_lockstep(mon
     assert [(step["num_decode_requests"], step["sum_decode_kv_tokens"]) for step in first_steps] == [(2, 499)] * 11
 
 
-def align_prefill(module, tmp_path, new):
+def align_prefill(module, tmp_path, new, alignment=None):
     """A prefill point of one request with ``new`` tokens after one block of prefix, on the 2,176-token blocks of
-    GLM-5.3-Flash at TP 4, scheduled like vLLM in Mamba align mode with an 8,192-token budget."""
+    GLM-5.3-Flash at TP 4, scheduled like vLLM in Mamba align mode with an 8,192-token budget.
+
+    With an ``alignment``, every KDA group of the launch holds a prefill checkpoint block of that alignment."""
     points = [Point("prefill", 1, 1, new, 2176, rows=[[new, 2176]])]
     s = make_scheduler(module, tmp_path, points)
     s._glm_serving = {"hash_block_size": 2176}
-    s.cache_config.block_size = 2176
+    s.cache_config.block_size = s.block_size = s.hash_block_size = 2176
+    s.mamba_has_prefill_checkpoint_blocks = alignment is not None
+    s.mamba_prefill_checkpoint_alignment = alignment
     s._bench_explicit_points = points
-    return s, BudgetEngine(s, budget=8192, unit=2176)
+    return s, BudgetEngine(s, budget=8192, unit=2176, alignment=alignment)
 
 
 def test_explicit_prefill_points_that_vllm_splits_are_refused_at_grid_build(monkeypatch, tmp_path):
     module = load_producer(monkeypatch)
-    # vLLM stops the chunk of 4,096 new tokens after one block at 4,352, the last block boundary of its prompt. Every
-    # repetition then records two prefill steps, and the producer rejects it.
-    s, engine = align_prefill(module, tmp_path, 4096)
+    # Without a prefill checkpoint block, vLLM 0.33.0 stops the chunk of two blocks after one block at 4,352, the last
+    # cacheable block boundary before the end of its prompt. Every repetition then records two prefill steps, and the
+    # producer rejects it.
+    s, engine = align_prefill(module, tmp_path, 4352)
     with pytest.raises(RuntimeError, match="too many rejected repetitions"):
         run(s, engine, "prefill")
     assert not s.saved
     assert [(record["rejection_reason"], record["prefill_chunks"]) for record in s._glm_rejected] == [
-        ("recorded 2 native FPMs, expected 1", [[[2176, 2176]], [[4352, 1920]]])
+        ("recorded 2 native FPMs, expected 1", [[[2176, 2176]], [[4352, 2176]]])
     ] * 11
     # The grid build refuses the point at engine start, before it seeds anything.
     (tmp_path / "refused").mkdir()
-    s, _ = align_prefill(module, tmp_path / "refused", 4096)
+    s, _ = align_prefill(module, tmp_path / "refused", 4352)
     with pytest.raises(ValueError) as refused:
         s._bench_build_grid()
     assert str(refused.value) == (
-        "benchmark_id=1: vLLM's Mamba align mode stops the prefill of 4096 new tokens after a prefix of 2176 at 4352, "
+        "benchmark_id=1: vLLM's Mamba align mode stops the prefill of 4352 new tokens after a prefix of 2176 at 4352, "
         "a boundary of its 2176-token blocks, so the point runs in more than one step and the producer measures one"
     )
-    # Two whole blocks after a whole-block prefix end at the last block boundary, so they run in one step.
-    (tmp_path / "blocks").mkdir()
-    s, engine = align_prefill(module, tmp_path / "blocks", 4352)
-    s._bench_build_grid()
-    run(s, engine, "prefill")
-    assert [point.benchmark_id for point, _ in s.saved] == [1]
-    record = json.loads((tmp_path / "blocks" / "benchmark.repetitions.jsonl").read_text())
-    assert not record["rejected_repetitions"]
-    assert all(repetition["prefill_chunks"] == [[[2176, 4352]]] for repetition in record["repetitions"])
+    # With a checkpoint block of a 16-token alignment, vLLM saves the checkpoint at 4,352 inside the chunk and takes
+    # neither stop, so two blocks and 4,096 tokens after one block of prefix run in one step.
+    for new in (4352, 4096):
+        (tmp_path / f"checkpoint-{new}").mkdir()
+        s, engine = align_prefill(module, tmp_path / f"checkpoint-{new}", new, alignment=16)
+        s._bench_build_grid()
+        run(s, engine, "prefill")
+        assert [point.benchmark_id for point, _ in s.saved] == [1]
+        record = json.loads((tmp_path / f"checkpoint-{new}" / "benchmark.repetitions.jsonl").read_text())
+        assert not record["rejected_repetitions"]
+        assert all(repetition["prefill_chunks"] == [[[2176, new]]] for repetition in record["repetitions"])
+
+
+def _scheduler(module, tmp_path, **launch):
+    """A producer of one prefill point whose vLLM scheduler holds the launch attributes ``launch``."""
+    points = [Point("prefill", 1, 1, 4, 0, rows=[[4, 0]])]
+    s = make_scheduler(module, tmp_path, points)
+    s._bench_explicit_points = points
+    for name, value in launch.items():
+        setattr(s, name, value)
+    return s
+
+
+def test_producer_and_planner_align_rules_agree(monkeypatch):
+    scheduler = load_producer(monkeypatch).Glm53FlashPrefixSeedScheduler
+    for start in range(0, 257, 16):
+        for end in range(start + 4, 449, 12):
+            for alignment in (None, 16, 48):
+                assert scheduler._glm_align_stop(
+                    start, end, 64, hash_block=64, checkpoint_alignment=alignment
+                ) == glm_align_stop(start, end, 64, hash_block=64, checkpoint_alignment=alignment)
+
+
+def test_producer_refuses_a_launch_that_the_align_rule_does_not_model(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    for name, value in (
+        ("use_eagle_block_drop", True),
+        ("num_hash_lookahead_tokens", 1),
+        ("mamba_partial_cache_hit", True),
+        # The scheduler block of vLLM differs from the block of the cache configuration.
+        ("block_size", 8),
+    ):
+        scheduler = _scheduler(module, tmp_path, **{name: value})
+        with pytest.raises(ValueError, match="align-mode rule") as refused:
+            scheduler._bench_build_grid()
+        assert str(refused.value) == (
+            f"GLM-5.3-Flash collection does not model this launch in its align-mode rule: {name}={value}"
+        )
+    # A launch that the rule models builds its grid.
+    scheduler = _scheduler(module, tmp_path)
+    scheduler._bench_build_grid()
+    assert [point.benchmark_id for point in scheduler._bench_grid] == [1]
 
 
 def hub_stand_in(monkeypatch, cached):

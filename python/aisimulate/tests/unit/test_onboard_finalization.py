@@ -487,6 +487,8 @@ def test_finalization_accepts_the_generated_glm_point_list(tmp_path, monkeypatch
         kv_cache_bytes=899 * 1024,
         page_size_bytes=1024,
         state_groups=0,
+        checkpoint_alignment=None,
+        checkpoint_groups=0,
     )
     request, root = build_completed_collection(
         tmp_path,

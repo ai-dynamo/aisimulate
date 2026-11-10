@@ -489,8 +489,26 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         if built:
             return
         unit = self._glm_serving["hash_block_size"]
-        # vLLM v0.31.0 splits prefill chunks only in Mamba align mode (scheduler.py:354-356, :695, :1127), on the block
-        # of the cache configuration (:440).
+        # vLLM 0.33.0 sets these launch attributes in Scheduler.__init__ (scheduler.py:218, :331, :342-345, :350,
+        # :437-456). The align-mode rule holds only without EAGLE block drop, hash lookahead tokens and partial hash
+        # hits, and with a scheduler block equal to the block of the cache configuration, which its chunk cut uses
+        # (:572-591).
+        for field, value, modeled in (
+            ("use_eagle_block_drop", self.use_eagle_block_drop, not self.use_eagle_block_drop),
+            ("num_hash_lookahead_tokens", self.num_hash_lookahead_tokens, self.num_hash_lookahead_tokens == 0),
+            ("mamba_partial_cache_hit", self.mamba_partial_cache_hit, not self.mamba_partial_cache_hit),
+            ("block_size", self.block_size, self.block_size == self.cache_config.block_size),
+        ):
+            if not modeled:
+                raise ValueError(
+                    f"GLM-5.3-Flash collection does not model this launch in its align-mode rule: {field}={value}"
+                )
+        # vLLM 0.33.0 saves a prefill checkpoint inside the last chunk only if every Mamba group holds a checkpoint
+        # block (scheduler.py:593-604).
+        alignment = self.mamba_prefill_checkpoint_alignment if self.mamba_has_prefill_checkpoint_blocks else None
+        hash_block = self.hash_block_size
+        # vLLM 0.33.0 splits prefill chunks only in Mamba align mode (scheduler.py:432-434, :860-861, :1350-1351), on
+        # the block of the cache configuration (:572).
         block = self.cache_config.block_size if self.need_mamba_block_aligned_split else None
         for point in self._bench_grid:
             if point.point_type == "prefill":
@@ -506,7 +524,13 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                         f"{CHUNK_ALIGN} (kpool_align4); the frozen manifest must carry the executed geometry"
                     )
                 for prefix, query in zip(prefixes, queries, strict=True):
-                    stop = None if block is None else self._glm_align_stop(prefix, prefix + query, block)
+                    stop = (
+                        None
+                        if block is None
+                        else self._glm_align_stop(
+                            prefix, prefix + query, block, hash_block=hash_block, checkpoint_alignment=alignment
+                        )
+                    )
                     if stop is not None:
                         # A repetition accepts one native FPM, so a split point would be rejected until the run fails.
                         raise ValueError(
@@ -549,13 +573,32 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                     )
 
     @staticmethod
-    def _glm_align_stop(start, end, block):
-        """Where vLLM v0.31.0 in Mamba align mode stops a prefill chunk from ``start`` to the prompt end ``end``.
+    def _glm_align_stop(start, end, block, *, hash_block, checkpoint_alignment):
+        """Where vLLM 0.33.0 in Mamba align mode stops the last prefill chunk from ``start`` to the prompt end ``end``.
 
-        The chunk stops at the last block boundary of the prompt (scheduler.py:444) and, after a start inside a block,
-        at the next boundary (:482, :508-513), whichever lies first strictly inside it (:526). None means one step.
+        It holds without EAGLE, without hash lookahead tokens and without partial hash hits. None means one step. The
+        planner's ``glm53flash_points.glm_align_stop`` has the same body, because this module cannot import it.
         """
-        stops = (end - end % block, (start // block + 1) * block if start % block else 0)
+        # The last cacheable position is (end - 1) // block * block (scheduler.py:579-584,
+        # kv_cache_interface.py:1169-1186). With a prefill checkpoint block of ``checkpoint_alignment``, a chunk that
+        # passes is_mamba_prefill_checkpoint_valid saves the checkpoint inside it (kv_cache_interface.py:1189-1210) and
+        # takes neither that stop nor the stop at the next boundary after a start inside a block (scheduler.py:593-606,
+        # :644-651). The chunk stops at the first remaining stop strictly inside it (:661). The rule leaves out the
+        # shared-prefix junction stop (:632-658). vLLM sets a junction only when the prefix hit of one cache group is
+        # longer than the hit that the request uses (kv_cache_manager.py:319-325). The chunk then starts before the
+        # planned prefix, and the producer rejects a repetition whose prefix differs from the planned one.
+        last_cache_position = (end - 1) // block * block
+        internal = (
+            checkpoint_alignment is not None
+            and start % hash_block == 0
+            and -(-end // block) - 2 > (start - 1) // block
+            and start + hash_block <= last_cache_position
+            and start < last_cache_position < end
+            and (last_cache_position - start) % checkpoint_alignment == 0
+        )
+        if internal:
+            return None
+        stops = (last_cache_position, (start // block + 1) * block if start % block else 0)
         return min((stop for stop in stops if start < stop < end), default=None)
 
     @staticmethod

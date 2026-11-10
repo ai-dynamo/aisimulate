@@ -1762,7 +1762,7 @@ def test_run_collection_stages_the_glm_adapter_files(monkeypatch, tmp_path):
         }
         assert (entry["benchmark_points_sha256"], entry["requested_point_count"], entry["smoke_manifest"]) == (
             subset_sha256,
-            {"prefill": 3, "decode": 2}[cell.workload_kind],
+            {"prefill": 2, "decode": 2}[cell.workload_kind],
             "glm53flash_grid_v1_smoke",
         )
 
@@ -1827,7 +1827,7 @@ def test_formal_glm_run_stages_the_full_point_list(monkeypatch, tmp_path):
         assert adapter | instrumentation | {POINTS_FILENAME} <= set(staged[cell.cell_id])
         listed = (campaign / "cells" / cell.cell_id / POINTS_FILENAME).read_bytes()
         assert listed == full
-        assert (len(json.loads(listed)["prefill"]), len(json.loads(listed)["decode"])) == (472, 81)
+        assert (len(json.loads(listed)["prefill"]), len(json.loads(listed)["decode"])) == (456, 81)
         entry = checkpoint["cells"][cell.cell_id]
         assert entry["status"] == "passed"
         # The collector's own check of the staged file records the digest of the full list.
@@ -1840,7 +1840,7 @@ def test_formal_glm_run_stages_the_full_point_list(monkeypatch, tmp_path):
         }
         assert (entry["benchmark_points_sha256"], entry["requested_point_count"], entry["benchmark_points_origin"]) == (
             full_sha256,
-            {"prefill": 472, "decode": 81}[cell.workload_kind],
+            {"prefill": 456, "decode": 81}[cell.workload_kind],
             "glm53flash_grid_v1",
         )
         assert "smoke_manifest" not in entry

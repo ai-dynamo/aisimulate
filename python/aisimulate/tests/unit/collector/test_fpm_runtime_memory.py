@@ -2055,6 +2055,9 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
         kv_cache_bytes=180_218_332_800,
         page_size_bytes=13_045_120,
         state_groups=5,
+        # The KDA groups of the fixture profile hold no prefill checkpoint block.
+        checkpoint_alignment=None,
+        checkpoint_groups=0,
     )
     saved = plan.to_dict()
 
@@ -2062,7 +2065,7 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
     assert plan.options.benchmark_points_origin == "glm53flash_grid_v1"
     assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
     assert saved["point_generation"]["source"] == "generated_glm53flash_grid"
-    assert saved["point_generation"]["planned_point_count"] == 553
+    assert saved["point_generation"]["planned_point_count"] == 537
     assert saved["point_generation"]["manifest_sha256"] == digest
     assert saved["options"]["benchmark_points"]["origin"] == "glm53flash_grid_v1"
     # The plan hash covers the list and its origin, so a saved plan validates and a second build reproduces it.
@@ -2090,7 +2093,7 @@ def test_glm_collection_plan_records_the_points_that_each_rule_drops(tmp_path):
     saved = plan.to_dict()
     # The counts of the generator's log line. Onboarding sets no log handler, so the plan keeps them.
     dropped = {
-        "prefill": {"candidates": 496, "mamba_align_split": 24, "cache_capacity": 0},
+        "prefill": {"candidates": 496, "mamba_align_split": 40, "cache_capacity": 0},
         "decode": {"candidates": 97, "token_budget": 16, "cache_capacity": 0},
     }
 
@@ -2465,7 +2468,7 @@ def test_probe_backed_glm_collection_renders_the_producer_launch(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_glm_smoke_stages_the_five_point_subset(tmp_path):
+def test_glm_smoke_stages_the_four_point_subset(tmp_path):
     plan = _glm_plan(tmp_path)
     frozen = json.loads(plan.options.benchmark_points_json)
 
@@ -2478,23 +2481,23 @@ def test_glm_smoke_stages_the_five_point_subset(tmp_path):
 
     for cell in plan.cells:
         subset = staged(f"smoke-{cell.workload_kind}", cell, True)
-        # One 64-token request without a prefix and after one hash block of prefix, one request of two hash blocks
-        # after one block of prefix, and the decode of one and of two requests at the smallest context of the list
-        # above one hash block.
+        # One 64-token request without a prefix and after one hash block of prefix, and the decode of one and of two
+        # requests at the smallest context of the list above one hash block. The KDA groups of the fixture profile hold
+        # no prefill checkpoint block, so vLLM 0.33.0 cuts the prefill of two hash blocks after one block of prefix, and
+        # the list does not hold it.
         assert json.loads(subset) == {
             "schema_version": 3,
             "prefill": [
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
-                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
             ],
             "decode": [
                 {"batch_size": 1, "total_kv_read_tokens": 4096},
                 {"batch_size": 2, "total_kv_read_tokens": 8192},
             ],
         }
-        # Both cells of an aggregated plan stage the same five points, byte for byte.
-        assert hashlib.sha256(subset).hexdigest() == "35060cd4787dc7cb14fb00480359fa5c63a907bd514692e0397f839315c018fd"
+        # Both cells of an aggregated plan stage the same four points, byte for byte.
+        assert hashlib.sha256(subset).hexdigest() == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
         # The smoke measures points of the frozen list, so smoke and formal collection share one plan hash.
         for phase in ("prefill", "decode"):
             assert all(point in frozen[phase] for point in json.loads(subset)[phase])
@@ -2502,16 +2505,16 @@ def test_glm_smoke_stages_the_five_point_subset(tmp_path):
         policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
         assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
             "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
-            "requested_point_count": {"prefill": 3, "decode": 2}[cell.workload_kind],
+            "requested_point_count": {"prefill": 2, "decode": 2}[cell.workload_kind],
             "smoke_manifest": "glm53flash_grid_v1_smoke",
             **policy,
         }
         full = staged(f"formal-{cell.workload_kind}", cell, False)
         assert full.decode() == plan.options.benchmark_points_json
-        assert len(json.loads(full)["prefill"]) == 472
+        assert len(json.loads(full)["prefill"]) == 456
         assert runner._configured_sampling_metadata(plan, cell, smoke=False) == {
             "benchmark_points_sha256": plan.options.benchmark_points_sha256,
-            "requested_point_count": {"prefill": 472, "decode": 81}[cell.workload_kind],
+            "requested_point_count": {"prefill": 456, "decode": 81}[cell.workload_kind],
             "benchmark_points_origin": "glm53flash_grid_v1",
             **policy,
         }
@@ -2536,7 +2539,6 @@ def test_glm_smoke_of_a_one_sequence_request_stages_points_of_one_request(tmp_pa
             "prefill": [
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
-                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
             ],
             "decode": [
                 {"batch_size": 1, "total_kv_read_tokens": 4096},
@@ -2548,7 +2550,7 @@ def test_glm_smoke_of_a_one_sequence_request_stages_points_of_one_request(tmp_pa
         policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
         assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
             "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
-            "requested_point_count": {"prefill": 3, "decode": 2}[cell.workload_kind],
+            "requested_point_count": {"prefill": 2, "decode": 2}[cell.workload_kind],
             "smoke_manifest": "glm53flash_grid_v1_smoke",
             **policy,
         }

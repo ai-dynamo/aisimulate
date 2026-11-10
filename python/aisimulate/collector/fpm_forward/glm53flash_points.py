@@ -52,6 +52,36 @@ def glm_measured_context(options: FPMCollectionOptions) -> int:
     return min(MAX_CONTEXT, options.vllm_max_model_len - 7)
 
 
+def glm_align_stop(
+    start: int, end: int, block: int, *, hash_block: int, checkpoint_alignment: int | None
+) -> int | None:
+    """Where vLLM 0.33.0 in Mamba align mode stops the last prefill chunk from ``start`` to the prompt end ``end``.
+
+    It holds without EAGLE, without hash lookahead tokens and without partial hash hits. None means one step.
+    """
+    # The last cacheable position is (end - 1) // block * block (scheduler.py:579-584, kv_cache_interface.py:1169-1186).
+    # With a prefill checkpoint block of ``checkpoint_alignment``, a chunk that passes is_mamba_prefill_checkpoint_valid
+    # saves the checkpoint inside it (kv_cache_interface.py:1189-1210) and takes neither that stop nor the stop at the
+    # next boundary after a start inside a block (scheduler.py:593-606, :644-651). The chunk stops at the first
+    # remaining stop strictly inside it (:661). The rule leaves out the shared-prefix junction stop (:632-658). vLLM
+    # sets a junction only when the prefix hit of one cache group is longer than the hit that the request uses
+    # (kv_cache_manager.py:319-325). The chunk then starts before the planned prefix, and the producer rejects a
+    # repetition whose prefix differs from the planned one.
+    last_cache_position = (end - 1) // block * block
+    internal = (
+        checkpoint_alignment is not None
+        and start % hash_block == 0
+        and -(-end // block) - 2 > (start - 1) // block
+        and start + hash_block <= last_cache_position
+        and start < last_cache_position < end
+        and (last_cache_position - start) % checkpoint_alignment == 0
+    )
+    if internal:
+        return None
+    stops = (last_cache_position, (start // block + 1) * block if start % block else 0)
+    return min((stop for stop in stops if start < stop < end), default=None)
+
+
 def glm_points(
     *,
     hash_block_size: int,
@@ -62,17 +92,20 @@ def glm_points(
     kv_cache_bytes: int,
     page_size_bytes: int,
     state_groups: int,
+    checkpoint_alignment: int | None,
+    checkpoint_groups: int,
 ) -> tuple[dict[str, Any], dict[str, dict[str, int]]]:
     """Return the point list and, for each phase, its candidates and the number of them that each rule dropped.
 
     Every point meets the producer's rules. Prefixes are whole hash blocks. New-token and prefix lengths are multiples
     of 4. Prefix plus new tokens stay within the measured context. The new tokens of a batch fit the token budget, so
-    each request's suffix runs in one step. The new tokens of a request are at most one hash block or a whole number of
-    hash blocks, so vLLM's Mamba align mode does not split them either. At default serving the hash block of
-    GLM-5.3-Flash is its Mamba block (vLLM interface.py:995-996, kv_cache_utils.py:792-798). Before a decode batch
-    decodes, each request prefills its prompt beyond its cached seed. These suffixes of a batch of two or more requests
-    fit the token budget too, so every request decodes in the same step. The producer divides a total evenly, so every
-    request of a point gets the same prefix, the same new tokens and the same decode context.
+    each request's suffix runs in one step. vLLM's Mamba align mode does not stop the prefill of a request inside its
+    prompt either (``glm_align_stop``): without a prefill checkpoint block, the new tokens of a request are at most one
+    hash block. With one, ``checkpoint_alignment`` decides which longer prefills run in one step. At default serving the
+    hash block of GLM-5.3-Flash is its Mamba block (vLLM interface.py:995-996, kv_cache_utils.py:792-798). Before a
+    decode batch decodes, each request prefills its prompt beyond its cached seed. These suffixes of a batch of two or
+    more requests fit the token budget too, so every request decodes in the same step. The producer divides a total
+    evenly, so every request of a point gets the same prefix, the same new tokens and the same decode context.
     """
     if token_budget % CHUNK_ALIGN:
         raise ValueError("GLM-5.3-Flash collection requires a token budget that is a multiple of 4")
@@ -87,10 +120,11 @@ def glm_points(
 
     def fits(batch_size: int, tokens: int) -> bool:
         # An estimate of the blocks that the native cache managers give a request: ceil((tokens + 1) / unit) blocks of
-        # its attention, and one block in each state group. A request with a prefix hit can hold more than one block in
-        # a recurrent-state group, for example the cached block of its prefix and the block of its running state, so a
-        # point near the capacity limit can still fail when it runs.
-        return batch_size * (-(-(tokens + 1) // unit) + state_groups) <= usable
+        # its attention, one block in each state group and one more in each group with a prefill checkpoint block. A
+        # request with a prefix hit can hold more than one block in a recurrent-state group, for example the cached
+        # block of its prefix and the block of its running state, so a point near the capacity limit can still fail
+        # when it runs.
+        return batch_size * (-(-(tokens + 1) // unit) + state_groups + checkpoint_groups) <= usable
 
     def batch_sizes(limit: int) -> list[int]:
         return sorted({*_powers_of_two_up_to(limit), limit})
@@ -108,23 +142,28 @@ def glm_points(
     for new in sorted(new_tokens):
         blocks = (measured - new) // unit
         rungs = sorted(rung for rung in {0, 1, blocks, *_powers_of_two_up_to(blocks)} if 0 <= rung <= blocks)
+        # A prefill that vLLM's Mamba align mode stops inside the prompt runs in two steps, and the producer measures
+        # one.
+        whole = [
+            rung
+            for rung in rungs
+            if glm_align_stop(
+                rung * unit, rung * unit + new, unit, hash_block=unit, checkpoint_alignment=checkpoint_alignment
+            )
+            is None
+        ]
         for batch in batch_sizes(min(MAX_BATCH, prefill_batch_limit, prefill_budget // new)):
             prefill_candidates += len(rungs)
-            if new > unit and new % unit:
-                # vLLM v0.31.0 in Mamba align mode stops a prefill chunk at the last block boundary of the prompt
-                # (scheduler.py:444, :526). After a whole-block prefix, such a length runs in two steps, and the
-                # producer measures one.
-                split += len(rungs)
-            else:
-                prefill.extend(
-                    {
-                        "batch_size": batch,
-                        "total_prefill_tokens": batch * new,
-                        "total_kv_read_tokens": batch * rung * unit,
-                    }
-                    for rung in rungs
-                    if fits(batch, rung * unit + new)
-                )
+            split += len(rungs) - len(whole)
+            prefill.extend(
+                {
+                    "batch_size": batch,
+                    "total_prefill_tokens": batch * new,
+                    "total_kv_read_tokens": batch * rung * unit,
+                }
+                for rung in whole
+                if fits(batch, rung * unit + new)
+            )
     contexts = {measured, *(value for value in _powers_of_two_up_to(measured) if value >= MIN_CONTEXT)}
     # The producer accepts a decode repetition only if its first decode step holds every request. vLLM prefills the
     # suffixes of two or more requests in one step only if they fit the token budget together, so the budget bounds the
@@ -190,13 +229,30 @@ def glm_plan_manifest(
     """Return the canonical JSON and the SHA-256 of the point list for a plan's options and profile deployments.
 
     The third value is the canonical JSON of the dropped counts of ``glm_points``. The planner resolves
-    ``options.max_prefill_isl`` first. The cells of a plan share one list, so the deployments must share one hash block,
-    and the capacity rule takes the smallest capacity, the largest page and the most state groups among them.
+    ``options.max_prefill_isl`` first. The cells of a plan share one list, so the deployments must share one hash block
+    and one prefill checkpoint alignment, and the capacity rule takes the smallest capacity, the largest page, the most
+    state groups and the most groups with a prefill checkpoint block among them.
     """
     memories = [deployment.resources.runtime_memory for deployment in deployments]
     hash_blocks = {None if memory is None else memory.hash_block_size_tokens for memory in memories}
     if len(hash_blocks) != 1 or None in hash_blocks:
         raise ValueError("GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens")
+    # vLLM 0.33.0 saves a prefill checkpoint inside a chunk only if every Mamba group holds a checkpoint block, and it
+    # uses the alignment of the first one (scheduler.py:437-449). The import writes the checkpoint fields for each Mamba
+    # state group, so a deployment whose groups do not all hold a block takes no internal checkpoint.
+    alignments, checkpoint_groups = set(), 0
+    for deployment in deployments:
+        mamba = [group for group in deployment.resources.cache_groups if group.prefill_checkpoint_blocks is not None]
+        holding = [group for group in mamba if group.prefill_checkpoint_blocks == 1]
+        checkpoint_groups = max(checkpoint_groups, len(holding))
+        if mamba and len(holding) == len(mamba):
+            alignments.update(group.prefill_checkpoint_alignment for group in holding)
+        else:
+            alignments.add(None)
+    if len(alignments) != 1:
+        raise ValueError(
+            "GLM-5.3-Flash collection requires one prefill checkpoint alignment across the accepted deployments"
+        )
     prefill_batch_limit = options.max_prefill_batch_size or options.max_num_seqs
     decode_batch_limit = options.max_decode_batch_size or options.max_num_seqs
     if prefill_batch_limit is None or decode_batch_limit is None:
@@ -214,6 +270,8 @@ def glm_plan_manifest(
         state_groups=max(
             sum(group.kind == "state" for group in deployment.resources.cache_groups) for deployment in deployments
         ),
+        checkpoint_alignment=alignments.pop(),
+        checkpoint_groups=checkpoint_groups,
     )
     _, canonical, digest = _manifest(payload)
     return canonical, digest, json.dumps(dropped, sort_keys=True, separators=(",", ":"))
@@ -228,18 +286,19 @@ def glm_smoke_subset(
     takes two. The prefill phase takes a third point when the list holds it. The other phase of a role keeps an empty
     list, because the cells of the plan never measure it.
 
-    The prefill points are the 64-token prefill of one request, once without a prefix and once after one hash block
-    of prefix. The third point is the prefill of two hash blocks for one request after one hash block of prefix. Its
-    chunk holds a block boundary that vLLM's Mamba align mode does not stop at, so the smoke shows that such a point
-    runs in one step. The context of a decode point is its total KV read tokens divided by its batch size. The decode
-    points are the points of one request and of two requests at the smallest context above one hash block where the
-    list holds both. A small token budget can leave a smaller context with one request only. If no context above one
-    hash block holds a point of two requests, as in the list of a request limited to one sequence, the decode points
-    are the points of one request at the two smallest contexts above one hash block. A point is taken at a context only
-    if its total KV read tokens equal its batch size times that context. A list that does not give the two 64-token
-    prefill points or the two decode points of a collected phase is refused. So is a list whose points of two requests
-    above one hash block have no point of one request at the same context, because the generator puts one request on
-    the batch axis of every context.
+    The prefill points are the 64-token prefill of one request, once without a prefix and once after one hash block of
+    prefix. The third point is the prefill of two hash blocks for one request after one hash block of prefix. The list
+    holds it only if the launch has a prefill checkpoint block whose alignment lets vLLM's Mamba align mode save the
+    checkpoint inside the chunk. Its chunk then holds a block boundary that the align mode does not stop at, so the
+    smoke shows that such a point runs in one step. The context of a decode point is its total KV read tokens divided by
+    its batch size. The decode points are the points of one request and of two requests at the smallest context above
+    one hash block where the list holds both. A small token budget can leave a smaller context with one request only. If
+    no context above one hash block holds a point of two requests, as in the list of a request limited to one sequence,
+    the decode points are the points of one request at the two smallest contexts above one hash block. A point is taken
+    at a context only if its total KV read tokens equal its batch size times that context. A list that does not give the
+    two 64-token prefill points or the two decode points of a collected phase is refused. So is a list whose points of
+    two requests above one hash block have no point of one request at the same context, because the generator puts one
+    request on the batch axis of every context.
     """
     taken = ((64, 0), (64, hash_block_size), (2 * hash_block_size, hash_block_size))
     prefill = [
@@ -278,7 +337,8 @@ def glm_smoke_subset(
     ]
     # The cells of the plan never measure a phase that it does not collect, so that phase keeps no point and needs none.
     smoke = {"prefill": prefill if "prefill" in phases else [], "decode": decode if "decode" in phases else []}
-    # A small token budget or context leaves no prefill of two hash blocks, so only the two 64-token points are needed.
+    # A small token budget or context, or a launch without an internal prefill checkpoint, leaves no prefill of two hash
+    # blocks, so only the two 64-token points are needed.
     required = {"prefill": sum(point["total_prefill_tokens"] == 64 for point in prefill), "decode": len(decode)}
     if any(required[phase] != 2 for phase in phases):
         held = "four points" if len(phases) == 2 else f"two {phases[0]} points"

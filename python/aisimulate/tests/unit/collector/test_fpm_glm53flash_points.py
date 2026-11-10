@@ -15,8 +15,11 @@ from collector.fpm_forward.glm53flash_points import (
     MAX_BATCH,
     MAX_CONTEXT,
     MAX_NEW,
+    glm_align_stop,
     glm_measured_context,
+    glm_plan_manifest,
     glm_point_manifest,
+    glm_points,
     glm_smoke_subset,
 )
 
@@ -26,7 +29,7 @@ pytestmark = pytest.mark.unit
 
 # GLM-5.3-Flash at TP 4 as the runtime probe measured it: 2,176-token hash blocks, a 180,218,332,800-byte cache of
 # 13,045,120-byte pool blocks and five state groups, with the onboarding limits of 8,192 tokens and 256 sequences.
-_TP4 = {
+_TP4_LIMITS = {
     "hash_block_size": 2176,
     "token_budget": 8192,
     "prefill_batch_limit": 256,
@@ -36,6 +39,16 @@ _TP4 = {
     "page_size_bytes": 13_045_120,
     "state_groups": 5,
 }
+# With the default KDA backend of vLLM 0.33.0 on bf16 Hopper and Blackwell GPUs, each of the four KDA state groups holds
+# one prefill checkpoint block with an alignment of 16 tokens.
+_TP4 = {**_TP4_LIMITS, "checkpoint_alignment": 16, "checkpoint_groups": 4}
+
+
+def _limits(**changes: int) -> dict[str, int]:
+    """The TP4 limits without the checkpoint arguments, with ``changes`` applied."""
+    return {**_TP4_LIMITS, **changes}
+
+
 _GENERATOR_LOGGER = "collector.fpm_forward.glm53flash_points"
 
 
@@ -50,20 +63,21 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
     prefill, decode = payload["prefill"], payload["decode"]
 
     assert payload["schema_version"] == 3
-    assert (len(prefill), len(decode)) == (472, 81)
-    # One line counts the points that each rule drops, against the candidates that the rule sees. The align rule drops
-    # 4,096 and 8,192 new tokens at 8 prefix rungs, for one and two requests and for one request. The token budget drops
-    # 16 decode batches and adds its own limit of 7 requests at context 16,384 to the candidates. The cache holds every
-    # point, and its count is logged too.
+    assert (len(prefill), len(decode)) == (496, 81)
+    # One line counts the points that each rule drops, against the candidates that the rule sees. With a checkpoint
+    # alignment of 16 tokens, the align rule drops none. The token budget drops 16 decode batches and adds its own limit
+    # of 7 requests at context 16,384 to the candidates. The cache holds every point, and its count is logged too.
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 24/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
-            "decode cases (token budget, token_budget=8192), 0/472 prefill and 0/81 decode cases (cache capacity, "
+            "GLM-5.3-Flash points: dropped 0/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
+            "decode cases (token budget, token_budget=8192), 0/496 prefill and 0/81 decode cases (cache capacity, "
             "usable_blocks=13814)",
         )
     ]
-    # The new tokens above one hash block are whole hash blocks, so 4,096 and 8,192 are not on the axis.
+    # vLLM saves the prefill checkpoint inside the chunk of every length above one hash block, because after a
+    # whole-block prefix each of them puts its last cache position a multiple of 16 tokens after its start. So 4,096
+    # and 8,192 are on the axis too.
     assert sorted({point["total_prefill_tokens"] // point["batch_size"] for point in prefill}) == [
         4,
         8,
@@ -76,16 +90,18 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
         1024,
         2048,
         2176,
+        4096,
         4352,
         6528,
+        8192,
     ]
     assert sorted({point["total_kv_read_tokens"] // point["batch_size"] for point in decode}) == [
         2**exponent for exponent in range(2, 18)
     ]
     assert prefill[0] == {"batch_size": 1, "total_prefill_tokens": 4, "total_kv_read_tokens": 0}
-    assert prefill[-1] == {"batch_size": 1, "total_prefill_tokens": 6528, "total_kv_read_tokens": 124032}
+    assert prefill[-1] == {"batch_size": 1, "total_prefill_tokens": 8192, "total_kv_read_tokens": 121856}
     # The formal cell of an aggregated TP4 request stages these bytes.
-    assert digest == "130d476feeb3f2d83ff698a24e802a1d07803088b35291335a018c3e37f1e7dc"
+    assert digest == "2c81f2f524251c18a5a0c33607544695042c48f8151f2b9c3f067d983fa4cbc6"
     assert decode[0] == {"batch_size": 1, "total_kv_read_tokens": 4}
     assert decode[-1] == {"batch_size": 16, "total_kv_read_tokens": 2097152}
     # Prefill points ascend by per-request new tokens, batch size and prefix; decode points by context and batch size.
@@ -113,15 +129,15 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
 
 def test_tp4_prefill_points_run_in_one_align_mode_step():
     payload, _, _ = glm_point_manifest(**_TP4)
-    # With prefix caching, vLLM v0.31.0 runs GLM-5.3-Flash in Mamba align mode, on 2,176-token blocks at TP 4. It stops
-    # a prefill chunk at the last block boundary of its prompt (scheduler.py:444, :526). A point whose chunk holds that
-    # boundary runs in two steps, and the producer accepts one step per repetition.
+    # With prefix caching, vLLM 0.33.0 runs GLM-5.3-Flash in Mamba align mode, on 2,176-token blocks at TP 4. Without
+    # an internal checkpoint, it stops a prefill chunk at the last cacheable block boundary before the end of its
+    # prompt. A point whose chunk holds that stop runs in two steps, and the producer accepts one step per repetition.
     split = []
     for point in payload["prefill"]:
         batch = point["batch_size"]
         start = point["total_kv_read_tokens"] // batch
         end = start + point["total_prefill_tokens"] // batch
-        if start < end - end % 2176 < end:
+        if glm_align_stop(start, end, 2176, hash_block=2176, checkpoint_alignment=16) is not None:
             split.append(point)
     assert split == []
 
@@ -443,9 +459,9 @@ def test_smoke_subset_of_a_list_without_two_request_decode_points_takes_two_cont
 
 
 def test_smoke_subset_follows_a_cache_capacity_that_excludes_two_requests():
-    # 13 usable blocks: two requests fit only below one hash block, because one request of 4,096 tokens needs 2
-    # attention blocks and 5 state blocks and two such requests need 14.
-    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 14 * 13_045_120})
+    # 21 usable blocks: two requests fit only below one hash block, because one request of 4,096 tokens needs 2
+    # attention blocks, 5 state blocks and 4 checkpoint blocks and two such requests need 22.
+    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 22 * 13_045_120})
     two_request_contexts = {
         point["total_kv_read_tokens"] // 2 for point in payload["decode"] if point["batch_size"] == 2
     }
@@ -470,20 +486,21 @@ def test_smoke_subset_of_a_one_request_list_with_one_context_above_the_hash_bloc
 
 def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
     caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
-    # 99 usable blocks: one request of 131,072 tokens needs 61 attention blocks and one block in each state group.
+    # 99 usable blocks: one request of 131,072 tokens needs 61 attention blocks, one block in each state group and one
+    # checkpoint block in each KDA group.
     payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 100 * 13_045_120})
     decode = payload["decode"]
 
-    assert len(decode) == 63
+    assert len(decode) == 53
     assert {"batch_size": 1, "total_kv_read_tokens": 131072} in decode
     assert {"batch_size": 2, "total_kv_read_tokens": 262144} not in decode
-    # The candidates are the 472 prefill and 81 decode points of the TP4 list. The rule keeps 291 and 63 of them.
-    assert len(payload["prefill"]) == 291
+    # The candidates are the 496 prefill and 81 decode points of the TP4 list. The rule keeps 287 and 53 of them.
+    assert len(payload["prefill"]) == 287
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 24/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
-            "decode cases (token budget, token_budget=8192), 181/472 prefill and 18/81 decode cases (cache capacity, "
+            "GLM-5.3-Flash points: dropped 0/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
+            "decode cases (token budget, token_budget=8192), 209/496 prefill and 28/81 decode cases (cache capacity, "
             "usable_blocks=99)",
         )
     ]
@@ -491,7 +508,8 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
 
 def test_capacity_without_a_feasible_point_is_refused(caplog):
     caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
-    # Five usable blocks: every request needs one attention block and one block in each of the five state groups.
+    # Five usable blocks: every request needs one attention block, one block in each of the five state groups and one
+    # checkpoint block in each of the four KDA groups.
     with pytest.raises(ValueError) as error:
         glm_point_manifest(**{**_TP4, "kv_cache_bytes": 6 * 13_045_120})
     assert str(error.value) == "GLM-5.3-Flash collection has no feasible point for the accepted cache capacity"
@@ -499,8 +517,8 @@ def test_capacity_without_a_feasible_point_is_refused(caplog):
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 24/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
-            "decode cases (token budget, token_budget=8192), 472/472 prefill and 81/81 decode cases (cache capacity, "
+            "GLM-5.3-Flash points: dropped 0/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
+            "decode cases (token budget, token_budget=8192), 496/496 prefill and 81/81 decode cases (cache capacity, "
             "usable_blocks=5)",
         )
     ]
@@ -530,3 +548,132 @@ def test_budget_and_hash_block_must_be_multiples_of_four(field, value, text):
     with pytest.raises(ValueError) as error:
         glm_point_manifest(**{**_TP4, field: value})
     assert str(error.value) == text
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "alignment", "stop"),
+    [
+        (0, 64, None, None),  # one block or less: no boundary strictly inside
+        (64, 128, None, None),
+        (64, 192, None, 128),  # two blocks after one block: cut one block before the end
+        (64, 193, None, 192),
+        (0, 65, None, 64),
+        (64, 192, 16, None),  # the internal checkpoint removes the stop
+        (0, 65, 16, None),
+        (64, 192, 48, 128),  # 128 - 64 is no multiple of the alignment
+        (32, 192, 16, 64),  # a start inside a block stops at the next boundary
+    ],
+)
+def test_align_stop_follows_vllm_0330(start, end, alignment, stop):
+    assert glm_align_stop(start, end, 64, hash_block=64, checkpoint_alignment=alignment) == stop
+
+
+def test_points_without_a_checkpoint_keep_at_most_one_block_of_new_tokens():
+    payload, dropped = glm_points(
+        **_limits(hash_block_size=64, token_budget=256), checkpoint_alignment=None, checkpoint_groups=0
+    )
+    assert max(point["total_prefill_tokens"] // point["batch_size"] for point in payload["prefill"]) == 64
+    assert dropped["prefill"]["mamba_align_split"] > 0
+
+
+def test_points_with_a_checkpoint_keep_every_length():
+    payload, dropped = glm_points(
+        **_limits(hash_block_size=64, token_budget=256), checkpoint_alignment=16, checkpoint_groups=4
+    )
+    assert dropped["prefill"]["mamba_align_split"] == 0
+    assert {point["total_prefill_tokens"] for point in payload["prefill"] if point["batch_size"] == 1} >= {
+        128,
+        192,
+        256,
+    }
+
+
+@pytest.mark.parametrize("alignment", [None, 16, 48])
+def test_planned_prefill_points_run_in_one_step(alignment):
+    # Each request of a prefill point starts at its whole-block prefix and runs to the end of its prompt. With the
+    # checkpoint alignment of the launch, vLLM 0.33.0 does not stop that chunk inside the prompt.
+    payload, _ = glm_points(
+        **_limits(hash_block_size=96, token_budget=1024),
+        checkpoint_alignment=alignment,
+        checkpoint_groups=0 if alignment is None else 4,
+    )
+    for point in payload["prefill"]:
+        start = point["total_kv_read_tokens"] // point["batch_size"]
+        end = start + point["total_prefill_tokens"] // point["batch_size"]
+        assert glm_align_stop(start, end, 96, hash_block=96, checkpoint_alignment=alignment) is None, point
+
+
+PAGE = _TP4_LIMITS["page_size_bytes"]
+
+
+def test_capacity_estimate_counts_one_block_for_each_checkpoint_group():
+    limits = _limits(
+        hash_block_size=64, token_budget=64, kv_cache_bytes=PAGE * 11, page_size_bytes=PAGE, state_groups=4
+    )
+    without, _ = glm_points(**limits, checkpoint_alignment=None, checkpoint_groups=0)
+    with_checkpoint, _ = glm_points(**limits, checkpoint_alignment=16, checkpoint_groups=4)
+    # 10 usable blocks. A request of at most 63 tokens holds 1 attention block and 4 state blocks, so two requests fit.
+    # With 4 checkpoint blocks, one request fits.
+    assert max(point["batch_size"] for point in without["prefill"]) > max(
+        point["batch_size"] for point in with_checkpoint["prefill"]
+    )
+
+
+def _deployment(*state_groups: tuple[int | None, int | None]) -> SimpleNamespace:
+    """A TP4 deployment whose recurrent-state groups hold these (prefill checkpoint blocks, alignment) pairs."""
+    memory = SimpleNamespace(hash_block_size_tokens=2176, kv_cache_bytes=_TP4_LIMITS["kv_cache_bytes"])
+    groups = [
+        SimpleNamespace(kind="attention", page_size_bytes=PAGE, prefill_checkpoint_blocks=None),
+        # The state group of the 4-token blocks is no Mamba group, so the import writes no checkpoint fields for it.
+        SimpleNamespace(kind="state", page_size_bytes=PAGE, prefill_checkpoint_blocks=None),
+        *(
+            SimpleNamespace(
+                kind="state", page_size_bytes=PAGE, prefill_checkpoint_blocks=blocks, prefill_checkpoint_alignment=align
+            )
+            for blocks, align in state_groups
+        ),
+    ]
+    return SimpleNamespace(resources=SimpleNamespace(runtime_memory=memory, cache_groups=groups))
+
+
+_OPTIONS = SimpleNamespace(
+    max_prefill_isl=8192,
+    max_prefill_batch_size=256,
+    max_decode_batch_size=256,
+    max_num_seqs=256,
+    vllm_max_model_len=131072 + 7,
+)
+
+
+@pytest.mark.parametrize(
+    ("groups", "alignment", "checkpoint_groups"),
+    [
+        ([(0, None)] * 4, None, 0),
+        ([(1, 16)] * 4, 16, 4),
+    ],
+    ids=["no-checkpoint", "checkpoint-16"],
+)
+def test_plan_manifest_reads_the_checkpoint_of_the_accepted_profile(groups, alignment, checkpoint_groups):
+    canonical, digest, _ = glm_plan_manifest(_OPTIONS, [_deployment(*groups)])
+    _, expected, expected_digest = glm_point_manifest(
+        **_TP4_LIMITS, checkpoint_alignment=alignment, checkpoint_groups=checkpoint_groups
+    )
+    assert (canonical, digest) == (expected, expected_digest)
+
+
+@pytest.mark.parametrize(
+    "deployments",
+    [
+        [[(1, 16)] * 4, [(1, 32)] * 4],
+        # The plan's one point list serves every cell, and a deployment without a checkpoint block would cut the
+        # prefill that the other one runs in one step.
+        [[(1, 16)] * 4, [(0, None)] * 4],
+    ],
+    ids=["two-alignments", "checkpoint-and-none"],
+)
+def test_plan_manifest_refuses_deployments_with_different_checkpoint_alignments(deployments):
+    with pytest.raises(ValueError) as error:
+        glm_plan_manifest(_OPTIONS, [_deployment(*groups) for groups in deployments])
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires one prefill checkpoint alignment across the accepted deployments"
+    )
