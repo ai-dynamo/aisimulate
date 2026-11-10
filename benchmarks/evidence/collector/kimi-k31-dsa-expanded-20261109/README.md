@@ -84,6 +84,14 @@ strict provenance and must return its exact stored latency. This establishes
 consumer compatibility and data integrity. It is not interpolation validation,
 whole-model accuracy or a matched SemiAnalysis AgentX comparison.
 
+The exact development package versions above are measurement coordinates. The
+normal `current` query slot consumes them through the existing shared data layer,
+which fills missing architecture/coordinate rows from older source versions.
+H100/H200/B300 context and decode controls passed this public query path with
+strict provenance and identical SILICON latencies. Explicitly disabling that
+shared layer restricts queries to the selected version's own rows. These checks
+do not qualify the newer query-slot runtime as a measured K3.1 serving backend.
+
 Source tables combine only as disjoint row unions with every column and every
 original collection event preserved. Actual CUDA OOMs, if any, remain explicit
 missing coverage with their original case and log hashes. Environment, launch

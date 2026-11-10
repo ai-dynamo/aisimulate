@@ -1,0 +1,121 @@
+{
+  "source_head": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+  "system": "h200_sxm",
+  "count": 16,
+  "passed": 16,
+  "points": [
+    {
+      "name": "tp1-01-context",
+      "phase": "context",
+      "tp_size": 1,
+      "latency_ms": 0.7872160077095032,
+      "kernel_source": "sglang_dsa_dense_mha_fa3_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp1-02-context",
+      "phase": "context",
+      "tp_size": 1,
+      "latency_ms": 10.473039627075195,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp1-03-context",
+      "phase": "context",
+      "tp_size": 1,
+      "latency_ms": 1.5349440574645996,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp1-04-generation",
+      "phase": "generation",
+      "tp_size": 1,
+      "latency_ms": 1.0837279558181763,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp2-01-context",
+      "phase": "context",
+      "tp_size": 2,
+      "latency_ms": 0.7663040161132812,
+      "kernel_source": "sglang_dsa_dense_mha_fa3_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp2-02-context",
+      "phase": "context",
+      "tp_size": 2,
+      "latency_ms": 6.271200180053711,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp2-03-context",
+      "phase": "context",
+      "tp_size": 2,
+      "latency_ms": 1.6252319812774658,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp2-04-generation",
+      "phase": "generation",
+      "tp_size": 2,
+      "latency_ms": 1.0561280250549316,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-01-context",
+      "phase": "context",
+      "tp_size": 4,
+      "latency_ms": 0.7626399993896484,
+      "kernel_source": "sglang_dsa_dense_mha_fa3_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-02-context",
+      "phase": "context",
+      "tp_size": 4,
+      "latency_ms": 5.016831874847412,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-03-context",
+      "phase": "context",
+      "tp_size": 4,
+      "latency_ms": 1.5564160346984863,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-04-generation",
+      "phase": "generation",
+      "tp_size": 4,
+      "latency_ms": 1.0979520082473755,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-01-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 1.2384960651397705,
+      "kernel_source": "sglang_dsa_dense_mha_fa3_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-02-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 4.109983921051025,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-03-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 1.5266879796981812,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-04-generation",
+      "phase": "generation",
+      "tp_size": 8,
+      "latency_ms": 1.0720959901809692,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    }
+  ],
+  "scope": "Explicit standalone native qualification smoke; no model accuracy claim; formal collector dispatch not yet enabled for SM90"
+}

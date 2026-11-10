@@ -1,0 +1,86 @@
+[
+  {
+    "name": "tp8-01-context",
+    "phase": "context",
+    "case": [
+      128,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273617.6298375,
+    "finished_at": 1794273906.4423153,
+    "log_sha256": "e4e4b1c590d527d7cf9c18934fb7ddbc19d49d1dc8b9958c9e345a4cf45e2fbc",
+    "csv_sha256": "2f280577efa19bb64f2304196a42a2ac1335db040c801be35dad8b6780af7711"
+  },
+  {
+    "name": "tp8-02-context",
+    "phase": "context",
+    "case": [
+      4096,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273906.4427226,
+    "finished_at": 1794273964.9717076,
+    "log_sha256": "2ff2887d8b0bbf030c2bdbf55b3470b128acb5dccdd1ae6e910f1dfb8a243bf7",
+    "csv_sha256": "a0418bbfbaaffc3c52d0e260aeb3eeaf3adbec2fdd2a01e143328f49b53f052d"
+  },
+  {
+    "name": "tp8-03-context",
+    "phase": "context",
+    "case": [
+      512,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      32768
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273964.9722383,
+    "finished_at": 1794274020.1621788,
+    "log_sha256": "734203bd790f4199a4d044a97d9c50a4a4df4cb8a325b5ad80be2ac91b600ef5",
+    "csv_sha256": "5763c2d99309fe422793ad59f414b7efd47a80f6363140946db9e5d46fd2059f"
+  },
+  {
+    "name": "tp8-04-generation",
+    "phase": "generation",
+    "case": [
+      2048,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794274020.1626422,
+    "finished_at": 1794274079.0663774,
+    "log_sha256": "18bf8832bf0229f45e5e6268361a532fd9ed87a9bc4ae2d9802cd9245ada6c85",
+    "csv_sha256": "97ff4a2b73d63cd4a5ab2802076e49e336a300787480e727d86a89c954441809"
+  }
+]

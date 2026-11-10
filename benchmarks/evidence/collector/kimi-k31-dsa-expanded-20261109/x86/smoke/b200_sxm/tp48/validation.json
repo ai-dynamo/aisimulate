@@ -1,0 +1,66 @@
+{
+  "source_head": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+  "system": "b200_sxm",
+  "count": 8,
+  "passed": 8,
+  "points": [
+    {
+      "name": "tp4-01-context",
+      "phase": "context",
+      "tp_size": 4,
+      "latency_ms": 0.8156800270080566,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-02-context",
+      "phase": "context",
+      "tp_size": 4,
+      "latency_ms": 2.0173280239105225,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-03-context",
+      "phase": "context",
+      "tp_size": 4,
+      "latency_ms": 1.442352056503296,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp4-04-generation",
+      "phase": "generation",
+      "tp_size": 4,
+      "latency_ms": 1.1154720783233643,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-01-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 1.2624160051345825,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-02-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 1.720207929611206,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-03-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 1.9679679870605469,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-04-generation",
+      "phase": "generation",
+      "tp_size": 8,
+      "latency_ms": 1.4154560565948486,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    }
+  ],
+  "scope": "Explicit standalone native qualification smoke; no model accuracy claim.",
+  "validator_sha256": "8d8e352fadfcb3a5ec9aa3644541d571b057afc9abc666f30b5c57f1e1024e55"
+}
