@@ -9,15 +9,16 @@ import copy
 import hashlib
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+
+from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 from collector.fpm_forward import planner, runtime_probe
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.runtime_instrumentation import load_instrumentation, runtime_binding
 from collector.fpm_forward.runtime_observations import expected_ranks, validate_observations
 from collector.fpm_forward.types import ParallelTopology
-
-from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
 from .test_fpm_forward import _kimi_k31_config
 from .test_fpm_profile_collection import no_models_or_timing_data  # noqa: F401
@@ -245,4 +246,74 @@ def test_unobserved_checkpoint_native_identity_is_not_promoted(inputs):
 def test_resource_fields_cannot_be_relabelled_around_valid_precision_proof(inputs, mutation, match):
     mutation(inputs["profile"]["deployments"][0]["resources"])
     with pytest.raises(ValueError, match=match):
+        bind(inputs)
+
+
+def onboarding_wrapper(inputs):
+    memory = inputs["profile"]["deployments"][0]["resources"]["runtime_memory"]
+    proof = json.loads(memory["provenance"])
+    index = Path(proof["observations_index"]["path"])
+    (index.parent / "launch.json").write_text(json.dumps(inputs["runtime_launch"]))
+    (index.parent / "model-config.json").write_bytes(
+        Path(inputs["runtime_launch"]["model_config"]["path"]).read_bytes()
+    )
+    resources = copy.deepcopy(inputs["profile"]["deployments"][0]["resources"])
+    resources.pop("provenance", None)
+    resources["runtime_memory"].pop("provenance", None)
+    wrapper = {
+        "schema_version": "aisimulate-onboarding-runtime-probe/v1",
+        "configuration": proof["configuration"],
+        "checkpoint": str(index.parent / "checkpoint.json"),
+        "model_metadata": {key: inputs["profile"][key] for key in ("architecture", "context_length", "num_experts")},
+        "user_overrides": {},
+        "observations_index": str(index),
+        "source_artifacts": [
+            {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in sorted(index.parent.rglob("*"))
+            if path.is_file()
+        ],
+        "observed_resources": resources,
+    }
+    memory["provenance"] = json.dumps(wrapper)
+    return wrapper
+
+
+def test_canonical_onboarding_wrapper_revalidates_native_evidence(inputs):
+    expected = bind(inputs)
+    onboarding_wrapper(inputs)
+    assert bind(inputs) == expected
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda p: p.update(configuration="missing"),
+        lambda p: p["model_metadata"].update(num_experts=999),
+        lambda p: p.update(user_overrides=None),
+        lambda p: p.update(source_artifacts=[]),
+        lambda p: p["source_artifacts"][0].update(sha256="0" * 64),
+        lambda p: p["source_artifacts"].append(copy.deepcopy(p["source_artifacts"][0])),
+        lambda p: p["observed_resources"]["runtime_memory"].update(kv_cache_bytes=9999),
+    ],
+)
+def test_onboarding_wrapper_cannot_replace_immutable_native_proof(inputs, mutation):
+    onboarding_wrapper(inputs)
+    edit_proof(inputs, mutation)
+    with pytest.raises(ValueError):
+        bind(inputs)
+
+
+def test_onboarding_wrapper_rejects_changed_source_even_if_inline_claim_is_valid(inputs):
+    wrapper = onboarding_wrapper(inputs)
+    index = Path(wrapper["observations_index"])
+    index.write_text(index.read_text() + "\n")
+    with pytest.raises(ValueError, match="source artifact changed"):
+        bind(inputs)
+
+
+def test_onboarding_wrapper_does_not_bypass_native_validator(inputs):
+    onboarding_wrapper(inputs)
+    inputs["runtime_launch"] = copy.deepcopy(inputs["runtime_launch"])
+    inputs["runtime_launch"]["collection"]["warmup_iterations"] += 1
+    with pytest.raises(ValueError, match="native evidence is incomplete"):
         bind(inputs)

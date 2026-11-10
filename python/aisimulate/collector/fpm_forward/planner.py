@@ -722,6 +722,59 @@ def _require_real_prefix_seeding(
             )
 
 
+def _k31_runtime_proof(proof: Any, launch: dict[str, Any], profile: FpmModelProfile) -> Any:
+    """Resolve the canonical onboarding wrapper back to immutable native evidence.
+
+    The onboarding importer replaces inline memory provenance with this source
+    manifest. Verify its files and rerun the collector's native validators; a
+    wrapper or its saved status alone never establishes observed precision.
+    """
+    if not isinstance(proof, dict) or proof.get("schema_version") != "aisimulate-onboarding-runtime-probe/v1":
+        return proof
+    from .runtime_instrumentation import validate_sha256
+    from .runtime_observations import validate_observations
+
+    name, location, refs = (proof.get(key) for key in ("configuration", "observations_index", "source_artifacts"))
+    if not isinstance(name, str) or not name or not isinstance(location, str) or not location:
+        raise ValueError("K3.1 onboarding provenance requires configuration and observation index")
+    if (
+        not isinstance(refs, list)
+        or not isinstance(proof.get("checkpoint"), str)
+        or not proof["checkpoint"]
+        or any(
+            not isinstance(proof.get(key), dict) for key in ("observed_resources", "model_metadata", "user_overrides")
+        )
+    ):
+        raise ValueError("K3.1 onboarding provenance requires immutable source artifacts and profile metadata")
+    if proof["model_metadata"] != {
+        key: getattr(profile, key) for key in ("architecture", "context_length", "num_experts")
+    }:
+        raise ValueError("K3.1 onboarding model metadata differs from the imported profile")
+    covered = set()
+    for ref in refs:
+        if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
+            raise ValueError("K3.1 onboarding provenance has an invalid source artifact")
+        path = Path(ref["path"])
+        digest = validate_sha256(ref.get("sha256"), "K3.1 onboarding source artifact")
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"K3.1 onboarding source artifact changed: {path}")
+        if str(path) in covered:
+            raise ValueError("K3.1 onboarding source artifacts are duplicated")
+        covered.add(str(path))
+    index = Path(location)
+    if {str(index), str(index.parent / "launch.json"), str(index.parent / "model-config.json")} - covered:
+        raise ValueError("K3.1 onboarding provenance is missing immutable source artifacts")
+    result = validate_observations(index, {name: launch})[name]
+    if result["status"] != "complete":
+        raise ValueError("K3.1 onboarding native evidence is incomplete: " + "; ".join(result["diagnostics"]))
+    resources = json.loads(json.dumps(result["resources"]))
+    resources.pop("provenance", None)
+    resources.get("runtime_memory", {}).pop("provenance", None)
+    if proof.get("observed_resources") != resources:
+        raise ValueError("K3.1 onboarding observed resources differ from immutable native evidence")
+    return result["provenance"]
+
+
 def _observed_k31_capability(
     capability: ModelCapabilityProfile,
     profile: FpmModelProfile,
@@ -815,6 +868,7 @@ def _observed_k31_capability(
             proof = json.loads(memory.provenance)
         except (TypeError, ValueError) as error:
             raise ValueError("K3.1 observed MoE precision requires JSON runtime provenance") from error
+        proof = _k31_runtime_proof(proof, launch, profile)
         if (
             not isinstance(proof, dict)
             or proof.get("source") != "runtime_observations"
