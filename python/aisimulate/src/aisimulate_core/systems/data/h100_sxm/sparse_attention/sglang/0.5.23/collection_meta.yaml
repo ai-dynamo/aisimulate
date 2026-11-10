@@ -24,6 +24,22 @@ tables:
       collected_at: '2026-11-10'
       rows: 18160
       status: complete
+  dsa_generation_module_perf:
+    rows: 9485
+    status: complete
+    collections:
+    - collector_ref: 5cf50dd96
+      collector_hash: sha256:02b847e4bf18a6c966cb58de2fbfb17a1a631a7dbd63258d8622893e3df9cc06
+      case_plan_hash: sha256:f264767f9abdfcb76e51bee4a2201270ef4b69592578efb3a19d314aa0236365
+      collected_at: '2026-11-10'
+      rows: 5655
+      status: complete
+    - collector_ref: 5cf50dd96
+      collector_hash: sha256:02b847e4bf18a6c966cb58de2fbfb17a1a631a7dbd63258d8622893e3df9cc06
+      case_plan_hash: sha256:deb046b7d3a8d5206ff562c1f848f1316165659879412010b6a207a453c6df1f
+      collected_at: '2026-11-10'
+      rows: 3830
+      status: complete
   dsv4_csa_context_module_perf:
     rows: 4120
     status: complete
