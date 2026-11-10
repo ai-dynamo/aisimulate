@@ -114,3 +114,38 @@ def test_kimi_k3_dcp_reserves_rank_local_kda_state_before_striping():
     assert striped.get_kvcache_rank_batch_capacity(state, max_batch_size=1) == 0
     assert striped.get_kvcache_rank_batch_capacity(state + 1000 * per_token / 4, max_batch_size=1) == 1000
     assert plain.get_kvcache_rank_batch_capacity(state + 1000 * per_token, max_batch_size=1) == 1000
+
+
+@pytest.mark.parametrize("dcp,token_bytes", [(1, 13_824), (4, 3456)])
+@pytest.mark.parametrize("batch_size", [1, 8])
+def test_kimi_k3_dcp_batch_capacity_keeps_every_request_state_rank_local(dcp, token_bytes, batch_size):
+    from aisimulate_core.sdk.common import KVCacheQuantMode
+    from aisimulate_core.sdk.config import ModelConfig
+    from aisimulate_core.sdk.models import get_model
+
+    model = get_model(
+        "moonshotai/Kimi-K3",
+        ModelConfig(
+            tp_size=8,
+            moe_tp_size=8,
+            moe_ep_size=1,
+            dcp_size=dcp,
+            kvcache_quant_mode=KVCacheQuantMode.fp8,
+        ),
+        "sglang",
+    )
+    # TP8: 69 * (12 * 128 * 128 * 4 + 3 * 3 * 12 * 128 * 2)
+    # = 56,171,520 bytes per state copy; retain the existing five-copy proxy.
+    # K3's 24 * 576 raw FP8 latent bytes are the only DCP-striped component.
+    state_bytes = 280_857_600
+    assert model.get_kvcache_rank_bytes_per_sequence(0) == state_bytes
+    assert model.get_kvcache_rank_bytes_per_token() == token_bytes
+    state_budget = batch_size * state_bytes
+    budget = state_budget + batch_size * 2048 * token_bytes
+    assert model.get_kvcache_rank_bytes_per_sequence(2048) * batch_size == budget
+    assert model.get_kvcache_rank_batch_capacity(budget, batch_size) == batch_size * 2048
+    assert model.get_kvcache_rank_batch_capacity(budget - 1, batch_size) == batch_size * 2048 - 1
+    assert model.get_kvcache_rank_batch_capacity(state_budget + token_bytes, batch_size) == 1
+    assert model.get_kvcache_rank_batch_capacity(state_budget + token_bytes - 1, batch_size) == 0
+    assert model.get_kvcache_rank_batch_capacity(state_budget, batch_size) == 0
+    assert model.get_kvcache_rank_batch_capacity(0, batch_size) == 0

@@ -44,6 +44,23 @@ through the backend's `current` data alias for the requested system and data
 roots. Explicit version selectors are preserved. FPM profile estimates still
 require the profile's literal backend version.
 
+Kimi K3 and K3.1 keep token-linear attention KV and fixed per-request KDA
+state separately. The reported `kv_size_per_token_bytes` contains only the
+token-linear bytes on one rank. Capacity reserves the model's KDA state for
+`max_batch_size` requests before converting the remaining bytes to tokens;
+state is not charged again for every token. Decode context parallelism, when
+supported, partitions only the token KV, leaving each rank's recurrent state
+whole. K3.1 does not currently support decode context parallelism.
+
+For K3.1 FP8 KV, the selected attention backend determines the token geometry:
+24 DSA layers use 18,912 bytes per token per rank with `flashmla`, or 16,992
+with `trtllm_mla`, including the indexer. These latent/indexer entries are
+replicated across attention-TP ranks. Sparse top-k selection does not discard
+resident history. The analytical KDA reservation retains K3's five-slot
+per-request proxy and unified-pool assumption; it is not an observed runtime
+allocation. Physical state geometry must come from an explicit configuration
+or a matching grouped FPM resource profile.
+
 For Mistral3's gated Pixtral encoder, the analytical activation estimate includes
 the replicated residual alongside the gate and up intermediates. Encoder tensor
 parallelism shards those intermediates; encoder data parallelism keeps a full

@@ -316,6 +316,20 @@ def _literal_backend_version(
     return perf_database.resolve_query_version(system, backend, requested, systems_paths=systems_path)
 
 
+def _memory_identity_extra(config: Any) -> dict[str, str]:
+    """Preserve resolved kernel identity for the Rust Mocker memory bridge."""
+    extra = {}
+    for name in ("attention_backend", "moe_backend", "comm_quant_mode"):
+        value = getattr(config, name, None)
+        if value is not None:
+            extra[name] = getattr(value, "name", str(value))
+    for name in ("enable_eplb", "wideep_num_slots"):
+        value = getattr(config, name, None)
+        if value is not None:
+            extra[name] = json.dumps(value)
+    return extra
+
+
 def _engine_config_dict(
     *,
     model: Any,
@@ -397,7 +411,7 @@ def _engine_config_dict(
         # directory, so the Rust reload skips its missing-directory gate for
         # exactly this identity.
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
-        "extra": {},
+        "extra": _memory_identity_extra(cfg),
     }
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
@@ -816,6 +830,7 @@ def _direct_fpm_spec_json(
         "database_mode": "SILICON",
         "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
         "extra": {
+            **_memory_identity_extra(deployment),
             "fpm_profile": profile.model_dump_json(),
             **({"worker_type": worker_type} if deployment.worker_type is not None else {}),
             "estimator_config": json.dumps({"fpm_interpolation": controls}),

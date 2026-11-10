@@ -35,12 +35,23 @@ claim serving support or measured coverage. For FP8 KV, an explicit
 `flashmla` or `trtllm_mla` attention backend identifies the physical layout:
 FlashMLA uses 656 bytes (FP8 latent, FP32 scales, BF16 RoPE), while TRTLLM
 uses 576 raw FP8 bytes. Index storage is additional in both cases. KDA state
-continues to use the existing K3 state model.
+continues to use the existing K3 five-slot analytic state model. Token KV is
+18,912 bytes per token per rank with FlashMLA or 16,992 with TRTLLM MLA,
+independent of TP; KDA state is sharded by attention heads. Batch capacity
+reserves one state per admitted request, and token-byte metadata excludes
+that fixed state. The analytic unified memory pool does not reproduce a
+serving runtime's separately sized token and state pools.
 
 Initial modeling covers ordinary decoding (`nextn=0`) with CP=1 and DCP=1.
 K3's DSPARK contract does not establish K3.1 speculative support. Automatic
-vLLM physical state-cache sizing also needs a K3.1-specific runtime contract;
-use measured/manual state capacity for that path.
+vLLM physical state-cache sizing also needs a K3.1-specific runtime contract.
+Replay requires explicit manual state geometry under its vLLM G1 contract or
+a compatible grouped FPM memory profile containing per-request state. Fixed
+token capacity alone is rejected, including after estimator reload and at the
+direct Rust entry point. See [state cache](../../replay/engine/kv-cache.md#state-cache)
+for the supported configuration and its limits. Replay/Sweeper token geometry
+preserves the source role's backend, cache layout and parallelism for transfers;
+it does not fall back to an all-layer MLA estimate for this hybrid model.
 
 The pinned native runtime requires FP8 KV and defaults both prefill and decode
 to FlashMLA. Its TRTLLM option changes the physical cache format and uses raw

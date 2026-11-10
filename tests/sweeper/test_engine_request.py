@@ -337,8 +337,98 @@ def test_kv_quantization_auto_aliases_preserve_model_dtype(monkeypatch, alias):
 
     estimator = SimpleNamespace(dtype_bytes=2)
     estimator.kv_bytes_per_token = lambda: 100 * estimator.dtype_bytes
-    monkeypatch.setattr(NaiveKVCacheEstimator, "from_model_path", lambda *a, **k: estimator)
+    monkeypatch.setattr(NaiveKVCacheEstimator, "_load_config", lambda *a, **k: {"architectures": ["LlamaForCausalLM"]})
+    monkeypatch.setattr(NaiveKVCacheEstimator, "from_hf_config", lambda *a, **k: estimator)
     assert estimate_kv_bytes_per_token("model", tp_size=1, pp_size=1, kvcache_quant_mode=alias) == 200
+
+
+@pytest.fixture
+def k31_token_geometry_config(tmp_path):
+    import json
+    from copy import deepcopy
+
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    # Synthetic K31 extension of the bundled K3 test configuration.
+    raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
+    raw["architectures"] = ["KimiK31ForConditionalGeneration"]
+    raw["model_type"] = "kimi_k31"
+    raw["text_config"]["dsa_config"] = {
+        "dsa_layers": list(raw["text_config"]["linear_attn_config"]["full_attn_layers"]),
+        "index_topk": 2048,
+        "index_head_dim": 128,
+        "index_num_heads": 32,
+        "index_rope_dim": 0,
+        "index_k_norm_type": "layernorm",
+        "index_topk_freq": 1,
+        "index_skip_topk_offset": 1,
+    }
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    return str(tmp_path)
+
+
+@pytest.mark.parametrize("tp", [1, 2, 4, 8])
+@pytest.mark.parametrize("layout,expected", [("flashmla", 18_912), ("trtllm_mla", 16_992)])
+def test_k31_token_geometry_uses_core_layout_without_fixed_state(k31_token_geometry_config, tp, layout, expected):
+    from aisimulate.capacity import estimate_kv_bytes_per_token
+
+    # 24 DSA layers: packed latent 656 (FlashMLA) / 576 (TRTLLM) bytes
+    # plus one 132-byte indexer entry. KDA contributes no token-linear bytes.
+    assert (
+        estimate_kv_bytes_per_token(
+            k31_token_geometry_config,
+            tp_size=tp,
+            pp_size=1,
+            moe_tp_size=tp,
+            backend="sglang",
+            kvcache_quant_mode="fp8",
+            attention_backend=layout,
+        )
+        == expected
+    )
+
+
+def test_k31_token_geometry_rejects_ambiguous_layout(k31_token_geometry_config):
+    from aisimulate.capacity import estimate_kv_bytes_per_token
+
+    with pytest.raises(ValueError, match="attention_backend"):
+        estimate_kv_bytes_per_token(
+            k31_token_geometry_config, tp_size=8, pp_size=1, moe_tp_size=8, kvcache_quant_mode="fp8"
+        )
+
+
+@pytest.mark.parametrize("precision,expected", [("bfloat16", 27_648), ("fp8", 13_824)])
+@pytest.mark.parametrize("tp", [1, 8])
+def test_k3_token_geometry_counts_only_attention_layers(precision, expected, tp):
+    from aisimulate.capacity import estimate_kv_bytes_per_token
+
+    # K3 has 24 latent-cache layers, each storing 576 elements; the other
+    # 69 layers keep fixed KDA state, irrespective of sequence length.
+    assert (
+        estimate_kv_bytes_per_token(
+            "moonshotai/Kimi-K3", tp_size=tp, pp_size=1, moe_tp_size=tp, backend="sglang", kvcache_quant_mode=precision
+        )
+        == expected
+    )
+
+
+def test_k3_token_geometry_preserves_decode_context_topology():
+    from aisimulate.capacity import estimate_kv_bytes_per_token
+
+    # DCP4 stripes the 13,824-byte token cache across four ranks. Fixed
+    # KDA state remains rank-local and is absent from this token-only rate.
+    assert (
+        estimate_kv_bytes_per_token(
+            "moonshotai/Kimi-K3",
+            tp_size=8,
+            pp_size=1,
+            moe_tp_size=8,
+            backend="sglang",
+            kvcache_quant_mode="fp8",
+            dcp_size=4,
+        )
+        == 3456
+    )
 
 
 def test_optional_runner_must_advertise_new_request_capabilities():
