@@ -14,6 +14,7 @@ from aisimulate.afd_artifacts import AFDQualificationError, build_afd_qualificat
 from aisimulate.sweeper.afd_parallel import AFDTopology
 from aisimulate.sweeper.replay import (
     BackendDeploymentSpec,
+    EncoderPoolSpec,
     ReplaySpec,
     RunnerCapabilities,
     canonical_json,
@@ -181,6 +182,116 @@ def test_ordinary_companion_requires_complete_gpu_identity(missing):
     del spec.backend_deployment.parallel_config[missing]
     with pytest.raises(AFDQualificationError, match="ordinary prefill GPU geometry"):
         build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("prefill_tp", 0), ("prefill_pp", -1), ("prefill_attention_dp", True), ("prefill_tp", 2.0), ("prefill_tp", "2")],
+)
+def test_ordinary_companion_rejects_invalid_gpu_identity(field, value):
+    spec = _spec("disagg", ("decode",))
+    spec.backend_deployment.parallel_config[field] = value
+    with pytest.raises(AFDQualificationError, match="ordinary prefill GPU geometry"):
+        build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize(
+    "mode,afd_roles,field,role",
+    [
+        ("agg", ("aggregated",), "num_workers", "aggregated"),
+        ("disagg", ("decode",), "num_prefill_workers", "prefill"),
+        ("disagg", ("prefill",), "num_decode_workers", "decode"),
+    ],
+)
+@pytest.mark.parametrize("count", [0, -1, True])
+def test_qualification_requires_positive_worker_counts(mode, afd_roles, field, role, count):
+    spec = _spec(mode, afd_roles)
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: count}))
+    with pytest.raises(AFDQualificationError, match=f"{role} worker count must be positive"):
+        build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+def test_qualification_requires_one_logical_worker_per_afd_pool(role):
+    spec = _spec() if role == "aggregated" else _spec("disagg", ("prefill", "decode"))
+    field = "num_workers" if role == "aggregated" else f"num_{role}_workers"
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: 2}))
+    with pytest.raises(AFDQualificationError, match=f"{role} AFD pool requires one logical worker"):
+        build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("field,value", [("backend", "trtllm"), ("backend_version", ""), ("backend_version", None)])
+def test_qualification_requires_resolved_sglang_backend(field, value):
+    spec = _spec()
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: value}))
+    with pytest.raises(AFDQualificationError, match="require sglang and a resolved backend_version"):
+        build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("vision", ["encoder", "images"])
+def test_qualification_rejects_encoder_pools_and_images(vision):
+    spec = _spec()
+    if vision == "encoder":
+        encoder = EncoderPoolSpec(
+            model="Qwen/Qwen2.5-VL-7B-Instruct",
+            system="h200_sxm",
+            backend="sglang",
+            backend_version="0.5.14",
+            tp=1,
+            batch_size=1,
+            workers=1,
+            latency_ms=1.0,
+            throughput_rps=1000.0,
+            memory_gib=1.0,
+            rate_degradation=1.0,
+            visual_tokens=256,
+            image_height=224,
+            image_width=224,
+            image_count=1,
+        )
+        spec = replace(spec, backend_deployment=replace(spec.backend_deployment, encoder=encoder))
+    else:
+        spec = replace(spec, workload={**spec.workload, "images": {"count": 1, "height": 224, "width": 224}})
+    with pytest.raises(AFDQualificationError, match="rejects encoder pools and images"):
+        build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("mode,roles,wrong_mode", [("agg", ("aggregated",), "disagg"), ("disagg", ("decode",), "agg")])
+def test_qualification_rejects_afd_roles_outside_deployment_topology(mode, roles, wrong_mode):
+    spec = _spec(mode, roles)
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, deployment_mode=wrong_mode))
+    with pytest.raises(AFDQualificationError, match="AFD role is outside the configured deployment topology"):
+        build_afd_qualification(spec)
+
+
+def test_qualification_checks_expert_count_against_source_model():
+    spec = _spec()
+    deployment = spec.backend_deployment
+    topology = AFDTopology.from_mapping({**deployment.agg_engine_args["afd"], "num_experts": 64})
+    # Keep all saved topology identities consistent so only the source-model check can reject it.
+    deployment.agg_engine_args["afd"] = topology.provenance()["topology"]
+    deployment.parallel_config["aggregated"] = {"type": "afd", **topology.provenance()}
+    deployment.performance_model_metadata["aggregated"]["config"] = topology.provenance()["topology"]
+    with pytest.raises(AFDQualificationError, match="aggregated expert count disagrees with source model"):
+        build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+@pytest.mark.parametrize("field", ["status", "phase"])
+def test_qualification_requires_successful_memory_check_for_matching_role(role, field, tmp_path):
+    spec = _spec() if role == "aggregated" else _spec("disagg", ("prefill", "decode"))
+    memory = {
+        name: {"status": "fits", "phase": "both" if name == "aggregated" else name}
+        for name in spec.backend_deployment.afd_roles
+    }
+    artifact = build_afd_qualification(spec, memory=memory)
+    assert artifact["deployment_plan"]["roles"][role]["memory"] == memory[role]
+    memory[role][field] = "out_of_memory" if field == "status" else ("prefill" if role != "prefill" else "decode")
+    with pytest.raises(AFDQualificationError, match=f"{role} requires a successful matching native memory check"):
+        build_afd_qualification(spec, memory=memory)
+    with pytest.raises(AFDQualificationError, match=f"{role} requires a successful matching native memory check"):
+        write_afd_qualification_artifacts(tmp_path, spec, memory=memory)
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("schema", [None, True, 1, 2.0, 3, "2"])

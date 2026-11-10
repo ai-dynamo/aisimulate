@@ -136,7 +136,7 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
 
-An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any non-AFD timing phase with no compatible fused MoE operator. In AFD, the A pool retains the selector in its canonical configuration but emits no routed MoE operation; the F pool applies it to routed MoE operations. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
 Ordinary prefill/decode companions of AFD roles use the canonical timing provider
 and preserve exact-source requests under the same eligibility rules. Fixed or
@@ -1117,7 +1117,9 @@ FP8 KV holds twice as many tokens. This does not imply twice the throughput.
 AFD preserves supported controls, including explicit `attention_backend` and
 `moe_kernel_source`, through prediction, recommendation, saved replay specifications,
 canonical pool construction and memory preflight. Attention uses A; routed MoE
-uses F. Omission preserves pool defaults;
+uses F. The A pool retains `moe_kernel_source` in its canonical configuration but
+does not apply it to attention, shared, or dense operations. The F pool applies
+it to routed MoE operations. Omission preserves pool defaults;
 explicit selectors retain the canonical eligibility, data-source and SOL rules
 above without changing communication. EPLB, redundant slots and nondefault
 `moe_backend` overrides remain unsupported for AFD.
