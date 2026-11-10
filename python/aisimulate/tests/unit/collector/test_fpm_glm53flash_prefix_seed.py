@@ -16,7 +16,10 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
+import shutil
 import statistics
+import subprocess
 import sys
 import types
 from dataclasses import asdict, dataclass, field
@@ -1288,3 +1291,48 @@ def test_bench_init_refuses_a_launch_revision_that_differs_from_the_tokenizer_re
     )
     # The producer refuses before it reads the configuration or the tokenizer of a snapshot.
     assert (lookups, loads) == ([], {"config": [], "tokenizer": []})
+
+
+def test_preflight_refuses_the_producer_on_a_vllm_patch_release(tmp_path):
+    """The first refusal of a GLM-5.3-Flash collection on vLLM 0.33.1 is the producer activation in preflight.
+
+    The image is consistent: package metadata and the imported vllm package both report 0.33.1, as the release check
+    of the collection observers requires. The producer admits one exact vLLM version, so its activation fails before
+    it hashes a source file or runs a scheduler line.
+    """
+    runtime = PRODUCER.parent.parent
+    shutil.copy2(runtime / "preflight.py", tmp_path / "preflight.py")
+    for name in ("sitecustomize.py", "runtime-source-sha256.json"):
+        shutil.copy2(PRODUCER.with_name(name), tmp_path / name)
+    (tmp_path / "vllm").mkdir()
+    (tmp_path / "vllm/__init__.py").write_text('__version__ = "0.33.1"\n')
+    (tmp_path / "vllm-0.33.1.dist-info").mkdir()
+    (tmp_path / "vllm-0.33.1.dist-info/METADATA").write_text("Metadata-Version: 2.1\nName: vllm\nVersion: 0.33.1\n")
+    native = tmp_path / "dynamo/vllm/instrumented_scheduler.py"
+    native.parent.mkdir(parents=True)
+    native.write_text("class BenchmarkPoint: pass\nclass InstrumentedScheduler: pass\n")
+    audit = tmp_path / "audit.json"
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import preflight\nfrom pathlib import Path\n"
+            f"preflight._AUDIT_PATH = Path({str(audit)!r})\npreflight.main()\n",
+        ],
+        cwd=tmp_path,
+        env=dict(
+            os.environ,
+            PYTHONPATH=os.pathsep.join((str(tmp_path), str(PRODUCER.parents[4]))),
+            DYN_FPM_GLM53FLASH_REAL_KV="1",
+            DYN_FPM_GLM53FLASH_PREFIX_SEED="1",
+        ),
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert child.returncode == 1
+    refusal = "GLM-5.3-Flash real-KV producer activation failed: unqualified GLM backend runtime: vllm '0.33.1'"
+    assert refusal in child.stderr
+    receipt = json.loads(audit.read_text())
+    assert receipt["status"] == "failed"
+    assert receipt["import_error"] == refusal

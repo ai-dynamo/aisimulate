@@ -1764,6 +1764,24 @@ def test_execution_record_adds_the_hybrid_cache_fields_only_with_a_recurrent_sta
         assert sorted(cache) == sorted(plain)
 
 
+def test_execution_record_of_a_patch_release_has_no_hybrid_cache_fields(tmp_path, monkeypatch):
+    # The release check accepts 0.33.1: the imported package reports the metadata version, and the cached source
+    # check of the audited release found no changed file.
+    vllm = ModuleType("vllm")
+    vllm.__version__ = "0.33.1"
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    monkeypatch.setattr(observer, "_SOURCE_PROBLEMS", {"0.33.0": None})
+    record = _observe_execution(
+        tmp_path,
+        monkeypatch,
+        version="0.33.1",
+        groups=_glm53_flash_groups(),
+        cache_settings={"num_gpu_blocks_override": None},
+    )
+    assert record["audited_backend_version"] == "0.33.0"
+    assert sorted(record["resolved_config"]["cache_config"]) == sorted(observer._CONFIG_FIELDS["cache_config"])
+
+
 def test_execution_record_of_a_plain_model_on_vllm_0330_keeps_the_bytes_of_main(tmp_path, monkeypatch):
     record = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_full_attention_group()])
     assert _json_bytes(record["resolved_config"]) == _json_bytes(_main_execution_config())
