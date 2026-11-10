@@ -1159,8 +1159,8 @@ def test_v033_formal_hook_records_execution_evidence(tmp_path, monkeypatch):
     evidence = _execution_evidence(campaign)
     assert evidence["status"] == "observed"
     assert evidence["backend_version"] == "0.33.0"
-    # G0 holds two attention groups, one for each of its backends (v1/worker/gpu/attn_utils.py:233-265).
-    assert [group["kv_cache_group_id"] for group in evidence["attention_groups"]] == [0, 0, 1, 2, 3, 4, 5]
+    # G4 holds two attention groups, one for each of its backends (v1/worker/gpu/attn_utils.py:233-265).
+    assert [group["kv_cache_group_id"] for group in evidence["attention_groups"]] == [0, 1, 2, 3, 4, 4, 5]
     assert evidence["resolved_config"]["cache_config"]["mamba_cache_mode"] == "align"
 
 

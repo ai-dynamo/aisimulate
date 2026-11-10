@@ -2022,22 +2022,27 @@ def _glm_plan(
     same token and sequence limits, because accepted runtime memory is exact for its scheduler settings. The producer
     runs no global warm-up iterations. ``changes`` replace option fields before planning. With a
     ``kda_checkpoint_alignment``, each of the four KDA groups holds one prefill checkpoint block of that alignment, as
-    the import writes it for a launch that prefills KDA with FlashKDA.
+    the import writes it for a launch that prefills KDA with FlashKDA. Without it, they hold none, as with the Triton
+    KDA prefill backend.
     """
     from .test_runtime_observations import glm_tp4_cache_groups
 
     cache_groups = glm_tp4_cache_groups()
-    if kda_checkpoint_alignment is not None:
-        # A FlashKDA prefill gives each KDA spec one checkpoint block aligned to 16 tokens (vLLM 0.33.0
-        # models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10), and the import
-        # keeps the count and the alignment of a MambaSpec group (collector/fpm_forward/runtime_memory.py:661-675).
-        for group in cache_groups:
-            if "prefill_checkpoint_blocks" in group:
+    # A FlashKDA prefill gives each KDA spec one checkpoint block aligned to 16 tokens (vLLM 0.33.0
+    # models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10), and the import
+    # keeps the count and the alignment of a MambaSpec group (collector/fpm_forward/runtime_memory.py:661-675). The
+    # Triton backend gives no checkpoint block, and the import then keeps a count of 0 without an alignment.
+    for group in cache_groups:
+        if "prefill_checkpoint_blocks" in group:
+            group.pop("prefill_checkpoint_alignment", None)
+            if kda_checkpoint_alignment is None:
+                group.update(prefill_checkpoint_blocks=0)
+            else:
                 group.update(prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=kda_checkpoint_alignment)
     architecture = "Glm5NextForConditionalGeneration"
     path = _mixed_attention_config(tmp_path, architecture, True)
     memory = {
-        "kv_cache_bytes": 180_218_332_800,
+        "kv_cache_bytes": 185_126_092_800,
         "gpu_memory_utilization": 0.9,
         "max_model_len": 1_048_576,
         "provenance": "Runtime probe capacity of GLM-5.3-Flash at TP 4, declared for this test.",
@@ -2126,8 +2131,8 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
         prefill_batch_limit=256,
         decode_batch_limit=256,
         measured_context=131072,
-        kv_cache_bytes=180_218_332_800,
-        page_size_bytes=13_045_120,
+        kv_cache_bytes=185_126_092_800,
+        page_size_bytes=13_516_800,
         state_groups=5,
         # The KDA groups of the fixture profile hold no prefill checkpoint block.
         checkpoint_alignment=None,
@@ -2174,8 +2179,8 @@ def test_glm_collection_plan_with_prefill_checkpoint_blocks_keeps_every_prefill(
         prefill_batch_limit=256,
         decode_batch_limit=256,
         measured_context=131072,
-        kv_cache_bytes=180_218_332_800,
-        page_size_bytes=13_045_120,
+        kv_cache_bytes=185_126_092_800,
+        page_size_bytes=13_516_800,
         state_groups=5,
         checkpoint_alignment=16,
         checkpoint_groups=4,
@@ -2437,7 +2442,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=No
                 "kv_cache_dtype": labels["kvcache_quant_mode"],
                 "resources": {
                     "runtime_memory": {
-                        "kv_cache_bytes": 180_218_332_800,
+                        "kv_cache_bytes": 185_126_092_800,
                         "gpu_memory_utilization": 0.9,
                         "max_model_len": 1_048_576,
                         "provenance": "Runtime probe capacity of GLM-5.3-Flash at TP 4, declared for this test.",
