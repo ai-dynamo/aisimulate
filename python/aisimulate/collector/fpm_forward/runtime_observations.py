@@ -1341,13 +1341,12 @@ def _configuration(
         if prefix_caching[phase] is not None:
             for _, scheduler in sorted(schedulers.items()):
                 _validate_startup_concurrency(scheduler)
-    if len({value is None for value in prefix_caching.values()}) > 1:
-        raise ValueError("runtime observation prefix-caching evidence across phases mismatch")
     # The record holds the prefix-caching values of the role's first collection phase that this validation covers.
     record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
     # Only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
-    # hybrid record must, and every phase agrees on that (checked above). The provenance of a vLLM 0.27.0
-    # or 0.28.0 import stays as it was, because finalized campaigns compare it byte for byte.
+    # hybrid record must. The cache geometry comparison across phases includes layer_specs, so every phase
+    # agrees on hybrid evidence. The provenance of a vLLM 0.27.0 or 0.28.0 import stays as it was, because
+    # finalized campaigns compare it byte for byte.
     hybrid_evidence = (
         {
             "prefix_caching": {item: value for item, value in prefix_caching.items() if value is not None},

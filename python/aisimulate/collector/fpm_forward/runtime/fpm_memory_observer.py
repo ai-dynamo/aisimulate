@@ -81,7 +81,7 @@ SPEC_KINDS: dict[str, str] = {
 }
 # SlidingWindowSpec and its subclasses (831, 930, 1016) declare a positive window.
 _WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec", "KpoolTailSpec"))
-# The spec classes that records without hybrid evidence accept (vLLM 0.27.0 and 0.28.0).
+# The spec classes that records without hybrid evidence accept (vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0).
 _LEGACY_SPECS = frozenset((_SPEC_MODULE + "FullAttentionSpec", _SPEC_MODULE + "SlidingWindowSpec"))
 # Cache settings that only hybrid evidence records (vLLM 0.31.0 config/cache.py).
 _HYBRID_CACHE_FIELDS = (
@@ -596,7 +596,7 @@ def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False) -> list[di
     UniformTypeKVCacheSpecs group keeps one inner spec per layer; its layers share
     one window and one state, and the group dtype is None when layers differ.
     Without it, only FullAttentionSpec and SlidingWindowSpec groups are supported
-    and the record is the one vLLM 0.27.0 and 0.28.0 runtimes have.
+    and the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
     """
     groups = []
     all_names: set[str] = set()
@@ -878,7 +878,7 @@ def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = Fal
 
     ``hybrid_evidence`` adds the vLLM 0.31.0 block sizes, Mamba cache mode and
     startup capacity, and records the ``cache_groups`` evidence without the kind;
-    without it the record is the one vLLM 0.27.0 and 0.28.0 runtimes have.
+    without it the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
     """
     manager = scheduler.kv_cache_manager
     pool = manager.block_pool

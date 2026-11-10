@@ -2639,16 +2639,16 @@ def _make_layer_strided(record):
 
 
 @pytest.mark.parametrize(
-    "strided,complete",
+    "hybrid,complete",
     [(("prefill",), False), (("decode",), False), (("prefill", "decode"), True)],
     ids=["prefill_strided", "decode_strided", "both_strided_control"],
 )
-def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, strided, complete):
+def test_v031_role_phases_cannot_mix_hybrid_and_plain_records(tmp_path, hybrid, complete):
     path, launches = observation_fixture(tmp_path)
 
     def edit(record):
         # Only a hybrid phase holds the layer specs of its groups; the other phase keeps its older record.
-        if record["phase"] not in strided:
+        if record["phase"] not in hybrid:
             return
         for group in record["cache"]["groups"]:
             group["layer_specs"] = {
