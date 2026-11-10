@@ -3,7 +3,7 @@
   "runtime": {
     "framework": "vllm",
     "version": "0.1.dev24216+g266e88c05",
-    "source_revision": "a98c53daa233afbfb882310dc531f5c9331c5f89c3f43f079f6e0d9695aeee6e",
+    "source_revision": "a1e6b422124ec1f62ed64a65d7e905ea81c62ec173359296eca3abcebf20e08f",
     "source_files": {
       "vllm/_version.py": "9970596266339f11081588eea94bfcc6281b9b69822338a1a09d4b6476145014",
       "vllm/config/vllm.py": "e06bb920ed9f530afb23d928d549f6bed7d60bbbea82b5144edbe3392f7d4602",
@@ -37,7 +37,10 @@
       "vllm/model_executor/layers/fused_moe/modular_kernel.py": "86d79f4b86bc6fdd5192bdf0fce83506d40955f8e23e88f9c4322c257b5a5de2",
       "vllm/v1/attention/backends/mla/flashmla_sparse.py": "38702f9ad851132d0f5fb1e1eeaac90fa9deea272cee200f07c274e06f5d75cb",
       "vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py": "758e5917801b33fe0c4c561e45bcc9a72f19931e0c516d02f04f40e40ae8843f",
-      "dynamo/vllm/instrumented_scheduler.py": "2509d616b888cbbdf87888a7f305feeb8c1c6643c4dd5bc348c66b5fb297aaee"
+      "dynamo/vllm/instrumented_scheduler.py": "2509d616b888cbbdf87888a7f305feeb8c1c6643c4dd5bc348c66b5fb297aaee",
+      "vllm/v1/core/kv_cache_utils.py": "de64494f8316d3e706802d1461cbf17ddbd421bb4c18946c085145aefd9846ea",
+      "vllm/v1/worker/gpu/attn_utils.py": "cbd0dd300928f0fbd24c91f45f34c4dcb1bf93c0737e7b0404c9e4d365ea419c",
+      "vllm/v1/attention/backends/mla/compressor_utils.py": "94966398f822512ac35968ca5d1634e707deaa198c68f1e145befc12bdde379e"
     }
   },
   "files": [

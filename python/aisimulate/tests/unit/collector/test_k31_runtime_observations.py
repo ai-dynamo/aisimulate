@@ -54,7 +54,7 @@ class _Tensor:
         return (512 // self.size, *reversed(result))
 
 
-def _native_fixture(monkeypatch, *, uniform=False):
+def _native_fixture(monkeypatch, *, uniform=False, scheduler_projection=False):
     adapter = _adapter(monkeypatch)
     storage = _Storage(1234, 5120)
     layers, groups, placements = {}, [], []
@@ -134,7 +134,11 @@ def _native_fixture(monkeypatch, *, uniform=False):
             coordinator=SimpleNamespace(single_type_managers=[SimpleNamespace(block_pool=pool) for _ in groups]),
         ),
     )
-    cache, scheduled = adapter.worker_memory(worker), adapter.scheduler_memory(scheduler, config)
+    scheduler_config = copy.deepcopy(config)
+    if scheduler_projection:
+        for group in scheduler_config.kv_cache_groups:
+            group.kv_cache_spec = next(iter(group.kv_cache_spec.kv_cache_specs.values()))
+    cache, scheduled = adapter.worker_memory(worker), adapter.scheduler_memory(scheduler, scheduler_config)
     for record in (cache, scheduled):
         record["pool_id"] = "pool"
         for group in record["groups"]:
@@ -203,6 +207,89 @@ def test_raw_uniform_wrapper_reads_children_without_abstract_scalar_property(mon
     monkeypatch.setattr(type(child), "state_content_size_bytes", property(abstract_state_content), raising=False)
     with pytest.raises(NotImplementedError):
         observer._raw_cache(config, kimi_k31=True)
+
+
+def test_scheduler_projection_uses_observed_representative_not_serialized_key_order(monkeypatch):
+    cache, scheduled, _ = _native_fixture(monkeypatch, uniform=True, scheduler_projection=True)
+    cache = json.loads(json.dumps(cache, sort_keys=True))
+    assert next(iter(cache["groups"][0]["layer_specs"])) == "indexer.0"
+    assert cache["groups"][0]["representative_layer"] == "mla.0"
+    groups, accounting = _physical_views(cache, scheduled, "fp8")
+    assert len(groups) == 2 and groups[0]["num_layers"] == 4
+    assert accounting["page_size_bytes"] == 512
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda c, s: c["groups"][0].pop("representative_layer"), "observed representative"),
+        (lambda c, s: c["groups"][0].update(representative_layer="indexer.0"), "geometry disagrees"),
+        (lambda c, s: s["groups"][0].update(spec_page_size_bytes=129), "geometry disagrees"),
+        (lambda c, s: s["groups"][0]["layer_names"].pop(), "geometry disagrees"),
+        (lambda c, s: c["groups"][0]["layer_specs"]["indexer.0"].update(block_size_tokens=8), "incompatible per-layer"),
+    ],
+)
+def test_scheduler_projection_retains_exact_native_geometry_checks(monkeypatch, mutation, match):
+    cache, scheduled, _ = _native_fixture(monkeypatch, uniform=True, scheduler_projection=True)
+    mutation(cache, scheduled)
+    with pytest.raises(ValueError, match=match):
+        _physical_views(cache, scheduled, "fp8")
+
+
+def _kernel_view_fixture(monkeypatch):
+    cache, scheduled, _ = _native_fixture(monkeypatch, uniform=True, scheduler_projection=True)
+    cache["kernel_block_views"] = {}
+    for name in ("indexer.0", "indexer.1"):
+        cache["layer_components"][name][0].update(shape=[146, 2, 16], stride_bytes=[32, 16, 1])
+        cache["kernel_block_views"][name] = {
+            "attention_group_class": "vllm.v1.worker.utils.AttentionGroup",
+            "backend_class": "vllm.models.kimi_k3.common.dsa_cache.KimiK3IndexerBackend",
+            "kernel_block_size": 2,
+            "kernel_block_stride": 16,
+            "kernel_block_offsets": [0, 1],
+            "kernel_block_table_shape": [1, 8, 32],
+            "kernel_block_table_dtype": "torch.int32",
+            "maps_slot_mapping": False,
+            "writes_kv_cache_from_block_table": True,
+        }
+    return cache, scheduled
+
+
+def test_native_indexer_kernel_view_charges_only_actual_shared_allocation(monkeypatch):
+    cache, scheduled = _kernel_view_fixture(monkeypatch)
+    groups, accounting = _physical_views(cache, scheduled, "fp8")
+    assert len(groups) == 2
+    assert accounting["num_blocks"] == 10 and accounting["page_size_bytes"] == 512
+    assert cache["allocated_cache_bytes"] == 5120
+    assert cache["layer_components"]["indexer.0"][0]["shape"][0] == 146
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda c: c["kernel_block_views"].pop("indexer.0"), "coverage"),
+        (lambda c: c["kernel_block_views"]["indexer.0"].update(kernel_block_stride=15), "stride"),
+        (lambda c: c["kernel_block_views"]["indexer.0"].update(kernel_block_size=3), "subdivision"),
+        (lambda c: c["kernel_block_views"]["indexer.0"].update(kernel_block_offsets=[0, 2]), "offsets"),
+        (lambda c: c["kernel_block_views"]["indexer.0"].update(kernel_block_table_dtype="torch.int64"), "table"),
+        (lambda c: c["kernel_block_views"]["indexer.0"].update(kernel_block_table_shape=[1, 8, 31]), "table"),
+        (lambda c: c["kernel_block_views"]["indexer.0"].update(backend_class="other.Backend"), "address mapping"),
+        (
+            lambda c: c["kernel_block_views"]["indexer.0"].update(writes_kv_cache_from_block_table=False),
+            "address mapping",
+        ),
+        (lambda c: c["kernel_block_views"].update({"unknown.layer": {}}), "layer coverage"),
+        (lambda c: c["layer_components"]["indexer.0"][0].update(shape=[145, 2, 16]), "coverage"),
+        (lambda c: c["layer_components"]["indexer.0"][0].update(stride_bytes=[31, 16, 1]), "stride"),
+        (lambda c: c["layer_components"]["indexer.0"][0].update(storage_offset_bytes=257), "offsets"),
+        (lambda c: c["tensor_allocations"][1].update(layer_stride=32), "overlap"),
+    ],
+)
+def test_kernel_view_mapping_cannot_hide_pool_or_layer_corruption(monkeypatch, mutation, match):
+    cache, scheduled = _kernel_view_fixture(monkeypatch)
+    mutation(cache)
+    with pytest.raises(ValueError, match=match):
+        _physical_views(cache, scheduled, "fp8")
 
 
 @pytest.mark.parametrize(

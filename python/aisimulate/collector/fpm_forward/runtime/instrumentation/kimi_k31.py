@@ -27,6 +27,7 @@ def _spec(spec, vllm_config):
             "block_size_tokens": spec.block_size,
             "spec_page_size_bytes": spec.page_size_bytes,
             "sliding_window": None,
+            "representative_layer": next(iter(spec.kv_cache_specs)),
             "layer_specs": children,
         }
     if name not in {SPEC + "MambaSpec", SPEC + "MLAAttentionSpec"}:
@@ -181,9 +182,9 @@ def attention_groups(owner, cache, source_files):
         raise ValueError("K3.1 runner class has no audited kernel block mapping")
     sizes = getattr(runner, size_field)
     if list(sizes) != [group["block_size_tokens"] for group in cache["groups"]]:
-        raise ValueError("K3.1 block-outer adapter does not support subdivided kernel blocks")
+        raise ValueError("K3.1 runner block sizes differ from the native pool-group block sizes")
     cache["model_runner"] = {"class": legacy._class_name(runner), "kernel_block_sizes": list(sizes)}
-    observed, names, covered = [], set(), set()
+    observed, names, covered, kernel_views = [], set(), set(), {}
     for group_id, entries in enumerate(runner.attn_groups):
         for entry in entries:
             backend = entry.backend
@@ -196,10 +197,37 @@ def attention_groups(owner, cache, source_files):
             covered.update(layers)
             names.add(backend.get_name())
             observed.append({"group_id": group_id, "layer_names": layers, "backend": backend.get_name()})
+            # Pinned worker/utils.py::AttentionGroup maps packed manager
+            # blocks to strided kernel-page views before binding them to the
+            # layers. Read the initialized mapping; never create cache views
+            # or reconstruct block tables in the observer.
+            stride = entry.kernel_block_stride
+            if type(stride) is not int or stride < 0:
+                raise ValueError("K3.1 native kernel block stride is unresolved")
+            if stride:
+                group_source = type(entry).__module__.replace(".", "/") + ".py"
+                if group_source not in source_files:
+                    raise ValueError("K3.1 attention-group mapping source is not pinned")
+                offsets, table = entry.kernel_block_offsets, entry.kernel_block_table
+                if offsets is None or table is None or entry.kernel_block_size is None:
+                    raise ValueError("K3.1 initialized kernel block mapping is incomplete")
+                mapping = {
+                    "attention_group_class": legacy._class_name(entry),
+                    "backend_class": f"{backend.__module__}.{backend.__qualname__}",
+                    "kernel_block_size": entry.kernel_block_size,
+                    "kernel_block_stride": stride,
+                    "kernel_block_offsets": offsets.detach().cpu().tolist(),
+                    "kernel_block_table_shape": list(table.shape),
+                    "kernel_block_table_dtype": str(table.dtype),
+                    "maps_slot_mapping": entry.maps_slot_mapping,
+                    "writes_kv_cache_from_block_table": backend.writes_kv_cache_from_block_table(),
+                }
+                kernel_views.update({name: dict(mapping) for name in layers})
     if covered != set(cache["layer_components"]):
         raise ValueError("K3.1 backend groups do not cover all bound layer states")
     cache["attention_groups"] = observed
     cache["attention_backends"] = sorted(names)
+    cache["kernel_block_views"] = kernel_views
 
 
 def initialized_moe(owner):

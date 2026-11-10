@@ -2131,9 +2131,16 @@ modified for AISimulate's explicit policy and evidence validation contracts.
 
 The ARM64 image child is
 `sha256:52b793567651780dc529647a211a3d15cec11ebc872ac7492636d7d75340eab4`.
-The complete original path and SHA-256 inventory for the 32 inspected vLLM
+The complete original path and SHA-256 inventory for the 35 inspected vLLM
 interfaces is in `runtime/vllm-kimi-k31.example.json`; the adjacent
 `runtime/instrumentation/vllm-kimi-k31.md` records their observation contracts.
+The initialized cache comparison also observes the representative-child projection
+in `vllm/v1/core/kv_cache_utils.py::generate_scheduler_kv_cache_config`, preserving
+the worker's full per-layer cache geometry and physical allocation evidence.
+The strided DSA indexer view additionally follows the initialized kernel-block
+mapping exposed through `vllm/v1/worker/gpu/attn_utils.py` and
+`vllm/v1/attention/backends/mla/compressor_utils.py`. The adapter observes this
+mapping and validates addresses; it does not change native cache views.
 The source mapping also reads Dynamo's
 `components/src/dynamo/vllm/instrumented_scheduler.py` at immutable commit
 `17628144dc33c9d5916b08789f9d317924217dad`:

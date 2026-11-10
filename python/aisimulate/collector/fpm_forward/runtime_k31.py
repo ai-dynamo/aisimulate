@@ -89,7 +89,19 @@ def normalize_groups(cache, scheduled, page_bytes):
         raise ValueError("K3.1 cache group coverage is incomplete")
     names, result = set(), []
     for index, (group, scheduler) in enumerate(zip(raw, other, strict=True)):
-        if {key: value for key, value in group.items() if key not in {"kind", "layer_classes"}} != scheduler:
+        expected = {key: value for key, value in group.items() if key not in {"kind", "layer_classes"}}
+        if (
+            group.get("spec_type") == SPEC + "UniformTypeKVCacheSpecs"
+            and scheduler.get("spec_type") != SPEC + "UniformTypeKVCacheSpecs"
+        ):
+            # Pinned kv_cache_utils.generate_scheduler_kv_cache_config selects
+            # the first native child; JSON serialization may reorder its keys.
+            children = expected.pop("layer_specs", None)
+            representative = expected.pop("representative_layer", None)
+            if not isinstance(children, dict) or not isinstance(representative, str) or representative not in children:
+                raise ValueError("K3.1 scheduler projection requires the observed representative layer")
+            expected.update(children[representative])
+        if expected != scheduler:
             raise ValueError("K3.1 worker and scheduler cache group geometry disagrees")
         layers = group.get("layer_names")
         if (
@@ -191,6 +203,55 @@ def normalize_groups(cache, scheduled, page_bytes):
     return result
 
 
+def _kernel_view_geometry(mapping, group, view, count, page, width):
+    """Check the observed AttentionGroup's manager-to-kernel address mapping."""
+    if (
+        not isinstance(mapping, dict)
+        or mapping.get("attention_group_class") != "vllm.v1.worker.utils.AttentionGroup"
+        or mapping.get("backend_class") != "vllm.models.kimi_k3.common.dsa_cache.KimiK3IndexerBackend"
+        or type(mapping.get("maps_slot_mapping")) is not bool
+        or mapping.get("writes_kv_cache_from_block_table") is not True
+    ):
+        raise ValueError("K3.1 kernel-block view has no audited native address mapping")
+    kernel = _positive(mapping.get("kernel_block_size"), "kernel block size")
+    stride = _positive(mapping.get("kernel_block_stride"), "kernel block stride")
+    block = group["block_size_tokens"]
+    if kernel >= block or block % kernel:
+        raise ValueError("K3.1 kernel-block subdivision contradicts the native manager block")
+    subdivisions = block // kernel
+    offsets = mapping.get("kernel_block_offsets")
+    if (
+        not isinstance(offsets, list)
+        or any(type(value) is not int for value in offsets)
+        or offsets != list(range(subdivisions))
+    ):
+        raise ValueError("K3.1 native kernel-block offsets do not cover the manager block")
+    table = mapping.get("kernel_block_table_shape")
+    if (
+        mapping.get("kernel_block_table_dtype") != "torch.int32"
+        or not isinstance(table, list)
+        or len(table) != 3
+        or any(type(value) is not int or value < 1 for value in table)
+        or table[-1] % subdivisions
+    ):
+        raise ValueError("K3.1 native kernel-block table shape/dtype is inconsistent")
+    shape, strides = view["shape"], view["stride_bytes"]
+    if len(shape) != 3 or shape[1] != kernel or strides[1:] != [shape[2], 1]:
+        raise ValueError("K3.1 kernel-block component has no native contiguous token layout")
+    kernel_bytes = kernel * shape[2]
+    # AttentionGroup.map_kv_cache_to_kernel_blocks and map_to_kernel_block_table:
+    # kernel page j of manager block b is b * stride + j. The strided tensor
+    # spans other layers' gaps; only these addressed pages belong to this layer.
+    if (
+        strides[0] != kernel_bytes
+        or stride * kernel_bytes != page
+        or subdivisions * kernel_bytes != width
+        or shape[0] != (count - 1) * stride + subdivisions
+    ):
+        raise ValueError("K3.1 kernel-block view contradicts native pool stride or layer page coverage")
+    return kernel
+
+
 def validate_views(cache, precision, count, page):
     """Verify block-outer native placements, including safe cross-group overlays.
 
@@ -215,6 +276,9 @@ def validate_views(cache, precision, count, page):
     views = cache.get("layer_components")
     if not isinstance(views, dict) or set(views) != set(by_name):
         raise ValueError("K3.1 bound component coverage is incomplete")
+    kernel_views = cache.get("kernel_block_views", {})
+    if not isinstance(kernel_views, dict) or set(kernel_views) - set(by_name):
+        raise ValueError("K3.1 kernel-block view layer coverage is inconsistent")
     allocations = cache.get("tensor_allocations")
     if not isinstance(allocations, list) or not allocations:
         raise ValueError("K3.1 native placements are missing")
@@ -249,6 +313,11 @@ def validate_views(cache, precision, count, page):
             intervals[gid].append((offset, offset + width))
             components = views[name]
             state = group["kind"] == "state"
+            mapping = kernel_views.get(name)
+            if name in kernel_views and (
+                state or group["layer_classes"].get(name) != "vllm.models.kimi_k3.common.dsa_cache.KimiK3IndexerCache"
+            ):
+                raise ValueError("K3.1 kernel-block mapping is not an observed native indexer cache")
             if not isinstance(components, list) or len(components) != (2 if state else 1):
                 raise ValueError("K3.1 layer component count contradicts native spec")
             component_offset = offset
@@ -260,8 +329,6 @@ def validate_views(cache, precision, count, page):
                     or not shape
                     or not isinstance(strides, list)
                     or len(shape) != len(strides)
-                    or shape[0] != count
-                    or strides[0] != page
                     or view.get("storage_id") != storage
                     or view.get("storage_offset_bytes") != component_offset
                 ):
@@ -271,6 +338,11 @@ def validate_views(cache, precision, count, page):
                 for value in strides:
                     if _nonnegative(value, "component stride") % size:
                         raise ValueError("K3.1 component stride is not element aligned")
+                component_block = group["block_size_tokens"]
+                if name in kernel_views:
+                    component_block = _kernel_view_geometry(mapping, group, view, count, page, width)
+                elif shape[0] != count or strides[0] != page:
+                    raise ValueError("K3.1 component block coverage, offsets or storage disagrees")
                 if state:
                     dtype = group["state_dtypes"][component_index]
                     if (
@@ -279,12 +351,7 @@ def validate_views(cache, precision, count, page):
                         or size != (2 if dtype == "torch.bfloat16" else 4)
                     ):
                         raise ValueError("K3.1 component shape/dtype differs from native state spec")
-                elif (
-                    size != 1
-                    or view.get("dtype") != group["dtype"]
-                    or len(shape) != 3
-                    or shape[1] != group["block_size_tokens"]
-                ):
+                elif size != 1 or view.get("dtype") != group["dtype"] or len(shape) != 3 or shape[1] != component_block:
                     raise ValueError("K3.1 attention component shape/dtype differs from native cache spec")
                 span = size
                 for stride, dimension in sorted(zip(strides[1:], shape[1:], strict=True)):

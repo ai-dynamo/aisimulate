@@ -42,6 +42,11 @@ is redistributed by this adapter.
   Native `UniformTypeKVCacheSpecs` groups preserve every per-layer spec. A mixed
   MLA/indexer group uses one block table and remains one resource group; the
   observer never splits it into separately charged attention groups.
+  `v1/core/kv_cache_utils.py::generate_scheduler_kv_cache_config` projects each
+  wrapper to its first native child for scheduler use. The observer retains that
+  child's layer name before JSON key sorting; import compares the scheduler's
+  exact representative spec and group membership while independently checking
+  every worker child, aggregate page size and actual tensor allocation.
 * `model_executor/layers/mamba/abstract.py::bind_kv_cache` and
   `models/kimi_k3/nvidia/kda.py`: initialized `kv_cache` is a tuple of convolution
   and recurrent tensors. The observer records each actual shape, dtype, byte
@@ -57,7 +62,18 @@ is redistributed by this adapter.
   `model_executor/layers/attention/mla_attention.py`, and the sparse MLA backends:
   MLA and indexer retain full-history token pages. Explicit `flashmla` or
   `trtllm_mla` policy must match the observed sparse backend and FP8 indexer.
-  Kernel block sizes must equal native pool-group block sizes.
+  Native pool-group block sizes remain distinct from an attention backend's
+  kernel block size. `worker/gpu/attn_utils.py::init_kv_cache` binds the views
+  produced by `worker/utils.py::AttentionGroup.map_kv_cache_to_kernel_blocks`.
+  The initialized group's size, stride, offset tensor and block-table geometry
+  are observed directly. For a packed indexer, kernel page `j` of manager block
+  `b` is `b * kernel_block_stride + j`; import verifies that each addressed page
+  lies in the layer's native allocation interval. The tensor spans intervening
+  layers' pages but does not own them, so that span is never charged as another
+  allocation. `KimiK3IndexerMetadataBuilder` uses
+  `attention/backends/mla/compressor_utils.py::get_compressed_slot_mapping`
+  to write from those kernel block tables. Unmapped MLA and recurrent state
+  views retain their direct manager-block geometry checks.
 * `quantization/mxfp4.py`, `fused_moe/{routed_experts,config,modular_kernel}.py`,
   `fused_moe/oracle/mxfp4.py`, and `models/kimi_k3/nvidia/model.py`: enumerate
   initialized native `KimiMoE` and `RoutedExperts`, require one routed expert
