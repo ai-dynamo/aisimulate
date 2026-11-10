@@ -132,7 +132,7 @@ field is left out of the serialized record. `align` requires
 `enable_prefix_caching` to be `true`. vLLM's `all` mode is not modeled and is
 rejected. Rust exports the mode type as `FpmMambaCacheMode`. These fields are
 evidence of the probe's settings. Selection, sizing and replay do not read them
-yet. The simulated deployment decides prefix caching. The vLLM 0.31.0 runtime
+yet. The simulated deployment decides prefix caching. The vLLM 0.33.0 runtime
 probe fills these fields from the prefill phase of an aggregated or prefill
 role. A decode role takes them from its decode phase.
 
@@ -165,16 +165,16 @@ linear-attention layers. It has no `sliding_window`, and no other kind accepts
   request holds between block boundaries. For a Mamba spec, that is `1 + k`,
   where `k` is the spec's `num_speculative_blocks`. Grouped execution forbids
   speculative decoding, so `k` is 0 there. A ring spec, such as
-  `KpoolTailSpec` or `CircularBufferSpec` in vLLM 0.31.0, holds 1 block for
-  the whole life of the request in every mode. The count does not change with
+  `CircularBufferSpec` in vLLM 0.33.0, holds 1 block for the whole life of
+  the request in every mode. The count does not change with
   the request length. When a request crosses a block boundary in `align` mode,
   a Mamba group also holds the previous block for one or two steps. vLLM's
   startup sizing in that mode counts `2 + k + c` blocks per request for a
   Mamba group, where `c` is the spec's `num_prefill_checkpoint_blocks`. It
-  counts 1 block for a ring group. See vLLM v0.31.0
-  [`kv_cache_interface.py:1083-1094`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/kv_cache_interface.py#L1083-L1094)
+  counts 1 block for a ring group. See vLLM v0.33.0
+  [`kv_cache_interface.py:1135-1141`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/v1/kv_cache_interface.py#L1135-L1141)
   and
-  [`single_type_kv_cache_manager.py:1658-1675`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py#L1658-L1675).
+  [`single_type_kv_cache_manager.py:1640-1657`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/v1/core/single_type_kv_cache_manager.py#L1640-L1657).
 
 A `state` group can also hold two optional fields from the runtime probe
 import. A profile imported before these fields existed has neither of them, and
