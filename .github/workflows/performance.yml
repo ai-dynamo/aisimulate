@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Forward Prediction Performance (advisory)
+name: PR 585 cold-query isolation (diagnostic)
 
 on:
   workflow_dispatch:
@@ -10,19 +10,18 @@ on:
         description: Pull request number to compare
         required: true
         type: number
-  push:
-    # Start even when copy-pr-bot creates a ref with an empty push commit list.
-    # Select relevant PR files in the hosted job before allocating a benchmark runner.
-    branches:
-      - "pull-request/*"
+      expected_sha:
+        description: Reviewed diagnostic branch commit (full SHA)
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('pull-request/{0}', inputs.pr_number) || github.ref_name }}
-  cancel-in-progress: true
+  group: pr-585-cold-diagnostic-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   select:
@@ -47,12 +46,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python scripts/performance/select_forward_perf.py
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          test "${PR_NUMBER}" = "585"
+          test "${GITHUB_SHA}" = "${EXPECTED_SHA}"
+          python scripts/performance/select_forward_perf.py
 
   compare:
     needs: select
     if: needs.select.outputs.run_comparison == 'true'
-    name: Forward Prediction Performance (advisory)
+    name: Collect balanced cold-query diagnostic
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 45
     defaults:
@@ -66,13 +69,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.select.outputs.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12"
+          python-version: "3.12.16"
 
       - name: Configure Python linker path
         run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
@@ -83,6 +86,8 @@ jobs:
           sudo apt-get install --yes --no-install-recommends build-essential util-linux
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.99.1"
 
       - name: Install wheel builder
         run: python -m pip install --require-hashes -r scripts/release/requirements.txt
@@ -95,12 +100,17 @@ jobs:
         run: |
           set -euo pipefail
           actual_head="$(git rev-parse HEAD)"
-          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
-            echo "checked out ${actual_head}, expected PR head ${PR_HEAD_SHA}" >&2
+          if [[ "${actual_head}" != "${GITHUB_SHA}" ]]; then
+            echo "checked out ${actual_head}, expected diagnostic source ${GITHUB_SHA}" >&2
             exit 1
           fi
           base_tip="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
           base_sha="$(git merge-base "${PR_HEAD_SHA}" "${base_tip}")"
+          if [[ "${base_sha}" != "912e91755a23a79724426a0301f3ab157086be2f" ||
+                "${PR_HEAD_SHA}" != "a75c4a62cba4e734395d26885afbcf9a5fa8cb83" ]]; then
+            echo "the reviewed diagnostic only applies to the pinned base/head pair" >&2
+            exit 1
+          fi
 
           gate_path="python/aisimulate/tools/forward_perf_gate"
           skip_reason=""
@@ -137,24 +147,8 @@ jobs:
           fi
 
           if [[ -n "${skip_reason}" ]]; then
-            echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
-            {
-              echo "## Forward Prediction Performance (advisory)"
-              echo
-              echo "**SKIPPED** — ${skip_reason}."
-              echo
-              echo "Head \`${PR_HEAD_SHA}\` was not benchmarked."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-
-          controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
-            ":(glob)${gate_path}/*.py" \
-            "python/aisimulate/tools/prediction_regression_gate/grid.py")"
-          if [[ -n "${controller_changes}" ]]; then
-            echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "validate_head_controller=false" >> "${GITHUB_OUTPUT}"
+            echo "diagnostic cannot run: ${skip_reason}" >&2
+            exit 1
           fi
 
           git worktree prune
@@ -173,6 +167,7 @@ jobs:
             echo "HEAD_DIST=${run_root}/head-dist"
             echo "BASE_VENV=${run_root}/base-venv"
             echo "HEAD_VENV=${run_root}/head-venv"
+            echo "CONTROL_VENV=${run_root}/control-venv"
             echo "RESULTS_DIR=${run_root}/results"
           } >> "${GITHUB_ENV}"
 
@@ -198,68 +193,39 @@ jobs:
           )
           python -m venv "${BASE_VENV}"
           python -m venv "${HEAD_VENV}"
+          python -m venv "${CONTROL_VENV}"
           "${BASE_VENV}/bin/python" -m pip install "${BASE_DIST}"/*.whl
           "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/*.whl
+          "${CONTROL_VENV}/bin/python" -m pip install "${BASE_DIST}"/*.whl
 
-      - name: Run paired benchmark
+      - name: Collect crossed traversal/order and same-revision controls
         if: steps.revisions.outputs.run_comparison == 'true'
         run: |
           set -euo pipefail
+          unset PYTHONPATH
           "${BASE_VENV}/bin/python" \
-            "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
+            scripts/performance/diagnose_pr585_cold_queries.py \
+            --base-source "${BASE_SRC}" \
+            --head-source "${HEAD_SRC}" \
+            --base-wheel "${BASE_DIST}"/*.whl \
+            --head-wheel "${HEAD_DIST}"/*.whl \
             --base-python "${BASE_VENV}/bin/python" \
-            --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
-            --base-revision "${BASE_SHA}" \
             --head-python "${HEAD_VENV}/bin/python" \
-            --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
-            --head-revision "${HEAD_SHA}" \
+            --control-python "${CONTROL_VENV}/bin/python" \
             --output-dir "${RESULTS_DIR}"
 
-      - name: Validate PR benchmark controller
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.revisions.outputs.validate_head_controller == 'true' }}
-        run: |
-          set -euo pipefail
-          "${HEAD_VENV}/bin/python" \
-            "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
-            --base-python "${BASE_VENV}/bin/python" \
-            --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
-            --base-revision "${BASE_SHA}" \
-            --head-python "${HEAD_VENV}/bin/python" \
-            --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
-            --head-revision "${HEAD_SHA}" \
-            --output-dir "${RESULTS_DIR}/head-controller"
-
-      - name: Publish summary and annotations
+      - name: Publish diagnostic summary
         if: always() && steps.revisions.outputs.run_comparison == 'true'
         run: |
           if [[ -f "${RESULTS_DIR}/summary.md" ]]; then
             cat "${RESULTS_DIR}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
-          fi
-          if [[ -s "${RESULTS_DIR}/annotations.txt" ]]; then
-            blocker_count="$(grep -c . "${RESULTS_DIR}/annotations.txt")"
-            echo "::error::Forward-prediction performance found ${blocker_count} blocker(s); see the job summary and artifact for details."
-          fi
-
-      - name: Publish PR controller validation
-        if: always() && steps.revisions.outputs.validate_head_controller == 'true'
-        run: |
-          if [[ -f "${RESULTS_DIR}/head-controller/summary.md" ]]; then
-            {
-              echo "## PR controller validation"
-              echo
-              cat "${RESULTS_DIR}/head-controller/summary.md"
-            } >> "${GITHUB_STEP_SUMMARY}"
-          fi
-          if [[ -s "${RESULTS_DIR}/head-controller/annotations.txt" ]]; then
-            blocker_count="$(grep -c . "${RESULTS_DIR}/head-controller/annotations.txt")"
-            echo "::error::PR controller validation found ${blocker_count} blocker(s); see the job summary and artifact for details."
           fi
 
       - name: Upload benchmark artifacts
         if: always() && steps.revisions.outputs.run_comparison == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: forward-prediction-performance-pr-${{ needs.select.outputs.number }}
+          name: pr585-cold-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.RESULTS_DIR }}
           if-no-files-found: warn
           retention-days: 30
