@@ -1551,6 +1551,7 @@ mod tests {
             &mut manager,
         );
         assert_eq!(lease.resident_block_count(), 3);
+        assert_eq!(lease.watermark_owned_block_count(4), 3);
         assert_eq!(host.unreserved_tail_blocks(), 2);
         let cost = VllmHostOffloadAdapter::activated_prefill_cost(
             &host,
