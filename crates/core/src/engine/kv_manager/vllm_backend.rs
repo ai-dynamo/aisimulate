@@ -234,12 +234,9 @@ impl BlockRequestLease {
     /// scan: its resident entries are exactly the blocks below the allocation
     /// watermark.
     pub(crate) fn watermark_owned_block_count(&self, block_size: usize) -> usize {
-        let resident = self
-            .allocated_tokens
-            .div_ceil(block_size)
-            .min(self.entries.len());
-        debug_assert_eq!(resident, self.resident_block_count());
-        resident + self.opaque_copies.len()
+        let owned = self.allocated_tokens.div_ceil(block_size) + self.opaque_copies.len();
+        debug_assert_eq!(owned, self.physical_owned_block_count());
+        owned
     }
 
     /// Project one framework-native identity without exposing physical G1
