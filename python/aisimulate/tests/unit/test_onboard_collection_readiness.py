@@ -608,11 +608,10 @@ def _glm_smoke(tmp_path, monkeypatch, shape=None):
 
     Each cell has its generated launch, the producer's rank artifact of the smoke points and one execution record per
     TP rank, which the execution observer writes from a stand-in vLLM 0.33.0 configuration of that launch. The rank
-    artifacts have no measurement protocol, benchmark measurement or warm-up evidence, as a scheduler base that writes
-    none, such as ai-dynamo 1.6.0.dev20261010, leaves them. The producer's scheduler base, ai-dynamo 1.7.0.dev20261109,
-    writes them. The profile names no probe provenance, so readiness does not bind the runtime memory to probe
-    observations here. ``shape``, if given, rewrites each rank artifact before it is written. Return the request and
-    the onboarding root.
+    artifacts have no measurement protocol, benchmark measurement or warm-up evidence. The producer's scheduler base,
+    ai-dynamo 1.7.0.dev20261109, writes them, and ``_glm_producer_shape`` adds them. The profile names no probe
+    provenance, so readiness does not bind the runtime memory to probe observations here. ``shape``, if given, rewrites
+    each rank artifact before it is written. Return the request and the onboarding root.
     """
     from types import SimpleNamespace
 
@@ -730,28 +729,17 @@ def _glm_smoke(tmp_path, monkeypatch, shape=None):
     return request, root
 
 
-def test_readiness_qualifies_a_glm_smoke_of_producer_artifacts(tmp_path, monkeypatch):
+def test_readiness_blocks_a_glm_smoke_without_the_producer_protocol(tmp_path, monkeypatch):
+    # The producer's scheduler base writes the measurement protocol into every rank artifact, so an artifact without it
+    # is not the producer's.
     request, root = _glm_smoke(tmp_path, monkeypatch)
     report = assess_readiness(request, root, root / "fpm-checkpoint")
-    assert report["blockers"] == []
-    assert report["ready_for_full_collection"]
-    cells = {item["cell"]["workload_kind"]: item for item in report["selected_cells"]}
-    # The cold prefill point has no KV to label. The cached prefill and the decode points were seeded with real KV.
-    assert cells["prefill"]["formal_regime_counts"] == {"n/a": 1, "real_kv": 1}
-    assert cells["decode"]["formal_regime_counts"] == {"real_kv": 2}
-    legacy = {
-        "measurement evidence: legacy artifact has no measurement protocol",
-        "measurement evidence: rank 0: per-sample execution and warmup evidence is unreported",
-    }
-    for item in cells.values():
-        assert (item["campaign"], item["status"], item["blockers"]) == ("smoke", "ready", [])
-        assert item["kvwarm"]["method"] == "native_prefix_cache_real_seed"
-        # vLLM 0.33.0 execution is audited, and the observed configuration agrees with the plan and its launch.
-        assert item["execution"]["failures"] == []
-        assert [reason for reason in item["execution"]["missing_evidence"] if "unaudited" in reason] == []
-        # A rank artifact without measurement evidence, as a scheduler base older than Dynamo 1.7 writes it, is
-        # reported as legacy, and it does not block.
-        assert legacy <= set(item["execution"]["missing_evidence"])
+    assert not report["ready_for_full_collection"]
+    message = "measurement_protocol of a GLM-5.3-Flash producer artifact must be present"
+    assert {item["cell"]["workload_kind"] for item in report["selected_cells"]} == {"prefill", "decode"}
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
 
 
 def _glm_producer_shape(tmp_path, breakage=None):
@@ -864,9 +852,15 @@ def test_readiness_qualifies_a_glm_smoke_of_dynamo_17_producer_artifacts(tmp_pat
     assert report["ready_for_full_collection"]
     cells = {item["cell"]["workload_kind"]: item for item in report["selected_cells"]}
     assert set(cells) == {"prefill", "decode"}
+    # The cold prefill point has no KV to label. The cached prefill and the decode points were seeded with real KV.
+    assert cells["prefill"]["formal_regime_counts"] == {"n/a": 1, "real_kv": 1}
+    assert cells["decode"]["formal_regime_counts"] == {"real_kv": 2}
     for item in cells.values():
         assert (item["campaign"], item["status"], item["blockers"]) == ("smoke", "ready", [])
+        assert item["kvwarm"]["method"] == "native_prefix_cache_real_seed"
+        # vLLM 0.33.0 execution is audited, and the observed configuration agrees with the plan and its launch.
         assert item["execution"]["failures"] == []
+        assert [reason for reason in item["execution"]["missing_evidence"] if "unaudited" in reason] == []
         # The measurement record of every point is read, so no legacy note remains.
         missing = item["execution"]["missing_evidence"]
         assert not [reason for reason in missing if "legacy" in reason or "warmup evidence is unreported" in reason]
@@ -913,3 +907,59 @@ def test_readiness_blocks_a_glm_smoke_whose_producer_names_another_vllm(tmp_path
     for item in report["selected_cells"]:
         assert item["status"] != "ready"
         assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
+
+
+def _nine_repetitions(_phase, payload):
+    """Rewrite the producer's record of each point into a consistent record of nine measured repetitions.
+
+    The protocol names nine repetitions and random content, and each point keeps its first nine raw samples, the
+    indices of samples 1 to 8 and their upper median. The record still expects ten internal samples.
+    """
+    protocol = payload["measurement_protocol"]
+    protocol["producer"]["measurement_repeats"] = 9
+    protocol["synthetic_content"] = "random"
+    for row, group in zip(payload["results"], payload["iteration_groups"], strict=True):
+        fpm = row["fpms"][0]
+        measurement = fpm["benchmark_measurement"]
+        del measurement["raw_fpms"][9:]
+        measurement["estimate"]["raw_sample_indices"] = list(range(1, 9))
+        walls = sorted(sample["wall_time"] for sample in measurement["raw_fpms"][1:])
+        fpm["wall_time"] = group["wall_time"] = walls[len(walls) // 2]
+        assert measurement["expected_internal_samples"] == 10
+    payload["timing"]["measured_iteration_seconds"] = sum(group["wall_time"] for group in payload["iteration_groups"])
+
+
+def test_readiness_blocks_a_glm_smoke_whose_protocol_names_nine_repetitions(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_then(_glm_producer_shape(tmp_path), _nine_repetitions))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    message = "measurement_protocol.producer must be the GLM-5.3-Flash producer's record: expected "
+    assert {item["cell"]["workload_kind"] for item in report["selected_cells"]} == {"prefill", "decode"}
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker and "'measurement_repeats': 9" in blocker for blocker in item["blockers"]), item[
+            "blockers"
+        ]
+
+
+def test_measurement_reader_holds_each_glm_cell_to_the_producer_protocol(tmp_path, monkeypatch):
+    # The readers of a frozen GLM-5.3-Flash plan, without readiness around them.
+    from collector.fpm_forward.measurement_evidence import extract_measurement_evidence
+    from collector.fpm_forward.native_artifact import validate_native_collection
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    _request, root = _glm_smoke(tmp_path, monkeypatch, shape=_then(_glm_producer_shape(tmp_path), _nine_repetitions))
+    (campaign,) = [path / "smoke" for path in (root / "fpm-artifacts").iterdir()]
+    plan = load_repeatability_source(campaign)
+    assert {cell.workload_kind for cell in plan.cells} == {"prefill", "decode"}
+    for cell in plan.cells:
+        raw = campaign / "cells" / cell.cell_id / "raw"
+        collection = validate_native_collection(
+            cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id=f"smoke-{cell.workload_kind}"
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"^measurement_protocol\.producer must be the GLM-5\.3-Flash producer's record: expected \{.+\}, "
+            r"found \{.+'measurement_repeats': 9.+\}: .+benchmark\.json$",
+        ):
+            extract_measurement_evidence(raw, collection)

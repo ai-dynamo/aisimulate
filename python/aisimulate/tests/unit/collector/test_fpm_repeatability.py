@@ -1853,7 +1853,7 @@ def _dynamo_17_campaign(tmp_path, coordinate, phase="prefill"):
     return plan, cell, tmp_path / "source" / "cells" / cell.cell_id / "raw"
 
 
-def _producer_collection(tmp_path, *, walls=None, retained=None, shift_sample=None, phase="prefill"):
+def _producer_collection(tmp_path, *, walls=None, retained=None, shift_sample=None, phase="prefill", contract=True):
     """The Dynamo 1.7 artifact of one point whose measurement record the GLM-5.3-Flash producer wrote.
 
     The producer runs its point on the fake of the native scheduler. Its measurement protocol, its retained wall time
@@ -1861,6 +1861,10 @@ def _producer_collection(tmp_path, *, walls=None, retained=None, shift_sample=No
     measured wall times ``walls``. A decode point of three requests at context 201 takes the wall times of the fake.
     ``retained`` overrides the retained wall time, and ``shift_sample`` moves the start of that raw sample's timing
     interval by 0.1 s.
+
+    The campaign's cell has no execution identity, so the native reader selects no producer contract for it. With
+    ``contract``, the returned collection carries the contract that a GLM-5.3-Flash cell selects, as the native
+    reader returns it for such a cell, so the measurement reader applies the producer's rules.
     """
     (tmp_path / "producer").mkdir(parents=True)
     with pytest.MonkeyPatch.context() as patch:
@@ -1898,7 +1902,8 @@ def _producer_collection(tmp_path, *, walls=None, retained=None, shift_sample=No
     group["wall_time"] = payload["timing"]["measured_iteration_seconds"] = wall
     path.write_text(json.dumps(payload))
     collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
-    return raw, collection
+    assert collection.execution_mode is None
+    return raw, replace(collection, execution_mode="native_graph_policy") if contract else collection
 
 
 def _edit_rank_artifact(root, action):
@@ -1942,13 +1947,22 @@ def test_measurement_evidence_refuses_a_repetition_sample_with_a_foreign_timing_
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        # Seeded token content needs the producer's protocol record.
-        ({"producer": None}, "malformed content settings"),
+        # The producer contract of the cell needs the producer's protocol record.
+        ({"producer": None}, "measurement_protocol.producer must be the GLM-5.3-Flash producer's record"),
         # A record that differs from the producer's in a value or in a JSON type is not the producer's.
-        ({"producer": {"measurement_repeats": 10.0}}, "malformed content settings"),
-        ({"producer": {"reduction": "adjacent_upper_median"}}, "malformed content settings"),
+        (
+            {"producer": {"measurement_repeats": 10.0}},
+            "measurement_protocol.producer must be the GLM-5.3-Flash producer's record",
+        ),
+        (
+            {"producer": {"reduction": "adjacent_upper_median"}},
+            "measurement_protocol.producer must be the GLM-5.3-Flash producer's record",
+        ),
         # The label of the retired median of all ten repetitions.
-        ({"producer": {"reduction": "repetition_median"}}, "malformed content settings"),
+        (
+            {"producer": {"reduction": "repetition_median"}},
+            "measurement_protocol.producer must be the GLM-5.3-Flash producer's record",
+        ),
     ],
 )
 def test_measurement_evidence_refuses_producer_values_without_the_producer_protocol(tmp_path, change, message):
@@ -2154,3 +2168,135 @@ def test_measurement_evidence_reads_plain_native_reductions_as_before(tmp_path, 
     )
     with pytest.raises(ValueError, match="inconsistent reduction method"):
         extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_refuses_the_producer_protocol_on_a_cell_without_its_contract(tmp_path):
+    # The cell selects no producer contract, so the artifact's own record cannot select the producer's rules.
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10, contract=False)
+    with pytest.raises(
+        ValueError,
+        match=r"^measurement_protocol\.producer must be absent for a cell without the GLM-5\.3-Flash producer "
+        r"contract: expected no such field, found \{.+\}: .+benchmark-dp0\.json$",
+    ):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_holds_a_producer_cell_to_the_producer_protocol_whatever_the_artifact_reports(tmp_path):
+    # The record of nine repetitions over random content is consistent in itself, and the generic rules accept it.
+    # The cell's contract still demands the producer's record.
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
+
+    def nine(payload):
+        protocol = payload["measurement_protocol"]
+        protocol["producer"]["measurement_repeats"] = 9
+        protocol["synthetic_content"] = "random"
+
+    _edit_rank_artifact(root, nine)
+    _edit_raw_samples(root, _producer_record(9, 10))
+    with pytest.raises(
+        ValueError,
+        match=r"^measurement_protocol\.producer must be the GLM-5\.3-Flash producer's record: expected \{.+\}, "
+        r"found \{.+'measurement_repeats': 9.+\}: .+benchmark-dp0\.json$",
+    ):
+        extract_measurement_evidence(root, collection)
+    # The same record on a cell without the contract is still refused, by the record that it carries.
+    with pytest.raises(ValueError, match=r"^measurement_protocol\.producer must be absent"):
+        extract_measurement_evidence(root, replace(collection, execution_mode=None))
+
+
+def _drop_protocol(payload):
+    payload.pop("measurement_protocol")
+
+
+def _random_content(payload):
+    payload["measurement_protocol"]["synthetic_content"] = "random"
+
+
+def _no_execution_contract(payload):
+    payload["measurement_protocol"].pop("execution_evidence")
+
+
+def _no_warmup_history(payload):
+    payload["warmup_evidence"] = {"status": "unavailable", "records": []}
+    for fpm in (payload["results"][0]["fpms"][0], payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]):
+        fpm["benchmark_measurement"]["preparation"]["warmup_records_before"] = None
+
+
+def _each_sample(change):
+    def edit(payload):
+        for fpm in (payload["results"][0]["fpms"][0], payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]):
+            change(fpm["benchmark_measurement"]["raw_fpms"][4]["benchmark_sample"])
+
+    return edit
+
+
+def _no_timing_start(sample):
+    sample["timing"]["start_monotonic"] = None
+
+
+def _no_graph_dispatch(sample):
+    sample["cudagraph"] = {
+        "status": "unavailable",
+        "runtime_mode": None,
+        "num_unpadded_tokens": None,
+        "num_padded_tokens": None,
+        "num_paddings": None,
+    }
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        pytest.param(
+            _drop_protocol,
+            r"^measurement_protocol of a GLM-5\.3-Flash producer artifact must be present: expected the producer's "
+            r"protocol, found no such field: .+benchmark-dp0\.json$",
+            id="protocol-absent",
+        ),
+        pytest.param(
+            _random_content,
+            r"^measurement_protocol\.synthetic_content must be the GLM-5\.3-Flash producer's content: "
+            r"expected 'seeded_tokens', found 'random': .+benchmark-dp0\.json$",
+            id="random-content",
+        ),
+        pytest.param(
+            _no_execution_contract,
+            r"^measurement_protocol\.execution_evidence must be Dynamo's execution evidence contract: "
+            r"expected \{.+\}, found None: .+benchmark-dp0\.json$",
+            id="execution-contract-absent",
+        ),
+        pytest.param(
+            _no_warmup_history,
+            r"^warmup_evidence\.status of a GLM-5\.3-Flash producer artifact must be recorded: "
+            r"expected 'recorded', found 'unavailable': .+benchmark-dp0\.json$",
+            id="warmup-history-unavailable",
+        ),
+        pytest.param(
+            _each_sample(_no_timing_start),
+            r"^benchmark_sample\.timing\.start_monotonic of a GLM-5\.3-Flash producer sample must be recorded: "
+            r"expected a number, found None: .+benchmark-dp0\.json$",
+            id="timing-start-unavailable",
+        ),
+        pytest.param(
+            _each_sample(_no_graph_dispatch),
+            r"^benchmark_sample\.cudagraph\.status of a GLM-5\.3-Flash producer sample must be observed: "
+            r"expected 'observed', found 'unavailable': .+benchmark-dp0\.json$",
+            id="graph-dispatch-unavailable",
+        ),
+    ],
+)
+def test_measurement_evidence_refuses_a_producer_artifact_that_reports_less_evidence(tmp_path, change, message):
+    # Each change makes the generic rules record a gap instead of checking the evidence. The producer always writes
+    # the evidence, so for its cell the gap is a refusal.
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
+    _edit_rank_artifact(root, change)
+    with pytest.raises(ValueError, match=message):
+        extract_measurement_evidence(root, collection)
+    # The generic rules of a cell without the contract read the same gap as unestablished evidence or refuse the
+    # producer record, never as the producer's evidence.
+    if change is not _drop_protocol:
+        with pytest.raises(ValueError, match=r"^measurement_protocol\.producer must be absent"):
+            extract_measurement_evidence(root, replace(collection, execution_mode=None))
