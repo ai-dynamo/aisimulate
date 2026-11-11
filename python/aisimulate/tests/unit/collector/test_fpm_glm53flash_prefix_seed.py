@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# dynamo_merge_refusal is modified code derived from ai-dynamo/dynamo (Apache-2.0, https://github.com/ai-dynamo/dynamo),
+# components/src/dynamo/vllm/worker_factory.py at 9abd2ef0d908c4bb323e1b8956ea76a5772a1d41. See THIRD_PARTY_NOTICES.md.
 """CPU lifecycle of the default-serving (prefix-cache) GLM vLLM FPM producer.
 
 A small fake of the native scheduler admits every injected request in one step,

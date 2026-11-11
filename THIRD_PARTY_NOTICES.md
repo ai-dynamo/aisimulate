@@ -325,6 +325,22 @@ per-request geometries on the 4-token IndexPool grid with recorded prefill chunk
 Licensed under Apache-2.0; the upstream license is preserved in the adjacent `LICENSE`.
 No upstream root NOTICE exists. vLLM and SGLang implementation files are not vendored.
 
+## Dynamo 1.7 merge checks in the GLM-5.3-Flash producer tests
+
+`dynamo_merge_refusal` in
+`python/aisimulate/tests/unit/collector/test_fpm_glm53flash_prefix_seed.py` is
+modified code adapted from `components/src/dynamo/vllm/worker_factory.py` in
+https://github.com/ai-dynamo/dynamo/tree/9abd2ef0d908c4bb323e1b8956ea76a5772a1d41
+(file SHA256 `4560426701a52a5adb56a37ef3831d905a2c677eb7d72050f840b53f71401b77`, git blob
+`c2ad87ce4b475b53ff733dd5a1e27d785801a64b`; ai-dynamo 1.7.0.dev20261109 ships the same file).
+It follows the point checks of `_merge_benchmark_rank_results` and
+`_validate_execution_measurement` and keeps their error texts. Changes: it checks the
+saved points of one attention-DP rank of a test fake and returns the refusal text
+instead of raising. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights
+reserved. Licensed under Apache-2.0; the upstream license is preserved in
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/LICENSE`. No upstream root
+NOTICE exists.
+
 ## NVIDIA AIConfigurator speculative decoding
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
