@@ -219,10 +219,11 @@ def checkpoint_fmha_quant_mode(config: dict[str, object], architecture: str | No
     """The FMHA label that checkpoint-native collection gives a checkpoint with one KV-cache dtype.
 
     ``config`` is the effective model configuration after ``_attach_inferred_quant_fields``. A bfloat16 KV cache keeps
-    bfloat16 attention, because weight quantization does not require quantized KV storage. Any other KV-cache dtype
-    takes the FMHA mode that the checkpoint inference names, and bfloat16 when it names none. The runtime probe
-    preview and the observation import apply the same label to each KV-cache dtype that ``has_checkpoint_fmha``
-    accepts, so such a profile that passes them passes collection planning.
+    bfloat16 attention, because weight quantization does not require quantized KV storage. The other labels that
+    ``_normalize_kv_dtype`` accepts (``auto``, ``fp8``, ``fp8_e4m3`` and ``int8``) take the FMHA mode that the
+    checkpoint inference names, and bfloat16 when it names none. Any other label, for example ``half``, raises
+    ValueError. The runtime probe preview and the observation import apply the same label to each KV-cache dtype that
+    ``has_checkpoint_fmha`` accepts, so such a profile that passes them passes collection planning.
     """
     if _normalize_kv_dtype(kv_cache_dtype) == "bfloat16":
         return "bfloat16"

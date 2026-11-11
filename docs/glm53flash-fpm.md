@@ -136,7 +136,7 @@ included, before the scheduler loads.
   `serving_config.mamba_prefill_checkpoint`.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
-`--enable-prefix-caching --kv-cache-dtype fp8_e4m3
+`--enable-prefix-caching --kv-cache-dtype fp8
 --no-async-scheduling --language-model-only --cudagraph-metrics
 --max-num-batched-tokens 8192 --max-num-seqs 32 --benchmark-warmup-iterations 0`.
 Without `--prefix-match-unit`, the hash block is the native block of the
