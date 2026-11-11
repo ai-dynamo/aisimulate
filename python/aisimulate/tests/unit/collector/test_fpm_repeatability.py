@@ -2042,6 +2042,36 @@ def test_measurement_evidence_refuses_a_malformed_producer_upper_median(tmp_path
         extract_measurement_evidence(root, collection)
 
 
+def _producer_record(count, expected, method="adjacent_upper_median"):
+    def change(measurement):
+        del measurement["raw_fpms"][count:]
+        indices = list(range(1, count)) if method == "adjacent_upper_median" else [count - 1]
+        measurement.update(
+            expected_internal_samples=expected, estimate={"method": method, "raw_sample_indices": indices}
+        )
+
+    return change
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Each record is consistent in itself, but it does not hold one raw sample per measured repetition of the
+        # producer's protocol, or it names a reduction other than the producer's.
+        pytest.param(_producer_record(9, 10), id="nine-samples-of-ten-expected"),
+        pytest.param(_producer_record(10, 11), id="ten-samples-of-eleven-expected"),
+        pytest.param(_producer_record(9, 9), id="nine-samples-of-nine-expected"),
+        pytest.param(_producer_record(10, 10, "last_step"), id="last-step-of-ten"),
+    ],
+)
+def test_measurement_evidence_refuses_a_producer_record_without_its_measured_repetitions(tmp_path, change):
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
+    _edit_raw_samples(root, change)
+    with pytest.raises(ValueError, match="benchmark_measurement does not hold the producer's measured repetitions"):
+        extract_measurement_evidence(root, collection)
+
+
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_measurement_evidence_refuses_producer_samples_numbered_within_their_repetition(tmp_path):
     # Each raw sample is the only prefill FPM of its repetition. Its index in that repetition is 0 for every sample,

@@ -234,6 +234,14 @@ def _read_measurement(
         raise ValueError("benchmark_measurement has inconsistent grid/order/KV preparation")
     recorded = _validate_prompts(measurement.get("prompts"))
     _validate_estimate(measurement, fpm, rank, row["point"]["benchmark_id"])
+    if _glm_producer(protocol) and (
+        measurement["expected_internal_samples"] != GLM_PRODUCER_PROTOCOL["measurement_repeats"]
+        or len(measurement["raw_fpms"]) != GLM_PRODUCER_PROTOCOL["measurement_repeats"]
+        or measurement["estimate"]["method"] != "adjacent_upper_median"
+    ):
+        # The producer's protocol names one raw sample per measured repetition and the upper median after the first.
+        # Dynamo's own scheduler writes no producer record, so its records never reach this rule.
+        raise ValueError("benchmark_measurement does not hold the producer's measured repetitions")
     return measurement, [] if recorded else [f"rank {rank}: injected prompt hashes unavailable"]
 
 
