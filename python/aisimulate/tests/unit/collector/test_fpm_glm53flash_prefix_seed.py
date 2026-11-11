@@ -1028,14 +1028,18 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
 
 def test_dynamo_runtime_pins_match_the_ai_dynamo_1_7_0_dev20261109_build():
     pins = json.loads(MANIFEST.read_text())
-    # The ai-dynamo 1.7.0.dev20261109 build carries these four files of ai-dynamo/dynamo@9abd2ef0d9 (release/1.7.0).
+    # The ai-dynamo 1.7.0.dev20261109 build carries these five files of ai-dynamo/dynamo@9abd2ef0d9 (release/1.7.0).
+    # worker_factory.py holds the merge whose checks the producer's measurement records must pass.
     expected = {
         "dynamo/vllm/instrumented_scheduler.py": "2509d616b888cbbdf87888a7f305feeb8c1c6643c4dd5bc348c66b5fb297aaee",
+        "dynamo/vllm/worker_factory.py": "4560426701a52a5adb56a37ef3831d905a2c677eb7d72050f840b53f71401b77",
         "dynamo/vllm/benchmark_points.py": "bdc6f2f0bb222498e8542859ed2b4f950d1949868f02f50aaee8199257172f91",
         "dynamo/vllm/gc_policy.py": "9b0d6443dbb36f6f6b84017fa618a4606884235855405be258257f93a5256180",
         "dynamo/common/forward_pass_metrics.py": "b1551b47794b1ed30f1e6c90eea404cb7ce7769e0263c86f1375cd39fb35513b",
     }
     assert {name: pins[name] for name in expected} == expected
+    # The 19 vLLM files and the five Dynamo files.
+    assert len(pins) == 24 and sum(name.startswith("dynamo/") for name in pins) == len(expected)
 
 
 def test_native_warmup_planning_never_runs_under_the_producer(monkeypatch, tmp_path):

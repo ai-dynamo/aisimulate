@@ -50,7 +50,9 @@ producer. It is staged next to `fpm_exec.sh` and `preflight.py` and runs with
 the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`. The first
 part of the overlay below is the `ai-dynamo 1.7.0.dev20261109` build, whose
 scheduler file equals `ai-dynamo/dynamo@9abd2ef0d9` on `release/1.7.0`, and
-`runtime-source-sha256.json` pins that file.
+`runtime-source-sha256.json` pins that file. It also pins
+`dynamo/vllm/worker_factory.py`, whose merge checks every measurement record
+before the engine writes its merged artifact.
 
 The producer runs on exactly stock vLLM 0.33.0 (`4ba787ec`) with the Dynamo 1.7
 scheduler. It refuses every other vLLM version, a patch release such as 0.33.1
@@ -181,8 +183,8 @@ The container needs one overlay directory at `/opt/glm53flash-dynamo`. A Slurm
 run can mount it with `--container-mount`. The collector uses that path unless
 the deployment environment declares its own `PYTHONPATH`. The overlay is a
 composite of two parts. The first part is the `dynamo` files of the
-`ai-dynamo 1.7.0.dev20261109` build, the Dynamo 1.7 scheduler whose file
-`runtime-source-sha256.json` pins. The second part is the `collector`,
+`ai-dynamo 1.7.0.dev20261109` build, the Dynamo 1.7 scheduler and merge whose
+files `runtime-source-sha256.json` pins. The second part is the `collector`,
 `aisimulate_core` and `aisimulate` packages of the AISimulate checkout that
 plans the collection. The producer imports them.
 

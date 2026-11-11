@@ -19,6 +19,7 @@
   "vllm/config/parallel.py": "61f4e257fbe61145ddac89740952d0bcceed80f9a0fc48eb653e549d3738007a",
   "vllm/config/offload.py": "1dbcc23fedee34e09fe275b5889c43d77bbbafed7b36d097a620fb3e905c7aab",
   "dynamo/vllm/instrumented_scheduler.py": "2509d616b888cbbdf87888a7f305feeb8c1c6643c4dd5bc348c66b5fb297aaee",
+  "dynamo/vllm/worker_factory.py": "4560426701a52a5adb56a37ef3831d905a2c677eb7d72050f840b53f71401b77",
   "dynamo/vllm/benchmark_points.py": "bdc6f2f0bb222498e8542859ed2b4f950d1949868f02f50aaee8199257172f91",
   "dynamo/vllm/gc_policy.py": "9b0d6443dbb36f6f6b84017fa618a4606884235855405be258257f93a5256180",
   "dynamo/common/forward_pass_metrics.py": "b1551b47794b1ed30f1e6c90eea404cb7ce7769e0263c86f1375cd39fb35513b"
