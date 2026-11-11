@@ -987,9 +987,12 @@ def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
     them gives the smallest GCD.
 
     With one group, vLLM raises when prefix_match_unit is neither None nor the block size times the decode context
-    parallel size, and prefix caching is on or a KV connector is set (v1/core/kv_cache_utils.py:840-858). The record
+    parallel size, a factor of 1 unless the spec is dcp_sharded (v1/core/kv_cache_utils.py:841-842), and prefix
+    caching is on or a KV connector is set (v1/core/kv_cache_utils.py:840-858). The record
     shows every part of that rule: the decode context parallel size is 1, every accepted record has no
-    kv_transfer_config, and the scheduler block size is that block size (:858).
+    kv_transfer_config, and the scheduler block size is that block size (:858). For one group, that block size is
+    also the block of the group, because the engine core sets cache_config.block_size from the group blocks before it
+    resolves the scheduler block (v1/engine/core.py:342-351, :163, :176-178).
     """
     cache, settings = record["cache"], record["resolved_config"]["cache_config"]
     groups, hash_block = cache["groups"], cache["hash_block_size"]
