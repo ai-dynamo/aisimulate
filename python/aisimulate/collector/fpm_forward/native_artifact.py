@@ -286,7 +286,8 @@ def _glm_producer_record() -> dict[str, Any]:
     The producer (``_glm_enrich`` of runtime/glm53flash/glm53flash_prefix_scheduler.py) imports Dynamo and vLLM, so the
     reader cannot import its constants. The reader keeps them here, and a test keeps them equal to the record that the
     producer writes. The vLLM version is the exact supported runtime. The two digests are those of the pin manifest and
-    of the producer file that this collector ships and that the launch mounts; the producer computes both the same way.
+    of the producer file that this collector ships and that a launch of this collector mounts; the producer computes
+    both the same way. A campaign of another producer revision is therefore refused.
     """
     return {
         "instrumentation_revision": "54960177085413259859c88bd34ed0734d4c2ea9",

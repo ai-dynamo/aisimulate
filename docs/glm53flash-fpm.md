@@ -60,25 +60,6 @@ scheduler file of the `release/1.7.0` branch that `runtime-source-sha256.json`
 pins. It refuses every other vLLM version, a patch release such as 0.33.1
 included, before the scheduler loads.
 
-The collector reads the artifact of a GLM-5.3-Flash cell only as an artifact of
-this producer. The cell selects these rules, not the artifact:
-
-- The `producer` record must equal the record that this producer writes: the
-  Dynamo and vLLM revisions above, vLLM `0.33.0`, the digests of the
-  `runtime-source-sha256.json` and `glm53flash_prefix_scheduler.py` files that
-  the collector ships, and the repetition counts below. A missing, changed or
-  added field is refused. So is an artifact of another producer revision.
-- The vLLM version of the record must equal the runtime that the Collector
-  provenance of the launch names.
-- The measurement protocol must be present. It must hold the producer's record
-  of 5 warmups, 10 measurements and their reduction, the `seeded_tokens`
-  content and Dynamo's execution evidence contract.
-- Every point must hold the 10 raw samples and the `adjacent_upper_median`
-  estimate below. The warm-up history must be recorded, and each raw sample
-  must have its timing start and an observed CUDA graph dispatch.
-- A rank artifact of another model that carries the producer's protocol record
-  is refused.
-
 - `sitecustomize.py` checks the installed vLLM/Dynamo sources against
   `runtime-source-sha256.json` before the scheduler loads. It then replaces
   `InstrumentedScheduler` with `Glm53FlashPrefixSeedScheduler` from
@@ -153,6 +134,46 @@ this producer. The cell selects these rules, not the artifact:
   checkpoint block. `_glm_align_stop` in the producer holds the exact rule,
   and the artifact records the checkpoint blocks and their alignment in
   `serving_config.mamba_prefill_checkpoint`.
+
+The collector reads the artifact of a GLM-5.3-Flash cell only as an artifact of
+this producer. The cell selects these rules, not the artifact:
+
+- The `producer` record must equal the record that this producer writes,
+  field by field: the instrumentation revision `54960177`, the scheduler
+  revision `9abd2ef0d9` and the `ai-dynamo 1.7.0.dev20261109` distribution,
+  the sources of the real-seed and queued-request ports, vLLM `0.33.0`, the
+  reviewed vLLM revision `4ba787ec`, the digests of the
+  `runtime-source-sha256.json` and `glm53flash_prefix_scheduler.py` files of
+  the checkout that reads the artifact, the context policy version and the
+  repetition counts above. A missing, changed or added field is refused.
+- The vLLM version of the record must equal the runtime that the Collector
+  provenance of the launch names.
+- The measurement protocol must be present. It must hold the producer's record
+  of 5 warmups, 10 measurements and their reduction, the `seeded_tokens`
+  content and Dynamo's execution evidence contract.
+- Every point must hold the 10 raw samples and the `adjacent_upper_median`
+  estimate above. The warm-up history must be recorded, and each raw sample
+  must have its timing start and an observed CUDA graph dispatch.
+- A rank artifact of another model that carries the producer's protocol record
+  is refused.
+
+The first two rules apply wherever the collector reads the artifact,
+publication included. Readiness and repeatability assessment apply the other
+three. Publication (`aggregate_cell`) does not apply them. The warm-up and raw
+sample checks need measurement evidence version 2, the default.
+
+The two digests are those of the checkout that reads the artifact. A campaign
+is therefore readable only by a collector whose `glm53flash_prefix_scheduler.py`
+and `runtime-source-sha256.json` have the bytes of the files that the launch
+staged. After any change of either file, a comment included, the collector
+refuses earlier GLM-5.3-Flash campaigns at `producer.overlay_sha256` or
+`producer.runtime_source_manifest_sha256`. This holds for every step that reads
+the raw artifacts again: readiness, repeatability assessment, publication and
+finalization, serving validation and the runtime memory import. Read such a
+campaign with the collector revision that collected it, which
+`collection-plan.json` records as `aic_revision`, or collect a new smoke and a
+new campaign. A published table keeps loading, because loading reads the table
+and not the raw artifacts. Artifacts of other models are not affected.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --kv-cache-dtype fp8
