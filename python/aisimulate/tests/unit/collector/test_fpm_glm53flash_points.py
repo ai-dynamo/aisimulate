@@ -665,8 +665,12 @@ _OPTIONS = SimpleNamespace(
     [
         ([(0, None)] * 4, None, 0),
         ([(1, 16)] * 4, 16, 4),
+        # Each Mamba layer sets its own checkpoint block in vLLM 0.33.0 (kda.py:171-176 of glm5next), so a model with
+        # two kinds of Mamba layers can hold groups with and without one. The scheduler then saves no checkpoint inside
+        # the last chunk (scheduler.py:445-449), and the point list is the one without a checkpoint.
+        ([(1, 16), (1, 16), (1, 16), (0, None)], None, 3),
     ],
-    ids=["no-checkpoint", "checkpoint-16"],
+    ids=["no-checkpoint", "checkpoint-16", "checkpoint-in-some-groups"],
 )
 def test_plan_manifest_reads_the_checkpoint_of_the_accepted_profile(groups, alignment, checkpoint_groups):
     canonical, digest, _ = glm_plan_manifest(_OPTIONS, [_deployment(*groups)])
