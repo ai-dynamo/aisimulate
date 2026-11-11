@@ -37,6 +37,7 @@ from .common import (
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
+NonNegativeU64 = Annotated[int, Field(strict=True, ge=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -138,7 +139,8 @@ class SchedulerPredictionConfig(StrictModel):
         default=None,
         description=(
             "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
-            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts "
+            "or MTP with G2 host offload."
         ),
     )
 
@@ -164,6 +166,16 @@ class KvCapacityPredictionConfig(StrictModel):
         elif self.blocks is not None or self.bytes is not None:
             raise ValueError("default KV capacity rejects blocks or bytes")
         return self
+
+
+class HiCacheConfig(StrictModel):
+    """Private SGLang host KV capacity and transfer links per attention-DP rank."""
+
+    num_host_blocks: PositiveInt
+    write_policy: Literal["write_through", "write_through_selective", "write_back"] = "write_through"
+    d2h_bandwidth_gbps: NonNegativeFloat = 32.0
+    h2d_bandwidth_gbps: NonNegativeFloat = 32.0
+    latency_to_first_byte_ms: NonNegativeFloat = 0.0
 
 
 class HostOffloadConfig(StrictModel):
@@ -239,10 +251,18 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+class SlidingWindowStateConfig(StrictModel):
+    """Prefix-cache retention of a sliding-window state (DeepSeek V4)."""
+
+    retention_interval: NonNegativeU64 | None = None
+    lookahead_tokens: NonNegativeU64
+
+
 class StateCacheConfig(StrictModel):
     """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
+    sliding_window: SlidingWindowStateConfig | None = None
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -265,6 +285,18 @@ class StateCachePredictionConfig(StrictModel):
     bytes_per_request: PositiveU64 | None = None
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
+    # vLLM's VLLM_PREFIX_CACHE_RETENTION_INTERVAL; DeepSeek V4 only.
+    retention_interval: NonNegativeU64 | None = None
+    # Sizing fills this for DeepSeek V4; authored only beside explicit bytes.
+    sliding_window_lookahead_tokens: NonNegativeU64 | None = None
+
+    def resolved_sliding_window(self) -> dict[str, int] | None:
+        if self.sliding_window_lookahead_tokens is None:
+            return None
+        window = {"lookahead_tokens": self.sliding_window_lookahead_tokens}
+        if self.retention_interval is not None:
+            window["retention_interval"] = self.retention_interval
+        return window
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -276,9 +308,11 @@ class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
+    decode_radix_cache: bool = False
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
+    hicache: HiCacheConfig | None = None
     g3_offload: G3OffloadConfig | None = None
     kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
@@ -287,7 +321,13 @@ class KvCachePredictionConfig(StrictModel):
     @classmethod
     def _accept_resolved_state_config(cls, value: Any) -> Any:
         if isinstance(value, StateCacheConfig):
-            return value.model_dump()
+            # The resolved window round-trips through the sizing fields.
+            window = value.sliding_window
+            return StateCachePredictionConfig(
+                bytes_per_request=value.bytes_per_request,
+                retention_interval=window.retention_interval if window else None,
+                sliding_window_lookahead_tokens=window.lookahead_tokens if window else None,
+            )
         return value
 
     @model_validator(mode="after")
@@ -950,7 +990,13 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
                 workers=self.workers,
                 has_transfer=self.kv_transfer is not None,
             )
+        _validate_decode_radix_cache(
+            backends={self.backend},
+            workers=self.workers,
+            speculative=bool(self.nextn) or self.speculation is not None,
+        )
         _validate_prediction_host_offload(self)
+        _validate_prediction_hicache(self)
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
@@ -1057,6 +1103,7 @@ class KvCapacityRecommendationConfig(StrictModel):
 class KvCacheRecommendationConfig(StrictModel):
     block_size: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     prefix_caching: bool = True
+    decode_radix_cache: bool = False
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityRecommendationConfig = Field(default_factory=KvCapacityRecommendationConfig)
     host_offload: HostOffloadConfig | None = None
@@ -1064,6 +1111,8 @@ class KvCacheRecommendationConfig(StrictModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_state_cache_recommendation(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("hicache") is not None:
+            raise ValueError("hicache currently supports prediction only; recommendation is not supported")
         if isinstance(value, dict) and value.get("state_cache") is not None:
             raise ValueError("state_cache currently supports prediction only; recommendation is not supported")
         return value
@@ -1204,6 +1253,11 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         _validate_recommendation_host(self, modes=modes, backends=backends)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
+        _validate_decode_radix_cache(
+            backends=backends,
+            workers=self.workers,
+            speculative=bool(self.nextn) or self.speculation is not None,
+        )
         return self
 
 
@@ -1288,7 +1342,24 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError(f"{kind} speculation does not support host_offload")
+            if kind != "mtp":
+                raise ValueError(f"{kind} speculation does not support host_offload")
+            if worker.scheduler.async_scheduling is True:
+                raise ValueError("mtp speculation with host_offload requires async_scheduling=false")
+            cache = worker.kv_cache
+            if (
+                backends != {"vllm"}
+                or modes != {"aggregated"}
+                or role != "aggregated"
+                or worker.parallelism.attention_data != 1
+                or not cache.prefix_caching
+                or cache.host_offload.scope != "dp_rank_local"
+                or cache.g3_offload is not None
+            ):
+                raise ValueError(
+                    "mtp speculation with host_offload requires aggregated vllm, attention_data=1, "
+                    "prefix_caching=true, scope=dp_rank_local, and no g3_offload"
+                )
         if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
@@ -1333,6 +1404,26 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+
+
+def _validate_decode_radix_cache(*, backends: set[str], workers, speculative: bool) -> None:
+    """Validate SGLang's `--disaggregation-decode-enable-radix-cache`.
+
+    Mixed backend domains may keep it; concrete predictions reject it outside SGLang.
+    """
+    for role in ("aggregated", "prefill"):
+        worker = getattr(workers, role)
+        if worker is not None and worker.kv_cache.decode_radix_cache:
+            raise ValueError(f"workers.{role}.kv_cache.decode_radix_cache applies only to the decode role")
+    decode = workers.decode
+    if decode is None or not decode.kv_cache.decode_radix_cache:
+        return
+    if "sglang" not in backends:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache is supported only for backend=sglang")
+    if not decode.kv_cache.prefix_caching:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache requires prefix_caching=true")
+    if speculative:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache is incompatible with speculative decoding")
 
 
 def require_native_vl_parallelism(
@@ -1431,10 +1522,25 @@ def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
             raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
 
 
+def _validate_prediction_hicache(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.hicache is None:
+            continue
+        if engine.backend != "sglang" or engine.mode != "aggregated" or role != "aggregated":
+            raise ValueError("hicache requires backend=sglang and mode=aggregated")
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("hicache requires prefix_caching=true")
+        if worker.kv_cache.host_offload is not None:
+            raise ValueError("hicache cannot be combined with host_offload")
+
+
 def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
+    if engine.nextn or engine.nextn_accepted is not None:
+        raise ValueError("host_offload with speculative decoding requires canonical engine.speculation kind=mtp")
     if engine.mode == "afd":
         raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":

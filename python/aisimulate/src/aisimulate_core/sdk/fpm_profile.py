@@ -96,6 +96,7 @@ def _load_pinned_checkpoint_config(model: str, revision: str) -> dict | None:
 
 def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
     """Verify raw checkpoint metadata without loading weights or remote code."""
+    from aisimulate_core.sdk.fpm_model_metadata import decoder_config_key
     from aisimulate_core.sdk.utils import HuggingFaceDownloadError, _load_local_config
 
     checkpoint = Path(profile.model).expanduser()
@@ -114,10 +115,14 @@ def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
         ) from error
     if not isinstance(metadata, dict):
         raise ValueError(f"FPM profile checkpoint config.json must be a mapping for {identity}")
-    # Match the collector's text-model view of checkpoint metadata.
-    text_config = metadata.get("text_config")
-    if isinstance(text_config, dict):
-        metadata = {**metadata, **text_config}
+    # Match the collector's text-model view of checkpoint metadata. A decoder that declares no architectures,
+    # absent or null, keeps the wrapper's, as the collector and config intake read it.
+    decoder = metadata.get(decoder_config_key(metadata))
+    if isinstance(decoder, dict):
+        merged = {**metadata, **decoder}
+        if decoder.get("architectures") is None:
+            merged["architectures"] = metadata.get("architectures")
+        metadata = merged
     architectures = metadata.get("architectures")
     if (
         not isinstance(architectures, list)

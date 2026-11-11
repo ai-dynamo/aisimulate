@@ -374,9 +374,15 @@ def _resolve_state_cache(
     if cache.state_cache is None:
         return worker, None
     size = resolve_state_size(engine, worker)
+    state = cache.state_cache.model_copy(
+        update={
+            "bytes_per_request": size["bytes_per_request"],
+            "sliding_window_lookahead_tokens": size.get("sliding_window_lookahead_tokens"),
+        }
+    )
     resolved = cache.model_copy(
         update={
-            "state_cache": cache.state_cache.model_copy(update={"bytes_per_request": size["bytes_per_request"]}),
+            "state_cache": state,
             "block_size": size["block_size"],
             "bytes_per_token": size["kv_bytes_per_token"],
         }
@@ -774,6 +780,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if backend == "sglang" and role == "decode" and cache.decode_radix_cache:
+        payload["sglang"] = {"disaggregation_decode_enable_radix_cache": True}
     if worker.scheduler.async_scheduling is not None:
         payload["async_scheduling"] = worker.scheduler.async_scheduling
     if engine.speculation is not None:
@@ -818,6 +826,8 @@ def _worker_engine_args(
         payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
         payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
+        if (window := cache.state_cache.resolved_sliding_window()) is not None:
+            payload["state_cache"]["sliding_window"] = window
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:
@@ -943,7 +953,7 @@ def _worker_engine_args(
         payload["aic_nextn"] = engine.nextn
         payload["aic_nextn_accepted"] = engine.nextn_accepted
     host_offload = cache.host_offload
-    if host_offload is not None:
+    if host_offload is not None or cache.hicache is not None:
         payload["kv_cache_bytes_per_token"] = _resolve_kv_bytes_per_token(
             engine,
             worker,
@@ -972,6 +982,8 @@ def _worker_engine_args(
                 frontend=worker.frontend,
             )
         )
+    if cache.hicache is not None:
+        payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
     return payload
 
 

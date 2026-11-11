@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Aggregated vLLM template: replace every <placeholder> and absolute path.
+traffic:
+  source:
+    type: trace
+    format: mooncake
+    paths: [/absolute/path/requests.jsonl]
+    block_size: <trace-hash-block-size>
+  load:
+    type: trace_timestamps
+    speedup: 1.0
+
+engine:
+  mode: aggregated
+  model: <captured-model-id>
+  hardware: <packaged-system-name>
+  backend: vllm
+  backend_version: "<captured-engine-version>"
+  context_length: <captured-context-limit>
+  workers:
+    aggregated:
+      parallelism:
+        replicas: 1
+        tensor: <captured-tp>
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: <captured-moe-tp>
+        moe_expert: <captured-ep>
+      scheduler:
+        max_batched_tokens: <captured-scheduler-token-limit>
+        max_sequences: <captured-sequence-limit>
+      kv_cache:
+        block_size: <observed-kv-block-size>
+        bytes_per_token: <observed-bytes-per-token-per-tp-shard>
+        prefix_caching: <captured-true-or-false>
+        capacity:
+          type: fixed
+          blocks: <observed-usable-blocks-per-dp-rank>
+      timing:
+        type: default
+        estimation_mode: fpm_learned
+        fallback_policy: deny
+        estimator_config:
+          fpm_learned:
+            artifact_path: /absolute/path/fpm-run/models/aggregated.learned.json
+            adaptation: frozen
+          correction:
+            enabled: false

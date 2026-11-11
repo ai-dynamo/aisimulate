@@ -531,8 +531,8 @@ fn validate_preflight_graph(block_size: usize, rows: &[AgenticMooncakeRow]) -> R
         row.source_play_ordinal = Some(0);
         builder.push(row)?;
     }
-    builder.finish()?;
-    Ok(())
+    // Only the checks matter here; the corpus graph is compiled once later.
+    builder.validate()
 }
 
 #[derive(Debug, Deserialize)]

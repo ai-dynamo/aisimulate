@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
@@ -120,12 +121,14 @@ class OptimizationGoal(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target: OptimizationTarget = OptimizationTarget.THROUGHPUT
+    target: OptimizationTarget | AIPerfMetric = OptimizationTarget.THROUGHPUT
+    # Aggregate AIPerf metric constraints, enforced only with strict_sla.
+    metric_constraints: list[MetricConstraint] = Field(default_factory=list)
     # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
     sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
-    pareto_objectives: list[OptimizationTarget] | None = None
+    pareto_objectives: list[OptimizationTarget | AIPerfMetric] | None = None
     # Preserve replay goodput's per-request SLA semantics by default. When
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
@@ -133,11 +136,21 @@ class OptimizationGoal(BaseModel):
     min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @property
+    def uses_aiperf_metrics(self) -> bool:
+        targets = self.resolved_pareto_objectives if self.is_pareto else [self.target]
+        return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
+
+    @property
+    def enforced_metric_constraints(self) -> list[MetricConstraint]:
+        # min_gpus forces the mean SLA gate, but metric constraints stay opt-in via strict_sla.
+        return self.metric_constraints if self.strict_sla else []
+
+    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
-    def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
+    def resolved_pareto_objectives(self) -> list[OptimizationTarget | AIPerfMetric]:
         """The effective Pareto objective list: the configured one, or the default pair only
         when unset (``None``). An explicitly-supplied empty/short list is kept as-is so the
         validator's ``len < 2`` guard rejects it (rather than silently using the default).
@@ -172,8 +185,8 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and not has_sla:
-            raise ValueError("strict_sla requires at least one SLA bound")
+        if self.strict_sla and not has_sla and not self.metric_constraints:
+            raise ValueError("strict_sla requires at least one SLA bound or metric constraint")
         if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
             raise ValueError("min_gpus requires at least one SLA bound")
         if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
@@ -660,7 +673,8 @@ class SearchSpace(BaseModel):
     # pinned
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
-    decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_enable_prefix_caching: bool = False
+    decode_radix_cache: bool = False  # SGLang --disaggregation-decode-enable-radix-cache
     decode_kv_bytes_per_token: int | str = "auto"
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
@@ -903,6 +917,8 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_afd_contract(self) -> SearchSpace:
         afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if afd_modes and self.decode_radix_cache:
+            raise ValueError("decode_radix_cache is unsupported for AFD")
         if self.afd_phase not in {"prefill", "decode", "both"}:
             raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
         if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
@@ -1073,6 +1089,13 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_engine_controls(self):
+        if self.decode_radix_cache and "sglang" not in self.backend:
+            raise ValueError("decode_radix_cache requires a search with backend=sglang")
+        if self.decode_radix_cache and "disagg" in self.deployment_mode:
+            if not self.decode_enable_prefix_caching:
+                raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
+            if self.aic_nextn or self.speculation is not None:
+                raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
         if self.enable_chunked_prefill is not None and any(
             mode not in {"agg", "disagg"} for mode in self.deployment_mode
         ):

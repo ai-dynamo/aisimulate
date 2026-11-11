@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
@@ -562,9 +563,9 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
 }
 
 #[rstest]
-#[case::prefill_survives_retraction(3, true)]
-#[case::decode_retraction_is_not_committed(4, false)]
-fn speculative_retraction_preserves_only_executed_work(
+#[case::waiting_reservation_defers_before_prefill(3, true)]
+#[case::decode_growth_preemption_is_not_committed(4, false)]
+fn speculative_capacity_commits_only_scheduled_work(
     #[case] blocks: usize,
     #[case] prefill_pass: bool,
 ) {
@@ -601,7 +602,18 @@ fn speculative_retraction_preserves_only_executed_work(
         let second = core.execute_pass(&mut collector, first.end_ms);
         core.execute_pass(&mut collector, second.end_ms)
     };
-    assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
+    assert_eq!(
+        core.state.requests[&retracted].num_preemptions,
+        usize::from(!prefill_pass)
+    );
+    if prefill_pass {
+        let waiting = &core.state.requests[&retracted];
+        assert_eq!(waiting.status, RequestStatus::Waiting);
+        assert_eq!(waiting.num_computed_tokens, 0);
+        assert_eq!(waiting.sequence.lease.physical_owned_block_count(), 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), 2);
+        assert_eq!(pass.fpm.as_ref().unwrap().num_prefill_requests, 1);
+    }
     assert!(
         pass.output_signals
             .iter()
@@ -613,7 +625,7 @@ fn speculative_retraction_preserves_only_executed_work(
             .all(|signal| signal.uuid != retracted)
     );
     assert!(pass.committed_requests.contains(&survivor));
-    assert_eq!(pass.committed_requests.contains(&retracted), prefill_pass);
+    assert!(!pass.committed_requests.contains(&retracted));
 }
 
 mod speculative_scheduling {
@@ -846,6 +858,18 @@ mod speculative_scheduling {
                 break;
             }
             let pass = core.execute_pass(&mut collector, now);
+            if passes.len() == 4 {
+                // All three owners hold four blocks after pass 4. On pass 5,
+                // request 2 needs five (11 computed + 4 query + 3 lookahead =
+                // 18 slots), so request 3 releases its four before sampling.
+                let [pressure] = pass.pressure_events.as_slice() else {
+                    panic!("pass 5 must preempt exactly one owner before sampling");
+                };
+                assert_eq!(pressure.request_id, Uuid::from_u128(3));
+                assert_eq!(pressure.request_active_blocks_before, 4);
+                assert_eq!(pressure.state_before.active_blocks, 12);
+                assert_eq!(pressure.state_after.active_blocks, 8);
+            }
             accepted += pass.decode_acceptance.accepted_tokens;
             forwards += pass.decode_acceptance.forwards;
             // One entry per request burst: id, tokens emitted, then `!` if it completed.
@@ -877,8 +901,11 @@ mod speculative_scheduling {
         );
         assert_eq!(
             passes.join(" "),
-            "1:1,2:1 1:1,2:2,3:1 1:1,2:1,3:3 1:2,2:2,3:3 1:4!,2:4,3:1 2:2,3:1 2:2!,3:2,4:1 \
-             3:2,4:1 3:2,4:1,5:1 3:1,4:2 3:1,4:1 3:3!,4:1!,5:1 5:2 5:2 5:3,6:1 5:3!,6:2 6:1!"
+            // Native MTP owns the pending query plus future draft slots before
+            // sampling. On pass 5, request 3 loses its reservation and is not
+            // sampled; this deliberately changes the legacy draw-order golden.
+            "1:1,2:1 1:1,2:2,3:1 1:1,2:1,3:3 1:2,2:2,3:3 1:4!,2:4 2:1 2:2,3:1 2:1!,3:3 \
+             3:2,4:1 3:2,4:1 3:2,4:1,5:1 3:1,4:2 3:1,4:1 3:1!,4:1! 5:1 5:3 5:2,6:1 5:2,6:3! 5:1 5:2!"
         );
     }
 
@@ -937,6 +964,7 @@ mod speculative_scheduling {
                 .kv_cache_bytes_per_token(Some(16))
                 .state_cache(Some(crate::engine::StateCacheConfig {
                     bytes_per_request: 16,
+                    sliding_window: None,
                 }))
                 .build()
                 .unwrap(),
@@ -2354,6 +2382,7 @@ mod core_behavior {
         let uuid = Uuid::from_u128(0xA11CE);
         let planned = vec![101, 202, 303];
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: vec![1, 2],
             max_output_tokens: planned.len(),
             output_token_ids: Some(planned.clone()),
@@ -2405,6 +2434,7 @@ mod core_behavior {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -2415,6 +2445,7 @@ mod core_behavior {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..108).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -2474,6 +2505,7 @@ mod core_behavior {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -2484,6 +2516,7 @@ mod core_behavior {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..108).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -2523,6 +2556,7 @@ mod core_behavior {
         let r2 = Uuid::from_u128(202);
         for (uuid, tokens) in [(r1, vec![1; 4]), (r2, vec![2; 4])] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens: 1,
                 output_token_ids: None,
@@ -2585,6 +2619,7 @@ mod core_behavior {
             .unwrap();
         let mut core = VllmCore::new(args);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: vec![1; 8],
             max_output_tokens: 1,
             output_token_ids: None,
@@ -2644,6 +2679,7 @@ mod core_behavior {
         let mut core = VllmCore::new(make_args());
         let uuid = Uuid::from_u128(11);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -2689,6 +2725,7 @@ mod core_behavior {
         let r2 = Uuid::from_u128(2);
         for (uuid, range) in [(r1, 0u32..8u32), (r2, 100u32..108u32)] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: range.collect(),
                 max_output_tokens: 8,
                 output_token_ids: None,
@@ -2737,6 +2774,7 @@ mod core_behavior {
         let blocked = Uuid::from_u128(2);
         let follower = Uuid::from_u128(3);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..16).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -2747,6 +2785,7 @@ mod core_behavior {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..112).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -2757,6 +2796,7 @@ mod core_behavior {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (200..204).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -2830,6 +2870,7 @@ mod core_behavior {
         let follower = Uuid::from_u128(2);
         for (uuid, range) in [(oversized, 0u32..20u32), (follower, 100u32..104u32)] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: range.collect(),
                 max_output_tokens: 1,
                 output_token_ids: None,
@@ -2862,6 +2903,7 @@ mod core_behavior {
         let mut core = VllmCore::new(make_args());
         for uuid in [Uuid::from_u128(1), Uuid::from_u128(2)] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: (0..8).collect(),
                 max_output_tokens: 2,
                 output_token_ids: None,
@@ -2900,6 +2942,7 @@ mod core_behavior {
         let short = Uuid::from_u128(1);
         let long = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 5,
             output_token_ids: None,
@@ -2910,6 +2953,7 @@ mod core_behavior {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 8,
             output_token_ids: None,
@@ -2947,7 +2991,7 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_mtp_releases_unused_block_reservations() {
+    fn test_mtp_retains_rejected_draft_capacity_until_completion() {
         let args = MockEngineArgs::builder()
             .block_size(2)
             .num_gpu_blocks(8)
@@ -2971,18 +3015,27 @@ mod core_behavior {
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, 0.0);
         assert_eq!(pass.output_signals.len(), 1);
-        // Exercise an actual verification round, not just the draft-free
-        // prefill output. Rejected drafts must not retain their reservation.
+        assert_eq!(core.kv_manager.num_active_blocks(), 3);
+        // Rejection rolls back computed tokens while retaining physical slots
+        // for the next forward. Completion must release the complete lease.
         let pass = core.execute_pass(&mut collector, pass.end_ms);
         assert_eq!(pass.output_signals.len(), 1);
         assert_eq!(
             core.kv_manager.num_active_blocks(),
-            3,
-            "the block reserved only for rejected drafts must be released"
+            4,
+            "rejected draft capacity remains owned by the running request"
         );
         let request = core.state.requests.get(&uuid).unwrap();
         assert_eq!(request.sequence.generated_tokens(), 2);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
+        let mut now = pass.end_ms;
+        for _ in 0..3 {
+            let pass = core.execute_pass(&mut collector, now);
+            assert_eq!(pass.output_signals.len(), 1);
+            now = pass.end_ms;
+        }
+        assert!(core.is_empty());
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
     }
 
     #[test]
@@ -3004,6 +3057,7 @@ mod core_behavior {
             let mut collector = crate::engine::trace::TraceCollector::default();
 
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: (0..8).collect(),
                 max_output_tokens: 1,
                 output_token_ids: None,
@@ -3017,6 +3071,7 @@ mod core_behavior {
             assert!(core.is_empty());
 
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: (0..12).collect(),
                 max_output_tokens: 1,
                 output_token_ids: None,
@@ -3061,6 +3116,7 @@ mod forward_pass_metrics {
     fn test_fpm_single_prefill_request() {
         let mut core = VllmCore::new(fpm_args());
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3091,6 +3147,7 @@ mod forward_pass_metrics {
         // r1: 4-token prompt, 3 output tokens
         let r1 = Uuid::from_u128(1);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3112,6 +3169,7 @@ mod forward_pass_metrics {
         // r2: 4-token prompt arriving while r1 is decoding
         let r2 = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3144,6 +3202,7 @@ mod forward_pass_metrics {
         // Request with 4-token prompt and 1 output token — completes in 1 pass
         let r1 = Uuid::from_u128(1);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3186,6 +3245,7 @@ mod forward_pass_metrics {
 
         let r1 = Uuid::from_u128(1);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3233,6 +3293,7 @@ mod forward_pass_metrics {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3243,6 +3304,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..108).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3283,6 +3345,7 @@ mod forward_pass_metrics {
 
         // Two prefill requests with different prompt lengths
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(), // prompt_len = 4
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3293,6 +3356,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..112).collect(), // prompt_len = 12
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3334,6 +3398,7 @@ mod forward_pass_metrics {
         let mut core = VllmCore::new(args);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..16).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3406,6 +3471,7 @@ mod forward_pass_metrics {
 
         // r1: 4-token prompt, long output (stays running)
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
@@ -3423,6 +3489,7 @@ mod forward_pass_metrics {
 
         // r2: another request that will compete for KV
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..116).collect(), // 16 tokens — will pressure KV
             max_output_tokens: 5,
             output_token_ids: None,

@@ -537,6 +537,8 @@ def _role_search_space(
         else:
             result[memory_name] = memory_value
         result[f"{legacy_role}_enable_prefix_caching"] = cache.get("prefix_caching", True)
+        if legacy_role == "decode":
+            result["decode_radix_cache"] = cache.get("decode_radix_cache", False)
         result[f"{legacy_role}_kv_bytes_per_token"] = cache.get("bytes_per_token", "auto")
         result[f"{legacy_role}_native_host_offload"] = deepcopy(cache.get("host_offload"))
         capacity_type = capacity.get("type", "default")
@@ -976,6 +978,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.metrics:
+        payload["metric_constraints"] = [c.model_dump(mode="json") for c in config.optimization.constraints.metrics]
     if config.optimization.constraints.min_goodput_rps is not None:
         payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla
@@ -1124,6 +1128,8 @@ def _candidate_prediction(
             "bytes_per_token": sample[f"{role}_kv_bytes_per_token"],
             "capacity": capacity,
         }
+        if role == "decode" and sample["backend"] == "sglang" and sample.get("decode_radix_cache"):
+            kv_cache["decode_radix_cache"] = True
         role_args = (
             deployment.agg_engine_args
             if role == "agg"
