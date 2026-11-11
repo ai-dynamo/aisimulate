@@ -2065,10 +2065,14 @@ def _producer_record(count, expected, method="adjacent_upper_median"):
         pytest.param(_producer_record(10, 10, "last_step"), id="last-step-of-ten"),
     ],
 )
-def test_measurement_evidence_refuses_a_producer_record_without_its_measured_repetitions(tmp_path, change):
+def test_measurement_evidence_refuses_a_producer_record_without_its_repetitions_and_estimate(tmp_path, change):
     root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
     _edit_raw_samples(root, change)
-    with pytest.raises(ValueError, match="benchmark_measurement does not hold the producer's measured repetitions"):
+    with pytest.raises(
+        ValueError,
+        match="benchmark_measurement does not hold the producer's ten measured repetitions with their "
+        "adjacent_upper_median estimate",
+    ):
         extract_measurement_evidence(root, collection)
 
 

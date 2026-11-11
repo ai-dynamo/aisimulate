@@ -241,7 +241,10 @@ def _read_measurement(
     ):
         # The producer's protocol names one raw sample per measured repetition and the upper median after the first.
         # Dynamo's own scheduler writes no producer record, so its records never reach this rule.
-        raise ValueError("benchmark_measurement does not hold the producer's measured repetitions")
+        raise ValueError(
+            "benchmark_measurement does not hold the producer's ten measured repetitions with their "
+            "adjacent_upper_median estimate"
+        )
     return measurement, [] if recorded else [f"rank {rank}: injected prompt hashes unavailable"]
 
 
