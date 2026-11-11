@@ -610,6 +610,24 @@ land on every matching token. With `block_size: 1536` and `prefix_match_unit: 12
 24,300-token prompt keeps snapshots at 23,040 and 24,192 tokens. A later request
 sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode.
 
+### State pool from recorded runtime memory
+
+An `engine.fpm_profile` whose deployment records `resources.runtime_memory`
+rejects fixed capacity, because the pool is the one the backend allocated when
+the profile was collected. With inferred state geometry (`state_cache` without
+`bytes_per_request`), leave `capacity` at `type: default`. Each rank's pool is
+then the recorded `runtime_memory.kv_cache_bytes` in whole blocks of the
+resolved geometry: `kv_cache_bytes // (block_size * bytes_per_token)`.
+`capacity.memory_fraction` must equal the recorded `gpu_memory_utilization`,
+and the context length must not exceed the recorded `max_model_len`.
+Leave `capacity.cuda_graph_reserved_bytes` unset, because the recorded pool
+already excludes graph memory. A grouped FPM cache and `prefill_context` or
+`decode_context` above 1 are not supported here. Every
+`engine.speculation.kind` except `ngram` requires fixed capacity, so it cannot
+use a recorded pool; set the draft depth with `engine.nextn` instead.
+The block count follows the inferred row size, so it can differ from the count
+the backend logged when that build packs its cache groups differently.
+
 In `mode: disaggregated`, set `state_cache` on both `prefill` and `decode`;
 each role sizes its own state. The decode worker reserves the prompt blocks
 plus one state when it accepts a request, then continues from the transferred
@@ -622,7 +640,8 @@ than the padded `bytes_per_request` for Kimi K3 at TP8), transfers it after all
 but the last prompt token and recomputes that token on the decode worker. Replay
 transfers the state for the whole prompt and does not model the recompute.
 
-Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
+Supported: aggregated and P/D vLLM, fixed `capacity` (or the
+[recorded pool](#state-pool-from-recorded-runtime-memory) of an FPM profile), `predict --stack engine`;
 inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
 Speculative decoding supports `prefix_match_unit` equal to `block_size`.
 Sub-block matching with speculation remains unsupported.

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Modified native port of heterogeneous AFD/fabric behavior; source revision and
+// original paths: root THIRD_PARTY_NOTICES.md (AISimulate heterogeneous AFD).
+// Source: https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 
 //! Communication operators: custom allreduce, NCCL collectives, P2P.
 //!
@@ -419,9 +422,36 @@ pub struct P2POp {
     /// per-rank payload is `ceil(x / seq_split)`. Defaults to 1.
     #[serde(default = "crate::operators::gemm::default_seq_split")]
     pub seq_split: u32,
+    /// AFD pool-pair span. None preserves adjacent pipeline-rank pricing.
+    #[serde(default)]
+    pub span_gpus: Option<u32>,
+    /// Different hardware systems cannot share a scale-up domain.
+    #[serde(default)]
+    pub force_scale_out: bool,
 }
 
 impl P2POp {
+    /// Resolve immutable link parameters once for a prepared AFD pool pair.
+    pub(crate) fn fabric_parameters(&self, spec: &SystemSpec) -> (f64, f64) {
+        let node = &spec.node;
+        if self.force_scale_out {
+            return (
+                node.inter_rack_bw.unwrap_or(node.inter_node_bw),
+                if node.num_gpus_per_rack.is_some() {
+                    node.inter_rack_latency
+                        .unwrap_or(node.p2p_latency)
+                        .max(node.p2p_latency)
+                } else {
+                    node.p2p_latency
+                },
+            );
+        }
+        match self.span_gpus {
+            Some(span) => (spec.get_p2p_bandwidth(span), spec.get_p2p_latency(span)),
+            None => (node.inter_node_bw, node.p2p_latency),
+        }
+    }
+
     pub fn new(name: impl Into<String>, pp_size: u32, hidden_size: u32) -> Self {
         Self {
             name: name.into(),
@@ -429,6 +459,8 @@ impl P2POp {
             pp_size,
             hidden_size,
             seq_split: 1,
+            span_gpus: None,
+            force_scale_out: false,
         }
     }
 
@@ -436,24 +468,32 @@ impl P2POp {
         if self.pp_size <= 1 {
             return Ok(PerformanceResult::zero());
         }
-        let spec = &db.system_spec;
+        self.query_with_link(db, x, self.fabric_parameters(&db.system_spec))
+    }
+
+    pub(crate) fn query_with_link(
+        &self,
+        db: &PerfDatabase,
+        x: u32,
+        link: (f64, f64),
+    ) -> Result<PerformanceResult, AicError> {
+        if self.pp_size <= 1 {
+            return Ok(PerformanceResult::zero());
+        }
         let per_rank_tokens = x.div_ceil(self.seq_split.max(1)); // CP: busiest rank
         let bytes = (per_rank_tokens as f64) * (self.hidden_size as f64) * 2.0;
         // Python `_query_p2p_table`: SOL drops the constant `p2p_latency`
         // term (`message_bytes / inter_node_bw * 1000`, source "sol"); every
         // other mode — including SILICON/HYBRID, which have no P2P table —
         // uses the empirical formula tagged "empirical".
-        let inter_bw = spec.node.inter_node_bw.max(1.0);
+        let inter_bw = link.0.max(1.0);
         // The P2P SOL_FULL triple is `(sol_time, 0, sol_time)` — the
         // inter-node bandwidth bound rides in the mem slot.
         let result = match db.database_mode {
             DatabaseMode::Sol | DatabaseMode::SolFull => {
                 PerformanceResult::sol(SolComponents::new(0.0, bytes / inter_bw * 1000.0))
             }
-            _ => PerformanceResult::new(
-                (bytes / inter_bw + spec.node.p2p_latency) * 1000.0,
-                Source::Empirical,
-            ),
+            _ => PerformanceResult::new((bytes / inter_bw + link.1) * 1000.0, Source::Empirical),
         };
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
     }
@@ -826,5 +866,45 @@ mod tests {
             (bytes / spec.node.inter_node_bw + spec.node.p2p_latency) * 1000.0
         );
         assert_eq!(empirical.source, Source::Empirical);
+    }
+
+    #[test]
+    fn p2p_fabric_tiers_and_cross_system_override_have_hand_derived_costs() {
+        let mut db = b200_vllm_db();
+        db.database_mode = DatabaseMode::Empirical;
+        let node = &mut db.tables_mut().system_spec.node;
+        node.num_gpus_per_node = 4;
+        node.intra_node_bw = 1000e9;
+        node.inter_node_bw = 100e9;
+        node.num_gpus_per_rack = Some(72);
+        node.inter_rack_bw = Some(10e9);
+        node.p2p_latency = 10e-6;
+        node.inter_rack_latency = Some(30e-6);
+        // x=100, hidden=5000, bf16: exactly 1,000,000 bytes.
+        // Local: 1us+10us; rack:10us+10us; cross-rack:100us+30us.
+        for (span, ms) in [
+            (Some(4), 0.011),
+            (Some(5), 0.020),
+            (Some(72), 0.020),
+            (Some(73), 0.130),
+            (None, 0.020),
+        ] {
+            let mut op = P2POp::new("tier", 2, 5000);
+            op.span_gpus = span;
+            assert!((op.query(&db, 100).unwrap().latency_ms - ms).abs() < 1e-12);
+            op.force_scale_out = true;
+            assert!((op.query(&db, 100).unwrap().latency_ms - 0.130).abs() < 1e-12);
+        }
+        // Optional cross-rack latency cannot make a rack crossing faster.
+        db.tables_mut().system_spec.node.inter_rack_latency = Some(1e-6);
+        assert_eq!(db.system_spec.get_p2p_latency(73), 10e-6);
+        db.tables_mut().system_spec.node.inter_rack_latency = None;
+        assert_eq!(db.system_spec.get_p2p_latency(73), 10e-6);
+        let mut forced = P2POp::new("flat", 2, 5000);
+        forced.force_scale_out = true;
+        let node = &mut db.tables_mut().system_spec.node;
+        node.num_gpus_per_rack = None;
+        node.inter_rack_bw = None;
+        assert!((forced.query(&db, 100).unwrap().latency_ms - 0.020).abs() < 1e-12);
     }
 }

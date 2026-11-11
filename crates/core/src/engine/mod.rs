@@ -36,6 +36,8 @@ pub(crate) use common::hashing::{
 };
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
+pub(crate) use config::afd_total_gpus;
+pub use config::{AfdAPoolConfig, AfdEngineConfig, AfdFPoolConfig};
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
     G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
@@ -57,6 +59,10 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(feature = "python")]
+pub(crate) use scheduler::afd::timing::AfdTimingModel;
+#[cfg(test)]
+pub(crate) use scheduler::afd::timing::tests::provider_for as afd_timing_provider_for;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{

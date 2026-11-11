@@ -68,3 +68,23 @@ joint resolution is required.
 
 The application/runtime dependencies remain in
 [`python/aisim/pyproject.toml`](../python/aisim/pyproject.toml).
+
+## AFD golden build identity
+
+Before refreshing AFD goldens, rebuild the native extension using the
+[development setup](../DEVELOPMENT.md#2-install-development-dependencies), then run:
+
+```bash
+python/aisim/.venv/bin/python scripts/afd_parity.py snapshot-build --output /tmp/afd-build/manifest.json
+```
+
+Pass that manifest to `refresh-e2e` or `refresh-layouts` with `--build-manifest`.
+The native extension embeds the hashes of its Rust sources, build script and
+Cargo manifests/lockfile during compilation. Snapshot creation and refresh both
+compare that inventory with the checkout. Source edits, additions, deletions or
+renames require a rebuild; an extension without build-time identity also fails
+with rebuild guidance. Python sources are recorded at snapshot time because they
+execute directly from the checkout. Their later changes invalidate the manifest.
+Historical manifests remain evidence for their original campaigns; they cannot
+be upgraded by pairing their binaries with newly hashed source files. Rebuild and
+generate a new manifest for a new qualification run.

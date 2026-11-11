@@ -1026,21 +1026,31 @@ def test_profile_search_space_rejects_custom_timing(profile, role, timing):
 @pytest.mark.parametrize(
     "updates",
     [
-        {"deployment_mode": ["afd"]},
-        {"deployment_mode": ["afd+pd"]},
+        {
+            "deployment_mode": ["agg"],
+            "backend": ["sglang"],
+            "afd_roles": {"aggregated": {"type": "afd", "afd": {"a_batch_size": 16}}},
+        },
+        {
+            "deployment_mode": ["disagg"],
+            "backend": ["sglang"],
+            "afd_roles": {"decode": {"type": "afd", "afd": {"a_batch_size": 16}}},
+        },
         {"encoder": {"hardware_sku": "h200_sxm"}},
         {"backend": ["sglang"]},
     ],
 )
 def test_profile_search_space_rejects_unsupported_providers(profile, updates):
+    options = {
+        "model_name": profile["model"],
+        "hardware_sku": "h200_sxm",
+        "backend_version": "0.25.1",
+        **updates,
+    }
+    if "afd_roles" in updates:
+        SearchSpace(**options)
     with pytest.raises(ValidationError, match="FPM profiles support vLLM aggregated/disaggregated"):
-        SearchSpace(
-            model_name=profile["model"],
-            hardware_sku="h200_sxm",
-            backend_version="0.25.1",
-            fpm_profile=profile,
-            **updates,
-        )
+        SearchSpace(fpm_profile=profile, **options)
 
 
 @pytest.mark.parametrize(

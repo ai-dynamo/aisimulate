@@ -685,6 +685,36 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
     assert actual.cpu_count == 0.5
 
 
+@pytest.mark.parametrize(
+    "membership,mount,limit,usage,stat",
+    [
+        ("0::/job", "cgroup2 cgroup rw", "memory.max", "memory.current", f"anon {GB}\ninactive_file {5 * GB}\n"),
+        (
+            "1:memory:/job",
+            "cgroup cgroup rw,memory",
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+            # v1 usage is hierarchical, like its total_ counters.
+            f"inactive_file 0\ntotal_rss {GB}\ntotal_inactive_file {5 * GB}\n",
+        ),
+    ],
+    ids=["v2", "v1"],
+)
+def test_cgroup_usage_excludes_inactive_page_cache(tmp_path, host, membership, mount, limit, usage, stat):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text(f"{membership}\n")
+    (proc / "self/mountinfo").write_text(f"42 30 0:27 / /sys/fs/cgroup rw - {mount}\n")
+    root = tmp_path / "sys/fs/cgroup"
+    (root / "job").mkdir(parents=True)
+    (root / limit).write_text(str(8 * GB))
+    (root / usage).write_text(str(7 * GB))
+    (root / "memory.stat").write_text(stat)
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 6 * GB
+    (root / "memory.stat").unlink()
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == GB
+
+
 def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host):
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
     monkeypatch.setattr(resources, "discover_host", lambda: host)

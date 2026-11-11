@@ -230,6 +230,15 @@ impl BlockRequestLease {
         self.resident_block_count() + self.opaque_copies.len()
     }
 
+    /// `physical_owned_block_count` of a scalar token-only lease without the
+    /// scan: its resident entries are exactly the blocks below the allocation
+    /// watermark.
+    pub(crate) fn watermark_owned_block_count(&self, block_size: usize) -> usize {
+        let owned = self.allocated_tokens.div_ceil(block_size) + self.opaque_copies.len();
+        debug_assert_eq!(owned, self.physical_owned_block_count());
+        owned
+    }
+
     /// Project one framework-native identity without exposing physical G1
     /// copy identity.
     pub(crate) fn sequence_hash(&self, block_index: usize) -> Option<SequenceHash> {
@@ -659,6 +668,20 @@ impl VllmKvManager {
         }
         if self.state_cache.is_some() {
             return self.allocate_state_lease(lease, cumulative_tokens, reusable_prefix_blocks);
+        }
+        let previous_blocks = lease
+            .allocated_tokens
+            .div_ceil(self.block_size)
+            .min(lease.entries.len());
+        if cumulative_tokens.div_ceil(self.block_size) <= previous_blocks {
+            // Most decode steps stay inside a block the lease already owns.
+            // Same result as the slot path's `count == 0` case with nothing to
+            // bind, which is why the target is not clamped to `entries.len()`.
+            lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
+            return NativeAllocation::Ready {
+                value: 0,
+                dependencies: self.pending_capacity_write_dependencies(lease),
+            };
         }
         self.allocate_lease_with_slots(
             owner,
@@ -2414,6 +2437,15 @@ mod tests {
             _ => panic!("dependency-bearing suffix must still be acquired"),
         };
         assert_eq!(dependencies, vec![dependency]);
+        // A retry that needs no new block reports the unauthorized fence again.
+        assert!(matches!(
+            manager.allocate_lease(owner, &mut lease, 4, 0),
+            NativeAllocation::Ready {
+                value: 0,
+                dependencies: ref retry,
+            } if *retry == dependencies
+        ));
+        assert_eq!(lease.allocated_tokens(), 8);
         manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
         assert!(matches!(
             manager.allocate_lease(owner, &mut lease, 4, 0),
@@ -2484,6 +2516,7 @@ mod tests {
                 assert!(matches!(outcome, NativeAllocation::CapacityExhausted));
                 assert_eq!(lease.allocated_tokens(), computed);
                 assert_eq!(lease.physical_owned_block_count(), 3);
+                assert_eq!(lease.watermark_owned_block_count(4), 3);
                 assert_eq!(manager.num_active_blocks(), 3);
                 manager.finish_lease(owner, lease);
                 continue;
@@ -2492,6 +2525,7 @@ mod tests {
             assert_eq!(lease.allocated_tokens(), known);
             assert_eq!(lease.resident_block_count(), 4);
             assert_eq!(lease.physical_owned_block_count(), 5);
+            assert_eq!(lease.watermark_owned_block_count(4), 5);
             assert_eq!(lease.entries.len(), 4);
             assert_eq!(manager.num_active_blocks(), 5);
             assert_eq!(lease.sequence_hash(3), None);
@@ -2520,6 +2554,7 @@ mod tests {
             );
             assert_eq!(lease.physical_owned_block_count(), 5);
             assert_eq!(lease.resident_block_count(), 5);
+            assert_eq!(lease.watermark_owned_block_count(4), 5);
             assert_eq!(lease.sequence_hash(4), None);
             assert_eq!(manager.num_active_blocks(), 5);
             manager.finish_lease(owner, lease);
@@ -2544,6 +2579,7 @@ mod tests {
         manager.preempt_lease(owner, &mut lease);
         assert_eq!(lease.allocated_tokens(), 0);
         assert_eq!(lease.physical_owned_block_count(), 0);
+        assert_eq!(lease.watermark_owned_block_count(4), 0);
         assert_eq!(manager.num_active_blocks(), 0);
         ready(manager.allocate_lease_with_slots(owner, &mut lease, 4, 12, 0));
         manager.finish_lease(owner, lease);

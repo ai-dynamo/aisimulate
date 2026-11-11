@@ -30,10 +30,10 @@ from aisim.sweeper import (
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
-    RunnerCapabilities,
     RuntimeHookSpec,
 )
 from aisim.sweeper.config import Workload
+from aisim.sweeper.replay import REPLAY_SPEC_API_VERSION, RunnerCapabilities
 from aisim_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
 
@@ -121,6 +121,33 @@ def test_public_namespace_exports_engine_runner_contract():
     assert aisim.EngineReplayRunnerFactory is EngineReplayRunnerFactory
 
 
+def test_ordinary_null_rank_uses_flat_role_fields_through_runner():
+    args = {**_engine_args(), "rank": None}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+    )
+    assert deployment.afd_roles == ()
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["block_size"] == 4
+    assert rank["num_gpu_blocks"] == 16
+    assert rank["timing_model"] == {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0}
+
+
+@pytest.mark.parametrize("rank", [[], 0, "afd"])
+def test_malformed_rank_is_rejected_by_runner(rank):
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args={"rank": rank},
+        num_workers=1,
+    )
+    with pytest.raises(ValueError, match="rank config must be a mapping"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_legacy_replay_config_preserves_execution_mode() -> None:
     config = ReplayCliConfig(
         trace_files=(),
@@ -143,6 +170,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     factory = pickle.loads(pickle.dumps(EngineReplayRunnerFactory()))
     capabilities = factory.capabilities()
 
+    assert capabilities.replay_spec_api_version == REPLAY_SPEC_API_VERSION
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
     assert capabilities.supports_backend_topology("trtllm", "disagg")
@@ -158,6 +186,25 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_agentic_speculative_decoding
     assert capabilities.supports_generic_speculation
     assert capabilities.agentic_qualification == "functional_only"
+
+
+def test_v1_runner_accepts_current_ordinary_replay_and_rejects_api_two():
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="sglang",
+            backend_version="test",
+            num_workers=1,
+            agg_engine_args={"worker_type": "aggregated"},
+        ),
+        workload={},
+        goal={},
+    )
+    assert not spec.backend_deployment.has_afd
+    capabilities = RunnerCapabilities(replay_spec_api_version=1, supported_backend_topologies=(("sglang", "agg"),))
+    capabilities.require_compatible(spec)
+    with pytest.raises(ValueError, match="ReplaySpec API version 2 is incompatible with runner version 1"):
+        capabilities.require_compatible(replace(spec, api_version=2))
 
 
 @pytest.mark.parametrize("location", ["rank", "canonical"])
@@ -2953,7 +3000,7 @@ def test_agentic_warmup_policy_requires_its_own_runner_capability_and_reaches_na
 def test_primers_only_capability_keeps_existing_positional_arguments():
     # RunnerCapabilities is public: an adapter passing the earlier fields positionally keeps their meaning.
     default = RunnerCapabilities()
-    earlier = [field.name for field in fields(RunnerCapabilities) if field.name != "supports_agentic_primers_only"]
+    earlier = [field.name for field in fields(RunnerCapabilities) if not field.kw_only]
     positional = RunnerCapabilities(
         *(True if name == "supports_weka_client" else getattr(default, name) for name in earlier)
     )
@@ -3604,7 +3651,12 @@ def test_detokenization_requires_capability_and_offline_replay() -> None:
 def test_detokenization_rejects_afd() -> None:
     engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
-    afd = replace(_detokenization_deployment(detokenization, 1), deployment_mode="afd")
+    deployment = _detokenization_deployment(detokenization, 1)
+    afd = replace(
+        deployment,
+        agg_engine_args={**deployment.agg_engine_args, "afd": {}},
+        parallel_config={"aggregated": {"schema_version": 2}},
+    )
     with pytest.raises(ValueError, match="engine.detokenization is unsupported for AFD"):
         engine.require_compatible(_spec(deployment=afd))
 

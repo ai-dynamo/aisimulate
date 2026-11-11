@@ -2229,6 +2229,29 @@ buckets. The evidence harness calls the installed native runner; it does not
 vendor its implementation. This source attribution does not assert separate
 OSRB approval.
 
+## AISimulate heterogeneous AFD and super-node behavior
+
+The heterogeneous-node and fabric-tier behavior in the repository-root files
+listed below is adapted and reimplemented for the native worker-role architecture
+from the AISimulate fork at immutable commit
+`af56328c4ba7ffa1b8c42c8375244568c2e7bb8c`:
+
+https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
+
+| Derived files (repository-root paths) | Original paths at the pinned revision |
+| --- | --- |
+| `crates/core/src/perfmodel/common/system_spec.rs`, `crates/core/src/perfmodel/operators/communication.rs`, `crates/core/src/perfmodel/operators/afd_comm.rs`, `crates/core/src/perfmodel/afd/model.rs`, `crates/core/src/perfmodel/afd/execution.rs` | `crates/core/src/perfmodel/common/system_spec.rs`, `crates/core/src/perfmodel/operators/communication.rs`, `python/aisimulate/src/aiconfigurator_core/sdk/operations/afd_transfer.py`, `python/aisimulate/src/aiconfigurator/sdk/inference_session.py` |
+| `crates/core/src/engine/config.rs`, `crates/core/src/perfmodel/afd/mod.rs`, `python/aisim/src/aisim/sweeper/afd_parallel.py`, `python/aisim/src/aisim/sweeper/search_space.py`, `python/aisim/src/aisim/compiler.py` | `python/aisimulate/src/aiconfigurator_core/sdk/config.py`, `python/aisimulate/src/aiconfigurator/sdk/task_v2.py`, `python/aisimulate/src/aiconfigurator/sdk/pareto_analysis.py` |
+| `docs/replay/engine/analytical.md`, `docs/sweeper/afd-topology.md` | `docs/cli/legacy-aic-user-guide.md`, `python/aisimulate/docs/advanced_tuning.md` |
+
+All listed derivatives are modified. New rank-mapping preparation and regression
+tests were written for the current implementation; the old Python execution path
+was not imported. Upstream material retains its original copyright:
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Applicable license: Apache License 2.0, preserved in the repository `LICENSE`.
+The upstream license is available at:
+https://github.com/LPhgh/aisimulate/blob/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c/LICENSE
+
 ## AIPerf request metric compatibility
 
 - Derived files: the request metric populations in
@@ -2253,7 +2276,7 @@ OSRB approval.
 `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V3_config.json`
 is a modified configuration from `config.json` at
 https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/config.json.
-Copyright owner: DeepSeek. The configuration was adapted for AISimulate;
+Copyright owner: DeepSeek. The configuration was adapted for AISim;
 its exact bundled bytes are recorded in `scripts/ci/bundled_configs.json`.
 
 Applicable configuration license: **UNKNOWN / unresolved**. This revision

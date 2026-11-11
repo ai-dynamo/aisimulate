@@ -31,6 +31,7 @@ from aisim.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
 from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
+    AFD_UNSUPPORTED_MODEL_CONTROLS,
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
     SystemsRoot,
@@ -573,7 +574,7 @@ class Workload(BaseModel):
 # candidate generator can reuse it. Pinned scalars and the generated
 # ``parallel_configs`` are intentionally not choice-constrained.
 SEARCH_CHOICES: dict[str, tuple] = {
-    "deployment_mode": ("disagg", "agg", "afd", "afd+pd"),
+    "deployment_mode": ("disagg", "agg"),
     "backend": ("vllm", "sglang", "trtllm"),
 }
 
@@ -636,20 +637,9 @@ class SearchSpace(BaseModel):
     speculation: NgramSpeculationConfig | None = None
     encoder: EncoderSearch | None = None
 
-    # Attention--FFN disaggregation. The A/F topology is a finite, complete
-    # domain; ``afd+pd`` pairs each topology with one opposite-phase companion.
-    afd_pinned_topologies: list[dict[str, Any]] = Field(default_factory=list)
-    afd_companion_parallel_configs: list[dict[str, Any]] = Field(default_factory=list)
-    afd_tp_a_candidates: list[int] | None = None
-    afd_batch_size_candidates: list[int] | None = None
-    afd_f_moe_ep_size_candidates: list[int | str] | None = None
-    afd_microbatch_candidates: list[int] = Field(default_factory=lambda: [2, 3, 4])
-    afd_pipeline_model_candidates: list[str] = Field(default_factory=lambda: ["optimistic", "conservative"])
-    afd_phase: str = "decode"
-    afd_comm_overhead_factor: float = Field(default=1.0, gt=0)
-    afd_boundary_on_attn: bool = True
-    afd_max_af_ratio: float = Field(default=4.0, gt=0)
-    afd_max_candidates: int = Field(default=10_000, ge=1)
+    # Independent A/F topology domains indexed by public language role.
+    afd_roles: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    max_topology_candidates: int = Field(default=10_000, strict=True, gt=0)
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -723,15 +713,14 @@ class SearchSpace(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_estimator_selection(cls, value):
+        from ..afd_config import normalize_afd_search_input
         from .state_snapshot import derive_snapshot_roles, reject_engine_wide_snapshot
 
         if not isinstance(value, dict):
             return value
+        value = normalize_afd_search_input(value)
         reject_engine_wide_snapshot(value)
-        modes = value.get("deployment_mode")
-        if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
-            "encoder"
-        ) is not None:
+        if value.get("encoder") is not None:
             return value
         value = dict(value)
         raw_controls = value.get("role_estimator_controls", {})
@@ -741,6 +730,10 @@ class SearchSpace(BaseModel):
             return value
         controls = {role: dict(settings) for role, settings in raw_controls.items()}
         for role in ("agg", "prefill", "decode"):
+            if ("aggregated" if role == "agg" else role) in value.get("afd_roles", {}):
+                if value.get(f"{role}_forward_model") == "fpm":
+                    raise ValueError("role_estimator_controls require regular language workers")
+                continue
             legacy = value.get(f"{role}_forward_model")
             if legacy == "op_level" and value.get(f"{role}_timing_model") is not None:
                 continue
@@ -828,11 +821,16 @@ class SearchSpace(BaseModel):
         return self
 
     def _uses_legacy_estimator_provider(self) -> bool:
-        return bool(set(self.deployment_mode) & {"afd", "afd+pd"}) or self.encoder is not None
+        return self.encoder is not None
 
     @model_serializer(mode="wrap")
     def _serialize_estimator_selection(self, handler):
         result = handler(self)
+        for role in self.afd_roles:
+            prefix = ("agg" if role == "aggregated" else role) + "_"
+            for key in list(result):
+                if key.startswith(prefix):
+                    result.pop(key)
         # Ordinary workers serialize only the canonical controls. Existing AFD
         # and encoder providers still consume the legacy selector, including
         # when a saved search is reloaded.
@@ -871,85 +869,37 @@ class SearchSpace(BaseModel):
 
         return self._state_snapshots.get(role)
 
-    @field_validator(
-        "afd_tp_a_candidates",
-        "afd_batch_size_candidates",
-        "afd_microbatch_candidates",
-        mode="before",
-    )
+    @field_validator("afd_roles", mode="before")
     @classmethod
-    def _validate_afd_positive_candidates(cls, value: Any) -> Any:
-        if value is None:
-            return value
-        if not isinstance(value, list) or not value:
-            raise ValueError("AFD candidate lists must be nonempty lists")
-        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in value):
-            raise ValueError(f"AFD candidate lists need positive integers, got {value!r}")
-        if len(set(value)) != len(value):
-            raise ValueError("AFD candidate lists must not contain duplicates")
-        return value
+    def _validate_afd_role_domains(cls, value):
+        from ..config.engine import AFDWorkerRecommendationConfig
 
-    @field_validator("afd_f_moe_ep_size_candidates", mode="before")
-    @classmethod
-    def _validate_afd_ep_candidates(cls, value: Any) -> Any:
-        if value is None:
-            return value
-        if not isinstance(value, list) or not value:
-            raise ValueError("afd_f_moe_ep_size_candidates must be a nonempty list")
-        allowed_symbols = {"n_f_nodes", "ffn_tp", "tp_f"}
-        invalid = [
-            item
-            for item in value
-            if not (
-                (isinstance(item, int) and not isinstance(item, bool) and item > 0)
-                or (isinstance(item, str) and item in allowed_symbols)
-            )
-        ]
-        if invalid:
-            raise ValueError(
-                "afd_f_moe_ep_size_candidates accepts positive integers, "
-                f"'n_f_nodes', 'ffn_tp', or 'tp_f'; got {invalid!r}"
-            )
-        if len({(type(item).__name__, item) for item in value}) != len(value):
-            raise ValueError("afd_f_moe_ep_size_candidates must not contain duplicates")
-        return value
+        if not isinstance(value, dict):
+            raise ValueError("afd_roles must be a mapping by language role")
+        return {
+            role: AFDWorkerRecommendationConfig.model_validate(raw).model_dump(mode="python", exclude_none=True)
+            for role, raw in value.items()
+        }
 
     @model_validator(mode="after")
-    def _validate_afd_contract(self) -> SearchSpace:
-        afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
-        if afd_modes and self.decode_radix_cache:
-            raise ValueError("decode_radix_cache is unsupported for AFD")
-        if self.afd_phase not in {"prefill", "decode", "both"}:
-            raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
-        if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
-            raise ValueError("afd_pipeline_model_candidates accepts optimistic, conservative, or serial")
-        if len(set(self.afd_pipeline_model_candidates)) != len(self.afd_pipeline_model_candidates):
-            raise ValueError("afd_pipeline_model_candidates must not contain duplicates")
-        if "afd+pd" in afd_modes and self.afd_phase == "both":
-            raise ValueError("deployment_mode='afd+pd' requires afd_phase prefill or decode")
-        if afd_modes and not self.afd_pinned_topologies and self.afd_batch_size_candidates is None:
-            raise ValueError(
-                "searched AFD requires explicit, memory-qualified afd_batch_size_candidates; "
-                "legacy topology-specific batch derivation must not become an implicit fixed batch"
+    def _validate_afd_contract(self):
+        if self.afd_roles:
+            if self.decode_radix_cache:
+                raise ValueError("decode_radix_cache is unsupported for AFD")
+            if self.backend != ["sglang"] or self.encoder is not None:
+                raise ValueError("AFD roles require only sglang and reject encoder pools")
+            active = ({"aggregated"} if "agg" in self.deployment_mode else set()) | (
+                {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
             )
-        if self.afd_pinned_topologies:
-            if len(afd_modes) != 1:
-                raise ValueError("afd_pinned_topologies requires exactly one AFD deployment_mode")
-            required = {"n_a_nodes", "n_f_nodes", "tp_a", "a_batch_size"}
-            for index, topology in enumerate(self.afd_pinned_topologies):
-                if not isinstance(topology, dict):
-                    raise ValueError(f"afd_pinned_topologies[{index}] must be a mapping")
-                missing = sorted(required - topology.keys())
-                if missing:
-                    raise ValueError(f"afd_pinned_topologies[{index}] is missing {missing}")
-        if self.afd_companion_parallel_configs and "afd+pd" not in afd_modes:
-            raise ValueError("afd_companion_parallel_configs requires deployment_mode='afd+pd'")
-        for index, companion in enumerate(self.afd_companion_parallel_configs):
-            if not isinstance(companion, dict) or "tp" not in companion:
-                raise ValueError(f"afd_companion_parallel_configs[{index}] must be a flat shape with tp")
-            replicas = companion.get("replicas", 1)
-            if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
-                raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
+            if set(self.afd_roles) - active:
+                raise ValueError("AFD role is outside the configured deployment topology")
+            afd_modes = ({"agg"} if "aggregated" in self.afd_roles else set()) | (
+                {"disagg"} if set(self.afd_roles) & {"prefill", "decode"} else set()
+            )
+            if self.parallel_configs or afd_modes & self.parallel_configs_by_mode.keys():
+                raise ValueError(
+                    "AFD modes do not support parallel_configs/parallel_configs_by_mode; use role topology"
+                )
         return self
 
     @field_validator("database_mode", mode="before")
@@ -983,7 +933,9 @@ class SearchSpace(BaseModel):
                 raise ValueError(f"unknown estimator role {role!r}; expected agg, prefill, or decode")
             if set(controls) - allowed:
                 raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
-            if controls and self._uses_legacy_estimator_provider():
+            if controls and (
+                self._uses_legacy_estimator_provider() or ("aggregated" if role == "agg" else role) in self.afd_roles
+            ):
                 raise ValueError(
                     "role_estimator_controls require regular language workers; "
                     "AFD and encoder providers are unsupported"
@@ -1024,12 +976,10 @@ class SearchSpace(BaseModel):
             {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
         )
         if self.systems_paths not in (None, ["default"]) and self._uses_legacy_estimator_provider():
-            unsupported = "AFD" if set(self.deployment_mode) & {"afd", "afd+pd"} else "encoder pools"
+            unsupported = "AFD" if bool(self.afd_roles) else "analytical encoder pools"
             raise ValueError(f"systems_paths does not support {unsupported}")
         if nondefault and (
-            set(self.deployment_mode) & {"afd", "afd+pd"}
-            or self.encoder is not None
-            or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
+            self.encoder is not None or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
         ):
             raise ValueError("estimator policies require regular language workers with default timing in every role")
         return self
@@ -1096,10 +1046,11 @@ class SearchSpace(BaseModel):
                 raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
             if self.aic_nextn or self.speculation is not None:
                 raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
-        if self.enable_chunked_prefill is not None and any(
-            mode not in {"agg", "disagg"} for mode in self.deployment_mode
-        ):
-            raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        if self.enable_chunked_prefill is not None and self.afd_roles:
+            raise ValueError(
+                "enable_chunked_prefill is unsupported for AFD; "
+                "use workers.<role>.afd.chunked_prefill_size to size the chunked-prefill window"
+            )
         if self.aic_nextn and self.nextn_accepted is None:
             raise ValueError("aic_nextn requires explicit nextn_accepted")
         if self.nextn_accepted is not None and (not self.aic_nextn or self.nextn_accepted > self.aic_nextn):
@@ -1109,10 +1060,17 @@ class SearchSpace(BaseModel):
         )
         if active and (
             self.encoder is not None
-            or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode)
             or any(getattr(self, f"{role}_timing_model") is not None for role in ("agg", "prefill", "decode"))
         ):
             raise ValueError("engine model controls require default timing in every regular language role")
+        if self.afd_roles:
+            unsupported = [
+                name
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if name in AFD_UNSUPPORTED_MODEL_CONTROLS and is_active_engine_model_control(name, getattr(self, name))
+            ]
+            if unsupported:
+                raise ValueError(f"engine model controls {unsupported} are unsupported for AFD")
         return self
 
     def requested_backend_version(self, backend: str) -> str | None:
@@ -1363,6 +1321,14 @@ class SmartSearchConfig(BaseModel):
     sweep: SweepConfig = Field(default_factory=SweepConfig)
 
     @model_validator(mode="after")
+    def _validate_afd_load(self) -> SmartSearchConfig:
+        if self.search_space.afd_roles and (
+            self.workload.kv_load_ratio is not None or self.workload.load_search_field == "kv_load_ratio"
+        ):
+            raise ValueError("AFD does not support kv_load_ratio; use absolute concurrency or request_rate")
+        return self
+
+    @model_validator(mode="after")
     def _validate_min_gpus(self) -> SmartSearchConfig:
         if self.goal.target is not OptimizationTarget.MIN_GPUS:
             return self
@@ -1410,13 +1376,11 @@ class SmartSearchConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_epd(self) -> SmartSearchConfig:
         encoder, workload = self.search_space.encoder, self.workload
-        if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
-            raise ValueError("cached_prefix_tokens is unsupported for AFD")
         search = self.search_space
         if encoder is None and workload.images is not None:
             if search.agg_vision is None and search.prefill_vision is None:
                 raise ValueError("image workloads require search_space.encoder or a language worker hosting vision")
-            if set(search.deployment_mode) & {"afd", "afd+pd"}:
+            if bool(search.afd_roles):
                 raise ValueError("image workloads are unsupported for AFD")
             if any(backend != "sglang" for backend in search.backend):
                 raise ValueError("native VL replay requires backend=sglang")

@@ -32,6 +32,43 @@ def _reload(canonical):
     return ForwardPassPerfModelConfig(**json.loads(json.dumps(canonical.to_dict())))
 
 
+@pytest.mark.parametrize("role", ["a", "f"])
+def test_legacy_afd_pool_identity_survives_migration_reload_and_compilation(role, monkeypatch):
+    from aisim_core.sdk import engine
+
+    compiled = []
+    build = engine.build_engine_spec_json
+
+    def capture(*args, **kwargs):
+        raw = build(*args, **kwargs)
+        compiled.append(json.loads(raw))
+        return raw
+
+    monkeypatch.setattr(engine, "build_engine_spec_json", capture)
+    legacy = _legacy_config(afd_pool_role=role)
+    legacy.update(model_name="Qwen/Qwen3-30B-A3B", system_name="h200_sxm", backend="sglang", backend_version="0.5.14")
+    canonical = ForwardPassPerfModelConfig.from_legacy_engine_config(legacy, "aggregated")
+    assert canonical.afd_pool_role == role
+    assert RustForwardPassPerfModel.normalize_config(_reload(canonical))["afd_pool_role"] == role
+    model = RustForwardPassPerfModel.best_available(_reload(canonical))
+    assert len(compiled) == 1
+    assert compiled[0]["afd_plan"]["role"] == role
+    for phase in ("context_ops", "generation_ops"):
+        ops = compiled[0][phase]
+        if role == "a":
+            assert any("ContextAttention" in op or "GenerationAttention" in op for op in ops)
+            assert not any("Moe" in op for op in ops)
+        else:
+            assert ops and all(set(op) == {"Moe"} for op in ops)
+    query = {"version": 1, "scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 16}}
+    assert model.estimate_forward_pass_time_ms([query]) > 0
+
+
+def test_legacy_afd_pool_identity_rejects_an_unsupported_backend():
+    with pytest.raises(ValueError, match="AFD pool compilation requires SGLang"):
+        ForwardPassPerfModelConfig.from_legacy_engine_config(_legacy_config(afd_pool_role="a"), "aggregated")
+
+
 @pytest.mark.parametrize("mode", ["auto", "fixed", "dynamic_local", "hybrid"])
 def test_correction_mode_survives_reload_and_controls_native_feedback(mode):
     config = ForwardPassPerfModelConfig(

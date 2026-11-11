@@ -310,6 +310,25 @@ def test_unknown_profile_auto_compiles_without_operations(profile_dict, direct_c
         assert op["weight_bytes"] == 100
 
 
+@pytest.mark.parametrize("role", ["a", "f"])
+def test_direct_profile_compilation_does_not_discard_afd_pool_role(profile_dict, direct_compile, role):
+    # Exercise the Python direct-profile entry point, which can return before
+    # canonical native construction. The fixture forbids op-level construction.
+    with pytest.raises(ValueError, match="AFD pool compilation requires op_level"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            afd_pool_role=role,
+        )
+
+
 @pytest.mark.parametrize("entry_point", [_normalize, RustForwardPassPerfModel.best_available])
 @pytest.mark.parametrize("mode", ["fmha", "comm"])
 def test_profile_precision_cannot_be_selected_as_unrecorded(profile_dict, monkeypatch, entry_point, mode):

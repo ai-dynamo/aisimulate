@@ -28,9 +28,6 @@ else:
         )
 
 _LAZY_EXPORTS = {
-    "AFDCompanionPerformanceModel": ("aisim.runner", "AFDCompanionPerformanceModel"),
-    "AFDCompanionTiming": ("aisim.runner", "AFDCompanionTiming"),
-    "AICAFDCompanionPerformanceModel": ("aisim.runner", "AICAFDCompanionPerformanceModel"),
     "BackendDeploymentSpec": ("aisim.sweeper.replay", "BackendDeploymentSpec"),
     "CorePredictionConfig": ("aisim.config", "CorePredictionConfig"),
     "CoreRecommendationConfig": ("aisim.config", "CoreRecommendationConfig"),
@@ -64,9 +61,6 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "AFDCompanionPerformanceModel",
-    "AFDCompanionTiming",
-    "AICAFDCompanionPerformanceModel",
     "BackendDeploymentSpec",
     "CorePredictionConfig",
     "CoreRecommendationConfig",

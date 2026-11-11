@@ -44,7 +44,6 @@ prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     execution_mode: str = "offline",
 ) -> ReplaySpec
 ```

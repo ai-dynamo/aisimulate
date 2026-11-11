@@ -37,7 +37,7 @@ from numbers import Real
 from typing import Any, Protocol
 
 from ._quiet import configure_vizier_runtime
-from .afd_parallel import AFDParallelConfig
+from .afd_parallel import AFDTopology
 from .parallel_enum import DisaggParallelConfig, ReplicaParallelConfig
 from .parallel_projection import (
     InfeasibleParallelSelection,
@@ -87,7 +87,7 @@ class Suggestion:
     plus an opaque handle the sampler uses to report the score."""
 
     selection: dict[str, Any]
-    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDTopology
     handle: Any = field(repr=False)
     projection: ParallelProjection | None = field(default=None, repr=False)
     infeasible_reason: str | None = None
@@ -98,7 +98,7 @@ def _project_parallel(
     params: dict[str, Any],
     backend: str,
 ) -> tuple[
-    ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig,
+    ReplicaParallelConfig | DisaggParallelConfig | AFDTopology,
     ParallelProjection | None,
     str | None,
 ]:
