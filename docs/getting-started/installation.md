@@ -96,10 +96,11 @@ aisim --help
 aisimulate --help
 ```
 
-Use that same ordering for upgrades. If both distributions have already been
-installed, uninstall `aisimulate` and use `pip install --force-reinstall` for
-the selected `aisim` wheel, because uninstalling the old distribution can remove
-files listed in both RECORDs. When both distributions are installed and the
+Use that same ordering for upgrades. For a wheel installation where both
+distributions have already been installed, uninstall `aisimulate` and use
+`pip install --force-reinstall` for the selected `aisim` wheel, because removing
+the old distribution can remove files listed in both RECORDs. When both
+distributions are installed and the
 old `aisimulate` distribution owns files under the shared import packages, the
 current `aisim` and `aisimulate` launchers print a warning with repair commands
 for the installed `aisim` version. A missing warning does not prove that only
@@ -108,8 +109,10 @@ last may replace shared modules or the `aisimulate` launcher before the check
 runs. Use `python -m pip list` to check both distribution names and
 `python -m pip show -f aisimulate` to inspect ownership of files under
 `aisimulate/` and `aisimulate_core/`. If both distributions are installed and
-the old distribution owns those files, follow the force-reinstall procedure
-above even if no warning appears. Both CLI names remain available after
+the old distribution owns those files, repair the installation even if no
+warning appears: use the wheel procedure above or the
+[source-checkout procedure below](#use-current-source), matching your install.
+Both CLI names remain available after
 migration; Python imports stay `aisimulate` and `aisimulate_core`.
 
 Dynamo and other consumers must change their **distribution dependency** to
@@ -131,6 +134,18 @@ uv sync --project python/aisimulate --extra dev
 source python/aisimulate/.venv/bin/activate
 aisimulate --help
 ```
+
+To repair an existing source-checkout environment after a legacy distribution
+was installed, run the following from that same repository root:
+
+```bash
+uv pip uninstall --python python/aisimulate/.venv/bin/python aisimulate
+uv sync --project python/aisimulate --extra dev --frozen --reinstall-package aisim
+```
+
+The explicit interpreter selects the checkout's project environment. The sync
+command reinstalls this checkout and its CLI entry points using the existing
+lockfile, including any shared files removed by the uninstall.
 
 Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
 linker before syncing: Maturin compiles the native extension. On macOS, install
