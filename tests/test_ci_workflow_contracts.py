@@ -2703,44 +2703,7 @@ python() {
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("missing", [None, "bundled-deps.csv", "bundled-provenance.json", "extracted-files.json"])
-def test_nightly_inventory_upload_has_flat_complete_metadata_without_container_paths(tmp_path, missing):
-    steps = _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
-    stage = next(step for step in steps if step.get("name") == "Stage wheel configuration inventory for upload")
-    upload = next(step for step in steps if step.get("name") == "Preserve wheel configuration inventory")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    container_temp = tmp_path / "container-temp"
-    extracted = container_temp / "bundled-configs-nightly"
-    extracted.mkdir(parents=True)
-    reports = {
-        name: f"verified {name}\n" for name in ("bundled-deps.csv", "bundled-provenance.json", "extracted-files.json")
-    }
-    for name, content in reports.items():
-        if name != missing:
-            (extracted / name).write_text(content)
-    # Extracted payload/configs must never leak into this metadata-only artifact.
-    (extracted / "files").mkdir()
-    (extracted / "files/model.json").write_text("private fixture")
-    result = subprocess.run(
-        ["bash", "-e", "-c", stage["run"]],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "RUNNER_TEMP": str(container_temp)},
-    )
-    if missing:
-        assert result.returncode != 0
-        return
-    assert result.returncode == 0, result.stderr
-    artifact_path = upload["with"]["path"]
-    assert len(artifact_path.splitlines()) == 1
-    assert not Path(artifact_path).is_absolute()
-    staged = workspace / artifact_path
-    assert {path.relative_to(staged).as_posix(): path.read_text() for path in staged.rglob("*")} == reports
-
-
-def test_bundled_config_gates_run_before_wheel_publication_or_installation():
+def test_bundled_config_gates_run_before_wheel_publication_or_installation(tmp_path):
     policy = _workflow("fast-ci.yml")["jobs"]["policy"]
     assert "scripts/ci/check_bundled_configs.py" in _run_commands(policy)
     assert "tests/test_bundled_configs.py" in _run_commands(policy)
@@ -2768,16 +2731,25 @@ def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     assert check < stage
     assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
-    for collection in (application, action["runs"]["steps"]):
+    for kind, collection in zip(
+        ("application", "platform", "nightly"), (application, action["runs"]["steps"], steps), strict=True
+    ):
         upload_report = next(
             step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
         )
-        paths = upload_report["with"]["path"].splitlines()
-        assert {path.rsplit("/", 1)[-1] for path in paths} == {
-            "bundled-deps.csv",
-            "bundled-provenance.json",
-            "extracted-files.json",
-        }
+        pattern = upload_report["with"]["path"]
+        assert len(pattern.splitlines()) == 1
+        assert pattern.startswith("${{ runner.temp }}/")
+        root = tmp_path / f"bundled-configs-{kind}"
+        payload = root / "files/model_configs"
+        payload.mkdir(parents=True)
+        reports = {"bundled-deps.csv", "bundled-provenance.json", "extracted-files.json"}
+        for name in reports:
+            (root / name).touch()
+        for name in ("nested.csv", "nested.json"):
+            (payload / name).touch()
+        # Check the upload path's intended file selection against a fixture tree.
+        assert set(tmp_path.glob(pattern.removeprefix("${{ runner.temp }}/"))) == {root / name for name in reports}
     tooling = next(step for step in steps if step.get("with", {}).get("path") == "release-tooling")
     for file in ["check_bundled_configs.py", "bundled_configs.json", "bundled_config_legacy.json"]:
         assert "/scripts/ci/" + file in tooling["with"]["sparse-checkout"]
