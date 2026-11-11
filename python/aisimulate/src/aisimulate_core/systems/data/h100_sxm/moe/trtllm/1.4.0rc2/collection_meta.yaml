@@ -12,10 +12,10 @@ tables:
     rows: 145498
     status: complete
     collections:
-    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
-      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+    - collector_ref: 93bde7488
+      collector_hash: sha256:175e80466bdd504a1677eac11137a3a80eef2a203b4b9f1e17f1e0cdbb9527eb
       case_plan_hash: sha256:da3721349358a6e38ac83f156bca84f4a5a8d2d3a33a9ac478efece5aff1bc85
-      collected_at: '2026-11-08'
+      collected_at: '2026-11-11'
       rows: 51459
       status: complete
     - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194

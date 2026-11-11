@@ -24,15 +24,9 @@ tables:
       collected_at: '2026-11-10'
       rows: 37074
       status: complete
-    - collector_ref: b7a79aa880384dc24ecd8e92f6b170aa69b4de83
-      collector_hash: sha256:d1a3caacd93b37a41aeca9566de03864aaf8d265895bda28586b66152cd6cff6
-      case_plan_hash: sha256:0a8d20c48a0f9fe9a945652759da42ed002e077a83b3a3bc41798409b996d1af
-      collected_at: '2026-11-08'
-      rows: 1554
-      status: complete
-    - collector_ref: b7a79aa880384dc24ecd8e92f6b170aa69b4de83
-      collector_hash: sha256:d1a3caacd93b37a41aeca9566de03864aaf8d265895bda28586b66152cd6cff6
-      case_plan_hash: sha256:29ba116d0d5033b5d209d2e5f8e0e1f8c830da70e2f908c729b95da6c4808c5f
-      collected_at: '2026-11-08'
-      rows: 32264
+    - collector_ref: 93bde7488
+      collector_hash: sha256:175e80466bdd504a1677eac11137a3a80eef2a203b4b9f1e17f1e0cdbb9527eb
+      case_plan_hash: sha256:b7d4ac8c4ab860140d898c6bcf2cea4ad17e1b98cc901528911fcbd6bcacb477
+      collected_at: '2026-11-11'
+      rows: 33818
       status: complete
