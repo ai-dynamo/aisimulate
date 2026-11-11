@@ -23,7 +23,7 @@ from aisimulate_core.fpm_profile import FpmResourceProfile
 from aisimulate_core.sdk.perf_database import load_system_spec
 
 from . import runtime_memory
-from .capabilities import _normalize_kv_dtype, checkpoint_fmha_quant_mode
+from .capabilities import checkpoint_fmha_quant_mode, has_checkpoint_fmha
 from .config import PrefillSamplingProfile, collection_phases
 from .model_capability import load_model_config
 from .planner import BackendPolicy, FPMCell
@@ -276,7 +276,8 @@ def _validate_record(
     """Validate one rank record of a phase.
 
     ``checkpoint_fmha`` is the checkpoint-native FMHA label of the phase's staged model configuration. It is None for
-    a bfloat16 KV cache, whose FMHA precision is the observed compute dtype.
+    a bfloat16 KV cache and for a KV-cache dtype without an AIC mode, whose FMHA precision is the observed compute
+    dtype.
     """
     if record.get("schema_version") != OBSERVATION_SCHEMA:
         raise ValueError("unsupported runtime observation schema")
@@ -1310,11 +1311,11 @@ def _configuration(
         references = result.get("artifacts")
         if not isinstance(references, list):
             raise ValueError("runtime phase is missing its artifact manifest")
-        # Only a KV cache other than bfloat16 reads the staged model configuration.
+        # Only an AIC KV-cache mode other than bfloat16 reads the staged model configuration.
         checkpoint_fmha = (
-            None
-            if _normalize_kv_dtype(cell.kv_cache_dtype) == "bfloat16"
-            else _staged_checkpoint_fmha(root, references, launch, cell.kv_cache_dtype)
+            _staged_checkpoint_fmha(root, references, launch, cell.kv_cache_dtype)
+            if has_checkpoint_fmha(cell.kv_cache_dtype)
+            else None
         )
         for reference in references:
             path, digest = _artifact(root, reference)

@@ -744,8 +744,8 @@ def observation_fixture(
             ref["path"] = str(Path(ref["path"]).relative_to(root))
             result["artifacts"].append({**ref, "kind": "observation"})
     _write(root / "observations.json", index)
-    # The import reads the staged configuration only for a KV cache other than bfloat16. The other layouts keep the
-    # evidence that they had before the probe staged copies were read.
+    # The import reads the staged configuration only for an AIC KV-cache mode other than bfloat16. The other layouts
+    # keep the evidence that they had before the probe staged copies were read.
     if launch["precision"]["kvcache_quant_mode"] != "bfloat16":
         stage_model_config(root / "observations.json")
     return root / "observations.json", {"tp2": launch}

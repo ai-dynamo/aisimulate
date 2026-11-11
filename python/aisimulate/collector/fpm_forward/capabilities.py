@@ -221,12 +221,24 @@ def checkpoint_fmha_quant_mode(config: dict[str, object], architecture: str | No
     ``config`` is the effective model configuration after ``_attach_inferred_quant_fields``. A bfloat16 KV cache keeps
     bfloat16 attention, because weight quantization does not require quantized KV storage. Any other KV-cache dtype
     takes the FMHA mode that the checkpoint inference names, and bfloat16 when it names none. The runtime probe
-    preview and the observation import apply the same label, so a profile that passes them passes collection planning.
+    preview and the observation import apply the same label to each KV-cache dtype that ``has_checkpoint_fmha``
+    accepts, so such a profile that passes them passes collection planning.
     """
     if _normalize_kv_dtype(kv_cache_dtype) == "bfloat16":
         return "bfloat16"
     inferred = _infer_quant_modes_from_raw_config(config, architecture)
     return _enum_name(inferred.get("fmha_quant_mode", common.FMHAQuantMode.bfloat16))
+
+
+def has_checkpoint_fmha(kv_cache_dtype: str) -> bool:
+    """Whether the FMHA label of this KV-cache dtype is the checkpoint-native one of ``checkpoint_fmha_quant_mode``.
+
+    True for an AIC KV-cache mode other than bfloat16, for example fp8. The runtime probe preview and the observation
+    import keep the observed compute dtype as the FMHA label of a bfloat16 KV cache and of a KV-cache dtype without an
+    AIC mode, for example float16 (label ``half``), and read no checkpoint configuration for it.
+    """
+    mode = _KV_ALIASES.get(kv_cache_dtype.lower())
+    return mode != "bfloat16" and mode in {item.name for item in common.KVCacheQuantMode}
 
 
 def _supported_modes(supported: dict[str, Any], op: str) -> set[str]:

@@ -11,9 +11,12 @@ from types import SimpleNamespace
 import pytest
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
+from collector.fpm_forward.runtime_instrumentation import load_instrumentation
 from collector.fpm_forward.runtime_observations import validate_observations
+from collector.fpm_forward.runtime_probe import build_runtime_probe_plan
 
 from .test_fpm_runtime_memory import _typed
+from .test_fpm_runtime_probe import _inputs as _probe_inputs
 from .test_runtime_observations import _mutate, _replace_launch, observation_fixture, stage_model_config
 
 pytestmark = pytest.mark.unit
@@ -23,7 +26,7 @@ def _precision_fixture(tmp_path, *, cache_dtype="fp8", storage_dtype="torch.uint
     path, launches = observation_fixture(tmp_path, version="0.27.0")
     launches["tp2"]["precision"]["kvcache_quant_mode"] = precision
     _replace_launch(path, launches)
-    if precision != "bfloat16":
+    if precision == "fp8":
         # The import takes the FMHA label of this KV cache from the configuration that the probe stages.
         stage_model_config(path)
     spec = _typed("vllm.v1.kv_cache_interface", "FullAttentionSpec")
@@ -61,7 +64,10 @@ def test_fp8_uint8_storage_import_uses_resolved_precision_and_preserves_physical
             assert tensor["element_size_bytes"] == 1
 
 
-@pytest.mark.parametrize("cache_dtype,storage_dtype,precision", [("bfloat16", "torch.bfloat16", "bfloat16")])
+@pytest.mark.parametrize(
+    "cache_dtype,storage_dtype,precision",
+    [("bfloat16", "torch.bfloat16", "bfloat16"), ("float16", "torch.float16", "half")],
+)
 def test_unquantized_cache_storage_import_remains_supported(tmp_path, cache_dtype, storage_dtype, precision):
     path, launches = _precision_fixture(
         tmp_path, cache_dtype=cache_dtype, storage_dtype=storage_dtype, item_size=2, precision=precision
@@ -71,17 +77,19 @@ def test_unquantized_cache_storage_import_remains_supported(tmp_path, cache_dtyp
     assert result["resources"]["runtime_memory"]["kv_cache_bytes"] == 83 * 128
 
 
-def test_float16_cache_storage_import_is_refused_like_collection(tmp_path):
-    # FPM collection resolves no FMHA label for a float16 KV cache, because AIC has no such KV-cache mode. The import
-    # takes the label of a KV cache other than bfloat16 from collection's rule, so it refuses the cache with
-    # collection's text.
-    path, launches = _precision_fixture(
-        tmp_path, cache_dtype="float16", storage_dtype="torch.float16", item_size=2, precision="half"
+@pytest.mark.parametrize("checkpoint_dtype,label", [("bfloat16", "bfloat16"), ("float16", "half")])
+def test_float16_cache_keeps_the_compute_dtype_fmha_label_in_the_probe_preview(tmp_path, checkpoint_dtype, label):
+    # AIC has no float16 KV-cache mode, so the preview takes no checkpoint-native FMHA label for this cache. The FMHA
+    # label is the compute dtype, as the import checks it.
+    launch, manifest, _ = _probe_inputs(tmp_path)
+    config = Path(launch["model_config"]["path"])
+    config.write_text(json.dumps({**json.loads(config.read_text()), "torch_dtype": checkpoint_dtype}))
+    launch["model_config"]["sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+    launch["precision"].update(
+        gemm_quant_mode=label, moe_quant_mode=label, fmha_quant_mode=label, kvcache_quant_mode="half"
     )
-    result = validate_observations(path, launches)["tp2"]
-    assert result["diagnostics"] == [
-        "tp2: unsupported FPM KV-cache dtype 'half'; AIC modes are ['bfloat16', 'fp8', 'int8']"
-    ]
+    plan = build_runtime_probe_plan("case", launch, load_instrumentation(manifest))
+    assert {(cell.kv_cache_dtype, cell.fmha_quant_mode) for cell in plan.cells} == {("half", label)}
 
 
 @pytest.mark.parametrize("fmha", ["half", "bfloat16"])
