@@ -622,9 +622,9 @@ resolved geometry: `kv_cache_bytes // (block_size * bytes_per_token)`.
 and the context length must not exceed the recorded `max_model_len`.
 Leave `capacity.cuda_graph_reserved_bytes` unset, because the recorded pool
 already excludes graph memory. A grouped FPM cache and `prefill_context` or
-`decode_context` above 1 are not supported here. `engine.speculation` requires
-fixed capacity, so it cannot use a recorded pool; set the draft depth with
-`engine.nextn` instead.
+`decode_context` above 1 are not supported here. Every
+`engine.speculation.kind` except `ngram` requires fixed capacity, so it cannot
+use a recorded pool; set the draft depth with `engine.nextn` instead.
 The block count follows the inferred row size, so it can differ from the count
 the backend logged when that build packs its cache groups differently.
 
