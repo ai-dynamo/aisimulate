@@ -1284,13 +1284,18 @@ def recorded_state_pool(engine, worker: WorkerPredictionConfig, role: str):
     """The runtime memory an FPM profile recorded for a state-cache worker that sets no fixed capacity."""
     from aisimulate.capacity import DEFAULT_GPU_MEMORY_UTILIZATION
 
-    runtime = None
+    resources = None
     if engine.fpm_profile is not None:
-        runtime = fpm_profile_deployment(engine, worker, role).resources.runtime_memory
-    if runtime is None:
+        resources = fpm_profile_deployment(engine, worker, role).resources
+    if resources is None or (runtime := resources.runtime_memory) is None:
         raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
-    # The pool was recorded at one memory fraction and context limit; other values describe a different pool.
-    if (worker.kv_cache.capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
+    if resources.cache_layout == "grouped":
+        raise ValueError("state_cache requires a linear FPM cache; a grouped profile sizes state by its cache groups")
+    # The pool was recorded as allocated, at one memory fraction and context limit.
+    capacity = worker.kv_cache.capacity
+    if capacity.cuda_graph_reserved_bytes != 0:
+        raise ValueError("the recorded pool already excludes graph memory; unset cuda_graph_reserved_bytes")
+    if (capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
         raise ValueError(
             "kv_cache.capacity.memory_fraction must match the FPM profile's recorded "
             f"runtime_memory.gpu_memory_utilization ({runtime.gpu_memory_utilization})"

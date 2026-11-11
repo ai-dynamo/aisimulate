@@ -781,6 +781,11 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
     def resources(engine):
         return engine["fpm_profile"]["deployments"][0]["resources"]
 
+    def grouped(engine):
+        group = {"name": "kv", "kind": "attention", "num_layers": 1, "block_size_tokens": 256, "page_size_bytes": 1}
+        resources(engine).update(cache_layout="grouped", cache_groups=[group], kv_bytes_per_token=None)
+        cache(engine).update(prefix_caching=False)
+
     for match, change in (
         ("memory_fraction must match", lambda e: cache(e).update(capacity={"memory_fraction": 0.8})),
         (
@@ -788,6 +793,9 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
             lambda e: resources(e)["runtime_memory"].update(max_model_len=2047),
         ),
         ("records runtime_memory", lambda e: resources(e).pop("runtime_memory")),
+        ("unset cuda_graph_reserved_bytes", lambda e: cache(e).update(capacity={"cuda_graph_reserved_bytes": 1})),
+        ("no matching FPM deployment", lambda e: e["workers"]["aggregated"]["parallelism"].update(prefill_context=2)),
+        ("requires a linear FPM cache", grouped),
     ):
         invalid = copy.deepcopy(payload)
         change(invalid["engine"])
