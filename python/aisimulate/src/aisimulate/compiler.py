@@ -1108,6 +1108,8 @@ def _worker_engine_args(
                 frontend=worker.frontend,
             )
         )
+    if worker.scheduler.chunked_prefill_size is not None:
+        payload.setdefault("sglang", {})["chunked_prefill_size"] = worker.scheduler.chunked_prefill_size
     if cache.hicache is not None:
         payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
     return payload

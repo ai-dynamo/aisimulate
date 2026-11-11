@@ -38,7 +38,7 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
+from ..config.engine import NgramSpeculationConfig, PositiveInt, ReplayEstimationMode
 
 
 class OptimizationTarget(str, Enum):
@@ -645,6 +645,7 @@ class SearchSpace(BaseModel):
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     prefill_max_num_seqs: list[int] = [1, 2, 4, 8, 16, 32, 64, 128, 256]
     # pinned
+    prefill_chunked_prefill_size: PositiveInt | list[PositiveInt] | None = None
     prefill_block_size: int | list[int] | None = 64
     prefill_gpu_memory_utilization: float | list[float] | None = 0.9
     prefill_enable_prefix_caching: bool = True
@@ -661,6 +662,7 @@ class SearchSpace(BaseModel):
     decode_max_num_batched_tokens: list[int] = [8192]
     decode_max_num_seqs: list[int] = [256, 512, 1024]
     # pinned
+    decode_chunked_prefill_size: PositiveInt | list[PositiveInt] | None = None
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
     decode_enable_prefix_caching: bool = False
@@ -678,6 +680,7 @@ class SearchSpace(BaseModel):
     agg_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
     agg_max_num_seqs: list[int] = [256, 512, 1024]
     # pinned
+    agg_chunked_prefill_size: PositiveInt | list[PositiveInt] | None = None
     agg_block_size: int | list[int] | None = 64
     agg_gpu_memory_utilization: float | list[float] | None = 0.9
     agg_enable_prefix_caching: bool = True
@@ -749,6 +752,12 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        for role in ("agg", "prefill", "decode"):
+            chunk = getattr(self, f"{role}_chunked_prefill_size")
+            if chunk == []:
+                raise ValueError(f"{role}_chunked_prefill_size must list at least one choice")
+            if chunk is not None and set(self.backend) != {"sglang"}:
+                raise ValueError(f"{role}_chunked_prefill_size requires backend=sglang")
         if self.fpm_profile is not None:
             from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 

@@ -67,7 +67,7 @@ _DECODE_ENGINE = (
     "decode_max_num_seqs",
 )
 _DISAGG_ENGINE = _PREFILL_ENGINE + _DECODE_ENGINE
-_ROLE_OPTIONAL_ENGINE = ("block_size", "gpu_memory_utilization")
+_ROLE_OPTIONAL_ENGINE = ("block_size", "gpu_memory_utilization", "chunked_prefill_size")
 
 
 @dataclass(frozen=True)

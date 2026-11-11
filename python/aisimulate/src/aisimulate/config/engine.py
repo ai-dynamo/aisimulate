@@ -144,6 +144,7 @@ class ParallelismPredictionConfig(ParallelismPresetConfig):
 
 
 class SchedulerPredictionConfig(StrictModel):
+    chunked_prefill_size: PositiveInt | None = None
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
     prefill_schedule_interval: PositiveInt = Field(
@@ -1196,8 +1197,16 @@ class ParallelismRecommendationConfig(StrictModel):
 
 
 class SchedulerRecommendationConfig(StrictModel):
+    chunked_prefill_size: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     max_batched_tokens: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     max_sequences: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
+
+    @field_validator("chunked_prefill_size")
+    @classmethod
+    def _positive_chunk_range(cls, value):
+        if isinstance(value, IntegerRange) and value.range.min <= 0:
+            raise ValueError("chunked_prefill_size range must be positive")
+        return value
 
 
 class KvCapacityRecommendationConfig(StrictModel):
@@ -1387,6 +1396,10 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
                 raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
         _validate_recommendation_host_offload(self)
         _validate_recommendation_host(self, modes=modes, backends=backends)
+        for role in ("aggregated", "prefill", "decode"):
+            worker = getattr(self.workers, role)
+            if worker is not None and worker.scheduler.chunked_prefill_size is not None and backends != {"sglang"}:
+                raise ValueError(f"workers.{role}.scheduler.chunked_prefill_size requires backend=sglang")
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         _validate_decode_radix_cache(
@@ -1575,6 +1588,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
+            ("chunked_prefill_size", "sglang", None),
             ("async_scheduling", "vllm", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:

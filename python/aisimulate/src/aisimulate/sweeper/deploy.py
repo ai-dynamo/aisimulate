@@ -210,6 +210,9 @@ def _engine_args_payload(
             payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
+    chunk = sample.get(f"{role}_chunked_prefill_size")
+    if chunk is not None:
+        payload.setdefault("sglang", {})["chunked_prefill_size"] = int(chunk)
     return payload
 
 

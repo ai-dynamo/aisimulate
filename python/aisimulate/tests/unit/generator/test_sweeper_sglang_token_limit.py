@@ -68,3 +68,36 @@ def test_sglang_candidate_omits_unspecified_kv_cache_dtype(backend_version):
 
     assert "--kv-cache-dtype" not in artifacts["cli_args_agg"]
     assert "--kv-cache-dtype" not in artifacts["k8s_deploy.yaml"]
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_explicit_chunk_is_preserved_separately_from_prefill_ceiling(mode):
+    candidate = (_agg_candidate if mode == "agg" else _disagg_candidate)(backend="sglang", backend_version="0.5.18")
+    candidate["config"].pop("adapters", None)
+    roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+    chunks = {role: 4096 * (index + 1) for index, role in enumerate(roles)}
+    for role, chunk in chunks.items():
+        candidate["config"][f"{role}_chunked_prefill_size"] = chunk
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": "example/sglang:0.5.18"}},
+    )
+    artifacts = generate_from_request(request)
+    for role, chunk in chunks.items():
+        assert _cli_flag_value(artifacts[f"cli_args_{role}"], "--chunked-prefill-size") == str(chunk)
+        assert _cli_flag_value(artifacts[f"cli_args_{role}"], "--max-prefill-tokens") == str(
+            candidate["config"][f"{role}_max_num_batched_tokens"]
+        )
+
+
+def test_generator_does_not_silently_round_an_evaluated_chunk():
+    candidate = _agg_candidate(backend="sglang", backend_version="0.5.18")
+    candidate["config"]["agg_chunked_prefill_size"] = 65
+    with pytest.raises(ValueError, match="multiple of 64"):
+        from_sweeper_candidate(
+            candidate,
+            workload={"isl": 4000, "osl": 1000},
+            model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        )
