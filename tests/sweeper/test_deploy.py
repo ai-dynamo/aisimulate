@@ -130,6 +130,60 @@ def test_disagg_backend_deployment_preserves_both_roles():
     assert deployment.decode_engine_args["engine_type"] == "sglang"
 
 
+@pytest.mark.parametrize(
+    ("backend", "enabled", "prefix_caching", "nextn", "expected"),
+    [
+        ("sglang", False, False, 0, None),
+        ("sglang", False, True, 0, None),
+        ("sglang", True, True, 0, {"disaggregation_decode_enable_radix_cache": True}),
+        ("sglang", True, False, 0, "decode_enable_prefix_caching=true"),
+        ("sglang", True, True, 2, "incompatible with speculative decoding"),
+        ("vllm", True, False, 0, None),
+        ("vllm", True, False, 2, None),
+    ],
+)
+def test_disagg_deployment_lowers_only_the_sglang_decode_radix_cache(backend, enabled, prefix_caching, nextn, expected):
+    shape = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1)
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(shape, 1),
+        decode=ReplicaParallelConfig(shape, 1),
+    )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend=backend,
+        prefill_max_num_batched_tokens=8192,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=256,
+    )
+    sample = unroll_sample(
+        search_space=_space(
+            backend=["vllm", "sglang"],
+            decode_enable_prefix_caching=True,
+        ),
+        selection=selection,
+        parallel_config=parallel,
+    )
+    # Direct sample consumers still need validation when bypassing SearchSpace.
+    sample.update(
+        decode_radix_cache=enabled,
+        decode_enable_prefix_caching=prefix_caching,
+        aic_nextn=nextn,
+        nextn_accepted=1.0 if nextn else None,
+    )
+
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=expected):
+            build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+        return
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.decode_engine_args.get("sglang") == expected
+    assert deployment.decode_engine_args["enable_prefix_caching"] is prefix_caching
+    assert "sglang" not in deployment.prefill_engine_args
+
+
 def test_disagg_backend_deployment_uses_role_hardware():
     parallel = DisaggParallelConfig(
         prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),

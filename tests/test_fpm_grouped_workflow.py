@@ -220,6 +220,24 @@ def _mixed_profile(profile):
     return profile
 
 
+# Two pool blocks of 64 bytes for every running request, whatever its length.
+_STATE_GROUP = {
+    "name": "state",
+    "kind": "state",
+    "num_layers": 2,
+    "block_size_tokens": 64,
+    "page_size_bytes": 64,
+    "blocks_per_request": 2,
+}
+
+
+def _with_state_group(profile):
+    profile = deepcopy(profile)
+    for deployment in profile["deployments"]:
+        deployment["resources"]["cache_groups"].append(dict(_STATE_GROUP))
+    return profile
+
+
 @pytest.mark.parametrize("unrelated", ["topology", "hardware", "version"])
 def test_mixed_profile_predict_preserves_selected_linear_prefix_cache(grouped_case, tmp_path, unrelated):
     profile, root = grouped_case
@@ -454,6 +472,35 @@ def test_public_predict_uses_group_bytes_with_tp_and_dep(grouped_case, tmp_path,
     assert "estimated_num_gpu_blocks" not in memory
 
 
+@pytest.mark.parametrize("dep", [False, True])
+def test_public_predict_runs_with_a_state_group(grouped_case, tmp_path, dep):
+    profile, root = grouped_case
+    raw = _prediction(_with_state_group(profile), root, dep=dep)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    diagnostics = {}
+    lowered = materialize_aic_num_gpu_blocks(spec.backend_deployment.agg_engine_args, memory_diagnostics=diagnostics)
+    # The state group reaches the engine configuration with its block count. No other group has the key.
+    assert lowered["kv_cache_groups"] == diagnostics["cache_groups"]
+    groups = {group["name"]: group for group in lowered["kv_cache_groups"]}
+    assert groups["state"] == {**_STATE_GROUP, "sliding_window": None}
+    assert all("blocks_per_request" not in group for name, group in groups.items() if name != "state")
+    assert lowered["kv_cache_capacity_bytes"] == 3486
+    # 2048 full-history + 656 sliding-window + 272 convolution + 128 state bytes (2 blocks of 64).
+    assert diagnostics["request_peak_cache_bytes"] == 3104
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "prediction"
+    arguments = ["predict", "-c", str(path), "--output-dir", str(output), "--detail", "memory", "--capture-per-request"]
+    assert cli.main(arguments) == 0
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["completed_requests"] == 2
+    assert all(row["output_length"] == 4 for row in report["per_request"])
+    assert report["fpm_query_coverage"]["status"] == "covered"
+    memory = report["details"]["sections"]["memory"]["roles"]["aggregated"]
+    assert memory["total_kv_size_bytes"] == 3486
+    assert memory["total_kv_size_tokens"] is None
+
+
 def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, tmp_path):
     profile, root = grouped_case
     # Window-only allocation is bounded, but the first decode after the
@@ -634,6 +681,48 @@ def test_grouped_kv_load_uses_bytes_without_inventing_token_capacity(grouped_cas
         )
         # 1216 full-history + 528 sliding-window + 16 convolution bytes.
         assert result.role_request_cache_bytes == {"agg": 1760}
+        assert result.role_capacity_bytes == {"agg": 3486 * candidate.shape.dp}
+        assert result.concurrency_capacity == candidate.shape.dp
+        assert result.role_capacity_tokens == {}
+
+
+def test_grouped_state_group_adds_fixed_bytes_per_request(grouped_case):
+    profile, root = grouped_case
+    profile = _with_state_group(profile)
+    candidates = parallel_configs_for(
+        profile["model"],
+        "h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        deployment_mode="agg",
+        gpu_budget=2,
+        max_num_tokens=128,
+        max_batch_size=4,
+        fpm_profile=profile,
+        systems_paths=[str(root)],
+    )
+    assert len(candidates) == 2
+    for candidate in candidates:
+        sample = {
+            "model_name": profile["model"],
+            "hardware_sku": "h200_sxm",
+            "backend": "vllm",
+            "fpm_profile": profile,
+            "systems_paths": [str(root)],
+            "agg_block_size": 64,
+            "agg_max_num_batched_tokens": 128,
+            "agg_max_num_seqs": 4,
+            "agg_gpu_memory_utilization": 0.9,
+        }
+        result = resolve_kv_load(
+            sample,
+            workload=Workload(isl=1152, osl=4, kv_load_ratio=1.0, request_count=2),
+            parallel_config=candidate,
+            ratio=1.0,
+            backend_version="0.25.1",
+        )
+        # The 1760 bytes of the other groups plus 2 state blocks of 64 bytes. The capacity does not change.
+        assert result.role_request_cache_bytes == {"agg": 1888}
         assert result.role_capacity_bytes == {"agg": 3486 * candidate.shape.dp}
         assert result.concurrency_capacity == candidate.shape.dp
         assert result.role_capacity_tokens == {}

@@ -93,6 +93,8 @@ def _engine_args(*, role="aggregated", backend="vllm", timing=None):
         "aic_attention_dp_size": 1,
         "block_size": 4,
         "num_gpu_blocks": 16,
+        # These toy pools cannot hold SGLang's default 512-token decode reserve.
+        **({"sglang": {"num_reserved_decode_tokens": 0}} if backend == "sglang" else {}),
         "timing_model": timing or {"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0},
     }
 
@@ -180,6 +182,157 @@ def test_generic_speculation_requires_explicit_runner_capability(location, neste
         replace(capabilities, supports_generic_speculation=False).require_compatible(spec)
 
 
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+@pytest.mark.parametrize("nested_rank", [False, True])
+def test_mtp_host_offload_requires_explicit_composition_capability(location, nested_rank):
+    args = _engine_args()
+    selection = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    if location == "rank":
+        args["speculation"] = selection
+    else:
+        args["timing_model"] = {"type": "external", "provider": "aic", "config": {"speculation": selection}}
+    args["native_host_offload"] = {"num_host_blocks": 16}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args={"rank": args} if nested_rank else args,
+            num_workers=1,
+        )
+    )
+    engine = EngineReplayRunnerFactory().capabilities()
+    engine.require_compatible(spec)
+    consumer = replace(engine, supports_mtp_host_offload=False)
+    with pytest.raises(ValueError, match="MTP with host offload; use --stack engine"):
+        consumer.require_compatible(spec)
+    # Support for either feature alone must not imply support for their composition.
+    offload = args.pop("native_host_offload")
+    consumer.require_compatible(spec)
+    args["native_host_offload"] = offload
+    if location == "rank":
+        args.pop("speculation")
+    else:
+        args["timing_model"]["config"].pop("speculation")
+    consumer.require_compatible(spec)
+
+
+@pytest.mark.parametrize("location,name", [("rank", "aic_nextn"), ("rank", "nextn"), ("canonical", "nextn")])
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("supports_composition", [False, True])
+def test_host_offload_rejects_legacy_depth_during_capability_preflight(
+    location, name, nested_rank, supports_composition
+):
+    args = _engine_args()
+    args["native_host_offload"] = {"num_host_blocks": 16}
+    if location == "rank":
+        controls = args
+    else:
+        args["timing_model"] = {"type": "external", "provider": "aic", "config": {}}
+        controls = args["timing_model"]["config"]
+    controls[name] = 2
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args={"rank": args} if nested_rank else args,
+            num_workers=1,
+        )
+    )
+    capabilities = replace(EngineReplayRunnerFactory().capabilities(), supports_mtp_host_offload=supports_composition)
+    with pytest.raises(ValueError, match="requires canonical mtp speculation"):
+        capabilities.require_compatible(spec)
+    # Disabled legacy depth and legacy speculation without G2 remain compatible.
+    controls[name] = 0
+    capabilities.require_compatible(spec)
+    controls[name] = 2
+    args.pop("native_host_offload")
+    capabilities.require_compatible(spec)
+
+
+@pytest.mark.parametrize("name", ["aic_nextn", "nextn"])
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("cache_mode", ["g1", "g2", "state"])
+def test_runner_zero_legacy_depth_executes_as_disabled(name, nested_rank, cache_mode):
+    args = _engine_args()
+    if cache_mode == "g2":
+        args.update(kv_cache_bytes_per_token=1024, native_host_offload={"num_host_blocks": 16})
+    elif cache_mode == "state":
+        args.update(kv_cache_bytes_per_token=1024, state_cache={"bytes_per_request": 1500}, prefix_match_unit=1)
+    if nested_rank:
+        materialized = _materialize_engine_role("vllm", "test", {}, args, "aggregated")
+        args = {key: materialized[key] for key in ("rank", "dp_size", "tensor_parallel_size")}
+    rank = args.get("rank", args)
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    runner = EngineReplayRunnerFactory().create(0)
+    baseline = runner.run(spec)
+    rank[name] = 0
+    disabled = runner.run(spec)
+    assert rank[name] == 0  # Materialization must not rewrite the caller's spec.
+    assert disabled.metrics["completed_requests"] == 1
+    assert disabled.metrics["total_output_tokens"] == 2
+    for metric in ("mean_e2e_latency_ms", "mean_ttft_ms", "mean_tpot_ms", "output_throughput_tok_s"):
+        assert disabled.metrics[metric] == baseline.metrics[metric]
+    # Positive legacy depth remains forbidden with G2 or sub-block state cache.
+    rank[name] = 2
+    if cache_mode == "g2":
+        with pytest.raises(ValueError, match="requires canonical mtp speculation"):
+            runner.run(spec)
+    elif cache_mode == "state":
+        with pytest.raises(ValueError, match="sub-block prefix_match_unit does not support speculative decoding"):
+            runner.run(spec)
+    else:
+        rank["aic_nextn_accept_rates"] = "1,0.5"
+        assert runner.run(spec).metrics["completed_requests"] == 1
+
+
+@pytest.mark.parametrize(
+    "controls,message",
+    [
+        ({"aic_nextn": 0, "nextn": 0}, "duplicates aic_nextn"),
+        ({"aic_nextn": 0, "nextn": 2}, "duplicates aic_nextn"),
+        ({"aic_nextn": False}, "aic_nextn must be a positive integer"),
+        ({"nextn": 0.0}, "aic_nextn must be a positive integer"),
+        (
+            {"nextn": 0, "speculation": {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1}},
+            "speculation cannot be combined with legacy",
+        ),
+        (
+            {
+                "nextn": 0,
+                "timing_model": {"type": "external", "provider": "aic", "config": {"nextn": 2}},
+            },
+            "aic_nextn=0 conflicts with timing_model.config.nextn",
+        ),
+        (
+            {
+                "nextn": 0,
+                "timing_model": {
+                    "type": "external",
+                    "provider": "aic",
+                    "config": {"speculation": {"kind": "mtp", "params": {"depth": 2}}},
+                },
+            },
+            "aic_nextn must be a positive integer",
+        ),
+    ],
+)
+def test_runner_disabled_depth_normalization_preserves_input_validation(controls, message):
+    args = {**_engine_args(), **controls}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    with pytest.raises(ValueError, match=message):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
 def _canonical_speculation_deployment(speculation, *, backend="vllm"):
     version = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}[backend]
     timing = {
@@ -245,6 +398,46 @@ def test_native_canonical_speculation_requires_authored_acceptance(accept_rates,
     else:
         with pytest.raises(RuntimeError, match="acceptance|accept_rates"):
             runner.run(spec)
+
+
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+@pytest.mark.parametrize("scope", ["dp_rank_local", "cluster_shared"])
+def test_runner_canonical_mtp_g2_retains_local_scope_limit(location, scope):
+    deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
+    args = dict(deployment.agg_engine_args)
+    args.update(kv_cache_bytes_per_token=250_000, native_host_offload={"num_host_blocks": 16, "scope": scope})
+    if location == "rank":
+        args["speculation"] = {**args["timing_model"]["config"].pop("speculation"), "expected_accepted_tokens": 1.5}
+    else:
+        args.update(aic_nextn_accept_rates="1,0.5", aic_mtp_seed=42)
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    spec = _spec(deployment=replace(deployment, agg_engine_args=args))
+    if scope == "cluster_shared":
+        with pytest.raises(ValueError, match="scope=dp_rank_local"):
+            runner.run(spec)
+        assert runtime.execution_spec is None
+    else:
+        runner.run(spec)
+        rank = runtime.execution_spec["engine"]["rank"]
+        assert rank["native_host_offload"] == args["native_host_offload"]
+        assert rank["timing_model"]["config"]["speculation"] == {"kind": "mtp", "params": {"depth": 2}}
+
+
+@pytest.mark.parametrize("field,value", [("g3_offload", {"num_g3_blocks": 16}), ("enable_prefix_caching", False)])
+def test_runner_canonical_mtp_g2_rejects_unsupported_cache_compositions(field, value):
+    deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
+    args = {
+        **deployment.agg_engine_args,
+        "kv_cache_bytes_per_token": 250_000,
+        "native_host_offload": {"num_host_blocks": 16},
+        "aic_nextn_accept_rates": "1,0.5",
+        field: value,
+    }
+    with pytest.raises(ValueError, match="uniform G1/G2 without G3"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(deployment=replace(deployment, agg_engine_args=args))
+        )
 
 
 @pytest.mark.parametrize(
@@ -477,6 +670,32 @@ def test_agentic_g2_capability_accepts_static_vllm_dp1_roles(trace_format, neste
 
 
 @pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+@pytest.mark.parametrize("scope", ["dp_rank_local", "cluster_shared"])
+def test_agentic_g2_canonical_mtp_capability_is_local_aggregated_only(nested_rank, location, scope):
+    spec = _agentic_g2_spec(scopes=(scope,), nested_rank=nested_rank)
+    args = spec.backend_deployment.agg_engine_args
+    rank = args.get("rank", args)
+    if location == "rank":
+        rank["speculation"] = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    else:
+        rank["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": {"speculation": {"kind": "mtp", "params": {"depth": 2}}},
+        }
+        rank["aic_nextn_accept_rates"] = "1,0.5"
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    if scope == "cluster_shared":
+        with pytest.raises(ValueError, match="scope=dp_rank_local"):
+            capabilities.require_compatible(spec)
+    else:
+        capabilities.require_compatible(spec)
+        with pytest.raises(ValueError, match="speculative decoding disabled"):
+            replace(capabilities, supports_agentic_speculative_decoding=False).require_compatible(spec)
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
 @pytest.mark.parametrize("scopes", [("dp_rank_local",), ("cluster_shared", None)])
 @pytest.mark.parametrize("workers", [1, 2])
 def test_agentic_g2_runner_capability_remains_explicit(nested_rank, scopes, workers):
@@ -600,7 +819,7 @@ def test_agentic_g2_preserves_disabled_speculation_default_in_canonical_timing()
     capabilities = EngineReplayRunnerFactory().capabilities()
     capabilities.require_compatible(spec)
     identity["nextn"] = 1
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
+    with pytest.raises(ValueError, match="requires canonical mtp speculation"):
         capabilities.require_compatible(spec)
 
 
@@ -3450,3 +3669,19 @@ def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeyp
         engine["mode"] = "disaggregated"
     with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
+
+
+def test_native_summary_supplies_every_aiperf_selector():
+    from aisimulate.aiperf_metrics import AIPerfMetric, metric_value
+
+    report = EngineReplayRunnerFactory().create(0).run(_spec(goal={"target": "output_token_throughput_per_user.p50"}))
+    # Fixed timing: 2 ms prefill, one 1 ms decode, one completed request.
+    expected = {
+        "time_to_first_token": 2,
+        "request_latency": 3,
+        "inter_token_latency": 1,
+        "output_token_throughput_per_user": 1000,
+    }
+    for metric in AIPerfMetric:
+        assert metric_value(report.metrics, metric) == expected[metric.value.rsplit(".", 1)[0]], metric
+    assert "native_report" not in report.metadata

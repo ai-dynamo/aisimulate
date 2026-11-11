@@ -20,8 +20,9 @@
 //! forward starts when it is launched and the previous forward has finished.
 //! Consequently the outputs, terminals, and KV release of batch `k` become
 //! visible at the end of iteration `k+1`, and a request that finished in batch
-//! `k` still fills a slot in batch `k+1` because SGLang's `filter_batch` only
-//! sees `finished()` after that result is processed. Everything a forward
+//! `k` retains KV until that result is processed. The core filters aggregated
+//! non-speculative rows finishing by length before batch `k+1`, following
+//! SGLang v0.5.22; PD decode can still run those ghost rows. Everything a forward
 //! produces for the scheduler's bookkeeping travels with the batch: its output
 //! tokens and the prefix-cache commits of `maybe_cache_unfinished_req` become
 //! visible together when the batch is observed. Retraction or cancellation
@@ -105,6 +106,17 @@ impl HostLoop {
         self.inbox.is_empty() && self.in_flight.is_none()
     }
 
+    pub(super) fn unobserved_output_tokens(&self) -> usize {
+        self.in_flight.as_ref().map_or(0, |batch| {
+            batch
+                .outputs
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+                .count()
+        })
+    }
+
     /// Requests delivered but not yet received.
     #[cfg(test)]
     pub(super) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
@@ -135,6 +147,17 @@ impl HostLoop {
         self.in_flight
             .as_mut()
             .map_or(0, |batch| batch.outputs.discard_request(uuid))
+    }
+
+    pub(super) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.in_flight.as_ref().is_some_and(|batch| {
+            batch.outputs.output_signals.iter().any(|s| s.uuid == uuid)
+                || batch
+                    .outputs
+                    .cache_commits
+                    .iter()
+                    .any(|(id, _)| *id == uuid)
+        })
     }
 
     /// Keep a cancelled request's KV until the current forward is observed.
@@ -194,13 +217,17 @@ impl HostLoop {
             "observe the previous forward first"
         );
         let (gpu_ms, outputs) = forward?;
-        let gpu_end_ms = self.gpu_free_ms.max(selected_ms) + gpu_ms;
+        let gpu_end_ms = self.forward_start_ms(selected_ms) + gpu_ms;
         self.gpu_free_ms = gpu_end_ms;
         self.in_flight = Some(InFlightBatch {
             gpu_end_ms,
             outputs,
         });
         Some(gpu_end_ms)
+    }
+
+    pub(super) fn forward_start_ms(&self, selected_ms: f64) -> f64 {
+        self.gpu_free_ms.max(selected_ms)
     }
 }
 
