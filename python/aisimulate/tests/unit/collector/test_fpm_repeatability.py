@@ -2183,6 +2183,15 @@ def test_measurement_evidence_refuses_the_producer_protocol_on_a_cell_without_it
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_refuses_seeded_content_on_a_cell_without_the_contract(tmp_path):
+    # Without a producer record the generic rules read the protocol, and they know no seeded token content.
+    root, collection = _producer_collection(tmp_path, walls=[0.4] * 10, contract=False)
+    _edit_rank_artifact(root, lambda payload: payload["measurement_protocol"].pop("producer"))
+    with pytest.raises(ValueError, match="measurement_protocol has malformed content settings"):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
 def test_measurement_evidence_holds_a_producer_cell_to_the_producer_protocol_whatever_the_artifact_reports(tmp_path):
     # The record of nine repetitions over random content is consistent in itself, and the generic rules accept it.
     # The cell's contract still demands the producer's record.
