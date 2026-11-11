@@ -5,11 +5,12 @@
 //! across ranks, replicas and P/D roles.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
 use aisimulate_core::engine::{
     Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
-    SharedG2Pool,
+    SharedG2Pool, TimingModel,
 };
 use aisimulate_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
@@ -28,6 +29,33 @@ fn rank(host_offload: Value) -> Value {
         "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
         "native_host_offload": host_offload,
     })
+}
+
+/// Canonical MTP, the only speculation G2 takes: the `aic` timing identity
+/// selects it, and [`timed_factory`] supplies the forward times.
+fn canonical_mtp(rank: &mut Value, depth: usize) {
+    rank["aic_nextn"] = json!(depth);
+    rank["aic_nextn_accept_rates"] = json!(vec!["1"; depth].join(","));
+    rank["timing_model"] = json!({
+        "type": "external", "provider": "aic",
+        "config": {"speculation": {"kind": "mtp", "params": {"depth": depth}}},
+    });
+}
+
+struct OneMsTiming;
+
+impl TimingModel for OneMsTiming {
+    fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+
+    fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+}
+
+fn timed_factory() -> ReplayEngineFactory {
+    ReplayEngineFactory::with_timing_model(Arc::new(OneMsTiming))
 }
 
 fn host(scope: &str) -> Value {
@@ -136,6 +164,41 @@ fn token_only_prefill_and_decode_join_one_cluster_pool() {
             "{prefill_scope}/{decode_scope}"
         );
     }
+}
+
+#[test]
+fn overlapping_mtp_requests_run_on_two_attention_dp_ranks() {
+    // One aggregated worker of two attention-DP ranks with a local pool each,
+    // MTP depth 2. `a` and `b` overlap on different ranks: 12-token prompts
+    // in an 8-token budget (chunked prefills) and draft rounds, while their
+    // stores (1 ms a block) are in flight. `evict` then fills rank 0's G1, so
+    // `c`, which repeats `a`'s prompt there, loads 12 of its 13 tokens from
+    // that rank's pool. `d` repeats it on rank 1, whose pool never had it.
+    let pool = json!({
+        "num_host_blocks": 16, "d2h_bandwidth_gbps": 1.0, "h2d_bandwidth_gbps": 1.0,
+    });
+    let mut rank = small_rank(8, 4, 8, json!({"native_host_offload": pool}));
+    canonical_mtp(&mut rank, 2);
+    let mut requests = token_ranges(&[
+        ("a", 0.0, 1, 12, 6),
+        ("b", 0.0, 101, 12, 6),
+        ("evict", 20.0, 201, 28, 1),
+        ("c", 40.0, 1, 13, 1),
+        ("d", 40.0, 1, 13, 1),
+    ]);
+    for (request, dp_rank) in requests.iter_mut().zip([0, 1, 0, 0, 1]) {
+        request["dp_rank"] = json!(dp_rank);
+    }
+    let engine = json!({"dp_size": 2, "rank": rank});
+    let report = run_with(&timed_factory(), aggregated(1), engine, requests).unwrap();
+    let mut records = report.per_request.iter().collect::<Vec<_>>();
+    records.sort_by_key(|record| record.request_id.clone());
+    let outputs = records.iter().map(|record| record.output_length);
+    assert_eq!(outputs.collect::<Vec<_>>(), [6, 6, 1, 1, 1]);
+    // Without accepted drafts six tokens take seven 1 ms passes: two prefill
+    // chunks, then a token a pass.
+    assert!(records[0].terminal_time_ms < 7.0);
+    assert_eq!(host_reuse(&report), [0, 0, 12, 0, 0].map(Some));
 }
 
 #[test]

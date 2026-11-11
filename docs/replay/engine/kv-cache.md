@@ -350,7 +350,7 @@ caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
 ngram speculation, `state_cache`, and Belady eviction.
 
 Canonical `engine.speculation.kind: mtp` can combine with G2 only on an
-aggregated vLLM worker with `attention_data: 1`, `scope: dp_rank_local`, prefix
+aggregated vLLM worker with any `attention_data`, `scope: dp_rank_local`, prefix
 caching and no G3. Use explicit fixed KV capacity and default timing. This
 models synchronous single-module MTP with one uniform shared FullAttention
 cache; separate draft models and grouped caches are unsupported. See

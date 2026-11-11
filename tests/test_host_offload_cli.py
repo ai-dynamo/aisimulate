@@ -165,7 +165,6 @@ def test_canonical_mtp_host_config_roundtrips_and_preserves_cost_identity(
     "change,error",
     [
         ({"scheduler": {"async_scheduling": True}}, "async_scheduling=false"),
-        ({"parallelism": {"attention_data": 2}}, "attention_data=1"),
         (
             {"kv_cache": {"host_offload": {"scope": "cluster_shared", "num_host_blocks": 16}}},
             "dp_rank_local",
@@ -189,6 +188,17 @@ def test_canonical_mtp_host_config_preserves_composition_limits(change, error) -
         worker[section].update(values)
     with pytest.raises(ValidationError, match=error):
         CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_canonical_mtp_host_config_takes_attention_dp() -> None:
+    engine = _mtp_host_engine()
+    engine["workers"]["aggregated"]["parallelism"]["attention_data"] = 2
+    runtime = _RecordingRuntime()
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    lowered = runtime.execution_spec["spec"]["engine"]
+    assert lowered["dp_size"] == 2
+    assert lowered["rank"]["aic_nextn"] == 2
 
 
 def test_canonical_mtp_host_config_rejects_disaggregated_workers() -> None:

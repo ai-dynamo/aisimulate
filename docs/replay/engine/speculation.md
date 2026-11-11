@@ -107,10 +107,10 @@ an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
 `kind: mtp` also supports [G2 host offload](kv-cache.md#host-offload-g2)
-on aggregated vLLM with `attention_data: 1`, prefix caching enabled and
+on aggregated vLLM with any `attention_data`, prefix caching enabled and
 `host_offload.scope: dp_rank_local`. This uses synchronous, single-module MTP
 with a uniform shared FullAttention cache. Agentic G2 additionally requires a
-single static worker. Separate draft models, other speculative schemes,
+single static worker with `attention_data: 1`. Separate draft models, other speculative schemes,
 asynchronous scheduling, P/D, shared G2 pools, and G3 are outside this combined
 scope. Keep the canonical `engine.speculation` block, fixed KV capacity and
 default timing; acceptance and seed remain workload assumptions. This composition

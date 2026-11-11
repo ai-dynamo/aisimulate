@@ -80,7 +80,8 @@ schemes' draft costs. A stack must explicitly declare generic speculation
 support and retain those costs through its timing provider.
 
 `supports_mtp_host_offload` defaults to `False` and declares the combined
-MTP + G2 contract. The built-in engine advertises it; existing external runners,
+MTP + G2 contract: aggregated workers at any attention DP, with a rank-local
+pool. The built-in engine advertises it; existing external runners,
 including Dynamo, must opt in only after their runtime and dependency pins
 support the same composition. Generic speculation or G2 support alone does
 not enable it.

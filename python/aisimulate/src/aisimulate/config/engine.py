@@ -1389,14 +1389,13 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
                 backends != {"vllm"}
                 or modes != {"aggregated"}
                 or role != "aggregated"
-                or worker.parallelism.attention_data != 1
                 or not cache.prefix_caching
                 or cache.host_offload.scope != "dp_rank_local"
                 or cache.g3_offload is not None
             ):
                 raise ValueError(
-                    "mtp speculation with host_offload requires aggregated vllm, attention_data=1, "
-                    "prefix_caching=true, scope=dp_rank_local, and no g3_offload"
+                    "mtp speculation with host_offload requires aggregated vllm, prefix_caching=true, "
+                    "scope=dp_rank_local, and no g3_offload"
                 )
         if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
