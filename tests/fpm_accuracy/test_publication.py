@@ -163,9 +163,56 @@ def test_reject_raw_fields_bad_coverage_and_internal_links(summary):
     with pytest.raises(ValueError):
         validate_summary(summary)
     metric["predicted_count"] = 80
-    summary["rows"][0]["configuration_manifest"] = "https://gitlab-master.nvidia.com/private"
-    with pytest.raises(ValueError):
+    summary["rows"][0]["configuration_manifest"] = "https://gitlab.internal.example.com/private"
+    with pytest.raises(ValueError, match="internal provenance"):
         validate_summary(summary)
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_reject_gitlab_provenance_in_public_text(summary, hostname):
+    summary["rows"][0]["model"] = hostname
+    with pytest.raises(ValueError, match="internal provenance"):
+        validate_summary(summary)
+
+
+@pytest.mark.parametrize("via_publisher", [False, True])
+@pytest.mark.parametrize(
+    "dataset,message",
+    [
+        ("https://gitlab.example.com/dataset", "internal provenance"),
+        ("GITLAB.EXAMPLE.COM/dataset", "internal provenance"),
+        ("file://example.com/dataset", "internal provenance"),
+        ("example\ncorpus", "control characters in public text"),
+        ("x" * 1025, "invalid public text"),
+    ],
+    ids=["gitlab-url", "uppercase-gitlab", "file-url", "control-character", "too-long"],
+)
+def test_reject_invalid_collection_dataset_names(summary, dataset, message, via_publisher):
+    summary["rows"][0]["collection"] = dict(
+        types=["trace_replay"], datasets=[dataset], run_count=1, unattributed_measurements=0
+    )
+    with pytest.raises(ValueError, match=message):
+        if via_publisher:
+            producer = run(summary)
+            publish.validate_artifact(
+                archive(summary), producer, "fpm-accuracy-web-" + artifact_key("main"), [job(producer)]
+            )
+        else:
+            validate_summary(summary)
+
+
+def test_public_collection_dataset_names_can_publish(summary):
+    summary["rows"][0]["collection"] = dict(
+        types=["trace_replay"], datasets=["example-corpus"], run_count=1, unattributed_measurements=0
+    )
+    producer = run(summary)
+    assert validate_summary(summary) == summary
+    assert (
+        publish.validate_artifact(
+            archive(summary), producer, "fpm-accuracy-web-" + artifact_key("main"), [job(producer)]
+        )
+        == summary
+    )
 
 
 @pytest.mark.parametrize("data", ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}'])

@@ -161,8 +161,9 @@ prediction YAML, and native replay. Quantization overrides also participate in
 KV feasibility and capacity-cache identity. EPLB, slots, and MoE backend
 selection require an MoE model; nondefault MoE backends require SGLang.
 Collected FPM interpolation rejects EPLB, slot, and MoE-backend overrides that
-its cells cannot represent. Custom timing, AFD, and analytical encoder runs
-reject these model controls.
+its cells cannot represent. Custom timing and analytical encoder runs reject
+these model controls. AFD roles accept precision overrides, kernel selectors and
+MTP, while rejecting EPLB, redundant slots and nondefault `moe_backend`.
 
 `aic_nextn` is the compute-side MTP draft depth (0–5); zero disables MTP.
 For a positive depth, set `nextn_accepted`
@@ -176,7 +177,8 @@ omission preserves the backend default.
 It must fit the shortest generated input, including a configured random-length
 range. It creates shared tokens and does not prewarm the KV cache: the first
 request is cold, and subsequent reuse follows backend cache and block rules.
-Positive cached prefixes are unsupported for AFD and AFD+PD.
+Native AFD roles support cached prefixes in aggregated and disaggregated replay;
+prefill timing uses the actual uncached suffix and cached-prefix geometry.
 
 The model controls above and synthetic cached prefixes are supported by
 `--stack engine`. Optional runners, including Dynamo, must explicitly advertise
@@ -223,8 +225,8 @@ Every `Workload` field:
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`) and the optional import fields below. Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `agentic_snapshot.initial_selections` | `list[AgenticSnapshotSelection] \| None` | `None` (unset) | Exact imported `{source_play_id, t_star_ms}` cuts in lane order, with exactly one selection per `agentic_lanes`. Requires `corpus_cursor`; source IDs must exist in the input corpus and finite cuts must lie within the selected play's request-start bounds in the loaded graph's clock (Weka: play-relative milliseconds). Cuts are not re-sampled. |
 | `agentic_snapshot.corpus_cursor` | `int \| None` | `None` (unset) | Unsigned 64-bit next sequential source draw, including skipped draws. Requires `initial_selections` and must be at least their count; it may exceed the lane count. |
-| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../replay/workloads.md#agentic-warmup). Failed preparation is retained as candidate evidence and excluded from ranking. |
-| `agentic_warmup_policy` | `Literal["repeated_prefixes", "live_trajectory_v1"]` | `"repeated_prefixes"` | The default preserves the saved frontier and is omitted from serialized workloads. `live_trajectory_v1` advances the dependency graph with ten additional one-token admissions per lane; it requires `agentic_warmup: true`, `agentic_profile`, and a runner advertising `supports_agentic_live_warmup`. See [warmup policies](../replay/agentic/warmup.md#live-trajectory-policy). |
+| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs the preparation requests that `agentic_warmup_policy` selects before measured replay, preserving native cache state; see [warmup behavior](../replay/workloads.md#agentic-warmup). Failed preparation is retained as candidate evidence and excluded from ranking. |
+| `agentic_warmup_policy` | `Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"]` | `"repeated_prefixes"` | The default preserves the saved frontier and is omitted from serialized workloads. `live_trajectory_v1` advances the dependency graph with ten additional one-token admissions per lane; it requires `agentic_warmup: true`, `agentic_profile`, and a runner advertising `supports_agentic_live_warmup`. `primers_only` sends only the primers; it requires `agentic_warmup: true` and a runner advertising `supports_agentic_primers_only`. See [live trajectory](../replay/agentic/warmup.md#live-trajectory-policy) and [primers-only](../replay/agentic/warmup.md#primers-only-policy) policies. |
 | `agentic_profile` | `AgenticProfileOptions \| None` | `None` (unset) | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `agentic_snapshot` and its agentic trace/lane controls; cannot be combined with `max_sim_time_ms`. Unset preserves finite replay. See [continuous profile](../replay/workloads.md#agentic-profile) for the complete configuration, results, and limits. |
 | `agentic_profile.duration_seconds` | `float` | `3600.0` when enabled | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. Stops new workload requests and replacement plays at the deadline. |
 | `agentic_profile.response_grace_seconds` | `float` | `30.0` when enabled | Nonnegative finite response window after admission closes; remaining client requests are then canceled. |
@@ -249,14 +251,15 @@ aggregated worker or 1P1D, or local G2 on several static aggregated workers, wit
 on every role. G3 remains unsupported;
 speculative decoding follows the narrower [engine SD constraints](../replay/engine/speculation.md).
 Warmup is optional: `repeated_prefixes` retains the saved snapshot frontier,
-while `live_trajectory_v1` advances it.
+`live_trajectory_v1` advances it, and `primers_only` sends only the primers.
 A completed lane takes a new turn-zero play from the shared corpus cursor, wrapping as necessary
 until the admission deadline. Seed-only sampling differs from the AgentX reference; import exact
 cuts for matched comparisons. The live warmup policy follows the pinned reference's accelerated
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
-`supports_agentic_profile`, plus `supports_agentic_live_warmup` for `live_trajectory_v1` and
-`supports_weka_client` for `weka_client: agentx`; unsupported runners fail validation.
+`supports_agentic_profile` for `agentic_profile`, `supports_agentic_live_warmup` for
+`live_trajectory_v1`, `supports_agentic_primers_only` for `primers_only`, and `supports_weka_client`
+for `weka_client: agentx`; unsupported runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 

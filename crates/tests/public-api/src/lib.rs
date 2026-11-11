@@ -236,9 +236,98 @@ mod tests {
         // v25: SOL/direct interpolation selector combined with typed DCP.
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
         // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 29);
+        // v30: append native AFD communication ops and source-ordered pool plan.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 30);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
+    }
+
+    #[test]
+    fn afd_public_pipeline_layouts_construct_replay_topology() {
+        use aisimulate_core::engine::{AfdAPoolConfig, AfdEngineConfig, AfdFPoolConfig};
+        use aisimulate_core::{AfdPipelineLayout, AfdRoutingLocation};
+
+        for layout in [AfdPipelineLayout::FourStage, AfdPipelineLayout::TwoStage] {
+            let topology = AfdEngineConfig {
+                routing_location: AfdRoutingLocation::A,
+                a_pool: AfdAPoolConfig {
+                    system: "h200_sxm".into(),
+                    a_tp_size: 2,
+                    n_a_nodes: 1,
+                    batch_size_per_a_replica: 4,
+                },
+                f_pool: AfdFPoolConfig {
+                    system: "gb200".into(),
+                    f_moe_ep_size: 4,
+                    n_f_nodes: 1,
+                },
+                gpus_per_node: 8,
+                f_gpus_per_node: Some(4),
+                num_microbatches: 2,
+                pipeline_layout: layout,
+                comm_overhead_factor: 1.0,
+            };
+            let restored: AfdEngineConfig =
+                serde_json::from_str(&serde_json::to_string(&topology).unwrap()).unwrap();
+            assert_eq!(restored, topology);
+            assert_eq!(restored.pipeline_layout, layout);
+            assert_eq!(restored.effective_f_gpus_per_node(), 4);
+        }
+    }
+
+    #[test]
+    fn afd_public_typed_plan_round_trips_in_engine_spec() {
+        use aisimulate_core::perfmodel::engine::spec::{EngineSpec, OpSpec};
+        use aisimulate_core::{AfdExecutionPlan, AfdLayerTemplate, AfdPhasePlan, AfdPoolRole};
+
+        // A synthetic one-op fixture exercises the public wire contract without
+        // loading performance data or claiming a real model's execution graph.
+        let op: OpSpec = serde_json::from_value(serde_json::json!({
+            "Elementwise": {"name": "synthetic", "scale_factor": 1.0, "bytes_per_token": 4.0}
+        }))
+        .unwrap();
+        let phase = AfdPhasePlan {
+            templates: vec![AfdLayerTemplate {
+                attention_kind: "global".into(),
+                routed: true,
+                ops: vec![0],
+                rank_ops: vec![],
+                work_scale: 1.0,
+            }],
+            prefix: vec![],
+            suffix: vec![],
+        };
+        for role in [AfdPoolRole::A, AfdPoolRole::F] {
+            let plan = AfdExecutionPlan {
+                role,
+                model: "synthetic/model".into(),
+                hidden_size: 8,
+                num_experts: 4,
+                topk: 1,
+                layers: vec![0],
+                shared_inter_size: 0,
+                context: phase.clone(),
+                generation: phase.clone(),
+            };
+            plan.validate(1, 1).unwrap();
+            let role_name = serde_json::to_value(role).unwrap();
+            let config = serde_json::from_value(serde_json::json!({
+                "schema_version": ENGINE_CONFIG_SCHEMA_VERSION,
+                "model_name": "synthetic/model", "system_name": "h200_sxm",
+                "backend": "sglang", "tp_size": 1, "pp_size": 1,
+                "extra": {"afd_pool_role": role_name}
+            }))
+            .unwrap();
+            let mut spec = EngineSpec::new(config, vec![op.clone()], vec![op.clone()]);
+            spec.afd_plan = Some(plan.clone());
+            let restored = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+            assert_eq!(restored.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
+            assert_eq!(restored.afd_plan, Some(plan));
+            assert_eq!(
+                restored.engine.extra["afd_pool_role"],
+                role_name.as_str().unwrap()
+            );
+        }
     }
 
     struct LatencyOnlyProvider;

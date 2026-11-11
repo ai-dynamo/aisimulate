@@ -16,13 +16,6 @@ Public surface preserves the prior import pattern:
 
 from __future__ import annotations
 
-from aisimulate_core.sdk.operations.afd_transfer import (
-    AFDCombine,
-    AFDFAllGather,
-    AFDFReduceScatter,
-    AFDTransfer,
-    _afd_send_prob,
-)
 from aisimulate_core.sdk.operations.attention import ContextAttention, EncoderAttention, GenerationAttention
 from aisimulate_core.sdk.operations.base import (
     Operation,
@@ -66,10 +59,6 @@ __all__ = [
     "GEMM",
     "NCCL",
     "P2P",
-    "AFDCombine",
-    "AFDFAllGather",
-    "AFDFReduceScatter",
-    "AFDTransfer",
     "ContextAttention",
     "ContextDSAModule",
     "ContextDeepSeekV4AttentionModule",
@@ -104,7 +93,6 @@ __all__ = [
     "PythonOperation",
     "WideEPContextMLA",
     "WideEPGenerationMLA",
-    "_afd_send_prob",
     "clear_all_op_caches",
     "warm_all_op_data",
 ]

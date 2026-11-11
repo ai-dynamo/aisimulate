@@ -31,16 +31,20 @@ pub use launch::EngineLaunchConfig;
 
 pub use belady::KvEvictionPolicy;
 pub(crate) use common::hashing::{
-    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    block_hashes_with_salt, cache_salt_seed, compute_block_hash_for_tokens,
+    compute_next_sequence_hash,
 };
 #[cfg(all(test, feature = "python"))]
 pub(crate) use common::protocols::{DirectRequest, MockEngineArgs};
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
+pub(crate) use config::afd_total_gpus;
+pub use config::{AfdAPoolConfig, AfdEngineConfig, AfdFPoolConfig};
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
     G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
-    SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    SglangHiCacheConfig, SglangHiCacheWritePolicy, SglangSchedulePolicy, SlidingWindowStateConfig,
+    StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{
@@ -59,6 +63,10 @@ pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use scheduler::VllmCore;
+#[cfg(feature = "python")]
+pub(crate) use scheduler::afd::timing::AfdTimingModel;
+#[cfg(test)]
+pub(crate) use scheduler::afd::timing::tests::provider_for as afd_timing_provider_for;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{

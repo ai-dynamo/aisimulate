@@ -3,7 +3,10 @@
 # SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
 # Dense/decode composition and exclusion matching adapt (with modifications) SGLang:
-# https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+# Original audit revision: 02c5a855aceb968c310e6fbc6632270e26edc84b.
+# Public reference (not a verified mirror of the audit revision):
+# https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt
+# Source paths, modification status, and license: THIRD_PARTY_NOTICES.md.
 # The vLLM copyright is retained from SGLang's deepseek_v2.py, which cites:
 # https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py
 
@@ -123,7 +126,9 @@ def _dsa_shared_expert_quant_mode(extra_params: object, fallback: common.GEMMQua
     return fallback
 
 
-def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQuantMode) -> list:
+def _dense_mlp_groups(
+    raw_config: dict, num_layers: int, fallback: common.GEMMQuantMode, *, ordered: bool = False
+) -> list:
     """Dense-prefix layer counts grouped by gate/up and down projection dtype."""
     count = raw_config.get("first_k_dense_replace")
     if count is None:
@@ -185,6 +190,9 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
                 return common.GEMMQuantMode.bfloat16
         return fallback
 
+    if ordered:
+        # AFD must retain physical layer order rather than the agg histogram.
+        return [(1, quant_mode(layer, "gate_up_proj"), quant_mode(layer, "down_proj")) for layer in range(count)]
     groups: Counter = Counter()
     for layer in range(count):
         groups[(quant_mode(layer, "gate_up_proj"), quant_mode(layer, "down_proj"))] += 1

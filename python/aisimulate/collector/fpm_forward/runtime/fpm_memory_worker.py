@@ -11,9 +11,13 @@ try:
     from vllm.distributed import get_pp_group, get_tp_group
     from vllm.v1.worker.gpu_worker import Worker
 except ImportError as error:
+    # Already imported above; the version tuples are needed only for this message.
+    from fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS, MEMORY_SUPPORTED_VERSIONS
+
     raise RuntimeError(
         "FPM observation requires a compatible vLLM V1 GPU-worker image; "
-        "execution observation supports vLLM 0.27.0/0.28.0, memory supports 0.27.0"
+        f"execution observation supports vLLM {'/'.join(EXECUTION_SUPPORTED_VERSIONS)}, "
+        f"memory supports {'/'.join(MEMORY_SUPPORTED_VERSIONS)}"
     ) from error
 
 
