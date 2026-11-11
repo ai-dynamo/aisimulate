@@ -101,11 +101,16 @@ installed, uninstall `aisimulate` and use `pip install --force-reinstall` for
 the selected `aisim` wheel, because uninstalling the old distribution can remove
 files listed in both RECORDs. When both distributions are installed and the
 old `aisimulate` distribution owns files under the shared import packages, the
-`aisim` and `aisimulate` commands print a warning with the exact repair commands
-for the installed `aisim` version. The check stays silent if the package
-metadata cannot be read, so a missing warning does not prove that only `aisim`
-is installed; `pip list` shows both names. Both CLI names remain available
-after migration; Python imports stay `aisimulate` and `aisimulate_core`.
+current `aisim` and `aisimulate` launchers print a warning with repair commands
+for the installed `aisim` version. A missing warning does not prove that only
+`aisim` is installed: metadata may be unreadable, or a legacy wheel installed
+last may replace shared modules or the `aisimulate` launcher before the check
+runs. Use `python -m pip list` to check both distribution names and
+`python -m pip show -f aisimulate` to inspect ownership of files under
+`aisimulate/` and `aisimulate_core/`. If both distributions are installed and
+the old distribution owns those files, follow the force-reinstall procedure
+above even if no warning appears. Both CLI names remain available after
+migration; Python imports stay `aisimulate` and `aisimulate_core`.
 
 Dynamo and other consumers must change their **distribution dependency** to
 `aisim` before sharing the new environment. Do not migrate the historical Dynamo
