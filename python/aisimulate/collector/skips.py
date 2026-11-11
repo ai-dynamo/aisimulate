@@ -324,13 +324,15 @@ SKIPS: list[dict] = [
     # TRT-LLM runs MSA off SM100/103 on its Triton reference (triton_backend.py),
     # a masked dense FP32 attention whose cost grows with isl x (isl + prefix): an
     # isl-32768 prefill takes 18 s per forward on h200, and a longer one runs out of
-    # memory on its index scores. A 16K chunk stays within that up to a 32K prefix,
-    # so these SMs stop there.
+    # memory on its index scores. Its latency is close to linear in the prefix (h200,
+    # isl 4096: 364, 616, 1214 and 2566 ms at prefix 4096, 8192, 16384 and 32768), so
+    # these SMs time a thinned prefix grid up to 16K: the full grid up to 32K cost
+    # 15 GPU-hours on h200 and 46 on l40s, 65% of it on the points left out here.
     {
         "backend": "trtllm",
         "op": "msa_context_module",
         "sm": [80, 86, 89, 90, 120],
-        "prefix_len": lambda prefix_len: prefix_len > 32768,
+        "prefix_len": lambda prefix_len: prefix_len not in (0, 1, 512, 2048, 4096, 8192, 16384),
     },
     # SGLang loads MiniMax-M3 as its BF16 checkpoint, and SGLang quantizes M3
     # projections only to MXFP8, so the collector refuses fp8_block and nvfp4 cases.

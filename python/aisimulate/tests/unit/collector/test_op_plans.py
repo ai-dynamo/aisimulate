@@ -387,12 +387,12 @@ def test_msa_plan_times_the_model_shards_on_the_long_context_grid():
     assert {(b, s) for b in (1, 2, 4) for s in (262144, 524288, 1048575)} <= decode
 
 
-def test_trtllm_msa_stops_at_a_32k_prefix_where_it_runs_the_triton_reference():
+def test_trtllm_msa_times_a_thinned_prefix_grid_up_to_16k_where_it_runs_the_triton_reference():
     def prefixes(sm):
         return {case.prefix_len for case in plan("msa_context_module", "trtllm", sm).cases}
 
     for sm in (89, 90, 120):
-        assert max(prefixes(sm)) == 32768
+        assert prefixes(sm) == {0, 1, 512, 2048, 4096, 8192, 16384}
     for sm in (100, 103):
         assert max(prefixes(sm)) == 1048575
     assert max(case.prefix_len for case in plan("msa_context_module", "vllm", 90).cases) == 1048575
