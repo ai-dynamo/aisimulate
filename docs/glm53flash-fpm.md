@@ -77,9 +77,11 @@ included, before the scheduler loads.
   cached seed `4 * floor((c - 2) / 4)`.
 - Each point runs 5 warmups and 10 measurements. The table stores the median
   of measurements 2 to 10, which is Dynamo's `adjacent_upper_median` estimate.
+  Measurement 1 is a valid measured repetition that this estimate leaves out.
   The merge of Dynamo 1.7 accepts no other median of several samples. Each raw
   sample of the record is numbered by its position. The first repetition of a
-  point whose requests reuse a seeded prefix is rejected, and the later
+  point whose requests reuse a seeded prefix is rejected. It runs before the
+  warmups and counts as neither a warmup nor a measurement, and the later
   repetitions are measured. With the default
   `prefix_cache_retention_interval` of 0, the seed does not keep the Mamba
   state at the end of the prefix. vLLM 0.33.0 stops the first repetition there,
