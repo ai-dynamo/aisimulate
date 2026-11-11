@@ -158,7 +158,7 @@ def test_isolated_hash_closure_tracks_reader_and_native_dependencies(tmp_path):
         "collector/sglang/dsv41_native_runner.py",
         "collector/sglang/dsv41_humming.py",
         "collector/sglang/collect_dsv41_module.py",
-        "src/aisimulate_core/sdk/models/deepseek_v41.py",
+        "src/aisim_core/sdk/models/deepseek_v41.py",
     ):
         target = tmp_path / relative
         original = target.read_bytes()

@@ -498,7 +498,7 @@ class TestTablesAndSystems:
         assert _diff_for(unchanged, "sglang", "gemm").systems == ()
 
     def test_nested_source_root_resolves_unified_package_data(self, mod, repo):
-        source_root = repo / "python" / "aisimulate"
+        source_root = repo / "python" / "aisim"
         files = {f"python/aisim/{path}": content for path, content in _default_files().items()}
         files["python/aisim/src/aisim_core/systems/data/h200_sxm/gemm/sglang/0.5.14/gemm_perf.parquet"] = "x"
         _write_tree(repo, files)
