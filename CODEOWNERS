@@ -117,6 +117,7 @@
 /tests/test_agentx_curves.py                             @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_agentx_inputs.py                             @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_agentx_accuracy.py                           @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_bundled_configs.py                           @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_ui.mjs                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                         @ai-dynamo/aisimulate-infra-codeowners

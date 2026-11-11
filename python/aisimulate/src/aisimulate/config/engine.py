@@ -39,6 +39,7 @@ from .common import (
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
+NonNegativeU64 = Annotated[int, Field(strict=True, ge=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -271,10 +272,18 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+class SlidingWindowStateConfig(StrictModel):
+    """Prefix-cache retention of a sliding-window state (DeepSeek V4)."""
+
+    retention_interval: NonNegativeU64 | None = None
+    lookahead_tokens: NonNegativeU64
+
+
 class StateCacheConfig(StrictModel):
     """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
+    sliding_window: SlidingWindowStateConfig | None = None
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -297,6 +306,18 @@ class StateCachePredictionConfig(StrictModel):
     bytes_per_request: PositiveU64 | None = None
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
+    # vLLM's VLLM_PREFIX_CACHE_RETENTION_INTERVAL; DeepSeek V4 only.
+    retention_interval: NonNegativeU64 | None = None
+    # Sizing fills this for DeepSeek V4; authored only beside explicit bytes.
+    sliding_window_lookahead_tokens: NonNegativeU64 | None = None
+
+    def resolved_sliding_window(self) -> dict[str, int] | None:
+        if self.sliding_window_lookahead_tokens is None:
+            return None
+        window = {"lookahead_tokens": self.sliding_window_lookahead_tokens}
+        if self.retention_interval is not None:
+            window["retention_interval"] = self.retention_interval
+        return window
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -321,7 +342,13 @@ class KvCachePredictionConfig(StrictModel):
     @classmethod
     def _accept_resolved_state_config(cls, value: Any) -> Any:
         if isinstance(value, StateCacheConfig):
-            return value.model_dump()
+            # The resolved window round-trips through the sizing fields.
+            window = value.sliding_window
+            return StateCachePredictionConfig(
+                bytes_per_request=value.bytes_per_request,
+                retention_interval=window.retention_interval if window else None,
+                sliding_window_lookahead_tokens=window.lookahead_tokens if window else None,
+            )
         return value
 
     @model_validator(mode="after")
@@ -355,7 +382,8 @@ class KvCachePredictionConfig(StrictModel):
             if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
-            if self.capacity.type != "fixed":
+            # Inferred geometry may leave capacity to an FPM profile's recorded runtime memory.
+            if self.capacity.type != "fixed" and not infer_state:
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
                 raise ValueError("state_cache supports G1 only; host_offload is not supported")
@@ -1369,6 +1397,55 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         return self
 
 
+def fpm_profile_deployment(engine, worker: WorkerPredictionConfig, role: str):
+    """The FPM profile deployment that matches one worker role's identity."""
+    parallel = worker.parallelism
+    return engine.fpm_profile.select(
+        model=engine.model,
+        system=worker.hardware or engine.hardware,
+        backend=engine.backend,
+        backend_version=requested_backend_version(engine.backend_version, "vllm"),
+        worker_type=role,
+        tp_size=parallel.tensor,
+        pp_size=parallel.pipeline,
+        attention_dp_size=parallel.attention_data,
+        moe_tp_size=parallel.moe_tensor,
+        moe_ep_size=parallel.moe_expert,
+    )
+
+
+def recorded_state_pool(engine, worker: WorkerPredictionConfig, role: str):
+    """The runtime memory an FPM profile recorded for a state-cache worker that sets no fixed capacity."""
+    from aisimulate.capacity import DEFAULT_GPU_MEMORY_UTILIZATION
+
+    resources = None
+    if engine.fpm_profile is not None:
+        resources = fpm_profile_deployment(engine, worker, role).resources
+    if resources is None or (runtime := resources.runtime_memory) is None:
+        raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
+    # Native FPM resource selection matches CP1 deployments only, and a profile does not record decode CP.
+    parallel = worker.parallelism
+    if (parallel.prefill_context or 1) != 1 or (parallel.decode_context or 1) != 1:
+        raise ValueError("a recorded state pool requires parallelism prefill_context=1 and decode_context=1")
+    if resources.cache_layout == "grouped":
+        raise ValueError("state_cache requires a linear FPM cache; a grouped profile sizes state by its cache groups")
+    # The pool was recorded as allocated, at one memory fraction and context limit.
+    capacity = worker.kv_cache.capacity
+    if capacity.cuda_graph_reserved_bytes != 0:
+        raise ValueError("the recorded pool already excludes graph memory; unset cuda_graph_reserved_bytes")
+    if (capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
+        raise ValueError(
+            "kv_cache.capacity.memory_fraction must match the FPM profile's recorded "
+            f"runtime_memory.gpu_memory_utilization ({runtime.gpu_memory_utilization})"
+        )
+    context = worker.context_length or engine.context_length
+    if (engine.fpm_profile.context_length if context == "max" else context) > runtime.max_model_len:
+        raise ValueError(
+            f"context_length exceeds the FPM profile's recorded runtime_memory.max_model_len ({runtime.max_model_len})"
+        )
+    return runtime
+
+
 def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
     profile = engine.fpm_profile
     if profile is None:
@@ -1400,19 +1477,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         if worker.timing.type != "default":
             raise ValueError("engine.fpm_profile requires default timing for every worker")
         if isinstance(worker, WorkerPredictionConfig):
-            parallel = worker.parallelism
-            deployment = profile.select(
-                model=engine.model,
-                system=worker.hardware or engine.hardware,
-                backend=engine.backend,
-                backend_version=backend_version,
-                worker_type=role,
-                tp_size=parallel.tensor,
-                pp_size=parallel.pipeline,
-                attention_dp_size=parallel.attention_data,
-                moe_tp_size=parallel.moe_tensor,
-                moe_ep_size=parallel.moe_expert,
-            )
+            deployment = fpm_profile_deployment(engine, worker, role)
             deployment.resources.validate_envelope(
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,
@@ -1643,6 +1708,8 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         worker = getattr(engine.workers, role)
         if worker is None or is_afd_worker(worker) or worker.kv_cache.state_cache is None:
             continue
+        if worker.kv_cache.capacity.type != "fixed":
+            recorded_state_pool(engine, worker, role)
         roles.append(role)
         if (
             worker.kv_cache.prefix_match_unit is not None

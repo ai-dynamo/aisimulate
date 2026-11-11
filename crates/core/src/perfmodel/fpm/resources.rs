@@ -111,16 +111,26 @@ impl FpmCacheGroup {
         if target_tokens < computed_tokens {
             return Err(invalid("cache target_tokens must be >= computed_tokens"));
         }
+        Ok(self.validated_block_range(computed_tokens, target_tokens))
+    }
+
+    /// [`Self::block_range`] without its checks, for a caller that validated
+    /// the group once and passes `target_tokens >= computed_tokens`.
+    pub(crate) fn validated_block_range(
+        &self,
+        computed_tokens: u64,
+        target_tokens: u64,
+    ) -> std::ops::Range<u64> {
         if self.kind == FpmCacheKind::State {
             // `validate` guarantees a positive count for state groups.
             let blocks = self.blocks_per_request.map_or(0, u64::from);
-            return Ok(0..if target_tokens == 0 { 0 } else { blocks });
+            return 0..if target_tokens == 0 { 0 } else { blocks };
         }
         let block = u64::from(self.block_size_tokens);
         let first = self.sliding_window.map_or(0, |window| {
             computed_tokens.saturating_sub(u64::from(window) - 1) / block
         });
-        Ok(first..target_tokens.div_ceil(block))
+        first..target_tokens.div_ceil(block)
     }
 
     pub fn bytes_for_forward(

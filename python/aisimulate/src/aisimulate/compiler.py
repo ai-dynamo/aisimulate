@@ -34,7 +34,7 @@ from .config.engine import (
 )
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .estimator_readiness import unready_estimator_message
-from .state_size import resolve_state_size
+from .state_size import resolve_state_size, runtime_memory_blocks
 from .sweeper.afd_parallel import AFDTopology, validate_afd_model
 from .sweeper.kv_estimate import resolve_backend_version
 from .sweeper.model_hw import resolve_model_hardware
@@ -323,7 +323,7 @@ def _deployment(
         worker, vl_metadata, vision = _host_worker(engine, engine.workers.aggregated, workload)
         _require_exclusive_context_parallelism(worker)
         parallel = _parallel_mapping(worker, prefix="")
-        worker, state_size = _resolve_state_cache(engine, worker)
+        worker, state_size = _resolve_state_cache(engine, worker, "aggregated")
         return BackendDeploymentSpec(
             parallel_config=parallel,
             performance_model_metadata={"aggregated": {**_state_metadata(engine, worker, state_size), **vl_metadata}},
@@ -336,8 +336,8 @@ def _deployment(
     assert engine.workers.prefill is not None and engine.workers.decode is not None
     prefill, vl_metadata, vision = _host_worker(engine, engine.workers.prefill, workload)
     _require_disaggregated_context_parallelism(engine.backend, prefill, engine.workers.decode)
-    prefill, prefill_state = _resolve_state_cache(engine, prefill)
-    decode, decode_state = _resolve_state_cache(engine, engine.workers.decode)
+    prefill, prefill_state = _resolve_state_cache(engine, prefill, "prefill")
+    decode, decode_state = _resolve_state_cache(engine, engine.workers.decode, "decode")
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
         configured = engine.kv_transfer.bytes_per_token
@@ -373,16 +373,22 @@ def _deployment(
 
 
 def _resolve_state_cache(
-    engine: EnginePredictionConfig, worker: WorkerPredictionConfig
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str
 ) -> tuple[WorkerPredictionConfig, dict[str, Any] | None]:
     """Return the worker with resolved state geometry and its sizing report."""
     cache = worker.kv_cache
     if cache.state_cache is None:
         return worker, None
-    size = resolve_state_size(engine, worker)
+    size = resolve_state_size(engine, worker, role)
+    state = cache.state_cache.model_copy(
+        update={
+            "bytes_per_request": size["bytes_per_request"],
+            "sliding_window_lookahead_tokens": size.get("sliding_window_lookahead_tokens"),
+        }
+    )
     resolved = cache.model_copy(
         update={
-            "state_cache": cache.state_cache.model_copy(update={"bytes_per_request": size["bytes_per_request"]}),
+            "state_cache": state,
             "block_size": size["block_size"],
             "bytes_per_token": size["kv_bytes_per_token"],
         }
@@ -941,8 +947,15 @@ def _worker_engine_args(
         payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
         payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
+        if (window := cache.state_cache.resolved_sliding_window()) is not None:
+            payload["state_cache"]["sliding_window"] = window
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
-    if capacity.type == "fixed":
+    if capacity.type == "default" and cache.state_cache is not None:
+        assert isinstance(cache.bytes_per_token, int)
+        # Derived from the profile's recorded pool, so the runner must not treat it as a user-fixed capacity.
+        payload["num_gpu_blocks"] = runtime_memory_blocks(engine, worker, role, block_size * cache.bytes_per_token)
+        payload["num_gpu_blocks_is_explicit"] = False
+    elif capacity.type == "fixed":
         if capacity.blocks is not None:
             payload["num_gpu_blocks"] = capacity.blocks
         else:

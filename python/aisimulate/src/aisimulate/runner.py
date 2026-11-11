@@ -1524,7 +1524,10 @@ def _materialize_engine_role(
 
     state_cache = _manual_state_cache(rank, deployment_backend, role)
     if state_cache is not None:
-        num_gpu_blocks_is_explicit = True
+        # A state pool is explicit unless the compiler derived it from an FPM profile's recorded runtime memory.
+        num_gpu_blocks_is_explicit = rank.pop("num_gpu_blocks_is_explicit", True)
+        if not isinstance(num_gpu_blocks_is_explicit, bool):
+            raise ValueError("num_gpu_blocks_is_explicit must be a boolean")
         rank["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
 
     nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)

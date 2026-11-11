@@ -43,7 +43,9 @@ reserve. The default memory budget is max(0, min(0.9 A, A - 1 GB)); the separate
 and that fraction of effective physical RAM.
 
 Linux cgroup v1/v2 memory limits, current usage, ancestor limits, affinity and CPU
-quotas constrain the host snapshot. Swap does not increase the budget. Automatic
+quotas constrain the host snapshot. Cgroup usage excludes inactive file cache
+(`inactive_file` in `memory.stat`, `total_inactive_file` on v1), which the kernel
+reclaims on demand. Swap does not increase the budget. Automatic
 CPU selection leaves one CPU free when more than one whole CPU is available.
 CPU capacity caps the number of parallel simulations; it does not estimate CPU
 speed or simulation duration. An explicit positive `memory_limit_gb` or integer
