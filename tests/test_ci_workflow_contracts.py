@@ -3189,7 +3189,10 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
 @pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
 @pytest.mark.parametrize("base_version", [None, "0.12.0"], ids=["current", "historical"])
 @pytest.mark.parametrize("package", ["aisim", "aisimulate"])
-def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version, package):
+@pytest.mark.parametrize("inherit_version", [True, False], ids=["workspace-version", "explicit-version"])
+def test_current_release_tools_stamp_and_validate_historical_manifests(
+    tmp_path, suffix, base_version, package, inherit_version
+):
     current_version = _current_product_version()
     base_version = base_version or current_version
     for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
@@ -3200,6 +3203,11 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
             .read_text()
             .replace(f'version = "{current_version}"', f'version = "{base_version}"')
         )
+    core_manifest = tmp_path / "crates/core/Cargo.toml"
+    if not inherit_version:
+        core_manifest.write_text(
+            core_manifest.read_text().replace("version.workspace = true", f'version = "{base_version}"')
+        )
     if package == "aisimulate":
         for name in ("crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
             target = tmp_path / name
@@ -3209,6 +3217,7 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
                 .replace('name = "aisim-core"', 'name = "aisimulate-core"')
                 .replace('aisim = "aisimulate.supervision:main"\n', "")
             )
+    original_core = core_manifest.read_bytes()
     for args in (
         ["init", "-q"],
         ["add", "."],
@@ -3233,7 +3242,11 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"{base_version}{suffix}" in (tmp_path / "python/aisimulate/pyproject.toml").read_text()
-    assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "crates/core/Cargo.toml").read_text()
+    assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "Cargo.toml").read_text()
+    if inherit_version:
+        assert core_manifest.read_bytes() == original_core
+    else:
+        assert f"{base_version}-dev.{suffix[4:]}" in core_manifest.read_text()
 
 
 def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():

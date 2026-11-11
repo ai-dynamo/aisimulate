@@ -89,7 +89,10 @@ def check_manifests() -> tuple[str, str]:
     app = _toml(ROOT / "python" / "aisimulate" / "pyproject.toml")["project"]
     crate = _toml(EXPECTED_CRATE)["package"]
     py_version = str(app["version"])
-    crate_version = str(crate["version"])
+    crate_version = crate["version"]
+    if crate_version == {"workspace": True}:
+        crate_version = _toml(ROOT / "Cargo.toml")["workspace"]["package"]["version"]
+    crate_version = str(crate_version)
     dev_suffix = py_version.removeprefix(VERSION)
     assert py_version.startswith(VERSION) and (dev_suffix == "" or DEV_SUFFIX_RE.fullmatch(dev_suffix)), (
         f"wheel version must be {VERSION} or a supported numeric nightly version, got {py_version}"
