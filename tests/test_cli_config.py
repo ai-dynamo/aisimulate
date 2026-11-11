@@ -1870,6 +1870,16 @@ def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture(tmp_path) -
     # A local directory without a readable config leaves `auto` off.
     (tmp_path / "empty").mkdir()
     assert tails(model=str(tmp_path / "empty")) is None
+    # A corrupt config is reported instead of silently replaying unrestricted prefix reuse.
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    (corrupt / "config.json").write_text('{"architectures":["DeepseekV4ForCausalLM"')
+    with pytest.raises(ValueError, match="config is not valid JSON") as raised:
+        tails(model=str(corrupt))
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    (corrupt / "config.json").write_text('["DeepseekV4ForCausalLM"]')
+    with pytest.raises(ValueError, match="config must be a JSON object"):
+        tails(model=str(corrupt))
 
     spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={}, afd_performance_model=None)
     assert spec.prefill_engine_args["sglang"]["swa_prefix_tails"] == 100

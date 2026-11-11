@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from typing import Any
@@ -1028,9 +1029,14 @@ def _swa_prefix_tails(engine: EnginePredictionConfig, worker: WorkerPredictionCo
             raw = _load_pre_downloaded_hf_config(engine.model)
         else:
             return None
+    except json.JSONDecodeError as error:
+        # A config that is present but corrupt is invalid input, not a model without SWA reuse.
+        raise ValueError(f"{engine.model} config is not valid JSON: {error}") from error
     except (OSError, ValueError):
-        # An unreadable config is not a DeepSeek-V4 checkpoint `auto` can recognize.
+        # A missing or unreadable config is not a DeepSeek-V4 checkpoint `auto` can recognize.
         return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{engine.model} config must be a JSON object")
     architectures = raw.get("architectures") or []
     if not isinstance(architectures, list) or not all(isinstance(name, str) for name in architectures):
         raise ValueError(f"{engine.model} config architectures must be a list of strings")
