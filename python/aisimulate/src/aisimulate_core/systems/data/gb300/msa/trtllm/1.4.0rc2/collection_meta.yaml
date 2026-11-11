@@ -12,8 +12,8 @@ tables:
     rows: 18303
     status: complete
     collections:
-    - collector_ref: 727b37943
-      collector_hash: sha256:694fee90a3f2495605c3941ebffc6fe067a818b408d05abdef5921fa289281ec
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:776ca524d69b069bed3ec55dbe89b79dc340f1ad79f34856b23b7a2c0c995da3
       collected_at: '2026-11-11'
       rows: 18303
@@ -22,8 +22,8 @@ tables:
     rows: 2895
     status: complete
     collections:
-    - collector_ref: 727b37943
-      collector_hash: sha256:694fee90a3f2495605c3941ebffc6fe067a818b408d05abdef5921fa289281ec
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:463cc7fc38ff69690d76d23ab0807d251c7045a832ebc906683cf02d3b85dca5
       collected_at: '2026-11-11'
       rows: 2895
