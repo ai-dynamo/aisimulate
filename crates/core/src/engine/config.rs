@@ -1239,13 +1239,20 @@ impl EngineConfig {
                 self.backend == Backend::Vllm,
                 "state_cache is supported only for backend=vllm"
             );
-            ensure!(
-                self.native_host_offload.is_none(),
-                "state_cache does not support native_host_offload in the G1-only implementation"
-            );
+            if let Some(host) = &self.native_host_offload {
+                ensure!(
+                    state_cache.sliding_window.is_some(),
+                    "native_host_offload supports only a sliding-window state_cache"
+                );
+                ensure!(
+                    host.connector.is_default(),
+                    "state_cache requires host_offload.connector=offloading_v0_24"
+                );
+                ensure!(self.kvcr.is_none(), "state_cache does not support kvcr");
+            }
             ensure!(
                 self.g3_offload.is_none(),
-                "state_cache does not support g3_offload in the G1-only implementation"
+                "state_cache does not support g3_offload"
             );
             ensure!(
                 self.prefix_match_unit.is_none()
@@ -1521,12 +1528,6 @@ impl EngineConfig {
                 ensure!(
                     self.kvcr.is_none() || self.worker_type == WorkerType::Aggregated,
                     "kvcr with aic_nextn requires worker_type=aggregated"
-                );
-                ensure!(
-                    self.state_cache.is_none()
-                        && self.kv_cache_groups.is_empty()
-                        && self.prefix_match_unit.is_none(),
-                    "native_host_offload with aic_nextn requires a scalar uniform FullAttention KV pool"
                 );
             }
             let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
@@ -1824,6 +1825,19 @@ mod tests {
             input[field] = value;
             let error = serde_json::from_value::<EngineConfig>(input).unwrap_err();
             assert!(error.to_string().contains(message), "{field}: {error}");
+        }
+        // A sliding-window state is offloaded with its prompt
+        // blocks, by the default connector and without KVCR.
+        let mut input = state_cache_config_json();
+        input["state_cache"]["sliding_window"] = serde_json::json!({"lookahead_tokens": 0});
+        input["native_host_offload"] = serde_json::json!({"num_host_blocks": 8});
+        serde_json::from_value::<EngineConfig>(input.clone()).unwrap();
+        let mut connector = input.clone();
+        connector["native_host_offload"]["connector"] = serde_json::json!("offloading_v0_32");
+        input["kvcr"] = serde_json::json!({});
+        for (rejected, message) in [(connector, "offloading_v0_24"), (input, "support kvcr")] {
+            let error = serde_json::from_value::<EngineConfig>(rejected).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
         }
     }
 

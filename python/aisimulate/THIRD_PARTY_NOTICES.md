@@ -499,13 +499,14 @@ Apache-2.0 LICENSE supplies the license text; no upstream source file is vendore
 
 The repository-root files
 `crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
-`crates/core/src/engine/kv_manager/state_cache_tests.rs` and
+`crates/core/src/engine/kv_manager/state_cache_tests.rs`,
+`crates/core/src/engine/scheduler/vllm/host_offload.rs` (state checkpoints in
+the host tier) and
 `python/aisimulate/src/aisimulate_core/sdk/memory/deepseek_v4.py` model the
 sliding-window prefix-cache retention (`VLLM_PREFIX_CACHE_RETENTION_INTERVAL`,
 replay boundaries, the EAGLE/MTP block after a boundary and the DeepSeek V4 MTP
-group) of vLLM [`v0.32.0`](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be)
-(commit `5df63a7203cdb9328d824a27b682e77c7b9928be`). The modeled functions are
-unchanged at main commit `0d5306aaca3971b620443a3ea779550ffe4d5114`. Files at v0.32.0:
+group) and its offload to the host tier of vLLM [`v0.32.0`](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be)
+(commit `5df63a7203cdb9328d824a27b682e77c7b9928be`). Files at v0.32.0:
 
 - [`vllm/v1/core/kv_cache_coordinator.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py)
   (`_validate_prefix_cache_retention_interval`, `replay_boundaries`,
@@ -518,6 +519,11 @@ unchanged at main commit `0d5306aaca3971b620443a3ea779550ffe4d5114`. Files at v0
   (`_annotate_eagle_groups`; lines 2029-2085)
 - [`vllm/models/deepseek_v4/attention.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/models/deepseek_v4/attention.py)
   (MTP layer without a compressor; line 235)
+- [`vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py)
+  (`RequestOffloadState.storable_chunks`, `_sliding_window_lookup`,
+  `_lookup_complete_chunks`, `_reachable_store_block_mask`, `_build_store_jobs`:
+  the sliding-window blocks the connector stores in one job with a step's other
+  blocks, and the window it loads at a hit; lines 450-481, 708-952 and 1517-1844)
 
 Copyright contributors to the vLLM project. Licensed under Apache-2.0
 (https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE).

@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::AllocationRequirement;
 use super::grouped::{GroupedKvPool, GroupedLease};
-use super::state_cache_manager::{StateCacheManager, StateRequest};
+use super::state_cache_manager::{StateCacheManager, StateRequest, state_resume_limit};
 use crate::engine::belady::BeladyOracle;
 use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, ReserveOutcome, VllmBlockPool,
@@ -330,6 +330,9 @@ pub(crate) struct DestinationReservation {
     block_count: usize,
     /// Fresh blocks for the transferred recurrent state; not prompt tokens.
     state_blocks: usize,
+    /// Boundary of the sliding-window state checkpoint a host-tier restore
+    /// carries in `state_blocks`; a P/D destination has none.
+    restored_state: Option<SequenceHash>,
     pool: BlockReservation,
 }
 
@@ -399,6 +402,9 @@ pub(crate) struct VllmKvManager {
     grouped: Option<GroupedKvPool>,
     state_cache: Option<StateCacheManager>,
     prefix_match_unit: Option<usize>,
+    /// Sliding-window boundaries `(owner, tokens)` retained while their prompt
+    /// was computed, until the host tier takes them. `None` without one.
+    retained_prompt_boundaries: Option<Vec<(Uuid, usize)>>,
 }
 
 impl VllmKvManager {
@@ -442,6 +448,7 @@ impl VllmKvManager {
             grouped: None,
             state_cache: None,
             prefix_match_unit: None,
+            retained_prompt_boundaries: None,
         }
     }
 
@@ -920,6 +927,10 @@ impl VllmKvManager {
         let Some(mut outcome) = self.pool.reserve_keys(keys.into_iter(), total) else {
             return NativeAllocation::CapacityExhausted;
         };
+        if let (Some(manager), Some(state)) = (&self.state_cache, &mut lease.state) {
+            // The reservation now pins the checkpoint this request restored.
+            manager.release_restored(&mut self.pool, state);
+        }
         let mut hits = self.pool.activate_keys(&mut outcome.reservation);
         for entry in &mut lease.entries[previous..previous + reused_tokens] {
             let (key, copy) = hits.next().expect("reserved token prefix");
@@ -979,6 +990,8 @@ impl VllmKvManager {
                 } else {
                     0
                 },
+            // A rank whose host tier stores state holds its store sources, so
+            // this capacity has no pending reader.
             dependencies: Vec::new(),
         }
     }
@@ -1179,19 +1192,26 @@ impl VllmKvManager {
                         computed_after,
                     )
                     .map(|boundary| {
-                        lease
+                        let hash = lease
                             .state_hash(boundary, self.block_size)
-                            .expect("completed boundary block has a hash")
+                            .expect("completed boundary block has a hash");
+                        (boundary, hash)
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             }
             _ => Vec::new(),
         };
+        if let Some(retained) = &mut self.retained_prompt_boundaries
+            && computed_before < sequence.num_input_tokens()
+        {
+            let owner = lease.owner();
+            retained.extend(window_hashes.iter().map(|&(boundary, _)| (owner, boundary)));
+        }
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state)
             && manager.sliding_window.is_some()
         {
             let mut removed = Vec::new();
-            for hash in window_hashes {
+            for (_, hash) in window_hashes {
                 manager.publish_window(&mut self.pool, state, hash, &mut removed);
             }
             manager.commit(&mut self.pool, state, computed_after, None);
@@ -1282,6 +1302,7 @@ impl VllmKvManager {
             request_id: owner,
             block_count: prompt_blocks,
             state_blocks,
+            restored_state: None,
             pool: outcome.reservation,
         })
     }
@@ -1294,6 +1315,7 @@ impl VllmKvManager {
         lease: &BlockRequestLease,
         g1_prefix_blocks: usize,
         transferred_suffix: &[SequenceHash],
+        restored_state: Option<SequenceHash>,
     ) -> VllmAcquire<DestinationReservation> {
         lease.debug_assert_owner(owner);
         assert_eq!(
@@ -1327,21 +1349,39 @@ impl VllmKvManager {
                 .sequence_hash
                 .expect("G1 destination prefix must contain complete blocks")
         });
-        let Some(outcome) = self.pool.reserve_exact_prefix(prefix, block_count) else {
+        let state_blocks = restored_state.map_or(0, |_| self.state_cache_blocks());
+        let Some(outcome) = self
+            .pool
+            .reserve_exact_prefix(prefix, block_count + state_blocks)
+        else {
             return VllmAcquire::CapacityExhausted;
         };
         assert_eq!(
             outcome.reservation.fresh_len(),
-            transferred_suffix.len(),
+            transferred_suffix.len() + state_blocks,
             "external reservation changed the exact tier boundary"
         );
         self.publish_removed(outcome.removed);
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
             block_count,
-            state_blocks: 0,
+            state_blocks,
+            restored_state,
             pool: outcome.reservation,
         })
+    }
+
+    /// Keep the sliding-window boundaries each prompt pass retains, for a
+    /// rank whose host tier stores state checkpoints.
+    pub(crate) fn record_retained_prompt_boundaries(&mut self) {
+        self.retained_prompt_boundaries.get_or_insert_with(Vec::new);
+    }
+
+    pub(crate) fn take_retained_prompt_boundaries(&mut self) -> Vec<(Uuid, usize)> {
+        self.retained_prompt_boundaries
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     pub(crate) fn destination_pending_dependencies(
@@ -1465,7 +1505,21 @@ impl VllmKvManager {
             },
         );
         lease.allocated_tokens = (prompt_blocks * self.block_size).min(sequence.num_input_tokens());
-        if let Some(manager) = &self.state_cache {
+        if let Some(prefix) = reservation.restored_state {
+            // The restored window becomes a G1 checkpoint at its boundary, which
+            // admission resumes from like any cached one. The request keeps it
+            // referenced until it is admitted, so nothing reclaims it first.
+            let manager = self
+                .state_cache
+                .as_ref()
+                .expect("a restored state requires the state cache");
+            let id = self.pool.publish_held_state_group(
+                prefix,
+                manager.blocks_per_state,
+                &mut reservation.pool,
+            );
+            manager.hold_restored(lease.state.get_or_insert_with(Default::default), id);
+        } else if let Some(manager) = &self.state_cache {
             // The transferred state already covers the prompt.
             let prompt = sequence.num_input_tokens();
             let state = lease.state.get_or_insert_with(Default::default);
@@ -1727,11 +1781,12 @@ impl VllmKvManager {
         if let Some(manager) = &self.state_cache {
             // Token policy bounds must be applied BEFORE selecting an actual
             // state checkpoint: truncating a joint hit afterwards can invent one.
-            let needs_logits = sequence.generated_tokens() < sequence.max_output_tokens();
-            if needs_logits {
-                overlap_blocks =
-                    overlap_blocks.min(sequence.len().saturating_sub(1) / self.block_size);
-            }
+            let (limit, _) = state_resume_limit(
+                sequence,
+                self.block_size,
+                manager.mtp_enabled,
+                overlap_blocks,
+            );
             let find = |limit: usize| {
                 (1..=limit)
                     .rev()
@@ -1743,13 +1798,7 @@ impl VllmKvManager {
                     })
                     .unwrap_or(0)
             };
-            // vLLM drops the MTP block from the hit. For a sliding window the
-            // MTP group's dropped block must lie inside the block-aligned token
-            // hit, so the state hit also lands one block lower.
-            if needs_logits && manager.mtp_enabled {
-                overlap_blocks = overlap_blocks.saturating_sub(1);
-            }
-            overlap_blocks = find(overlap_blocks);
+            overlap_blocks = find(limit);
             active_overlap_blocks = lease.entries[..overlap_blocks]
                 .iter()
                 .filter(|entry| {
@@ -2357,7 +2406,8 @@ mod tests {
 
         let owner = Uuid::from_u128(2);
         let (sequence, mut lease) = request(owner, &[7, 8, 9], false);
-        let reservation = ready(manager.reserve_external_prefix_lease(owner, &lease, 1, &[8]));
+        let reservation =
+            ready(manager.reserve_external_prefix_lease(owner, &lease, 1, &[8], None));
         assert_eq!(reservation.block_count, 2);
         assert_eq!(reservation.pool.fresh_len(), 1);
         assert_eq!(manager.num_active_blocks(), 2);

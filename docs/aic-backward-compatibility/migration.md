@@ -233,8 +233,8 @@ prefixes likewise describe workload sharing, not guaranteed hits. Enable
 shared input.
 
 `kv_cache.host_offload` adds vLLM host-cache simulation, with no AIC CLI flag
-counterpart. It requires prefix caching and supports aggregated or token-only
-P/D workers, including attention DP. Recommendation keeps host capacity and
+counterpart. It requires prefix caching and supports aggregated or P/D
+workers, including attention DP. Recommendation keeps host capacity and
 bandwidth fixed while searching supported parallelism. Cluster-shared G2 on
 both P/D roles requires identical explicit integer tensor/pipeline values.
 See the [host-offload contract](../replay/engine/kv-cache.md#host-offload-g2)

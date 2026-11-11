@@ -38,11 +38,12 @@
 //!   source blocks until the copy completes, and a preemption waits for every
 //!   transfer in flight (`vllm/v1/simple_kv_offload/worker.py`).
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::engine::common::hashing::SequenceHash;
 use crate::engine::common::protocols::PrefillCost;
 use crate::engine::common::sequence::RequestSequence;
 use crate::engine::config::ConnectorRules;
@@ -53,13 +54,17 @@ use crate::engine::host_offload::{
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
-    SourceReuseDependency,
+    SourceReuseDependency, state_resume_limit,
 };
 use crate::engine::{HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
 
 struct LoadingPrefix {
     transfer_id: TransferId,
+    /// Every key the H2D moves: token blocks, then any state checkpoint.
     keys: Vec<HostBlockKey>,
+    token_blocks: usize,
+    /// With a restored state checkpoint: the blocks admission resumes at.
+    state_resume_blocks: Option<usize>,
     reservation: DestinationReservation,
     original_g1_tokens: usize,
     loaded_prefix_blocks: usize,
@@ -70,6 +75,9 @@ struct LoadingPrefix {
 struct ActivatedPrefix {
     original_g1_tokens: usize,
     loaded_prefix_blocks: usize,
+    /// With a restored state checkpoint: the blocks admission resumes at,
+    /// under MTP one block below the loaded token blocks.
+    state_resume_blocks: Option<usize>,
     loaded_blocks: usize,
     request_footprint_blocks: usize,
 }
@@ -143,6 +151,14 @@ pub(super) struct VllmHostRequestState {
     /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
+    /// Retained prompt boundaries, in blocks, whose state checkpoint is not
+    /// in G2 yet.
+    unstored_states: Vec<usize>,
+    /// Set when a store offer found no room: the pool's room epoch at that
+    /// offer, or `None` for a cohort larger than the pool. Until the request
+    /// is readmitted its cohort only grows, so it finds no room again before
+    /// the pool's room changes, or ever if it is larger than the pool.
+    unstored_room: Option<Option<u64>>,
 }
 
 impl VllmHostRequestState {
@@ -193,6 +209,8 @@ impl VllmHostRequestState {
             confirmed_tokens: 0,
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
+            unstored_states: Vec::new(),
+            unstored_room: None,
         }
     }
 
@@ -219,6 +237,15 @@ impl VllmHostRequestState {
                 });
             }
             self.block_keys.push(HostBlockKey::new(hash));
+        }
+    }
+
+    /// A prompt pass retained the state checkpoint at `boundary_blocks`.
+    /// Decode-time boundaries are not offloaded, like decode blocks.
+    pub(super) fn note_retained_boundary(&mut self, boundary_blocks: usize) {
+        if boundary_blocks <= self.prompt_blocks && !self.unstored_states.contains(&boundary_blocks)
+        {
+            self.unstored_states.push(boundary_blocks);
         }
     }
 
@@ -251,19 +278,65 @@ impl VllmHostRequestState {
 }
 
 pub(super) struct HostLookupHit {
+    /// Token blocks, then any state checkpoint, in transfer order.
     keys: Vec<HostBlockKey>,
+    token_blocks: usize,
     base_g1_blocks: usize,
     original_g1_tokens: usize,
     request_footprint_blocks: usize,
+    state: Option<HostStateHit>,
+}
+
+/// The state checkpoint a sliding-window restore loads with its token blocks.
+struct HostStateHit {
+    prefix: SequenceHash,
+    /// Blocks admission resumes at.
+    resume_blocks: usize,
+    /// G1 blocks the checkpoint takes.
+    rows: usize,
+}
+
+/// Sliding-window state checkpoints in G2. vLLM v0.32.0's
+/// `OffloadingConnector` stores the sliding-window groups' blocks that
+/// `reachable_block_mask` retains (`storable_chunks`) and loads the window
+/// ending at a hit, less the drafter group's last chunk
+/// (`_lookup_complete_chunks`), in
+/// `vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py` at
+/// commit `5df63a7203cdb9328d824a27b682e77c7b9928be`; see
+/// THIRD_PARTY_NOTICES.md. Replay keeps one checkpoint per retained boundary:
+/// one G2 entry keyed by the boundary that occupies `rows` pool blocks, as G1
+/// keeps a retained window copy, stored and loaded with the prompt blocks.
+#[derive(Clone, Copy)]
+pub(super) struct HostStateRows {
+    pub(super) rows: usize,
+    /// The rank runs MTP, whose drafter group recomputes the last block of a hit.
+    pub(super) mtp: bool,
+}
+
+impl HostStateRows {
+    fn key(self, prefix: SequenceHash) -> HostBlockKey {
+        HostBlockKey::state(prefix, self.rows)
+    }
 }
 
 impl HostLookupHit {
     pub(super) fn destination_blocks(&self) -> usize {
-        self.base_g1_blocks + self.keys.len()
+        self.base_g1_blocks + self.token_blocks
     }
 
     pub(super) fn request_footprint_blocks(&self) -> usize {
         self.request_footprint_blocks
+    }
+
+    /// G1 blocks the load adds for a restored state checkpoint, which the
+    /// request holds beside its own state until it is admitted.
+    pub(super) fn restored_state_blocks(&self) -> usize {
+        self.state.as_ref().map_or(0, |state| state.rows)
+    }
+
+    /// Blocks admission resumes at after a restored state checkpoint.
+    pub(super) fn state_resume_blocks(&self) -> Option<usize> {
+        self.state.as_ref().map(|state| state.resume_blocks)
     }
 
     /// Only the matched prefix is physically reserved for H2D. The remaining
@@ -311,6 +384,10 @@ pub(super) struct VllmHostOffloadAdapter {
     /// Keys being loaded, which defer a peer's lookup. Tracked only when the
     /// connector `waits_for_loads`.
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
+    state_rows: Option<HostStateRows>,
+    /// Stores in flight that copy checkpoints only: with no token block they
+    /// carry no G1 source dependency.
+    checkpoint_stores: FxHashSet<TransferId>,
     compute_not_before_ms: f64,
     /// Stores the next compute waits for that were prepared in the current
     /// pass. Their deadline exists once the pass boundary submits them.
@@ -395,6 +472,8 @@ impl VllmHostOffloadAdapter {
             kvcr: None,
             load_epoch: 0,
             load_by_key: FxHashMap::default(),
+            state_rows: None,
+            checkpoint_stores: FxHashSet::default(),
             compute_not_before_ms: 0.0,
             fences_at_submit: Vec::new(),
             observer: None,
@@ -404,11 +483,27 @@ impl VllmHostOffloadAdapter {
     /// Whether a store keeps a reference on the G1 blocks it copies until the
     /// copy completes, and the order it frees them in: the connector's rule,
     /// or tail first for a cluster-shared pool, like Mooncake Store and
-    /// LMCache MP.
+    /// LMCache MP. A rank that offloads state checkpoints holds them too: a
+    /// checkpoint is one grouped copy, which cannot wait behind a block's
+    /// pending reader.
     pub(super) fn store_source_hold(&self) -> Option<SourceReleaseOrder> {
         self.rules
             .holds_store_sources
-            .or(self.shared.then_some(SourceReleaseOrder::TailFirst))
+            .or((self.shared || self.state_rows.is_some()).then_some(SourceReleaseOrder::TailFirst))
+    }
+
+    /// Offload the rank's sliding-window state checkpoints with its prompt
+    /// blocks. Checked here, where the rows with draft tokens are known.
+    pub(super) fn set_state_rows(&mut self, rows: HostStateRows) -> anyhow::Result<()> {
+        let capacity = self.host.lock().capacity_blocks();
+        anyhow::ensure!(
+            capacity > rows.rows,
+            "native_host_offload.num_host_blocks ({capacity}) must exceed one state \
+             checkpoint ({} blocks)",
+            rows.rows
+        );
+        self.state_rows = Some(rows);
+        Ok(())
     }
 
     /// Whether requests must retain router identities for residency events.
@@ -440,6 +535,7 @@ impl VllmHostOffloadAdapter {
             return HostLookup::Deferred;
         }
         let rules = self.rules;
+        let state_rows = self.state_rows;
         let Self {
             host,
             g3,
@@ -513,26 +609,70 @@ impl VllmHostOffloadAdapter {
             HostLookup::Deferred
         } else {
             let mut matched = 0usize;
-            let mut deferred = false;
+            // The first matched block whose store or load is still in flight.
+            let mut first_waiting = None;
             for key in request.block_keys[base_g1_blocks..end].iter().copied() {
-                match tier.lookup(key) {
-                    Lookup::Hit => deferred |= load_by_key.contains_key(&key),
-                    Lookup::Pending { .. } if rules.waits_for_stores => deferred = true,
+                let waits = match tier.lookup(key) {
+                    Lookup::Hit => load_by_key.contains_key(&key),
+                    Lookup::Pending { .. } if rules.waits_for_stores => true,
                     Lookup::Pending { .. } | Lookup::Miss => break,
+                };
+                if waits {
+                    first_waiting.get_or_insert(matched);
                 }
                 matched += 1;
             }
-            let keys = &request.block_keys[base_g1_blocks..base_g1_blocks + matched];
+            // A sliding-window model resumes only at a boundary whose state
+            // checkpoint is in G2 as well: the highest one inside the bound
+            // that admission's joint G1 lookup applies, where it lands once
+            // both are loaded.
+            let mut state = None;
+            let mut state_waits = false;
+            if let Some(rows) = state_rows {
+                let (limit, drafter_blocks) =
+                    state_resume_limit(sequence, block_size, rows.mtp, base_g1_blocks + matched);
+                let resume = (base_g1_blocks + 1..=limit).rev().find_map(|blocks| {
+                    let prefix = request.block_keys[blocks - 1].sequence_hash();
+                    let key = rows.key(prefix);
+                    let waits = match tier.lookup(key) {
+                        Lookup::Hit => load_by_key.contains_key(&key),
+                        Lookup::Pending { .. } if rules.waits_for_stores => true,
+                        Lookup::Pending { .. } | Lookup::Miss => return None,
+                    };
+                    Some((blocks, prefix, waits))
+                });
+                match resume {
+                    None => matched = 0,
+                    Some((blocks, prefix, waits)) => {
+                        matched = blocks + drafter_blocks - base_g1_blocks;
+                        state_waits = waits;
+                        state = Some(HostStateHit {
+                            prefix,
+                            resume_blocks: blocks,
+                            rows: rows.rows,
+                        });
+                    }
+                }
+            }
+            // A block above the shortened hit does not hold it back.
+            let deferred = state_waits || first_waiting.is_some_and(|index| index < matched);
             if matched == 0 {
                 HostLookup::Miss
             } else if deferred {
                 HostLookup::Deferred
             } else {
+                let mut keys =
+                    request.block_keys[base_g1_blocks..base_g1_blocks + matched].to_vec();
+                if let (Some(rows), Some(state)) = (state_rows, &state) {
+                    keys.push(rows.key(state.prefix));
+                }
                 HostLookup::Hit(HostLookupHit {
-                    keys: keys.to_vec(),
+                    keys,
+                    token_blocks: matched,
                     base_g1_blocks,
                     original_g1_tokens: g1_cost.cached_tokens,
                     request_footprint_blocks: sequence.current_known_blocks(),
+                    state,
                 })
             }
         };
@@ -546,6 +686,14 @@ impl VllmHostOffloadAdapter {
                 .copied()
             {
                 tier.touch(key);
+            }
+            // The connector looks its sliding-window groups up after the
+            // full-attention ones, so the checkpoint a hit resumes at ranks
+            // newest. Checkpoints at lower boundaries age and go first.
+            if let HostLookup::Hit(hit) = &outcome {
+                for key in &hit.keys[hit.token_blocks..] {
+                    tier.touch(*key);
+                }
             }
         }
         if rules.pins_hits
@@ -574,8 +722,7 @@ impl VllmHostOffloadAdapter {
         {
             return StartLoad::Deferred;
         }
-        let hashes = hit
-            .keys
+        let hashes = hit.keys[..hit.token_blocks]
             .iter()
             .map(|key| key.sequence_hash())
             .collect::<Vec<_>>();
@@ -584,6 +731,7 @@ impl VllmHostOffloadAdapter {
             lease,
             hit.base_g1_blocks,
             &hashes,
+            hit.state.as_ref().map(|state| state.prefix),
         ) {
             G1Acquire::Ready(reservation) => reservation,
             G1Acquire::CapacityExhausted => return StartLoad::CapacityBlocked,
@@ -628,7 +776,7 @@ impl VllmHostOffloadAdapter {
         if self.rules.reranks_at_finish {
             request
                 .accessed_blocks
-                .extend(hit.base_g1_blocks..hit.base_g1_blocks + hit.keys.len());
+                .extend(hit.base_g1_blocks..hit.base_g1_blocks + hit.token_blocks);
         }
         if let Some(g3) = &mut self.g3 {
             g3.release(uuid);
@@ -639,10 +787,12 @@ impl VllmHostOffloadAdapter {
         self.load_epoch += 1;
         request.load = Some(LoadState::Loading(LoadingPrefix {
             transfer_id,
+            token_blocks: hit.token_blocks,
+            state_resume_blocks: hit.state.map(|state| state.resume_blocks),
             keys: hit.keys,
             reservation,
             original_g1_tokens: hit.original_g1_tokens,
-            loaded_prefix_blocks: hit.base_g1_blocks + hashes.len(),
+            loaded_prefix_blocks: hit.base_g1_blocks + hit.token_blocks,
             request_footprint_blocks: hit.request_footprint_blocks,
         }));
         StartLoad::Queued
@@ -668,6 +818,9 @@ impl VllmHostOffloadAdapter {
             else {
                 continue;
             };
+            if self.checkpoint_stores.remove(transfer_id) {
+                continue;
+            }
             assert!(kv_manager.satisfy_native_source_dependency(source_dependency(*transfer_id)));
             if let Some(g3) = &mut self.g3 {
                 g3.store(&mut tier, blocks, now_ms);
@@ -754,7 +907,8 @@ impl VllmHostOffloadAdapter {
         request.load = Some(LoadState::Activated(ActivatedPrefix {
             original_g1_tokens: load.original_g1_tokens,
             loaded_prefix_blocks: load.loaded_prefix_blocks,
-            loaded_blocks: load.keys.len(),
+            state_resume_blocks: load.state_resume_blocks,
+            loaded_blocks: load.token_blocks,
             request_footprint_blocks: load.request_footprint_blocks,
         }));
     }
@@ -768,7 +922,12 @@ impl VllmHostOffloadAdapter {
         let Some(load) = request.activated() else {
             return cost;
         };
-        let loaded_tokens = load.loaded_prefix_blocks * block_size;
+        // The request holds a restored checkpoint until it is admitted, so
+        // the joint G1 lookup resumes at that boundary or above.
+        let loaded_tokens = load
+            .state_resume_blocks
+            .unwrap_or(load.loaded_prefix_blocks)
+            * block_size;
         assert!(cost.cached_tokens >= loaded_tokens);
         let newly_visible = cost.cached_tokens - loaded_tokens;
         assert_eq!(newly_visible % block_size, 0);
@@ -808,6 +967,10 @@ impl VllmHostOffloadAdapter {
         block_size: usize,
     ) -> Option<(usize, usize)> {
         request.restore_rounds.reset();
+        // A readmitted request retains its boundaries again as it recomputes;
+        // the connector drops a preempted request's blocks.
+        request.unstored_states.clear();
+        request.unstored_room = None;
         let attribution = match request.load.take() {
             Some(LoadState::Activated(load)) => {
                 assert!(reused_tokens / block_size <= load.loaded_prefix_blocks);
@@ -837,7 +1000,9 @@ impl VllmHostOffloadAdapter {
     /// Prepare one missing-only, per-request write-through cohort: the prompt
     /// blocks computed so far, or for an eager store every block computed
     /// before this pass (vLLM stores a step's blocks when the next step is
-    /// scheduled).
+    /// scheduled). A state rank adds the checkpoints its passes retained:
+    /// the connector offers a step's blocks of every KV group in one job,
+    /// which is stored whole or not at all.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_completed_blocks(
         &mut self,
@@ -859,10 +1024,25 @@ impl VllmHostOffloadAdapter {
         } else {
             (computed_tokens.min(prompt_tokens) / block_size).min(request.prompt_blocks)
         };
-        if end <= request.next_store_block {
+        let start = request.next_store_block;
+        let end = end.max(start);
+        if let Some(room) = request.unstored_room {
+            // Applies due completions, as the offer it stands for would.
+            let now = self.host.lock().room_epoch(now_ms);
+            if room.is_none_or(|room| room == now) {
+                return;
+            }
+            request.unstored_room = None;
+        }
+        let checkpoints = match self.state_rows {
+            Some(rows) => (request.unstored_states.iter())
+                .map(|&blocks| rows.key(request.block_keys[blocks - 1].sequence_hash()))
+                .collect(),
+            None => Vec::new(),
+        };
+        if end == start && checkpoints.is_empty() {
             return;
         }
-        let start = request.next_store_block;
         let mut tier = self.host.lock();
         if rules.reranks_at_finish {
             // `prepare_store` records the blocks it is offered, except those
@@ -891,22 +1071,28 @@ impl VllmHostOffloadAdapter {
                 missing_indices.truncate(free);
             }
         }
-        if missing_indices.is_empty() {
+        if missing_indices.is_empty() && checkpoints.is_empty() {
             request.next_store_block = end;
             return;
         }
-        let Some(snapshot) =
-            kv_manager.snapshot_native_store_sources(uuid, lease, &missing_indices)
-        else {
-            return;
+        // A cohort of checkpoints alone copies no token block from G1.
+        let snapshot = if missing_indices.is_empty() {
+            None
+        } else {
+            let Some(snapshot) =
+                kv_manager.snapshot_native_store_sources(uuid, lease, &missing_indices)
+            else {
+                return;
+            };
+            assert_eq!(snapshot.len(), missing_indices.len());
+            assert!(
+                snapshot
+                    .sequence_hashes()
+                    .zip(missing_indices.iter().copied())
+                    .all(|(hash, index)| HostBlockKey::new(hash) == request.block_keys[index])
+            );
+            Some(snapshot)
         };
-        assert_eq!(snapshot.len(), missing_indices.len());
-        assert!(
-            snapshot
-                .sequence_hashes()
-                .zip(missing_indices.iter().copied())
-                .all(|(hash, index)| HostBlockKey::new(hash) == request.block_keys[index])
-        );
         // The offloading connectors protect every block they offer from
         // eviction. SimpleCPU's `get_new_blocks` protects none, so it offers
         // only the missing blocks.
@@ -930,21 +1116,44 @@ impl VllmHostOffloadAdapter {
                 request.block_meta.as_deref().map(|meta| &meta[start..end]),
             )
         };
-        match tier.prepare_store(self.host.id(), uuid, keys, meta, now_ms) {
-            StoreOutcome::AlreadyPresent => request.next_store_block = end,
-            StoreOutcome::RetryCapacity { .. } => {}
+        let weight = self.state_rows.map_or(1, |rows| rows.rows);
+        let client = self.host.id();
+        match tier.prepare_cohort(client, uuid, keys, meta, &checkpoints, weight, now_ms) {
+            StoreOutcome::AlreadyPresent => {
+                request.next_store_block = end;
+                request.unstored_states.clear();
+            }
+            StoreOutcome::RetryCapacity {
+                structurally_unfittable,
+            } => {
+                // With checkpoints a cohort can exceed the pool or wait
+                // long for room in it. It is offered again when the pool's
+                // room changes, not on every decode pass.
+                if self.state_rows.is_some() {
+                    request.unstored_room =
+                        Some((!structurally_unfittable).then(|| tier.room_epoch(now_ms)));
+                }
+            }
             StoreOutcome::Prepared {
                 transfer_id,
                 stored_blocks,
             } => {
-                assert_eq!(stored_blocks, snapshot.len());
-                kv_manager.attach_native_store_source_dependency(
-                    uuid,
-                    lease,
-                    snapshot,
-                    source_dependency(transfer_id),
-                );
-                if let Some(observer) = &self.observer {
+                request.unstored_states.clear();
+                if let Some(snapshot) = snapshot {
+                    assert_eq!(stored_blocks, snapshot.len());
+                    kv_manager.attach_native_store_source_dependency(
+                        uuid,
+                        lease,
+                        snapshot,
+                        source_dependency(transfer_id),
+                    );
+                } else {
+                    assert_eq!(stored_blocks, 0);
+                    self.checkpoint_stores.insert(transfer_id);
+                }
+                if let Some(observer) = &self.observer
+                    && !missing_indices.is_empty()
+                {
                     let mappings = missing_indices
                         .iter()
                         .map(|index| HostStoreBlockMapping {
@@ -2651,6 +2860,64 @@ mod tests {
         assert_eq!(adapter.compute_not_before_ms(0.0), 0.0);
         adapter.complete_engine_boundary(&mut manager, 0.0);
         assert_eq!(adapter.compute_not_before_ms(0.0), 1.0);
+    }
+
+    #[test]
+    fn a_cohort_without_room_is_offered_again_after_a_readmission_or_a_room_change() {
+        // Prompt A's three blocks and prompt B's one are in the five-block
+        // G2. A checkpoint is three rows.
+        let rows = HostStateRows {
+            rows: 3,
+            mtp: false,
+        };
+        let mut adapter = adapter(5);
+        adapter.set_state_rows(rows).unwrap();
+        let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
+        let (_, a_lease, mut a) = request(Uuid::nil(), (1..=12).collect());
+        let (_, b_lease, mut b) = request(Uuid::from_u128(1), (21..=24).collect());
+        let mut now_ms = 0.0;
+        for key in [a.block_keys.clone(), b.block_keys.clone()].concat() {
+            now_ms = seed_host(&mut adapter, key);
+        }
+        a.note_retained_boundary(3);
+        b.note_retained_boundary(1);
+        let mut offer = |adapter: &mut VllmHostOffloadAdapter,
+                         host: &mut VllmHostRequestState,
+                         lease: &BlockRequestLease,
+                         now_ms: f64| {
+            let (id, tokens) = (Uuid::nil(), host.block_keys.len() * 4);
+            adapter.observe_completed_blocks(
+                id,
+                host,
+                lease,
+                tokens,
+                tokens,
+                4,
+                &mut manager,
+                now_ms,
+            );
+        };
+        // A's blocks and checkpoint exceed the pool. A readmission that
+        // loaded two blocks leaves the last block and the checkpoint, which
+        // fit.
+        offer(&mut adapter, &mut a, &a_lease, now_ms);
+        assert_eq!(a.unstored_room, Some(None));
+        adapter.on_admitted(&mut a, 8, 4);
+        a.next_store_block = 2;
+        a.note_retained_boundary(3);
+        offer(&mut adapter, &mut a, &a_lease, now_ms);
+        assert!(a.unstored_states.is_empty());
+        // B's block and checkpoint fit the pool, but find no room while A's
+        // checkpoint is being stored. They do once that store has completed.
+        offer(&mut adapter, &mut b, &b_lease, now_ms);
+        assert!(matches!(b.unstored_room, Some(Some(_))));
+        adapter.host.lock().submit_prepared_stores(C, now_ms);
+        let stored_ms = (adapter.host.lock())
+            .transfer_deadline(a.latest_store.unwrap())
+            .unwrap();
+        adapter.host.lock().tick(C, stored_ms);
+        offer(&mut adapter, &mut b, &b_lease, stored_ms);
+        assert!(b.unstored_states.is_empty());
     }
 
     fn connector_adapter(connector: G2Connector, capacity_blocks: usize) -> VllmHostOffloadAdapter {

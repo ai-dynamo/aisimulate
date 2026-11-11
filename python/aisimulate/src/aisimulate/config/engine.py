@@ -364,10 +364,21 @@ class KvCachePredictionConfig(StrictModel):
             # Inferred geometry may leave capacity to an FPM profile's recorded runtime memory.
             if self.capacity.type != "fixed" and not infer_state:
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
-            if self.host_offload is not None:
-                raise ValueError("state_cache supports G1 only; host_offload is not supported")
             if self.g3_offload is not None:
-                raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+                raise ValueError("state_cache does not support g3_offload")
+            # G2 carries sliding-window checkpoints. An inferred
+            # state's family is known only after sizing, where the engine checks it.
+            recurrent = (
+                self.state_cache.bytes_per_request is not None
+                and self.state_cache.sliding_window_lookahead_tokens is None
+            )
+            if self.host_offload is not None:
+                if recurrent:
+                    raise ValueError("host_offload supports only a sliding-window state_cache")
+                if self.host_offload.connector != "offloading_v0_24":
+                    raise ValueError("state_cache requires host_offload.connector=offloading_v0_24")
+                if self.kvcr is not None:
+                    raise ValueError("state_cache does not support kvcr")
         if infer_state:
             # Capacity and prefix alignment use the backend's resolved block size.
             return self
@@ -1616,7 +1627,7 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
             )
         supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
         if engine.backend != "vllm" or not supported:
-            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated")
     # Both roles run the same hybrid model, and decode resumes from the transferred state.
     if engine.mode == "disaggregated" and roles and roles != ["prefill", "decode"]:
         raise ValueError("disaggregated state_cache must be set on both prefill and decode workers")
