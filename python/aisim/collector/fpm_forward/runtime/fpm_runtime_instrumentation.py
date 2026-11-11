@@ -20,7 +20,7 @@ import socket
 import sys
 from pathlib import Path, PurePosixPath
 
-BINDING_SCHEMA = "aisim-runtime-instrumentation-imports/v1"
+BINDING_SCHEMA = "aisimulate-runtime-instrumentation-imports/v1"
 _bundle = None
 
 

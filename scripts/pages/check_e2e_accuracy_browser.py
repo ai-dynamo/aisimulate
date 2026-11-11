@@ -36,7 +36,8 @@ async def check():
                     for topology in gpu["topologies"]:
                         topology.update(total_gpus=8, is_multinode=False)
                         for point in topology["points"]:
-                            for name in ("measured", "aic", "aisim"):
+                            # Serialized field names stay stable across the product rename.
+                            for name in ("measured", "aic", "aisimulate"):
                                 values = point[name]
                                 for metric in ("ttft", "tpot"):
                                     relative = values[f"{metric}_relative"]

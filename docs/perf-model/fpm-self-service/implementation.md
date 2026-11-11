@@ -309,7 +309,15 @@ Calling the same command again inspects existing state without replacing it. Eac
 The JSON document uses `schema_version: "aisimulate-onboarding-checkpoint/v1"`.
 This persisted format identifier and the `aisimulate-support-request/v1` and
 `/v2` request identifiers remain unchanged across the AISim rename, preserving
-accepted profiles and artifact bindings. Its [schema](../../../python/aisim/src/aisim/support/checkpoint.py) holds:
+accepted profiles and artifact bindings. Supported plan, validation-policy,
+validation-report and runtime-observation formats also retain their original
+`aisimulate-` identifiers and version rules. Existing v2 plans are checked
+against their complete original command presentation and generated-file hashes;
+verification and collection preview leave those files unchanged. New plans use
+`aisim` commands. Saved v1 validation policies retain bounded-repeat semantics;
+v2 retains full-grid defaults.
+
+The checkpoint [schema](../../../python/aisim/src/aisim/support/checkpoint.py) holds:
 
 | Field | Purpose |
 | --- | --- |
@@ -1530,7 +1538,7 @@ Run the export with Python from the installed AISim environment. In a source che
 For another pin, create a fresh bundle using the same public manifest fields. This abbreviated template illustrates the structure; replace the revision and hashes with inspected values and declare every imported adapter file:
 
 ```yaml
-schema_version: aisim-runtime-instrumentation/v1
+schema_version: aisimulate-runtime-instrumentation/v1
 runtime:
   framework: vllm
   version: "<pinned-version>"
@@ -1542,7 +1550,7 @@ files: [observer.py, source-notes.md]
 source_notes: source-notes.md
 worker_class: observer.ObservedWorker
 scheduler_class: observer.ObservedInstrumentedScheduler
-observation_schema: aisim-runtime-observation/v1
+observation_schema: aisimulate-runtime-observation/v1
 ```
 
 Paths are normalized relative paths within the bundle. The manifest and every declared file contribute to its identity. `source_notes` and nonempty installed `source_files` are required for complete import. The runner freezes the bundle for each attempt and injects the classes through the native worker/scheduler extension mechanism. Loading a manifest, previewing launches and importing saved observations never execute the supplied Python.
@@ -1551,7 +1559,7 @@ Use the [runnable hooks](../../../python/aisim/collector/fpm_forward/runtime/ins
 
 New launches verify the frozen bundle's bytes and import its declared modules from their exact paths, including in spawned workers. For a campaign-local adapter, include `instrumentation_binding: observed_binding()` in every worker and scheduler observation after the native lifecycle hook, importing `observed_binding` from the collector's `fpm_runtime_instrumentation` entrypoint. The bundled observer demonstrates this call. Do not copy the launch's declared binding as evidence: missing receipts or contradictory imported sources leave memory import incomplete. Saved campaigns without this binding remain readable with `import_binding: unverified_legacy`; resuming them does not retroactively verify their imports or rewrite their bundles.
 
-The runner supplies `AISIMULATE_RUNTIME_CONTEXT`, `AISIMULATE_RUNTIME_INSTRUMENTATION` and `AISIMULATE_RUNTIME_OBSERVATION_DIR`. The context binds attempt, configuration, phase, bundle, exact launch facts and expected ranks. Worker files use `schema_version: aisim-runtime-observation/v1`, the same binding, `kind: worker`, DP/TP/PP coordinates, actual runtime/config/hardware evidence, a lifecycle record, raw cache data and `unresolved_fields`. Schedulers use `kind: scheduler`, a DP coordinate and null TP/PP coordinates. They report initial free blocks, null/permanent reservation IDs and group-to-pool mapping.
+The runner supplies `AISIMULATE_RUNTIME_CONTEXT`, `AISIMULATE_RUNTIME_INSTRUMENTATION` and `AISIMULATE_RUNTIME_OBSERVATION_DIR`. The context binds attempt, configuration, phase, bundle, exact launch facts and expected ranks. Worker files use `schema_version: aisimulate-runtime-observation/v1`, the same binding, `kind: worker`, DP/TP/PP coordinates, actual runtime/config/hardware evidence, a lifecycle record, raw cache data and `unresolved_fields`. Schedulers use `kind: scheduler`, a DP coordinate and null TP/PP coordinates. They report initial free blocks, null/permanent reservation IDs and group-to-pool mapping.
 
 A worker's physical view has this shape (illustrative values, not model geometry):
 
@@ -1824,7 +1832,7 @@ Use separate validation directories for each precision/topology campaign. The or
 
 ```json
 {
-  "schema_version": "aisim-onboarding-validation-policy/v2",
+  "schema_version": "aisimulate-onboarding-validation-policy/v2",
   "repeatability": {
     "comparison_mode": "full_grid",
     "samples": 5,

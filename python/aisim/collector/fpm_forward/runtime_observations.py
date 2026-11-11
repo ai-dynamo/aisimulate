@@ -35,8 +35,8 @@ from .runtime_instrumentation import (
 )
 from .types import ParallelTopology
 
-INDEX_SCHEMA = "aisim-runtime-observations/v1"
-LAUNCH_SCHEMA = "aisim-runtime-probe-launch/v1"
+INDEX_SCHEMA = "aisimulate-runtime-observations/v1"
+LAUNCH_SCHEMA = "aisimulate-runtime-probe-launch/v1"
 _SEMANTICS = {
     "allocation": "shared_block_pool",
     "storage": "hbm",
@@ -350,7 +350,7 @@ def _validate_import_binding(record: dict, expected: dict, bundle: Instrumentati
     if (
         not isinstance(expected, dict)
         or set(expected) != {"schema_version", "loader_sha256"}
-        or expected.get("schema_version") != "aisim-runtime-instrumentation-imports/v1"
+        or expected.get("schema_version") != "aisimulate-runtime-instrumentation-imports/v1"
     ):
         raise ValueError("unsupported runtime instrumentation import binding")
     validate_sha256(expected.get("loader_sha256"), "runtime instrumentation loader")

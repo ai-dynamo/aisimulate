@@ -16,15 +16,15 @@ from typing import Any
 
 import yaml
 
-INSTRUMENTATION_SCHEMA = "aisim-runtime-instrumentation/v1"
-OBSERVATION_SCHEMA = "aisim-runtime-observation/v1"
+INSTRUMENTATION_SCHEMA = "aisimulate-runtime-instrumentation/v1"
+OBSERVATION_SCHEMA = "aisimulate-runtime-observation/v1"
 INSTRUMENTATION_LOADER = "fpm_runtime_instrumentation.py"
 
 
 def runtime_binding() -> dict[str, str]:
     """Identify the collector loader without importing runtime or adapter code."""
     return {
-        "schema_version": "aisim-runtime-instrumentation-imports/v1",
+        "schema_version": "aisimulate-runtime-instrumentation-imports/v1",
         "loader_sha256": sha256_bytes((Path(__file__).parent / "runtime" / INSTRUMENTATION_LOADER).read_bytes()),
     }
 

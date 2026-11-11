@@ -45,7 +45,7 @@ def _inputs(tmp_path, *, graph_policy="runtime"):
     manifest.write_text(
         json.dumps(
             {
-                "schema_version": "aisim-runtime-instrumentation/v1",
+                "schema_version": "aisimulate-runtime-instrumentation/v1",
                 "runtime": {
                     "framework": "vllm",
                     "version": "0.28.0",
@@ -55,7 +55,7 @@ def _inputs(tmp_path, *, graph_policy="runtime"):
                 "files": ["observer.py", "source-notes.txt"],
                 "worker_class": "observer.ObservedWorker",
                 "scheduler_class": "observer.ObservedScheduler",
-                "observation_schema": "aisim-runtime-observation/v1",
+                "observation_schema": "aisimulate-runtime-observation/v1",
                 "source_notes": "source-notes.txt",
             }
         )
@@ -157,7 +157,7 @@ class _SyntheticExecutor:
             raw = self.cell_dir / "raw" / pod
             raw.mkdir(parents=True, exist_ok=True)
             (raw / "synthetic-observation.json").write_text(
-                json.dumps({**context, "schema_version": "aisim-runtime-observation/v1", "synthetic": True})
+                json.dumps({**context, "schema_version": "aisimulate-runtime-observation/v1", "synthetic": True})
             )
         if context["configuration"] == self.fail_configuration:
             raise RuntimeError("synthetic runtime failure")
@@ -1074,7 +1074,9 @@ def test_formal_resume_archives_recovered_native_evidence_before_skip(
 
     native_files(prefill, raw, "prefill-native-attempt")
     observation = raw / "synthetic-observation.json"
-    observation.write_text(json.dumps({**context, "schema_version": "aisim-runtime-observation/v1", "synthetic": True}))
+    observation.write_text(
+        json.dumps({**context, "schema_version": "aisimulate-runtime-observation/v1", "synthetic": True})
+    )
     original_observation = observation.read_bytes()
     if archive_failure == "stale":
         # A prior failed snapshot can predate the final observation write.

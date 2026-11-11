@@ -15,7 +15,7 @@ The collector stages the frozen bundle and a collector-owned import entrypoint, 
 
 | Variable | Contents |
 | --- | --- |
-| `AISIMULATE_RUNTIME_CONTEXT` | Absolute path to the runner-owned `aisim-runtime-probe-launch/v1` JSON document: `attempt_id`, `configuration`, `phase`, `bundle_sha256`, exact `launch`, and `expected_ranks`. Sampling is a separate field. |
+| `AISIMULATE_RUNTIME_CONTEXT` | Absolute path to the runner-owned `aisimulate-runtime-probe-launch/v1` JSON document: `attempt_id`, `configuration`, `phase`, `bundle_sha256`, exact `launch`, and `expected_ranks`. Sampling is a separate field. |
 | `AISIMULATE_RUNTIME_INSTRUMENTATION` | Absolute path to the frozen JSON `manifest.json`. |
 | `AISIMULATE_RUNTIME_OBSERVATION_DIR` | The current process's results directory; the collector uses `/results`. |
 
