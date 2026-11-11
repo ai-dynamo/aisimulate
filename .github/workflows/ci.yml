@@ -860,6 +860,8 @@ jobs:
           python -m pytest -q -rx -n 4
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+          crates/core/parity_tests/perfmodel/test_afd_parity.py
+          crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py
       - name: Check native prediction numerical sentinels
         run: |
           python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only

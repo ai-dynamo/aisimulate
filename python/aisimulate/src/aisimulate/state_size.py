@@ -6,10 +6,10 @@
 from typing import Any
 
 from .capacity import estimate_state_cache
-from .config.engine import EnginePredictionConfig, StateCacheConfig, WorkerPredictionConfig
+from .config.engine import EnginePredictionConfig, StateCacheConfig, WorkerPredictionConfig, recorded_state_pool
 
 
-def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionConfig) -> dict[str, Any]:
+def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str) -> dict[str, Any]:
     cache = worker.kv_cache
     sizing = cache.state_cache
     if sizing is None:
@@ -53,11 +53,19 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
     size = StateCacheConfig(bytes_per_request=result["bytes_per_request"])
     blocks = size.state_blocks(block_size, bytes_per_token)
     block_bytes = block_size * bytes_per_token
-    capacity = cache.capacity.blocks
-    if capacity is None:
+    if cache.capacity.type != "fixed":
+        capacity = runtime_memory_blocks(engine, worker, role, block_bytes)
+    elif (capacity := cache.capacity.blocks) is None:
         capacity = cache.capacity.bytes // block_bytes
     if not 0 < capacity <= (1 << 64) - 1:
         raise ValueError("fixed KV capacity must fit at least one block within u64")
     if capacity < blocks + 1:
         raise ValueError("state_cache capacity must fit one token block and one request state")
     return {**result, "state_blocks": blocks, "allocated_bytes_per_request": blocks * block_bytes}
+
+
+def runtime_memory_blocks(
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, role: str, block_bytes: int
+) -> int:
+    """Whole blocks of the cache pool the FPM profile recorded for this worker (``resources.runtime_memory``)."""
+    return recorded_state_pool(engine, worker, role).kv_cache_bytes // block_bytes
