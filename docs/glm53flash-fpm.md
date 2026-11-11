@@ -166,14 +166,21 @@ The two digests are those of the checkout that reads the artifact. A campaign
 is therefore readable only by a collector whose `glm53flash_prefix_scheduler.py`
 and `runtime-source-sha256.json` have the bytes of the files that the launch
 staged. After any change of either file, a comment included, the collector
-refuses earlier GLM-5.3-Flash campaigns at `producer.overlay_sha256` or
-`producer.runtime_source_manifest_sha256`. This holds for every step that reads
-the raw artifacts again: readiness, repeatability assessment, publication and
-finalization, serving validation and the runtime memory import. Read such a
-campaign with the collector revision that collected it, which
+refuses earlier GLM-5.3-Flash campaigns. The refusal names the first field of
+the record that differs. When only the bytes of the files changed, that field
+is `producer.overlay_sha256` or `producer.runtime_source_manifest_sha256`. This
+holds wherever the collector reads the raw artifacts again: readiness,
+repeatability assessment, publication, finalization and serving validation, and
+each later check of a profile that was finalized from the campaign.
+`onboard checkpoint` and `onboard resume` run that check. They report the
+refusal as an integrity issue, report the profile as not accepted and exit
+with status 2. The saved-plan check of a finalized directory whose finalization
+kept a collection report refuses the campaign too.
+`onboard import-observations` reads only the observation files and is not
+affected. Read such a campaign with the collector revision that collected it, which
 `collection-plan.json` records as `aic_revision`, or collect a new smoke and a
-new campaign. A published table keeps loading, because loading reads the table
-and not the raw artifacts. Artifacts of other models are not affected.
+new campaign. The simulator keeps loading a published table, because loading
+reads the table and not the raw artifacts. Artifacts of other models are not affected.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --kv-cache-dtype fp8
