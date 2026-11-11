@@ -101,7 +101,7 @@ function accuracyCard(label, metrics, className) {
 }
 
 function visibleModels() {
-  return state.data?.models.filter(model => (model.aisimulate.status_counts?.success ?? model.aisimulate.points) > 0) ?? [];
+  return state.data?.models.filter(model => (model.aisim.status_counts?.success ?? model.aisim.points) > 0) ?? [];
 }
 
 function renderSummary() {
@@ -109,9 +109,9 @@ function renderSummary() {
   summaryGrid.innerHTML = [
     basicCard("Models", String(visibleModels().length), true),
     basicCard("AIC (legacy CLI) points", totals.aic.points.toLocaleString()),
-    basicCard("AISim points", totals.aisimulate.points.toLocaleString()),
+    basicCard("AISim points", totals.aisim.points.toLocaleString()),
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
-    accuracyCard("AISim Error · all configurations", totals.aisimulate, "aisimulate"),
+    accuracyCard("AISim Error · all configurations", totals.aisim, "aisim"),
     accuracyCard("AIC (legacy CLI) Error · all configurations", totals.aic, "aic"),
   ].join("");
   const groups = new Map();
@@ -132,13 +132,13 @@ function renderSummary() {
       (frameworkOrder.includes(a) ? frameworkOrder.indexOf(a) : frameworkOrder.length) -
       (frameworkOrder.includes(b) ? frameworkOrder.indexOf(b) : frameworkOrder.length) || a.localeCompare(b));
     return `<tbody>${rows.map(([framework, topologies], index) => {
-      const m = aggregateTopologies(topologies).aisimulate;
+      const m = aggregateTopologies(topologies).aisim;
       const servingLabel = {aggregated: "Agg", disaggregated: "Disagg"}[serving] || serving;
       return `<tr>${index === 0 ? `<th scope="rowgroup" rowspan="${rows.length}">${escapeHtml(servingLabel)}</th>` : ""}<th scope="row">${escapeHtml(framework.toUpperCase())}</th><td>${m.points}</td>${["tpot_mape_pct", "tpot_shape_error_pct", "ttft_mape_pct", "ttft_shape_error_pct"].map(f => `<td>${formatPercent(m[f])}</td>`).join("")}</tr>`;
     }).join("")}</tbody>`;
   }).join("")}</table></div>` : "";
   document.getElementById("hardware-summary").innerHTML = hardwareGroups.size ? `<h2>AISim error by hardware</h2><div class="table-scroll"><table><thead><tr><th scope="col">Hardware</th><th scope="col">Points</th><th scope="col">TPOT MAPE</th><th scope="col">TTFT MAPE</th></tr></thead><tbody>${[...hardwareGroups].sort(([a], [b]) => a.localeCompare(b)).map(([hardware, topologies]) => {
-    const m = aggregateTopologies(topologies).aisimulate;
+    const m = aggregateTopologies(topologies).aisim;
     return `<tr><th scope="row">${escapeHtml(hardware.toUpperCase())}</th><td>${m.points}</td><td>${formatPercent(m.tpot_mape_pct)}</td><td>${formatPercent(m.ttft_mape_pct)}</td></tr>`;
   }).join("")}</tbody></table></div>` : "";
 }
@@ -161,9 +161,9 @@ function renderSnapshot() {
       )} ${escapeHtml(snapshot.release_tag)}</a><br />
       Multi-node measurements: ${escapeHtml(scope.multinode)} (${scope.excluded_multinode_rows.toLocaleString()} points not exported).<br />
       Measured through: ${escapeHtml(formatDate(snapshot.measurement_date_through))}<br />
-      AISim run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
+      AISim run completed: ${escapeHtml(formatDate(snapshot.aisim_completed_at))}<br />
       Packages: ${escapeHtml(
-        Object.entries(snapshot.aisimulate_packages)
+        Object.entries(snapshot.aisim_packages)
           .map(([name, version]) => `${name} ${version}`)
           .join(", "),
       )}
@@ -188,7 +188,7 @@ function renderSnapshot() {
         ? "Qualified e2e-accuracy-web artifact from the campaign above"
         : "Local preview; publication commit not recorded"}</p>
     <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
-    <code>AISim evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
+    <code>AISim evidence SHA-256: ${escapeHtml(snapshot.aisim_sot_sha256)}</code>`;
 }
 
 function modelLabel(model) {
@@ -200,15 +200,15 @@ function sortValue(model) {
     case "aicPoints":
       return model.aic.points;
     case "aisimPoints":
-      return model.aisimulate.points;
+      return model.aisim.points;
     case "hardware":
       return model.gpu_skus.join(",");
     case "precisions":
       return model.precisions.join(",");
     case "aisimTpot":
-      return model.aisimulate.tpot_mape_pct;
+      return model.aisim.tpot_mape_pct;
     case "aisimTtft":
-      return model.aisimulate.ttft_mape_pct;
+      return model.aisim.ttft_mape_pct;
     case "aicTpot":
       return model.aic.tpot_mape_pct;
     case "aicTtft":
@@ -235,8 +235,8 @@ function metricCells(item) {
   return `
     <td class="mono">${escapeHtml(item.gpu_skus.join(", "))}</td>
     <td>${escapeHtml(item.precisions.join(", "))}</td>
-    <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
+    <td class="points-cell">${escapeHtml(item.aisim.points.toLocaleString())}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aisim.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aisim.ttft_mape_pct))}</td>
     <td class="points-cell">${escapeHtml(item.aic.points.toLocaleString())}</td>
     <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
 }
@@ -385,15 +385,15 @@ function topologyOptions(topologies) {
 }
 
 function coverageText(item) {
-  const counts = item.aisimulate.status_counts;
+  const counts = item.aisim.status_counts;
   return `${counts.success}/${item.rows} successful replay points · ${counts.unsupported} unsupported · ${counts.failed} failed`;
 }
 
 function errorBars(item) {
   const series = [
-    ["AISim TPOT", item.aisimulate.tpot_mape_pct, "aisimulate"],
+    ["AISim TPOT", item.aisim.tpot_mape_pct, "aisim"],
     ["AIC (legacy CLI) TPOT", item.aic.tpot_mape_pct, "aic"],
-    ["AISim TTFT", item.aisimulate.ttft_mape_pct, "aisimulate"],
+    ["AISim TTFT", item.aisim.ttft_mape_pct, "aisim"],
     ["AIC (legacy CLI) TTFT", item.aic.ttft_mape_pct, "aic"],
   ];
   const maximum = Math.max(1, ...series.map(([, value]) => value ?? 0));
@@ -415,7 +415,7 @@ function pointTable(topology) {
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
       const run = point.infx_run_id ? `<a href="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/${escapeHtml(point.infx_run_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(point.infx_run_id)}</a>` : "—";
       const failure = point.status === "success" ? "—" : point.aisim_error || "Not recorded";
-      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${errors("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aic")}</td><td>${escapeHtml(point.configuration_quality ?? point.configuration?.configuration_quality ?? "Not recorded")}</td><td>${run}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status ?? "success")}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
+      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisim")}</td><td>${errors("aisim")}</td><td>${ratios("aic")}</td><td>${errors("aic")}</td><td>${escapeHtml(point.configuration_quality ?? point.configuration?.configuration_quality ?? "Not recorded")}</td><td>${run}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status ?? "success")}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
@@ -485,7 +485,46 @@ function branchOption(entry) {
   return `<option value="${escapeHtml(entry.branch)}">${escapeHtml(entry.branch + (suffix[entry.status] || ""))}</option>`;
 }
 
+function normalizeSummary(data) {
+  if (!data || ![1, 2].includes(data.schema_version)) throw new Error("unsupported accuracy summary schema");
+  const version = data.schema_version;
+  const result = structuredClone(data);
+  const [oldName, newName] = version === 1 ? ["aisimulate", "aisim"] : ["aisim", "aisimulate"];
+  const field = (item, source, destination) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return;
+    if (Object.hasOwn(item, destination)) throw new Error(`summary v${version} contains unexpected field ${destination}`);
+    if (version === 1 && Object.hasOwn(item, source)) {
+      item[destination] = item[source];
+      delete item[source];
+    }
+  };
+  const series = item => field(item, oldName, newName);
+  const children = (item, name) => Array.isArray(item?.[name]) ? item[name] : [];
+  for (const suffix of ["completed_at", "method", "packages", "sot_sha256"]) {
+    field(result.snapshot, `${oldName}_${suffix}`, `${newName}_${suffix}`);
+  }
+  series(result.totals);
+  const groups = result.totals?.by_configuration_quality;
+  if (groups && typeof groups === "object" && !Array.isArray(groups)) Object.values(groups).forEach(series);
+  for (const model of children(result, "models")) {
+    series(model);
+    for (const workload of children(model, "workloads")) {
+      series(workload);
+      for (const gpu of children(workload, "gpus")) {
+        series(gpu);
+        for (const topology of children(gpu, "topologies")) {
+          series(topology);
+          children(topology, "points").forEach(series);
+        }
+      }
+    }
+  }
+  result.schema_version = 2;
+  return result;
+}
+
 function validateSummary(data) {
+  data = normalizeSummary(data);
   const research = data?.snapshot?.research_preview;
   const statuses = ["success", "unsupported", "failed", "unknown"];
   const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -496,11 +535,11 @@ function validateSummary(data) {
     ["ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"]
       .every((key) => item[key] === null || (Number.isFinite(item[key]) && item[key] >= 0));
   const aggregate = (item) => {
-    if (!object(item) || !metrics(item.aic, item.rows) || !metrics(item.aisimulate, item.rows) ||
-      !Number.isInteger(item.rows) || item.rows <= 0 || !object(item.aisimulate.status_counts)) return false;
-    const counts = item.aisimulate.status_counts;
+    if (!object(item) || !metrics(item.aic, item.rows) || !metrics(item.aisim, item.rows) ||
+      !Number.isInteger(item.rows) || item.rows <= 0 || !object(item.aisim.status_counts)) return false;
+    const counts = item.aisim.status_counts;
     return statuses.every((key) => Number.isInteger(counts[key]) && counts[key] >= 0) &&
-      counts.success === item.aisimulate.points && Object.values(counts).reduce((sum, count) => sum + count, 0) === item.rows;
+      counts.success === item.aisim.points && Object.values(counts).reduce((sum, count) => sum + count, 0) === item.rows;
   };
   const topologyValid = (topology) => {
     if (!object(topology) || typeof topology.id !== "string" || !/^[0-9a-f]{16}$/.test(topology.id) || !aggregate(topology) ||
@@ -524,8 +563,8 @@ function validateSummary(data) {
       if (point.infx_run_id != null && (typeof point.infx_run_id !== "string" || !/^[1-9][0-9]*$/.test(point.infx_run_id))) return false;
       counts[point.status] += 1;
       if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
-      return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
-        const missing = name === "aisimulate" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
+      return ["measured", "aic", "aisim"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
+        const missing = name === "aisim" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
         for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"]) {
           const raw = point[name][field];
           if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || missing)) return false;
@@ -535,18 +574,18 @@ function validateSummary(data) {
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
-    }) && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
-      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]) &&
+    }) && Object.keys(topology.aisim.status_counts).length === statuses.length &&
+      statuses.every((key) => counts[key] === topology.aisim.status_counts[key]) &&
       aicSuccesses === topology.aic.points;
   };
-  if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
+  if (!object(data) || data.schema_version !== 2 || !object(data.snapshot) || !object(data.scope) ||
     typeof data.snapshot.release_tag !== "string" ||
     (data.snapshot.release_tag.startsWith("hf/") && !/^hf\/[0-9a-f]{40}$/.test(data.snapshot.release_tag)) ||
     data.snapshot.measurement_source_url !== (data.snapshot.release_tag.startsWith("hf/")
       ? `https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/${data.snapshot.release_tag.slice(3)}`
       : `https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/${data.snapshot.release_tag}`) ||
-    !object(data.snapshot.aisimulate_packages) ||
-    !["measurement_date_through", "aisimulate_completed_at"].every((key) =>
+    !object(data.snapshot.aisim_packages) ||
+    !["measurement_date_through", "aisim_completed_at"].every((key) =>
       data.snapshot[key] == null || typeof data.snapshot[key] === "string") ||
     !["included", "excluded"].includes(data.scope.multinode) ||
     !Number.isInteger(data.scope.excluded_multinode_rows) || data.scope.excluded_multinode_rows < 0 ||
@@ -566,7 +605,7 @@ function validateSummary(data) {
     !/^[0-9a-f]{40}$/.test(research.source_commit) ||
     !Number.isInteger(research.estimated_points) || research.estimated_points < 0 || research.estimated_points > data.totals.rows ||
     !Number.isInteger(research.estimated_successes) || research.estimated_successes < 0 ||
-    research.estimated_successes > research.estimated_points || research.estimated_successes > data.totals.aisimulate.points)) {
+    research.estimated_successes > research.estimated_points || research.estimated_successes > data.totals.aisim.points)) {
     throw new Error("invalid local research preview provenance");
   }
   if (data.scope.preview === true && revision == null ||
@@ -619,9 +658,9 @@ function validateSummary(data) {
   if (groups !== undefined && (!object(groups) || !Object.keys(groups).length ||
     Object.entries(groups).some(([quality, group]) => !["verified", "estimated", "not_recorded"].includes(quality) ||
       !object(group) || !Number.isInteger(group.rows) || group.rows <= 0 ||
-      !metrics(group.aic, group.rows) || !metrics(group.aisimulate, group.rows)) ||
+      !metrics(group.aic, group.rows) || !metrics(group.aisim, group.rows)) ||
     Object.values(groups).reduce((sum, group) => sum + group.rows, 0) !== data.totals.rows ||
-    ["aic", "aisimulate"].some((name) => Object.values(groups).reduce((sum, group) => sum + group[name].points, 0) !== data.totals[name].points))) {
+    ["aic", "aisim"].some((name) => Object.values(groups).reduce((sum, group) => sum + group[name].points, 0) !== data.totals[name].points))) {
     throw new Error("invalid configuration quality metrics");
   }
   return data;
@@ -751,10 +790,10 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
       branchStatus.textContent = `${entry.branch} · historical package snapshot; evaluated branch and commit were not recorded. These are not current branch accuracy results.`;
     }
     if (data.scope.preview === true) branchStatus.textContent = "PR preview · " + branchStatus.textContent;
-    branchStatus.textContent += ` Measurements: ${data.snapshot.release_tag}; evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}.`;
+    branchStatus.textContent += ` Measurements: ${data.snapshot.release_tag}; evaluated ${formatDate(data.snapshot.aisim_completed_at)}.`;
     if (entry.last_update?.status === "failed") branchStatus.textContent += " Update failed; showing previous evidence. See the accuracy workflow for details.";
     const brief = document.getElementById("evidence-brief");
-    brief.textContent = `${entry.branch} · ${revision ? revision.commit_sha.slice(0, 8) : "historical snapshot"} · evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}` +
+    brief.textContent = `${entry.branch} · ${revision ? revision.commit_sha.slice(0, 8) : "historical snapshot"} · evaluated ${formatDate(data.snapshot.aisim_completed_at)}` +
       (entry.status === "inherited" ? ` · inherited from ${revision.branch}` : "") +
       (entry.last_update?.status === "failed" ? " · Update failed — showing previous results" : "");
     if (data.scope.preview === true) brief.textContent = "PR preview · " + brief.textContent;
@@ -819,9 +858,9 @@ async function initialize() {
 
 // The public dashboard operates on qualified snapshots, including historical ones.
 let legendTimer;
-const seriesClass = name => name === "aisimulate" ? "aisim" : name;
-const SERIES_NAMES = {measured: "Measured silicon", aisimulate: "AISim", aic: "AIC (legacy CLI)"};
-const SERIES_COLORS = {measured: "#f59e0b", aisimulate: "#818cf8", aic: "#14b8a6"};
+const seriesClass = name => name;
+const SERIES_NAMES = {measured: "Measured silicon", aisim: "AISim", aic: "AIC (legacy CLI)"};
+const SERIES_COLORS = {measured: "#f59e0b", aisim: "#818cf8", aic: "#14b8a6"};
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 const numeric = value => Number.isFinite(value) ? value.toFixed(2) : "—";
 
@@ -836,7 +875,7 @@ function aggregateTopologies(topologies, quality = null) {
   const matchesQuality = point => quality === null || (point.configuration_quality ?? "not_recorded") === quality;
   const rows = topologies.flatMap(t => t.points).filter(matchesQuality);
   const result = {rows: rows.length};
-  for (const name of ["aic", "aisimulate"]) {
+  for (const name of ["aic", "aisim"]) {
     const acceptedPoints = new Set();
     const metrics = {};
     for (const metric of ["ttft", "tpot"]) {
@@ -863,7 +902,7 @@ function aggregateTopologies(topologies, quality = null) {
   result.aic.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
     status => [status, rows.filter(p => (p.aic_status ?? "success") === status).length]));
   result.aic.coverage_pct = rows.length ? result.aic.status_counts.success / rows.length * 100 : 0;
-  result.aisimulate.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
+  result.aisim.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
     status => [status, rows.filter(p => p.status === status).length]));
   return result;
 }
@@ -999,8 +1038,8 @@ function renderDetails() {
 function topologyContent(topology) {
   const stats = aggregateTopologies([topology]);
   return `<p>${escapeHtml(topologyLabel(topology))} · ${escapeHtml(topology.total_gpus ?? "unknown")} GPUs</p>
-    <p class="coverage-text">${escapeHtml(coverageText({...stats, aisimulate: {...stats.aisimulate, points: stats.aisimulate.status_counts.success}}))}</p>
-    <div class="detail-cards">${accuracyCard("AISim error", stats.aisimulate, "aisimulate")}${accuracyCard("AIC (legacy CLI) error", stats.aic, "aic")}</div>
+    <p class="coverage-text">${escapeHtml(coverageText({...stats, aisim: {...stats.aisim, points: stats.aisim.status_counts.success}}))}</p>
+    <div class="detail-cards">${accuracyCard("AISim error", stats.aisim, "aisim")}${accuracyCard("AIC (legacy CLI) error", stats.aic, "aic")}</div>
     <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${seriesClass(key)}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
     <p class="detail-scope">Click a legend to hide a series; double-click or Shift+Enter to isolate it. Click a point for its configuration and values.</p>
     <div class="detail-charts">
@@ -1113,5 +1152,5 @@ document.getElementById("close-point").addEventListener("click", () => document.
 function updateOutlierCounts(topologies) {
   const rows = topologies.flatMap(t => t.points);
   const count = name => rows.filter(p => ["ttft", "tpot"].some(m => p[name][`${m}_error_pct`] > 100)).length;
-  document.getElementById("outlier-count").textContent = `(AISim: ${count("aisimulate")}, AIC (legacy CLI): ${count("aic")})`;
+  document.getElementById("outlier-count").textContent = `(AISim: ${count("aisim")}, AIC (legacy CLI): ${count("aic")})`;
 }

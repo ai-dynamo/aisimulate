@@ -821,9 +821,9 @@ def test_same_commit_publication_compares_completion_times(
     summary, run = artifact
     run["head_sha"] = "a" * 40
     summary["snapshot"]["campaign"]["completed_at"] = current_time
-    summary["snapshot"]["aisimulate_completed_at"] = current_time
+    summary["snapshot"]["aisim_completed_at"] = current_time
     previous = deepcopy(summary)
-    previous["snapshot"]["aisimulate_completed_at"] = previous_time
+    previous["snapshot"]["aisim_completed_at"] = previous_time
     responses = {
         "actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100": {"workflow_runs": [run]},
         "actions/runs/123": run,
@@ -995,7 +995,7 @@ def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp
     release = branch_snapshot(summary, "release/0.12.0", "e" * 40)
     publication_api(monkeypatch, run, [summary, release])
     previous = deepcopy(summary)
-    previous["snapshot"]["aisimulate_completed_at"] = previous_time
+    previous["snapshot"]["aisim_completed_at"] = previous_time
     monkeypatch.setattr(
         publish,
         "committed_accuracy",
@@ -1098,10 +1098,10 @@ def test_failed_prior_attempt_requires_that_attempts_successful_branch_job(artif
 def test_same_commit_campaign_selection_uses_completion_time_not_run_order(artifact, tmp_path, monkeypatch, reverse):
     summary, run = artifact
     summary["snapshot"]["campaign"]["completed_at"] = "2026-09-15T09:00:00Z"
-    summary["snapshot"]["aisimulate_completed_at"] = "2026-09-15T09:00:00Z"
+    summary["snapshot"]["aisim_completed_at"] = "2026-09-15T09:00:00Z"
     newer = deepcopy(summary)
     newer["snapshot"]["campaign"].update(run_id="124", completed_at="2026-09-15T11:00:00.500000+02:00")
-    newer["snapshot"]["aisimulate_completed_at"] = newer["snapshot"]["campaign"]["completed_at"]
+    newer["snapshot"]["aisim_completed_at"] = newer["snapshot"]["campaign"]["completed_at"]
     newer_run = {**run, "id": 124}
     responses = publication_api(monkeypatch, run, [summary])
     runs = [run, newer_run]
@@ -1453,15 +1453,15 @@ def test_publication_accepts_failure_details_but_rejects_success_errors(artifact
     topology = gpu["topologies"][0]
     failed = topology["points"][0]
     failed["status"] = "failed"
-    failed["aisimulate"] = dict.fromkeys(failed["aisimulate"])
-    failed["aisimulate"]["unavailable_metrics"] = dict.fromkeys(
+    failed["aisim"] = dict.fromkeys(failed["aisim"])
+    failed["aisim"]["unavailable_metrics"] = dict.fromkeys(
         ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"), "prediction_failed"
     )
     for item in (summary["totals"], model, workload, gpu, topology):
-        item["aisimulate"]["points"] -= 1
-        item["aisimulate"]["status_counts"]["success"] -= 1
-        item["aisimulate"]["status_counts"]["failed"] += 1
-    summary["totals"]["by_configuration_quality"]["not_recorded"]["aisimulate"]["points"] -= 1
+        item["aisim"]["points"] -= 1
+        item["aisim"]["status_counts"]["success"] -= 1
+        item["aisim"]["status_counts"]["failed"] += 1
+    summary["totals"]["by_configuration_quality"]["not_recorded"]["aisim"]["points"] -= 1
     failed["aisim_error"] = "ValueError: no KV budget"
     assert publish.validate_artifact(archive(summary), run) == summary
     success = topology["points"][1]
@@ -1837,7 +1837,7 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     assert summary["totals"]["rows"] == 1
     assert summary["totals"]["aic"]["status_counts"]["failed"] == 1
     assert summary["totals"]["aic"]["coverage_pct"] == 0
-    assert summary["totals"]["by_configuration_quality"]["verified"]["aisimulate"]["points"] == 1
+    assert summary["totals"]["by_configuration_quality"]["verified"]["aisim"]["points"] == 1
 
 
 def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
@@ -2072,7 +2072,7 @@ def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_pat
     "name,field",
     [
         (name, field)
-        for name in ("aic", "aisimulate")
+        for name in ("aic", "aisim")
         for field in (
             "ttft_ms",
             "tpot_ms",
@@ -2081,7 +2081,7 @@ def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_pat
             "interactivity_tok_s",
         )
     ]
-    + [("aisimulate", "total_per_gpu")],
+    + [("aisim", "total_per_gpu")],
 )
 def test_serving_metric_contract_rejects_missing_success_metrics(artifact, name, field):
     summary, run = artifact
@@ -2097,10 +2097,10 @@ def test_serving_metrics_survive_qualification_and_explain_unavailable(artifact)
     summary, run = artifact
     validated = publish.validate_artifact(archive(summary), run)
     point = validated["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
-    assert point["aisimulate"]["output_per_gpu"] == 760
-    assert point["aisimulate"]["total_per_gpu"] == 1520
-    assert point["aisimulate"]["e2e_ms"] == 1300
-    assert point["aisimulate"]["interactivity_tok_s"] == 1000 / 12
+    assert point["aisim"]["output_per_gpu"] == 760
+    assert point["aisim"]["total_per_gpu"] == 1520
+    assert point["aisim"]["e2e_ms"] == 1300
+    assert point["aisim"]["interactivity_tok_s"] == 1000 / 12
     assert point["aic"]["total_per_gpu"] is None
     assert point["aic"]["unavailable_metrics"] == {"total_per_gpu": "unsupported_by_predictor"}
     assert point["measured"]["unavailable_metrics"]["e2e_ms"] == "not_recorded"
@@ -2124,7 +2124,7 @@ def test_measurement_metrics_preserve_recorded_rates_and_units():
 def test_serving_metrics_reject_invalid_values(artifact, bad):
     summary, run = artifact
     point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
-    point["aisimulate"]["output_per_gpu"] = bad
+    point["aisim"]["output_per_gpu"] = bad
     with pytest.raises((pages.PagesBuildError, ValueError)):
         publish.validate_artifact(archive(summary), run)
 
@@ -2132,7 +2132,7 @@ def test_serving_metrics_reject_invalid_values(artifact, bad):
 def test_serving_metrics_check_interactivity_definition(artifact):
     summary, run = artifact
     point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
-    point["aisimulate"]["interactivity_tok_s"] = 12
+    point["aisim"]["interactivity_tok_s"] = 12
     with pytest.raises(pages.PagesBuildError, match="interactivity definition"):
         publish.validate_artifact(archive(summary), run)
 
@@ -2581,3 +2581,32 @@ def test_mtp_staleness_uses_current_cohort_without_changing_stp():
     assert points == stp
     assert stats["excluded"] == {"stale": 1}
     assert len(points) + sum(stats["excluded"].values()) == 2
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_publisher_and_digest_accept_both_public_summary_versions(artifact, version):
+    from test_e2e_accuracy_overview import _legacy_public_summary
+
+    from scripts.notifications.accuracy_digest import e2e_snapshot
+
+    current, _ = artifact
+    summary = _legacy_public_summary(current) if version == 1 else current
+    original = deepcopy(summary)
+    normalized = publish.unpack_artifact(archive(summary))
+    assert normalized == current
+    assert summary == original
+    assert normalized["snapshot"]["campaign"]["schema_version"] == 1
+    assert e2e_snapshot(summary, "rules", "url") == e2e_snapshot(current, "rules", "url")
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_publisher_checks_source_bytes_before_summary_normalization(artifact, version):
+    from test_e2e_accuracy_overview import _legacy_public_summary
+
+    current, _ = artifact
+    summary = _legacy_public_summary(current) if version == 1 else current
+    qualification = {**summary["snapshot"]["campaign"], "summary_sha256": "0" * 64}
+    # A schema/field error must not precede verification of the source bytes.
+    summary["schema_version"] = 999
+    with pytest.raises(ValueError, match="summary checksum mismatch"):
+        publish.unpack_artifact(archive(summary, qualification=qualification))
