@@ -18,10 +18,10 @@ tables:
       collected_at: '2026-11-09'
       rows: 26870
       status: complete
-    - collector_ref: e22b5faedc65193d24a17c235ee1ff408c13c5b1
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: 93bde7488
+      collector_hash: sha256:175e80466bdd504a1677eac11137a3a80eef2a203b4b9f1e17f1e0cdbb9527eb
       case_plan_hash: sha256:284feac47393b54ae48ff4e05f6898e300d0afa494fed78dbdf703a96cce6620
-      collected_at: '2026-11-10'
+      collected_at: '2026-11-11'
       rows: 18160
       status: complete
   dsa_generation_module_perf:
