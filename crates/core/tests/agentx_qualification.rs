@@ -671,26 +671,30 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
     // To re-pin, run this test and copy the `left:` list from the failure. A
     // mismatch the change did not intend must first be diffed semantically
     // against the previous report, per-request and lifecycle output.
+    // The AISim rename deliberately changes lifecycle and Weka source digests.
+    // A three-domain-only before/after comparison recovered every old pin;
+    // complete per-request records and lifecycle event streams were identical.
+    // See benchmarks/evidence/pr796-rename/agentx-domain-comparison.json.
     let expected = [
-        "g2 snapshot agg: 5 6b28fe341f87b490",
-        "g2 snapshot disagg: 5 515ff132fcdc6b08",
-        "g2 warmup agg: 5 b89358b190c66046",
-        "g2 warmup disagg: 5 1a9c63bc1919b472",
-        "g2 profile agg: 168 b8aa80a7a5d00b2b",
-        "g2 profile disagg: 151 f3062f253ba53636",
-        "g2 profile-cold agg: 168 0cbdef689a45e540",
-        "g2 profile-cold disagg: 151 1a03cbac9330a961",
-        "two-plays snapshot agg: 3 6ee98c82ab648f45",
-        "two-plays snapshot disagg: 3 a01db8613f512a83",
-        "two-plays warmup agg: 3 0f7ad48710c5d7c6",
-        "two-plays warmup disagg: 3 26a20280546a6cc7",
-        "two-plays profile agg: 821 10a719a78e167cd4",
-        "two-plays profile disagg: 667 c737d31ab004240b",
-        "two-plays profile-cold agg: 820 720a0b2eb0c2c09b",
+        "g2 snapshot agg: 5 6cbb612c534c4835",
+        "g2 snapshot disagg: 5 223e5df120da3b73",
+        "g2 warmup agg: 5 4a868a5c33ea746b",
+        "g2 warmup disagg: 5 727e03e2b6458069",
+        "g2 profile agg: 168 3836acf6cc08fea7",
+        "g2 profile disagg: 151 5a87dfb36cf47921",
+        "g2 profile-cold agg: 168 4d3fe50afc4f2048",
+        "g2 profile-cold disagg: 151 e2916a8f8909348f",
+        "two-plays snapshot agg: 3 f32d45662c04076b",
+        "two-plays snapshot disagg: 3 46193e1206325680",
+        "two-plays warmup agg: 3 8a40174c1b270569",
+        "two-plays warmup disagg: 3 35307eb4e477fbd3",
+        "two-plays profile agg: 821 b4ee47cad4b96929",
+        "two-plays profile disagg: 667 b25bb6287a94ebd6",
+        "two-plays profile-cold agg: 820 1c2fdbee5fa71dcf",
         // Same-timestamp arrivals now join the synchronous prefill pass: the
         // first affected recycled request admits at 13 ms instead of 15 ms,
         // allowing 667 requests to issue before the 1 s profiling cutoff.
-        "two-plays profile-cold disagg: 667 126b8310bccd00f3",
+        "two-plays profile-cold disagg: 667 03b6b577866b0ec4",
     ];
     assert_eq!(actual, expected);
 }

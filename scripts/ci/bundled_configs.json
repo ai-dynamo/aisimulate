@@ -19,7 +19,7 @@
     },
     "Apache-2.0": {
       "license_text_sha256": [
-        "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a"
+        "e23fff8569b293286854873c37cf51c72cdb13018ff50e0487517a8534524d37"
       ]
     },
     "LicenseRef-GLM-5.3": {
@@ -472,7 +472,7 @@
       "modified": false,
       "notice": {
         "file": "THIRD_PARTY_NOTICES.md",
-        "license_text_sha256": "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a",
+        "license_text_sha256": "e23fff8569b293286854873c37cf51c72cdb13018ff50e0487517a8534524d37",
         "section": "Meta Muse Glimmer model configuration",
         "license_file": "LICENSE"
       }
@@ -984,7 +984,7 @@
       "notice": {
         "file": "THIRD_PARTY_NOTICES.md",
         "section": "NVIDIA Qwen3.5-397B-A17B-NVFP4-V2 model configuration files",
-        "license_text_sha256": "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a",
+        "license_text_sha256": "e23fff8569b293286854873c37cf51c72cdb13018ff50e0487517a8534524d37",
         "required_attribution": [
           "NVIDIA CORPORATION & AFFILIATES",
           "Alibaba Cloud"
@@ -1007,7 +1007,7 @@
       "notice": {
         "file": "THIRD_PARTY_NOTICES.md",
         "section": "NVIDIA Qwen3.5-397B-A17B-NVFP4-V2 model configuration files",
-        "license_text_sha256": "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a",
+        "license_text_sha256": "e23fff8569b293286854873c37cf51c72cdb13018ff50e0487517a8534524d37",
         "required_attribution": [
           "NVIDIA CORPORATION & AFFILIATES",
           "Alibaba Cloud"
@@ -1102,7 +1102,7 @@
         "file": "THIRD_PARTY_NOTICES.md",
         "section": "StepFun Step-3.7-Flash model configuration files",
         "license_file": "LICENSE",
-        "license_text_sha256": "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a",
+        "license_text_sha256": "e23fff8569b293286854873c37cf51c72cdb13018ff50e0487517a8534524d37",
         "required_attribution": [
           "StepFun"
         ]
@@ -1125,7 +1125,7 @@
         "file": "THIRD_PARTY_NOTICES.md",
         "section": "StepFun Step-3.7-Flash model configuration files",
         "license_file": "LICENSE",
-        "license_text_sha256": "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a",
+        "license_text_sha256": "e23fff8569b293286854873c37cf51c72cdb13018ff50e0487517a8534524d37",
         "required_attribution": [
           "StepFun"
         ]

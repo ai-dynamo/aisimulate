@@ -670,7 +670,7 @@ def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan
     import yaml
 
     legacy = _request().model_dump(mode="json", exclude_none=True)
-    legacy["schema_version"] = "aisim-support-request/v1"
+    legacy["schema_version"] = "aisimulate-support-request/v1"
     legacy.pop("collection")
     if search is None:
         legacy.pop("search")
@@ -679,7 +679,7 @@ def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan
     source = tmp_path / "old-request.yaml"
     source.write_text(yaml.safe_dump(legacy))
     migrated = SupportRequest.from_yaml(source)
-    assert migrated.schema_version == "aisim-support-request/v2"
+    assert migrated.schema_version == "aisimulate-support-request/v2"
     assert migrated.search.context_length == expected_context
     assert migrated.scheduler_limits() == {"max_batched_tokens": 8192, "max_sequences": 256}
     root = tmp_path / "old-plan"

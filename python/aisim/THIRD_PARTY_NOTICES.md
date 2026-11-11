@@ -500,7 +500,7 @@ Apache-2.0 LICENSE supplies the license text; no upstream source file is vendore
 The repository-root files
 `crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
 `crates/core/src/engine/kv_manager/state_cache_tests.rs` and
-`python/aisimulate/src/aisim_core/sdk/memory/deepseek_v4.py` model the
+`python/aisim/src/aisim_core/sdk/memory/deepseek_v4.py` model the
 sliding-window prefix-cache retention (`VLLM_PREFIX_CACHE_RETENTION_INTERVAL`,
 replay boundaries, the EAGLE/MTP block after a boundary and the DeepSeek V4 MTP
 group) of vLLM [`v0.32.0`](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be)

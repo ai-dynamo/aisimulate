@@ -58,7 +58,8 @@ class Configuration(StrictModel):
 
 
 class Checkpoint(StrictModel):
-    schema_version: Literal["aisim-onboarding-checkpoint/v1"] = "aisim-onboarding-checkpoint/v1"
+    # Persisted format identifier: product branding must not invalidate sessions.
+    schema_version: Literal["aisimulate-onboarding-checkpoint/v1"] = "aisimulate-onboarding-checkpoint/v1"
     revision: int = Field(default=0, strict=True, ge=0)
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
     validation_inputs: dict[str, JsonValue] = Field(default_factory=dict)

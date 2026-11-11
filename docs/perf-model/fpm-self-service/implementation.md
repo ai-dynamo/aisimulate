@@ -306,7 +306,10 @@ aisim onboard checkpoint \
 
 Calling the same command again inspects existing state without replacing it. Each saved revision has a generated revision number. Updates require `--expect-revision` with the number just read; a stale revision rejects the update. Reload and reconcile concurrent changes instead of retrying with an invented revision. Saves use an OS lock and atomic file replacement. The adjacent lock file is an implementation detail, not another user checkpoint; leave it in place.
 
-The JSON document uses `schema_version: "aisim-onboarding-checkpoint/v1"`. Its [schema](../../../python/aisim/src/aisim/support/checkpoint.py) holds:
+The JSON document uses `schema_version: "aisimulate-onboarding-checkpoint/v1"`.
+This persisted format identifier and the `aisimulate-support-request/v1` and
+`/v2` request identifiers remain unchanged across the AISim rename, preserving
+accepted profiles and artifact bindings. Its [schema](../../../python/aisim/src/aisim/support/checkpoint.py) holds:
 
 | Field | Purpose |
 | --- | --- |
@@ -1121,7 +1124,7 @@ If an AISim update changes generated guidance, recreate the plan in a new output
 
 The plan reports `fpm.collection_gpus_required`, derived as attention TP times attention DP. Collection uses only that worker width and the matching `tp`, `pure_tp`, `dep`, or `tep` preset. The generated prediction and recommendation configs both use one worker. Recommendation has one exact preset and one trial; its `optimization.constraints.max_candidate_gpus` equals the selected worker's requirement so even workers wider than the runtime default are representable. That derived cap describes this validation example and does not declare the user's total available GPUs. There is no replica expansion or deployment optimization during onboarding.
 
-Saved `aisim-support-request/v1` requests are read as v2 while preserving their declared context and profile resource bounds; an omitted legacy context retains 16,384. Legacy validation concurrency is not reused as a collection sequence limit. Review these retained and newly independent settings before use. Old `aisim-support-plan/v1` directories must be regenerated in a **new directory** because their collection commands depended on the synthetic validation workload. Do not overwrite old timings or checkpoints to reuse the old plan identity.
+Saved `aisimulate-support-request/v1` requests are read as v2 while preserving their declared context and profile resource bounds; an omitted legacy context retains 16,384. Legacy validation concurrency is not reused as a collection sequence limit. Review these retained and newly independent settings before use. Old `aisimulate-support-plan/v1` directories must be regenerated in a **new directory** because their collection commands depended on the synthetic validation workload. Do not overwrite old timings or checkpoints to reuse the old plan identity.
 
 Some earlier v1 drafts also included `identity.gpu_count`, `identity.node_count`, `identity.gpus_per_node` and `search.max_candidates`; those obsolete fields remain rejected. Copy the request, remove them and review the retained topology/profile before regeneration. Plan summaries use `fpm.collection_gpus_required` and `search.candidates[].required_gpus`. The old `onboard init` allocation flags (`--gpu-count`, `--node-count`, `--gpus-per-node`, `--max-candidates`) are not accepted. Ordinary `predict` and `recommend` replica and GPU-budget APIs are unchanged.
 

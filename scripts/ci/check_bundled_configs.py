@@ -88,6 +88,7 @@ def legacy_baseline() -> dict[str, str]:
     data = BASELINE.read_bytes()
     if digest(data) != BASELINE_SHA256:
         raise InventoryError("frozen unresolved baseline changed; policy review is required")
+    # The package moved; retain every frozen byte hash and exception unchanged.
     return {path.replace("aisimulate_core/", "aisim_core/", 1): sha for path, sha in load_json(data)["files"].items()}
 
 

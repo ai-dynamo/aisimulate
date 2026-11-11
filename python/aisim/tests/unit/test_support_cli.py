@@ -196,7 +196,7 @@ def test_retired_support_command_is_rejected_before_dispatch(tmp_path, monkeypat
 def test_v1_request_rejects_malformed_search_without_writing_plan(tmp_path, capsys, search):
     source = tmp_path / "request.yaml"
     source.write_text(
-        yaml.safe_dump({"schema_version": "aisim-support-request/v1", "identity": _REQUIRED, "search": search})
+        yaml.safe_dump({"schema_version": "aisimulate-support-request/v1", "identity": _REQUIRED, "search": search})
     )
     original = source.read_bytes()
     output = tmp_path / "plan"
