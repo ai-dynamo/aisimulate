@@ -172,9 +172,12 @@ is `producer.overlay_sha256` or `producer.runtime_source_manifest_sha256`. This
 holds wherever the collector reads the raw artifacts again: readiness,
 repeatability assessment, publication, finalization and serving validation, and
 each later check of a profile that was finalized from the campaign.
-`onboard checkpoint` and `onboard resume` run that check. They report the
-refusal as an integrity issue, report the profile as not accepted and exit
-with status 2. The saved-plan check of a finalized directory whose finalization
+For an accepted profile, `onboard checkpoint` and `onboard resume` run that
+check. They report the refusal as an integrity issue, report the profile as not
+accepted and exit with status 2. They also run it for a request or profile file
+that the checkpoint registers for the configuration, and report the refusal as
+an integrity issue of that file. An attempt to accept such a profile fails with
+the same text and status 2. The saved-plan check of a finalized directory whose finalization
 kept a collection report refuses the campaign too.
 `onboard import-observations` reads only the observation files and is not
 affected. Read such a campaign with the collector revision that collected it, which
