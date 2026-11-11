@@ -98,8 +98,8 @@ not enable it.
 
 `require_compatible(spec)` checks versions and coarse combinations before
 execution. AgentX G2 additionally requires offline vLLM, static workers (one
-aggregated worker, 1P1D, or several aggregated workers with a `dp_rank_local`
-G2 each), and DP1 on every role. G3 cannot be combined with AgentX G2.
+aggregated worker, several aggregated workers with a `dp_rank_local` G2 each,
+or P/D with any number of workers per role), and DP1 on every role. G3 cannot be combined with AgentX G2.
 Speculation is limited to canonical MTP on a single aggregated worker with
 local G2, prefix caching and synchronous scheduling. The [feature matrix](../replay/features.md) records the built-in
 stack's actual boundary, including limitations stricter than a capability flag.

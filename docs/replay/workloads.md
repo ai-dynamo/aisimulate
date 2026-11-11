@@ -326,8 +326,8 @@ workers and HBM-only KV cache, including
 [speculative decoding](engine/speculation.md) with explicit acceptance
 assumptions; ngram requires vLLM. vLLM additionally
 supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers:
-one aggregated worker, 1P1D, or several aggregated workers with
-`scope: dp_rank_local`; `attention_data: 1` on every role. Speculation with G2
+one aggregated worker, several aggregated workers with
+`scope: dp_rank_local`, or P/D with any number of workers per role; `attention_data: 1` on every role. Speculation with G2
 is limited to canonical MTP on a single aggregated worker with local G2 and
 prefix caching. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
