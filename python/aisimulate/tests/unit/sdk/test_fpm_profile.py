@@ -1404,6 +1404,18 @@ def test_cache_group_checkpoint_fields_follow_the_rust_rules(grouped_profile, in
         _normalize(_request(grouped_profile))
 
 
+def test_cache_group_checkpoint_block_without_alignment_loads(grouped_profile):
+    # Rust checks the alignment only when it is present, so one checkpoint block without an alignment is valid there
+    # (resources.rs, checkpoint_fields_need_a_state_group_and_each_other). The profile model accepts it too.
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(prefill_checkpoint_blocks=1))
+    (group,) = [
+        item for item in load_fpm_profile(grouped_profile).deployments[0].resources.cache_groups if item.kind == "state"
+    ]
+    assert (group.prefill_checkpoint_blocks, group.prefill_checkpoint_alignment) == (1, None)
+    _normalize(_request(grouped_profile))
+
+
 def test_cache_group_rule_texts_match_the_rust_validator():
     """Native entry points report the Python text first, so compare the literals of the Rust validator."""
     rust_src = Path(__file__).resolve().parents[5] / "crates/core/src/perfmodel/fpm/resources.rs"

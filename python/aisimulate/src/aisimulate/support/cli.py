@@ -638,10 +638,9 @@ def _review_config_profile(
         print("  Synthetic validation traffic and SLAs do not determine these collection limits.")
         print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
         if draft.resolved.get("cache_layout") == "grouped":
-            print(
-                "  Grouped pages retain full history or the declared window. "
-                "State groups hold a fixed block count per request."
-            )
+            print("  Grouped pages retain full history or the declared window, with separate convolution state.")
+            if any(group.get("kind") == "state" for group in draft.resolved.get("cache_groups") or ()):
+                print("  State groups hold a fixed block count per request.")
             print("  Group page_size_bytes sums every group layer per rank; verify runtime block sizes and padding.")
             print(
                 "  Config-derived pages are minimum packed tensor estimates; edit cache_groups for runtime allocation."

@@ -816,12 +816,31 @@ def test_grouped_review_states_where_pending_memory_is_observed(tmp_path, monkey
     args = _args(tmp_path / "request.yaml", source, resources, framework_version=version) + ["--interactive"]
     assert cli.main(args) == 0
     review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
-    assert (
-        "  Grouped pages retain full history or the declared window. State groups hold a fixed block count per request."
-    ) in review
+    assert "  Grouped pages retain full history or the declared window, with separate convolution state." in review
+    assert not [line for line in review if "State groups" in line]
     assert "  Memory source: pending." in review
     memory_lines = {line for lines in _PENDING_MEMORY_LINES.values() for line in lines}
     assert [line for line in review if line in memory_lines] == _PENDING_MEMORY_LINES[version]
+
+
+def test_grouped_review_names_state_groups_only_when_the_draft_holds_one(tmp_path, monkeypatch, capsys):
+    # Without a layer count in the config, a complete cache_groups override resolves the grouped geometry, so a
+    # declared state group reaches the review.
+    config = {key: value for key, value in _CONFIG.items() if key != "num_hidden_layers"}
+    page = {"block_size_tokens": 16, "page_size_bytes": 4096}
+    groups = [
+        {"name": "full", "kind": "attention", "num_layers": 1, **page},
+        {"name": "kda", "kind": "state", "num_layers": 1, "blocks_per_request": 1, **page},
+    ]
+    overrides = {"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"}
+    source, resources = _files(tmp_path, config=config, overrides={**overrides, "cache_groups": groups})
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(tmp_path / "request.yaml", source, resources) + ["--interactive"]) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    grouped = review.index(
+        "  Grouped pages retain full history or the declared window, with separate convolution state."
+    )
+    assert review[grouped + 1] == "  State groups hold a fixed block count per request."
 
 
 def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
