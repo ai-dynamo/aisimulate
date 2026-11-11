@@ -170,9 +170,12 @@ An SGLang disaggregated `prefill` worker accepts `parallelism.pipeline` above
 one with an AIC timing model. SGLang's PP event loop feeds the next chunk of a
 prompt into the first stage while the previous chunk runs on later stages, so
 replay retires passes at the per-stage rate: the timing provider prices the
-whole forward and replay divides it by `pipeline`. The prompt's last forward
-still crosses the remaining `pipeline - 1` stages before its KV handoff, which
-delays the transfer by that many passes. The worker counts
+whole forward and replay divides it by `pipeline`. Each chunk still crosses the
+remaining `pipeline - 1` stages in order, a stage taking it once the stage
+before has finished it and the stage itself has finished the chunk ahead. The
+KV handoff starts when the prompt's last chunk leaves the last stage: after
+`pipeline - 1` more passes for equal chunks, and later when a short last chunk
+follows a longer one. The worker counts
 `tensor × attention_data × prefill_context × pipeline` GPUs. Fixed and
 polynomial timing price one stage, so they reject `pipeline` above one, as do
 other roles and backends, before capacity estimation.

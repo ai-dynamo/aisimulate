@@ -271,8 +271,9 @@ impl HandoffCoordinatorCore {
         Self::new_with_fallback(handoff_id, order, 0.0)
     }
 
-    /// The part of the transfer delay the source still spends in later
-    /// pipeline stages (zero before the source is held).
+    /// How long after the source is held its KV can start to move: the time
+    /// its last forward still spends in later pipeline stages (zero before the
+    /// source is held).
     pub(crate) fn pipeline_fill_ms(&self) -> f64 {
         self.source
             .transfer_timing
@@ -474,9 +475,7 @@ impl HandoffCoordinatorCore {
                     handoff_id: self.handoff_id,
                     delay_ms: transfer_timing
                         .delay_ms(transferable_prompt_tokens)
-                        .unwrap_or(
-                            self.fallback_transfer_delay_ms + transfer_timing.pipeline_fill_ms,
-                        ),
+                        .unwrap_or(self.fallback_transfer_delay_ms),
                 }),
             ]);
         }
@@ -597,7 +596,7 @@ pub fn validate_transfer_timing(transfer_timing: HandoffTransferTiming) -> Resul
     {
         bail!("invalid handoff transfer bandwidth {bandwidth_gb_s}");
     }
-    // The fill also reaches the unpriced fallback delay, so check it on its own.
+    // The fill delays the transfer whether or not its link work is priced.
     let fill_ms = transfer_timing.pipeline_fill_ms;
     if !fill_ms.is_finite() || fill_ms < 0.0 {
         bail!("invalid handoff pipeline fill {fill_ms}");
@@ -687,9 +686,13 @@ mod tests {
             pipeline_fill_ms: 2.0,
             ..missing
         };
-        assert_eq!(start_transfer_delay(filled, 7.5), 9.5);
+        assert_eq!(
+            start_transfer_delay(filled, 7.5),
+            7.5,
+            "the fill is not link work"
+        );
 
-        // An unpriced transfer still rejects a fill the fallback would add.
+        // An unpriced transfer still rejects an invalid fill.
         for fill_ms in [f64::NAN, f64::INFINITY, -1.0] {
             let invalid = HandoffTransferTiming {
                 pipeline_fill_ms: fill_ms,

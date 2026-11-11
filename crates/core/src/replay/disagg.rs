@@ -868,25 +868,18 @@ impl DisaggFlowState {
         let ranks = (state.prefill_worker_idx(), state.decode_worker_idx());
         // A PP prefill's later stages are compute, not link work: the KV
         // occupies the shared links only once they finish.
-        let fill_ms = state.coordinator.pipeline_fill_ms().min(delay_ms);
-        if delay_ms > 0.0 {
+        let ready_ms = now_ms + state.coordinator.pipeline_fill_ms();
+        if delay_ms > 0.0 || ready_ms > now_ms {
             let Some(links) = &mut self.links else {
                 return Ok(TransferStart::Scheduled(ScheduledTransfer {
-                    at_ms: now_ms + delay_ms,
+                    at_ms: ready_ms + delay_ms,
                     handoff_id,
                 }));
             };
             let (Some(source), Some(destination)) = ranks else {
                 bail!("offline disagg transfer for {uuid} has no prefill or decode rank");
             };
-            links.submit(
-                handoff_id,
-                delay_ms - fill_ms,
-                source,
-                destination,
-                now_ms,
-                now_ms + fill_ms,
-            );
+            links.submit(handoff_id, delay_ms, source, destination, now_ms, ready_ms);
             return Ok(TransferStart::Linked);
         }
         self.apply_handoff_fact(

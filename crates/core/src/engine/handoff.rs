@@ -77,6 +77,7 @@ pub struct HandoffTransferTiming {
     pub bandwidth_gb_s: Option<f64>,
     /// Milliseconds the source's last forward still spends in later pipeline stages after the
     /// scheduler sees it complete (a PP prefill worker retires its passes at the per-stage rate).
+    /// The transfer becomes ready that much later; it is not part of `delay_ms`.
     #[serde(default)]
     pub pipeline_fill_ms: f64,
 }
@@ -86,7 +87,7 @@ impl HandoffTransferTiming {
     ///
     /// Returns `None` when the source did not provide a complete timing model
     /// or when bandwidth is non-positive. In that case the Replayer may apply
-    /// its configured fallback delay, plus `pipeline_fill_ms`.
+    /// its configured fallback delay.
     pub fn delay_ms(self, destination_missing_tokens: usize) -> Option<f64> {
         let tokens = match self.mode {
             TransferTimingMode::FullPrompt => self.full_prompt_tokens,
@@ -101,12 +102,10 @@ impl HandoffTransferTiming {
             return None;
         }
 
-        Some(
-            transfer_delay_ms(
-                tokens as f64 * bytes_per_token as f64 + self.state_bytes as f64,
-                bandwidth_gb_s,
-            ) + self.pipeline_fill_ms,
-        )
+        Some(transfer_delay_ms(
+            tokens as f64 * bytes_per_token as f64 + self.state_bytes as f64,
+            bandwidth_gb_s,
+        ))
     }
 
     /// Calculate delay using the full prompt irrespective of `mode`.
@@ -174,6 +173,11 @@ mod tests {
         };
 
         assert_eq!(timing.delay_ms(20), Some(0.02));
+        let filled = HandoffTransferTiming {
+            pipeline_fill_ms: 5.0,
+            ..timing
+        };
+        assert_eq!(filled.delay_ms(20), Some(0.02), "the fill is not link work");
         assert_eq!(timing.full_prompt_delay_ms(), Some(0.1));
     }
 
@@ -211,15 +215,6 @@ mod tests {
             ..timing
         };
         assert_eq!(timing.delay_ms(0), None);
-        let filled = HandoffTransferTiming {
-            pipeline_fill_ms: 5.0,
-            ..timing
-        };
-        assert_eq!(
-            filled.delay_ms(0),
-            None,
-            "unpriced timing leaves the fill to the coordinator fallback"
-        );
     }
 
     #[test]

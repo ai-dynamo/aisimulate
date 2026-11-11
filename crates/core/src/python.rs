@@ -3785,12 +3785,14 @@ struct TimingPowerSource {
 }
 
 impl TimingPowerSource {
-    fn new(timing: Arc<dyn TimingModel>, config: &EngineConfig) -> Self {
-        Self {
+    /// Scale the evidence as replay charges the rank, pipeline stages included.
+    fn new(timing: Arc<dyn TimingModel>, config: &EngineConfig) -> Result<Self> {
+        let speedup_ratio = crate::replay::pipeline_speedup_ratio(config)?;
+        Ok(Self {
             timing,
-            prefill_speedup_ratio: config.speedup_ratio,
-            decode_speedup_ratio: config.speedup_ratio * config.decode_speedup_ratio,
-        }
+            prefill_speedup_ratio: speedup_ratio,
+            decode_speedup_ratio: speedup_ratio * config.decode_speedup_ratio,
+        })
     }
 }
 
@@ -4412,7 +4414,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 &mut coverage_sources,
             )?;
             if let Some(timing) = timing.as_ref() {
-                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank)?);
             }
             prediction_provenance.insert("aggregated".into(), timing_provenance(&role.rank.timing_model));
             engine_config.dp_size = role.dp_size;
@@ -4524,10 +4526,10 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 &mut coverage_sources,
             )?;
             if let Some(timing) = prefill_timing.as_ref() {
-                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank)?);
             }
             if let Some(timing) = decode_timing.as_ref() {
-                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &decode.rank));
+                power_sources.push(TimingPowerSource::new(Arc::clone(timing), &decode.rank)?);
             }
             prediction_provenance.insert("prefill".into(), timing_provenance(&prefill.rank.timing_model));
             prediction_provenance.insert("decode".into(), timing_provenance(&decode.rank.timing_model));

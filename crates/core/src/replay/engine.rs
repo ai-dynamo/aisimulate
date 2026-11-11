@@ -503,11 +503,7 @@ impl ReplayEngineFactory {
             ));
         }
         if pipeline_size > 1 {
-            // A zero ratio means unscaled; normalize it before dividing by the stages.
-            if role.rank.speedup_ratio == 0.0 {
-                role.rank.speedup_ratio = 1.0;
-            }
-            role.rank.speedup_ratio *= pipeline_size as f64;
+            role.rank.speedup_ratio = pipeline_speedup_ratio(&role.rank)?;
             role.rank.pipeline_fill_passes = (pipeline_size - 1) as f64;
         }
         // A pull moves G2 bytes times the tensor-parallel size; it does not
@@ -697,6 +693,22 @@ fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u
             "timing provider `{key}` must be a positive integer, got {value}"
         ))
     })
+}
+
+/// The prefill speedup ratio a rank replays with: its own ratio times its pipeline stages, whose
+/// passes retire at the per-stage rate. Diagnostics scale the timing evidence by the same value.
+pub(crate) fn pipeline_speedup_ratio(rank: &EngineConfig) -> Result<f64, ReplayError> {
+    let pipeline_size = pipeline_parallel_size(&rank.timing_model)?;
+    if pipeline_size == 1 {
+        return Ok(rank.speedup_ratio);
+    }
+    // A zero ratio means unscaled; normalize it before dividing by the stages.
+    let ratio = if rank.speedup_ratio == 0.0 {
+        1.0
+    } else {
+        rank.speedup_ratio
+    };
+    Ok(ratio * pipeline_size as f64)
 }
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
@@ -1124,6 +1136,15 @@ mod kvcr_tests {
             .role_factory(&unscaled, WorkerStage::Prefill, false)
             .unwrap();
         assert_eq!(prefill.factory.config().speedup_ratio, 4.0);
+        // Diagnostics scale the timing evidence by the ratio replay charged.
+        assert_eq!(pipeline_speedup_ratio(&unscaled.rank).unwrap(), 4.0);
+        let mut doubled = config(Backend::Sglang);
+        doubled.rank.speedup_ratio = 2.0;
+        assert_eq!(pipeline_speedup_ratio(&doubled.rank).unwrap(), 8.0);
+        assert_eq!(
+            pipeline_speedup_ratio(&EngineConfig::default()).unwrap(),
+            EngineConfig::default().speedup_ratio
+        );
         for (backend, stage) in [
             (Backend::Vllm, WorkerStage::Prefill),
             (Backend::Sglang, WorkerStage::Decode),

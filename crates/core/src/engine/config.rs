@@ -886,8 +886,8 @@ pub struct EngineConfig {
     /// Additional divisor applied to decode latency.
     #[serde(default = "default_one")]
     pub decode_speedup_ratio: f64,
-    /// Passes a completed prefill forward still spends in later pipeline stages (PP size - 1 on a
-    /// PP prefill worker, whose passes retire at the per-stage rate); delays the KV handoff.
+    /// Later pipeline stages a prefill forward still crosses after its pass retires (PP size - 1
+    /// on a PP prefill worker, whose passes retire at the per-stage rate); delays the KV handoff.
     #[serde(default)]
     pub pipeline_fill_passes: f64,
     /// MTP/EAGLE draft-token count. One verification forward can emit up to
@@ -1342,8 +1342,10 @@ impl EngineConfig {
             "decode_speedup_ratio must be finite and non-negative"
         );
         ensure!(
-            self.pipeline_fill_passes.is_finite() && self.pipeline_fill_passes >= 0.0,
-            "pipeline_fill_passes must be finite and non-negative"
+            self.pipeline_fill_passes.is_finite()
+                && self.pipeline_fill_passes >= 0.0
+                && self.pipeline_fill_passes.fract() == 0.0,
+            "pipeline_fill_passes must be a non-negative whole number"
         );
         if let Some(nextn) = self.aic_nextn {
             normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
@@ -2894,5 +2896,30 @@ mod tests {
             ..EngineConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn pipeline_fill_passes_must_be_a_whole_stage_count() {
+        for stages in [0.0, 1.0, 3.0] {
+            let config = EngineConfig {
+                pipeline_fill_passes: stages,
+                ..EngineConfig::default()
+            };
+            config.validate().unwrap();
+        }
+        for stages in [-1.0, 0.5, f64::NAN, f64::INFINITY] {
+            let config = EngineConfig {
+                pipeline_fill_passes: stages,
+                ..EngineConfig::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("pipeline_fill_passes must be a non-negative whole number"),
+                "{stages}"
+            );
+        }
     }
 }
