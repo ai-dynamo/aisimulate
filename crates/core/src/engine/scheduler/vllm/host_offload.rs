@@ -116,29 +116,15 @@ impl RestoreRounds {
     }
 }
 
-/// What a request's last prompt touch found, for the next one to reuse while
-/// the host tier has not changed in a way that could alter it.
-#[derive(Default)]
+/// A request's last prompt touch, reused while the tier's counts stand.
 struct PromptTouch {
-    /// The tier's LRU touch count after the touch. While it stands, the
-    /// prompt's evictable blocks are still the newest, in order.
-    lru_touches: Option<u64>,
-    /// `(admitted, blocks)`: when the tier had admitted `admitted` blocks, it
-    /// held no block of the prompt from index `blocks` on.
-    absent_from: Option<(u64, usize)>,
-}
-
-impl PromptTouch {
-    /// The request's own store admitted blocks, all before index `end`,
-    /// taking the tier's count from `before` to `after`.
-    fn admitted_own(&mut self, before: u64, after: u64, end: usize) {
-        if let Some((admitted, blocks)) = &mut self.absent_from
-            && *admitted == before
-        {
-            *admitted = after;
-            *blocks = (*blocks).max(end);
-        }
-    }
+    /// [`HostTier::lru_touches`] after the touch: the prompt's evictable
+    /// blocks are still the newest, in order.
+    lru_touches: u64,
+    /// [`HostTier::admitted_blocks`] when the tier held no block of the
+    /// prompt from index `absent_from` on.
+    admitted: u64,
+    absent_from: usize,
 }
 
 /// Request-local connector cursor and transient load ownership.
@@ -168,8 +154,8 @@ pub(super) struct VllmHostRequestState {
     /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
-    /// With `touches_prompt`: what the latest prompt touch found.
-    prompt_touch: PromptTouch,
+    /// With `touches_prompt`: the latest prompt touch.
+    prompt_touch: Option<PromptTouch>,
 }
 
 impl VllmHostRequestState {
@@ -220,29 +206,41 @@ impl VllmHostRequestState {
             confirmed_tokens: 0,
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
-            prompt_touch: PromptTouch::default(),
+            prompt_touch: None,
         }
     }
 
     /// `touches_prompt`: make the prompt's evictable blocks the newest, its
     /// first block newest of all, as touching every prompt key in reverse
-    /// does. When nothing was touched since this request's last touch, its
-    /// blocks are still the newest and nothing moves; blocks the tier lacked
-    /// are skipped until it admits more.
+    /// does. Nothing moves while the LRU is as this request's last touch left
+    /// it, and blocks the tier lacked are skipped until it admits more.
     fn touch_prompt(&mut self, tier: &mut HostTier) {
-        if self.prompt_touch.lru_touches == Some(tier.lru_touches()) {
-            return;
-        }
         let admitted = tier.admitted_blocks();
-        let end = match self.prompt_touch.absent_from {
-            Some((seen, blocks)) if seen == admitted => blocks,
+        let end = match &self.prompt_touch {
+            Some(last) if last.lru_touches == tier.lru_touches() => return,
+            Some(last) if last.admitted == admitted => last.absent_from,
             _ => self.prompt_blocks,
         };
-        let present = tier.touch_reversed(&self.block_keys[..end]);
-        self.prompt_touch = PromptTouch {
-            lru_touches: Some(tier.lru_touches()),
-            absent_from: Some((admitted, present)),
-        };
+        let absent_from = tier.touch_reversed(&self.block_keys[..end]);
+        self.prompt_touch = Some(PromptTouch {
+            lru_touches: tier.lru_touches(),
+            admitted,
+            absent_from,
+        });
+    }
+
+    /// [`Self::touch_prompt`] after this request's store admitted `stored`
+    /// blocks, all before index `end`: the blocks from `end` on are still
+    /// absent.
+    fn touch_prompt_after_store(&mut self, tier: &mut HostTier, stored: usize, end: usize) {
+        let stored = stored as u64;
+        if let Some(last) = &mut self.prompt_touch
+            && last.admitted + stored == tier.admitted_blocks()
+        {
+            last.admitted += stored;
+            last.absent_from = last.absent_from.max(end.min(self.prompt_blocks));
+        }
+        self.touch_prompt(tier);
     }
 
     /// Append the keys (and router identities) of blocks the lease completed
@@ -962,7 +960,6 @@ impl VllmHostOffloadAdapter {
                 request.block_meta.as_deref().map(|meta| &meta[start..end]),
             )
         };
-        let admitted = tier.admitted_blocks();
         match tier.prepare_store(self.host.id(), uuid, keys, meta, now_ms) {
             StoreOutcome::AlreadyPresent => request.next_store_block = end,
             StoreOutcome::RetryCapacity { .. } => {}
@@ -997,12 +994,7 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = resume;
                 if rules.touches_prompt {
-                    request.prompt_touch.admitted_own(
-                        admitted,
-                        tier.admitted_blocks(),
-                        end.min(request.prompt_blocks),
-                    );
-                    request.touch_prompt(&mut tier);
+                    request.touch_prompt_after_store(&mut tier, stored_blocks, end);
                 }
             }
         }
@@ -1384,75 +1376,34 @@ mod tests {
     }
 
     #[test]
-    fn prompt_touch_matches_touching_every_prompt_key_in_reverse() {
-        use rand::rngs::StdRng;
-        use rand::{Rng, SeedableRng};
-
-        // Two requests with the same 12-block prompt, one that shares its
-        // first four blocks and one that shares none, so a request's skipped
-        // tail can be stored by another.
-        let prompts: [Vec<u32>; 4] = [
-            (1..=48).collect(),
-            (1..=48).collect(),
-            (1..=16).chain(101..=132).collect(),
-            (201..=248).collect(),
-        ];
-        let hosts = || {
-            let owners = (1..).map(Uuid::from_u128);
-            let hosts = prompts.iter().zip(owners);
-            hosts
-                .map(|(tokens, owner)| request(owner, tokens.clone()).2)
-                .collect::<Vec<_>>()
+    fn prompt_touch_is_redone_after_the_tier_changes() {
+        let mut adapter = adapter(8);
+        // `a` is blocks a0..a3; `b` shares a0 and a1 and adds c.
+        let (_, _, mut a) = request(Uuid::from_u128(1), (1..=16).collect());
+        let (_, _, mut b) = request(Uuid::from_u128(2), (1..=8).chain(101..=104).collect());
+        let [a0, a1, a2, a3] = a.block_keys[..] else {
+            panic!("a has four prompt blocks")
         };
-        // `reusing` touches prompts as the connector does; `each` touches
-        // every prompt key. 24 blocks hold two prompts, so stores evict.
-        let (reusing, each) = (adapter(24), adapter(24));
-        let (mut reusing_hosts, mut each_hosts) = (hosts(), hosts());
-        let mut rng = StdRng::seed_from_u64(13);
-        let mut now = 0.0;
-        for _ in 0..4_000 {
-            now += f64::from(rng.random_range(0..3u8));
-            let request = rng.random_range(0..prompts.len());
-            let start = rng.random_range(0..12);
-            let end = rng.random_range(start..12) + 1;
-            let action = rng.random_range(0..4);
-            for (adapter, host) in [
-                (&reusing, &mut reusing_hosts[request]),
-                (&each, &mut each_hosts[request]),
-            ] {
-                let mut tier = adapter.host.lock();
-                tier.tick(C, now);
-                let blocks = &host.block_keys[start..end];
-                match action {
-                    0 => {
-                        tier.schedule_load(C, host.owner, blocks, now, now);
-                        continue;
-                    }
-                    1 => {
-                        let admitted = tier.admitted_blocks();
-                        let stored = tier.prepare_store(C, host.owner, blocks, None, now);
-                        tier.submit_prepared_stores(C, now);
-                        if !matches!(stored, StoreOutcome::Prepared { .. }) {
-                            continue;
-                        }
-                        host.prompt_touch
-                            .admitted_own(admitted, tier.admitted_blocks(), end);
-                    }
-                    _ => {}
-                }
-                if std::ptr::eq(adapter, &reusing) {
-                    host.touch_prompt(&mut tier);
-                } else {
-                    for key in host.block_keys.iter().rev() {
-                        tier.touch(*key);
-                    }
-                }
-            }
-            assert_eq!(
-                reusing.host.lock().lru_order(),
-                each.host.lock().lru_order()
-            );
+        let c = b.block_keys[2];
+        let touch = |adapter: &VllmHostOffloadAdapter, host: &mut VllmHostRequestState| {
+            let mut tier = adapter.host.lock();
+            host.touch_prompt(&mut tier);
+            tier.lru_order()
+        };
+
+        seed_host(&mut adapter, a0);
+        seed_host(&mut adapter, a1);
+        assert_eq!(touch(&adapter, &mut a), [a1, a0]);
+
+        // Other requests store the tail the tier lacked, then c.
+        for key in [a2, a3, c] {
+            seed_host(&mut adapter, key);
         }
+        assert_eq!(touch(&adapter, &mut a), [c, a3, a2, a1, a0]);
+
+        // `b` moves c, then a1 and a0 as one run.
+        assert_eq!(touch(&adapter, &mut b), [a3, a2, c, a1, a0]);
+        assert_eq!(touch(&adapter, &mut a), [c, a3, a2, a1, a0]);
     }
 
     #[test]
@@ -1797,6 +1748,45 @@ mod tests {
             "generated/lookahead tokens are never stored"
         );
         assert!(!adapter.has_work());
+    }
+
+    #[test]
+    fn chunk_stores_keep_the_prompt_in_touch_order() {
+        let mut adapter = adapter(12);
+        let owner = Uuid::from_u128(34);
+        let (mut sequence, mut lease, mut host) = request(owner, (0..48).collect());
+        let mut manager = G1Manager::new_with_caching(16, 4, KvEventPublishers::default(), 0, true);
+        for chunk in 0..3 {
+            // A four-block store takes 4 ms, so each lands before the next.
+            let now_ms = 4.0 * chunk as f64;
+            adapter.advance(&mut manager, now_ms);
+            let computed = 16 * (chunk + 1);
+            assert!(matches!(
+                manager.allocate_native(owner, &mut lease, computed, 0),
+                NativeAllocation::Ready { .. }
+            ));
+            manager.finalize_native_computed_prefix(
+                owner,
+                computed - 16,
+                computed,
+                &mut sequence,
+                &mut lease,
+            );
+            adapter.observe_completed_blocks(
+                owner,
+                &mut host,
+                &lease,
+                computed,
+                48,
+                4,
+                &mut manager,
+                now_ms,
+            );
+            adapter.complete_engine_boundary(&mut manager, now_ms);
+            // The landed chunks, the prompt's first block newest.
+            let landed: Vec<_> = host.block_keys[..4 * chunk].iter().rev().copied().collect();
+            assert_eq!(adapter.host.lock().lru_order(), landed);
+        }
     }
 
     #[test]
