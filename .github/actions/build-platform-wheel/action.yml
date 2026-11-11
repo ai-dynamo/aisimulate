@@ -98,14 +98,20 @@ runs:
           --wheel wheelhouse/*.whl \
           --output-dir "${RUNNER_TEMP}/bundled-configs-platform"
 
+    - name: Stage wheel configuration reports
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A single upload path keeps container path translation and the archive root aligned.
+        mkdir -p "${RUNNER_TEMP}/bundled-reports-platform"
+        cp "${RUNNER_TEMP}/bundled-configs-platform/"{bundled-deps.csv,bundled-provenance.json,extracted-files.json} \
+          "${RUNNER_TEMP}/bundled-reports-platform/"
+
     - name: Preserve wheel configuration inventory
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: bundled-configs-platform-${{ inputs.build_method }}-${{ inputs.python_architecture }}
-        path: |
-          ${{ runner.temp }}/bundled-configs-platform/bundled-deps.csv
-          ${{ runner.temp }}/bundled-configs-platform/bundled-provenance.json
-          ${{ runner.temp }}/bundled-configs-platform/extracted-files.json
+        path: ${{ runner.temp }}/bundled-reports-platform/
         if-no-files-found: error
 
     - name: Verify installed unified wheel

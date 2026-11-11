@@ -544,14 +544,19 @@ jobs:
           "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/ci/check_bundled_configs.py extract --check \
             --root . "${inventory_args[@]}" --wheel "${DIST_DIR}"/*.whl \
             --output-dir "${RUNNER_TEMP}/bundled-configs-nightly"
+      - name: Stage wheel configuration reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A single upload path keeps container path translation and the archive root aligned.
+          mkdir -p "${RUNNER_TEMP}/bundled-reports-nightly"
+          cp "${RUNNER_TEMP}/bundled-configs-nightly/"{bundled-deps.csv,bundled-provenance.json,extracted-files.json} \
+            "${RUNNER_TEMP}/bundled-reports-nightly/"
       - name: Preserve wheel configuration inventory
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundled-configs-nightly-${{ matrix.arch }}
-          path: |
-            ${{ runner.temp }}/bundled-configs-nightly/bundled-deps.csv
-            ${{ runner.temp }}/bundled-configs-nightly/bundled-provenance.json
-            ${{ runner.temp }}/bundled-configs-nightly/extracted-files.json
+          path: ${{ runner.temp }}/bundled-reports-nightly/
           if-no-files-found: error
           retention-days: 30
           overwrite: true

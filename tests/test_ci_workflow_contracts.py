@@ -2458,6 +2458,7 @@ def _nightly_license_report(
     artifact_pages=None,
     bundled=None,
     bundled_arches=("amd64", "arm64"),
+    bundled_archive=None,
 ):
     inventories = tmp_path / "python"
     inventories.mkdir(exist_ok=True)
@@ -2480,6 +2481,10 @@ def _nightly_license_report(
     for arch in bundled_arches:
         directory = bundled_root / f"bundled-configs-nightly-{arch}"
         directory.mkdir(parents=True)
+        if bundled_archive is not None:
+            with zipfile.ZipFile(io.BytesIO(bundled_archive)) as archive:
+                archive.extractall(directory)
+            continue
         with (directory / "bundled-deps.csv").open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=["dependency_type", "name", "version", "spdx_license"])
             writer.writeheader()
@@ -2703,6 +2708,69 @@ python() {
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("kind", ["application", "platform", "nightly"])
+@pytest.mark.parametrize("missing", [None, "bundled-deps.csv", "bundled-provenance.json", "extracted-files.json"])
+def test_bundled_config_report_upload_preserves_archive_root_and_requires_all_reports(tmp_path, kind, missing):
+    if kind == "platform":
+        action = yaml.load((ACTION_ROOT / "build-platform-wheel/action.yml").read_text(), Loader=yaml.BaseLoader)
+        steps = action["runs"]["steps"]
+    else:
+        workflow, job = (
+            ("ci.yml", "application-test-wheel") if kind == "application" else ("nightly-ci.yml", "build-artifacts")
+        )
+        steps = _workflow(workflow)["jobs"][job]["steps"]
+    stage = next(step for step in steps if step.get("name") == "Stage wheel configuration reports")
+    upload = next(step for step in steps if step.get("name") == "Preserve wheel configuration inventory")
+    # A container translates a single absolute input path before uploading it.
+    # Multiple absolute paths in one input can retain incompatible host roots.
+    upload_path = upload["with"]["path"]
+    assert len(upload_path.splitlines()) == 1
+    runner_temp = tmp_path / "container temp"
+    upload_directory = Path(upload_path.replace("${{ runner.temp }}", str(runner_temp)))
+    assert upload_directory.is_absolute()
+    source = runner_temp / f"bundled-configs-{kind}"
+    extracted = source / "files/model_configs/example.json"
+    extracted.parent.mkdir(parents=True)
+    extracted.write_text('{"fixture": "extracted configuration"}\n')
+    reports = {
+        "bundled-deps.csv": (
+            b"dependency_type,name,version,spdx_license\n"
+            b"bundled_model_config,model_configs/example.json,sha256:fixture,LicenseRef-Example\n"
+        ),
+        "bundled-provenance.json": b'{"fixture": "provenance"}\n',
+        "extracted-files.json": b'{"fixture": "extraction manifest"}\n',
+    }
+    for name, contents in reports.items():
+        if name != missing:
+            (source / name).write_bytes(contents)
+    result = subprocess.run(
+        ["bash", "-e", "-c", stage["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "RUNNER_TEMP": str(runner_temp)},
+        text=True,
+        capture_output=True,
+    )
+    if missing is not None:
+        assert result.returncode != 0
+        assert missing in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        for path in upload_directory.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(upload_directory))
+        assert set(archive.namelist()) == set(reports)
+        assert {name: archive.read(name) for name in archive.namelist()} == reports
+    if kind == "nightly":
+        evidence = tmp_path / "license-artifacts"
+        evidence.mkdir()
+        inventory, _ = _nightly_license_report(evidence, [], bundled_archive=archive_bytes.getvalue())
+        assert [row["name"] for row in inventory if row["dependency_type"] == "bundled_model_config"] == [
+            "model_configs/example.json"
+        ]
+
+
 def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     policy = _workflow("fast-ci.yml")["jobs"]["policy"]
     assert "scripts/ci/check_bundled_configs.py" in _run_commands(policy)
@@ -2732,15 +2800,12 @@ def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
     for collection in (application, action["runs"]["steps"], steps):
-        upload_report = next(
-            step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
+        names = [step.get("name") for step in collection]
+        assert (
+            names.index("Check exact wheel configuration provenance")
+            < names.index("Stage wheel configuration reports")
+            < names.index("Preserve wheel configuration inventory")
         )
-        paths = upload_report["with"]["path"].splitlines()
-        assert {path.rsplit("/", 1)[-1] for path in paths} == {
-            "bundled-deps.csv",
-            "bundled-provenance.json",
-            "extracted-files.json",
-        }
     tooling = next(step for step in steps if step.get("with", {}).get("path") == "release-tooling")
     for file in ["check_bundled_configs.py", "bundled_configs.json", "bundled_config_legacy.json"]:
         assert "/scripts/ci/" + file in tooling["with"]["sparse-checkout"]

@@ -621,14 +621,19 @@ jobs:
           python scripts/ci/check_bundled_configs.py extract --check \
             --wheel application-test-dist/*.whl \
             --output-dir "${RUNNER_TEMP}/bundled-configs-application"
+      - name: Stage wheel configuration reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A single upload path keeps container path translation and the archive root aligned.
+          mkdir -p "${RUNNER_TEMP}/bundled-reports-application"
+          cp "${RUNNER_TEMP}/bundled-configs-application/"{bundled-deps.csv,bundled-provenance.json,extracted-files.json} \
+            "${RUNNER_TEMP}/bundled-reports-application/"
       - name: Preserve wheel configuration inventory
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundled-configs-application-${{ matrix.arch }}
-          path: |
-            ${{ runner.temp }}/bundled-configs-application/bundled-deps.csv
-            ${{ runner.temp }}/bundled-configs-application/bundled-provenance.json
-            ${{ runner.temp }}/bundled-configs-application/extracted-files.json
+          path: ${{ runner.temp }}/bundled-reports-application/
           if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
