@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 INFERENCEX_RELEASE_URL_PREFIX = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
 
 
@@ -334,7 +334,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
             if "configuration_quality" in row:
                 point["configuration_quality"] = row["configuration_quality"]
-            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisimulate", "dynamo")):
+            for name, prefix in (("measured", "silicon"), ("aic", "aic"), ("aisim", "dynamo")):
                 point[name] = _chart_metrics(row, prefix)
                 for metric, anchor in anchors.items():
                     value = _finite(row.get(f"{prefix}_{metric}_ms"))
@@ -348,7 +348,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         )
                 tpot = point[name]["tpot_ms"]
                 point[name]["interactivity_tok_s"] = 1000 / tpot if tpot else None
-                missing = (name == "aisimulate" and row["aisimulate_status"] != "success") or (
+                missing = (name == "aisim" and row["aisimulate_status"] != "success") or (
                     name == "aic" and row.get("aic_status", "success") != "success"
                 )
                 point[name]["unavailable_metrics"] = {
@@ -381,7 +381,7 @@ def _topology_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 },
                 "rows": len(topology_rows),
                 "aic": _series_metrics(topology_rows, "aic"),
-                "aisimulate": {
+                "aisim": {
                     **_series_metrics(topology_rows, "dynamo"),
                     "status_counts": _status_counts(topology_rows),
                 },
@@ -470,7 +470,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
                     "rows": len(gpu_rows),
                     "precisions": sorted({str(row["precision"]) for row in gpu_rows}),
                     "aic": _series_metrics(gpu_rows, "aic"),
-                    "aisimulate": {
+                    "aisim": {
                         **_series_metrics(gpu_rows, "dynamo"),
                         "status_counts": gpu_statuses,
                         "coverage_pct": _round_metric(
@@ -487,7 +487,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "gpu_skus": sorted({str(row["hardware"]) for row in workload_rows}),
                 "precisions": sorted({str(row["precision"]) for row in workload_rows}),
                 "aic": _series_metrics(workload_rows, "aic"),
-                "aisimulate": {
+                "aisim": {
                     **_series_metrics(workload_rows, "dynamo"),
                     "status_counts": statuses,
                     "coverage_pct": _round_metric(
@@ -512,7 +512,7 @@ def _model_summary(model: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": len(rows),
         **identities,
         "aic": _series_metrics(rows, "aic"),
-        "aisimulate": {
+        "aisim": {
             **_series_metrics(rows, "dynamo"),
             "status_counts": statuses,
             "coverage_pct": _round_metric(statuses["success"] / len(rows) * 100),
@@ -659,10 +659,10 @@ def build_summary(
             "prediction_generated_at": predictions.get("generated_at"),
             "predictions_sha256": predictions_sha256,
             "aic_commit_sha": predictions.get("aic_commit_sha"),
-            "aisimulate_completed_at": aisimulate_run.get("completed_at"),
-            "aisimulate_method": aisimulate_run.get("method"),
-            "aisimulate_packages": dict(sorted(packages.items())),
-            "aisimulate_sot_sha256": metadata.get("sha256"),
+            "aisim_completed_at": aisimulate_run.get("completed_at"),
+            "aisim_method": aisimulate_run.get("method"),
+            "aisim_packages": dict(sorted(packages.items())),
+            "aisim_sot_sha256": metadata.get("sha256"),
             "corrections": sorted(
                 correction["id"]
                 for correction in aisimulate_run.get("corrections", [])
@@ -687,7 +687,7 @@ def build_summary(
             **identities,
             "rows": len(scoped_rows),
             "aic": _series_metrics(scoped_rows, "aic"),
-            "aisimulate": {
+            "aisim": {
                 **_series_metrics(scoped_rows, "dynamo"),
                 "status_counts": statuses,
                 "coverage_pct": _round_metric(statuses["success"] / len(scoped_rows) * 100),
@@ -699,7 +699,7 @@ def build_summary(
         quality: {
             "rows": len(group),
             "aic": _series_metrics(group, "aic"),
-            "aisimulate": _series_metrics(group, "dynamo"),
+            "aisim": _series_metrics(group, "dynamo"),
         }
         for quality in ("verified", "estimated", "not_recorded")
         if (group := [row for row in scoped_rows if row.get("configuration_quality", "not_recorded") == quality])

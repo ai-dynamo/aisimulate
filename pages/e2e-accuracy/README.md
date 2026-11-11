@@ -146,6 +146,14 @@ local preview directory rather than replacing a checked-in qualified snapshot.
 When refreshing a preview with a branch catalog, update both `summary.json`
 and the selected catalog entry's summary path so the browser loads the new data.
 
+## Public summary versions
+
+New InfX dashboard summaries use `schema_version: 2`, with `aisim` as the predictor series key at every aggregate and operating point. Snapshot metadata uses `aisim_completed_at`, `aisim_method`, `aisim_packages`, and `aisim_sot_sha256`. Recorded distribution names inside `aisim_packages`, measurement values, evaluated revisions, URLs, and evidence hashes keep their original identities.
+
+Historical v1 summaries retain their `aisimulate` series and `aisimulate_*` snapshot fields. The updated dashboard, Pages validators, and accuracy notifications accept both versions and normalize v1 to the canonical representation in memory. Source documents are not modified, and qualification checks verify the hash of the original summary bytes before normalization. Unknown versions and mixed v1/v2 field names are rejected. A generated site may contain normalized representations; its bytes are not the checksum-bound original campaign artifact.
+
+This migration changes only the public dashboard summary. Raw InfX prediction rows and metadata, the v1 campaign qualification envelope, AgentX schemas, and the branch catalog remain unchanged. Older consumers that only accept summary v1 must be upgraded before reading v2; dual-read support in the new readers does not make old readers accept a new schema.
+
 ## Branch selection
 
 The Pages build publishes a `branches.json` catalog containing `main` and every
@@ -482,7 +490,7 @@ Commit the generated summary on the evaluated branch. Use `--branch main` for
 main. The builder rejects missing, dirty, mismatched, or mixed incremental run
 provenance. Omitting `--branch` preserves the legacy unqualified export path;
 it cannot assert branch accuracy. Both export paths include sanitized topology
-details. The existing aggregate schema stays compatible.
+details. New exports use the v2 public summary contract; updated readers also accept historical v1 summaries.
 
 ## Validate and preview
 

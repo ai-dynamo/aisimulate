@@ -9,11 +9,15 @@ import http.server
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 from pathlib import Path
 
 from playwright.async_api import async_playwright, expect
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy.summary_contract import normalize_summary
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,7 +32,7 @@ async def check():
         site = Path(directory)
         shutil.copytree(ROOT / "pages/e2e-accuracy", site / "e2e-accuracy")
         path = site / "e2e-accuracy/summary.json"
-        data = json.loads(path.read_text())
+        data = normalize_summary(json.loads(path.read_text()))
         # Synthetic chart values exercise the rich contract; never publish this fixture.
         for model in data["models"]:
             for workload in model["workloads"]:
@@ -36,8 +40,7 @@ async def check():
                     for topology in gpu["topologies"]:
                         topology.update(total_gpus=8, is_multinode=False)
                         for point in topology["points"]:
-                            # Serialized field names stay stable across the product rename.
-                            for name in ("measured", "aic", "aisimulate"):
+                            for name in ("measured", "aic", "aisim"):
                                 values = point[name]
                                 for metric in ("ttft", "tpot"):
                                     relative = values[f"{metric}_relative"]

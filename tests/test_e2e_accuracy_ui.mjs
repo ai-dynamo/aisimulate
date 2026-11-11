@@ -47,7 +47,7 @@ function harness(fetch = async () => response(historical), url = "https://exampl
     document: { getElementById: element, querySelectorAll: () => [], documentElement: { dataset: {} } },
     localStorage: { setItem() {} }, location,
     history: { replaceState(_state, _title, next) { location.href = String(next); } },
-    fetch, URL, Intl, console,
+    fetch, URL, Intl, console, structuredClone,
   });
   vm.runInContext(source.replace(bootstrap, ""), context);
   return { element, context, location, run: (code) => vm.runInContext(code, context),
@@ -82,9 +82,9 @@ function withTopology() {
   for (const item of [data.totals, model, workload, gpu]) {
     item.rows = 3;
     item.aic.points = 3;
-    item.aisimulate.points = 2;
-    item.aisimulate.coverage_pct = 200 / 3;
-    item.aisimulate.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
+    item.aisim.points = 2;
+    item.aisim.coverage_pct = 200 / 3;
+    item.aisim.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
     item.precisions = ["fp8"];
     if ("gpu_skus" in item) item.gpu_skus = [gpu.gpu];
   }
@@ -92,7 +92,7 @@ function withTopology() {
     concurrency, status: success ? "success" : "failed",
     measured: { ttft_relative: concurrency, tpot_relative: concurrency },
     aic: { ttft_relative: concurrency * 1.2, tpot_relative: concurrency * 1.1, ttft_error_pct: 20, tpot_error_pct: 10 },
-    aisimulate: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
+    aisim: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
       ttft_error_pct: success ? 10 : null, tpot_error_pct: success ? 0 : null },
   });
   gpu.topologies = [{ ...structuredClone(gpu),
@@ -392,8 +392,8 @@ test("changing topology updates the rendered points and shared selection in both
   for (const item of [data.totals, model, workload, gpu]) {
     item.rows *= 2;
     item.aic.points *= 2;
-    item.aisimulate.points *= 2;
-    for (const status of Object.keys(item.aisimulate.status_counts)) item.aisimulate.status_counts[status] *= 2;
+    item.aisim.points *= 2;
+    for (const status of Object.keys(item.aisim.status_counts)) item.aisim.status_counts[status] *= 2;
   }
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
@@ -486,7 +486,7 @@ for (const [level, depth] of [["model", 1], ["workload", 2], ["GPU", 3], ["topol
     // Keep each aggregate and all ancestors internally consistent; only this child coverage is short.
     for (const parent of [invalid.totals, model, workload, gpu].slice(0, depth)) {
       parent.rows += 1;
-      parent.aisimulate.status_counts.unknown += 1;
+      parent.aisim.status_counts.unknown += 1;
     }
     const app = setup(); app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
@@ -501,9 +501,9 @@ test("summary validates the metadata, dimensions, and types required by renderin
       data.snapshot.measurement_source_url = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/123";
     }],
     ["release URL", (data) => { data.snapshot.measurement_source_url += "-other"; }],
-    ["packages", (data) => { data.snapshot.aisimulate_packages = []; }],
+    ["packages", (data) => { data.snapshot.aisim_packages = []; }],
     ["measurement date", (data) => { data.snapshot.measurement_date_through = 123; }],
-    ["completion date", (data) => { data.snapshot.aisimulate_completed_at = {}; }],
+    ["completion date", (data) => { data.snapshot.aisim_completed_at = {}; }],
     ["scope", (data) => { data.scope = []; }],
     ["multinode scope", (data) => { data.scope.multinode = "unknown"; }],
     ["excluded rows", (data) => { data.scope.excluded_multinode_rows = -1; }],
@@ -518,7 +518,7 @@ test("summary validates the metadata, dimensions, and types required by renderin
     ["GPU precisions", (data) => { data.models[0].workloads[0].gpus[0].precisions = []; }],
     ["topology ID", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].id = 1234567890123456; }],
     ["topology parallelism", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].parallelism = []; }],
-    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisimulate.status_counts.extra = 0; }],
+    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisim.status_counts.extra = 0; }],
   ]) {
     const invalid = withTopology(); corrupt(invalid);
     app.set("invalid", invalid);
@@ -562,9 +562,9 @@ test("aggregate replay counts must match rows and successful points at every lev
     (data) => data.models[0].workloads[0].gpus[0].topologies[0],
   ]) {
     for (const corrupt of [
-      (item) => { item.aisimulate.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
-      (item) => { item.aisimulate.points = item.aisimulate.status_counts.success + 1; },
-      (item) => { item.aisimulate.status_counts.failed += 1; },
+      (item) => { item.aisim.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
+      (item) => { item.aisim.points = item.aisim.status_counts.success + 1; },
+      (item) => { item.aisim.status_counts.failed += 1; },
     ]) {
       const data = withTopology();
       corrupt(select(data));
@@ -578,8 +578,8 @@ test("topology point statuses must match otherwise consistent aggregate counts",
   const data = withTopology();
   const topology = data.models[0].workloads[0].gpus[0].topologies[0];
   // Keep points, successes, and rows consistent, but misclassify the failed point.
-  topology.aisimulate.status_counts.failed = 0;
-  topology.aisimulate.status_counts.unsupported = 1;
+  topology.aisim.status_counts.failed = 0;
+  topology.aisim.status_counts.unsupported = 1;
   const app = setup(async () => response(data));
   app.set("invalid", data);
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
@@ -889,13 +889,13 @@ test("tabs preserve selected topology and shareable exclusion settings", async (
 test("outlier filtering is per predictor and metric and keeps points visible", () => {
   const app = harness();
   const t = withTopology().models[0].workloads[0].gpus[0].topologies[0];
-  t.points[0].aisimulate.ttft_error_pct = 150;
-  t.points[0].aisimulate.tpot_error_pct = 100;
+  t.points[0].aisim.ttft_error_pct = 150;
+  t.points[0].aisim.tpot_error_pct = 100;
   app.set("topologyFixture", t);
   app.run('state.excludeOutliers = true');
   const stats = app.run('aggregateTopologies([topologyFixture])');
-  assert.equal(stats.aisimulate.ttft_mape_pct, t.points[2].aisimulate.ttft_error_pct);
-  assert.equal(stats.aisimulate.tpot_mape_pct, (100 + t.points[2].aisimulate.tpot_error_pct) / 2);
+  assert.equal(stats.aisim.ttft_mape_pct, t.points[2].aisim.ttft_error_pct);
+  assert.equal(stats.aisim.tpot_mape_pct, (100 + t.points[2].aisim.tpot_error_pct) / 2);
   assert.equal(stats.aic.points, 3);
   const chart = app.run('metricChart(topologyFixture, "ttft")');
   assert.match(chart, /#ec4899/);
@@ -929,8 +929,8 @@ test("hardware MAPE weights individual points across models and respects exclusi
   second.model = "Another model";
   const topology = second.workloads[0].gpus[0].topologies[0];
   topology.points = [topology.points[0]];
-  topology.points[0].aisimulate.tpot_error_pct = 60;
-  topology.points[0].aisimulate.ttft_error_pct = 160;
+  topology.points[0].aisim.tpot_error_pct = 60;
+  topology.points[0].aisim.ttft_error_pct = 160;
   topology.is_multinode = true;
   data.models.push(second);
   const app = harness();
@@ -952,8 +952,8 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   const hidden = structuredClone(data.models[0]);
   hidden.model = "hidden/model";
   hidden.hf_model_paths = [hidden.model];
-  hidden.aisimulate.points = 0;
-  hidden.aisimulate.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
+  hidden.aisim.points = 0;
+  hidden.aisim.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
   data.models.unshift(hidden);
   const app = harness();
   app.set("fixture", data);
@@ -965,7 +965,7 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   assert.match(app.element("details-view").innerHTML, /Operating points \(3\)/);
   assert.match(app.element("details-view").innerHTML, /failed \/ success/);
   assert.equal(app.run("state.data.models.length"), 2);
-  app.run("state.data.models.forEach(model => { model.aisimulate.points = 0; model.aisimulate.status_counts.success = 0; }); renderMatrix(); renderView()");
+  app.run("state.data.models.forEach(model => { model.aisim.points = 0; model.aisim.status_counts.success = 0; }); renderMatrix(); renderView()");
   assert.match(app.element("matrix-body").innerHTML, /No models with successful AISim predictions/);
   assert.equal(app.element("detail-filters").innerHTML, "");
 });
@@ -1033,14 +1033,14 @@ test("models with only outlier predictions stay selectable and charted", async (
   const data = withTopology();
   for (const p of data.models[0].workloads[0].gpus[0].topologies[0].points) {
     if (p.status === "success") {
-      p.aisimulate.ttft_error_pct = 150;
-      p.aisimulate.tpot_error_pct = 150;
+      p.aisim.ttft_error_pct = 150;
+      p.aisim.tpot_error_pct = 150;
     }
   }
   const app = setup(async () => response(data));
   await app.run('loadBranch("main")');
   app.run('state.excludeOutliers = true; state.data = filterSnapshot(state.rawData); state.tab = "details"; renderView()');
-  assert.equal(app.run("state.data.models[0].aisimulate.points"), 0);
+  assert.equal(app.run("state.data.models[0].aisim.points"), 0);
   assert.equal(app.run("visibleModels().length"), 1);
   assert.ok(app.run("selectedGpu()"));
   assert.match(app.element("details-view").innerHTML, /point aisim/);
@@ -1054,7 +1054,7 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   const mtp = structuredClone(gpu.topologies[0]);
   mtp.id = "fedcba9876543210";
   mtp.spec_method = "mtp";
-  for (const point of mtp.points) if (point.status === "success") point.aisimulate.tpot_error_pct = 25;
+  for (const point of mtp.points) if (point.status === "success") point.aisim.tpot_error_pct = 25;
   gpu.topologies.push(mtp);
   const app = harness();
   app.set("fixture", data);
@@ -1062,17 +1062,17 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   app.run('restoreView(new URL("https://example.com/?spec=mtp").searchParams)');
   app.run("state.data = filterSnapshot(state.rawData)");
   assert.equal(app.run("state.data.totals.rows"), 3);
-  assert.equal(app.run("state.data.totals.aisimulate.points"), 2);
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 25);
+  assert.equal(app.run("state.data.totals.aisim.points"), 2);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 25);
   assert.equal(app.run("state.data.models[0].workloads[0].gpus[0].topologies.length"), 1);
   assert.match(app.run("topologyLabel(state.data.models[0].workloads[0].gpus[0].topologies[0])"), /MTP/);
   app.run("updateLocation()");
   assert.equal(new URL(app.location.href).searchParams.get("spec"), "mtp");
   app.element("decoding-select").events.change({target: {value: "none"}});
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 0);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 0);
   app.element("decoding-select").events.change({target: {value: "all"}});
   assert.equal(app.run("state.data.totals.rows"), 6);
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 12.5);
 });
 
 for (const policy of ["hf-current-view-config-v1", "hf-current-view-config-v2"]) {
@@ -1312,4 +1312,47 @@ test("AgentX performance-model labels use recorded estimator and prediction data
   assert.equal(label([regression]),"FPM regression perf model (vllm 0.31.0)");
   const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};
   assert.equal(label([run,fpm]),"Op-based perf model (vllm 0.31.0); FPM interpolation perf model (vllm 0.31.0)");
+});
+
+
+function legacyPublicSummary(data) {
+  let text = JSON.stringify(data).replaceAll('"aisim":{', '"aisimulate":{');
+  for (const suffix of ["completed_at", "method", "packages", "sot_sha256"]) {
+    text = text.replaceAll(`"aisim_${suffix}":`, `"aisimulate_${suffix}":`);
+  }
+  const result = JSON.parse(text);
+  result.schema_version = 1;
+  return result;
+}
+
+test("v1 and v2 accuracy summaries normalize without changing evidence or source", async () => {
+  const current = withTopology();
+  for (const data of [current, legacyPublicSummary(current)]) {
+    const original = structuredClone(data);
+    const app = harness(async () => response(data));
+    app.set("input", data);
+    const result = JSON.parse(app.run("JSON.stringify(validateSummary(input))"));
+    assert.deepEqual(result, current);
+    assert.deepEqual(data, original);
+    assert.deepEqual(result.snapshot.aisim_packages, current.snapshot.aisim_packages);
+  }
+});
+
+test("summary version readers reject unknown and mixed field contracts", () => {
+  const app = harness();
+  for (const version of [null, 0, 3, true, "2"]) {
+    const input = withTopology();
+    input.schema_version = version;
+    app.set("input", input);
+    assert.throws(() => app.run("validateSummary(input)"), /unsupported accuracy summary schema/);
+  }
+  for (const legacy of [false, true]) for (const location of ["totals", "snapshot", "point"]) {
+    const input = legacy ? legacyPublicSummary(withTopology()) : withTopology();
+    const wrong = legacy ? "aisim" : "aisimulate";
+    if (location === "snapshot") input.snapshot[`${wrong}_packages`] = {};
+    else if (location === "totals") input.totals[wrong] = {};
+    else input.models[0].workloads[0].gpus[0].topologies[0].points[0][wrong] = {};
+    app.set("input", input);
+    assert.throws(() => app.run("validateSummary(input)"), /unexpected field/);
+  }
 });
