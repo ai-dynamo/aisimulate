@@ -361,7 +361,8 @@ class KvCachePredictionConfig(StrictModel):
             if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
-            if self.capacity.type != "fixed":
+            # Inferred geometry may leave capacity to an FPM profile's recorded runtime memory.
+            if self.capacity.type != "fixed" and not infer_state:
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
                 raise ValueError("state_cache supports G1 only; host_offload is not supported")
@@ -1261,6 +1262,55 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         return self
 
 
+def fpm_profile_deployment(engine, worker: WorkerPredictionConfig, role: str):
+    """The FPM profile deployment that matches one worker role's identity."""
+    parallel = worker.parallelism
+    return engine.fpm_profile.select(
+        model=engine.model,
+        system=worker.hardware or engine.hardware,
+        backend=engine.backend,
+        backend_version=requested_backend_version(engine.backend_version, "vllm"),
+        worker_type=role,
+        tp_size=parallel.tensor,
+        pp_size=parallel.pipeline,
+        attention_dp_size=parallel.attention_data,
+        moe_tp_size=parallel.moe_tensor,
+        moe_ep_size=parallel.moe_expert,
+    )
+
+
+def recorded_state_pool(engine, worker: WorkerPredictionConfig, role: str):
+    """The runtime memory an FPM profile recorded for a state-cache worker that sets no fixed capacity."""
+    from aisimulate.capacity import DEFAULT_GPU_MEMORY_UTILIZATION
+
+    resources = None
+    if engine.fpm_profile is not None:
+        resources = fpm_profile_deployment(engine, worker, role).resources
+    if resources is None or (runtime := resources.runtime_memory) is None:
+        raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
+    # Native FPM resource selection matches CP1 deployments only, and a profile does not record decode CP.
+    parallel = worker.parallelism
+    if (parallel.prefill_context or 1) != 1 or (parallel.decode_context or 1) != 1:
+        raise ValueError("a recorded state pool requires parallelism prefill_context=1 and decode_context=1")
+    if resources.cache_layout == "grouped":
+        raise ValueError("state_cache requires a linear FPM cache; a grouped profile sizes state by its cache groups")
+    # The pool was recorded as allocated, at one memory fraction and context limit.
+    capacity = worker.kv_cache.capacity
+    if capacity.cuda_graph_reserved_bytes != 0:
+        raise ValueError("the recorded pool already excludes graph memory; unset cuda_graph_reserved_bytes")
+    if (capacity.memory_fraction or DEFAULT_GPU_MEMORY_UTILIZATION) != runtime.gpu_memory_utilization:
+        raise ValueError(
+            "kv_cache.capacity.memory_fraction must match the FPM profile's recorded "
+            f"runtime_memory.gpu_memory_utilization ({runtime.gpu_memory_utilization})"
+        )
+    context = worker.context_length or engine.context_length
+    if (engine.fpm_profile.context_length if context == "max" else context) > runtime.max_model_len:
+        raise ValueError(
+            f"context_length exceeds the FPM profile's recorded runtime_memory.max_model_len ({runtime.max_model_len})"
+        )
+    return runtime
+
+
 def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
     profile = engine.fpm_profile
     if profile is None:
@@ -1292,19 +1342,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         if worker.timing.type != "default":
             raise ValueError("engine.fpm_profile requires default timing for every worker")
         if isinstance(worker, WorkerPredictionConfig):
-            parallel = worker.parallelism
-            deployment = profile.select(
-                model=engine.model,
-                system=worker.hardware or engine.hardware,
-                backend=engine.backend,
-                backend_version=backend_version,
-                worker_type=role,
-                tp_size=parallel.tensor,
-                pp_size=parallel.pipeline,
-                attention_dp_size=parallel.attention_data,
-                moe_tp_size=parallel.moe_tensor,
-                moe_ep_size=parallel.moe_expert,
-            )
+            deployment = fpm_profile_deployment(engine, worker, role)
             deployment.resources.validate_envelope(
                 max_num_tokens=worker.scheduler.max_batched_tokens,
                 max_batch_size=worker.scheduler.max_sequences,
@@ -1570,6 +1608,8 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
+        if worker.kv_cache.capacity.type != "fixed":
+            recorded_state_pool(engine, worker, role)
         roles.append(role)
         if (
             worker.kv_cache.prefix_match_unit is not None
