@@ -960,7 +960,10 @@ seeding for every cached prefill. GLM-5.3-Flash collection runs the
 repository's GLM-5.3-Flash producer as its runtime adapter, on exactly vLLM
 0.33.0 with the Dynamo scheduler file of the `release/1.7.0` branch that
 `runtime-source-sha256.json` pins. The producer refuses any other vLLM
-version, a patch release such as 0.33.1 included. The planner
+version, a patch release such as 0.33.1 included. The collector refuses an
+artifact whose producer record or measurement protocol differs from the
+record of this producer, as
+[the GLM-5.3-Flash FPM page](../../glm53flash-fpm.md#vllm-producer) describes. The planner
 generates its point list from the collection limits, as described in
 [the GLM-5.3-Flash FPM page](../../glm53flash-fpm.md). Formal collection on
 vLLM 0.33.0 records the cache groups and the execution evidence of every
@@ -1910,7 +1913,7 @@ Comparability is checked before numeric stability: inspect the per-rank injected
 
 Fresh assessments freeze `observation_evidence_version: 2` separately from the validation-policy version. Requested scheduling records distinguish an explicit generated flag, a runtime default and an unreported launch. An omitted async-scheduling flag does not imply either effective Boolean value. Inspect initialized native scheduler and worker observations; missing scheduling remains unestablished, contradictory observations reject, and synchronous/asynchronous runs cannot be pooled as comparable.
 
-Evidence v2 also checks the producer's per-sample graph mode and token padding, process-local forward indices and timing intervals, and the warm-up/preparation ledger before comparing dispatch, timing basis and recorded preparation. Missing producer execution evidence leaves fresh comparability unestablished and cannot qualify the source table; matching requested graphs or stable latencies do not replace it. Absolute timestamps and latency differences are not equality criteria. These observations describe scheduler wall time, not CUDA-event GPU execution time, GC activity or CPU stall causes. They do not establish the complete graph descriptor, capture-versus-replay, attention kernel, equal KV tensors, equivalent graph/kernel/cache warming, or decode real-KV chain warm-up history. Retain those limits and all valid slow samples.
+Evidence v2 also checks the producer's per-sample graph mode and token padding, process-local forward indices and timing intervals, and the warm-up/preparation ledger before comparing dispatch, timing basis and recorded preparation. Missing producer execution evidence leaves fresh comparability unestablished and cannot qualify the source table; matching requested graphs or stable latencies do not replace it. A GLM-5.3-Flash cell refuses such an artifact instead, because its producer always writes this evidence. Absolute timestamps and latency differences are not equality criteria. These observations describe scheduler wall time, not CUDA-event GPU execution time, GC activity or CPU stall causes. They do not establish the complete graph descriptor, capture-versus-replay, attention kernel, equal KV tensors, equivalent graph/kernel/cache warming, or decode real-KV chain warm-up history. Retain those limits and all valid slow samples.
 
 Exclude a workload prediction comparison from the onboarding review scope for DP imbalance only when actual per-rank workload evidence, including expert-load evidence where relevant, establishes imbalanced work in that comparison. DP topology or rank latency spread alone is insufficient. Record the excluded comparison, supporting evidence and resulting qualification scope in the checkpoint and review, preserving all raw samples. The CLI has no imbalance-exclusion feature; this review decision leaves measurement gates active, retains valid slow samples in their populations and does not relax CV thresholds or automatically qualify failed or incomplete results.
 

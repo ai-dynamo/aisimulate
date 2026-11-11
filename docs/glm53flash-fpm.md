@@ -60,6 +60,25 @@ scheduler file of the `release/1.7.0` branch that `runtime-source-sha256.json`
 pins. It refuses every other vLLM version, a patch release such as 0.33.1
 included, before the scheduler loads.
 
+The collector reads the artifact of a GLM-5.3-Flash cell only as an artifact of
+this producer. The cell selects these rules, not the artifact:
+
+- The `producer` record must equal the record that this producer writes: the
+  Dynamo and vLLM revisions above, vLLM `0.33.0`, the digests of the
+  `runtime-source-sha256.json` and `glm53flash_prefix_scheduler.py` files that
+  the collector ships, and the repetition counts below. A missing, changed or
+  added field is refused. So is an artifact of another producer revision.
+- The vLLM version of the record must equal the runtime that the Collector
+  provenance of the launch names.
+- The measurement protocol must be present. It must hold the producer's record
+  of 5 warmups, 10 measurements and their reduction, the `seeded_tokens`
+  content and Dynamo's execution evidence contract.
+- Every point must hold the 10 raw samples and the `adjacent_upper_median`
+  estimate below. The warm-up history must be recorded, and each raw sample
+  must have its timing start and an observed CUDA graph dispatch.
+- A rank artifact of another model that carries the producer's protocol record
+  is refused.
+
 - `sitecustomize.py` checks the installed vLLM/Dynamo sources against
   `runtime-source-sha256.json` before the scheduler loads. It then replaces
   `InstrumentedScheduler` with `Glm53FlashPrefixSeedScheduler` from
