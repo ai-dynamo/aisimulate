@@ -1828,11 +1828,11 @@ def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, ca
 def _run_decode_with_prefix_caching(index):
     """Give the decode phase of an observation index the records of a run with prefix caching on.
 
-    With prefix caching on, vLLM resolves the Mamba cache mode to align and the Mamba block to the attention block
-    (models/config.py:640-667, platforms/interface.py:995-996). The engine core then gives the scheduler the LCM and
-    the GCD of the group blocks as its block and hash block sizes (v1/core/kv_cache_utils.py:761-798). The prefill
-    records of the same run hold these values, so each decode record takes the cache and the cache settings of the
-    prefill record of its rank.
+    With prefix caching on, vLLM 0.33.0 resolves the Mamba cache mode to align and the Mamba block to the attention
+    block (models/config.py:763-779, platforms/interface.py:1114-1115). The engine core then gives the scheduler the
+    LCM and the GCD of the group blocks as its block and hash block sizes (v1/core/kv_cache_utils.py:860-891). The
+    prefill records of the same run hold these values, so each decode record takes the cache and the cache settings of
+    the prefill record of its rank.
     """
     document = json.loads(index.read_text())
     phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
@@ -2029,7 +2029,8 @@ def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_p
 
     # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold the 64-token block of align
     # mode. The formal decode Mamba groups hold 2048-token blocks, which breaks only vLLM's align rule that the Mamba
-    # block size equals the block size (platforms/interface.py:995-996). The import does not check that rule.
+    # block size equals the block size (vLLM 0.33.0 platforms/interface.py:1114-1115). The import does not check that
+    # rule.
     request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=True)
     # The whole-record comparison leaves out the block sizes of state groups, so the raw groups of the bound phase
     # are the only check of the decode Mamba block.
@@ -2045,8 +2046,8 @@ def test_formal_collection_compares_the_cache_geometry_of_every_phase(tmp_path, 
     # worker records and the resource records belong to prefill, so only a per-phase comparison sees the decode block.
     # The formal decode Mamba groups hold 2048-token blocks: the scheduler still hashes in their GCD with the
     # attention block, 64 tokens, so the prefix-caching settings of the phase stay equal. The records break only
-    # vLLM's align rule that the Mamba block size equals the block size (platforms/interface.py:995-996), which the
-    # import does not check.
+    # vLLM's align rule that the Mamba block size equals the block size (vLLM 0.33.0 platforms/interface.py:1114-1115),
+    # which the import does not check.
     _, request, _, root = _completed_runtime_collection(tmp_path, capsys, layout="mamba_hybrid")
     checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
     index = Path(checkpoint["runtime_observations"])
@@ -2063,7 +2064,7 @@ def test_finalization_compares_the_cache_geometry_of_every_formal_phase(tmp_path
     # Without an edit, decode runs without prefix caching, so its Mamba blocks differ from those of prefill in the
     # probe and in the formal run alike, and finalization accepts the role. The edited case runs decode with prefix
     # caching on, where 2048-token Mamba blocks keep the scheduler's 64-token hash block and break only vLLM's align
-    # rule (platforms/interface.py:995-996), which the import does not check.
+    # rule (vLLM 0.33.0 platforms/interface.py:1114-1115), which the import does not check.
     _, request, _, root = _completed_runtime_collection(
         tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_block is not None
     )
