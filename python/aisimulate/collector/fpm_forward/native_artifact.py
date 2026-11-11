@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -19,6 +20,7 @@ from aisimulate.fpm_contract import (
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+from collector.glm53flash_runtime_identity import BASELINE_VERSIONS
 
 from .planner import FPMCell
 from .types import KVWARM_STRATEGIES
@@ -122,6 +124,10 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+    # The execution mode of the producer contract that the frozen cell selected: "eager" for DeepSeek V4.1,
+    # "native_graph_policy" for GLM-5.3-Flash, None for a cell without an execution identity. Readers of the
+    # measurement records apply the contract's rules by this value, never by the artifact's own fields.
+    execution_mode: str | None = None
 
 
 def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
@@ -270,12 +276,47 @@ def _is_hex(value: object, digits: int) -> bool:
     return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{digits}}}", value) is not None
 
 
+_GLM_RUNTIME = Path(__file__).parent / "runtime" / "glm53flash"
+
+
+@functools.cache
+def _glm_producer_record() -> dict[str, Any]:
+    """The ``producer`` record that the supported GLM-5.3-Flash vLLM producer writes.
+
+    The producer (``_glm_enrich`` of runtime/glm53flash/glm53flash_prefix_scheduler.py) imports Dynamo and vLLM, so the
+    reader cannot import its constants. The reader keeps them here, and a test keeps them equal to the record that the
+    producer writes. The vLLM version is the exact supported runtime. The two digests are those of the pin manifest and
+    of the producer file that this collector ships and that the launch mounts; the producer computes both the same way.
+    """
+    return {
+        "instrumentation_revision": "54960177085413259859c88bd34ed0734d4c2ea9",
+        "runtime_scheduler_revision": "9abd2ef0d908c4bb323e1b8956ea76a5772a1d41",
+        "runtime_distribution": "ai-dynamo 1.7.0.dev20261109",
+        "real_seed_port_source": (
+            "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea instrumented_scheduler._bench_realseed_*"
+        ),
+        "queued_metrics_port_source": (
+            "ai-dynamo/dynamo@9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 instrumented_scheduler._compute_queued"
+        ),
+        "vllm_package_version": BASELINE_VERSIONS["vllm"],
+        "reviewed_scheduler_api_revision": "4ba787ec9959e566d3b587a796dff07673324da5",
+        "runtime_source_manifest_sha256": hashlib.sha256(
+            (_GLM_RUNTIME / "runtime-source-sha256.json").read_bytes()
+        ).hexdigest(),
+        "overlay_sha256": hashlib.sha256((_GLM_RUNTIME / "glm53flash_prefix_scheduler.py").read_bytes()).hexdigest(),
+        "context_policy_version": 1,
+        "warmup_repeats": 5,
+        "measurement_repeats": 10,
+    }
+
+
 def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any]:
     """Require the evidence that the GLM-5.3-Flash vLLM producer writes beside its graph-timed measurements.
 
     The producer builds every prefix and decode state from seeded tokens through vLLM's own scheduler, repeats each
-    point and keeps the evidence of the repetitions in a sidecar file next to the artifact. A refusal names the first
-    item that is absent or malformed. The caller has already checked that the rows are mappings with mapping points.
+    point and keeps the evidence of the repetitions in a sidecar file next to the artifact. Its ``producer`` record
+    must equal the record of the supported producer (``_glm_producer_record``). A refusal names the first item that is
+    absent or malformed. The caller has already checked that the rows are mappings with mapping points.
     """
 
     def lacks(field: str) -> ValueError:
@@ -358,9 +399,26 @@ def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path)
     for key, value in (("enable_prefix_caching", True), ("async_scheduling", False)):
         if not _same(serving.get(key), value):
             raise lacks(f"serving_config.{key}")
+    # The producer record must be the one that the supported producer writes, field by field and with the same JSON
+    # types. A field that the record lacks or adds is refused too.
     producer = payload.get("producer")
-    if not isinstance(producer, dict) or not _is_hex(producer.get("runtime_source_manifest_sha256"), 64):
-        raise lacks("producer.runtime_source_manifest_sha256")
+    if not isinstance(producer, dict):
+        raise ValueError(
+            f"native GLM-5.3-Flash result lacks valid producer: expected a mapping, found {producer!r}: {path}"
+        )
+    expected_producer = _glm_producer_record()
+    for key, value in expected_producer.items():
+        if not _same(producer.get(key), value):
+            raise ValueError(
+                f"native GLM-5.3-Flash result lacks valid producer.{key}: expected {value!r}, "
+                f"found {producer.get(key)!r}: {path}"
+            )
+    added = sorted(set(producer) - set(expected_producer))
+    if added:
+        raise ValueError(
+            f"native GLM-5.3-Flash result lacks valid producer.{added[0]}: expected no such field, "
+            f"found {producer[added[0]]!r}: {path}"
+        )
 
     for row in payload["results"]:
         point = row["point"]
@@ -667,6 +725,7 @@ def validate_native_collection(
     kvwarm_seen: object = _KVWARM_UNSEEN
     checkpoint_evidence: list[object] = []
     input_provenance: dict[str, Any] | None = None
+    execution_mode: str | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     seed_regimes: dict[int, str | None] = {}
     rank_timings: list[tuple[int, float, float]] = []
@@ -700,8 +759,16 @@ def validate_native_collection(
         if any(not isinstance(row, dict) or not isinstance(row.get("point"), dict) for row in rows):
             raise ValueError(f"native result has malformed result points: {path}")
         evidence = _validate_execution_provenance(cell, payload, path)
-        if evidence is not None and payload.get("execution_mode") == "eager":
+        # The validation above has proven that the artifact's mode is the mode of the cell's contract.
+        execution_mode = payload.get("execution_mode") if evidence is not None else None
+        if execution_mode == "eager":
             _validate_token_streams(payload, path)
+        elif execution_mode == "native_graph_policy" and payload["producer"]["vllm_package_version"] != backend_version:
+            # The producer reports the vLLM that it ran on. The Collector provenance binds the launch to its runtime.
+            raise ValueError(
+                "native GLM-5.3-Flash producer.vllm_package_version differs from the Collector provenance runtime: "
+                f"expected {backend_version!r}, found {payload['producer']['vllm_package_version']!r}: {path}"
+            )
         if input_provenance is None:
             input_provenance = evidence
         elif _without_sidecar_names(evidence) != _without_sidecar_names(input_provenance):
@@ -891,4 +958,5 @@ def validate_native_collection(
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
         input_provenance=input_provenance,
+        execution_mode=execution_mode,
     )

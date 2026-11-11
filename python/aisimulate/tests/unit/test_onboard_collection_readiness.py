@@ -887,3 +887,29 @@ def test_readiness_blocks_a_glm_smoke_with_a_broken_producer_record(tmp_path, mo
     for item in report["selected_cells"]:
         assert item["status"] != "ready"
         assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
+
+
+def _then(shape, change):
+    """``shape``, then ``change`` on the same rank artifact."""
+
+    def both(phase, payload):
+        shape(phase, payload)
+        change(phase, payload)
+
+    return both
+
+
+def _other_vllm(_phase, payload):
+    # A patch release of vLLM is another runtime. The producer runs only on vLLM 0.33.0.
+    payload["producer"]["vllm_package_version"] = "0.33.1"
+
+
+def test_readiness_blocks_a_glm_smoke_whose_producer_names_another_vllm(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_then(_glm_producer_shape(tmp_path), _other_vllm))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    message = "lacks valid producer.vllm_package_version: expected '0.33.0', found '0.33.1'"
+    assert {item["cell"]["workload_kind"] for item in report["selected_cells"]} == {"prefill", "decode"}
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker for blocker in item["blockers"]), item["blockers"]

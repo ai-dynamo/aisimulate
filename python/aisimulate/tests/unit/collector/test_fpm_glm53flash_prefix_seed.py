@@ -1028,6 +1028,27 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
     assert output["results"][0]["kv_seed_regime"] == "not_applicable"
 
 
+def test_reader_keeps_the_producer_record(monkeypatch, tmp_path):
+    from collector.fpm_forward import native_artifact
+
+    module = load_producer(monkeypatch)
+    monkeypatch.setattr(sys.modules["vllm"], "__version__", "0.33.0", raising=False)
+    s = make_scheduler(module, tmp_path, [Point("prefill", 1, 2, 64, 0, rows=[[32, 0], [32, 0]])])
+    run(s, Engine(s), "prefill")
+    s._glm_input = {"source": "seeded_tokens", "seed": 53}
+    s._glm_context_policy = {"measured_context_limit": 131072}
+    s._glm_identity = {"model_config_sha256": "test"}
+    output = {
+        "results": [{"point": {"point_type": "prefill", "total_kv_read_tokens": 0, "benchmark_id": 1}}],
+        "iteration_groups": [],
+    }
+    s._glm_enrich(output, tmp_path / "benchmark.json")
+    # The reader cannot import the producer outside its runtime image, so it keeps the record that the producer writes,
+    # with the same JSON types.
+    expected = native_artifact._glm_producer_record()
+    assert json.dumps(output["producer"], sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
 def test_dynamo_runtime_pins_match_the_ai_dynamo_1_7_0_dev20261109_build():
     pins = json.loads(MANIFEST.read_text())
     # The ai-dynamo 1.7.0.dev20261109 build carries these five files of ai-dynamo/dynamo@9abd2ef0d9 (release/1.7.0).

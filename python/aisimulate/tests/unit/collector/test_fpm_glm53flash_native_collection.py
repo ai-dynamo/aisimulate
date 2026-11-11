@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 from collector import glm53flash_attention_tokens as seeded
-from collector.fpm_forward import database
+from collector.fpm_forward import database, native_artifact
 from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
 from collector.fpm_forward.native_artifact import (
     NativeCollection,
@@ -47,6 +47,8 @@ GLM_MODEL = "zai-org/GLM-5.3-Flash"
 PLAN_SHA256 = "plan-sha"
 ATTEMPT_ID = "a1"
 EVIDENCE_FILE = "benchmark.repetitions.jsonl"
+# The producer files that the collector ships and the launch mounts. The producer records their digests.
+PRODUCER_DIR = Path(native_artifact.__file__).parent / "runtime" / "glm53flash"
 
 PREFILL_COLD = {
     "batch_size": 1,
@@ -200,8 +202,12 @@ def glm_native_payload(phase: str, *, points: list[dict], rank: int = 0, dp: int
             "instrumented_scheduler._compute_queued",
             "vllm_package_version": "0.33.0",
             "reviewed_scheduler_api_revision": "4ba787ec9959e566d3b587a796dff07673324da5",
-            "runtime_source_manifest_sha256": hashlib.sha256(b"runtime source manifest").hexdigest(),
-            "overlay_sha256": hashlib.sha256(b"producer overlay").hexdigest(),
+            "runtime_source_manifest_sha256": hashlib.sha256(
+                (PRODUCER_DIR / "runtime-source-sha256.json").read_bytes()
+            ).hexdigest(),
+            "overlay_sha256": hashlib.sha256(
+                (PRODUCER_DIR / "glm53flash_prefix_scheduler.py").read_bytes()
+            ).hexdigest(),
             "context_policy_version": 1,
             "warmup_repeats": 5,
             "measurement_repeats": 10,
@@ -238,12 +244,15 @@ def write_glm_rank(directory: Path, payload: dict) -> Path:
     return artifact
 
 
-def _pod(tmp_path: Path, cell: FPMCell) -> Path:
+def _pod(tmp_path: Path, cell: FPMCell, *, backend_version: str = "0.33.0") -> Path:
+    """The pod folder of a launch whose Collector provenance names the vLLM runtime ``backend_version``."""
     pod = tmp_path / "raw" / "node0000"
     pod.mkdir(parents=True)
-    _write_provenance(
-        pod / "collector-provenance.json", cell_id=cell.cell_id, plan_sha256=PLAN_SHA256, attempt_id=ATTEMPT_ID
-    )
+    provenance = pod / "collector-provenance.json"
+    _write_provenance(provenance, cell_id=cell.cell_id, plan_sha256=PLAN_SHA256, attempt_id=ATTEMPT_ID)
+    record = json.loads(provenance.read_text())
+    record["runtime"]["backend_version"] = backend_version
+    provenance.write_text(json.dumps(record))
     return pod
 
 
@@ -620,7 +629,7 @@ REFUSALS = [
         lambda p, _: p["producer"].update(runtime_source_manifest_sha256=None),
         id="runtime-source-manifest",
     ),
-    pytest.param("producer.runtime_source_manifest_sha256", lambda p, _: p.pop("producer"), id="producer-absent"),
+    pytest.param("producer", lambda p, _: p.pop("producer"), id="producer-absent"),
     pytest.param(
         "repetition_evidence_sha256",
         lambda p, _: p["results"][1].pop("repetition_evidence_sha256"),
@@ -922,3 +931,98 @@ def test_published_glm_pair_loads_through_the_rust_fpm_loader(tmp_path):
         )
         fpm = dict(version=1, wall_time=1.0, scheduled_requests=scheduled)
         assert model.estimate_forward_pass_time_ms(fpm) == pytest.approx(row["latency_ms"])
+
+
+def test_glm_producer_record_must_name_the_supported_vllm(tmp_path):
+    # vLLM 0.33.1 is another runtime, although its version shares the release line of the supported one.
+    cell = glm_cell("prefill")
+    payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
+    payload["producer"]["vllm_package_version"] = "0.33.1"
+    write_glm_rank(_pod(tmp_path, cell), payload)
+    with pytest.raises(
+        ValueError,
+        match=r"^native GLM-5\.3-Flash result lacks valid producer\.vllm_package_version: expected '0\.33\.0', "
+        r"found '0\.33\.1': .+benchmark\.json$",
+    ):
+        _validate(tmp_path, cell)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("instrumentation_revision", "0" * 40),
+        ("runtime_scheduler_revision", "0" * 40),
+        ("runtime_distribution", "ai-dynamo 1.6.0.dev20261010"),
+        ("real_seed_port_source", "ai-dynamo/dynamo@main instrumented_scheduler._bench_realseed_*"),
+        ("queued_metrics_port_source", "ai-dynamo/dynamo@main instrumented_scheduler._compute_queued"),
+        ("vllm_package_version", "0.33.0+local"),
+        ("reviewed_scheduler_api_revision", "0" * 40),
+        ("runtime_source_manifest_sha256", "0" * 64),
+        ("overlay_sha256", "0" * 64),
+        # The same number in another JSON type is another record.
+        ("context_policy_version", 1.0),
+        ("warmup_repeats", 4),
+        ("measurement_repeats", 9),
+        ("measurement_repeats", None),
+    ],
+)
+def test_glm_producer_record_must_be_the_supported_producers(tmp_path, field, value):
+    cell = glm_cell("prefill")
+    payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
+    expected = payload["producer"][field]
+    if value is None:
+        del payload["producer"][field]
+    else:
+        payload["producer"][field] = value
+    write_glm_rank(_pod(tmp_path, cell), payload)
+    with pytest.raises(ValueError) as refusal:
+        _validate(tmp_path, cell)
+    assert re.fullmatch(
+        rf"native GLM-5\.3-Flash result lacks valid producer\.{field}: expected {re.escape(repr(expected))}, "
+        rf"found {re.escape(repr(value))}: .+benchmark\.json",
+        str(refusal.value),
+    ), str(refusal.value)
+
+
+def test_glm_producer_record_must_not_add_a_field(tmp_path):
+    cell = glm_cell("prefill")
+    payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
+    payload["producer"]["patched"] = True
+    write_glm_rank(_pod(tmp_path, cell), payload)
+    with pytest.raises(
+        ValueError,
+        match=r"^native GLM-5\.3-Flash result lacks valid producer\.patched: expected no such field, found True: "
+        r".+benchmark\.json$",
+    ):
+        _validate(tmp_path, cell)
+
+
+def test_glm_producer_record_digests_are_those_of_the_shipped_producer_files():
+    record = native_artifact._glm_producer_record()
+    for field, name in (
+        ("runtime_source_manifest_sha256", "runtime-source-sha256.json"),
+        ("overlay_sha256", "glm53flash_prefix_scheduler.py"),
+    ):
+        assert record[field] == hashlib.sha256((PRODUCER_DIR / name).read_bytes()).hexdigest()
+    assert record["vllm_package_version"] == "0.33.0"
+
+
+def test_glm_producer_vllm_must_be_the_collection_runtime(tmp_path):
+    # The producer and the record are those of vLLM 0.33.0, and the Collector provenance binds the launch to 0.33.1.
+    cell = glm_cell("prefill")
+    write_glm_rank(
+        _pod(tmp_path, cell, backend_version="0.33.1"),
+        glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED]),
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"^native GLM-5\.3-Flash producer\.vllm_package_version differs from the Collector provenance runtime: "
+        r"expected '0\.33\.1', found '0\.33\.0': .+benchmark\.json$",
+    ):
+        _validate(tmp_path, cell)
+
+
+def test_glm_collection_carries_the_contract_of_its_cell(tmp_path):
+    cell = glm_cell("prefill")
+    write_glm_rank(_pod(tmp_path, cell), glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED]))
+    assert _validate(tmp_path, cell).execution_mode == "native_graph_policy"
