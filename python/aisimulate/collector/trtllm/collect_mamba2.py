@@ -248,150 +248,151 @@ def run_mamba2_context_benchmark(
     failed_points = 0
     failures: list[str] = []
 
-    # Sweep over batch_size x seq_len combinations
-    for batch_size in batch_size_list:
-        for seq_len in seq_len_list:
-            if aic_debug == 1:
-                print(f"  Benchmarking batch_size={batch_size}, seq_len={seq_len}")
+    # Cells run in order of size. A CUDA error on a cell too large for the kernel is sticky and
+    # fails every cell after it in this task; in batch-major order one such cell took the whole
+    # larger-batch columns with it (h200: 246 of 1,350 context rows).
+    cells = [(batch_size, seq_len) for batch_size in batch_size_list for seq_len in seq_len_list]
+    cells.sort(key=lambda cell: (cell[0] * cell[1], cell[0]))
+    for batch_size, seq_len in cells:
+        if aic_debug == 1:
+            print(f"  Benchmarking batch_size={batch_size}, seq_len={seq_len}")
 
-            try:
-                num_warmups = 3
-                num_runs = 10
+        try:
+            num_warmups = 3
+            num_runs = 10
 
-                # Conv state cache: (batch, dim, width-1) - updated in-place by causal_conv1d_fn
-                conv_state = torch.randn(batch_size, conv_dim, d_conv - 1, dtype=dtype, device=device)
+            # Conv state cache: (batch, dim, width-1) - updated in-place by causal_conv1d_fn
+            conv_state = torch.randn(batch_size, conv_dim, d_conv - 1, dtype=dtype, device=device)
 
-                # Common log data for both kernels
-                common_log_data = {
-                    "phase": "context",
-                    "batch_size": batch_size,
-                    "seq_len": seq_len,
-                    "num_tokens": batch_size * seq_len,
-                    "d_model": d_model,
-                    "d_state": d_state,
-                    "d_conv": d_conv,
-                    "nheads": nheads,
-                    "head_dim": head_dim,
-                    "n_groups": n_groups,
-                    "chunk_size": chunk_size,
-                    "model_name": model_name,
-                }
+            # Common log data for both kernels
+            common_log_data = {
+                "phase": "context",
+                "batch_size": batch_size,
+                "seq_len": seq_len,
+                "num_tokens": batch_size * seq_len,
+                "d_model": d_model,
+                "d_state": d_state,
+                "d_conv": d_conv,
+                "nheads": nheads,
+                "head_dim": head_dim,
+                "n_groups": n_groups,
+                "chunk_size": chunk_size,
+                "model_name": model_name,
+            }
 
-                # One input set per cell: CUDA-graph replays reuse the captured tensors (see collect_gdn)
-                xbc_input = torch.randn(batch_size, conv_dim, seq_len, dtype=dtype, device=device)
-                x = torch.randn(batch_size, seq_len, nheads, head_dim, dtype=dtype, device=device)
-                dt = torch.randn(batch_size, seq_len, nheads, dtype=dtype, device=device)
-                B = torch.randn(batch_size, seq_len, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
-                C = torch.randn(batch_size, seq_len, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
+            # One input set per cell: CUDA-graph replays reuse the captured tensors (see collect_gdn)
+            xbc_input = torch.randn(batch_size, conv_dim, seq_len, dtype=dtype, device=device)
+            x = torch.randn(batch_size, seq_len, nheads, head_dim, dtype=dtype, device=device)
+            dt = torch.randn(batch_size, seq_len, nheads, dtype=dtype, device=device)
+            B = torch.randn(batch_size, seq_len, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
+            C = torch.randn(batch_size, seq_len, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
 
-                # --- Benchmark causal_conv1d_fn ---
-                conv_kernel_source = "causal_conv1d_fn"
-                if _token_major_prefill_conv():
-                    conv_kernel_source = "causal_conv1d_fn_token_major"
-                    x_tm, out_tm, cu_seqlens, cache_idx, has_init = _prefill_conv_token_major_inputs(
-                        xbc_input, batch_size, seq_len, device
-                    )
-                    # free the channel-major copy before timing; the cell cleanup deletes the name
-                    xbc_input = None
+            # --- Benchmark causal_conv1d_fn ---
+            conv_kernel_source = "causal_conv1d_fn"
+            if _token_major_prefill_conv():
+                conv_kernel_source = "causal_conv1d_fn_token_major"
+                x_tm, out_tm, cu_seqlens, cache_idx, has_init = _prefill_conv_token_major_inputs(
+                    xbc_input, batch_size, seq_len, device
+                )
+                # free the channel-major copy before timing; the cell cleanup deletes the name
+                xbc_input = None
 
-                    def run_conv1d(
-                        _x=x_tm, _o=out_tm, _conv_state=conv_state, _cu=cu_seqlens, _ci=cache_idx, _hi=has_init
-                    ):
-                        _run_prefill_conv_token_major(_x, _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
+                def run_conv1d(_x=x_tm, _o=out_tm, _conv_state=conv_state, _cu=cu_seqlens, _ci=cache_idx, _hi=has_init):
+                    _run_prefill_conv_token_major(_x, _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
 
-                else:
+            else:
 
-                    def run_conv1d(_xbc=xbc_input, _conv_state=conv_state):
-                        causal_conv1d_fn(_xbc, conv_weight, conv_bias, activation="silu", conv_states=_conv_state)
+                def run_conv1d(_xbc=xbc_input, _conv_state=conv_state):
+                    causal_conv1d_fn(_xbc, conv_weight, conv_bias, activation="silu", conv_states=_conv_state)
 
-                torch.cuda.synchronize()
-                run_conv1d()
-                torch.cuda.synchronize()
+            torch.cuda.synchronize()
+            run_conv1d()
+            torch.cuda.synchronize()
 
-                with benchmark_with_power(
-                    device=device,
-                    kernel_func=run_conv1d,
-                    num_warmups=num_warmups,
-                    num_runs=num_runs,
-                    repeat_n=1,
-                ) as results:
-                    log_perf(
-                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                        framework="TRTLLM",
-                        version=tensorrt_llm.__version__,
-                        device_name=torch.cuda.get_device_name(device),
-                        op_name="mamba2",
-                        kernel_source=conv_kernel_source,
-                        perf_filename=perf_filename,
-                        power_stats=results["power_stats"],
-                    )
+            with benchmark_with_power(
+                device=device,
+                kernel_func=run_conv1d,
+                num_warmups=num_warmups,
+                num_runs=num_runs,
+                repeat_n=1,
+            ) as results:
+                log_perf(
+                    item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                    framework="TRTLLM",
+                    version=tensorrt_llm.__version__,
+                    device_name=torch.cuda.get_device_name(device),
+                    op_name="mamba2",
+                    kernel_source=conv_kernel_source,
+                    perf_filename=perf_filename,
+                    power_stats=results["power_stats"],
+                )
 
-                # --- Benchmark mamba_chunk_scan_combined ---
-                # Caller-owned output, as serving's preallocated buffer view
-                # (mamba2_mixer.py:634); the kernel asserts on it.
-                ssm_out = torch.empty_like(x)
-                torch.cuda.synchronize()
+            # --- Benchmark mamba_chunk_scan_combined ---
+            # Caller-owned output, as serving's preallocated buffer view
+            # (mamba2_mixer.py:634); the kernel asserts on it.
+            ssm_out = torch.empty_like(x)
+            torch.cuda.synchronize()
+            mamba_chunk_scan_combined(
+                x,
+                dt,
+                A,
+                B,
+                C,
+                chunk_size=chunk_size,
+                D=D,
+                z=None,
+                dt_bias=dt_bias,
+                dt_softplus=True,
+                return_final_states=True,
+                out=ssm_out,
+            )
+            torch.cuda.synchronize()
+
+            def run_ssm_scan(_x=x, _dt=dt, _b=B, _c=C, _out=ssm_out):
                 mamba_chunk_scan_combined(
-                    x,
-                    dt,
+                    _x,
+                    _dt,
                     A,
-                    B,
-                    C,
+                    _b,
+                    _c,
                     chunk_size=chunk_size,
                     D=D,
                     z=None,
                     dt_bias=dt_bias,
                     dt_softplus=True,
                     return_final_states=True,
-                    out=ssm_out,
+                    out=_out,
                 )
-                torch.cuda.synchronize()
 
-                def run_ssm_scan(_x=x, _dt=dt, _b=B, _c=C, _out=ssm_out):
-                    mamba_chunk_scan_combined(
-                        _x,
-                        _dt,
-                        A,
-                        _b,
-                        _c,
-                        chunk_size=chunk_size,
-                        D=D,
-                        z=None,
-                        dt_bias=dt_bias,
-                        dt_softplus=True,
-                        return_final_states=True,
-                        out=_out,
-                    )
+            with benchmark_with_power(
+                device=device,
+                kernel_func=run_ssm_scan,
+                num_warmups=num_warmups,
+                num_runs=num_runs,
+                repeat_n=1,
+            ) as results:
+                log_perf(
+                    item_list=[{**common_log_data, "latency": results["latency_ms"]}],
+                    framework="TRTLLM",
+                    version=tensorrt_llm.__version__,
+                    device_name=torch.cuda.get_device_name(device),
+                    op_name="mamba2",
+                    kernel_source="mamba_chunk_scan_combined",
+                    perf_filename=perf_filename,
+                    power_stats=results["power_stats"],
+                )
 
-                with benchmark_with_power(
-                    device=device,
-                    kernel_func=run_ssm_scan,
-                    num_warmups=num_warmups,
-                    num_runs=num_runs,
-                    repeat_n=1,
-                ) as results:
-                    log_perf(
-                        item_list=[{**common_log_data, "latency": results["latency_ms"]}],
-                        framework="TRTLLM",
-                        version=tensorrt_llm.__version__,
-                        device_name=torch.cuda.get_device_name(device),
-                        op_name="mamba2",
-                        kernel_source="mamba_chunk_scan_combined",
-                        perf_filename=perf_filename,
-                        power_stats=results["power_stats"],
-                    )
+            # Cleanup
+            del x, dt, B, C, xbc_input, conv_state, ssm_out
+            gc.collect()
+            torch.cuda.empty_cache()
+            successful_points += 1
 
-                # Cleanup
-                del x, dt, B, C, xbc_input, conv_state, ssm_out
-                gc.collect()
-                torch.cuda.empty_cache()
-                successful_points += 1
-
-            except Exception as e:
-                failed_points += 1
-                failures.append(f"batch_size={batch_size}, seq_len={seq_len}: {type(e).__name__}: {e}")
-                print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
-                continue
+        except Exception as e:
+            failed_points += 1
+            failures.append(f"batch_size={batch_size}, seq_len={seq_len}: {type(e).__name__}: {e}")
+            print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
+            continue
 
     summary = f"ok={successful_points} error={failed_points} skip=0"
     print(f"Mamba2 context summary: {summary}")
