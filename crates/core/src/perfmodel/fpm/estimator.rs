@@ -1933,6 +1933,22 @@ mod tests {
     }
 
     #[test]
+    fn retired_afd_decode_identity_is_rejected_for_every_value() {
+        for value in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::Value::Null,
+        ] {
+            assert!(
+                serde_json::from_value::<EstimatorConfig>(serde_json::json!({
+                    "afd": {"frozen_decode_identity": value}
+                }))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn default_selector_controls_preserve_previous_reader_configuration() {
         for value in [
             serde_json::json!({}),

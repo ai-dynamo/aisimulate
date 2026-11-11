@@ -1,0 +1,816 @@
+{
+  "main": "e8cbe2dc150f0df309993474842c2e417753873d",
+  "baseline": "444c71d55a66b5bc50ea4ddab30e69a024c30525",
+  "candidate": "d139f3646774dced5be67d3c20f3c51cde11ba72",
+  "host": "macOS-15.8-arm64-arm-64bit-Mach-O",
+  "pairs": 5,
+  "native_build_seconds": {
+    "baseline": 189,
+    "candidate": 185
+  },
+  "rows": [
+    {
+      "case": "ordinary_fixed",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 1.3691249769181013,
+          "candidate_median_ms": 0.08545804303139448,
+          "paired_ratio_median": 0.06172720218616106,
+          "paired_ratio_range": [
+            0.05731911285184214,
+            0.06639778260426665
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 0.24391605984419584,
+          "candidate_median_ms": 0.24224992375820875,
+          "paired_ratio_median": 0.9966938823704339,
+          "paired_ratio_range": [
+            0.3121105575573882,
+            1.1422393391565504
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 1.0173330083489418,
+          "candidate_median_ms": 1.037374953739345,
+          "paired_ratio_median": 1.0389770458040393,
+          "paired_ratio_range": [
+            0.8304925109930378,
+            1.0697990070486043
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 0.7647080346941948,
+          "candidate_median_ms": 0.764415948651731,
+          "paired_ratio_median": 0.9963685109896023,
+          "paired_ratio_range": [
+            0.9872478697682655,
+            1.0295075064976809
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 622.8334159823135,
+          "candidate_median_ms": 675.8967500645667,
+          "paired_ratio_median": 1.085967482357451,
+          "paired_ratio_range": [
+            0.9013821837282723,
+            1.1152175733725516
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.600333,
+          "candidate_median_ms": 0.597125,
+          "paired_ratio_median": 0.9917652549565426,
+          "paired_ratio_range": [
+            0.9864658447894751,
+            1.0096937238493722
+          ]
+        }
+      }
+    },
+    {
+      "case": "ordinary_op_level",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 1.480082981288433,
+          "candidate_median_ms": 0.20766607485711575,
+          "paired_ratio_median": 0.14379221349103366,
+          "paired_ratio_range": [
+            0.12464532591929617,
+            0.1490909574277306
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 7.407582947053015,
+          "candidate_median_ms": 7.319166092202067,
+          "paired_ratio_median": 1.0032273975240318,
+          "paired_ratio_range": [
+            0.9480189652157034,
+            1.0305318255966978
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 185.45937503222376,
+          "candidate_median_ms": 199.70949995331466,
+          "paired_ratio_median": 1.0878944544163769,
+          "paired_ratio_range": [
+            0.9819783063641668,
+            1.1068154193268924
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 14.17583308648318,
+          "candidate_median_ms": 14.130167081020772,
+          "paired_ratio_median": 1.003684411055412,
+          "paired_ratio_range": [
+            0.9967141345778121,
+            1.0171442158232955
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2085.696917027235,
+          "candidate_median_ms": 2087.2081669513136,
+          "paired_ratio_median": 0.9959906735163796,
+          "paired_ratio_range": [
+            0.9840490903519934,
+            1.0089403570072408
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.874875,
+          "candidate_median_ms": 0.892666,
+          "paired_ratio_median": 1.011949553634689,
+          "paired_ratio_range": [
+            0.9373122632884943,
+            1.0592902660040924
+          ]
+        }
+      }
+    },
+    {
+      "case": "ordinary_op_level",
+      "requests": 1024,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 1.4752920251339674,
+          "candidate_median_ms": 0.20462495740503073,
+          "paired_ratio_median": 0.14110855849813533,
+          "paired_ratio_range": [
+            0.08952745839937086,
+            0.15030705314633527
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 7.433874998241663,
+          "candidate_median_ms": 7.392707979306579,
+          "paired_ratio_median": 1.000102936489017,
+          "paired_ratio_range": [
+            0.9342253933514892,
+            1.0069522170910732
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 233.70470898225904,
+          "candidate_median_ms": 238.6599580058828,
+          "paired_ratio_median": 1.0348173336496453,
+          "paired_ratio_range": [
+            0.9889016385554165,
+            1.0542788489428627
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 51.49066599551588,
+          "candidate_median_ms": 51.6189590562135,
+          "paired_ratio_median": 1.000495906326461,
+          "paired_ratio_range": [
+            0.9871942724025584,
+            1.013710510682567
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2125.5530829075724,
+          "candidate_median_ms": 2113.7183340033516,
+          "paired_ratio_median": 0.9991735083096459,
+          "paired_ratio_range": [
+            0.9834321381512163,
+            1.0156654254279596
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 37.487417,
+          "candidate_median_ms": 37.387292,
+          "paired_ratio_median": 0.9997098759831867,
+          "paired_ratio_range": [
+            0.9775313338077821,
+            1.006834459041705
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_four_stage_low",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.9129580361768603,
+          "candidate_median_ms": 1.5981670003384352,
+          "paired_ratio_median": 0.5480682501998443,
+          "paired_ratio_range": [
+            0.5429903438633634,
+            0.5600847839378719
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1425.993625074625,
+          "candidate_median_ms": 1441.9649170013145,
+          "paired_ratio_median": 1.011443891920888,
+          "paired_ratio_range": [
+            0.993237397588496,
+            1.0230176294589708
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 200.3975419793278,
+          "candidate_median_ms": 198.44470801763237,
+          "paired_ratio_median": 1.019795192493167,
+          "paired_ratio_range": [
+            0.9672203032937264,
+            1.0950432820712748
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 23.059666040353477,
+          "candidate_median_ms": 23.15920894034207,
+          "paired_ratio_median": 1.0049852832191806,
+          "paired_ratio_range": [
+            0.9875027801945849,
+            1.0206882421391519
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2298.2963339891285,
+          "candidate_median_ms": 2294.3742919014767,
+          "paired_ratio_median": 1.000966428516725,
+          "paired_ratio_range": [
+            0.9788311557979504,
+            1.011340624297469
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 3.108833,
+          "candidate_median_ms": 3.125667,
+          "paired_ratio_median": 1.0195097253362142,
+          "paired_ratio_range": [
+            0.9322434176663894,
+            1.0686887973718753
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_four_stage_busy",
+      "requests": 1024,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.8364169411361217,
+          "candidate_median_ms": 1.5775420470163226,
+          "paired_ratio_median": 0.5554236753419737,
+          "paired_ratio_range": [
+            0.46702108250220475,
+            0.5967658416091723
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1445.2594999456778,
+          "candidate_median_ms": 1450.4133749287575,
+          "paired_ratio_median": 1.0035660550809549,
+          "paired_ratio_range": [
+            0.974252991425078,
+            1.0210516978816935
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 248.11312509700656,
+          "candidate_median_ms": 243.03245800547302,
+          "paired_ratio_median": 0.9942454788876677,
+          "paired_ratio_range": [
+            0.9681015821325656,
+            1.0755337242359966
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 66.07945798896253,
+          "candidate_median_ms": 66.28350005485117,
+          "paired_ratio_median": 1.0036004161202516,
+          "paired_ratio_range": [
+            0.9987434929097507,
+            1.0090065926436198
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2347.6360420463607,
+          "candidate_median_ms": 2332.7096248976886,
+          "paired_ratio_median": 0.9944994071325077,
+          "paired_ratio_range": [
+            0.9711435594469134,
+            1.0165404302953527
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 44.472334000000004,
+          "candidate_median_ms": 44.63525,
+          "paired_ratio_median": 1.007375386432992,
+          "paired_ratio_range": [
+            0.9977170307443365,
+            1.0183594529752626
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_two_stage",
+      "requests": 1024,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.865792019292712,
+          "candidate_median_ms": 1.6072919825091958,
+          "paired_ratio_median": 0.5608138670315099,
+          "paired_ratio_range": [
+            0.5396094707926762,
+            0.5783849758997803
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1444.724875036627,
+          "candidate_median_ms": 1445.873583899811,
+          "paired_ratio_median": 0.9994247703903728,
+          "paired_ratio_range": [
+            0.958932711340821,
+            1.0208477814648325
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 244.93504199199378,
+          "candidate_median_ms": 238.48258308134973,
+          "paired_ratio_median": 1.0044904578313525,
+          "paired_ratio_range": [
+            0.9575288866005437,
+            1.0228443994563752
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 64.42333396989852,
+          "candidate_median_ms": 64.47191699407995,
+          "paired_ratio_median": 1.0009493582612508,
+          "paired_ratio_range": [
+            0.9828978501641681,
+            1.0107802400006614
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2322.8893750347197,
+          "candidate_median_ms": 2335.2013329276815,
+          "paired_ratio_median": 1.0064329727199466,
+          "paired_ratio_range": [
+            0.9550958732647187,
+            1.0147812300812322
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 42.728833,
+          "candidate_median_ms": 42.596209,
+          "paired_ratio_median": 0.9954109909811952,
+          "paired_ratio_range": [
+            0.9630039065417166,
+            1.0040779801470932
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_ragged",
+      "requests": 64,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.83558398950845,
+          "candidate_median_ms": 1.5858339611440897,
+          "paired_ratio_median": 0.5592618547049262,
+          "paired_ratio_range": [
+            0.5559191034042921,
+            0.5627547311067946
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1432.9709160374478,
+          "candidate_median_ms": 1445.0206250185147,
+          "paired_ratio_median": 1.0121636867706925,
+          "paired_ratio_range": [
+            0.9996168478363335,
+            1.0210642938071144
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 199.0443749818951,
+          "candidate_median_ms": 198.88741697650403,
+          "paired_ratio_median": 0.9855124561027362,
+          "paired_ratio_range": [
+            0.9090482840132473,
+            1.05570757747586
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 22.98100001644343,
+          "candidate_median_ms": 23.080417071469128,
+          "paired_ratio_median": 1.0075389067778395,
+          "paired_ratio_range": [
+            0.9992190618644295,
+            1.0140090565978856
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2294.046457973309,
+          "candidate_median_ms": 2301.2126670219004,
+          "paired_ratio_median": 1.0007699373679864,
+          "paired_ratio_range": [
+            0.9907988395974104,
+            1.0156130905075884
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 2.852167,
+          "candidate_median_ms": 2.826292,
+          "paired_ratio_median": 0.988502777011304,
+          "paired_ratio_range": [
+            0.9319971704327108,
+            1.000544210479848
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_depth16",
+      "requests": 64,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.8849589871242642,
+          "candidate_median_ms": 1.5785000286996365,
+          "paired_ratio_median": 0.5470181940163772,
+          "paired_ratio_range": [
+            0.49100487673066506,
+            0.5851296989459303
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1428.4960000077263,
+          "candidate_median_ms": 1441.9658749829978,
+          "paired_ratio_median": 1.0196238148668544,
+          "paired_ratio_range": [
+            0.9869280137257612,
+            1.0229498717327985
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 197.83041707705706,
+          "candidate_median_ms": 204.44975001737475,
+          "paired_ratio_median": 1.0285293935526103,
+          "paired_ratio_range": [
+            1.0014008206193654,
+            1.0678894572632638
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 23.088332964107394,
+          "candidate_median_ms": 23.13129196409136,
+          "paired_ratio_median": 1.003278542798515,
+          "paired_ratio_range": [
+            0.9993892645992282,
+            1.014097272167416
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2297.2375840181485,
+          "candidate_median_ms": 2288.428792031482,
+          "paired_ratio_median": 1.0035890333286794,
+          "paired_ratio_range": [
+            0.9941902683114445,
+            1.0166709256525988
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 3.045833,
+          "candidate_median_ms": 3.074167,
+          "paired_ratio_median": 1.0075793777994535,
+          "paired_ratio_range": [
+            0.9644776186372902,
+            1.0575571091713896
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_restore",
+      "requests": 32,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.874166937544942,
+          "candidate_median_ms": 1.5994999557733536,
+          "paired_ratio_median": 0.5708633991139256,
+          "paired_ratio_range": [
+            0.5443213773895171,
+            0.5937800751470035
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1830.0241250544786,
+          "candidate_median_ms": 1824.1686249384657,
+          "paired_ratio_median": 0.9968003153423791,
+          "paired_ratio_range": [
+            0.9892915162212661,
+            1.0047325884569607
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 454.0619159815833,
+          "candidate_median_ms": 451.33966696448624,
+          "paired_ratio_median": 0.9842270574242191,
+          "paired_ratio_range": [
+            0.9633452168870763,
+            1.0869722529314008
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 23.33712507970631,
+          "candidate_median_ms": 23.398166056722403,
+          "paired_ratio_median": 1.0026156168254492,
+          "paired_ratio_range": [
+            0.9889364152246615,
+            1.0153811884022894
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2958.9167080121115,
+          "candidate_median_ms": 2960.758417029865,
+          "paired_ratio_median": 1.0006224267863866,
+          "paired_ratio_range": [
+            0.9807054232306501,
+            1.0169957741598323
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 1.756458,
+          "candidate_median_ms": 1.7505000000000002,
+          "paired_ratio_median": 0.9994516053138186,
+          "paired_ratio_range": [
+            0.9583032694537481,
+            1.0108435302622834
+          ]
+        }
+      }
+    },
+    {
+      "case": "ordinary_gemma4",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 1.4773750444874167,
+          "candidate_median_ms": 0.20941602997481823,
+          "paired_ratio_median": 0.14138287666588933,
+          "paired_ratio_range": [
+            0.13961791009400562,
+            0.1566597070351498
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 27.169625042006373,
+          "candidate_median_ms": 27.208208106458187,
+          "paired_ratio_median": 0.9941291209365338,
+          "paired_ratio_range": [
+            0.9483290412745119,
+            1.015498902610915
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 54.97433303389698,
+          "candidate_median_ms": 54.6345830662176,
+          "paired_ratio_median": 0.9924755555376442,
+          "paired_ratio_range": [
+            0.9861846399368627,
+            1.0850250834571251
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 54.45675004739314,
+          "candidate_median_ms": 54.213874973356724,
+          "paired_ratio_median": 0.9939493255846695,
+          "paired_ratio_range": [
+            0.9890320178829178,
+            0.9984090096029803
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 1148.0852499371395,
+          "candidate_median_ms": 1181.5265419427305,
+          "paired_ratio_median": 1.0035347357678037,
+          "paired_ratio_range": [
+            0.981887321969243,
+            1.040724310751599
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.9655,
+          "candidate_median_ms": 0.967291,
+          "paired_ratio_median": 1.0041864319005696,
+          "paired_ratio_range": [
+            0.9539167804829721,
+            1.086251354565878
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_gemma4",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 3.1469169771298766,
+          "candidate_median_ms": 1.7836249899119139,
+          "paired_ratio_median": 0.5570736445443937,
+          "paired_ratio_range": [
+            0.5465546585280265,
+            0.5880728757628937
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 726.6226659994572,
+          "candidate_median_ms": 731.8299170583487,
+          "paired_ratio_median": 1.007166375758082,
+          "paired_ratio_range": [
+            0.9889487291334293,
+            1.0389170204778115
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 64.8678329307586,
+          "candidate_median_ms": 64.85079193953425,
+          "paired_ratio_median": 0.9988595375724284,
+          "paired_ratio_range": [
+            0.9964795091879071,
+            1.012947005825411
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 63.59066697768867,
+          "candidate_median_ms": 63.43104096595198,
+          "paired_ratio_median": 0.9974714524120887,
+          "paired_ratio_range": [
+            0.98059859429713,
+            1.0066696099964472
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 1424.2638339055702,
+          "candidate_median_ms": 1437.4661250039935,
+          "paired_ratio_median": 1.0040137574571946,
+          "paired_ratio_range": [
+            0.9984257669320791,
+            1.0163286436613737
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.932041,
+          "candidate_median_ms": 0.944333,
+          "paired_ratio_median": 1.0196604130112026,
+          "paired_ratio_range": [
+            0.9849802744729041,
+            1.0661991273304243
+          ]
+        }
+      }
+    },
+    {
+      "case": "ordinary_nvfp4_wo_hopper",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 1.5138329472392797,
+          "candidate_median_ms": 0.21041592117398977,
+          "paired_ratio_median": 0.13864429551131324,
+          "paired_ratio_range": [
+            0.13487473341581463,
+            0.15034141780165805
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 27.948000002652407,
+          "candidate_median_ms": 28.1196249416098,
+          "paired_ratio_median": 0.9943656654360549,
+          "paired_ratio_range": [
+            0.9925708771740046,
+            1.0116898552869409
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 56.16404104512185,
+          "candidate_median_ms": 56.73191708046943,
+          "paired_ratio_median": 1.0071886848713607,
+          "paired_ratio_range": [
+            0.9964731514437636,
+            1.0179205440768921
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 56.109124911017716,
+          "candidate_median_ms": 56.137791951186955,
+          "paired_ratio_median": 0.9984955080228012,
+          "paired_ratio_range": [
+            0.9899607432771781,
+            1.003416654768982
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 1104.7336669871584,
+          "candidate_median_ms": 1109.8156670341268,
+          "paired_ratio_median": 1.0046002038308728,
+          "paired_ratio_range": [
+            0.9777217585706219,
+            1.0210738479022614
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.862791,
+          "candidate_median_ms": 0.8490000000000001,
+          "paired_ratio_median": 0.9842580648152334,
+          "paired_ratio_range": [
+            0.923800055344295,
+            1.0112398368212323
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_nvfp4_hopper",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.9358750907704234,
+          "candidate_median_ms": 1.600584015250206,
+          "paired_ratio_median": 0.5548057526952108,
+          "paired_ratio_range": [
+            0.5210244050361359,
+            0.5606083754995161
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 627.04679206945,
+          "candidate_median_ms": 631.1883330345154,
+          "paired_ratio_median": 1.0068254152667793,
+          "paired_ratio_range": [
+            0.9891549753208665,
+            1.0150679870535697
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 65.70933305192739,
+          "candidate_median_ms": 65.84512500558048,
+          "paired_ratio_median": 1.001341487461284,
+          "paired_ratio_range": [
+            0.9994857129236581,
+            1.03364136313136
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 64.59991598967463,
+          "candidate_median_ms": 64.36466693412513,
+          "paired_ratio_median": 0.9964572714543958,
+          "paired_ratio_range": [
+            0.9937700864637118,
+            1.0060726401592874
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 1308.772832970135,
+          "candidate_median_ms": 1308.6873750435188,
+          "paired_ratio_median": 1.0035199006055988,
+          "paired_ratio_range": [
+            0.992935177711314,
+            1.006289063422518
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.903375,
+          "candidate_median_ms": 0.88925,
+          "paired_ratio_median": 0.9977951493285228,
+          "paired_ratio_range": [
+            0.9715478776171975,
+            1.0219171870951602
+          ]
+        }
+      }
+    }
+  ],
+  "legacy": {
+    "paired_cli_ratio": 0.9940924380478888,
+    "paired_cli_ratio_range": [
+      0.9872832769371914,
+      0.9953733912784763
+    ]
+  },
+  "forward_gate": {
+    "blocking": false,
+    "case_count": 64,
+    "run_errors": [],
+    "classifications": {
+      "IMPROVEMENT": 66,
+      "OK": 35,
+      "UNSTABLE": 27
+    }
+  },
+  "limitations": [
+    "Unpinned macOS host; five-pair local evidence is not all-workload performance approval.",
+    "Ordinary fixed CLI samples are bimodal and cross parity: range 0.901-1.115; its 1.086 median ratio is inconclusive.",
+    "Native wall time excludes some provider preparation and final evidence aggregation; full runner and CLI measurements cover those costs.",
+    "Ordinary nvfp4_wo native control uses the effective execution format; separate legacy CLI estimates directly request nvfp4."
+  ]
+}

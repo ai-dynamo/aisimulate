@@ -41,14 +41,10 @@ PERF_DATABASE_PATH = OPERATIONS_DIR.parent / "perf_database.py"
 
 # Operation subclasses allowed to override ``query`` — ORCHESTRATION bodies
 # whose per-message values still come from the engine (they compose standard
-# comm/gemm twins via the single-op evaluation plumbing):
-#   - the AFD comm ops: A/F topology math (send probability, link volumes)
-QUERY_OVERRIDE_WHITELIST = {
-    "AFDTransfer",
-    "AFDFAllGather",
-    "AFDFReduceScatter",
-    "AFDCombine",
-}
+# comm/gemm twins via the single-op evaluation plumbing). The AFD comm ops
+# left this list when they became native `Op` variants (schema 22);
+# the whitelist is empty today by design.
+QUERY_OVERRIDE_WHITELIST: set[str] = set()
 
 # util_empirical's surviving public surface: the provenance pipeline (the
 # compiled engine reports its empirical tier back through it). The
@@ -76,30 +72,6 @@ UTIL_EMPIRICAL_PUBLIC_SURFACE = {
 # innocent name.
 OPERATIONS_DEF_INVENTORY = {
     "__init__.py": frozenset(),
-    "afd_transfer.py": frozenset(
-        {
-            "AFDCombine.__init__",
-            "AFDCombine.get_weights",
-            "AFDCombine.query",
-            "AFDFAllGather.__init__",
-            "AFDFAllGather.f_gpus_in_node",
-            "AFDFAllGather.get_weights",
-            "AFDFAllGather.num_f_nodes",
-            "AFDFAllGather.query",
-            "AFDFReduceScatter.__init__",
-            "AFDFReduceScatter.f_gpus_in_node",
-            "AFDFReduceScatter.get_weights",
-            "AFDFReduceScatter.num_f_nodes",
-            "AFDFReduceScatter.query",
-            "AFDTransfer.__init__",
-            "AFDTransfer.direction",
-            "AFDTransfer.get_weights",
-            "AFDTransfer.num_f_nodes",
-            "AFDTransfer.query",
-            "_afd_send_prob",
-            "_engine_comm_query",
-        }
-    ),
     "attention.py": frozenset(
         {
             "ContextAttention._cache_key",
