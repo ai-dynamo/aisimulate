@@ -6,13 +6,14 @@ from __future__ import annotations
 import copy
 import json
 import statistics
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from collector.fpm_forward import cli, execution_evidence, repeatability, runner
-from collector.fpm_forward.config import with_kv_warmup_defaults
+from collector.fpm_forward.config import semantic_generator_overrides, with_kv_warmup_defaults
 from collector.fpm_forward.database import aggregate_cell
 from collector.fpm_forward.native_artifact import (
     _expected_scheduled,
@@ -756,6 +757,62 @@ def test_resolved_hub_snapshot_does_not_override_generated_revision(campaign, la
         assert "runtime model_config.model differs from generated --model" in result["failures"]
 
 
+@pytest.mark.parametrize("dynamo_version", [None, "1.1.0"])
+def test_archived_deployment_matches_semantic_plan_hash(campaign, dynamo_version):
+    # AISIM-2283: the planner freezes the semantic inputs, which drop the
+    # declared Dynamo version, while the archive keeps it as provenance.
+    plan, source, checkpoint = campaign
+    deployment = {} if dynamo_version is None else {"generator_dynamo_version": dynamo_version}
+    plan = replace(
+        plan, generator_config_sha256=repeatability._canonical_hash(semantic_generator_overrides(deployment))
+    )
+    _write_campaign(source, checkpoint, plan, generator_overrides=deployment)
+    archived = json.loads((source / "generator-overrides.json").read_text())
+    assert archived.get("generator_dynamo_version") == dynamo_version
+    cell = plan.cells[0]
+    raw = source / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    assert "archived deployment inputs differ from the source plan" not in result["failures"]
+    assert result["status"] == "qualified", result["failures"]
+
+    archived["K8sConfig"]["extra_env"].append({"name": "UNPLANNED", "value": "1"})
+    (source / "generator-overrides.json").write_text(json.dumps(archived))
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    assert "archived deployment inputs differ from the source plan" in result["failures"]
+
+
+def test_fallback_commit_satisfies_revision_and_model_evidence(campaign, tmp_path, monkeypatch):
+    plan, source, checkpoint = campaign
+    revision = "a" * 40
+    profile = json.loads(plan._fpm_profile_json)
+    profile["model_revision"] = revision
+    plan = replace(plan, _fpm_profile_json=json.dumps(profile))
+    _write_campaign(source, checkpoint, plan)
+    snapshot_dir = tmp_path / "hub" / f"models--{plan.model_path.replace('/', '--')}" / "snapshots" / revision
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / "config.json").write_text("{}")
+    snapshot = str(snapshot_dir)
+    _stub_cached_file(monkeypatch, lambda *a, **k: None)
+    config = _config_with_hf_config(SimpleNamespace(), model=snapshot, revision=None)
+    loaded = observer.execution_config(config)["model_config"]["loaded_config_commit_hash"]
+    assert loaded == revision
+
+    def alter(payload):
+        payload["resolved_config"]["model_config"].update(
+            model=snapshot, revision=None, loaded_config_commit_hash=loaded
+        )
+
+    _mutate_workers(source, alter)
+    cell = plan.cells[0]
+    raw = source / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    assert result["status"] == "qualified", result
+    assert not any("runtime model revision" in item for item in result["missing_evidence"])
+    assert "runtime model_config.model differs from generated --model" not in result["failures"]
+
+
 def test_explicit_checkpoint_mount_does_not_accept_a_hub_snapshot_alias(campaign):
     plan, source, checkpoint = campaign
     revision = "a" * 40
@@ -1039,6 +1096,179 @@ def test_execution_observer_preserves_mixed_selected_backends_and_graph_config(t
         observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
 
 
+def _stub_cached_file(monkeypatch, resolve):
+    """Install a stub `huggingface_hub`; the lookup must not call transformers."""
+    calls = []
+
+    def try_to_load_from_cache(*args, **kwargs):
+        calls.append((args, kwargs))
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(try_to_load_from_cache=try_to_load_from_cache))
+    return calls
+
+
+def _config_with_hf_config(hf_config, **model_fields):
+    config = _vllm_config()
+    config.model_config.hf_config = hf_config
+    for key, value in model_fields.items():
+        setattr(config.model_config, key, value)
+    return config
+
+
+def _loaded_commit(config):
+    return observer.execution_config(config)["model_config"].get("loaded_config_commit_hash")
+
+
+def test_execution_config_recovers_commit_from_cached_snapshot_without_attribute(monkeypatch):
+    commit = "c" * 40
+    calls = _stub_cached_file(monkeypatch, lambda *a, **k: f"/hub/models--Org--Name/snapshots/{commit}/config.json")
+    config = _config_with_hf_config(SimpleNamespace(), model="Org/Name", revision=commit)
+    assert _loaded_commit(config) == commit
+    assert calls == [(("Org/Name", "config.json"), {"revision": commit})]
+
+
+def test_execution_config_looks_up_hf_config_path_not_model(monkeypatch):
+    commit = "c" * 40
+    calls = _stub_cached_file(monkeypatch, lambda *a, **k: f"/hub/models--Org--Cfg/snapshots/{commit}/config.json")
+    config = _config_with_hf_config(SimpleNamespace(), model="Org/Name", hf_config_path="Org/Cfg", revision=commit)
+    assert _loaded_commit(config) == commit
+    assert calls[0][0] == ("Org/Cfg", "config.json")
+
+
+class _Resolved(str):
+    def __new__(cls, value, resolved=None):
+        obj = super().__new__(cls, value)
+        if resolved is not None:
+            obj.resolved = resolved
+        return obj
+
+
+def test_execution_config_passes_commit_revision_as_plain_str(monkeypatch):
+    commit = "c" * 40
+    calls = _stub_cached_file(monkeypatch, lambda *a, **k: f"/hub/models--Org--Name/snapshots/{commit}/config.json")
+    config = _config_with_hf_config(SimpleNamespace(), model="Org/Name", revision=_Resolved(commit))
+    assert _loaded_commit(config) == commit
+    assert type(calls[0][1]["revision"]) is str and calls[0][1]["revision"] == commit
+
+
+@pytest.mark.parametrize("revision", [None, "main", _Resolved("main"), _Resolved("main", None), "C" * 40, "c" * 39])
+def test_execution_config_gives_no_evidence_for_mutable_or_absent_revision(monkeypatch, revision):
+    calls = _stub_cached_file(
+        monkeypatch, lambda *a, **k: "/hub/models--Org--Name/snapshots/" + "b" * 40 + "/config.json"
+    )
+    assert _loaded_commit(_config_with_hf_config(SimpleNamespace(), model="Org/Name", revision=revision)) is None
+    assert calls == []
+
+
+def test_execution_config_prefers_resolved_commit_over_mutable_ref(monkeypatch):
+    a, b = "a" * 40, "b" * 40
+    calls = _stub_cached_file(
+        monkeypatch,
+        lambda *args, revision=None, **k: f"/hub/models--Org--Name/snapshots/{a if revision == a else b}/config.json",
+    )
+    config = _config_with_hf_config(SimpleNamespace(), model="Org/Name", revision=_Resolved("main", a))
+    assert _loaded_commit(config) == a
+    assert type(calls[0][1]["revision"]) is str and calls[0][1]["revision"] == a
+
+
+def test_execution_config_uses_hf_config_revision_for_separate_config_repo(monkeypatch):
+    c, other = "c" * 40, "d" * 40
+    calls = _stub_cached_file(monkeypatch, lambda *a, **k: f"/hub/models--Org--Cfg/snapshots/{c}/config.json")
+    config = _config_with_hf_config(
+        SimpleNamespace(),
+        model="Org/Name",
+        hf_config_path="Org/Cfg",
+        revision=_Resolved("main", other),
+        _hf_config_revision=_Resolved("main", c),
+    )
+    assert _loaded_commit(config) == c
+    assert calls == [(("Org/Cfg", "config.json"), {"revision": c})]
+    assert type(calls[0][1]["revision"]) is str
+
+
+@pytest.mark.parametrize("resolved", ["C" * 40, "c" * 39, "main", 7])
+def test_execution_config_ignores_malformed_resolved_commit(monkeypatch, resolved):
+    calls = _stub_cached_file(
+        monkeypatch, lambda *a, **k: "/hub/models--Org--Name/snapshots/" + "b" * 40 + "/config.json"
+    )
+    config = _config_with_hf_config(SimpleNamespace(), model="Org/Name", revision=_Resolved("main", resolved))
+    assert _loaded_commit(config) is None
+    assert calls == []
+
+
+def test_execution_config_reads_commit_from_snapshot_directory(tmp_path, monkeypatch):
+    commit = "e" * 40
+    snapshot = tmp_path / "models--Org--Name" / "snapshots" / commit
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    calls = _stub_cached_file(monkeypatch, lambda *a, **k: None)
+    assert _loaded_commit(_config_with_hf_config(SimpleNamespace(), model=str(snapshot))) == commit
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "resolved",
+    [
+        "/data/snapshots/v2/hub/models--Org--Name/snapshots/" + "c" * 40 + "/config.json",
+        "/hub/models--Org--Name/snapshots/" + "C" * 40 + "/config.json",
+        "/data/checkpoints/model/config.json",
+        None,
+    ],
+)
+def test_execution_config_omits_commit_unless_first_snapshot_segment_is_lowercase_commit(monkeypatch, resolved):
+    _stub_cached_file(monkeypatch, lambda *a, **k: resolved)
+    assert _loaded_commit(_config_with_hf_config(SimpleNamespace(), model="Org/Name", revision="c" * 40)) is None
+
+
+def test_execution_config_keeps_existing_commit_attribute_without_resolving(monkeypatch):
+    calls = _stub_cached_file(
+        monkeypatch, lambda *a, **k: "/hub/models--Org--Name/snapshots/" + "d" * 40 + "/config.json"
+    )
+    config = _config_with_hf_config(SimpleNamespace(_commit_hash="a" * 40))
+    assert _loaded_commit(config) == "a" * 40
+    assert calls == []
+
+
+def test_execution_config_omits_commit_when_attribute_is_none_without_resolving(monkeypatch):
+    calls = _stub_cached_file(
+        monkeypatch, lambda *a, **k: "/hub/models--Org--Name/snapshots/" + "d" * 40 + "/config.json"
+    )
+    assert _loaded_commit(_config_with_hf_config(SimpleNamespace(_commit_hash=None))) is None
+    assert calls == []
+
+
+def test_execution_config_omits_commit_for_plain_local_directory(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text("{}")
+    calls = _stub_cached_file(monkeypatch, lambda *a, **k: None)
+    assert _loaded_commit(_config_with_hf_config(SimpleNamespace(), model=str(tmp_path))) is None
+    assert calls == []
+
+
+def test_execution_config_survives_resolver_failure(tmp_path, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise OSError("offline and not cached")
+
+    calls = _stub_cached_file(monkeypatch, fail)
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.32.0")
+    (tmp_path / "collector-provenance.json").write_text("{}")
+    backend = type("Backend", (), {"__module__": "actual.runtime"})
+    worker = SimpleNamespace(
+        vllm_config=_config_with_hf_config(SimpleNamespace(), revision="c" * 40),
+        model_runner=SimpleNamespace(
+            attn_groups=[[SimpleNamespace(backend=backend, layer_names=["layer.0"], kv_cache_group_id=0)]]
+        ),
+    )
+    del worker.vllm_config.offload_config
+    assert _loaded_commit(worker.vllm_config) is None
+    assert calls
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    result = json.loads((tmp_path / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    assert result["status"] == "observed"
+    assert "loaded_config_commit_hash" not in result["resolved_config"]["model_config"]
+
+
 @pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.29.0"])
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_execution_only_observation_does_not_enable_memory_conversion(version):
@@ -1054,6 +1284,35 @@ def test_execution_only_observation_does_not_enable_memory_conversion(version):
             assert args[args.index("--scheduler-cls") + 1] == "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler"
         else:
             assert "--worker-cls" not in args
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_new_runtime_versions_observe_execution(version):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+    plan = _plan(profile, collector_config={"runtime_backend_version": version})
+    for cell in plan.cells:
+        assert runner._observe_runtime_execution(plan, cell) is True
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
+
+
+@pytest.mark.parametrize(("version", "audited"), [("0.32.0", True), ("0.31.0", False)])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_gate_inspects_new_runtime_collections(tmp_path, version, audited):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+    plan = _plan(profile, collector_config={"runtime_backend_version": version})
+    _write_campaign(tmp_path / "source", tmp_path / "source-checkpoint.json", plan)
+    cell = plan.cells[0]
+    raw = tmp_path / "source" / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    unaudited = f"execution configuration inspection is unaudited for {version}"
+    assert (unaudited in result["missing_evidence"]) is not audited
 
 
 def test_cli_exposes_bounded_repeatability_defaults():

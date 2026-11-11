@@ -461,6 +461,12 @@ def test_invalid_or_empty_backend_choices_are_rejected(field, value):
         SearchSpace(**_search_space(**{field: value}))
 
 
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_obsolete_afd_deployment_modes_are_rejected(mode):
+    with pytest.raises(ValidationError, match="deployment_mode has invalid choice"):
+        SearchSpace(**_search_space(deployment_mode=[mode]))
+
+
 def test_pinned_parallel_config_requires_one_deployment_mode():
     with pytest.raises(ValidationError, match="exactly one mode"):
         SearchSpace(

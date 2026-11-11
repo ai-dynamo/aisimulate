@@ -710,6 +710,18 @@ impl Availability<'_> {
                     _ => Ok(()),
                 }
             }
+            // AFD comm ops compose the standard P2P/NCCL/ElementWise twins:
+            // transfer and combine need no table of their own; the F-node
+            // collectives need the NCCL table exactly when the twin
+            // collective is active (multi-GPU node + one-to-one mapping) —
+            // the same condition as the `Nccl` arm.
+            AfdFAllGather(comm) | AfdFReduceScatter(comm)
+                if comm.f_gpus_in_node() > 1
+                    && comm.rank_mapping == crate::operators::AfdRankMapping::OneToOne =>
+            {
+                self.any(&["nccl_perf.parquet", "oneccl_perf.parquet"])
+            }
+            AfdTransfer(_) | AfdFAllGather(_) | AfdFReduceScatter(_) | AfdCombine(_) => Ok(()),
             Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_) => Ok(()),
         }
     }
