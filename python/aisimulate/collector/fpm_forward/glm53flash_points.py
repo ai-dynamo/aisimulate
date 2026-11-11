@@ -102,10 +102,10 @@ def glm_points(
     each request's suffix runs in one step. vLLM's Mamba align mode does not stop the prefill of a request inside its
     prompt either (``glm_align_stop``): without a prefill checkpoint block, the new tokens of a request are at most one
     hash block. With one, ``checkpoint_alignment`` decides which longer prefills run in one step. At default serving the
-    hash block of GLM-5.3-Flash is its Mamba block (vLLM interface.py:995-996, kv_cache_utils.py:792-798). Before a
-    decode batch decodes, each request prefills its prompt beyond its cached seed. These suffixes of a batch of two or
-    more requests fit the token budget too, so every request decodes in the same step. The producer divides a total
-    evenly, so every request of a point gets the same prefix, the same new tokens and the same decode context.
+    hash block of GLM-5.3-Flash is its Mamba block (vLLM 0.33.0 interface.py:1114-1115, kv_cache_utils.py:885-891).
+    Before a decode batch decodes, each request prefills its prompt beyond its cached seed. These suffixes of a batch
+    of two or more requests fit the token budget too, so every request decodes in the same step. The producer divides
+    a total evenly, so every request of a point gets the same prefix, the same new tokens and the same decode context.
     """
     if token_budget % CHUNK_ALIGN:
         raise ValueError("GLM-5.3-Flash collection requires a token budget that is a multiple of 4")
