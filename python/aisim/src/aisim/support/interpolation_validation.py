@@ -213,7 +213,13 @@ def _execution_boundaries(
 
 
 def _anchors(rows: list[dict[str, Any]]) -> set[tuple[str, int, int, int]]:
-    """Retain the envelope at every batch, including both outer KV curves."""
+    """Retain the envelope at every batch, including both outer KV curves.
+
+    Each prefill batch also keeps its upper and lower grid edges: measured
+    coordinates with no other coordinate at least as large (or at most as
+    small) in both tokens and KV. An edge point never has two-sided support once
+    withheld, so it cannot be a holdout.
+    """
     anchors = set()
     for batch in sorted({row["batch_size"] for row in rows}):
         group = [row for row in rows if row["batch_size"] == batch]
@@ -227,6 +233,13 @@ def _anchors(rows: list[dict[str, Any]]) -> set[tuple[str, int, int, int]]:
         # A ragged interior KV curve may extend beyond both outer curves.
         # Preserve those token-envelope extrema as well.
         anchors.update(_coordinate(fn(group, key=_coordinate)) for fn in (min, max))
+        points = {(row["total_prefill_tokens"], row["total_kv_read_tokens"]) for row in group}
+        anchors.update(
+            _coordinate({**group[0], "total_prefill_tokens": tokens, "total_kv_read_tokens": kv})
+            for tokens, kv in points
+            if not any(o != (tokens, kv) and o[0] >= tokens and o[1] >= kv for o in points)
+            or not any(o != (tokens, kv) and o[0] <= tokens and o[1] <= kv for o in points)
+        )
     return anchors
 
 
@@ -358,7 +371,8 @@ def evaluate_interpolation_holdout(
 
     Forward timing permits pending memory. This tests interpolation, not request
     admission, measurement repeatability or serving accuracy. The measured
-    envelope and evidenced execution-mode boundaries are retained; any missing
+    envelope (including the grid edges of each prefill batch) and evidenced
+    execution-mode boundaries are retained; any missing
     interior brackets remain unsupported. Changing policy or inputs requires
     another directory; source measurements are never edited.
     """
@@ -449,7 +463,7 @@ def evaluate_interpolation_holdout(
             "small_table_minimum_points": 1,
             "max_p95_relative_error": max_p95_relative_error,
             "max_unsupported_fraction": max_unsupported_fraction,
-            "selection": "retained_envelope_execution_boundaries_seeded_farthest_shape_v2",
+            "selection": "retained_envelope_grid_edges_execution_boundaries_seeded_farthest_shape_v3",
             "fold": "simultaneously_remove_all_selected_coordinates",
         },
         "capture_boundaries": boundaries,

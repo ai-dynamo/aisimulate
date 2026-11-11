@@ -19,7 +19,7 @@ from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDEN
 from .model_capability import ResolvedModelConfig
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import BackendPolicy, FPMCell, _canonical_hash
-from .runtime.fpm_memory_observer import SCHEMA_NAME, SCHEMA_VERSION, SUPPORTED_VERSION
+from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, SCHEMA_NAME, SCHEMA_VERSION
 from .types import ParallelTopology
 
 _CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
@@ -609,8 +609,8 @@ def resolve_runtime_resources(
         raise ValueError("runtime memory GPU memory utilization must be in (0, 1]")
     if not expected_plan_sha256 or not expected_attempt_id:
         raise ValueError("runtime memory resolution requires exact plan and attempt identities")
-    if expected_backend_version != SUPPORTED_VERSION:
-        raise ValueError(f"runtime memory conversion currently supports vLLM {SUPPORTED_VERSION}")
+    if expected_backend_version not in MEMORY_SUPPORTED_VERSIONS:
+        raise ValueError(f"runtime memory conversion currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}")
     collection = validate_native_collection(
         cell, raw_root, expected_plan_sha256=expected_plan_sha256, expected_attempt_id=expected_attempt_id
     )

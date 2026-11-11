@@ -27,6 +27,8 @@ from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
 _LOCK_NAME = ".support.lock"
+# Mirrors collector.fpm_forward.runtime.fpm_memory_observer.MEMORY_SUPPORTED_VERSIONS; onboard init must not import it.
+MEMORY_OBSERVATION_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
 
 
 def request_id(request: SupportRequest) -> str:
@@ -394,7 +396,7 @@ def _plan_documents(
             plan["fpm"]["scheduling_policy"] = (
                 "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
                 "This is a collection policy, not the default for arbitrary vLLM serving."
-                if request.identity.framework_version == "0.27.0"
+                if request.identity.framework_version in MEMORY_OBSERVATION_VERSIONS
                 else "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
             )
         elif deployment.resources.cache_layout == "grouped":
@@ -438,13 +440,21 @@ def _plan_documents(
                 "Selected profile deployment; memory remains pending runtime initialization. "
                 "Collection is permitted; prediction, recommendation and replay require finalized memory."
             )
+            # A version's prerequisite text must not change once plans are saved with it, because check_plan
+            # compares saved plans byte for byte. The text therefore names only the plan's own version, and
+            # 0.27.0 and every version without memory observation keep the legacy text.
+            version = request.identity.framework_version
+            layouts = (
+                f"supported vLLM {version} layouts."
+                if version in MEMORY_OBSERVATION_VERSIONS and version != "0.27.0"
+                else "supported vLLM 0.27.0 layouts; other versions can collect timings but leave memory unresolved."
+            )
             plan["prerequisites"][0].update(
                 status="runtime_memory_pending",
                 detail=(
                     "Identity, precision, topology and cache geometry are declared. Runtime memory is collected "
-                    "during worker initialization for supported vLLM 0.27.0 layouts; other versions can collect "
-                    "timings but leave memory unresolved. No activation or non-KV byte declaration is required. "
-                    "Run onboard finalize after successful collection, then review the resolved profile."
+                    f"during worker initialization for {layouts} No activation or non-KV byte declaration is "
+                    "required. Run onboard finalize after successful collection, then review the resolved profile."
                 ),
             )
         elif deployment.resources.memory_source == "runtime":
