@@ -783,6 +783,9 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
     def resources(engine):
         return engine["fpm_profile"]["deployments"][0]["resources"]
 
+    def parallelism(engine):
+        return engine["workers"]["aggregated"]["parallelism"]
+
     def grouped(engine):
         group = {"name": "kv", "kind": "attention", "num_layers": 1, "block_size_tokens": 256, "page_size_bytes": 1}
         resources(engine).update(cache_layout="grouped", cache_groups=[group], kv_bytes_per_token=None)
@@ -796,7 +799,8 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
         ),
         ("records runtime_memory", lambda e: resources(e).pop("runtime_memory")),
         ("unset cuda_graph_reserved_bytes", lambda e: cache(e)["capacity"].update(cuda_graph_reserved_bytes=1)),
-        ("requires .*prefill_context=1", lambda e: e["workers"]["aggregated"]["parallelism"].update(prefill_context=2)),
+        ("requires .*prefill_context=1", lambda e: parallelism(e).update(prefill_context=2)),
+        ("requires .*decode_context=1", lambda e: parallelism(e).update(decode_context=2)),
         ("requires a linear FPM cache", grouped),
     ):
         invalid = copy.deepcopy(payload)
