@@ -10,7 +10,6 @@ import copy
 import hashlib
 import json
 import shutil
-import statistics
 from dataclasses import replace
 
 import pytest
@@ -760,10 +759,11 @@ def _glm_producer_shape(tmp_path, breakage=None):
 
     The fake of the native scheduler runs the producer once for each phase. Its measurement protocol and the
     ``benchmark_sample`` of its first measured repetition are the templates. Each point then gets the record of the
-    native save as the producer rewrites it: ten raw samples of the point's own FPM, each with its own timing
-    interval, and the repetition median as the retained wall time. With no global warm-up, Dynamo records an empty
-    warm-up list. ``breakage`` moves the timing interval of one raw sample (``interval``) or moves the retained wall
-    time to the slowest repetition (``median``), in the first point of each artifact.
+    native save as the producer rewrites it: ten raw samples of the point's own FPM, each numbered by its position and
+    with its own timing interval, and the producer's upper median of samples 1 to 9 as the retained wall time. With no
+    global warm-up, Dynamo records an empty warm-up list. ``breakage`` moves the timing interval of one raw sample
+    (``interval``) or moves the retained wall time to the slowest repetition (``median``), in the first point of each
+    artifact.
     """
     from collector.fpm_forward.measurement_evidence import _content_key
 
@@ -776,7 +776,7 @@ def _glm_producer_shape(tmp_path, breakage=None):
     )
     from .collector.test_fpm_glm53flash_prefix_seed import run as run_producer
 
-    templates = {}
+    templates, estimates = {}, {}
     with pytest.MonkeyPatch.context() as patch:
         module = load_producer(patch)
         for phase, point in (
@@ -793,9 +793,10 @@ def _glm_producer_shape(tmp_path, breakage=None):
             measurement = produced["benchmark_measurement"]
             assert (measurement["expected_internal_samples"], measurement["estimate"]["method"]) == (
                 10,
-                "repetition_median",
+                "adjacent_upper_median",
             )
             templates[phase] = measurement["raw_fpms"][0]["benchmark_sample"]
+            estimates[phase] = measurement["estimate"]
         protocol = scheduler._bench_measurement_protocol()
 
     def shape(phase, payload):
@@ -811,6 +812,8 @@ def _glm_producer_shape(tmp_path, breakage=None):
             for index, wall in enumerate(walls):
                 sample = copy.deepcopy(templates[phase])
                 start = 100.0 * position + index
+                # The producer numbers each raw sample by its position, as Dynamo's merge requires.
+                sample["sample_index"] = index
                 sample["forward_index"] = forward
                 sample["timing"].update(start_monotonic=start, end_monotonic=start + wall)
                 sample["cudagraph"].update(num_unpadded_tokens=tokens, num_padded_tokens=tokens, num_paddings=0)
@@ -822,7 +825,9 @@ def _glm_producer_shape(tmp_path, breakage=None):
                 samples.append(raw)
             if phase == "decode":
                 fpm["kvwarm_steady_sample"] = True
-            fpm["wall_time"] = group["wall_time"] = statistics.median(walls)
+            # The producer's reduction: the upper median of the samples that its estimate names.
+            chosen = sorted(walls[index] for index in estimates[phase]["raw_sample_indices"])
+            fpm["wall_time"] = group["wall_time"] = chosen[len(chosen) // 2]
             fpm["benchmark_measurement"] = {
                 "schema_version": 1,
                 "point_key": _content_key(row["point"]),
@@ -837,7 +842,7 @@ def _glm_producer_shape(tmp_path, breakage=None):
                 },
                 "expected_internal_samples": 10,
                 "raw_fpms": samples,
-                "estimate": {"method": "repetition_median", "raw_sample_indices": list(range(10))},
+                "estimate": copy.deepcopy(estimates[phase]),
             }
         first = payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]
         if breakage == "interval":

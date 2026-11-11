@@ -18,7 +18,6 @@ import json
 import math
 import os
 import shutil
-import statistics
 import subprocess
 import sys
 import types
@@ -273,6 +272,132 @@ class FakeBase:
                     },
                 }
             )
+
+
+def _number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def dynamo_merge_refusal(scheduler):
+    """The refusal of the Dynamo 1.7 merge for the saved points of the only rank, or None when it accepts them.
+
+    The rules and texts are those that ai-dynamo/dynamo@9abd2ef0d9 components/src/dynamo/vllm/worker_factory.py applies
+    to each point of a rank artifact before it writes the merged artifact: the point checks of
+    ``_merge_benchmark_rank_results`` (:618-768, :903-934), the raw sample checks of ``_validate_execution_measurement``
+    (:325-445) and the warm-up ledger reference (:706-748). The ledger is the native one of ``_bench_write_results``.
+    """
+    ledger = {"status": "recorded", "records": scheduler._bench_warmup_evidence}
+    previous_forward = -1
+    results = {result.point.benchmark_id: result for result in scheduler._bench_results}
+    for group in scheduler._bench_iteration_groups:
+        benchmark_id = group["benchmark_id"]
+        if not group.get("complete") or [result["dp_rank"] for result in group["rank_results"]] != [0]:
+            return f"Self-benchmark iteration group is incomplete for benchmark_id={benchmark_id}"
+        fpms = group["rank_results"][0]["fpms"]
+        if not isinstance(fpms, list) or len(fpms) != 1:
+            return f"Each self-benchmark rank-point must contain exactly one FPM: rank=0 benchmark_id={benchmark_id}"
+        (fpm,) = fpms
+        if fpm.get("counter_id") != benchmark_id or fpm.get("dp_rank") != 0:
+            return f"Self-benchmark FPM counter mismatch: rank=0 benchmark_id={benchmark_id}"
+        measurement = fpm.get("benchmark_measurement")
+        if not isinstance(measurement, dict) or measurement.get("schema_version") != 1 or measurement["dp_rank"] != 0:
+            return f"Self-benchmark measurement evidence missing or invalid: rank=0 benchmark_id={benchmark_id}"
+
+        def invalid(reason, benchmark_id=benchmark_id):
+            return f"Self-benchmark execution evidence is invalid: rank=0 benchmark_id={benchmark_id}: {reason}"
+
+        raw, expected = measurement.get("raw_fpms"), measurement.get("expected_internal_samples")
+        if not raw or type(expected) is not int or expected < len(raw) or "benchmark_sample" in fpm:
+            return invalid("missing raw samples or contradictory retained observation")
+        for index, sample_fpm in enumerate(raw):
+            if (
+                sample_fpm.get("counter_id") != benchmark_id
+                or sample_fpm.get("dp_rank") != 0
+                or sample_fpm.get("worker_id") != fpm.get("worker_id")
+            ):
+                return invalid(f"raw sample {index} has a different point/rank identity")
+            sample = sample_fpm.get("benchmark_sample")
+            if (
+                not isinstance(sample, dict)
+                or type(sample.get("sample_index")) is not int
+                or sample["sample_index"] != index
+                or type(sample.get("forward_index")) is not int
+                or sample["forward_index"] <= previous_forward
+            ):
+                return invalid(f"raw sample {index} has an invalid sample/forward index")
+            previous_forward = sample["forward_index"]
+            timing = sample.get("timing")
+            if not isinstance(timing, dict) or timing.get("basis") not in {"schedule_to_output", "inter_output"}:
+                return invalid(f"raw sample {index} has no timing interval")
+            start, end, wall = timing.get("start_monotonic"), timing.get("end_monotonic"), sample_fpm.get("wall_time")
+            if (
+                not _number(end)
+                or not _number(wall)
+                or wall < 0
+                or (
+                    start is not None
+                    and (
+                        not _number(start)
+                        or start > end
+                        or not math.isclose(end - start, wall, rel_tol=1e-9, abs_tol=1e-9)
+                    )
+                )
+            ):
+                return invalid(f"raw sample {index} contradicts its timing interval")
+            graph = sample.get("cudagraph")
+            if not isinstance(graph, dict):
+                return invalid(f"raw sample {index} has no graph observation status")
+            values = [graph.get(key) for key in ("runtime_mode", "num_unpadded_tokens", "num_padded_tokens")]
+            paddings = graph.get("num_paddings")
+            if graph.get("status") == "observed":
+                mode, unpadded, padded = values
+                if (
+                    not isinstance(mode, str)
+                    or not mode
+                    or type(unpadded) is not int
+                    or type(padded) is not int
+                    or not 0 <= unpadded <= padded
+                    or type(paddings) is not int
+                    or paddings != padded - unpadded
+                ):
+                    return invalid(f"raw sample {index} has invalid observed graph data")
+            elif graph.get("status") != "unavailable" or any(value is not None for value in [*values, paddings]):
+                return invalid(f"raw sample {index} contradicts its graph observation status")
+        estimate = measurement.get("estimate")
+        if not isinstance(estimate, dict):
+            return invalid("missing reduction inputs")
+        indices = estimate.get("raw_sample_indices")
+        if (
+            not isinstance(indices, list)
+            or not indices
+            or any(type(index) is not int or not 0 <= index < len(raw) for index in indices)
+            or indices != sorted(set(indices))
+        ):
+            return invalid("invalid reduction sample indices")
+        accepted = {
+            "single_step": [0] if len(raw) == 1 else None,
+            "last_step": [len(raw) - 1],
+            "adjacent_upper_median": list(range(1, len(raw))),
+        }
+        if estimate.get("method") not in accepted or indices != accepted[estimate["method"]]:
+            return invalid("reduction inputs contradict the reduction method")
+        walls = sorted(raw[index]["wall_time"] for index in indices)
+        if not math.isclose(fpm["wall_time"], walls[len(walls) // 2], rel_tol=1e-9, abs_tol=1e-12):
+            return invalid("retained wall time contradicts the raw reduction inputs")
+        before = measurement["preparation"].get("warmup_records_before")
+        if before is None or type(before) is not int or not 0 <= before <= len(ledger["records"]):
+            return f"Self-benchmark warmup reference is invalid: rank=0 benchmark_id={benchmark_id}"
+        first_forward = raw[0]["benchmark_sample"]["forward_index"]
+        if any(
+            record.status == "running" or (record.forward_index_end or -1) > first_forward
+            for record in ledger["records"][:before]
+        ):
+            return f"Self-benchmark warmup reference overlaps measurement: rank=0 benchmark_id={benchmark_id}"
+        if group.get("wall_time") != fpm["wall_time"]:
+            return f"Self-benchmark iteration wall time mismatch for benchmark_id={benchmark_id}"
+        if results[benchmark_id].fpms != fpms:
+            return f"Self-benchmark local result differs from synchronized group: rank=0 benchmark_id={benchmark_id}"
+    return None
 
 
 def load_producer(monkeypatch):
@@ -553,7 +678,7 @@ def test_prefill_prefix_seed_lifecycle(monkeypatch, tmp_path):
     prompts = {tuple(module.build_prompt(pool, rep["prompt_specs"][0])) for rep in records[1]["repetitions"]}
     assert len(prompts) == 15 and all(len(p) == 152 for p in prompts)
     measured = [rep["fpms"][0]["wall_time"] for rep in records[1]["repetitions"] if rep["role"] == "measurement"]
-    assert s.saved[1][1][0]["wall_time"] == pytest.approx(sorted(measured)[4:6][0] / 2 + sorted(measured)[4:6][1] / 2)
+    assert s.saved[1][1][0]["wall_time"] == sorted(measured[1:])[4]
 
 
 @pytest.mark.parametrize(("context", "seed"), [(201, 196), (200, 196), (198, 196), (197, 192)])
@@ -578,6 +703,19 @@ def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, seed):
     assert not record["rejected_repetitions"]
 
 
+def renumbered(fpms):
+    """The sidecar FPMs as the measurement record holds them: each raw sample is numbered by its position."""
+    return [
+        {**copy.deepcopy(fpm), "benchmark_sample": {**fpm["benchmark_sample"], "sample_index": position}}
+        for position, fpm in enumerate(fpms)
+    ]
+
+
+# The record of ten measured repetitions as ai-dynamo/dynamo@9abd2ef0d9 worker_factory.py:432-439 accepts it: Dynamo's
+# own adjacent upper median, whose inputs are every raw sample after the first.
+UPPER_MEDIAN_ESTIMATE = {"method": "adjacent_upper_median", "raw_sample_indices": list(range(1, 10))}
+
+
 def test_producer_point_keeps_the_sample_of_each_repetition_and_names_the_median(monkeypatch, tmp_path):
     walls = [0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
     scheduler = make_scheduler(
@@ -587,21 +725,25 @@ def test_producer_point_keeps_the_sample_of_each_repetition_and_names_the_median
     point = _run_prefill_point(scheduler, measured_walls=walls)
     fpm = point["fpms"][0]
     measurement = fpm["benchmark_measurement"]
-    assert fpm["wall_time"] == statistics.median(walls) == 0.455
-    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    # The median of repetitions 2 to 10, an odd count, which worker_factory.py:440-444 takes as walls[len // 2].
+    assert fpm["wall_time"] == sorted(walls[1:])[4] == 0.45
+    assert measurement["estimate"] == UPPER_MEDIAN_ESTIMATE
     assert measurement["expected_internal_samples"] == 10
     assert [raw["wall_time"] for raw in measurement["raw_fpms"]] == walls
+    assert [raw["benchmark_sample"]["sample_index"] for raw in measurement["raw_fpms"]] == list(range(10))
     for raw in measurement["raw_fpms"]:
         timing = raw["benchmark_sample"]["timing"]
         assert math.isclose(timing["end_monotonic"] - timing["start_monotonic"], raw["wall_time"])
     assert "benchmark_sample" not in fpm
     # The iteration group holds the same kept FPM, and its wall time is the retained one.
     (group,) = scheduler._bench_iteration_groups
-    assert group["rank_results"][0]["fpms"][0] is fpm and group["wall_time"] == 0.455
-    # The raw samples are the measured repetitions of the sidecar, which keeps every FPM as recorded.
+    assert group["rank_results"][0]["fpms"][0] is fpm and group["wall_time"] == 0.45
+    # The raw samples are the measured repetitions of the sidecar, which keeps every FPM as recorded, with the index of
+    # the FPM in its own repetition.
     record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
     measured = [rep for rep in record["repetitions"] if rep["role"] == "measurement"]
-    assert measurement["raw_fpms"] == [rep["fpms"][0] for rep in measured]
+    assert {rep["fpms"][0]["benchmark_sample"]["sample_index"] for rep in measured} == {0}
+    assert measurement["raw_fpms"] == renumbered([rep["fpms"][0] for rep in measured])
     assert all("benchmark_measurement" not in fpm for rep in record["repetitions"] for fpm in rep["fpms"])
 
 
@@ -614,14 +756,89 @@ def test_producer_decode_point_keeps_the_steady_sample_of_each_repetition(monkey
     record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
     measured = [rep for rep in record["repetitions"] if rep["role"] == "measurement"]
     # A decode repetition records its first decode step and the measured second one. The second one is kept.
-    assert measurement["raw_fpms"] == [rep["fpms"][-1] for rep in measured]
-    assert [raw["benchmark_sample"]["sample_index"] for raw in measurement["raw_fpms"]] == [1] * 10
+    # The sidecar keeps the index of the steady FPM in its repetition, the record its position among the samples.
+    assert {rep["fpms"][-1]["benchmark_sample"]["sample_index"] for rep in measured} == {1}
+    assert measurement["raw_fpms"] == renumbered([rep["fpms"][-1] for rep in measured])
     assert {raw["benchmark_sample"]["timing"]["basis"] for raw in measurement["raw_fpms"]} == {"inter_output"}
-    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    assert measurement["estimate"] == UPPER_MEDIAN_ESTIMATE
     assert measurement["expected_internal_samples"] == 10
-    assert fpm["wall_time"] == statistics.median(rep["fpms"][-1]["wall_time"] for rep in measured)
+    assert fpm["wall_time"] == sorted(rep["fpms"][-1]["wall_time"] for rep in measured[1:])[4]
     assert fpm["kvwarm_steady_sample"] is True and "benchmark_sample" not in fpm
     assert s._bench_iteration_groups[0]["wall_time"] == fpm["wall_time"]
+
+
+def native_decode_save(monkeypatch, tmp_path):
+    """The fake's native save of one decode point of two recorded steps; it keeps the last one."""
+    s = make_scheduler(load_producer(monkeypatch), tmp_path, [Point("decode", 1, 1, 0, 8)])
+    s._bench_current_point, s._bench_expected_fpms = s._bench_grid.popleft(), 2
+    for forward_index, wall in ((7, 0.25), (8, 0.125)):
+        s._bench_current_fpms.append(
+            {
+                "counter_id": 1,
+                "dp_rank": 0,
+                "wall_time": wall,
+                "scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 8},
+                "benchmark_sample": {
+                    "sample_index": len(s._bench_current_fpms),
+                    "forward_index": forward_index,
+                    "timing": {"basis": "inter_output", "start_monotonic": 1.0, "end_monotonic": 1.0 + wall},
+                    "cudagraph": {"status": "unavailable"},
+                },
+            }
+        )
+    FakeBase._bench_save_current_point(s)
+    return s
+
+
+def test_the_dynamo_merge_accepts_a_point_of_the_native_save(monkeypatch, tmp_path):
+    assert dynamo_merge_refusal(native_decode_save(monkeypatch, tmp_path)) is None
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        # worker_factory.py:432-439: a method that Dynamo does not know, or indices that its method does not name.
+        (
+            {"method": "repetition_median", "raw_sample_indices": [0, 1]},
+            "reduction inputs contradict the reduction method",
+        ),
+        (
+            {"method": "adjacent_upper_median", "raw_sample_indices": [0, 1]},
+            "reduction inputs contradict the reduction method",
+        ),
+        # worker_factory.py:440-444: the retained wall time is the upper median of the samples that the indices name.
+        (
+            {"method": "adjacent_upper_median", "raw_sample_indices": [1]},
+            "retained wall time contradicts the raw reduction",
+        ),
+    ],
+)
+def test_the_dynamo_merge_refuses_a_reduction_that_dynamo_does_not_compute(monkeypatch, tmp_path, change, reason):
+    s = native_decode_save(monkeypatch, tmp_path)
+    (fpm,) = s._bench_results[0].fpms
+    fpm["benchmark_measurement"]["estimate"] = change
+    if change["raw_sample_indices"] == [1]:
+        # The mean of the two samples, as statistics.median takes it, instead of the sample that the indices name.
+        fpm["wall_time"] = s._bench_iteration_groups[0]["wall_time"] = (0.25 + 0.125) / 2
+    assert reason in dynamo_merge_refusal(s)
+
+
+def test_the_dynamo_merge_accepts_the_prefill_points_of_the_producer(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    points = [
+        Point("prefill", 1, 2, 64, 0, rows=[[32, 0], [32, 0]]),
+        Point("prefill", 2, 2, 64, 240, rows=[[32, 120], [32, 120]]),
+    ]
+    s = make_scheduler(module, tmp_path, points)
+    run(s, Engine(s, first_miss={"test-p2-s0"}), "prefill")
+    assert dynamo_merge_refusal(s) is None
+
+
+def test_the_dynamo_merge_accepts_the_decode_points_of_the_producer(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    s = make_scheduler(module, tmp_path, [Point("decode", 1, 3, 0, 3 * 201), Point("decode", 2, 1, 0, 200)])
+    run(s, Engine(s), "decode")
+    assert dynamo_merge_refusal(s) is None
 
 
 def test_producer_point_leaves_a_rejected_measured_repetition_out_of_its_record(monkeypatch, tmp_path):
@@ -648,12 +865,12 @@ def test_producer_point_leaves_a_rejected_measured_repetition_out_of_its_record(
     assert [sample["benchmark_sample"]["forward_index"] for sample in rejection["fpms"]] == rejected
     # The record holds the ten accepted measured repetitions, not the rejected one.
     measured = [rep for rep in record["repetitions"] if rep["role"] == "measurement"]
-    assert len(measured) == 10 and measurement["raw_fpms"] == [rep["fpms"][0] for rep in measured]
+    assert len(measured) == 10 and measurement["raw_fpms"] == renumbered([rep["fpms"][0] for rep in measured])
     assert rejected[0] not in [raw["benchmark_sample"]["forward_index"] for raw in measurement["raw_fpms"]]
-    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    assert measurement["estimate"] == UPPER_MEDIAN_ESTIMATE
     assert measurement["expected_internal_samples"] == 10
     assert [raw["wall_time"] for raw in measurement["raw_fpms"]] == walls
-    assert fpm["wall_time"] == statistics.median(walls) == 0.455
+    assert fpm["wall_time"] == sorted(walls[1:])[4] == 0.45
 
 
 @pytest.mark.parametrize("origin", ["explicit", "imbalance"])
@@ -693,7 +910,7 @@ def test_producer_protocol_names_its_repetitions_and_seeded_tokens(monkeypatch, 
         "state_protocol": "glm53flash_prefix_cache_real_seed_v1",
         "warmup_repeats": 5,
         "measurement_repeats": 10,
-        "reduction": "repetition_median",
+        "reduction": "upper_median_after_first_repetition",
     }
     assert protocol == {**native, "synthetic_content": "seeded_tokens", "producer": producer}
     # The repetitions of a point share one launch.

@@ -1909,13 +1909,14 @@ def _edit_rank_artifact(root, action):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_measurement_evidence_accepts_a_repetition_median_point(tmp_path):
+def test_measurement_evidence_accepts_a_producer_upper_median_point(tmp_path):
     root, collection = _producer_collection(
         tmp_path, walls=[0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
     )
     evidence = extract_measurement_evidence(root, collection)
     (point,) = evidence["points"].values()
-    assert point["wall_time_seconds"] == 0.455
+    # The median of repetitions 2 to 10.
+    assert point["wall_time_seconds"] == 0.45
     # Every raw sample passes the interval rule, and the record is complete.
     assert evidence["status"] == point["status"] == "recorded"
     samples = point["ranks"]["0"]["observed_execution"]["samples"]
@@ -1924,7 +1925,7 @@ def test_measurement_evidence_accepts_a_repetition_median_point(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_measurement_evidence_refuses_a_repetition_median_that_is_not_the_median(tmp_path):
+def test_measurement_evidence_refuses_a_producer_point_whose_wall_time_is_not_the_median(tmp_path):
     root, collection = _producer_collection(tmp_path, walls=[0.4] * 10, retained=0.5)
     with pytest.raises(ValueError, match="benchmark_measurement reduction disagrees with retained timing"):
         extract_measurement_evidence(root, collection)
@@ -1941,13 +1942,13 @@ def test_measurement_evidence_refuses_a_repetition_sample_with_a_foreign_timing_
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        # A repetition median needs the producer's protocol record.
-        ({"synthetic_content": "random", "producer": None}, "inconsistent reduction method"),
-        # Seeded token content needs it too.
+        # Seeded token content needs the producer's protocol record.
         ({"producer": None}, "malformed content settings"),
         # A record that differs from the producer's in a value or in a JSON type is not the producer's.
         ({"producer": {"measurement_repeats": 10.0}}, "malformed content settings"),
         ({"producer": {"reduction": "adjacent_upper_median"}}, "malformed content settings"),
+        # The label of the retired median of all ten repetitions.
+        ({"producer": {"reduction": "repetition_median"}}, "malformed content settings"),
     ],
 )
 def test_measurement_evidence_refuses_producer_values_without_the_producer_protocol(tmp_path, change, message):
@@ -1969,7 +1970,7 @@ def test_measurement_evidence_refuses_producer_values_without_the_producer_proto
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_measurement_evidence_accepts_a_decode_repetition_median_point(tmp_path):
+def test_measurement_evidence_accepts_a_decode_producer_upper_median_point(tmp_path):
     root, collection = _producer_collection(tmp_path, phase="decode")
     payload = json.loads((root / "pod" / "benchmark-dp0.json").read_text())
     retained = payload["results"][0]["fpms"][0]
@@ -1978,15 +1979,14 @@ def test_measurement_evidence_accepts_a_decode_repetition_median_point(tmp_path)
     (point,) = evidence["points"].values()
     assert evidence["status"] == point["status"] == "recorded"
     assert point["point"]["point_type"] == "decode"
-    # The retained wall time is the median of the steady decode step of the ten repetitions.
-    assert (
-        point["wall_time_seconds"] == retained["wall_time"] == statistics.median(sample["wall_time"] for sample in raw)
-    )
+    # The retained wall time is the median of the steady decode step of repetitions 2 to 10.
+    assert point["wall_time_seconds"] == retained["wall_time"] == sorted(sample["wall_time"] for sample in raw[1:])[4]
     measurement = point["ranks"]["0"]
-    assert measurement["estimate"] == {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+    assert measurement["estimate"] == {"method": "adjacent_upper_median", "raw_sample_indices": list(range(1, 10))}
     assert measurement["expected_internal_samples"] == 10
-    # Each raw sample is the second recorded FPM of its repetition, timed from the output of the first.
-    assert [sample["benchmark_sample"]["sample_index"] for sample in measurement["raw_fpms"]] == [1] * 10
+    # Each raw sample is the second recorded FPM of its repetition, timed from the output of the first, and numbered
+    # by its position among the raw samples.
+    assert [sample["benchmark_sample"]["sample_index"] for sample in measurement["raw_fpms"]] == list(range(10))
     samples = measurement["observed_execution"]["samples"]
     assert [sample["sample_index"] for sample in samples] == list(range(10))
     assert {sample["timing_basis"] for sample in samples} == {"inter_output"}
@@ -2006,15 +2006,22 @@ def _edit_raw_samples(root, action):
 @pytest.mark.parametrize(
     ("action", "message"),
     [
-        # Nine raw samples where the protocol names ten measured repetitions.
-        (lambda measurement: measurement["raw_fpms"].pop(), "benchmark_measurement has inconsistent reduction method"),
-        # Indices that leave a sample out of the median, or name one twice.
+        # Nine raw samples whose indices still name ten.
         (
-            lambda measurement: measurement["estimate"].update(raw_sample_indices=list(range(9))),
+            lambda measurement: measurement["raw_fpms"].pop(),
+            "benchmark_measurement has inconsistent raw sample indices",
+        ),
+        # Indices that put the first sample into the median, leave one out, or name one twice.
+        (
+            lambda measurement: measurement["estimate"].update(raw_sample_indices=list(range(10))),
             "benchmark_measurement has inconsistent raw sample indices",
         ),
         (
-            lambda measurement: measurement["estimate"].update(raw_sample_indices=[*range(9), 8]),
+            lambda measurement: measurement["estimate"].update(raw_sample_indices=list(range(1, 9))),
+            "benchmark_measurement has inconsistent raw sample indices",
+        ),
+        (
+            lambda measurement: measurement["estimate"].update(raw_sample_indices=[*range(1, 9), 8]),
             "benchmark_measurement has inconsistent raw sample indices",
         ),
         # Forward indices that do not rise strictly from one repetition to the next.
@@ -2026,7 +2033,7 @@ def _edit_raw_samples(root, action):
         ),
     ],
 )
-def test_measurement_evidence_refuses_a_malformed_repetition_median(tmp_path, action, message):
+def test_measurement_evidence_refuses_a_malformed_producer_upper_median(tmp_path, action, message):
     root, collection = _producer_collection(
         tmp_path, walls=[0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
     )
@@ -2036,15 +2043,34 @@ def test_measurement_evidence_refuses_a_malformed_repetition_median(tmp_path, ac
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_measurement_evidence_refuses_a_repetition_median_whose_samples_have_different_indices(tmp_path):
+def test_measurement_evidence_refuses_producer_samples_numbered_within_their_repetition(tmp_path):
+    # Each raw sample is the only prefill FPM of its repetition. Its index in that repetition is 0 for every sample,
+    # which the merge of worker_factory.py:357-366 at ai-dynamo/dynamo@9abd2ef0d9 refuses, and so does the reader.
     root, collection = _producer_collection(tmp_path, walls=[0.4] * 10)
 
-    def renumber(payload):
-        for fpm in (payload["results"][0]["fpms"][0], payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]):
-            fpm["benchmark_measurement"]["raw_fpms"][4]["benchmark_sample"]["sample_index"] = 4
+    def renumber(measurement):
+        for sample in measurement["raw_fpms"]:
+            sample["benchmark_sample"]["sample_index"] = 0
 
-    _edit_rank_artifact(root, renumber)
+    _edit_raw_samples(root, renumber)
     with pytest.raises(ValueError, match="invalid sample or process-local forward index"):
+        extract_measurement_evidence(root, collection)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_measurement_evidence_refuses_the_retired_median_of_all_repetitions(tmp_path):
+    # The record that the producer wrote before: every repetition in a statistics.median, each sample numbered within
+    # its repetition. The merge of worker_factory.py:432-439 refuses its method, and so does the reader.
+    walls = [0.50, 0.42, 0.47, 0.41, 0.44, 0.49, 0.43, 0.46, 0.45, 0.48]
+    root, collection = _producer_collection(tmp_path, walls=walls, retained=statistics.median(walls))
+
+    def retire(measurement):
+        measurement["estimate"] = {"method": "repetition_median", "raw_sample_indices": list(range(10))}
+        for sample in measurement["raw_fpms"]:
+            sample["benchmark_sample"]["sample_index"] = 0
+
+    _edit_raw_samples(root, retire)
+    with pytest.raises(ValueError, match="benchmark_measurement has inconsistent reduction method"):
         extract_measurement_evidence(root, collection)
 
 
@@ -2079,7 +2105,7 @@ def test_measurement_evidence_reads_plain_native_reductions_as_before(tmp_path, 
     assert measurement["estimate"]["method"] == method
     samples = measurement["observed_execution"]["samples"]
     assert [sample["sample_index"] for sample in samples] == list(range(len(measurement["raw_fpms"])))
-    # The producer's reduction is refused on the plain native path.
+    # A method that Dynamo does not compute is refused.
     _edit_rank_artifact(
         root,
         lambda payload: [

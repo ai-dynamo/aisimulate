@@ -73,9 +73,12 @@ included, before the scheduler loads.
   and the producer fails the run on any unaligned prefill chunk start. A decode
   point keeps its true context `c`: the prompt has `c - 1` tokens and the
   cached seed `4 * floor((c - 2) / 4)`.
-- Each point runs 5 warmups and 10 measurements, and the table stores the
-  median. The first repetition of a point whose requests reuse a seeded prefix
-  is rejected, and the later repetitions are measured. With the default
+- Each point runs 5 warmups and 10 measurements. The table stores the median
+  of measurements 2 to 10, which is Dynamo's `adjacent_upper_median` estimate.
+  The merge of Dynamo 1.7 accepts no other median of several samples. Each raw
+  sample of the record is numbered by its position. The first repetition of a
+  point whose requests reuse a seeded prefix is rejected, and the later
+  repetitions are measured. With the default
   `prefix_cache_retention_interval` of 0, the seed does not keep the Mamba
   state at the end of the prefix. vLLM 0.33.0 stops the first repetition there,
   at the shared-prefix junction, and caches the state. The later repetitions

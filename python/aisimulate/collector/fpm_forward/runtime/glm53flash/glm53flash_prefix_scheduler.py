@@ -65,7 +65,6 @@ import hashlib
 import json
 import os
 import re
-import statistics
 import time
 import uuid
 from dataclasses import asdict
@@ -96,9 +95,13 @@ INPUT_SOURCE = "seeded_tokens"
 TIMING_BOUNDARY = "dynamo_vllm_instrumented_scheduler_fpm_wall_time"
 WARMUP_REPEATS = 5
 MEASUREMENT_REPEATS = 10
-# The reduction of the measured repetitions: statistics.median of their wall times. The collector's measurement
-# evidence reader keeps this value and the three before it, and a test keeps them equal.
-REDUCTION = "repetition_median"
+# The reduction of the measured repetitions: the upper median of the wall times of every repetition after the first,
+# which is Dynamo's adjacent_upper_median (ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:7445-7460). The merge
+# in the engine accepts no other median (worker_factory.py:432-444). Nine repetitions are an odd count, so the value is
+# their median. The collector's measurement evidence reader keeps the label and the three values before it, and a test
+# keeps them equal.
+REDUCTION = "upper_median_after_first_repetition"
+ESTIMATE_METHOD = "adjacent_upper_median"
 MAX_REJECTED_REPETITIONS = 10
 MAX_BATCH = 32
 MAX_CONTEXT = 131072
@@ -964,12 +967,16 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         self._glm_prompt_lengths = {}
 
     def _glm_record_repetitions(self, point, retained):
-        """Make the saved point hold the median of the measured repetitions and the raw sample of each one.
+        """Make the saved point hold the upper median of the measured repetitions and the raw sample of each one.
 
         ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:7437-7500 copies the FPMs of the last measured repetition
         into ``benchmark_measurement.raw_fpms`` and keeps one FPM. With one attention-DP rank there is no synchronizer
         (:2944-2955), so the point result and the iteration group hold that same FPM list (:7508-7511, :7659-7674).
-        Each raw sample keeps its own ``wall_time`` and ``benchmark_sample``, so its timing interval measures it.
+        Each raw sample keeps its own ``wall_time`` and ``benchmark_sample``, so its timing interval measures it. The
+        merge of worker_factory.py:357-366 requires ``sample_index`` to be the position of the sample in ``raw_fpms``,
+        so the record numbers the samples by position. The repetition sidecar keeps the index of each FPM in its own
+        repetition. The forward indices rise already: each repetition runs after the one before it. The retained wall
+        time is ``walls[len(walls) // 2]`` of the sorted samples 1 to 9, as :440-444 computes it.
         """
         result = self._bench_results[-1]
         group = self._bench_iteration_groups[-1]
@@ -984,9 +991,13 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         (fpm,) = result.fpms
         measurement = fpm["benchmark_measurement"]
         measurement["expected_internal_samples"] = MEASUREMENT_REPEATS
+        for position, sample in enumerate(retained):
+            sample["benchmark_sample"]["sample_index"] = position
+        indices = list(range(1, MEASUREMENT_REPEATS))
         measurement["raw_fpms"] = retained
-        measurement["estimate"] = {"method": REDUCTION, "raw_sample_indices": list(range(MEASUREMENT_REPEATS))}
-        fpm["wall_time"] = statistics.median(sample["wall_time"] for sample in retained)
+        measurement["estimate"] = {"method": ESTIMATE_METHOD, "raw_sample_indices": indices}
+        walls = sorted(retained[index]["wall_time"] for index in indices)
+        fpm["wall_time"] = walls[len(walls) // 2]
         group["wall_time"] = fpm["wall_time"]
 
     def _bench_cleanup_requests(self):
