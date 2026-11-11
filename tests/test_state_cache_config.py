@@ -766,7 +766,9 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
     worker["kv_cache"].pop("capacity")
     worker["timing"] = {"type": "default"}
     worker["parallelism"]["moe_tensor"] = 8
-    payload["engine"].update(backend_version="0.25.1", fpm_profile=_runtime_memory_profile(256 * 3585 * 50 + 7))
+    profile = _runtime_memory_profile(256 * 3585 * 50 + 7)
+    # "max" resolves to the profile's context_length, which equals the recorded max_model_len.
+    payload["engine"].update(backend_version="0.25.1", fpm_profile=profile, context_length="max")
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
     # The recorded bytes in whole blocks of the resolved geometry: a derived, not a user-fixed, capacity.
     assert spec.backend_deployment.agg_engine_args["num_gpu_blocks"] == 50
