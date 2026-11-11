@@ -22,7 +22,8 @@ and `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
 FP8 TP1 does not fit on one GPU. Hopper profiles use BF16 KV for both backends.
 The 15 published vLLM profiles are data from stock vLLM 0.31.0. New vLLM
 collections run the [producer](#vllm-producer) on vLLM 0.33.0 with the Dynamo
-1.7 scheduler.
+scheduler file of the `release/1.7.0` branch that `runtime-source-sha256.json`
+pins.
 
 The tables (`fpm_forward_perf.{parquet,metadata.json}`) are not stored in this
 repository. They are published in `nvidia/aisimulate-fpm-dataset`
@@ -54,8 +55,9 @@ scheduler file equals `ai-dynamo/dynamo@9abd2ef0d9` on `release/1.7.0`, and
 `dynamo/vllm/worker_factory.py`, whose merge checks every measurement record
 before the engine writes its merged artifact.
 
-The producer runs on exactly stock vLLM 0.33.0 (`4ba787ec`) with the Dynamo 1.7
-scheduler. It refuses every other vLLM version, a patch release such as 0.33.1
+The producer runs on exactly stock vLLM 0.33.0 (`4ba787ec`) with the Dynamo
+scheduler file of the `release/1.7.0` branch that `runtime-source-sha256.json`
+pins. It refuses every other vLLM version, a patch release such as 0.33.1
 included, before the scheduler loads.
 
 - `sitecustomize.py` checks the installed vLLM/Dynamo sources against
@@ -74,20 +76,21 @@ included, before the scheduler loads.
   v0.33.0 removed the defect. Inputs are therefore built on the 4-token grid,
   and the producer fails the run on any unaligned prefill chunk start. A decode
   point keeps its true context `c`: the prompt has `c - 1` tokens and the
-  cached seed `4 * floor((c - 2) / 4)`.
+  cached seed `(c - 2) // hash_block * hash_block`, where `hash_block` is the
+  hash block size of the engine.
 - Each point runs 5 warmups and 10 measurements. The table stores the median
   of measurements 2 to 10, which is Dynamo's `adjacent_upper_median` estimate.
   Measurement 1 is a valid measured repetition that this estimate leaves out.
   The merge of Dynamo 1.7 accepts no other median of several samples. Each raw
   sample of the record is numbered by its position. The first repetition of a
-  point whose requests reuse a seeded prefix is rejected. It runs before the
-  warmups and counts as neither a warmup nor a measurement, and the later
-  repetitions are measured. With the default
+  prefill point with a prefix is rejected. It runs before the warmups and
+  counts as neither a warmup nor a measurement, and the later repetitions are
+  accepted: 5 warmups, then 10 measurements. With the default
   `prefix_cache_retention_interval` of 0, the seed does not keep the Mamba
   state at the end of the prefix. vLLM 0.33.0 stops the first repetition there,
   at the shared-prefix junction, and caches the state. The later repetitions
-  hit the whole prefix. One rejected repetition for each such point is the
-  expected result.
+  hit the whole prefix. One rejected repetition for each such prefill point is
+  the expected result. A decode point has none.
 - Request tokens come from `collector/glm53flash_attention_tokens.py`
   (seed 53, ordinary BPE vocabulary of the pinned tokenizer).
 - A pinned revision needs the configuration of its own checkpoint. The
@@ -133,9 +136,14 @@ included, before the scheduler loads.
   `serving_config.mamba_prefill_checkpoint`.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
-`--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3
+`--enable-prefix-caching --kv-cache-dtype fp8_e4m3
 --no-async-scheduling --language-model-only --cudagraph-metrics
 --max-num-batched-tokens 8192 --max-num-seqs 32 --benchmark-warmup-iterations 0`.
+Without `--prefix-match-unit`, the hash block is the native block of the
+engine. The published vLLM 0.31.0 profiles used `--prefix-match-unit 4`, and
+the producer refuses that launch on vLLM 0.33.0, because vLLM 0.33.0 turns on
+partial hash hits (`mamba_partial_cache_hit`) for a hash block below the Mamba
+block, and the `align` rule of the producer does not model them.
 
 Environment:
 
@@ -143,7 +151,6 @@ Environment:
 |---|---|
 | `DYN_FPM_GLM53FLASH_REAL_KV` | `1` |
 | `DYN_FPM_GLM53FLASH_PREFIX_SEED` | `1` |
-| `DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT` | `4` |
 | `DYN_FPM_GLM53FLASH_MEASURED_CONTEXT` | `131072` |
 | `DYN_FPM_TOKENIZER_REVISION` | checkpoint revision |
 | `DYN_FPM_GLM53FLASH_DECODE_CONTEXTS` | optional `[[batch, total, [contexts...]], ...]` with the per-request decode split |
@@ -176,10 +183,9 @@ collector passes no `--prefix-match-unit`. It also sets these variables:
 
 `DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT` stays unset, so the native hash block of
 the engine is the prefix unit. The planner refuses a hash block that is not a
-multiple of 4. The producer still checks every prefill chunk start. In guided
-collection, a decode point seeds `(c - 2) // hash_block * hash_block` tokens,
-not the `4 * floor((c - 2) / 4)` of the launch above with
-`--prefix-match-unit 4`.
+multiple of 4. The producer still checks every prefill chunk start. A decode
+point seeds `(c - 2) // hash_block * hash_block` tokens, as in the launch
+above.
 
 The container needs one overlay directory at `/opt/glm53flash-dynamo`. A Slurm
 run can mount it with `--container-mount`. The collector uses that path unless
@@ -188,7 +194,9 @@ composite of two parts. The first part is the `dynamo` files of the
 `ai-dynamo 1.7.0.dev20261109` build, the Dynamo 1.7 scheduler and merge whose
 files `runtime-source-sha256.json` pins. The second part is the `collector`,
 `aisimulate_core` and `aisimulate` packages of the AISimulate checkout that
-plans the collection. The producer imports them.
+plans the collection. The producer imports them. Run the runtime probe with the
+deployment of the collection, the overlay mount included, because the collector
+refuses a collection deployment that differs from the accepted probe.
 
 The request must follow these rules:
 
