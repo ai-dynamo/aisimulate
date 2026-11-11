@@ -312,6 +312,9 @@ pub(super) struct VllmHostOffloadAdapter {
     /// connector `waits_for_loads`.
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
     compute_not_before_ms: f64,
+    /// Stores the next compute waits for that were prepared in the current
+    /// pass. Their deadline exists once the pass boundary submits them.
+    fences_at_submit: Vec<TransferId>,
     /// Present only for detailed artifact capture. Ordinary runs neither retain
     /// request-local mapping state nor allocate mapping payloads.
     observer: Option<Arc<dyn HostOffloadObserver>>,
@@ -393,6 +396,7 @@ impl VllmHostOffloadAdapter {
             load_epoch: 0,
             load_by_key: FxHashMap::default(),
             compute_not_before_ms: 0.0,
+            fences_at_submit: Vec::new(),
             observer: None,
         })
     }
@@ -712,9 +716,16 @@ impl VllmHostOffloadAdapter {
         now_ms: f64,
     ) -> HostTransferProgress {
         let mut progress = self.advance(kv_manager, now_ms);
-        self.host
-            .lock()
-            .submit_prepared_stores(self.host.id(), now_ms);
+        {
+            let mut tier = self.host.lock();
+            tier.submit_prepared_stores(self.host.id(), now_ms);
+            for store in self.fences_at_submit.drain(..) {
+                let deadline = tier
+                    .transfer_deadline(store)
+                    .expect("a fenced store has a deadline once it is submitted");
+                self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
+            }
+        }
         let settled = self.advance(kv_manager, now_ms);
         progress.completed_loads.extend(settled.completed_loads);
         progress.completed_any |= settled.completed_any;
@@ -1018,15 +1029,42 @@ impl VllmHostOffloadAdapter {
         dependencies: &[SourceReuseDependency],
         kv_manager: &mut G1Manager,
     ) {
+        self.fence(uuid, lease, dependencies, kv_manager, false);
+    }
+
+    /// [`Self::fence_allocation`] for the blocks accepted drafts take, which
+    /// are reserved after the pass prepared its stores.
+    pub(super) fn fence_speculative_growth(
+        &mut self,
+        uuid: Uuid,
+        lease: &mut BlockRequestLease,
+        dependencies: &[SourceReuseDependency],
+        kv_manager: &mut G1Manager,
+    ) {
+        self.fence(uuid, lease, dependencies, kv_manager, true);
+    }
+
+    fn fence(
+        &mut self,
+        uuid: Uuid,
+        lease: &mut BlockRequestLease,
+        dependencies: &[SourceReuseDependency],
+        kv_manager: &mut G1Manager,
+        after_stores_prepared: bool,
+    ) {
         if dependencies.is_empty() {
             return;
         }
         let tier = self.host.lock();
         for dependency in dependencies {
-            let deadline = tier
-                .transfer_deadline(transfer_id(*dependency))
-                .expect("pending dependency must retain a submitted D2H");
-            self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
+            let store = transfer_id(*dependency);
+            match tier.transfer_deadline(store) {
+                Some(deadline) => {
+                    self.compute_not_before_ms = self.compute_not_before_ms.max(deadline);
+                }
+                None if after_stores_prepared => self.fences_at_submit.push(store),
+                None => panic!("pending dependency must retain a submitted D2H"),
+            }
         }
         kv_manager.authorize_native_compute_after_dependencies(uuid, lease, dependencies);
     }
@@ -1042,9 +1080,17 @@ impl VllmHostOffloadAdapter {
             if self.rules.preemption_waits_for_all {
                 tier.last_deadline(self.host.id())
             } else {
-                request
-                    .latest_store
-                    .and_then(|transfer_id| tier.transfer_deadline(transfer_id))
+                let store = request.latest_store;
+                let deadline = store.and_then(|store| tier.transfer_deadline(store));
+                // A preemption during speculative emission follows the pass's
+                // stores: this one is submitted at the pass boundary.
+                if deadline.is_none()
+                    && !self.shared
+                    && let Some(store) = store.filter(|store| tier.has_transfer(*store))
+                {
+                    self.fences_at_submit.push(store);
+                }
+                deadline
             }
         };
         if let Some(deadline) = deadline {
@@ -2582,6 +2628,29 @@ mod tests {
         ));
         assert_eq!(registry.lock().unwrap().stats().loaded_blocks, 0);
         assert_eq!(target.host.lock().take_kvcr_origin(&host.block_keys), 1);
+    }
+
+    #[test]
+    fn a_preemption_waits_for_a_store_prepared_in_the_same_pass() {
+        // The offloading connector flushes a preempted request's stores. One
+        // prepared in the pass that preempts it gets its deadline when the
+        // pass boundary submits it: a 1 MB block at 1 GB/s lands at 1 ms.
+        let mut adapter = adapter(2);
+        let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
+        let (_, _, mut preempted) = request(Uuid::nil(), vec![1, 2, 3, 4]);
+        let keys = &preempted.block_keys;
+        let outcome = adapter
+            .host
+            .lock()
+            .prepare_store(C, Uuid::nil(), keys, None, 0.0);
+        let StoreOutcome::Prepared { transfer_id, .. } = outcome else {
+            panic!("the block was absent")
+        };
+        preempted.latest_store = Some(transfer_id);
+        adapter.preempt_request(&mut preempted);
+        assert_eq!(adapter.compute_not_before_ms(0.0), 0.0);
+        adapter.complete_engine_boundary(&mut manager, 0.0);
+        assert_eq!(adapter.compute_not_before_ms(0.0), 1.0);
     }
 
     fn connector_adapter(connector: G2Connector, capacity_blocks: usize) -> VllmHostOffloadAdapter {

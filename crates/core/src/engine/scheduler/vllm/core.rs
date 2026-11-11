@@ -676,6 +676,11 @@ pub(crate) struct VllmCore {
     speculative_sampler: Option<SpeculativeDecodeSampler>,
     /// Native MTP lookahead depth, fixed by the worker configuration.
     native_mtp_depth: Option<usize>,
+    /// Whether a G2 restore under MTP resumes at the loaded prefix. vLLM
+    /// v0.32.0 adds the connector hit to the local hit, and only an annotated
+    /// drafter KV group loses the last chunk of the connector hit. A uniform
+    /// cache has no such group.
+    mtp_restore_keeps_loaded_prefix: bool,
     kv_event_buffer: Option<CapturedKvEventBuffer>,
     source_holds: SourceHolds<HeldVllmPrefill>,
     pending_destinations: PendingDestinations<VllmRequestState>,
@@ -969,14 +974,17 @@ impl VllmCore {
                     .expect("validated grouped cache capacity"),
             ));
         }
-        let native_mtp_depth = if args.worker_type == WorkerType::Aggregated
-            && args.prefix_match_unit.is_none()
-            && kv_manager.supports_native_speculative_slots()
-        {
-            policy::native_mtp_depth(args.scheduling_policy(), args.aic_nextn)
-        } else {
-            None
-        };
+        // MTP over one uniform token cache, on any worker type.
+        let uniform_mtp_depth =
+            if args.prefix_match_unit.is_none() && kv_manager.supports_native_speculative_slots() {
+                policy::native_mtp_depth(args.scheduling_policy(), args.aic_nextn)
+            } else {
+                None
+            };
+        let native_mtp_depth =
+            uniform_mtp_depth.filter(|_| args.worker_type == WorkerType::Aggregated);
+        let mtp_restore_keeps_loaded_prefix = native_mtp_depth.is_some()
+            || (native_host_offload.is_some() && uniform_mtp_depth.is_some());
         Ok(Self {
             kv_manager,
             belady_oracle: None,
@@ -985,6 +993,7 @@ impl VllmCore {
             state: SchedulerState::default(),
             speculative_sampler,
             native_mtp_depth,
+            mtp_restore_keeps_loaded_prefix,
             kv_event_buffer,
             source_holds: SourceHolds::default(),
             pending_destinations: PendingDestinations::default(),
@@ -2165,6 +2174,7 @@ impl VllmCore {
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
         let mut host_step_skipped = Vec::new();
         let native_mtp_depth = self.native_mtp_depth;
+        let keeps_loaded_prefix = self.mtp_restore_keeps_loaded_prefix;
         // Agent-style workloads can keep many requests in both collections.
         // Scan once, then update only the selected request's contribution as
         // this pass queues/consumes a host load or admits a new prefill.
@@ -2271,7 +2281,7 @@ impl VllmCore {
                 {
                     counts.record(request.sequence.len(), cost.cached_tokens)?;
                 }
-                if native_mtp_depth.is_some() {
+                if keeps_loaded_prefix {
                     let requires_logits =
                         !policy::generation_complete(&request.sequence, self.args.max_model_len);
                     let activated = request.host_offload.as_deref().and_then(|host| {
@@ -2297,7 +2307,7 @@ impl VllmCore {
                     self.native_host_offload.as_mut(),
                     request.host_offload.as_deref_mut(),
                 ) {
-                    if native_mtp_depth.is_none() {
+                    if !keeps_loaded_prefix {
                         cost = VllmHostOffloadAdapter::freeze_activated_cost(
                             host,
                             cost,
@@ -2408,7 +2418,7 @@ impl VllmCore {
                                     } else {
                                         0
                                     };
-                                let decide_admission = if native_mtp_depth.is_some() {
+                                let decide_admission = if keeps_loaded_prefix {
                                     policy::decide_waiting_admission_with_adjusted_cost
                                 } else {
                                     policy::decide_waiting_admission_with_cost
@@ -3792,6 +3802,7 @@ impl VllmCore {
         for &SpeculativeBurst { uuid, burst, .. } in &bursts {
             let completed = {
                 let kv_manager = &mut self.kv_manager;
+                let native_host_offload = &mut self.native_host_offload;
                 let request = self
                     .state
                     .requests
@@ -3836,9 +3847,24 @@ impl VllmCore {
                                 .as_mut()
                                 .expect("legacy speculative reservation"),
                         );
-                        assert!(
-                            matches!(allocation, NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty())
-                        );
+                        // A reserved block may still be the source of an in-flight G2
+                        // store. vLLM flushes the pending stores of every block a step
+                        // allocates, lookahead slots included, before its forward. Replay
+                        // reserves these blocks after the pass, so the next pass waits.
+                        let NativeAllocation::Ready { dependencies, .. } = allocation else {
+                            panic!("speculative decode reservation must cover its blocks");
+                        };
+                        if !dependencies.is_empty() {
+                            native_host_offload
+                                .as_mut()
+                                .expect("G1 source dependencies require native host offload")
+                                .fence_speculative_growth(
+                                    uuid,
+                                    &mut request.sequence.lease,
+                                    &dependencies,
+                                    kv_manager,
+                                );
+                        }
                     }
                     output_signals.push(OutputSignal {
                         uuid,

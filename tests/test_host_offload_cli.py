@@ -201,9 +201,23 @@ def test_canonical_mtp_host_config_takes_attention_dp() -> None:
     assert lowered["rank"]["aic_nextn"] == 2
 
 
-def test_canonical_mtp_host_config_rejects_disaggregated_workers() -> None:
-    with pytest.raises(ValidationError, match="aggregated vllm"):
-        CorePredictionConfig.model_validate({"engine": _mtp_host_engine(mode="disaggregated")})
+def test_canonical_mtp_host_config_takes_prefill_and_decode_workers_without_kvcr() -> None:
+    engine = _mtp_host_engine(mode="disaggregated")
+    # These workers take either pool scope; an aggregated worker only a local pool.
+    engine["workers"]["prefill"]["kv_cache"]["host_offload"]["scope"] = "cluster_shared"
+    runtime = _RecordingRuntime()
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    lowered = runtime.execution_spec["spec"]["engine"]
+    assert lowered["prefill"]["rank"]["native_host_offload"]["scope"] == "cluster_shared"
+    assert lowered["decode"]["rank"]["native_host_offload"] == _host_offload()
+    for role in ("prefill", "decode"):
+        assert lowered[role]["rank"]["aic_nextn"] == 2
+    # KVCR needs a local pool, and MTP then rejects it on this role.
+    engine["workers"]["prefill"]["kv_cache"]["host_offload"]["scope"] = "dp_rank_local"
+    engine["workers"]["prefill"]["kv_cache"]["kvcr"] = {}
+    with pytest.raises(ValidationError, match="kvcr on workers.prefill"):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 @pytest.mark.parametrize("expected", [0.0, 2.0])

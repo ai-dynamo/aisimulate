@@ -165,7 +165,7 @@ name = "G2 local"
 detail = "Host memory per DP rank"
 doc = "replay/engine/kv-cache.md#g2-scope"
 cells = ["limited", "limited:HiCache", "not_supported", "na", "na", "na"]
-note = "Requires prefix caching. vLLM takes canonical MTP on aggregated workers with a local pool and no other speculation; it follows vLLM 0.24's OffloadingConnector or, on an aggregated worker, vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR). SGLang HiCache supports aggregated prediction with per-rank local host pools and all three write policies; no P/D, recommendation, external storage or peer KVCR."
+note = "Requires prefix caching. vLLM takes canonical MTP (aggregated workers with a local pool only) and no other speculation; it follows vLLM 0.24's OffloadingConnector or, on an aggregated worker, vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR). SGLang HiCache supports aggregated prediction with per-rank local host pools and all three write policies; no P/D, recommendation, external storage or peer KVCR."
 
 [[sections.rows]]
 name = "G2 shared"
