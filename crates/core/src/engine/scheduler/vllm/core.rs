@@ -1809,7 +1809,12 @@ impl VllmCore {
                 self.native_mtp_depth(),
                 self.args.block_size,
             )
-            .saturating_sub(request.sequence.lease.physical_owned_block_count())
+            .saturating_sub(
+                request
+                    .sequence
+                    .lease
+                    .watermark_owned_block_count(self.args.block_size),
+            )
         } else {
             request.sequence.current_known_blocks().saturating_sub(
                 request
