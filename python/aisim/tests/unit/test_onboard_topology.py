@@ -578,7 +578,7 @@ def _directory_terminal(monkeypatch, root, answers):
 
 def _saved_configurations(root):
     index = json.loads((root / "onboarding.json").read_text())
-    assert index["schema_version"] == "aisim-onboarding/v1"
+    assert index["schema_version"] == "aisimulate-onboarding/v1"
     entries = index["configurations"]
     assert len({entry["request_id"] for entry in entries}) == len(entries)
     requests = []

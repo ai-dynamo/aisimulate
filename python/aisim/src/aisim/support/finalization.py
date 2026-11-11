@@ -20,7 +20,7 @@ from .config_profile import _linear_layout_gap, linear_runtime_resources
 from .plan import _plan_documents, check_plan, plan_lock, request_id
 from .schema import FPMDeployment, SupportRequest
 
-_SCHEMA = "aisim-onboarding-finalization/v1"
+_SCHEMA = "aisimulate-onboarding-finalization/v1"
 
 
 def add_finalization_parser(actions: Any) -> None:

@@ -52,9 +52,9 @@ class ServingPolicy(StrictModel):
 
 
 class ValidationPolicy(StrictModel):
-    schema_version: Literal["aisim-onboarding-validation-policy/v1", "aisim-onboarding-validation-policy/v2"] = (
-        "aisim-onboarding-validation-policy/v2"
-    )
+    schema_version: Literal[
+        "aisimulate-onboarding-validation-policy/v1", "aisimulate-onboarding-validation-policy/v2"
+    ] = "aisimulate-onboarding-validation-policy/v2"
     repeatability: RepeatabilityPolicy = Field(default_factory=RepeatabilityPolicy)
     interpolation: InterpolationPolicy = Field(default_factory=InterpolationPolicy)
     serving: ServingPolicy = Field(default_factory=ServingPolicy)
@@ -63,7 +63,7 @@ class ValidationPolicy(StrictModel):
     @classmethod
     def preserve_legacy_subset_policy(cls, values: Any) -> Any:
         """Reading a saved v1 campaign must not turn its subset into a full sweep."""
-        if isinstance(values, dict) and values.get("schema_version") == "aisim-onboarding-validation-policy/v1":
+        if isinstance(values, dict) and values.get("schema_version") == "aisimulate-onboarding-validation-policy/v1":
             repeatability = values.get("repeatability", {})
             if isinstance(repeatability, dict):
                 if repeatability.get("comparison_mode", "bounded") != "bounded":
@@ -384,7 +384,7 @@ def _repeatability_gate_status(assessment: dict[str, Any], policy: ValidationPol
     ):
         return "failed"
     if (
-        policy.schema_version == "aisim-onboarding-validation-policy/v2"
+        policy.schema_version == "aisimulate-onboarding-validation-policy/v2"
         and policy.repeatability.comparison_mode == "full_grid"
         and assessment.get("schema_version") == 2
         and assessment.get("policy", {}).get("comparison_mode") == "full_grid"
@@ -445,7 +445,7 @@ def validate_collection(args: argparse.Namespace) -> int:
         _write(output / "campaign.json", inputs)
         _write(output / "repeatability-selection.json", frozen)
     report: dict[str, Any] = {
-        "schema_version": "aisim-collection-validation/v1",
+        "schema_version": "aisimulate-collection-validation/v1",
         "status": "incomplete",
         "accuracy": "not_assessed",
         "policy": _identity(output / "policy.json"),
@@ -543,7 +543,7 @@ def check_collection_report(
 ) -> tuple[dict[str, Any], SupportRequest, Any, dict[str, Any]]:
     """Recompute all mandatory collection gates from preserved native/formal data."""
     report = _json(path)
-    if report.get("schema_version") != "aisim-collection-validation/v1":
+    if report.get("schema_version") != "aisimulate-collection-validation/v1":
         raise ValueError("unsupported collection validation report")
     previous_policy = _policy(_checked(report["policy"]))
     if policy is None:
@@ -774,7 +774,7 @@ def validate_serving(args: argparse.Namespace) -> int:
     _fresh(output, *inputs)
     _write(output / "policy.json", policy.model_dump(mode="json"))
     combined: dict[str, Any] = {
-        "schema_version": "aisim-onboarding-validation/v1",
+        "schema_version": "aisimulate-onboarding-validation/v1",
         "status": "incomplete",
         "accuracy": "not_qualified",
         "policy": _identity(output / "policy.json"),

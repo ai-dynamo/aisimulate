@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import builtins
 import fcntl
+import hashlib
 import inspect
 import json
 import os
@@ -31,6 +32,69 @@ from aisim.support.plan import check_plan, create_plan, plan_lock, request_id, v
 from aisim.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
+
+
+def _pre_rename_plan(root: Path, case: str) -> SupportRequest:
+    fixture = Path(__file__).parents[1] / "fixtures/legacy_onboarding/plans-v2.json"
+    frozen = json.loads(fixture.read_text())
+    documents = frozen["cases"][case]
+    root.mkdir(parents=True)
+    # Relocate the frozen writer output, then rebind only hashes affected by
+    # that path substitution. No current plan generation is used in this fixture.
+    for relative, content in documents.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content.replace(frozen["root_placeholder"], str(root)))
+    path = root / "support-plan.json"
+    plan = json.loads(path.read_text())
+    plan["generated_files_sha256"] = {
+        relative: hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        for relative in plan["generated_files_sha256"]
+    }
+    path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    return SupportRequest.from_yaml(root / "request.yaml")
+
+
+@pytest.mark.parametrize("case", ["aggregated", "prefill", "decode", "pending"])
+def test_pre_rename_plan_is_verified_and_previewed_without_rewriting(tmp_path, capsys, monkeypatch, case):
+    from aisim import main as cli
+    from aisim.support import fpm
+
+    # The frozen profile is synthetic and has no upstream model repository.
+    # Keep the real saved-plan checks while isolating collector model preflight.
+    def resolve(command):
+        assert "--plan-only" in command
+
+    monkeypatch.setattr(fpm, "_resolve_execution", resolve)
+
+    root = (tmp_path / "campaign").resolve()
+    request = _pre_rename_plan(root, case)
+    before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    check_plan(request, root)
+    assert (
+        cli.main(["onboard", "collect-fpm", "-c", str(root / "request.yaml"), "--output-dir", str(root), "--resume"])
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert ("pending_runtime_version" if case == "pending" else "--plan-only") in output
+    assert before == {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("target", ["commands.json", "predict/pilot.yaml", "systems/h200_sxm.yaml", "plan"])
+def test_pre_rename_plan_still_rejects_tampering_with_rewritten_hashes(tmp_path, target):
+    root = (tmp_path / "campaign").resolve()
+    request = _pre_rename_plan(root, "aggregated")
+    manifest = root / "support-plan.json"
+    plan = json.loads(manifest.read_text())
+    if target == "plan":
+        plan["search"]["candidate_count"] += 1
+    else:
+        path = root / target
+        path.write_text(path.read_text().replace("aisimulate", "untrusted") + "\n")
+        plan["generated_files_sha256"][target] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(plan))
+    with pytest.raises(ValueError, match="modified"):
+        check_plan(request, root)
 
 
 class _OfflineRunner:
@@ -629,7 +693,7 @@ def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan
     import yaml
 
     legacy = _request().model_dump(mode="json", exclude_none=True)
-    legacy["schema_version"] = "aisim-support-request/v1"
+    legacy["schema_version"] = "aisimulate-support-request/v1"
     legacy.pop("collection")
     if search is None:
         legacy.pop("search")
@@ -638,12 +702,12 @@ def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan
     source = tmp_path / "old-request.yaml"
     source.write_text(yaml.safe_dump(legacy))
     migrated = SupportRequest.from_yaml(source)
-    assert migrated.schema_version == "aisim-support-request/v2"
+    assert migrated.schema_version == "aisimulate-support-request/v2"
     assert migrated.search.context_length == expected_context
     assert migrated.scheduler_limits() == {"max_batched_tokens": 8192, "max_sequences": 256}
     root = tmp_path / "old-plan"
     root.mkdir()
-    (root / "support-plan.json").write_text(json.dumps({"schema_version": "aisim-support-plan/v1"}))
+    (root / "support-plan.json").write_text(json.dumps({"schema_version": "aisimulate-support-plan/v1"}))
     with pytest.raises(ValueError, match="new output directory"):
         create_plan(migrated, root, overwrite=True)
     assert create_plan(migrated, tmp_path / "new-plan")["fpm"]["runtime_limits"]["context_length"] == expected_context

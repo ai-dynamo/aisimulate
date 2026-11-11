@@ -1234,7 +1234,7 @@ def _write_onboarding(requests: list[SupportRequest], root: Path) -> dict[str, A
         request.scheduler_limits()
     root = _onboarding_target(root)
     root.parent.mkdir(parents=True, exist_ok=True)
-    index = {"schema_version": "aisim-onboarding/v1", "configurations": []}
+    index = {"schema_version": "aisimulate-onboarding/v1", "configurations": []}
     with tempfile.TemporaryDirectory(prefix=f".{root.name}-", dir=root.parent) as temporary:
         staged = Path(temporary)
         for request in requests:

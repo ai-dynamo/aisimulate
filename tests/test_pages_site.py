@@ -1170,7 +1170,7 @@ def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
     del missing_metric["models"][0]["workloads"][0]["gpus"][0]["aic"]["ttft_mape_pct"]
     invalid_cases.append(missing_metric)
     broken_coverage = deepcopy(valid)
-    broken_coverage["totals"]["aisimulate"]["status_counts"]["success"] += 1
+    broken_coverage["totals"]["aisim"]["status_counts"]["success"] += 1
     invalid_cases.append(broken_coverage)
     bad_topology = deepcopy(valid)
     bad_topology["models"][0]["workloads"][0]["gpus"][0]["topologies"] = [{"id": "missing-points"}]

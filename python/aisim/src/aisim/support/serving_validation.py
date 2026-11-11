@@ -30,7 +30,7 @@ from aisim.config import CorePredictionConfig
 
 AIPERF_REVISION = "7db2ba37a62aa80c882bc90eaf61cc8073e2387b"
 AIPERF_SOURCE = "https://github.com/ai-dynamo/aiperf"
-SCHEMA = "aisim-serving-validation/v1"
+SCHEMA = "aisimulate-serving-validation/v1"
 EXECUTION_FIELDS = (
     "model",
     "model_revision",

@@ -88,7 +88,7 @@ def test_new_bundle_hooks_emit_observation_after_normal_warmup(tmp_path, monkeyp
     context.write_text(
         json.dumps(
             {
-                "schema_version": "aisim-runtime-probe-launch/v1",
+                "schema_version": "aisimulate-runtime-probe-launch/v1",
                 "attempt_id": "attempt-1",
                 "configuration": "tp2",
                 "phase": "prefill",
@@ -349,7 +349,7 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
         "phases": {},
     }
     index = {
-        "schema_version": "aisim-runtime-observations/v1",
+        "schema_version": "aisimulate-runtime-observations/v1",
         "configurations": {"worker": {"launch": launch, "active_attempt_id": "attempt-1", "attempts": [attempt]}},
     }
 
@@ -357,7 +357,7 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
         directory = tmp_path / phase
         directory.mkdir()
         context = {
-            "schema_version": "aisim-runtime-probe-launch/v1",
+            "schema_version": "aisimulate-runtime-probe-launch/v1",
             "attempt_id": "attempt-1",
             "configuration": "worker",
             "phase": phase,

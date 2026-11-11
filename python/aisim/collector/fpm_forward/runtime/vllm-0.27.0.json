@@ -1,5 +1,5 @@
 {
-  "schema_version": "aisim-runtime-instrumentation/v1",
+  "schema_version": "aisimulate-runtime-instrumentation/v1",
   "runtime": {
     "framework": "vllm",
     "version": "0.27.0",
@@ -36,6 +36,6 @@
   ],
   "worker_class": "instrumentation.vllm_027.ObservedWorker",
   "scheduler_class": "instrumentation.vllm_027.ObservedInstrumentedScheduler",
-  "observation_schema": "aisim-runtime-observation/v1",
+  "observation_schema": "aisimulate-runtime-observation/v1",
   "source_notes": "instrumentation/vllm-0.27.0.md"
 }

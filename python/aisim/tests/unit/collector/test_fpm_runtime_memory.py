@@ -712,7 +712,7 @@ def test_worker_and_scheduler_wrappers_delegate_before_observation(monkeypatch, 
 
 def test_ordinary_serving_worker_observes_initialized_runtime_without_dynamo(tmp_path, monkeypatch):
     provenance = {
-        "schema": "aisim-serving-validation/v1",
+        "schema": "aisimulate-serving-validation/v1",
         "run_id": "serving-123",
         "purpose": "matched_serving_accuracy",
     }

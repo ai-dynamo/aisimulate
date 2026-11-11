@@ -258,7 +258,8 @@ class FPMDeployment(StrictModel):
 
 
 class SupportRequest(StrictModel):
-    schema_version: Literal["aisim-support-request/v2"] = "aisim-support-request/v2"
+    # Keep serialized requests and their acceptance/context hashes stable.
+    schema_version: Literal["aisimulate-support-request/v2"] = "aisimulate-support-request/v2"
     identity: SupportIdentity
     workload: WorkloadSpec = Field(default_factory=WorkloadSpec)
     search: SearchProfile = Field(default_factory=SearchProfile)
@@ -310,9 +311,9 @@ class SupportRequest(StrictModel):
                     "Copy the request, remove these fields, and regenerate the plan in a new output directory. "
                     "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
                 )
-            if values.get("schema_version") == "aisim-support-request/v1":
+            if values.get("schema_version") == "aisimulate-support-request/v1":
                 search = values.get("search", {})
-                values = {**values, "schema_version": "aisim-support-request/v2"}
+                values = {**values, "schema_version": "aisimulate-support-request/v2"}
                 if isinstance(search, Mapping):
                     search = dict(search)
                     search.setdefault("context_length", 16384)

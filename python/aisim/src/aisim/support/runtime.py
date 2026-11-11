@@ -36,7 +36,7 @@ from .schema import (
     SupportRequest,
 )
 
-PROVENANCE_SCHEMA = "aisim-onboarding-runtime-probe/v1"
+PROVENANCE_SCHEMA = "aisimulate-onboarding-runtime-probe/v1"
 _PRECISION = (
     "gemm_quant_mode",
     "moe_quant_mode",
@@ -846,7 +846,7 @@ def import_observations(
     if observations.is_symlink():
         raise ValueError("runtime observation index cannot be a symlink")
     document = read_json(observations)
-    if document.get("schema_version") != "aisim-runtime-observations/v1" or not isinstance(
+    if document.get("schema_version") != "aisimulate-runtime-observations/v1" or not isinstance(
         document.get("configurations"), dict
     ):
         raise ValueError("unsupported runtime observation index schema")

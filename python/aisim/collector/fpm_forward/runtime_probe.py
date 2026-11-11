@@ -31,8 +31,8 @@ from .runtime_instrumentation import contained_file, read_json, validate_sha256
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
 
-INDEX_SCHEMA = "aisim-runtime-observations/v1"
-LAUNCH_SCHEMA = "aisim-runtime-probe-launch/v1"
+INDEX_SCHEMA = "aisimulate-runtime-observations/v1"
+LAUNCH_SCHEMA = "aisimulate-runtime-probe-launch/v1"
 CONTEXT_FILENAME = "runtime-probe-context.json"
 BUNDLE_FILENAME = "runtime-instrumentation.zip"
 PHASES = ("prefill", "decode")
@@ -667,7 +667,7 @@ def observation_artifacts(root: Path, phase_dir: Path) -> list[dict[str, Any]]:
                     payload = json.loads(path.read_text())
                 except (ValueError, UnicodeError):
                     payload = None
-                if isinstance(payload, dict) and payload.get("schema_version") == "aisim-runtime-observation/v1":
+                if isinstance(payload, dict) and payload.get("schema_version") == "aisimulate-runtime-observation/v1":
                     kind = "observation"
             artifacts.append({"path": str(path.relative_to(root)), "kind": kind, **runner._file_metadata(path)})
     return artifacts
@@ -940,7 +940,7 @@ def probe_runtime(
         runner._atomic_json(
             root / "probe-plan.json",
             {
-                "schema_version": "aisim-runtime-probe-plan/v1",
+                "schema_version": "aisimulate-runtime-probe-plan/v1",
                 "configurations": {name: plan.launch for name, plan in plans.items()},
                 "bundle_sha256": bundle.sha256,
             },

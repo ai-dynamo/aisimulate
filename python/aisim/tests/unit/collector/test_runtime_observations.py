@@ -124,7 +124,7 @@ def observation_fixture(root: Path, *, packed=False, planar=False, dense=False, 
         "phases": {},
     }
     index = {
-        "schema_version": "aisim-runtime-observations/v1",
+        "schema_version": "aisimulate-runtime-observations/v1",
         "configurations": {"tp2": {"launch": launch, "active_attempt_id": "attempt-001", "attempts": [attempt]}},
     }
     for phase in ("prefill", "decode"):
@@ -137,7 +137,7 @@ def observation_fixture(root: Path, *, packed=False, planar=False, dense=False, 
             "schedulers": [{"dp_rank": dp} for dp in range(launch["topology"]["dp"])],
         }
         context = {
-            "schema_version": "aisim-runtime-probe-launch/v1",
+            "schema_version": "aisimulate-runtime-probe-launch/v1",
             "configuration": "tp2",
             "attempt_id": "attempt-001",
             "phase": phase,
@@ -238,7 +238,7 @@ def observation_fixture(root: Path, *, packed=False, planar=False, dense=False, 
                     }
                 )
             record = {
-                "schema_version": "aisim-runtime-observation/v1",
+                "schema_version": "aisimulate-runtime-observation/v1",
                 **{k: context[k] for k in ("configuration", "attempt_id", "phase", "bundle_sha256")},
                 "kind": "worker" if worker else "scheduler",
                 **rank,
@@ -344,11 +344,13 @@ def test_aggregated_generic_graph_settings_are_checked_in_both_phases(tmp_path):
     assert validate_observations(path, launches)["tp2"]["status"] == "complete"
     _mutate(
         path,
-        lambda record: record["resolved_config"]["compilation_config"].update(
-            cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32], max_cudagraph_capture_size=32
-        )
-        if record["phase"] == "decode"
-        else None,
+        lambda record: (
+            record["resolved_config"]["compilation_config"].update(
+                cudagraph_capture_sizes=[1, 2, 4, 8, 16, 32], max_cudagraph_capture_size=32
+            )
+            if record["phase"] == "decode"
+            else None
+        ),
     )
     result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "incomplete"
@@ -468,11 +470,13 @@ def test_explicit_prefill_does_not_impose_capture_override_on_decode(tmp_path):
     _replace_launch(path, launch)
     _mutate(
         path,
-        lambda r: r["resolved_config"]["compilation_config"].update(
-            cudagraph_capture_sizes=[1, 2, 4, 8, 16], max_cudagraph_capture_size=16
-        )
-        if r["phase"] == "prefill"
-        else None,
+        lambda r: (
+            r["resolved_config"]["compilation_config"].update(
+                cudagraph_capture_sizes=[1, 2, 4, 8, 16], max_cudagraph_capture_size=16
+            )
+            if r["phase"] == "prefill"
+            else None
+        ),
     )
     result = validate_observations(path, launch)["tp2"]
     assert result["status"] == "incomplete"
@@ -673,15 +677,15 @@ def test_expert_axes_follow_resolved_ep_setting_and_attention_worker_width(tmp_p
         (lambda r: r["cache"].update(group_pool_ids=["other", "pool"]) if r["kind"] == "scheduler" else None, "pool"),
         (lambda r: r["cache"]["storages"][0].update(size_bytes=1) if r["kind"] == "worker" else None, "storage"),
         (
-            lambda r: r["cache"]["layer_tensors"]["layer0"].update(stride_bytes=[2, 2])
-            if r["kind"] == "worker"
-            else None,
+            lambda r: (
+                r["cache"]["layer_tensors"]["layer0"].update(stride_bytes=[2, 2]) if r["kind"] == "worker" else None
+            ),
             "overlap",
         ),
         (
-            lambda r: r["cache"]["tensor_allocations"][0].update(shared_by=["layer0"])
-            if r["kind"] == "worker"
-            else None,
+            lambda r: (
+                r["cache"]["tensor_allocations"][0].update(shared_by=["layer0"]) if r["kind"] == "worker" else None
+            ),
             "layer",
         ),
         (
@@ -717,9 +721,11 @@ def test_rank_phase_hash_and_graph_coverage_is_required(tmp_path, mode):
     if mode == "graph":
         _mutate(
             path,
-            lambda r: r["resolved_config"]["compilation_config"].update(cudagraph_mode="PIECEWISE")
-            if r["phase"] == "decode"
-            else None,
+            lambda r: (
+                r["resolved_config"]["compilation_config"].update(cudagraph_mode="PIECEWISE")
+                if r["phase"] == "decode"
+                else None
+            ),
         )
     result = validate_observations(path, launch)["tp2"]
     assert result["status"] == "incomplete"

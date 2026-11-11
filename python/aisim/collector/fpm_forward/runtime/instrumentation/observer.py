@@ -346,7 +346,7 @@ def observe(
     manifest = json.loads(Path(os.environ["AISIMULATE_RUNTIME_INSTRUMENTATION"]).read_text())
     directory = Path(os.environ["AISIMULATE_RUNTIME_OBSERVATION_DIR"])
     payload = {
-        "schema_version": "aisim-runtime-observation/v1",
+        "schema_version": "aisimulate-runtime-observation/v1",
         **{key: context[key] for key in ("attempt_id", "configuration", "phase", "bundle_sha256", "launch")},
         "identity": context["launch"]["identity"],
         "kind": kind,

@@ -16,13 +16,13 @@ def _manifest(tmp_path: Path):
     (tmp_path / "observer.py").write_text("raise AssertionError('observer must never execute on the host')\n")
     (tmp_path / "source.md").write_text("Source mapping with bytes and lifecycle points.\n")
     value = {
-        "schema_version": "aisim-runtime-instrumentation/v1",
+        "schema_version": "aisimulate-runtime-instrumentation/v1",
         "runtime": {"framework": "vllm", "version": "0.28.0", "source_revision": "a" * 40},
         "files": ["observer.py", "source.md"],
         "source_notes": "source.md",
         "worker_class": "observer.ObservedWorker",
         "scheduler_class": "observer.ObservedScheduler",
-        "observation_schema": "aisim-runtime-observation/v1",
+        "observation_schema": "aisimulate-runtime-observation/v1",
     }
     path = tmp_path / "manifest.yaml"
     path.write_text(json.dumps(value))

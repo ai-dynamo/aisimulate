@@ -159,7 +159,7 @@ def _configs(
         worker["timing"]["systems_paths"] = [str(root / "systems")]
         return (
             {
-                "schema_version": "aisim-onboarding-worker/v1",
+                "schema_version": "aisimulate-onboarding-worker/v1",
                 "worker_type": request.worker_type,
                 "serving_mode": "disaggregated",
                 "engine": {
@@ -192,11 +192,14 @@ def _configs(
     return prediction, {"pilot": recommendation}, [preset]
 
 
-def _commands(request: SupportRequest, root: Path, recommendation_names: list[str]) -> dict[str, Any]:
+def _commands(
+    request: SupportRequest, root: Path, recommendation_names: list[str], *, legacy_cli: bool = False
+) -> dict[str, Any]:
+    command_name = "aisimulate" if legacy_cli else "aisim"
     commands = {
         "fpm_plan_local": fpm_cli_args(request, output_dir=root, plan_only=True),
         "fpm_run_local": [
-            "aisim",
+            command_name,
             "onboard",
             "collect-fpm",
             "--config",
@@ -207,7 +210,7 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
         ],
         "predict": [
             [
-                "aisim",
+                command_name,
                 "predict",
                 "--config",
                 str(root / "predict/pilot.yaml"),
@@ -219,7 +222,7 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
         ],
         "recommend": [
             [
-                "aisim",
+                command_name,
                 "recommend",
                 "--config",
                 str(root / f"recommend/{name}.yaml"),
@@ -245,7 +248,7 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
         not request.profile_deployment().resources.memory_ready or runtime_probe_manifest(request) is not None
     ):
         commands["finalize"] = [
-            "aisim",
+            command_name,
             "onboard",
             "finalize",
             "--config",
@@ -258,7 +261,9 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
     return commands
 
 
-def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
+def _plan_documents(
+    request: SupportRequest, root: Path, *, legacy_cli: bool = False
+) -> tuple[dict[str, Any], dict[Path, bytes]]:
     package_spec = find_spec("aisim_core")
     if package_spec is None:
         raise ValueError("aisim_core package resources are required for packaged system specifications")
@@ -270,9 +275,9 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "new GPU architectures require integration"
         )
     if request.identity.framework_version is None:
-        return _pending_version_documents(request, root)
+        return _pending_version_documents(request, root, legacy_cli=legacy_cli)
     prediction, recommendations, presets = _configs(request, root)
-    commands = _commands(request, root, list(recommendations))
+    commands = _commands(request, root, list(recommendations), legacy_cli=legacy_cli)
     runtime_prerequisite = (
         "Prepare and verify the declared model/tokenizer snapshots, visible GPUs, model access and compatible "
         "Dynamo self-benchmark runtime. At collection, choose Kubernetes with the packaged Generator and "
@@ -282,7 +287,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         "This plan does not download a pinned checkpoint or inspect a running worker. "
     )
     plan = {
-        "schema_version": "aisim-support-plan/v2",
+        "schema_version": "aisimulate-support-plan/v2",
         "request_id": request_id(request),
         "validation_id": validation_id(request),
         "search": {
@@ -353,7 +358,8 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
     }
     if "prefill_cudagraph_policy" in request.collection.model_fields_set:
         plan["fpm"]["launch"] = (
-            "AISim launches and manages benchmark workers when collection is executed; no separately "
+            f"{'AISimulate' if legacy_cli else 'AISim'} launches and manages benchmark workers "
+            "when collection is executed; no separately "
             "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
             "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
         )
@@ -507,10 +513,12 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
     return plan, documents
 
 
-def _pending_version_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
+def _pending_version_documents(
+    request: SupportRequest, root: Path, *, legacy_cli: bool = False
+) -> tuple[dict[str, Any], dict[Path, bytes]]:
     """Offline registration before the target image supplies a data identity."""
     command = [
-        "aisim",
+        "aisimulate" if legacy_cli else "aisim",
         "onboard",
         "collect-fpm",
         "--config",
@@ -529,7 +537,7 @@ def _pending_version_documents(request: SupportRequest, root: Path) -> tuple[dic
             json.dumps(request.fpm_profile.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
         ).encode()
     plan = {
-        "schema_version": "aisim-support-plan/v2",
+        "schema_version": "aisimulate-support-plan/v2",
         "request_id": request_id(request),
         "validation_id": validation_id(request),
         "status": "pending_runtime_version",
@@ -607,7 +615,7 @@ def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = Fal
         prior = json.loads((root / "support-plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"a readable onboarding plan is required in {root}; run aisim onboard plan first") from exc
-    if not isinstance(prior, dict) or prior.get("schema_version") != "aisim-support-plan/v2":
+    if not isinstance(prior, dict) or prior.get("schema_version") != "aisimulate-support-plan/v2":
         raise ValueError(
             f"legacy or invalid onboarding plan in {root}; regenerate in a new output directory. "
             "Legacy plans used validation traffic to choose collection bounds and cannot be reused implicitly."
@@ -622,9 +630,14 @@ def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = Fal
         raise ValueError(f"saved request identity in {root} was modified or differs from the requested plan")
     expected, documents = _plan_documents(saved, root)
     if prior != expected:
-        raise ValueError(
-            f"generated plan input {root / 'support-plan.json'} was modified; choose a new output directory"
-        )
+        # Validate the entire original presentation, including its generated-file
+        # hashes. Do not rewrite saved commands/evidence or ignore differing fields.
+        legacy_expected, legacy_documents = _plan_documents(saved, root, legacy_cli=True)
+        if prior != legacy_expected:
+            raise ValueError(
+                f"generated plan input {root / 'support-plan.json'} was modified; choose a new output directory"
+            )
+        documents = legacy_documents
     # Recompute the manifest rather than trusting hashes in an edited plan. An
     # evaluation-only refresh must never bless modified collector inputs.
     for relative, content in documents.items():

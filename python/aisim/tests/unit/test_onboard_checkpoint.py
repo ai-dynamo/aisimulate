@@ -9,6 +9,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from copy import deepcopy
@@ -96,6 +97,38 @@ def _save(path, capsys, monkeypatch, patch=None, revision=None, accept=(), expec
 def _resume(path, capsys, expected=0):
     assert cli.main(["onboard", "resume", "--checkpoint", str(path)]) == expected
     return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("module", ["aisim", "aisimulate"])
+def test_pre_rename_checkpoint_preserves_acceptance_and_artifact_bindings(tmp_path, module):
+    fixture = Path(__file__).parents[1] / "fixtures" / "legacy_onboarding"
+    session = tmp_path / "session"
+    shutil.copytree(fixture, session)
+    path = session / "checkpoint.json"
+    original = path.read_bytes()
+    saved = json.loads(original)
+    result = subprocess.run(
+        [sys.executable, "-m", module, "onboard", "resume", "--checkpoint", str(path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "PYTHONPATH": str(Path(cli.__file__).parents[1])},
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["state"] == saved
+    assert report["integrity_issues"] == []
+    assert all(config["profile_accepted"] for config in report["configurations"].values())
+    assert report["verification"]["executed"] is False
+    assert path.read_bytes() == original
+    # The two saved request versions still resolve through the original v1
+    # migration and serialize exactly as they did before the package rename.
+    for version in ("v1", "v2"):
+        config = saved["configurations"][version]
+        request = SupportRequest.model_validate(config["draft_request"])
+        assert request.schema_version == "aisimulate-support-request/v2"
+        assert request.search.context_length == 16384
 
 
 def test_role_graph_edit_invalidates_only_its_accepted_configuration(tmp_path, capsys, monkeypatch, request_payload):
@@ -759,7 +792,7 @@ def test_two_processes_cannot_overwrite_same_revision(tmp_path):
         "[]",
         '{"revision":1}',
         '{"schema_version":"future","revision":1}',
-        '{"schema_version":"aisim-onboarding-checkpoint/v1","revision":1,"revision":2}',
+        '{"schema_version":"aisimulate-onboarding-checkpoint/v1","revision":1,"revision":2}',
     ],
 )
 def test_invalid_saved_checkpoints_are_not_replaced(tmp_path, capsys, monkeypatch, payload):

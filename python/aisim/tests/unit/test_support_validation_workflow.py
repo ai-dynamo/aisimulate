@@ -474,12 +474,12 @@ def test_validation_policy_rejects_ambiguous_settings(values, tmp_path, policy_f
 
 def test_repeatability_policy_defaults_and_legacy_semantics(tmp_path):
     policy = workflow.ValidationPolicy()
-    assert policy.schema_version == "aisim-onboarding-validation-policy/v2"
+    assert policy.schema_version == "aisimulate-onboarding-validation-policy/v2"
     assert policy.repeatability.comparison_mode == "full_grid"
     assert policy.repeatability.max_attempts_per_sample == 2
     assert policy.repeatability.max_cv == policy.repeatability.max_source_relative_difference == 0.05
     path = tmp_path / "legacy-policy.json"
-    legacy = {"schema_version": "aisim-onboarding-validation-policy/v1", "repeatability": {"samples": 3}}
+    legacy = {"schema_version": "aisimulate-onboarding-validation-policy/v1", "repeatability": {"samples": 3}}
     _write(path, legacy)
     parsed = workflow._policy(path)
     assert parsed.schema_version == legacy["schema_version"]
@@ -488,6 +488,16 @@ def test_repeatability_policy_defaults_and_legacy_semantics(tmp_path):
     assert json.loads(path.read_text()) == legacy
     with pytest.raises(ValueError, match="legacy v1 policy uses bounded"):
         workflow.ValidationPolicy.model_validate({**legacy, "repeatability": {"comparison_mode": "full_grid"}})
+
+
+@pytest.mark.parametrize("version, mode", [("v1", "bounded"), ("v2", "full_grid")])
+def test_pre_rename_policy_preserves_original_schema_and_repeat_scope(version, mode):
+    path = Path(__file__).parents[1] / f"fixtures/legacy_onboarding/policy-{version}.json"
+    original = path.read_bytes()
+    parsed = workflow._policy(path)
+    assert parsed.model_dump(mode="json") == json.loads(original)
+    assert parsed.repeatability.comparison_mode == mode
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize("reason", ["legacy", "bounded", "source_missing", "source_failed", "population_unstable"])
