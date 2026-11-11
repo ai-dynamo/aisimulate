@@ -114,6 +114,20 @@ and caps its `max_batched_tokens` and `max_sequences` domains at
 [snapshot roles](#recommending-with-a-calibrated-snapshot)). Nothing reads
 `context_length`.
 
+The canonical configuration carries the following AFD identity fields. Ordinary
+agg configurations omit them; AFD derives pool identities through the same
+`best_available` construction interface.
+
+| Field | Default | Behavior |
+|---|---|---|
+| `afd_routing_location` | absent | AFD passes `a` to both pools. An explicit `f` fails before estimator/data preparation. |
+| `afd_pool_role` | absent | `a` emits attention, shared and dense computation; `f` emits routed computation. Used for selective pool compilation and retained in canonical/cache identity. |
+
+Selective pool compilation requires SGLang, PP1/CP1/DCP1 and op-level estimation.
+Every AFD pool carries its role and a typed source layer plan. See
+[AFD execution plans](../sweeper/afd-topology.md#performance-model) for ownership
+and [AFD configuration](../replay/engine/analytical.md#afd) for public YAML.
+
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
 `encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
@@ -122,9 +136,13 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
 
-An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any non-AFD timing phase with no compatible fused MoE operator. In AFD, the A pool retains the selector in its canonical configuration but emits no routed MoE operation; the F pool applies it to routed MoE operations. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
-AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+Ordinary prefill/decode companions of AFD roles use the canonical timing provider
+and preserve exact-source requests under the same eligibility rules. Fixed or
+polynomial timing and whole-forward FPM reject incompatible source selectors.
+These controls describe standalone AISimulate behavior, not downstream Dynamo
+planner integration.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
 simulator workload assumption, supplied separately by the unified CLI as
@@ -875,8 +893,15 @@ concrete-only.
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
-| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and ordinary prefill/decode companions of AFD roles. |
 | `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
+
+AFD replay prices every decode pass at its actual batch, context length and
+MTP verification width. The former `estimator_config.afd.frozen_decode_identity`
+control and saved pricing identity have been removed. Configurations and saved
+ReplaySpecs containing them are rejected for every value, including `false` and
+`null`; regenerate them with the current compiler. Static forward queries remain
+available for configuration-sized estimates.
 
 The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
@@ -1016,15 +1041,30 @@ These additional public YAML fields are concrete controls:
 
 | Field | Meaning |
 | --- | --- |
-| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. AFD resolves GEMM/MoE execution independently against each pool hardware while preserving requested overrides. |
 | `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
-| `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
+| `engine.attention_backend` | Attention kernel selector, including AFD per-pool construction; subject to canonical model/backend validation. |
+| `engine.moe_kernel_source` | Exact collected fused-MoE compute source, including AFD per-pool construction; unsupported with a large-EP MoE graph. |
+| `engine.moe_backend` | Runtime graph/backend selector, subject to canonical validation; nondefault overrides remain unsupported for AFD. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |
+| `engine.enable_shared_layer` | Optional shared-data reuse override; explicit `false` disables reuse. Preserved by both AFD pools and their memory preflight. |
+| `engine.strict_provenance` | Fail-closed performance-data provenance validation; defaults to `false` in the canonical model. Preserved by both AFD pools and memory preflight. |
 
-These controls require default timing on language roles. AFD and encoder-pool
-configurations of either mode reject the unsupported controls. Use `--stack engine`
+For AFD, the original GEMM/MoE precision request is preserved in saved
+configuration. Each pool applies the supported hardware execution mapping:
+`nvfp4` uses weight-only `nvfp4_wo` with BF16 compute below Blackwell and native
+FP4 compute on Blackwell. An explicit `nvfp4_wo` remains weight-only. Unknown or
+unsupported hardware execution combinations fail construction; missing measured
+data follows the existing data policy without silently changing precision.
+Timing and memory/KV sizing share this resolution. Pool provenance reports both
+requested overrides and the execution modes present in the compiled graph.
+
+These controls require default timing on ordinary language roles. AFD supports
+explicit precision, kernel selectors and MTP; EPLB, redundant slots and nondefault
+`moe_backend` remain unsupported in both public YAML and SDK searches. Encoder-pool
+configurations reject unsupported controls. Use `--stack engine`
 and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)
@@ -1060,7 +1100,8 @@ does not prevent FP8 KV inference. For regular language roles using default timi
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;
 this does not make an `int8` checkpoint KV declaration valid.
-Fixed/polynomial timing, EPD, and AFD currently reject this engine override.
+Fixed/polynomial timing and EPD currently reject this engine override. AFD passes
+explicit KV precision through canonical per-pool construction.
 
 Ordinary `predict` output shows each known role's effective KV dtype and source.
 JSON stdout and `prediction.json` summaries expose `kv_cache_precision.<role>`
@@ -1072,6 +1113,16 @@ at compile time and do not report the resolved precision through this path.
 
 FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
 FP8 KV holds twice as many tokens. This does not imply twice the throughput.
+
+AFD preserves supported controls, including explicit `attention_backend` and
+`moe_kernel_source`, through prediction, recommendation, saved replay specifications,
+canonical pool construction and memory preflight. Attention uses A; routed MoE
+uses F. The A pool retains `moe_kernel_source` in its canonical configuration but
+does not apply it to attention, shared, or dense operations. The F pool applies
+it to routed MoE operations. Omission preserves pool defaults;
+explicit selectors retain the canonical eligibility, data-source and SOL rules
+above without changing communication. EPLB, redundant slots and nondefault
+`moe_backend` overrides remain unsupported for AFD.
 
 ## Migrating saved configuration
 

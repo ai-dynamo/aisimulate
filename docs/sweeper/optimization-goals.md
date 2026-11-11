@@ -183,8 +183,8 @@ The native definitions follow ordinary metrics in
   index `round((n - 1) * p / 100)`. AIPerf interpolates linearly, so percentiles can
   differ for small samples or sparse tails.
 
-These selectors require native offline request replay. FPM and op-level timing
-both use that path. Analytical AFD and analytical EPD reject them explicitly.
+These selectors require native offline request replay. FPM, op-level timing,
+and native AFD use that path. Analytical EPD rejects them explicitly.
 Matching these definitions does not model an unconfigured transport or frontend
 cost. Compare calibrated replay against serving measurements before admission.
 

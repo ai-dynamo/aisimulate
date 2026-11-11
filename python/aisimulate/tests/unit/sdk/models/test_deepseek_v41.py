@@ -546,20 +546,48 @@ def test_hgx_blackwell_has_published_scalar_fp32_rate(system):
     assert engine.predict_prefill_latency(1, 128) > 0
 
 
-@pytest.mark.parametrize("decoder_replay", [False, True])
-def test_afd_rejects_v41_before_session_construction(decoder_replay):
-    from aisimulate.sdk.inference_session import AFDInferenceSession
-    from aisimulate_core.sdk.config import ModelConfig
+def test_afd_rejects_v41_on_the_native_path():
+    """The Rust `AfdForwardPassPerfModel::build` architecture gate rejects
+    V4.1: a native AFD replay must fail with the explicit rejection before
+    any pool is compiled."""
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import CorePredictionConfig
+    from aisimulate.runner import EngineReplayRunnerFactory
 
-    with pytest.raises(NotImplementedError, match="AFD does not support DeepSeek-V4.1"):
-        AFDInferenceSession(
-            MODEL_PATH,
-            ModelConfig(decoder_replay=decoder_replay),
-            ModelConfig(decoder_replay=decoder_replay),
-            None,
-            None,
-            None,
-        )
+    config = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 8},
+                "load": {"type": "concurrency", "concurrency": 2},
+                "stop": {"requests": 2},
+            },
+            "engine": {
+                "mode": "aggregated",
+                "model": MODEL_PATH,
+                "hardware": "b300_sxm",
+                "backend": "sglang",
+                "workers": {
+                    "aggregated": {
+                        "type": "afd",
+                        "afd": {
+                            "n_a_nodes": 1,
+                            "n_f_nodes": 1,
+                            "tp_a": 1,
+                            "a_batch_size": 2,
+                            "num_microbatches": 1,
+                        },
+                    }
+                },
+            },
+        }
+    )
+    spec = prediction_to_replay_spec(config)
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        with pytest.raises(RuntimeError, match=r"AFD does not support DeepSeek-V4\.1"):
+            runner.run(spec)
+    finally:
+        runner.close()
 
 
 @pytest.mark.parametrize("is_context", [False, True])

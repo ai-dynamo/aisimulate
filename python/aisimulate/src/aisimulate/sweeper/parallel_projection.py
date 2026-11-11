@@ -14,11 +14,11 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from .afd_parallel import AFDParallelConfig
+from .afd_parallel import AFDTopology
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from .search_space import BranchSpace, _parallel_leaf_values, matches_parallel_domains
 
-ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
+ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDTopology
 
 
 class InfeasibleParallelSelection(ValueError):
@@ -84,9 +84,9 @@ class ParallelProjection:
 def _all_shapes(config: ParallelConfig) -> tuple[ParallelShape, ...]:
     if isinstance(config, ReplicaParallelConfig):
         return (config.shape,)
-    if isinstance(config, AFDParallelConfig):
-        return (config.companion.shape,) if config.companion is not None else ()
-    return (config.prefill.shape, config.decode.shape)
+    if isinstance(config, AFDTopology):
+        return ()
+    return tuple(c.shape for c in (config.prefill, config.decode) if isinstance(c, ReplicaParallelConfig))
 
 
 def _parallel_role(config: ParallelConfig, role: str) -> ReplicaParallelConfig:
@@ -94,10 +94,8 @@ def _parallel_role(config: ParallelConfig, role: str) -> ReplicaParallelConfig:
         if role != "agg":
             raise ValueError(f"aggregated parallel config has no {role!r} role")
         return config
-    if isinstance(config, AFDParallelConfig):
-        if config.companion is None or config.companion_role != role:
-            raise ValueError(f"AFD parallel config has no {role!r} companion")
-        return config.companion
+    if isinstance(config, AFDTopology):
+        raise ValueError("AFD has no ordinary parallel role")
     return config.prefill if role == "prefill" else config.decode
 
 
@@ -112,23 +110,21 @@ def _ffn_mode(shape: ParallelShape) -> str:
 
 
 def _config_key(config: ParallelConfig) -> tuple[int, ...]:
-    def role_key(role: ReplicaParallelConfig) -> tuple[int, ...]:
+    def role_key(role):
+        if isinstance(role, AFDTopology):
+            return (
+                role.n_a_nodes,
+                role.n_f_nodes,
+                role.a_tp_size,
+                role.batch_size_per_a_replica,
+                role.f_moe_ep_size,
+                role.num_microbatches,
+            )
         shape = role.shape
         return (shape.tp, shape.pp, shape.dp, shape.moe_tp, shape.moe_ep, role.replicas)
 
-    if isinstance(config, ReplicaParallelConfig):
+    if isinstance(config, (ReplicaParallelConfig, AFDTopology)):
         return role_key(config)
-    if isinstance(config, AFDParallelConfig):
-        topology = config.topology
-        topology_key = (
-            topology.n_a_nodes,
-            topology.n_f_nodes,
-            topology.tp_a,
-            topology.a_batch_size,
-            topology.f_moe_ep_size,
-            topology.num_microbatches,
-        )
-        return topology_key + (() if config.companion is None else role_key(config.companion))
     return (*role_key(config.prefill), *role_key(config.decode))
 
 
@@ -184,7 +180,7 @@ class ParallelConfigProjector:
 
     def _encode(self, config: ParallelConfig) -> dict[str, float | str]:
         features: dict[str, float | str] = {USED_GPU_RATIO: config.total_gpus / self.gpu_budget}
-        if isinstance(config, AFDParallelConfig):
+        if self._flat or isinstance(config, AFDTopology):
             return features
         if isinstance(config, ReplicaParallelConfig):
             features.update(self._role_features("agg", config))

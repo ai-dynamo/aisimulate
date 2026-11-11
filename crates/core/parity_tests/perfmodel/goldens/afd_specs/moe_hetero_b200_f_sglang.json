@@ -1,0 +1,168 @@
+{
+  "afd_plan": {
+    "context": {
+      "prefix": [],
+      "suffix": [],
+      "templates": [
+        {
+          "attention_kind": "default_index_q0",
+          "ops": [
+            0
+          ],
+          "rank_ops": [],
+          "routed": true,
+          "work_scale": 1.0
+        }
+      ]
+    },
+    "generation": {
+      "prefix": [],
+      "suffix": [],
+      "templates": [
+        {
+          "attention_kind": "default_index_q0",
+          "ops": [
+            0
+          ],
+          "rank_ops": [],
+          "routed": true,
+          "work_scale": 1.0
+        }
+      ]
+    },
+    "hidden_size": 2048,
+    "layers": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "model": "Qwen/Qwen3-30B-A3B",
+    "num_experts": 128,
+    "role": "f",
+    "shared_inter_size": 0,
+    "topk": 8
+  },
+  "context_ops": [
+    {
+      "Moe": {
+        "attention_dp_size": 1,
+        "enable_eplb": false,
+        "hidden_size": 2048,
+        "inter_size": 768,
+        "is_context": true,
+        "is_gated": true,
+        "moe_backend": null,
+        "moe_ep_size": 8,
+        "moe_kernel_source": null,
+        "moe_tp_size": 1,
+        "name": "context_afd_routed",
+        "num_experts": 128,
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "topk": 8,
+        "workload_distribution": "power_law_1.2"
+      }
+    }
+  ],
+  "engine": {
+    "activation_dtype": "bfloat16",
+    "attention_dp_size": 1,
+    "backend": "sglang",
+    "backend_version": "0.5.14",
+    "cp_size": 1,
+    "database_mode": "SILICON",
+    "dcp_size": null,
+    "decoder_replay": false,
+    "enable_shared_layer": true,
+    "extra": {
+      "afd_pool_role": "f"
+    },
+    "forward_model": "op_level",
+    "fpm_fmha_dtype": null,
+    "fpm_parquet_path": null,
+    "kv_block_size": null,
+    "kv_cache_dtype": "bfloat16",
+    "model_name": "Qwen/Qwen3-30B-A3B",
+    "moe_dtype": "bfloat16",
+    "moe_ep_size": 8,
+    "moe_kernel_source": null,
+    "moe_tp_size": 1,
+    "pp_size": 1,
+    "schema_version": 1,
+    "strict_provenance": false,
+    "system_name": "b200_sxm",
+    "systems_path": null,
+    "tolerate_dirless_version": false,
+    "tp_size": 8,
+    "transfer_policy": null,
+    "weight_dtype": "bfloat16"
+  },
+  "generation_ops": [
+    {
+      "Moe": {
+        "attention_dp_size": 1,
+        "enable_eplb": false,
+        "hidden_size": 2048,
+        "inter_size": 768,
+        "is_context": false,
+        "is_gated": true,
+        "moe_backend": null,
+        "moe_ep_size": 8,
+        "moe_kernel_source": null,
+        "moe_tp_size": 1,
+        "name": "generation_afd_routed",
+        "num_experts": 128,
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "topk": 8,
+        "workload_distribution": "power_law_1.2"
+      }
+    }
+  ],
+  "schema_version": 30
+}
