@@ -5,32 +5,59 @@
 
 use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct GroupedLease {
-    /// Absolute logical block ranges, one per configured group. Full-history
-    /// groups start at zero; expired window blocks are absent. A state
-    /// group's range `0..n` counts the blocks that the request holds.
-    ranges: Vec<std::ops::Range<usize>>,
+    /// Blocks that the request holds across every configured group. Expired
+    /// window blocks are not counted. A state group counts its fixed blocks.
+    blocks: usize,
     bytes: u64,
 }
 
 impl GroupedLease {
     pub(crate) fn blocks(&self) -> usize {
-        self.ranges.iter().map(std::ops::Range::len).sum()
+        self.blocks
+    }
+
+    /// Adds the blocks each group holds for a forward from `computed` to
+    /// `target` tokens, or `None` when the bytes overflow.
+    fn charge(mut self, groups: &[FpmCacheGroup], computed: u64, target: u64) -> Option<Self> {
+        for group in groups {
+            // A forward must retain the history needed by its first query,
+            // together with every token in the scheduled chunk. Freeing to
+            // the final query's window here would undercount prefill storage.
+            let range = group.validated_block_range(computed, target);
+            let blocks = range.end - range.start;
+            self.bytes = self
+                .bytes
+                .checked_add(blocks.checked_mul(group.page_size_bytes)?)?;
+            self.blocks += blocks as usize;
+        }
+        Some(self)
     }
 }
 
 pub(crate) struct GroupedKvPool {
+    /// Attention and convolution groups. Their blocks follow the request length.
     groups: Vec<FpmCacheGroup>,
+    /// What the state groups hold for every positive target, or `None` when
+    /// their bytes overflow.
+    state: Option<GroupedLease>,
     capacity_bytes: u64,
     used_bytes: u64,
     active_blocks: usize,
 }
 
 impl GroupedKvPool {
+    /// `groups` must have passed [`FpmCacheGroup::validate`], as
+    /// `EngineConfig::validate` checks once. Projections do not repeat it.
     pub(crate) fn new(groups: Vec<FpmCacheGroup>, capacity_bytes: u64) -> Self {
+        debug_assert!(groups.iter().all(|group| group.validate().is_ok()));
+        let (state_groups, groups): (Vec<_>, Vec<_>) = groups
+            .into_iter()
+            .partition(|group| group.kind == FpmCacheKind::State);
         Self {
             groups,
+            state: GroupedLease::default().charge(&state_groups, 0, 1),
             capacity_bytes,
             used_bytes: 0,
             active_blocks: 0,
@@ -41,23 +68,12 @@ impl GroupedKvPool {
         if computed_after < computed_before {
             return None;
         }
-        let mut projected = GroupedLease {
-            ranges: Vec::with_capacity(self.groups.len()),
-            bytes: 0,
+        let held = if computed_after == 0 {
+            GroupedLease::default()
+        } else {
+            self.state.clone()?
         };
-        for group in &self.groups {
-            // A forward must retain the history needed by its first query,
-            // together with every token in the scheduled chunk. Freeing to
-            // the final query's window here would undercount prefill storage.
-            let range = group
-                .block_range(computed_before as u64, computed_after as u64)
-                .ok()?;
-            let range = range.start as usize..range.end as usize;
-            let bytes = (range.len() as u64).checked_mul(group.page_size_bytes)?;
-            projected.bytes = projected.bytes.checked_add(bytes)?;
-            projected.ranges.push(range);
-        }
-        Some(projected)
+        held.charge(&self.groups, computed_before as u64, computed_after as u64)
     }
 
     pub(crate) fn required_bytes(
@@ -69,17 +85,11 @@ impl GroupedKvPool {
             .map(|lease| lease.bytes)
     }
 
-    /// Bytes that the state groups hold for every running request, whatever
-    /// its context length.
+    /// Bytes that the state groups hold for one running request, whatever
+    /// its context length: the state charge computed when the pool is built,
+    /// or `u64::MAX` when those bytes overflow.
     pub(crate) fn fixed_request_bytes(&self) -> u64 {
-        self.groups
-            .iter()
-            .filter(|group| group.kind == FpmCacheKind::State)
-            .map(|group| {
-                u64::from(group.blocks_per_request.unwrap_or(0))
-                    .saturating_mul(group.page_size_bytes)
-            })
-            .fold(0, u64::saturating_add)
+        self.state.as_ref().map_or(u64::MAX, |state| state.bytes)
     }
 
     /// Reserve every group atomically. Expired blocks become reusable in this
@@ -164,14 +174,14 @@ mod tests {
         assert!(pool.allocate(&mut first, 0, 4)); // 8 + 2 * 6 = 20
         assert!(pool.allocate(&mut second, 0, 2)); // 8 + 6 = 14
         assert!(!pool.allocate(&mut first, 4, 8)); // 16 + 3 * 6 = 34, plus 14
-        assert_eq!(first.as_ref().unwrap().ranges, vec![0..1, 0..2]);
+        assert_eq!(first.as_ref().unwrap().blocks(), 3); // 0..1 and 0..2
         assert_eq!(pool.used_bytes(), 34);
         pool.release(&mut second);
         assert!(pool.allocate(&mut first, 4, 8));
-        assert_eq!(first.as_ref().unwrap().ranges, vec![0..2, 1..4]);
+        assert_eq!(first.as_ref().unwrap().blocks(), 5); // 0..2 and 1..4
         assert_eq!(pool.used_bytes(), 34);
         assert!(pool.allocate(&mut first, 8, 9));
-        assert_eq!(first.as_ref().unwrap().ranges, vec![0..3, 3..5]);
+        assert_eq!(first.as_ref().unwrap().blocks(), 5); // 0..3 and 3..5
         assert_eq!(pool.used_bytes(), 36);
         pool.release(&mut first);
         pool.release(&mut first);
@@ -212,14 +222,50 @@ mod tests {
         assert_eq!(pool.fixed_request_bytes(), 20);
         let mut lease = None;
         assert!(pool.allocate(&mut lease, 0, 4)); // 8 + 2 * 10 = 28
-        assert_eq!(lease.as_ref().unwrap().ranges, vec![0..1, 0..2]);
+        assert_eq!(lease.as_ref().unwrap().blocks(), 3); // 0..1 and the state's 0..2
         assert_eq!(pool.used_bytes(), 28);
         assert!(pool.allocate(&mut lease, 4, 8)); // 2 * 8 + 2 * 10 = 36
-        assert_eq!(lease.as_ref().unwrap().ranges, vec![0..2, 0..2]);
+        assert_eq!(lease.as_ref().unwrap().blocks(), 4); // 0..2 and the state's 0..2
         assert_eq!(pool.used_bytes(), 36);
         assert_eq!(pool.active_blocks(), 4);
         pool.release(&mut lease);
         assert_eq!(pool.used_bytes(), 0);
         assert_eq!(pool.active_blocks(), 0);
+    }
+
+    #[test]
+    fn state_groups_charge_their_sum_only_for_a_positive_target() {
+        let state = |name: &str, page_size_bytes, blocks| FpmCacheGroup {
+            name: name.into(),
+            kind: FpmCacheKind::State,
+            num_layers: 1,
+            block_size_tokens: 4,
+            page_size_bytes,
+            sliding_window: None,
+            blocks_per_request: Some(blocks),
+            prefill_checkpoint_blocks: None,
+            prefill_checkpoint_alignment: None,
+        };
+        let mut pool = GroupedKvPool::new(vec![state("kda", 10, 2), state("tail", 6, 1)], 100);
+        assert_eq!(pool.required_bytes(0, 0), Some(0));
+        assert_eq!(pool.required_bytes(0, 1), Some(26)); // 2 * 10 + 6
+        assert_eq!(pool.required_bytes(7, 9), Some(26));
+        let mut lease = None;
+        assert!(pool.allocate(&mut lease, 0, 0));
+        assert_eq!(pool.active_blocks(), 0);
+        assert!(pool.allocate(&mut lease, 0, 1));
+        assert_eq!(pool.active_blocks(), 3);
+
+        // State bytes beyond u64 fail every positive target: one group's
+        // product (2^64), or a sum of products that each fit (2^63 + 2^63).
+        for groups in [
+            vec![state("huge", 1 << 53, 1 << 11)],
+            vec![state("a", 1 << 53, 1 << 10), state("b", 1 << 53, 1 << 10)],
+        ] {
+            let mut pool = GroupedKvPool::new(groups, 100);
+            assert_eq!(pool.required_bytes(0, 0), Some(0));
+            assert_eq!(pool.required_bytes(0, 1), None);
+            assert!(!pool.allocate(&mut None, 0, 1));
+        }
     }
 }
