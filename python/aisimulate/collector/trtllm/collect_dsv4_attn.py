@@ -511,6 +511,19 @@ def create_dsv4_kv_cache_and_metadata(
         max_gpu_total_bytes=int(free_bytes * 0.5),
         max_tokens=int(planned_tokens),
         enable_block_reuse=False,
+        # Deviation (every SM; also collect_mla_module.py and collect_msa_module.py): the
+        # manager is built without a host tier. Serving leaves host_cache_size unset, and
+        # KVCacheManagerV2 then adds a host tier sized from the GPU quota
+        # (pyexecutor/kv_cache/kv_cache_manager_v2.py:1718-1764@v1.4.0rc2) that a background
+        # thread prefaults and registers with CUDA (kv_cache_manager_v2/storage/core.cpp:392
+        # waitForFill=false, utils/hostMem.cpp:187-216). That tier holds offloaded blocks; the
+        # attention kernels timed here read the GPU pool. These collectors build a manager per
+        # point, so the fill ran while the point was timed: it stalled the timed loop at random
+        # (B200 and B300 rows up to 2,700x their neighbours) and cost about 17 s per point here.
+        # Without the tier the latencies are the same (B200 CSA context, 1,235 points: median
+        # 0.99x, 1st to 99th percentile 0.96-1.04x) and nine rows take 17 minutes instead of 6
+        # hours. Retire it when a row reuses one manager for all its points.
+        host_cache_size=0,
     )
     if get_sm_version() == 90:
         # On Hopper DeepseekV4CacheManager refuses any pool but the packed FP8

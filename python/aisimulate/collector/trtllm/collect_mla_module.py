@@ -510,6 +510,8 @@ def create_kv_cache_and_metadata(
     kv_cache_config = KvCacheConfig(
         max_tokens=kv_tokens,
         enable_block_reuse=False,
+        # No host tier: the deviation note is at the KvCacheConfig in collect_dsv4_attn.py.
+        host_cache_size=0,
     )
     # Serving's class: KvCacheConfig.use_kv_cache_manager_v2 defaults to True
     # (llmapi/llm_args.py:5057-5064), so a dense MLA model resolves KVCacheManagerV2
