@@ -26,6 +26,7 @@ from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
 from collector.fpm_forward.native_artifact import (
     NativeCollection,
     _expected_scheduled,
+    _validate_execution_provenance,
     select_native_measurements,
     validate_native_collection,
 )
@@ -36,6 +37,7 @@ from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identi
 from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
 from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
+from .test_fpm_forward import _write_v41_token_streams
 from .test_fpm_glm53flash_prefix_seed import load_producer
 from .test_fpm_runner import _cell, _native_payload, _write_provenance
 
@@ -348,6 +350,64 @@ def test_v41_artifacts_keep_their_contract(tmp_path):
     (_pod(tmp_path, cell) / "benchmark.json").write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="V4.1 native result lacks token-stream manifest"):
         _validate(tmp_path, cell)
+
+
+_V41_IDENTITY = ("c" * 64, "full", "hbm_tp_sharded", "text")
+
+
+def test_v41_cell_refuses_an_artifact_that_declares_the_glm_contract(tmp_path):
+    # The frozen cell, not the artifact, selects the producer contract. A V4.1 artifact that declares the GLM mode
+    # with its own execution identity and the GLM provenance would otherwise skip the V4.1 eager and text checks.
+    cell = replace(
+        _cell(phase="prefill", strategy="pure_tp"), execution_identity=_V41_IDENTITY, input_text_sha256="a" * 64
+    )
+    payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
+    payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, _V41_IDENTITY, strict=True))
+    artifact = write_glm_rank(_pod(tmp_path, cell), payload)
+    with pytest.raises(ValueError) as error:
+        _validate(tmp_path, cell)
+    assert str(error.value) == (
+        f"native execution identity cell expects execution mode 'eager', found 'native_graph_policy': {artifact}"
+    )
+
+
+def test_glm_cell_refuses_an_artifact_that_declares_the_v41_contract(tmp_path):
+    # The reverse case: the GLM cell accepts only the GLM producer's mode, whatever V4.1 evidence the artifact holds.
+    cell = glm_cell("prefill")
+    payload = _native_payload(phase="prefill", rank=0, dp=1)
+    payload.update(
+        execution_identity=dict(zip(EXECUTION_COLUMNS, glm_identity(), strict=True)),
+        execution_mode="eager",
+        input_provenance={
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        },
+    )
+    artifact = _pod(tmp_path, cell) / "benchmark.json"
+    _write_v41_token_streams(payload, artifact)
+    artifact.write_text(json.dumps(payload))
+    with pytest.raises(ValueError) as error:
+        _validate(tmp_path, cell)
+    assert str(error.value) == (
+        f"native execution identity cell expects execution mode 'native_graph_policy', found 'eager': {artifact}"
+    )
+
+
+def test_cell_without_an_audited_contract_refuses_an_audited_mode(tmp_path):
+    # An execution identity whose Engram residency no producer contract has stays refused, whatever mode it declares.
+    identity = ("c" * 64, "full", "cpu_offloaded", "text")
+    cell = SimpleNamespace(execution_identity=identity, input_text_sha256="a" * 64)
+    payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": "eager"}
+    path = tmp_path / "benchmark.json"
+    with pytest.raises(ValueError) as error:
+        _validate_execution_provenance(cell, payload, path)
+    assert str(error.value) == (
+        f"native execution identity cell has no audited producer contract: 'cpu_offloaded': {path}"
+    )
 
 
 def _drop_a_line(payload: dict, sidecar: Path) -> None:

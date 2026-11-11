@@ -215,17 +215,30 @@ def select_native_measurements(collection: NativeCollection, *, cell_id: str) ->
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
     """Config-bound curves require engine evidence for execution and real input.
 
-    Each audited execution mode has its own producer contract: ``eager`` is the DeepSeek V4.1 producer's and
-    ``native_graph_policy`` the GLM-5.3-Flash producer's. A mode that no contract audits is refused, never read as
-    one of them.
+    The frozen cell selects the producer contract, never the artifact. The planner computes the cell's execution
+    identity from the model configuration, and the cell ID and the plan hash cover it. A DeepSeek V4.1 cell accepts
+    only the ``eager`` mode of its producer and a GLM-5.3-Flash cell only ``native_graph_policy``. A mode that no
+    contract audits is refused, never read as one of them.
     """
     if not cell.execution_identity[0]:
         return None
+    # The execution mode of each contract, by the Engram residency of the cell's execution identity.
+    # aisimulate_core.sdk.fpm_identity.execution_identity gives DeepSeek V4.1 "hbm_tp_sharded" and GLM-5.3-Flash
+    # "none", and every other model the legacy identity, which has no configuration hash and returned above.
+    contract_modes = {"hbm_tp_sharded": "eager", "none": "native_graph_policy"}
     mode = payload.get("execution_mode")
+    if mode not in contract_modes.values():
+        raise ValueError(f"native execution identity cell has an unaudited execution mode: {mode!r}: {path}")
+    residency = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))["engram_residency"]
+    expected_mode = contract_modes.get(residency)
+    if expected_mode is None:
+        raise ValueError(f"native execution identity cell has no audited producer contract: {residency!r}: {path}")
+    if mode != expected_mode:
+        raise ValueError(
+            f"native execution identity cell expects execution mode {expected_mode!r}, found {mode!r}: {path}"
+        )
     if mode == "native_graph_policy":
         return _validate_glm_provenance(cell, payload, path)
-    if mode != "eager":
-        raise ValueError(f"native execution identity cell has an unaudited execution mode: {mode!r}: {path}")
     expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
     if payload.get("execution_identity") != expected:
         raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
