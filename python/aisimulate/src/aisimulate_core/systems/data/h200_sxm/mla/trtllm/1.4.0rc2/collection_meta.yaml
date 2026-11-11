@@ -29,22 +29,22 @@ tables:
       rows: 5068
       status: complete
   mla_context_module_perf:
-    rows: 5314
+    rows: 5328
     status: complete
     collections:
-    - collector_ref: e22b5faedc65193d24a17c235ee1ff408c13c5b1
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:d4ecadb692e32561a217956db4fd5070b77ab89cdb8f6505b4f3d5dc42282ce6
-      collected_at: '2026-11-09'
-      rows: 5314
+      collected_at: '2026-11-11'
+      rows: 5328
       status: complete
   mla_generation_module_perf:
     rows: 8832
     status: complete
     collections:
-    - collector_ref: e22b5faedc65193d24a17c235ee1ff408c13c5b1
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:757b16ebe42d6387f6c0ab4903fa9d97299def2767529192f41091de98f47631
-      collected_at: '2026-11-09'
+      collected_at: '2026-11-11'
       rows: 8832
       status: complete
