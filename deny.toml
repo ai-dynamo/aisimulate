@@ -5,7 +5,7 @@
 # https://github.com/EmbarkStudios/cargo-deny/blob/main/deny.template.toml
 
 [graph]
-# AISimulate CI targets Linux; avoid checking target-specific dependencies for
+# AISim CI targets Linux; avoid checking target-specific dependencies for
 # unsupported platforms such as Windows.
 targets = [
     "x86_64-unknown-linux-gnu",

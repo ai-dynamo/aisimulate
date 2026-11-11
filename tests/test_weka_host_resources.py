@@ -8,11 +8,11 @@ from copy import deepcopy
 
 import pytest
 
-from aisimulate import resources
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig
-from aisimulate.config.common import ResourceConfig
-from aisimulate.resources import (
+from aisim import resources
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig
+from aisim.config.common import ResourceConfig
+from aisim.resources import (
     GB,
     MIB,
     HostResources,
@@ -22,8 +22,8 @@ from aisimulate.resources import (
     require_plan,
     workload_bounds,
 )
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.replay import ReplayOutputRequirements
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper.replay import ReplayOutputRequirements
 
 
 def _request(input_length=64, output_length=1, *, hashes=None, timestamp=0.0):

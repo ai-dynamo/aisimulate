@@ -3,8 +3,8 @@
 
 name: Main branch nightly CI
 
-# Nightly build of the approved AISimulate release artifacts — the
-# `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
+# Nightly build of the approved AISim release artifacts — the
+# `aisim` wheel and the `aisim-core` crate — plus a strict-native
 # FPE support-matrix refresh at the same source SHA. The GitLab publish
 # trigger waits for the matrix refresh, and a failed refresh fails the run,
 # so consumers (who resolve the newest successful run) never advance to a
@@ -248,10 +248,10 @@ jobs:
             --arg run_url "${RUN_URL}" \
             '{
               channel: $channel,
-              text: ("AISimulate Nightly build started — " + $date),
+              text: ("AISim Nightly build started — " + $date),
               blocks: [
                 { type: "header",
-                  text: { type: "plain_text", text: (":crescent_moon: AISimulate Nightly build started — " + $date) } },
+                  text: { type: "plain_text", text: (":crescent_moon: AISim Nightly build started — " + $date) } },
                 { type: "section",
                   fields: [
                     { type: "mrkdwn", text: ("*Commit:*\n`" + $sha + "`") },
@@ -297,7 +297,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       # Keep the license policy/tooling at the workflow revision. Older
@@ -321,7 +321,7 @@ jobs:
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
           python scripts/ci/check_python_licenses.py \
-            --pyproject source/python/aisimulate/pyproject.toml \
+            --pyproject source/python/aisim/pyproject.toml \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
             --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
       - name: Preserve the dependency inventory as data
@@ -380,7 +380,7 @@ jobs:
       # for the runner's node24-based actions.
       image: ${{ matrix.container_image }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
     defaults:
       run:
         shell: bash
@@ -608,7 +608,7 @@ jobs:
           from pathlib import Path
 
           dist = Path(os.environ["DIST_DIR"])
-          pyproject = Path("python/aisimulate/pyproject.toml")
+          pyproject = Path("python/aisim/pyproject.toml")
           version = tomllib.loads(pyproject.read_text())["project"]["version"]
           provenance = {
               "version": version,
@@ -787,16 +787,16 @@ jobs:
           import importlib.metadata as metadata
           import os
 
-          import aisimulate
-          import aisimulate_core
+          import aisim
+          import aisim_core
 
           expected = os.environ["EXPECTED_VERSION"]
           assert (
-              aisimulate.__version__
-              == aisimulate_core.__version__
+              aisim.__version__
+              == aisim_core.__version__
               == metadata.version(os.environ["WHEEL_PACKAGE"])
               == expected
-          ), (aisimulate.__version__, expected)
+          ), (aisim.__version__, expected)
           installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
           forbidden = {"aisim-core", "aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
           assert installed.isdisjoint(forbidden), installed & forbidden
@@ -807,7 +807,7 @@ jobs:
             uv pip install --python "${venv}/bin/python" "${fetch_dir}/${wheel}"
             uv pip check --python "${venv}/bin/python"
             "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
-            "${venv}/bin/aisimulate" --help
+            "${venv}/bin/aisim" --help
             "${venv}/bin/aiconfigurator" version
             echo "smoke OK on Python ${series}"
           done
@@ -1311,7 +1311,7 @@ jobs:
               - type: "section"
                 text:
                   type: mrkdwn
-                  text: ":alert: *AISimulate Nightly CI Failure*"
+                  text: ":alert: *AISim Nightly CI Failure*"
               - type: "section"
                 text:
                   type: mrkdwn

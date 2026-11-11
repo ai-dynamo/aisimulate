@@ -190,8 +190,8 @@ Use the shared Python API with an already downloaded local selection:
 
 ```python
 from pathlib import Path
-from aisimulate_core.datasets import check_manifest, prepare_execution_profile
-from aisimulate_core.sdk import RustForwardPassPerfModel
+from aisim_core.datasets import check_manifest, prepare_execution_profile
+from aisim_core.sdk import RustForwardPassPerfModel
 
 root = Path("/local/pinned-dataset")
 manifest = "metadata/execution-profiles/example/prefill.manifest.json"

@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from ai-dynamo/AIConfigurator at commit
-# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISimulate packaging.
+# 77fd0773407b3683d8a671fe24a30a7110651b64; modified for AISim packaging.
 # Source: https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
 
 name: Build and verify a platform wheel
-description: Build and verify one unified AISimulate platform wheel
+description: Build and verify one unified AISim platform wheel
 
 inputs:
   build_method:
@@ -35,7 +35,7 @@ runs:
       uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
       with:
         context: .
-        file: python/aisimulate/docker/Dockerfile
+        file: python/aisim/docker/Dockerfile
         platforms: ${{ inputs.platform }}
         target: wheel-out
         build-args: WHEEL_BUILD_BASE=${{ inputs.wheel_base }}
@@ -62,13 +62,13 @@ runs:
         UV_PYTHON_PREFERENCE: only-managed
         UV_PYTHON_DOWNLOADS: automatic
       run: |
-        uv_cache_dir="${RUNNER_TEMP}/aisimulate-uv-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        uv_cache_dir="${RUNNER_TEMP}/aisim-uv-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         export UV_CACHE_DIR="${uv_cache_dir}"
         echo "UV_CACHE_DIR=${uv_cache_dir}" >> "${GITHUB_ENV}"
 
-        uv venv --seed --python 3.13 "${RUNNER_TEMP}/aisimulate-wheel-venv"
-        echo "${RUNNER_TEMP}/aisimulate-wheel-venv/bin" >> "${GITHUB_PATH}"
-        echo "VIRTUAL_ENV=${RUNNER_TEMP}/aisimulate-wheel-venv" >> "${GITHUB_ENV}"
+        uv venv --seed --python 3.13 "${RUNNER_TEMP}/aisim-wheel-venv"
+        echo "${RUNNER_TEMP}/aisim-wheel-venv/bin" >> "${GITHUB_PATH}"
+        echo "VIRTUAL_ENV=${RUNNER_TEMP}/aisim-wheel-venv" >> "${GITHUB_ENV}"
 
     - name: Select Rust toolchain for macOS wheel
       if: inputs.build_method == 'native-macos'
@@ -85,11 +85,11 @@ runs:
       run: |
         uv pip install --quiet 'maturin>=1.12,<2' 'delocate>=0.13,<1'
         mkdir -p wheelhouse repaired-wheelhouse
-        (cd python/aisimulate && maturin build --release --out ../../wheelhouse)
+        (cd python/aisim && maturin build --release --out ../../wheelhouse)
         delocate-wheel --wheel-dir repaired-wheelhouse --verbose wheelhouse/*.whl
         rm wheelhouse/*.whl
         mv repaired-wheelhouse/*.whl wheelhouse/
-        python python/aisimulate/tools/verify_release_wheels.py wheelhouse
+        python python/aisim/tools/verify_release_wheels.py wheelhouse
 
     - name: Check exact wheel configuration provenance
       shell: bash
@@ -112,7 +112,7 @@ runs:
       shell: bash
       run: |
         python -m pip install --quiet wheelhouse/*.whl
-        python python/aisimulate/tools/verify_installed_package_layers.py --exercise-engine --exercise-fpe
+        python python/aisim/tools/verify_installed_package_layers.py --exercise-engine --exercise-fpe
 
     - name: Exercise installed public CLI round trip
       shell: bash

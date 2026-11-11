@@ -19,7 +19,7 @@ runner and native placement/scaling extensions are described by the
 | Backend pass selection, allocation, preemption and cache | [`engine/`](../../crates/core/src/engine/) |
 | Pass timing and memory estimation | [Performance model](../perf-model/extending.md) |
 | Request metrics, aggregate distributions and artifacts | [`report.rs`](../../crates/core/src/replay/report.rs), [`artifact.rs`](../../crates/core/src/replay/artifact.rs), [`canonical.rs`](../../crates/core/src/replay/canonical.rs) |
-| Public YAML and runner admission | [`config/`](../../python/aisimulate/src/aisimulate/config/), [`compiler.py`](../../python/aisimulate/src/aisimulate/compiler.py), [`runner.py`](../../python/aisimulate/src/aisimulate/runner.py) |
+| Public YAML and runner admission | [`config/`](../../python/aisim/src/aisim/config/), [`compiler.py`](../../python/aisim/src/aisim/compiler.py), [`runner.py`](../../python/aisim/src/aisim/runner.py) |
 
 Do not create a second event loop for a new reporting mode or integration.
 Native `Replayer` owns virtual time and both topology runtimes. Scheduler
@@ -84,7 +84,7 @@ cleanup after lane reuse. Representative source-built checks include:
 ```bash
 cargo test --locked -p aisim-core --test agentx_qualification --example qualify_weka
 cargo test --locked -p aisim-core --lib agentic_pd_qualification
-python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay or agentic_snapshot or agentic_warmup'
+python/aisim/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay or agentic_snapshot or agentic_warmup'
 ```
 
 The optional `scripts/prediction_regression/qualify_agentx_replay.py` checks

@@ -6,9 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Runner ABI
 
 Source contracts:
-[`sweeper/replay.py`](../../python/aisimulate/src/aisimulate/sweeper/replay.py),
-[stack discovery](../../python/aisimulate/src/aisimulate/stack.py), and the
-[built-in runner](../../python/aisimulate/src/aisimulate/runner.py).
+[`sweeper/replay.py`](../../python/aisim/src/aisim/sweeper/replay.py),
+[stack discovery](../../python/aisim/src/aisim/stack.py), and the
+[built-in runner](../../python/aisim/src/aisim/runner.py).
 
 ## Required interface
 
@@ -33,7 +33,7 @@ one candidate's requests or caches into another. `close()` releases resources.
 The engine factory lazily imports the compiled runtime in its worker.
 
 Optional factories are selected by entry-point name in
-`aisimulate.runner_factories` (`--stack`). Resolution validates `capabilities`
+`aisim.runner_factories` (`--stack`). Resolution validates `capabilities`
 and `create`; unavailable, duplicate or unloadable optional stacks raise
 `StackNotFoundError`, `DuplicateStackError` or `StackLoadError`. A factory's
 coarse capabilities are checked before runner creation; execution must still

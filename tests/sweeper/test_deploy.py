@@ -5,15 +5,15 @@
 
 import pytest
 
-import aisimulate.sweeper.deploy as deploy_module
-from aisimulate.sweeper.config import SearchSpace
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.parallel_enum import (
+import aisim.sweeper.deploy as deploy_module
+from aisim.sweeper.config import SearchSpace
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.sample import unroll_sample
+from aisim.sweeper.sample import unroll_sample
 
 BACKEND_VERSION = "1.3.0rc10"
 

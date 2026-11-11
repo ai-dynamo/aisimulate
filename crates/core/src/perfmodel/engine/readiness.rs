@@ -83,7 +83,7 @@ fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result
     {
         return Err(AicError::InvalidEngineConfig(format!(
             "GPU {} (SM{sm}) does not support FP8 tensor-core compute required by quant mode '{}'. \
-             AISimulate does not model FP8 weight-only (Marlin) execution on pre-SM89 GPUs. \
+             AISim does not model FP8 weight-only (Marlin) execution on pre-SM89 GPUs. \
              Use a BF16 checkpoint on this GPU, or select an FP8-capable GPU such as h100_sxm or h200_sxm \
              with matching backend performance data.",
             db.system, quant.name,
@@ -730,7 +730,7 @@ mod tests {
     fn systems() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         let spec = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
+            .join("../../python/aisim/src/aisim_core/systems/b200_sxm.yaml");
         std::fs::copy(spec, root.path().join("b200_sxm.yaml")).unwrap();
         std::fs::create_dir_all(root.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
         root
@@ -807,7 +807,7 @@ mod tests {
         use crate::perf_database::fpm_forward::tests::default_identity;
         let root = systems();
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems/a100_sxm.yaml");
+            .join("../../python/aisim/src/aisim_core/systems/a100_sxm.yaml");
         std::fs::copy(source, root.path().join("a100_sxm.yaml")).unwrap();
         std::fs::create_dir_all(root.path().join("data/a100_sxm/vllm/0.24.0")).unwrap();
         let db = PerfDatabase::load(root.path(), "a100_sxm", "vllm", "0.24.0").unwrap();
@@ -1220,7 +1220,7 @@ mod tests {
         use crate::operators::glm53flash::tests::{ctx, mhc_site};
         let root = tempfile::tempdir().unwrap();
         let systems = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
         let data = root.path().join("data/gb300/mhc/vllm");
         for (version, role, latency) in [("0.31.0", "post", 0.03), ("0.30.0", "pre", 14.0)] {

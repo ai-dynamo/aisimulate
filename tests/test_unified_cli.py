@@ -14,21 +14,21 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import aisimulate.main as cli
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.output import (
+import aisim.main as cli
+from aisim.config.cli import CorePredictionConfig
+from aisim.output import (
     format_prediction_stdout,
     prepare_output_directory,
     write_prediction_report,
     write_prediction_stdout,
     write_telemetry,
 )
-from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
-from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
-from aisimulate.supervision import main as supervised_main
-from aisimulate.sweeper.config import Candidate
-from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
-from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
+from aisim.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
+from aisim.predict import PredictionExecutionError, PredictionResult, run_prediction
+from aisim.supervision import main as supervised_main
+from aisim.sweeper.config import Candidate
+from aisim.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
+from aisim.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
 
 
 class _RecommendationResult:
@@ -667,7 +667,7 @@ def test_predict_discloses_kv_precision_without_detail(
             )
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: MemoryFactory(runner))
-    monkeypatch.setattr("aisimulate.predict.get_model_config_from_model_path", lambda _: {"raw_config": raw})
+    monkeypatch.setattr("aisim.predict.get_model_config_from_model_path", lambda _: {"raw_config": raw})
     config = _prediction_config().model_dump(mode="json", exclude_none=True)
     worker = config["engine"]["workers"]["aggregated"]
     config["engine"]["workers"] = {role: deepcopy(worker) for role in roles}
@@ -758,7 +758,7 @@ def test_predict_reports_missing_data_after_shared_api_execution(tmp_path, monke
     output = tmp_path / "out"
 
     assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
-    assert f"aisimulate predict failed: {expected}" in capsys.readouterr().err
+    assert f"aisim predict failed: {expected}" in capsys.readouterr().err
     assert runner.closed
     coverage = json.loads((output / "fpm-coverage.json").read_text())
     assert coverage["status"] == "incomplete"
@@ -1038,7 +1038,7 @@ def test_predict_adapter_compilation_failure_preserves_previous_output(tmp_path,
 
 
 def test_predict_supervision_brackets_runner_lifecycle(tmp_path, monkeypatch) -> None:
-    from aisimulate import supervision
+    from aisim import supervision
 
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
@@ -1212,9 +1212,9 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
 
 @pytest.mark.filterwarnings("error")
 def test_recommend_runner_incompatibility_is_cli_config_error(tmp_path, monkeypatch, capsys) -> None:
-    from aisimulate.recommend import _run_recommendation
+    from aisim.recommend import _run_recommendation
 
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -1610,8 +1610,8 @@ def test_recommendation_exports_completed_results_after_invalid_suggestion(
 ) -> None:
     from vizier import pyvizier as vz
 
-    from aisimulate.recommend import _run_recommendation
-    from aisimulate.sweeper.sampler import SeededBayesianBranchSampler
+    from aisim.recommend import _run_recommendation
+    from aisim.sweeper.sampler import SeededBayesianBranchSampler
 
     # Exercise the real sampler validation, search, ranking and CLI exporters.
     # Only replace the upstream proposals and the expensive replay runner.
@@ -1629,7 +1629,7 @@ def test_recommendation_exports_completed_results_after_invalid_suggestion(
         monkeypatch.setattr(self._designer, "suggest", suggest)
 
     monkeypatch.setattr(SeededBayesianBranchSampler, "__init__", initialize)
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     config = {
         "engine": {
@@ -1801,7 +1801,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     partial = _RecommendationResult(candidates)
     partial.counts.resource_limited = resource_limited
     monkeypatch.setattr(
-        "aisimulate.recommend.run_recommendation",
+        "aisim.recommend.run_recommendation",
         lambda *args, **kwargs: partial,
     )
 
@@ -1898,7 +1898,7 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
         recommendation_kwargs.update(kwargs)
         return result
 
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", run_recommendation)
 
     output = tmp_path / "out"
     assert cli.main(
@@ -1981,7 +1981,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
 def test_recommendation_writes_an_empty_result_before_returning_failure(
     tmp_path, monkeypatch, capsys, resource_limited
 ) -> None:
-    import aisimulate.recommend as recommendation_module
+    import aisim.recommend as recommendation_module
 
     monkeypatch.setattr(
         cli.CoreRecommendationConfig,
@@ -2274,7 +2274,7 @@ def test_detail_schema_rejects_incomplete_or_unsupported_sections(section):
 def test_detail_partial_memory_preserves_unavailable_role_reason(kv_mode):
     from jsonschema import ValidationError, validate
 
-    from aisimulate.detail import build_prediction_details, format_prediction_details
+    from aisim.detail import build_prediction_details, format_prediction_details
 
     available = {
         "status": "available",
@@ -2383,7 +2383,7 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
 def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys, profile) -> None:
     import os
 
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim.runner import EngineReplayRunnerFactory
 
     class SnapshotFactory(_Factory):
         def capabilities(self):
@@ -2416,7 +2416,7 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
         # This unit test calls the internal child entry point directly. Model
         # its supervisor context; public-process supervision is tested separately.
         monkeypatch.setenv(
-            "_AISIMULATE_SUPERVISED_BUDGET",
+            "_AISIM_SUPERVISED_BUDGET",
             json.dumps(
                 {
                     "supervisor_pid": os.getpid(),
@@ -2460,7 +2460,7 @@ def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():
 
     from jsonschema import validate
 
-    from aisimulate.detail import build_prediction_details, format_prediction_details
+    from aisim.detail import build_prediction_details, format_prediction_details
 
     operations = [
         {
@@ -2562,7 +2562,7 @@ def performance_record():
     ],
 )
 def test_performance_detail_rejects_malformed_nested_records(performance_record, path, value):
-    from aisimulate.detail import build_prediction_details
+    from aisim.detail import build_prediction_details
 
     record = performance_record
     for key in path[:-1]:
@@ -2581,7 +2581,7 @@ def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(p
 
     from jsonschema import validate
 
-    from aisimulate.detail import performance_diagnostics
+    from aisim.detail import performance_diagnostics
 
     for path in [(), ("phases", 0), ("phases", 0, "operations", 0), ("phases", 0, "operations", 0, "fallbacks", 0)]:
         record = performance_record
@@ -2618,7 +2618,7 @@ def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(p
 def test_diagnostic_string_contract_rejects_whitespace_in_schema_and_adapter(performance_record, path):
     from jsonschema import Draft202012Validator
 
-    from aisimulate.detail import build_prediction_details, performance_diagnostics
+    from aisim.detail import build_prediction_details, performance_diagnostics
 
     if path == ("unavailable_reason",):
         performance_record.update(status="unavailable", phases=[], unavailable_reason="unsupported")
@@ -2658,7 +2658,7 @@ def test_diagnostic_string_contract_rejects_whitespace_in_schema_and_adapter(per
 def test_performance_sol_states_match_schema(performance_record, sol, reason, ratio, valid):
     from jsonschema import Draft202012Validator
 
-    from aisimulate.detail import performance_diagnostics
+    from aisim.detail import performance_diagnostics
 
     operation = performance_record["phases"][0]["operations"][0]
     operation.update(sol=sol, sol_unavailable_reason=reason, latency_to_sol_ratio=ratio)
@@ -2705,7 +2705,7 @@ def test_invalid_analytical_epd_table_includes_banner():
     }
     output = format_prediction_stdout(summary, "table")
     assert output.startswith("INVALID prediction (no_completed_requests): No requests completed.\n")
-    assert "AISimulate analytical EPD" in output
+    assert "AISim analytical EPD" in output
 
 
 def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):

@@ -922,13 +922,13 @@ impl Default for SplineFitConfig {
 /// and fields.
 ///
 /// ```compile_fail
-/// use aisimulate_core::SplineSearchConfig;
+/// use aisim_core::SplineSearchConfig;
 /// // Construct policies through their methods, leaving room for new controls.
 /// let search = SplineSearchConfig::Periodic { step: 64 };
 /// ```
 ///
 /// ```compile_fail
-/// use aisimulate_core::SplineSearchConfig;
+/// use aisim_core::SplineSearchConfig;
 /// // A wildcard arm is required for future search policies.
 /// match SplineSearchConfig::default() {
 ///     SplineSearchConfig::Periodic { .. } => (),
