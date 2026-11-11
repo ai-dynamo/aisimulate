@@ -1273,7 +1273,6 @@ def fpm_profile_deployment(engine, worker: WorkerPredictionConfig, role: str):
         worker_type=role,
         tp_size=parallel.tensor,
         pp_size=parallel.pipeline,
-        cp_size=parallel.prefill_context or 1,
         attention_dp_size=parallel.attention_data,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
@@ -1289,6 +1288,9 @@ def recorded_state_pool(engine, worker: WorkerPredictionConfig, role: str):
         resources = fpm_profile_deployment(engine, worker, role).resources
     if resources is None or (runtime := resources.runtime_memory) is None:
         raise ValueError("state_cache requires fixed capacity, or an engine.fpm_profile that records runtime_memory")
+    # Native FPM resource selection matches CP1 deployments only.
+    if (worker.parallelism.prefill_context or 1) != 1:
+        raise ValueError("a recorded state pool requires parallelism.prefill_context=1")
     if resources.cache_layout == "grouped":
         raise ValueError("state_cache requires a linear FPM cache; a grouped profile sizes state by its cache groups")
     # The pool was recorded as allocated, at one memory fraction and context limit.

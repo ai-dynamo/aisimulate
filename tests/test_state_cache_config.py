@@ -741,7 +741,7 @@ def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid
 
 def _runtime_memory_profile(kv_cache_bytes):
     def deployment(system, kv_cache_bytes):
-        runtime = {"kv_cache_bytes": kv_cache_bytes, "gpu_memory_utilization": 0.9, "max_model_len": 2048}
+        runtime = {"kv_cache_bytes": kv_cache_bytes, "gpu_memory_utilization": 0.92, "max_model_len": 2048}
         resources = {"kv_bytes_per_token": 3585, "cache_layout": "linear", "max_num_tokens": 8192}
         return {
             "system": system, "backend": "vllm", "backend_version": "0.25.1", "tp": 8, "pp": 1, "dp": 1,
@@ -763,7 +763,7 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
     payload = auto_dsv4_payload
     worker = payload["engine"]["workers"]["aggregated"]
     worker["kv_cache"]["state_cache"] = {"indexer_cache_dtype": "mxfp4"}
-    worker["kv_cache"].pop("capacity")
+    worker["kv_cache"]["capacity"] = {"memory_fraction": 0.92}
     worker["timing"] = {"type": "default"}
     worker["parallelism"]["moe_tensor"] = 8
     profile = _runtime_memory_profile(256 * 3585 * 50 + 7)
@@ -789,14 +789,14 @@ def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_pa
         cache(engine).update(prefix_caching=False)
 
     for match, change in (
-        ("memory_fraction must match", lambda e: cache(e).update(capacity={"memory_fraction": 0.8})),
+        ("memory_fraction must match", lambda e: cache(e).pop("capacity")),
         (
             "exceeds .* runtime_memory.max_model_len",
             lambda e: resources(e)["runtime_memory"].update(max_model_len=2047),
         ),
         ("records runtime_memory", lambda e: resources(e).pop("runtime_memory")),
-        ("unset cuda_graph_reserved_bytes", lambda e: cache(e).update(capacity={"cuda_graph_reserved_bytes": 1})),
-        ("no matching FPM deployment", lambda e: e["workers"]["aggregated"]["parallelism"].update(prefill_context=2)),
+        ("unset cuda_graph_reserved_bytes", lambda e: cache(e)["capacity"].update(cuda_graph_reserved_bytes=1)),
+        ("requires .*prefill_context=1", lambda e: e["workers"]["aggregated"]["parallelism"].update(prefill_context=2)),
         ("requires a linear FPM cache", grouped),
     ):
         invalid = copy.deepcopy(payload)
