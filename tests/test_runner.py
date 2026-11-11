@@ -664,16 +664,15 @@ def _agentic_g2_spec(*, scopes=("dp_rank_local",), nested_rank=False, trace_form
         if prefill is not None or decode is not None
     ],
 )
-def test_agentic_g2_capability_accepts_static_vllm_dp1_roles(trace_format, nested_rank, scopes):
+def test_agentic_g2_capability_accepts_static_vllm_roles(trace_format, nested_rank, scopes):
     spec = _agentic_g2_spec(scopes=scopes, nested_rank=nested_rank, trace_format=trace_format)
     EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
 @pytest.mark.parametrize("nested_rank", [False, True])
 @pytest.mark.parametrize("location", ["rank", "canonical"])
-@pytest.mark.parametrize("scope", ["dp_rank_local", "cluster_shared"])
-def test_agentic_g2_canonical_mtp_capability_is_local_aggregated_only(nested_rank, location, scope):
-    spec = _agentic_g2_spec(scopes=(scope,), nested_rank=nested_rank)
+def test_agentic_g2_capability_takes_canonical_mtp(nested_rank, location):
+    spec = _agentic_g2_spec(nested_rank=nested_rank)
     args = spec.backend_deployment.agg_engine_args
     rank = args.get("rank", args)
     if location == "rank":
@@ -686,13 +685,9 @@ def test_agentic_g2_canonical_mtp_capability_is_local_aggregated_only(nested_ran
         }
         rank["aic_nextn_accept_rates"] = "1,0.5"
     capabilities = EngineReplayRunnerFactory().capabilities()
-    if scope == "cluster_shared":
-        with pytest.raises(ValueError, match="scope=dp_rank_local"):
-            capabilities.require_compatible(spec)
-    else:
-        capabilities.require_compatible(spec)
-        with pytest.raises(ValueError, match="speculative decoding disabled"):
-            replace(capabilities, supports_agentic_speculative_decoding=False).require_compatible(spec)
+    capabilities.require_compatible(spec)
+    with pytest.raises(ValueError, match="speculative decoding disabled"):
+        replace(capabilities, supports_agentic_speculative_decoding=False).require_compatible(spec)
 
 
 @pytest.mark.parametrize("nested_rank", [False, True])
@@ -711,37 +706,15 @@ def test_agentic_g2_runner_capability_remains_explicit(nested_rank, scopes, work
 @pytest.mark.parametrize(
     "scopes,field,value",
     [
-        (("cluster_shared",), "num_workers", 2),
         (("cluster_shared",), "num_workers", 0),
         (("dp_rank_local",), "num_workers", True),
-        (("dp_rank_local", None), "num_prefill_workers", 2),
-        ((None, "cluster_shared"), "num_decode_workers", 2),
         (("dp_rank_local", "cluster_shared"), "num_prefill_workers", 0),
     ],
 )
-def test_agentic_g2_rejects_unqualified_worker_counts(nested_rank, scopes, field, value):
+def test_agentic_g2_rejects_invalid_worker_counts(nested_rank, scopes, field, value):
     spec = _agentic_g2_spec(scopes=scopes, nested_rank=nested_rank)
     spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: value}))
-    with pytest.raises(ValueError, match="one aggregated worker or one prefill and one decode"):
-        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
-
-
-@pytest.mark.parametrize("nested_rank", [False, True])
-@pytest.mark.parametrize("offload_role", ["prefill", "decode"])
-@pytest.mark.parametrize("dp_source", ["dp_size", "aic_attention_dp_size", "timing", "parallel_config"])
-def test_agentic_g2_checks_dp_on_role_without_offload(nested_rank, offload_role, dp_source):
-    scopes = ("cluster_shared", None) if offload_role == "prefill" else (None, "dp_rank_local")
-    spec = _agentic_g2_spec(scopes=scopes, nested_rank=nested_rank)
-    other_role = "decode" if offload_role == "prefill" else "prefill"
-    args = getattr(spec.backend_deployment, f"{other_role}_engine_args")
-    rank = args.get("rank", args)
-    if dp_source == "timing":
-        rank["timing_model"] = {"type": "external", "provider": "aic", "config": {"attention_dp": 2}}
-    elif dp_source == "parallel_config":
-        spec.backend_deployment.parallel_config[f"{other_role}_attention_dp"] = 2
-    else:
-        args[dp_source] = 2
-    with pytest.raises(ValueError, match="attention DP=1 on every role"):
+    with pytest.raises(ValueError, match=f"{field} to be a positive integer"):
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
@@ -800,12 +773,12 @@ def test_agentic_g2_rejects_backend_online_and_scaling():
         capabilities.require_compatible(replace(spec, adapters={"planner": AdapterReplaySpec(runtime_hooks=(hook,))}))
 
 
-@pytest.mark.parametrize("value", [True, 0, 2, "1"])
-def test_agentic_g2_requires_typed_dp1(value):
+@pytest.mark.parametrize("value", [True, 0, "1"])
+def test_agentic_g2_runner_rejects_an_untyped_attention_dp(value):
     spec = _agentic_g2_spec(nested_rank=True)
     spec.backend_deployment.agg_engine_args["dp_size"] = value
-    with pytest.raises(ValueError, match="attention DP=1"):
-        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    with pytest.raises(ValueError, match="dp_size"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(spec)
 
 
 def test_agentic_g2_preserves_disabled_speculation_default_in_canonical_timing():

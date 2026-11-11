@@ -244,9 +244,8 @@ shared synthetic knobs carried by `ReplaySpec.workload`.
 
 Profile controls are concrete workload values, not search dimensions. The built-in Engine runner
 supports profiles on offline aggregated or P/D vLLM/SGLang replay with HBM-only KV cache.
-vLLM also supports local or shared [G2 host offload](../replay/engine/kv-cache.md) on a static single
-aggregated worker or 1P1D, or local G2 on several static aggregated workers, with attention DP1
-on every role. G3 remains unsupported;
+vLLM also supports local or shared [G2 host offload](../replay/engine/kv-cache.md) on static
+workers of any count and attention DP. G3 remains unsupported;
 speculative decoding follows the narrower [engine SD constraints](../replay/engine/speculation.md).
 Warmup is optional: `repeated_prefixes` retains the saved snapshot frontier,
 `live_trajectory_v1` advances it, and `primers_only` sends only the primers.

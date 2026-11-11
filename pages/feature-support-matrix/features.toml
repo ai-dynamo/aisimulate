@@ -262,7 +262,7 @@ name = "G2 host offload"
 doc = "replay/engine/kv-cache.md#agentic-g2"
 # crates/core/src/python.rs agentic host-offload checks.
 cells = ["limited", "not_supported", "not_supported"]
-note = "One aggregated worker, several aggregated workers each with local G2, or 1P1D; attention DP 1 on every role, static pools; canonical MTP only on a single aggregated worker with local G2, no other speculation."
+note = "Static workers of any count and attention DP, local or shared pool; canonical MTP or no speculation; no G3."
 
 [[sections.rows]]
 name = "G3 offload, KVCR"

@@ -325,11 +325,9 @@ Supported runtimes: offline `engine` stack, vLLM or SGLang, aggregated or P/D
 workers and HBM-only KV cache, including
 [speculative decoding](engine/speculation.md) with explicit acceptance
 assumptions; ngram requires vLLM. vLLM additionally
-supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers:
-one aggregated worker, 1P1D, or several aggregated workers with
-`scope: dp_rank_local`; `attention_data: 1` on every role. Speculation with G2
-is limited to canonical MTP on a single aggregated worker with local G2 and
-prefix caching. TensorRT-LLM, G3 offload and online
+supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers
+of any count and `attention_data`. Speculation with G2 is limited to canonical
+MTP with prefix caching. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
 complete run.
