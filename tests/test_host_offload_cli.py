@@ -196,6 +196,21 @@ def test_canonical_mtp_host_config_rejects_disaggregated_workers() -> None:
         CorePredictionConfig.model_validate({"engine": _mtp_host_engine(mode="disaggregated")})
 
 
+@pytest.mark.parametrize("canonical_mtp", [False, True])
+def test_host_offload_stays_unsupported_with_an_afd_worker(canonical_mtp) -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine["backend"] = "sglang"
+    engine["workers"]["decode"] = {
+        "type": "afd",
+        "afd": {"n_a_nodes": 1, "n_f_nodes": 1, "tp_a": 1, "a_batch_size": 8},
+    }
+    engine["workers"]["prefill"]["kv_cache"]["host_offload"] = _host_offload()
+    if canonical_mtp:
+        engine["speculation"] = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    with pytest.raises(ValidationError, match="host_offload is supported only for aggregated or disaggregated"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
 @pytest.mark.parametrize("expected", [0.0, 2.0])
 def test_canonical_mtp_native_replay_restores_an_evicted_host_prefix(expected) -> None:
     from aisimulate import _runtime

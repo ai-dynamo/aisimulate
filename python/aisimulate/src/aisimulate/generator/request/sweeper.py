@@ -349,12 +349,12 @@ def from_sweeper_candidate(
     if config.get("speculation") is not None:
         raise SweeperCandidateError("ngram deployment generation is unsupported; use the saved prediction YAML")
 
-    if config.get("deployment_mode") not in ("afd", "afd+pd") and (
+    if not config.get("afd_roles") and (
         config.get("encoder") is not None or config.get("deployment_artifact_generation_supported") is False
     ):
         raise SweeperCandidateError("EPD deployment generation is unsupported; cannot drop the encoder pool")
     mode = _required_text(config, "deployment_mode")
-    if mode in {"afd", "afd+pd"}:
+    if config.get("afd_roles"):
         raise SweeperCandidateError(
             "native deployment generation is not supported for analytical AFD candidates; "
             "pass the concrete recommendation to 'aisimulate predict' to produce "

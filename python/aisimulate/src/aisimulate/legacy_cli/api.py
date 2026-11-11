@@ -1492,7 +1492,7 @@ def cli_estimate(
     elif mode == "afd":
         raise ValueError(
             "mode='afd' is no longer served by the legacy compatibility CLI. AFD runs "
-            "through the unified CLI: `aisimulate recommend` with an `engine.afd` block, "
+            "through the unified CLI: `aisimulate recommend` with a `workers.<role>.afd` block, "
             "then `aisimulate predict` on the selected recommendation."
         )
     else:
