@@ -19,7 +19,7 @@ pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
     vacant: Vec<NonZeroU32>,
-    /// Counts the times a block or a run was made the newest.
+    /// See [`Self::touches`].
     touches: u64,
 }
 
