@@ -740,6 +740,14 @@ pub enum RegressionFeatureAxis {
     CountSquared,
     #[serde(rename = "logP")]
     LogPast,
+    /// The longest scheduled sequence over the decode-attention KV splits of
+    /// its rank; reads `fit.linear.max_kv_splits`.
+    #[serde(rename = "longest_split")]
+    LongestPerSplit,
+    /// 1 when a rank schedules more tokens than a CUDA graph covers; reads
+    /// `fit.linear.max_cudagraph_capture_size`.
+    #[serde(rename = "eager")]
+    EagerPass,
 }
 
 fn default_regression_axes() -> Vec<RegressionFeatureAxis> {
@@ -875,6 +883,16 @@ pub struct LinearFitConfig {
     /// then keep its default. Omitted from serialization when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_set: Option<RegressionFeatureSet>,
+    /// KV splits the decode-attention kernel gives a request that runs alone:
+    /// the GPU's SMs divided by the kernel's CTAs per request. Required when
+    /// fitting or sampling selects `longest_split`; omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_kv_splits: Option<u32>,
+    /// The most scheduled tokens a pass runs in a CUDA graph, as vLLM's knob of
+    /// this name. Required when fitting or sampling selects `eager`; omitted
+    /// when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_cudagraph_capture_size: Option<u32>,
 }
 
 impl Default for LinearFitConfig {
@@ -884,6 +902,8 @@ impl Default for LinearFitConfig {
             non_negative: true,
             update_policy: RegressionUpdatePolicy::Always,
             feature_set: None,
+            max_kv_splits: None,
+            max_cudagraph_capture_size: None,
         }
     }
 }
@@ -1387,6 +1407,7 @@ impl EstimatorConfig {
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;
+        self.validate_axis_constants()?;
         self.validate_spline()?;
         crate::config::validate_fpm_parquet_path(
             self.fpm_interpolation.fpm_parquet_path.as_deref(),
@@ -1485,6 +1506,38 @@ impl EstimatorConfig {
                 "fit.linear.update_policy.trigger",
                 "must be positive and at most window",
             ));
+        }
+        Ok(())
+    }
+
+    /// `longest_split` and `eager` read a positive constant from `fit.linear`,
+    /// whether fitting or sampling selects them.
+    fn validate_axis_constants(&self) -> Result<(), AicError> {
+        let regression = &self.fpm_regression;
+        let default_linear = LinearFitConfig::default();
+        let linear = regression.fit.linear.as_ref().unwrap_or(&default_linear);
+        for (axis, name, field, constant) in [
+            (
+                RegressionFeatureAxis::LongestPerSplit,
+                "longest_split",
+                "max_kv_splits",
+                linear.max_kv_splits,
+            ),
+            (
+                RegressionFeatureAxis::EagerPass,
+                "eager",
+                "max_cudagraph_capture_size",
+                linear.max_cudagraph_capture_size,
+            ),
+        ] {
+            let selected =
+                regression.sampling.axes.contains(&axis) || linear.feature_axes.contains(&axis);
+            if constant == Some(0) || (selected && constant.is_none()) {
+                return Err(invalid_regression_config(
+                    &format!("fit.linear.{field}"),
+                    &format!("must be positive, and is required when the {name} axis is selected"),
+                ));
+            }
         }
         Ok(())
     }
@@ -2285,6 +2338,56 @@ mod tests {
                 config.fpm_regression.sampling.bins_per_axis = vec![8];
             }),
             None
+        );
+    }
+
+    #[test]
+    fn axis_constants_are_required_where_their_axes_are_selected_and_round_trip() {
+        let validated = |regression: serde_json::Value| {
+            let config: EstimatorConfig =
+                serde_json::from_value(serde_json::json!({"fpm_regression": regression})).unwrap();
+            match config.validate() {
+                Ok(()) => Ok(config),
+                Err(error) => Err(error.to_string()),
+            }
+        };
+        let message = validated(serde_json::json!({
+            "fit": {"linear": {"feature_axes": ["E", "longest_split"]}}
+        }))
+        .unwrap_err();
+        assert!(
+            message.contains(
+                "fit.linear.max_kv_splits must be positive, and is required when the longest_split axis is selected"
+            ),
+            "{message}"
+        );
+        // Retention reads the same constants from fit.linear.
+        let message = validated(serde_json::json!({
+            "sampling": {"axes": ["eager"], "bins_per_axis": [2]}
+        }))
+        .unwrap_err();
+        assert!(
+            message.contains("fit.linear.max_cudagraph_capture_size"),
+            "{message}"
+        );
+        // Zero is rejected even where no axis reads it.
+        assert!(
+            validated(serde_json::json!({
+                "fit": {"linear": {"feature_axes": ["E"], "max_cudagraph_capture_size": 0}}
+            }))
+            .is_err()
+        );
+        let linear = serde_json::json!({
+            "feature_axes": ["E", "P2", "F", "logN", "longest_split", "eager"],
+            "non_negative": true, "update_policy": {"kind": "always"},
+            "max_kv_splits": 66, "max_cudagraph_capture_size": 512,
+        });
+        let config = validated(serde_json::json!({"fit": {"linear": linear.clone()}})).unwrap();
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["fpm_regression"]["fit"]["linear"], linear);
+        assert_eq!(
+            serde_json::from_value::<EstimatorConfig>(serialized).unwrap(),
+            config
         );
     }
 

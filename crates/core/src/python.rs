@@ -1000,25 +1000,31 @@ impl AicTimingModel {
     /// A role a regression or learned estimator times. It prices every pass
     /// through [`TimingModel::predict_iteration_ms`] and never a phase, so
     /// work the iteration query cannot describe is rejected here: a vision
-    /// tower, speculative verification widths and bounded decoder replay.
+    /// tower, speculative decoding other than the MTP rounds a vLLM regression
+    /// was fitted to, and bounded decoder replay. Such a regression pins its
+    /// `nextn`, which the scheduler's `aic_nextn` must match. Only vLLM's
+    /// telemetry gives an MTP decode request its verification width as extend.
     fn require_fitted_role(
         config: &AicTimingConfig,
         mode: EstimationMode,
         vision: bool,
     ) -> Result<()> {
+        let nextn_priced = config.nextn == 0
+            || (mode == EstimationMode::FpmRegression && config.backend == "vllm");
         let mode = wire_name(mode);
         ensure!(
             !vision,
             "{mode} cannot time a rank hosting the vision encoder; it prices only language-model iterations"
         );
         ensure!(
-            config.nextn == 0
+            nextn_priced
                 && config
                     .speculation
                     .as_ref()
                     .is_none_or(|speculation| speculation.kind == "none"),
-            "{mode} replay does not support speculative decoding (nextn or speculation); \
-             the iteration query has no verification width"
+            "{mode} replay does not support speculative decoding here: speculation schemes are \
+             rejected, and nextn > 0 is priced only by a vLLM fpm_regression snapshot, at the \
+             nextn it was fitted at"
         );
         ensure!(
             !config.decoder_replay,
@@ -1647,7 +1653,8 @@ impl AicTimingModel {
     /// reports them. Dynamo's vLLM telemetry sums each decode request's
     /// computed tokens, so decode KV is the requests' past KV, their context
     /// lengths minus one current token each, as whole-model FPM reads it but
-    /// without the scheduler's KV clamp. No other query prices the pass, so
+    /// without the scheduler's KV clamp. A decode request counts once,
+    /// however many tokens it verifies. No other query prices the pass, so
     /// totals beyond the 32-bit counters are an error.
     fn fitted_rank_query(rank: &RankWork) -> Result<RankQuery> {
         let mut query = [0; 5];
@@ -1663,10 +1670,6 @@ impl AicTimingModel {
         if let Some(decode) = &rank.decode
             && decode.batch_size > 0
         {
-            ensure!(
-                decode.verify_width == 1,
-                "a regression or learned estimator cannot price speculative verification"
-            );
             let past_kv_tokens = decode
                 .active_kv_tokens
                 .checked_sub(decode.batch_size)
@@ -1679,12 +1682,13 @@ impl AicTimingModel {
 
     /// `query`'s metrics with the per-request detail of `rank`'s work in it:
     /// each prefill request's new tokens and prefix, and each decode
-    /// request's one token and past KV (its context excluding the current
-    /// token), as `extend_lengths` / `past_kv_lengths`; and the population
-    /// variances of the prefill requests' full prompt lengths, as Dynamo's
-    /// vLLM telemetry and the canonical field report them whatever chunk of
-    /// the prompt a pass computes, and of the decode requests' past KV, the
-    /// totals' decode KV convention.
+    /// request's verification width (one, or one plus its drafts) and past KV
+    /// (its context excluding the current token), as `extend_lengths` /
+    /// `past_kv_lengths`; and the population variances of the prefill
+    /// requests' full prompt lengths, as Dynamo's vLLM telemetry and the
+    /// canonical field report them whatever chunk of the prompt a pass
+    /// computes, and of the decode requests' past KV, the totals' decode KV
+    /// convention.
     fn detailed_rank_metrics(
         query: &RankQuery,
         rank: &RankWork,
@@ -1730,14 +1734,16 @@ impl AicTimingModel {
                 .context("decode query without decode work")?;
             ensure!(
                 decode.lengths.len() == decode.batch_size
+                    && decode.widths.len() == decode.batch_size
                     && decode.lengths.iter().all(|length| *length > 0),
-                "rank {} reported {} decode context lengths for a batch of {}, each including its current token",
+                "rank {} reported {} decode context lengths and {} widths for a batch of {}, each length including its current token",
                 rank.dp_rank,
                 decode.lengths.len(),
+                decode.widths.len(),
                 decode.batch_size
             );
-            for &length in &decode.lengths {
-                extend.push(1);
+            for (&length, &width) in decode.lengths.iter().zip(&decode.widths) {
+                extend.push(width as u64);
                 past.push(length as u64 - 1);
             }
             scheduled.var_decode_kv_tokens =
@@ -7153,6 +7159,7 @@ mod tests {
                     // A clamp below the logical total that fitted queries ignore.
                     kv_bound_tokens: active_kv_tokens / 2,
                     lengths: lengths.to_vec(),
+                    widths: vec![1; lengths.len()],
                     verify_width: 1,
                 }
             }),
@@ -7474,7 +7481,8 @@ mod tests {
             "decode",
         );
         decode.unwrap();
-        // Speculation and vision are rejected for a restored regression too.
+        // A restored regression keeps the nextn it was fitted at, and still
+        // rejects speculation schemes and vision.
         let mut model = ForwardPassPerfModel::best_available(unknown_regression_identity(
             ForwardPassWorkerType::Decode,
         ))
@@ -7483,8 +7491,21 @@ mod tests {
             .tune_with_fpms(&fitted_training_iterations(&[IterationKind::Decode], false))
             .unwrap();
         let config = snapshot_timing_config(&model, &dir.path().join("rejections"));
+        let mut deeper = config.clone();
+        deeper.nextn = 1;
+        let error = AicTimingModel::build(&mut deeper, ForwardPassWorkerType::Decode, false)
+            .err()
+            .expect("the snapshot was fitted at nextn 0");
+        assert!(
+            format!("{error:#}").contains("differs from the snapshot's pinned identity at nextn")
+        );
         let mut speculative = config.clone();
-        speculative.nextn = 1;
+        speculative.speculation = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "ngram", "params": {"num_speculative_tokens": 2}
+            }))
+            .unwrap(),
+        );
         assert!(
             message(AicTimingModel::build(
                 &mut speculative,
@@ -7501,6 +7522,23 @@ mod tests {
                 true
             ))
             .contains("vision encoder")
+        );
+        // SGLang's telemetry reports an MTP decode request's extend as 1, so
+        // only a vLLM regression is priced at nextn > 0.
+        let mut identity = unknown_sglang_identity(ForwardPassWorkerType::Decode);
+        identity.nextn = 1;
+        let mut sglang = ForwardPassPerfModel::best_available(identity).unwrap();
+        sglang
+            .tune_with_fpms(&fitted_training_iterations(&[IterationKind::Decode], false))
+            .unwrap();
+        let mut config = snapshot_timing_config(&sglang, &dir.path().join("sglang-mtp"));
+        assert!(
+            message(AicTimingModel::build(
+                &mut config,
+                ForwardPassWorkerType::Decode,
+                false
+            ))
+            .contains("does not support speculative decoding")
         );
     }
 
@@ -7545,9 +7583,22 @@ mod tests {
         let mut short = mixed.clone();
         short.decode.as_mut().unwrap().lengths.pop();
         assert!(AicTimingModel::detailed_rank_metrics(&query, &short).is_err());
+        // Under MTP each decode request verifies its token and its scheduled
+        // drafts, 5 unless the round was cut short. The totals still count each
+        // request once with its past KV; only its extend widens.
         let mut speculative = mixed.clone();
-        speculative.decode.as_mut().unwrap().verify_width = 2;
-        assert!(AicTimingModel::fitted_rank_query(&speculative).is_err());
+        let decode = speculative.decode.as_mut().unwrap();
+        decode.verify_width = 6;
+        decode.widths = vec![6, 6, 2];
+        assert_eq!(
+            AicTimingModel::fitted_rank_query(&speculative).unwrap(),
+            query
+        );
+        let detail = AicTimingModel::detailed_rank_metrics(&query, &speculative).unwrap();
+        assert_eq!(
+            detail.scheduled_requests.extend_lengths.as_deref(),
+            Some([200, 100, 6, 6, 2].as_slice())
+        );
         // Decode totals without a current token per request are an error.
         let mut no_current = mixed;
         no_current.decode.as_mut().unwrap().active_kv_tokens = 2;
@@ -7557,56 +7608,141 @@ mod tests {
     #[test]
     fn fitted_regression_with_request_axes_reads_per_request_detail() {
         pyo3::prepare_freethreaded_python();
-        let dir = tempfile::tempdir().unwrap();
+        // A regression fitted to measured MTP rounds (nextn 5: each decode
+        // request verifies 6 tokens) replays like one fitted without MTP: one
+        // query per pass, never scaled by the draft length.
+        for nextn in [0, 5] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut identity = unknown_regression_identity(ForwardPassWorkerType::Decode);
+            identity.nextn = nextn;
+            identity.estimator_config = serde_json::from_value(serde_json::json!({
+                "fpm_regression": {"fit": {"linear": {"feature_axes": ["attention", "moe", "P2"]}}}
+            }))
+            .unwrap();
+            let mut model = ForwardPassPerfModel::best_available(identity).unwrap();
+            let ranks = |i: usize| {
+                let lengths: Vec<usize> = (0..1 + i % 5)
+                    .map(|j| 100 + 37 * ((i * 7 + j * 13) % 41))
+                    .collect();
+                let mut rank = fitted_work(0, None, Some(&lengths));
+                let decode = rank.decode.as_mut().unwrap();
+                decode.verify_width = 1 + nextn as usize;
+                decode.widths = vec![decode.verify_width; lengths.len()];
+                rank
+            };
+            let iterations: Vec<_> = (0..32)
+                .map(|i| {
+                    let rank = ranks(i);
+                    let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
+                    let mut metrics = AicTimingModel::detailed_rank_metrics(&query, &rank).unwrap();
+                    let squares: f64 = metrics
+                        .scheduled_requests
+                        .past_kv_lengths
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .map(|p| (*p as f64).powi(2))
+                        .sum();
+                    metrics.wall_time =
+                        (2.0 + 0.001 * f64::from(query[4]) + 1e-6 * squares) / 1000.0;
+                    vec![metrics]
+                })
+                .collect();
+            model.tune_with_fpms(&iterations).unwrap();
+            assert!(model.reads_request_detail());
+            let mut config = snapshot_timing_config(&model, &dir.path().join("snapshot"));
+            let timing =
+                AicTimingModel::build(&mut config, ForwardPassWorkerType::Decode, false).unwrap();
+            let pricing = timing.iteration.as_ref().unwrap();
+            assert_eq!(pricing.query, IterationQuery::Fitted { detail: true });
+            assert!(pricing.cache.is_none());
+            for i in [3, 8, 21] {
+                let rank = ranks(i);
+                let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
+                let expected = model
+                    .estimate_forward_pass_time_ms(&[AicTimingModel::detailed_rank_metrics(
+                        &query, &rank,
+                    )
+                    .unwrap()])
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(iteration_ms(&timing, &[rank]), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn fitted_regression_prices_the_drafts_each_request_was_scheduled() {
+        use crate::engine::{DirectRequest, MockEngineArgs};
+        pyo3::prepare_freethreaded_python();
+        // A regression on scheduled tokens, fitted at nextn 5: 2 ms plus
+        // 0.25 ms per token.
         let mut identity = unknown_regression_identity(ForwardPassWorkerType::Decode);
+        identity.nextn = 5;
         identity.estimator_config = serde_json::from_value(serde_json::json!({
-            "fpm_regression": {"fit": {"linear": {"feature_axes": ["attention", "moe", "P2"]}}}
+            "fpm_regression": {"fit": {"linear": {"feature_axes": ["E"]}}}
         }))
         .unwrap();
         let mut model = ForwardPassPerfModel::best_available(identity).unwrap();
-        let ranks = |i: usize| {
-            let lengths: Vec<usize> = (0..1 + i % 5)
-                .map(|j| 100 + 37 * ((i * 7 + j * 13) % 41))
-                .collect();
-            fitted_work(0, None, Some(&lengths))
-        };
         let iterations: Vec<_> = (0..32)
             .map(|i| {
-                let rank = ranks(i);
+                let lengths: Vec<usize> = (0..1 + i % 4).map(|j| 50 + 10 * (i + j)).collect();
+                let mut rank = fitted_work(0, None, Some(&lengths));
+                let decode = rank.decode.as_mut().unwrap();
+                decode.verify_width = 6;
+                decode.widths = (0..lengths.len()).map(|j| 1 + (i + 2 * j) % 6).collect();
+                let tokens: usize = decode.widths.iter().sum();
                 let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
                 let mut metrics = AicTimingModel::detailed_rank_metrics(&query, &rank).unwrap();
-                let squares: f64 = metrics
-                    .scheduled_requests
-                    .past_kv_lengths
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(|p| (*p as f64).powi(2))
-                    .sum();
-                metrics.wall_time = (2.0 + 0.001 * f64::from(query[4]) + 1e-6 * squares) / 1000.0;
+                metrics.wall_time = (2.0 + 0.25 * tokens as f64) / 1000.0;
                 vec![metrics]
             })
             .collect();
         model.tune_with_fpms(&iterations).unwrap();
-        assert!(model.reads_request_detail());
+        let dir = tempfile::tempdir().unwrap();
         let mut config = snapshot_timing_config(&model, &dir.path().join("snapshot"));
         let timing =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Decode, false).unwrap();
-        let pricing = timing.iteration.as_ref().unwrap();
-        assert_eq!(pricing.query, IterationQuery::Fitted { detail: true });
-        assert!(pricing.cache.is_none());
-        for i in [3, 8, 21] {
-            let rank = ranks(i);
-            let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
-            let expected = model
-                .estimate_forward_pass_time_ms(&[AicTimingModel::detailed_rank_metrics(
-                    &query, &rank,
-                )
-                .unwrap()])
-                .unwrap()
-                .unwrap();
-            assert_eq!(iteration_ms(&timing, &[rank]), expected);
+        // Three decode requests with 5 drafts ready share a 16-token budget, as
+        // in vLLM: two verify 6 tokens and the last 1 + 3.
+        let mut core = crate::engine::VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(16)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .aic_nextn(Some(5))
+                .aic_nextn_accept_rates(Some("1,1,1,1,1".into()))
+                .build()
+                .unwrap(),
+        );
+        for id in 1..=3 {
+            core.receive(DirectRequest {
+                tokens: vec![id as u32; 4],
+                max_output_tokens: 64,
+                uuid: Some(uuid::Uuid::from_u128(id)),
+                ..Default::default()
+            });
         }
+        let rank = (0..8)
+            .find_map(|_| {
+                let work = core.schedule_pass(None, 0.0).unwrap();
+                core.resolve_pass(None).unwrap();
+                work.decode
+                    .as_ref()
+                    .is_some_and(|decode| decode.widths.iter().any(|&width| width > 1))
+                    .then_some(work)
+            })
+            .expect("a decode round with drafts");
+        let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
+        let metrics = AicTimingModel::detailed_rank_metrics(&query, &rank).unwrap();
+        let mut extend = metrics.scheduled_requests.extend_lengths.unwrap();
+        extend.sort_unstable();
+        assert_eq!(extend, [4, 6, 6]);
+        let ms = iteration_ms(&timing, &[rank]);
+        assert!((ms - (2.0 + 0.25 * 16.0)).abs() < 1e-9, "{ms}");
     }
 
     #[test]
@@ -9348,6 +9484,7 @@ mod tests {
                 mean_context_length: active_kv_tokens / batch_size,
                 kv_bound_tokens,
                 lengths: Vec::new(),
+                widths: Vec::new(),
                 verify_width: 1,
             }),
         }
