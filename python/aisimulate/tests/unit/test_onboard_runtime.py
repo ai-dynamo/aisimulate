@@ -1916,8 +1916,9 @@ def _formal_phase_bindings(tmp_path, capsys, *, decode_prefix_caching=False):
 def _resolve_decode_prefix_match_unit(index, tokens):
     """Give every decode process of an observation index a prefix-match unit of ``tokens``.
 
-    With prefix caching on, the engine core then hashes in that many tokens (v1/core/kv_cache_utils.py:797-805). No
-    block size follows the unit, so only the resolved setting and both copies of the scheduler's hash block size change.
+    With prefix caching on, the vLLM 0.33.0 engine core then hashes in that many tokens
+    (v1/core/kv_cache_utils.py:890-898). No block size follows the unit, so only the resolved setting and both copies
+    of the scheduler's hash block size change.
     """
     document = json.loads(index.read_text())
     phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
@@ -1987,9 +1988,9 @@ def _record_decode_state_block_size(index, tokens):
     """Give every Mamba group in the decode records of an observation index a block of ``tokens`` tokens.
 
     The decode phase must run with prefix caching on. Every record of the phase changes together: the resolved
-    mamba_block_size, the block of each Mamba group that vLLM builds from it (mamba/abstract.py:66-73), the kernel
-    block of its views and of the runner (v1/worker/utils.py:445-450, :500-502), and the scheduler's block and hash
-    block sizes (v1/core/kv_cache_utils.py:761-798).
+    mamba_block_size, the block of each Mamba group that vLLM 0.33.0 builds from it (mamba/abstract.py:72-80), the
+    kernel block of its views and of the runner (v1/worker/utils.py:614-625, :677-679), and the scheduler's block and
+    hash block sizes (v1/core/kv_cache_utils.py:860-891).
     Each Mamba view keeps one kernel block per pool block, so the phase still validates on its own.
     """
     document = json.loads(index.read_text())
