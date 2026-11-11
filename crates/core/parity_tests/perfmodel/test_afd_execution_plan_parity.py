@@ -60,7 +60,7 @@ def test_new_layout_native_plan_survives_engine_json_and_binary_round_trip(monke
         if spec.get("afd_plan"):
             binary = engine_spec_bincode_from_json(text)
             restored = json.loads(engine_spec_json_from_bincode(binary))
-            assert restored["schema_version"] == engine.ENGINE_SPEC_SCHEMA_VERSION == 30
+            assert restored["schema_version"] == engine.ENGINE_SPEC_SCHEMA_VERSION == 31
             assert restored["afd_plan"] == spec["afd_plan"]
             assert restored["engine"]["extra"]["afd_pool_role"] == spec["afd_plan"]["role"]
             AicEngine.from_spec(binary)
