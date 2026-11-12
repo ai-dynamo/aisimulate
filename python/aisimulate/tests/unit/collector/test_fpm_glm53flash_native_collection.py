@@ -386,8 +386,10 @@ def _publish(monkeypatch, tmp_path: Path, cell: FPMCell, collection: NativeColle
 
     The validator refuses artifacts that the producer never writes, such as a GLM decode artifact with a warm-up
     skip. A test starts from a collection that the validator accepted and changes it, to reach the publication rules.
-    The measurement record reader checks the artifact against the validated collection, so it would refuse every
-    changed collection before these rules. It is replaced too, and its own rules are tested on unchanged artifacts.
+    The tests of this helper write plain artifacts without measurement records, which the measurement record reader
+    refuses. The reader also refuses a collection whose points, row regimes or wall times differ from the artifact, as
+    a restamped point with a new stamp or regime does. So it is replaced too, and other tests of this file publish
+    through the real reader.
     """
     monkeypatch.setattr(database, "validate_native_collection", lambda *_args, **_kwargs: collection)
     monkeypatch.setattr(database, "extract_measurement_evidence", lambda *_args, **_kwargs: {})
