@@ -12,6 +12,10 @@ class InvalidEngineConfigurationError(ValueError):
     """Invalid caller controls; estimator fallback must not hide these errors."""
 
 
+class UnsupportedVisionFamilyError(ValueError):
+    """The model's image processor is not supported by native VL replay."""
+
+
 class NoResultsError(RuntimeError):
     """Base class for *expected* "the sweep produced no results" outcomes.
 

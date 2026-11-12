@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.release.package_identity import installed_distribution, wheels
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKAGES = ("aisimulate/", "aisimulate_core/")
+PACKAGES = ("aisim/", "aisim_core/", "aisimulate/", "aisimulate_core/")
 PROBES = Path("python/aisimulate/tools/support_matrix")
 DATA = Path("python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix")
 
@@ -73,16 +73,23 @@ def verify_installed_wheel(wheel: Path, *, distribution=None) -> None:
     """Verify package bytes and active import locations, including the native runtime."""
     dist = distribution or installed_distribution()
     with zipfile.ZipFile(wheel) as archive:
-        for name in archive.namelist():
+        members = archive.namelist()
+        for name in members:
             if (
                 name.startswith(PACKAGES)
                 and not name.endswith("/")
                 and Path(dist.locate_file(name)).read_bytes() != archive.read(name)
             ):
                 raise ValueError(f"installed file differs from qualified release wheel: {name}")
-    for name in ("aisimulate", "aisimulate_core", "aisimulate._runtime"):
+    # Distribution names do not identify import namespaces: early aisim wheels
+    # still used aisimulate, while renamed wheels ship both canonical and aliases.
+    application = "aisim" if "aisim/__init__.py" in members else "aisimulate"
+    modules = [application, f"{application}_core", f"{application}._runtime"]
+    if application == "aisim":
+        modules.extend(name for name in ("aisimulate", "aisimulate_core") if f"{name}/__init__.py" in members)
+    owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()}
+    for name in modules:
         spec = importlib.util.find_spec(name)
-        owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()}
         if spec is None or spec.origin is None or Path(spec.origin).resolve() not in owned:
             raise ValueError(f"{name} is not imported from the qualified installed release wheel")
 

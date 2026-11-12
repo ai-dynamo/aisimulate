@@ -24,6 +24,7 @@ import pandas as pd
 
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import RuntimeConfig, has_video_input
+from aisimulate_core.sdk.errors import UnsupportedVisionFamilyError
 from aisimulate_core.sdk.inference_summary import InferenceSummary
 from aisimulate_core.sdk.models import BaseModel
 from aisimulate_core.sdk.perf_database import PerfDatabase
@@ -157,7 +158,7 @@ def image_geometry(
     )
     fixed_tiles = enc_cfg.image_size > 0 and enc_cfg.max_num_tiles > 0
     if not (dynamic_qwen or fixed_tiles):
-        raise ValueError(
+        raise UnsupportedVisionFamilyError(
             f"{model_path}: the {model_info['architecture']} vision family is not supported by native VL replay"
         )
     overrides = {

@@ -2576,3 +2576,29 @@ def test_mtp_staleness_uses_current_cohort_without_changing_stp():
     assert points == stp
     assert stats["excluded"] == {"stale": 1}
     assert len(points) + sum(stats["excluded"].values()) == 2
+
+
+@pytest.mark.parametrize("wrong_checksum", [False, True])
+def test_v2_artifact_is_verified_before_normalizing_to_main_ui_v1(artifact, wrong_checksum):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    original, run = artifact
+    modern = normalize_summary(original, target_version=2)
+    assert modern["schema_version"] == 2
+    assert "aisim" in modern["totals"] and "aisimulate" not in modern["totals"]
+    before = deepcopy(modern)
+    qualification = None
+    if wrong_checksum:
+        qualification = {
+            **original["snapshot"]["campaign"],
+            "summary_sha256": hashlib.sha256(campaign.encoded(original)).hexdigest(),
+        }
+    payload = archive(modern, qualification=qualification)
+    if wrong_checksum:
+        with pytest.raises(ValueError, match="summary checksum mismatch"):
+            publish.validate_artifact(payload, run)
+    else:
+        normalized = publish.validate_artifact(payload, run)
+        assert normalized == original
+        assert normalized["snapshot"]["campaign"]["schema_version"] == 1
+    assert modern == before

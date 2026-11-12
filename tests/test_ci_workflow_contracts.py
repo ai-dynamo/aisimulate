@@ -2703,7 +2703,7 @@ python() {
     assert result.returncode == 0, result.stderr
 
 
-def test_bundled_config_gates_run_before_wheel_publication_or_installation():
+def test_bundled_config_gates_run_before_wheel_publication_or_installation(tmp_path):
     policy = _workflow("fast-ci.yml")["jobs"]["policy"]
     assert "scripts/ci/check_bundled_configs.py" in _run_commands(policy)
     assert "tests/test_bundled_configs.py" in _run_commands(policy)
@@ -2731,16 +2731,25 @@ def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     assert check < stage
     assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
-    for collection in (application, action["runs"]["steps"], steps):
+    for kind, collection in zip(
+        ("application", "platform", "nightly"), (application, action["runs"]["steps"], steps), strict=True
+    ):
         upload_report = next(
             step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
         )
-        paths = upload_report["with"]["path"].splitlines()
-        assert {path.rsplit("/", 1)[-1] for path in paths} == {
-            "bundled-deps.csv",
-            "bundled-provenance.json",
-            "extracted-files.json",
-        }
+        pattern = upload_report["with"]["path"]
+        assert len(pattern.splitlines()) == 1
+        assert pattern.startswith("${{ runner.temp }}/")
+        root = tmp_path / f"bundled-configs-{kind}"
+        payload = root / "files/model_configs"
+        payload.mkdir(parents=True)
+        reports = {"bundled-deps.csv", "bundled-provenance.json", "extracted-files.json"}
+        for name in reports:
+            (root / name).touch()
+        for name in ("nested.csv", "nested.json"):
+            (payload / name).touch()
+        # Check the upload path's intended file selection against a fixture tree.
+        assert set(tmp_path.glob(pattern.removeprefix("${{ runner.temp }}/"))) == {root / name for name in reports}
     tooling = next(step for step in steps if step.get("with", {}).get("path") == "release-tooling")
     for file in ["check_bundled_configs.py", "bundled_configs.json", "bundled_config_legacy.json"]:
         assert "/scripts/ci/" + file in tooling["with"]["sparse-checkout"]
@@ -3962,8 +3971,9 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
         assert record["after_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("chat_template", [False, True])
 @pytest.mark.parametrize("client_type", [None, "WekaClient", "OtherClient"])
-def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type):
+def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type, chat_template):
     from scripts.performance import build_simulation_dynamo as builder
 
     site = next(site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "WekaImportOptions")
@@ -3972,6 +3982,8 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
     api.parent.mkdir(parents=True)
     adapter.parent.mkdir(parents=True)
     fields = f"pub client: {client_type}," if client_type else ""
+    if chat_template:
+        fields += " pub chat_template: Option<WekaChatTemplate>,"
     api.write_text(f"pub struct WekaImportOptions {{pub nested_timestamp_basis: WekaNestedTimestampBasis, {fields}}}")
     source = "fn parse_weka_import_options() {\n    WekaImportOptions {\n        nested_timestamp_basis,\n    }\n}\n"
     adapter.write_text(source)
@@ -3984,10 +3996,13 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
         assert adapter.read_text() == source
     else:
         [record] = builder.patch_optional_literal_fields(core, dynamo)
-        assert record["inserted_fields"] == (["client"] if client_type else [])
+        inserted = (["client"] if client_type else []) + (["chat_template"] if chat_template else [])
+        assert record["inserted_fields"] == inserted
         if client_type:
             assert "client: WekaImportOptions::default().client," in adapter.read_text()
-        else:
+        if chat_template:
+            assert "chat_template: None," in adapter.read_text()
+        if not inserted:
             assert adapter.read_text() == source
 
 

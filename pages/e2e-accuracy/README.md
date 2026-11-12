@@ -146,6 +146,8 @@ local preview directory rather than replacing a checked-in qualified snapshot.
 When refreshing a preview with a branch catalog, update both `summary.json`
 and the selected catalog entry's summary path so the browser loads the new data.
 
+Main's dashboard currently consumes public summary v1 (`aisimulate` series fields). Pages readers also accept release summary v2 (`aisim` fields), converting only the public field names in memory before validation and generating the v1 representation for this UI. Original release artifacts and qualification checksums remain unchanged; checksums are verified before conversion. Unknown versions and mixed v1/v2 field names are rejected. This does not change AgentX schemas or raw InfX predictions.
+
 ## Branch selection
 
 The Pages build publishes a `branches.json` catalog containing `main` and every

@@ -15,13 +15,13 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
-from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
+from scripts.e2e_accuracy.summary_contract import normalize_summary
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 from scripts.fpm_accuracy.scenario_contract import validate_scenarios
 from scripts.pages import feature_support_matrix as feature_matrix
@@ -185,58 +185,6 @@ def _git(repo_root: Path, *args: str) -> str:
         raise PagesBuildError("timed out reading accuracy branch evidence") from exc
     except subprocess.CalledProcessError as exc:
         raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
-
-
-def _normalize_accuracy_summary(summary: dict) -> dict:
-    """Adapt v2 field names to the v1 UI contract without rewriting evidence.
-
-    Only series keys and four snapshot keys changed in v2. Package names,
-    source URLs, hashes, campaign metadata, and metric values retain their
-    original identities. Callers must check source checksums on original bytes.
-    """
-    if not isinstance(summary, dict) or type(summary.get("schema_version")) is not int:
-        raise ValueError("invalid or missing summary schema")
-    version = summary["schema_version"]
-    if version not in (1, 2):
-        raise ValueError("unsupported summary schema")
-    result = deepcopy(summary)
-
-    def rename(item, legacy, current):
-        if not isinstance(item, dict):
-            return  # The semantic validator diagnoses malformed containers.
-        source, unexpected = (legacy, current) if version == 1 else (current, legacy)
-        if unexpected in item:
-            raise ValueError(f"summary v{version} contains unexpected field {unexpected}")
-        if version == 2 and source in item:
-            item[legacy] = item.pop(source)
-
-    def aggregate(item):
-        rename(item, "aisimulate", "aisim")
-
-    def children(item, name):
-        values = item.get(name, []) if isinstance(item, dict) else []
-        return values if isinstance(values, list) else []
-
-    for suffix in ("completed_at", "method", "packages", "sot_sha256"):
-        rename(result.get("snapshot"), f"aisimulate_{suffix}", f"aisim_{suffix}")
-    totals = result.get("totals")
-    aggregate(totals)
-    quality = totals.get("by_configuration_quality", {}) if isinstance(totals, dict) else {}
-    if isinstance(quality, dict):
-        for group in quality.values():
-            aggregate(group)
-    for model in children(result, "models"):
-        aggregate(model)
-        for workload in children(model, "workloads"):
-            aggregate(workload)
-            for gpu in children(workload, "gpus"):
-                aggregate(gpu)
-                for topology in children(gpu, "topologies"):
-                    aggregate(topology)
-                    for point in children(topology, "points"):
-                        aggregate(point)
-    result["schema_version"] = 1
-    return result
 
 
 def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
@@ -418,7 +366,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require(aic_successes == item["aic"]["points"], "AIC topology coverage (AIC point count)")
 
     try:
-        summary = _normalize_accuracy_summary(json.loads(text))
+        summary = normalize_summary(json.loads(text), target_version=1)
         metric_contract = summary.get("snapshot", {}).get("campaign", {}).get("metric_contract")
         require(metric_contract in (None, "serving-metrics-v1"), "metric contract")
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
