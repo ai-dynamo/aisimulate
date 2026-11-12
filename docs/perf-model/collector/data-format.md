@@ -28,6 +28,9 @@ outcomes, not reasons to remove intended coverage before collection.
 
 ## Table layout and runtime pins
 
+This is the staging layout of the collector and of the published dataset (`data/op-latency/`); the repository
+does not carry the published tables. See [Default operation data](../../reference/cli.md#default-operation-data).
+
 ```text
 python/aisim/src/aisim_core/systems/data/
   <system>/<family>/<backend>/<version>/

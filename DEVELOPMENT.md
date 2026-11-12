@@ -47,6 +47,20 @@ To activate the environment:
 source python/aisim/.venv/bin/activate
 ```
 
+### Operation data for Rust tests
+
+Operation tables are not in the repository. Python tests fetch the pinned Hugging Face dataset on first use. Rust
+tests read a systems directory instead; compose it once and export it before `cargo test`
+(about 180 MB downloaded to the data cache on the first run):
+
+```bash
+export AICONFIGURATOR_SYSTEMS_PATH="$(python scripts/ci/compose_systems_root.py)"
+cargo test --workspace
+```
+
+Rust tests locate data through `crate::test_systems::path`; spec YAML files always come from the in-tree packaged
+directory.
+
 ### 3. Install Pre-Commit Hooks
 
 ```bash
