@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 
 from aisimulate.sdk.pareto_analysis import (
+    get_best_configs_for_target_load,
     get_pareto_front,
 )
 from aisimulate.sdk.picking import pick_default, pick_load_match
@@ -48,8 +49,10 @@ def process_experiment_result(
     Returns:
         tuple:
             - best_config_df: Best configuration dataframe.
-            - best_throughput: Best throughput (or 1/total_gpus_needed for
-              load-match mode so that ``max()`` picks fewest GPUs).
+            - best_throughput: Comparison score: inverse GPU count for compliant
+              full-target load matches and unbudgeted sizing, including diagnostics;
+              throughput for default picking, GPU-capped results, and SLA diagnostics
+              under a GPU budget.
             - pareto_frontier_df: Pareto frontier dataframe.
             - x_axis_col: X-axis column name.
             - best_latencies: Dict with ``ttft``, ``tpot``, ``request_latency``
@@ -103,6 +106,9 @@ def _merge_into_top_n(
     pareto_fronts: dict[str, pd.DataFrame],
     pareto_x_axis: dict[str, str],
     top_n: int = 5,
+    target_request_rate: float | None = None,
+    target_concurrency: float | None = None,
+    max_total_gpus: int | None = None,
 ) -> tuple:
     """Merge the best configs and pareto fronts into top N."""
     best_configs_dfs = []
@@ -126,13 +132,36 @@ def _merge_into_top_n(
             pf_copy["_task_key"] = exp_name
             pareto_dfs.append(pf_copy)
 
-    # Merge all best configs and take top N
+    # Preserve the picking objective when comparing results across backends.
+    load_match = target_request_rate is not None or target_concurrency is not None
     if best_configs_dfs:
         df_best_configs = pd.concat(best_configs_dfs, ignore_index=True)
-        df_best_configs = df_best_configs.sort_values("tokens/s/gpu_cluster", ascending=False).head(top_n)
+        if load_match:
+            ref_task = tasks[df_best_configs.iloc[0]["_task_key"]]
+            use_request_latency = ref_task.request_latency is not None and ref_task.request_latency > 0
+            df_best_configs = get_best_configs_for_target_load(
+                pareto_df=df_best_configs,
+                constraint_col="request_latency" if use_request_latency else "tpot",
+                constraint_value=ref_task.request_latency if use_request_latency else ref_task.tpot,
+                target_request_rate=target_request_rate,
+                target_concurrency=target_concurrency,
+                max_total_gpus=max_total_gpus,
+                top_n=top_n,
+            )
+        else:
+            df_best_configs = df_best_configs.sort_values("tokens/s/gpu_cluster", ascending=False).head(top_n)
     else:
         df_best_configs = pd.DataFrame()
-    best_throughput = df_best_configs["tokens/s/gpu_cluster"].values[0] if not df_best_configs.empty else 0.0
+
+    best_throughput = 0.0
+    if not df_best_configs.empty:
+        row = df_best_configs.iloc[0]
+        full_match = load_match and row["load_satisfied"] and (row["sla_satisfied"] or max_total_gpus is None)
+        if full_match:
+            gpus = row["total_gpus_needed"]
+            best_throughput = 1.0 / gpus if gpus > 0 else 0.0
+        else:
+            best_throughput = float(row["tokens/s/gpu_cluster"])
 
     df_merged_pareto_front = x_col = None
     # Merge pareto fronts for plotting and recompute Pareto frontier
@@ -157,6 +186,9 @@ def merge_experiment_results_by_mode(
     pareto_fronts: dict[str, pd.DataFrame],
     pareto_x_axis: dict[str, str],
     top_n: int = 5,
+    target_request_rate: float | None = None,
+    target_concurrency: float | None = None,
+    max_total_gpus: int | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, float], dict[str, pd.DataFrame], dict[str, str]]:
     """
     Merge results from multiple experiments into Top N agg and disagg.
@@ -165,21 +197,24 @@ def merge_experiment_results_by_mode(
     agg (with top N from all backends) and disagg (with top N from all backends).
 
     Args:
-        results: Dictionary containing the results of the experiments.
         tasks: Dictionary containing the task configs of the experiments.
         best_configs: Dictionary containing the best configs of the experiments.
-        best_throughputs: Dictionary containing the best throughputs of the experiments.
         pareto_fronts: Dictionary containing the pareto fronts of the experiments.
         pareto_x_axis: Dictionary containing the pareto x-axis of the experiments.
         top_n: Number of top configurations to return.
+        target_request_rate: Target request rate for minimum-GPU load-match picking.
+        target_concurrency: Target concurrency for minimum-GPU load-match picking.
+        max_total_gpus: Optional GPU budget for load-match picking.
 
     Returns:
         tuple:
             - best_configs: Dictionary containing the best configs of the merged experiments.
-            - best_throughputs: Dictionary containing the best throughputs of the merged experiments.
+            - best_throughputs: Dictionary of objective-specific comparison scores: inverse GPU count for
+                full-target load matches, or cluster token throughput for GPU-capped fallbacks, SLA
+                diagnostics under a GPU budget, and runs without a load target. Unbudgeted sizing
+                retains inverse-GPU scores for diagnostic results.
             - pareto_fronts: Dictionary containing the pareto fronts of the merged experiments.
             - pareto_x_axis: Dictionary containing the pareto x-axis of the merged experiments.
-            - tasks: Dictionary containing the task configs of the merged experiments.
     """
     agg_exps = [name for name, task in tasks.items() if task.serving_mode == "agg"]
     disagg_exps = [name for name, task in tasks.items() if task.serving_mode == "disagg"]
@@ -194,7 +229,17 @@ def merge_experiment_results_by_mode(
     for mode_name, mode_exps in (("agg", agg_exps), ("disagg", disagg_exps)):
         if not mode_exps:
             continue
-        mode_merged = _merge_into_top_n(mode_exps, tasks, best_configs, pareto_fronts, pareto_x_axis, top_n)
+        mode_merged = _merge_into_top_n(
+            mode_exps,
+            tasks,
+            best_configs,
+            pareto_fronts,
+            pareto_x_axis,
+            top_n,
+            target_request_rate=target_request_rate,
+            target_concurrency=target_concurrency,
+            max_total_gpus=max_total_gpus,
+        )
         merged_best_configs[mode_name] = mode_merged[0]
         merged_best_throughputs[mode_name] = mode_merged[1]
         merged_pareto_fronts[mode_name] = mode_merged[2]

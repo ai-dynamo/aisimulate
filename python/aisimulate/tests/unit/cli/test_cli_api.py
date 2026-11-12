@@ -646,6 +646,59 @@ class TestCLISupportEquivalence:
 class TestCLIRecommendUnit:
     """Unit tests for recommend API."""
 
+    @pytest.mark.parametrize("load_target", [{"target_request_rate": 1.0}, {"target_concurrency": 1.0}])
+    def test_multi_backend_comparison_scores(self, monkeypatch, load_target):
+        import aisimulate.legacy_cli.api as api
+        from aisimulate.legacy_cli import main as cli_main
+
+        candidates = {
+            ("agg", "trtllm"): (2, 100.0),
+            ("agg", "vllm"): (8, 120.0),
+            ("disagg", "trtllm"): (4, 110.0),
+            ("disagg", "vllm"): (8, 130.0),
+        }
+        tasks = {}
+        for mode, backend in candidates:
+            backend_args = (
+                {"backend_name": backend}
+                if mode == "agg"
+                else {"prefill_backend_name": backend, "decode_backend_name": backend}
+            )
+            tasks[f"{mode}_{backend}"] = api.Task(serving_mode=mode, total_gpus=8, tpot=30.0, **backend_args)
+
+        def fake_run(task):
+            gpus, throughput = candidates[task.serving_mode, task.primary_backend_name]
+            return pd.DataFrame(
+                {
+                    "parallel": ["shared"],
+                    "(d)parallel": ["shared"],
+                    "tpot": [25.0],
+                    "tokens/s/user": [40.0],
+                    "tokens/s/gpu": [throughput],
+                    "seq/s": [1.0],
+                    "concurrency": [1.0],
+                    "num_total_gpus": [gpus],
+                }
+            )
+
+        # Keep the public API, real Task rebuilding, execution, merge, and SDK
+        # picking; replace only task discovery and expensive simulation data.
+        monkeypatch.setattr(api, "build_default_tasks", lambda **kwargs: tasks)
+        monkeypatch.setattr(api.Task, "run", fake_run)
+        monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+
+        result = api.cli_recommend(
+            model_path="Qwen/Qwen3-32B", system="h200_sxm", backend="auto", top_n=2, **load_target
+        )
+
+        assert isinstance(result, CLIResult)
+        assert result.chosen_exp == "agg"
+        assert result.best_throughputs == {"agg": 0.5, "disagg": 0.25}
+        assert result.best_configs["agg"]["backend"].tolist() == ["trtllm", "vllm"]
+        assert result.best_configs["disagg"]["total_gpus_needed"].tolist() == [4, 8]
+        # Token throughput is available separately from the inverse-GPU score.
+        assert result.best_configs["agg"].iloc[0]["tokens/s/gpu_cluster"] == 100.0
+
     def test_requires_exactly_one_load_target(self):
         from aisimulate.legacy_cli.api import cli_recommend
 

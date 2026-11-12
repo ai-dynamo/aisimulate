@@ -697,7 +697,11 @@ def get_best_configs_for_target_load(
     Returns:
         DataFrame of top-N configs with added columns
         ``replicas_needed``, ``total_gpus_needed`` and
-        ``tokens/s/gpu_cluster``.
+        ``tokens/s/gpu_cluster``. ``sla_satisfied``, ``load_satisfied`` and
+        ``gpu_budget_satisfied`` distinguish feasible results from closest-SLA
+        diagnostics. No result exceeds an explicit GPU budget; an empty result
+        means that no replica fits. ``load_served_pct`` is present only when
+        the budget prevents serving the complete target load.
     """
     if pareto_df is None or pareto_df.empty:
         return pd.DataFrame()
@@ -711,8 +715,18 @@ def get_best_configs_for_target_load(
         logger.warning("Pareto DataFrame is missing constraint column '%s'.", constraint_col)
         return pd.DataFrame()
 
+    # A diagnostic must also fit at least one replica in the hard GPU budget.
+    # Apply this before SLA filtering so an unplaceable SLA fit does not hide
+    # a budget-feasible closest-SLA diagnostic.
+    available = pareto_df
+    if max_total_gpus is not None:
+        available = available[available["num_total_gpus"] <= max_total_gpus]
+        if available.empty:
+            logger.warning("No single replica fits within the GPU budget (%d).", max_total_gpus)
+            return pd.DataFrame()
+
     # 1. Filter by SLA constraint (fall back to closest if none meet it)
-    candidates = pareto_df[pareto_df[constraint_col] <= constraint_value].copy()
+    candidates = available[available[constraint_col] <= constraint_value].copy()
     if candidates.empty:
         logger.info(
             "No config found with %s <= %s for load-match. Returning top-%d closest configs.",
@@ -720,10 +734,14 @@ def get_best_configs_for_target_load(
             constraint_value,
             top_n,
         )
-        candidates = pareto_df.copy()
+        candidates = available.copy()
         candidates["_sla_exceeded"] = True
     else:
         candidates["_sla_exceeded"] = False
+    # Use unique row labels for replica alignment and grouped selections.
+    candidates = candidates.reset_index(drop=True)
+    # Merged backend results may carry a previous selection's capped marker.
+    candidates.drop(columns=["load_served_pct"], inplace=True, errors="ignore")
 
     # 2. Compute replicas needed per-row
     if has_rate:
@@ -740,6 +758,7 @@ def get_best_configs_for_target_load(
         candidates["replicas_needed"] = np.ceil(target_concurrency / candidates[load_col]).astype(int)
 
     candidates["replicas_needed"] = candidates["replicas_needed"].clip(lower=1)
+    uncapped_replicas = candidates["replicas_needed"].copy()
 
     # 3. Total GPUs needed
     candidates["total_gpus_needed"] = candidates["replicas_needed"] * candidates["num_total_gpus"]
@@ -749,7 +768,7 @@ def get_best_configs_for_target_load(
 
     # 5. GPU ceiling: prefer configs that fit; if none do, warn and cap to max_total_gpus
     gpu_capped = False
-    if max_total_gpus is not None and not candidates["_sla_exceeded"].all():
+    if max_total_gpus is not None:
         fits = candidates[candidates["total_gpus_needed"] <= max_total_gpus]
         if fits.empty:
             logger.warning(
@@ -762,8 +781,7 @@ def get_best_configs_for_target_load(
             # Cap replicas to what fits in the GPU budget and keep going.
             # Switch to maximizing throughput since all configs exceed budget.
             # Save uncapped replicas to compute load_served_pct.
-            uncapped_replicas = candidates["replicas_needed"].copy()
-            candidates["replicas_needed"] = (max_total_gpus // candidates["num_total_gpus"]).clip(lower=1).astype(int)
+            candidates["replicas_needed"] = (max_total_gpus // candidates["num_total_gpus"]).astype(int)
             candidates["total_gpus_needed"] = candidates["replicas_needed"] * candidates["num_total_gpus"]
             # Percentage of target load that the capped deployment can serve
             candidates["load_served_pct"] = ((candidates["replicas_needed"] / uncapped_replicas) * 100).round(1)
@@ -777,6 +795,12 @@ def get_best_configs_for_target_load(
             gpu_capped = True
         else:
             candidates = fits
+
+    candidates["sla_satisfied"] = ~candidates["_sla_exceeded"]
+    candidates["load_satisfied"] = candidates["replicas_needed"] >= uncapped_replicas.loc[candidates.index]
+    candidates["gpu_budget_satisfied"] = (
+        True if max_total_gpus is None else candidates["total_gpus_needed"] <= max_total_gpus
+    )
 
     # 6. Group-by (take best per group)
     if group_by is not None and group_by in candidates.columns:
