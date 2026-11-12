@@ -22,49 +22,49 @@ tables:
     rows: 10152
     status: complete
     collections:
-    - collector_ref: e22b5faed
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:78e9dda04af09867dee3703dfaffd25bc4aeefd96cc087621614e35cf5d44a02
-      collected_at: '2026-11-10'
+      collected_at: '2026-11-12'
       rows: 10152
       status: complete
   dsv4_csa_context_module_perf:
     rows: 9880
     status: complete
     collections:
-    - collector_ref: e22b5faed
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:b80e89444c2d570c38438b73abec7ce20bdbfea99b747e38a892614d53e47bfd
-      collected_at: '2026-11-10'
+      collected_at: '2026-11-12'
       rows: 9880
       status: complete
   dsv4_csa_generation_module_perf:
     rows: 1600
     status: complete
     collections:
-    - collector_ref: e22b5faed
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:b89227f11340c36e2cbe33f62c1f105b2eba13ed0a4f3aaacd9a3fff61fe3607
-      collected_at: '2026-11-10'
+      collected_at: '2026-11-12'
       rows: 1600
       status: complete
   dsv4_hca_context_module_perf:
     rows: 9880
     status: complete
     collections:
-    - collector_ref: e22b5faed
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:aaab163ff804bb256a60097c2ce9e373ad695a018cc3e0917eafae8154144267
-      collected_at: '2026-11-10'
+      collected_at: '2026-11-12'
       rows: 9880
       status: complete
   dsv4_hca_generation_module_perf:
     rows: 1600
     status: complete
     collections:
-    - collector_ref: e22b5faed
-      collector_hash: sha256:8c8867a1df27535d93f6bffffb1796aac9a0864a9d3b2b5c6a35c3e09ec28f00
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:ab71d6e3d6bffe93a94a4e4075b5e48f6fa19bc1785ac4c47a7397ecd62da23b
-      collected_at: '2026-11-10'
+      collected_at: '2026-11-12'
       rows: 1600
       status: complete
