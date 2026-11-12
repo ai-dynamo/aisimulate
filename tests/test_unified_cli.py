@@ -824,6 +824,25 @@ def test_run_prediction_wraps_runner_failure() -> None:
     assert runner.closed is True
 
 
+@pytest.mark.parametrize("notes", [[], ["cleanup failed"], ["first cleanup failed", "second cleanup failed"]])
+def test_recommend_reports_exception_notes_after_primary_error(tmp_path, monkeypatch, capsys, notes):
+    error = RuntimeError("primary failure")
+    for note in notes:
+        error.add_note(note)
+
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(cli, "_recommend", fail)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    path = tmp_path / "recommend.yaml"
+    path.write_text("{}")
+    assert cli.main(["recommend", "--config", str(path)]) == 1
+    assert capsys.readouterr().err == (
+        "aisimulate recommend failed: RuntimeError: primary failure\n" + "".join(f"{note}\n" for note in notes)
+    )
+
+
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
