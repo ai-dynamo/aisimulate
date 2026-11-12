@@ -95,7 +95,7 @@ def test_native_and_ergonomic_fpm_classes_are_deliberately_distinct() -> None:
 def test_stable_function_signatures() -> None:
     assert str(inspect.signature(compile_engine)) == (
         "(model_path: 'str', system: 'str', backend: 'str', backend_version: 'str | None' = None, *, "
-        "tp_size: 'int' = 1, pp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
+        "tp_size: 'int' = 1, afd_pool_role: 'str | None' = None, pp_size: 'int' = 1, attention_dp_size: 'int' = 1, "
         "dcp_size: 'int | None' = None, fpm_options: 'dict | None' = None, "
         "moe_tp_size: 'int | None' = None, moe_ep_size: 'int | None' = None, "
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "

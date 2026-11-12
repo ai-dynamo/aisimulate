@@ -364,32 +364,6 @@ def test_recommendation_rejects_unconfigured_backend_version():
         CoreRecommendationConfig.model_validate(raw)
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
-def test_cached_prefix_rejected_by_direct_sweeper_and_replay(mode):
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.config import SmartSearchConfig
-    from aisimulate.sweeper.replay import BackendDeploymentSpec
-
-    with pytest.raises(ValueError, match="cached_prefix_tokens is unsupported for AFD"):
-        SmartSearchConfig(
-            search_space={
-                "model_name": "model",
-                "hardware_sku": "h200_sxm",
-                "deployment_mode": [mode],
-                "afd_phase": "decode",
-                "afd_batch_size_candidates": [8],
-            },
-            workload={"isl": 8, "osl": 2, "request_count": 2, "concurrency": 1, "cached_prefix_tokens": 4},
-        )
-    spec = ReplaySpec(
-        backend_deployment=BackendDeploymentSpec(deployment_mode=mode, backend="vllm", backend_version="v"),
-        workload={"cached_prefix_tokens": 4},
-        goal={},
-    )
-    with pytest.raises(ValueError, match="cached_prefix_tokens is unsupported for AFD"):
-        EngineReplayRunnerFactory().create(0).run(spec)
-
-
 @pytest.mark.parametrize("moe_backend", [None, "default"])
 def test_default_prediction_payload_remains_compatible_with_older_runners(moe_backend):
     from aisimulate.sweeper.replay import RunnerCapabilities

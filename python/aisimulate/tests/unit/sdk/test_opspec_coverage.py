@@ -31,15 +31,9 @@ pytestmark = pytest.mark.unit
 # needs a reason; removing the op or porting it must also remove the entry
 # (the staleness assertion below enforces that).
 EXEMPT: dict[str, str] = {
-    # AFD (attention-FFN disagg) is session-level Python orchestration by
-    # design (`inference_session.py` builds and sums these directly; the
-    # engine-step path is never involved, and each op's math composes
-    # ENGINE-evaluated twin ops through the single-op plumbing). A future
-    # Rust port is sketched in the afd_transfer.py module TODO.
-    "AFDTransfer": "AFD orchestration is Python-side; composes engine-evaluated twins",
-    "AFDCombine": "AFD orchestration is Python-side; composes engine-evaluated twins",
-    "AFDFAllGather": "AFD orchestration is Python-side; composes engine-evaluated twins",
-    "AFDFReduceScatter": "AFD orchestration is Python-side; composes engine-evaluated twins",
+    # Empty by design today: the AFD comm ops left this list when they became
+    # native `Op` variants (schema 30), and every
+    # remaining Operation class reaches the compiled engine.
 }
 
 # Python-side classes with an explicit adapter branch in

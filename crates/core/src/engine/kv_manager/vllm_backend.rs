@@ -230,6 +230,15 @@ impl BlockRequestLease {
         self.resident_block_count() + self.opaque_copies.len()
     }
 
+    /// `physical_owned_block_count` of a scalar token-only lease without the
+    /// scan: its resident entries are exactly the blocks below the allocation
+    /// watermark.
+    pub(crate) fn watermark_owned_block_count(&self, block_size: usize) -> usize {
+        let owned = self.allocated_tokens.div_ceil(block_size) + self.opaque_copies.len();
+        debug_assert_eq!(owned, self.physical_owned_block_count());
+        owned
+    }
+
     /// Project one framework-native identity without exposing physical G1
     /// copy identity.
     pub(crate) fn sequence_hash(&self, block_index: usize) -> Option<SequenceHash> {
@@ -459,6 +468,7 @@ impl VllmKvManager {
                 )
                 .expect("validated state cache geometry");
             self.enable_state_cache(blocks, mtp_enabled);
+            self.state_cache.as_mut().unwrap().sliding_window = config.sliding_window;
         }
     }
 
@@ -614,10 +624,11 @@ impl VllmKvManager {
             lease
                 .state_hash(cached_tokens, self.block_size)
                 .map_or(0, |hash| {
-                    let states = manager
-                        .keys(hash)
+                    let states: usize = manager
+                        .snapshot_keys(&self.pool, hash)
                         .filter(|&key| self.pool.key_hit(key).is_some_and(|hit| !hit.is_active))
-                        .count();
+                        .map(|key| self.pool.key_blocks(key))
+                        .sum();
                     states
                         + usize::from(
                             !cached_tokens.is_multiple_of(self.block_size)
@@ -657,6 +668,20 @@ impl VllmKvManager {
         }
         if self.state_cache.is_some() {
             return self.allocate_state_lease(lease, cumulative_tokens, reusable_prefix_blocks);
+        }
+        let previous_blocks = lease
+            .allocated_tokens
+            .div_ceil(self.block_size)
+            .min(lease.entries.len());
+        if cumulative_tokens.div_ceil(self.block_size) <= previous_blocks {
+            // Most decode steps stay inside a block the lease already owns.
+            // Same result as the slot path's `count == 0` case with nothing to
+            // bind, which is why the target is not clamped to `entries.len()`.
+            lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
+            return NativeAllocation::Ready {
+                value: 0,
+                dependencies: self.pending_capacity_write_dependencies(lease),
+            };
         }
         self.allocate_lease_with_slots(
             owner,
@@ -879,7 +904,7 @@ impl VllmKvManager {
             if partial_source {
                 keys.push(CacheKey::Token(prefix));
             }
-            keys.extend(manager.keys(prefix));
+            keys.extend(manager.snapshot_keys(&self.pool, prefix));
         }
         let write_blocks = self.state_write_blocks(lease, cumulative_tokens);
         let fresh = write_blocks + new_tokens - reused_tokens
@@ -1138,7 +1163,40 @@ impl VllmKvManager {
             self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
-        if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
+        let window_hashes = match &self.state_cache {
+            Some(manager)
+                // Accepted tokens are final, so every token of an MTP burst
+                // can complete a window, not only the last one.
+                if manager.sliding_window.is_some()
+                    && self.enable_prefix_caching
+                    && sequence.enable_prefix_caching() =>
+            {
+                manager
+                    .sliding_window_boundaries(
+                        self.block_size,
+                        sequence.num_input_tokens(),
+                        computed_before,
+                        computed_after,
+                    )
+                    .map(|boundary| {
+                        lease
+                            .state_hash(boundary, self.block_size)
+                            .expect("completed boundary block has a hash")
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state)
+            && manager.sliding_window.is_some()
+        {
+            let mut removed = Vec::new();
+            for hash in window_hashes {
+                manager.publish_window(&mut self.pool, state, hash, &mut removed);
+            }
+            manager.commit(&mut self.pool, state, computed_after, None);
+            self.publish_removed(removed);
+        } else if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
             // Modified default-retention behavior from vLLM v0.29.0:
             // https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
             // Copyright contributors to the vLLM project. Apache-2.0.
@@ -1685,6 +1743,9 @@ impl VllmKvManager {
                     })
                     .unwrap_or(0)
             };
+            // vLLM drops the MTP block from the hit. For a sliding window the
+            // MTP group's dropped block must lie inside the block-aligned token
+            // hit, so the state hit also lands one block lower.
             if needs_logits && manager.mtp_enabled {
                 overlap_blocks = overlap_blocks.saturating_sub(1);
             }
@@ -2376,6 +2437,15 @@ mod tests {
             _ => panic!("dependency-bearing suffix must still be acquired"),
         };
         assert_eq!(dependencies, vec![dependency]);
+        // A retry that needs no new block reports the unauthorized fence again.
+        assert!(matches!(
+            manager.allocate_lease(owner, &mut lease, 4, 0),
+            NativeAllocation::Ready {
+                value: 0,
+                dependencies: ref retry,
+            } if *retry == dependencies
+        ));
+        assert_eq!(lease.allocated_tokens(), 8);
         manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
         assert!(matches!(
             manager.allocate_lease(owner, &mut lease, 4, 0),
@@ -2446,6 +2516,7 @@ mod tests {
                 assert!(matches!(outcome, NativeAllocation::CapacityExhausted));
                 assert_eq!(lease.allocated_tokens(), computed);
                 assert_eq!(lease.physical_owned_block_count(), 3);
+                assert_eq!(lease.watermark_owned_block_count(4), 3);
                 assert_eq!(manager.num_active_blocks(), 3);
                 manager.finish_lease(owner, lease);
                 continue;
@@ -2454,6 +2525,7 @@ mod tests {
             assert_eq!(lease.allocated_tokens(), known);
             assert_eq!(lease.resident_block_count(), 4);
             assert_eq!(lease.physical_owned_block_count(), 5);
+            assert_eq!(lease.watermark_owned_block_count(4), 5);
             assert_eq!(lease.entries.len(), 4);
             assert_eq!(manager.num_active_blocks(), 5);
             assert_eq!(lease.sequence_hash(3), None);
@@ -2482,6 +2554,7 @@ mod tests {
             );
             assert_eq!(lease.physical_owned_block_count(), 5);
             assert_eq!(lease.resident_block_count(), 5);
+            assert_eq!(lease.watermark_owned_block_count(4), 5);
             assert_eq!(lease.sequence_hash(4), None);
             assert_eq!(manager.num_active_blocks(), 5);
             manager.finish_lease(owner, lease);
@@ -2506,6 +2579,7 @@ mod tests {
         manager.preempt_lease(owner, &mut lease);
         assert_eq!(lease.allocated_tokens(), 0);
         assert_eq!(lease.physical_owned_block_count(), 0);
+        assert_eq!(lease.watermark_owned_block_count(4), 0);
         assert_eq!(manager.num_active_blocks(), 0);
         ready(manager.allocate_lease_with_slots(owner, &mut lease, 4, 12, 0));
         manager.finish_lease(owner, lease);

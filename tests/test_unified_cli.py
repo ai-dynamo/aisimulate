@@ -2885,3 +2885,50 @@ def test_failed_telemetry_serialization_removes_partial_artifacts(tmp_path):
     with pytest.raises(ValueError):
         write_telemetry(tmp_path, payload)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("detail", ["memory", "all"])
+@pytest.mark.parametrize("afd_roles", [("aggregated",), ("prefill",), ("decode",), ("prefill", "decode")])
+def test_native_afd_detail_reaches_final_cli_consumer(tmp_path, capsys, detail, afd_roles):
+    roles = ("aggregated",) if afd_roles == ("aggregated",) else ("prefill", "decode")
+    config = {
+        "engine": {
+            "mode": "aggregated" if roles == ("aggregated",) else "disaggregated",
+            "model": "Qwen/Qwen3-30B-A3B",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            "backend_version": "0.5.14",
+            "context_length": 2048,
+            "workers": {
+                role: {
+                    "type": "afd",
+                    "afd": {
+                        "n_a_nodes": 1,
+                        "n_f_nodes": 1,
+                        "tp_a": 1,
+                        "a_batch_size": 4,
+                        "num_microbatches": 2,
+                    },
+                }
+                if role in afd_roles
+                else {
+                    "parallelism": {"tensor": 2},
+                    "kv_cache": {"capacity": {"type": "fixed", "blocks": 8192}},
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+                for role in roles
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 16, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "--config", str(path), "--detail", detail, "--output-dir", str(output)]) == 0
+    result = json.loads((output / "prediction.json").read_text())
+    assert result.get("summary", result)["completed_requests"] == 4
+    assert "Traceback" not in capsys.readouterr().err
