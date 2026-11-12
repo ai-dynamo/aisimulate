@@ -253,12 +253,24 @@ MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
 SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
 The [manifest](../../.github/prediction-numerical-sentinels.json)
 records each query's inputs and expected value, but no source commit: a commit
-from a squashed PR branch is not on `main`, and mirrors cannot fetch it. In a
-clone with full history, `git log -p -- .github/prediction-numerical-sentinels.json`
-shows each change to the expected values and the PR that made it; that PR holds
-the evidence of how the values were produced. The current values come from
-PR #728 (`e2d994bba` on `main`). CI checks on every change that the code still
-reproduces them within tolerance, which is not exact reproduction.
+from a squashed PR branch is not on `main`, and a mirror without the PR refs
+cannot fetch it. In a clone with full history,
+`git log -p -- .github/prediction-numerical-sentinels.json` shows each change
+to the expected values and the PR that made it; that PR holds the evidence of
+how its values were produced. The current values come from:
+
+| PR | Values |
+| --- | --- |
+| #187 | the eight vLLM cases |
+| #244 | the four MiniMax values, changed (see below) |
+| #261 | the four TRT-LLM and four SGLang Qwen3-32B cases, added (see below) |
+| #728 | the two TRT-LLM Qwen3-32B prefill values, changed |
+
+Full CI runs this check (`engine-golden-regression`) only when its path
+selector marks a change as able to affect predictions, for example Rust,
+prediction or collector code and data, this manifest, or CI workflows and
+scripts. Documentation-only changes skip it. A pass means the values hold
+within tolerance, not that they reproduce exactly.
 
 Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
@@ -286,13 +298,18 @@ prediction-stability values, not measured whole-model accuracy.
 
 After the PR #244 squash merge, its original baseline commit was no longer
 reachable in fresh CI checkouts. All eight sentinels were revalidated at
-`ba64235a645580a8a1b20a424fffef6514ff0103`, and the manifest then recorded that
-main-branch merge commit. A later refresh recorded a squashed-PR commit again,
-which mirrors could not fetch, so the manifest no longer records a commit.
-Expected values, query inputs, and tolerances are unchanged.
+`ba64235a645580a8a1b20a424fffef6514ff0103`, the PR #244 squash commit on
+`main`, with unchanged expected values, query inputs, and tolerances. On `main`,
+the manifest recorded `a4c77310` (PR #187, a `main` commit), then commits from
+the squashed branches of PR #244 (`af91885d`), PR #261 (`d066e918`) and
+PR #728 (`fc6e26a8`). A fresh checkout reaches those only by fetching the PR's
+commit by SHA, which fails in a mirror without those PR refs, so the manifest
+no longer records a commit.
 
-The 16-case manifest was reproduced from runtime and packaged data at
-`d066e918705b98e2d55eed55743ce8d225f129ea`. The original eight vLLM values
+When PR #261 extended the manifest to 16 cases, the values were reproduced from
+runtime and packaged data at `d066e918705b98e2d55eed55743ce8d225f129ea`, a
+commit on that PR's branch. PR #728 later changed two of them; the other 14
+values are still those of that reproduction. The original eight vLLM values
 were reproduced exactly and retained unchanged. The eight added backend values
 use the same four dense-model query shapes and SILICON mode, without shared
 layer reuse. These operator-level queries complement the engine integration
