@@ -441,6 +441,59 @@ class TestTaskExceptions:
         assert _load_done_ids(tmp_path, "oom_restart") == {"after"}
         assert _load_failed_ids(tmp_path, "oom_restart") == {"oom"}
 
+    def test_failing_npu_case_followed_by_valid_case_runs_on_same_worker(self, tmp_path, monkeypatch):
+        """A non-fatal NPU task failure probes the NPU runtime rather than
+        torch.cuda.synchronize, keeping the healthy worker alive for the next case."""
+        import helper as helper_mod
+
+        class _Tensor:
+            def sum(self):
+                return self
+
+            def item(self):
+                return 1.0
+
+        npu_mod = MagicMock(name="torch_npu")
+        npu_mod.is_available.return_value = True
+        npu_mod.synchronize.return_value = None
+        monkeypatch.setattr(_torch, "device", lambda spec: spec, raising=False)
+        monkeypatch.setattr(_torch, "ones", lambda *_a, **_k: _Tensor(), raising=False)
+        monkeypatch.setattr(
+            _torch.cuda,
+            "synchronize",
+            MagicMock(side_effect=RuntimeError("CUDA synchronize must not be called for NPU")),
+        )
+        monkeypatch.setattr(helper_mod, "torch_npu_module", lambda: npu_mod)
+        monkeypatch.setattr(_collect_mod, "get_device_str", lambda: "npu")
+        monkeypatch.setattr(_collect_mod, "get_device_module", lambda device=None: npu_mod)
+
+        pid_file = tmp_path / "worker_pids.txt"
+
+        def _npu_task_fn(label, behavior, device):
+            with pid_file.open("a", encoding="utf-8") as fh:
+                fh.write(f"{label}:{os.getpid()}:{device}\n")
+            if behavior == "error":
+                raise ValueError(f"simulated npu failure: {label}")
+
+        tasks = _tasks([("fail_npu", "error"), ("valid_npu", "normal")])
+        errors = parallel_run(
+            tasks,
+            _npu_task_fn,
+            num_processes=1,
+            module_name="npu_same_worker",
+            resume_options={"checkpoint_dir": str(tmp_path / ".checkpoint")},
+        )
+
+        _assert_all_tasks_attempted(tasks, tmp_path, "npu_same_worker")
+        assert _crash_errors(errors) == []
+        assert _load_done_ids(tmp_path, "npu_same_worker") == {"valid_npu"}
+        assert _load_failed_ids(tmp_path, "npu_same_worker") == {"fail_npu"}
+
+        records = [line.strip().split(":", 2) for line in pid_file.read_text(encoding="utf-8").splitlines()]
+        assert [label for label, _, _ in records] == ["fail_npu", "valid_npu"]
+        assert records[0][1] == records[1][1], "valid case must run on the same worker after a non-fatal NPU failure"
+        assert records[0][2] == "npu:0"
+
 
 class TestFailureGroups:
     """Systemic (model, dtype) group failures are all run and all labeled."""

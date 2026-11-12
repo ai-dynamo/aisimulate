@@ -87,6 +87,7 @@ def test_executor_binds_every_declared_table_to_the_producer():
     identity = {
         "schema": collect.RESUME_SCHEMA_VERSION,
         "backend": "vllm",
+        "collector_framework": "vllm",
         "module": "vllm.compute_scale",
         "run_func": "run_computescale",
         "framework_version": "0.30.0",
