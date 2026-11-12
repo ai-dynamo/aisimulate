@@ -266,11 +266,15 @@ how its values were produced. The current values come from:
 | #261 | the four TRT-LLM and four SGLang Qwen3-32B cases, added (see below) |
 | #728 | the two TRT-LLM Qwen3-32B prefill values, changed |
 
-Full CI runs this check (`engine-golden-regression`) only when its path
-selector marks a change as able to affect predictions, for example Rust,
-prediction or collector code and data, this manifest, or CI workflows and
-scripts. Documentation-only changes skip it. A pass means the values hold
-within tolerance, not that they reproduce exactly.
+Full CI runs this check (`engine-golden-regression`) on every push to `main`
+and `release/*` and on every manual dispatch, because those runs select all
+components. On a trusted PR copy (`pull-request/*`), it runs only when
+`scripts/ci/select_full_ci.py` selects it: for Rust code, prediction or engine
+code, and collector or performance data, and whenever the selector falls back
+to the full matrix (a CI or shared repository contract change, an unclassified
+path such as this manifest, or more than 3000 changed files). A PR copy that
+changes only documentation skips it. A pass means the values hold within
+tolerance, not that they reproduce exactly.
 
 Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
