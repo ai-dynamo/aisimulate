@@ -2107,12 +2107,13 @@ fn fmha_quant_name(dtype: Option<&DataType>) -> Option<&'static str> {
     }
 }
 
-/// `DataType` → `KVCacheQuantMode` enum name. Only bf16/int8/fp8 exist.
+/// `DataType` → `KVCacheQuantMode` enum name. Only bf16/int8/fp8/nvfp4 exist.
 fn kvcache_quant_name(dtype: Option<&DataType>) -> Option<&'static str> {
     match dtype? {
         DataType::Bfloat16 => Some("bfloat16"),
         DataType::Int8 => Some("int8"),
         DataType::Fp8 => Some("fp8"),
+        DataType::Nvfp4 => Some("nvfp4"),
         _ => None,
     }
 }

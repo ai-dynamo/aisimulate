@@ -1415,6 +1415,7 @@ fn kv_cache_quant_by_name(name: &str) -> Option<KvCacheQuantMode> {
         "bfloat16" => Bfloat16,
         "int8" => Int8,
         "fp8" => Fp8,
+        "nvfp4" => Nvfp4,
         _ => return None,
     })
 }

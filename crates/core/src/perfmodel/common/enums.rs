@@ -479,6 +479,9 @@ pub enum KvCacheQuantMode {
     Bfloat16,
     Int8,
     Fp8,
+    /// 4-bit values plus one FP8 scale per 16: 9/16 byte per element. Appended
+    /// so existing bincode discriminants stay stable.
+    Nvfp4,
 }
 
 impl KvCacheQuantMode {
@@ -500,6 +503,12 @@ impl KvCacheQuantMode {
                 memory: 1.0,
                 compute: 0.0,
                 name: "fp8",
+                compute_dtype: None,
+            },
+            Self::Nvfp4 => QuantMapping {
+                memory: 9.0 / 16.0,
+                compute: 0.0,
+                name: "nvfp4",
                 compute_dtype: None,
             },
         }
@@ -787,9 +796,17 @@ mod tests {
             KvCacheQuantMode::Bfloat16,
             KvCacheQuantMode::Int8,
             KvCacheQuantMode::Fp8,
+            KvCacheQuantMode::Nvfp4,
         ] {
             assert_eq!(mode.mapping().compute, 0.0);
         }
+    }
+
+    #[test]
+    fn nvfp4_kv_cache_is_appended() {
+        let mode: KvCacheQuantMode = serde_json::from_str("\"nvfp4\"").unwrap();
+        assert_eq!(mode, KvCacheQuantMode::Nvfp4);
+        assert_eq!(bincode::serialize(&mode).unwrap(), 3_u32.to_le_bytes());
     }
 
     #[test]

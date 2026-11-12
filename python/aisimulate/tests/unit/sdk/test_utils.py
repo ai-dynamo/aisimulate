@@ -1513,6 +1513,23 @@ class TestKVCacheQuantInference:
             )
             assert "fmha_quant_mode" not in modes
 
+    # NVFP4 weights must not reset an NVFP4 KV declaration to FP8.
+    @pytest.mark.parametrize(
+        "kv_declaration",
+        [
+            {"kv_cache_quant_algo": "NVFP4"},
+            {"kv_cache_scheme": "NVFP4"},
+            {"kv_cache_scheme": {"num_bits": 4, "type": "float"}},
+        ],
+    )
+    def test_modelopt_nvfp4_kv_declarations(self, kv_declaration):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        quant = {"quant_method": "modelopt", "quant_algo": "NVFP4", **kv_declaration}
+        raw = _attach_inferred_quant_fields({"quantization_config": quant})
+        assert _infer_quant_modes_from_raw_config(raw)["kvcache_quant_mode"] is common.KVCacheQuantMode.nvfp4
+
     @pytest.mark.parametrize("kv_algo", ["not-an-algorithm", "null", ["none"], {"algorithm": "none"}, True])
     @pytest.mark.parametrize("source", ["quantization_config", "hf_quant_config"])
     def test_unknown_or_malformed_kv_algorithms_still_fail(self, kv_algo, source):

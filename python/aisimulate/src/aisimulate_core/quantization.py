@@ -90,6 +90,8 @@ class KVCacheQuantMode(Enum):
     bfloat16 = QuantMapping(2, 0, "bfloat16", None)
     int8 = QuantMapping(1, 0, "int8", None)
     fp8 = QuantMapping(1, 0, "fp8", None)
+    # 4-bit values plus one FP8 scale per 16 (vLLM and TRT-LLM "nvfp4").
+    nvfp4 = QuantMapping(9 / 16, 0, "nvfp4", None)
 
 
 class CommQuantMode(Enum):

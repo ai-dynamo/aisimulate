@@ -1876,14 +1876,20 @@ def _infer_quantization_fields(raw_config: dict) -> dict[str, object]:
 
     if kv_cache_algo is None:
         kv_cache_scheme = quant_cfg.get("kv_cache_scheme")
-        if isinstance(kv_cache_scheme, dict):
+        modelopt = str(quant_cfg.get("quant_method", "")).lower().startswith("modelopt")
+        if isinstance(kv_cache_scheme, str) and modelopt:
+            # As vLLM's MODELOPT_TO_VLLM_KV_CACHE_DTYPE_MAP; other strings stay unset.
+            kv_cache_algo = {"fp8": "fp8", "nvfp4": "nvfp4"}.get(kv_cache_scheme.lower())
+        elif isinstance(kv_cache_scheme, dict):
             scheme_type = str(kv_cache_scheme.get("type", "")).lower()
             num_bits = kv_cache_scheme.get("num_bits")
             if "fp8" in scheme_type:
                 kv_cache_algo = "fp8"
             elif scheme_type == "float" and isinstance(num_bits, int):
-                # TODO: 4bit kv cache support
-                if num_bits <= 8:
+                # vLLM reads a 4-bit float scheme as NVFP4 only under ModelOpt.
+                if num_bits == 4 and modelopt:
+                    kv_cache_algo = "nvfp4"
+                elif num_bits <= 8:
                     kv_cache_algo = "fp8"
                 elif num_bits >= 16:
                     kv_cache_algo = "bfloat16"
