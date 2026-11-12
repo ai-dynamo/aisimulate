@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core"
+name = "aisim-core"
 version = "0.12.0"
 dependencies = [
  "anyhow",
@@ -54,7 +54,7 @@ dependencies = [
 name = "aisimulate-replay-parity-runner"
 version = "0.1.0"
 dependencies = [
- "aisimulate-core",
+ "aisim-core",
  "anyhow",
  "serde",
  "serde_json",

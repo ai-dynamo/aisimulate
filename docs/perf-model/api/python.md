@@ -26,8 +26,8 @@ model = RustForwardPassPerfModel.best_available(config)
 
 | Method | Contract |
 | --- | --- |
-| `estimate_forward_pass_time_ms(metrics)` | One iteration's rank metrics, supplied as a dictionary or list of rank dictionaries; returns milliseconds, or `None` for an unready regression store. Empty work returns zero. |
-| `estimate_forward_pass_detailed(metrics)` | Same scalar latency plus native latency, correction, rank composition, and any direct lookup evidence. |
+| `estimate_forward_pass_time_ms(metrics, *, draft_length=None)` | One iteration's rank metrics, supplied as a dictionary or list of rank dictionaries; returns milliseconds, or `None` for an unready regression store. Empty work returns zero. A positive integer `draft_length` opts an ordinary STP FPM into the speculative decode approximation below. |
+| `estimate_forward_pass_detailed(metrics, *, draft_length=None)` | With no draft length, returns the scalar latency plus native latency, correction, rank composition, and any direct lookup evidence. With a draft length, returns `latency_ms`, `draft_length`, `scaling_factor`, and the unmodified `stp_reference` detailed estimate. |
 | `tune_with_fpms(iterations)` | Consume observed iterations for correction or regression. Preserve rank/iteration grouping and worker identity. |
 | `static_phase_latency(batch_size=..., input_tokens=..., output_tokens=..., prefill=...)` | Native static phase integration before correction. Prefill is one pass; decode is total sequence decode, so `output_tokens=2` represents one decode iteration. |
 | `static_phase_diagnostics(...)` | Operation diagnostics for supported native paths; details below. |
@@ -41,6 +41,21 @@ and [online regression](../methods/online-regression.md) for telemetry semantics
 `best_available` validates configuration before selection; query-domain errors
 do not silently change the chosen estimator. The raw PyO3 class and SDK wrapper
 are different surfaces: new applications should use the SDK wrapper.
+
+For an ordinary STP interpolation, regression or learned FPM, keyword-only
+`draft_length=d` estimates one complete speculative decode iteration using
+`(0.08*d + 1.25) * F_STP((d+1)*B, K_total)`. Supply logical decode request
+counts and total past KV: the query widens the request count and preserves KV.
+`d` must be a positive integer; booleans, non-integers and overflowing widths
+are rejected. Only pure decode (with optional idle ranks) is supported;
+prefill/mixed work, OP estimators and already-speculative estimators are rejected.
+Omitting the argument preserves existing behavior. The option does not change
+configuration, tuning or replay execution. See the
+[whole-forward contract](../methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm)
+for reference coverage, detailed evidence and calibration limits. The raw
+`aisimulate_core._native.RustForwardPassPerfModel` methods accept the same
+keyword-only option with JSON-string `fpm_json` input; their detailed result
+is a JSON string, while the SDK returns a dictionary.
 
 ## Stable Python facade
 
@@ -109,7 +124,7 @@ options.
 
 ## Direct FPM query evidence
 
-The same model returned by `RustForwardPassPerfModel.best_available(config)` exposes `estimate_forward_pass_detailed(metrics)` (also available on the Rust `ForwardPassPerfModel`). Its `latency_ms` equals `estimate_forward_pass_time_ms(metrics)`; the scalar API and four-element per-operation tuple APIs are unchanged.
+The same model returned by `RustForwardPassPerfModel.best_available(config)` exposes `estimate_forward_pass_detailed(metrics)` (also available on the Rust `ForwardPassPerfModel`). Its `latency_ms` equals `estimate_forward_pass_time_ms(metrics)` with the same query options. The schema below applies when `draft_length` is omitted; speculative queries retain this evidence under `stp_reference`. Four-element per-operation tuple APIs are unchanged.
 
 ```python
 result = model.estimate_forward_pass_detailed({
@@ -126,7 +141,7 @@ for rank in result["ranks"]:
 
 Each direct lookup records `exact_lookup`, `within_curve_interpolation`, `cross_kv_interpolation`, `cross_batch_interpolation`, or `kv_first_interpolation`, its phase and model, requested coordinates, raw latency, and supporting measured coordinates, latencies and weights. Coordinates are iteration totals: `batch_size`, `total_prefill_tokens` (null for decode), and `total_kv_read_tokens`. Nested interpolation weights are multiplied for each supporting measurement. Prefill's `cross_kv_interpolation` identifies the usual token-first order; `kv_first_interpolation` identifies its KV-first fallback. Support always lists original measurements rather than intermediate estimates. This evidence preserves `source="silicon"`, whose meaning includes interpolation; it does not establish accuracy or observed CUDA graph dispatch.
 
-Weights describe a raw lookup, before later composition. Each rank records prefill, decode and mixed-pass baseline latencies, plus `marginal_decode_ms = max(decode_ms - decode_baseline_ms, 0)`. A baseline lookup has `decode_baseline=true`: its query is the paired decode request, but its support contains each selected row's actual measured minimum-KV point. `max_rank` is the first zero-based input index attaining the positive native maximum. The result separately records `native_latency_ms`, `correction_factor`, and final `latency_ms`. Empty work has no query evidence. Other estimators also have no direct lookup evidence; an unready regression retains `latency_ms=null`.
+Weights describe a raw lookup, before later composition. Each rank records prefill, decode and mixed-pass baseline latencies, plus `marginal_decode_ms = max(decode_ms - decode_baseline_ms, 0)`. A baseline lookup has `decode_baseline=true`: its query is the paired decode request, but its support contains each selected row's actual measured minimum-KV point. `max_rank` is the first zero-based input index attaining the positive native maximum. The result separately records `native_latency_ms`, `correction_factor`, and final `latency_ms`. Empty work has no query evidence. Operation graphs (op-level and DeepSeek-V4.1 stage graphs) instead record each rank's name-folded `operations`, with the [static phase diagnostics](#static-phase-diagnostics) fields, summing to the rank's uncorrected latency; see [per-iteration queries](../configuration.md#per-iteration-queries). Learned and regression estimators have no rank evidence; an unready regression retains `latency_ms=null`.
 
 Replay and prediction capture this evidence with `ReplayOutputRequirements(capture_performance_diagnostics=True)`; CLI prediction enables it with `--detail source` or `--detail time`. Use `--format json` or inspect the saved `prediction.json` for the query records and measured support; the default source text output shows operation sources and fallbacks. Public `run_recommendation(..., output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))` and `Sweeper(..., output_requirements=...)` forward the same request to each candidate's replay. Evidence survives saved results under `ReplayReport.metadata["fpm_query_evidence"]` and each candidate's `provenance.runner_metadata["fpm_query_evidence"]`. The native replay report carries the same top-level key; source details include `fpm_estimates` on whole-model operations. FPM power remains unavailable and SOL comparison has an explicit unavailable reason.
 

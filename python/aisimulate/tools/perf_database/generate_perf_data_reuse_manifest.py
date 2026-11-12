@@ -119,7 +119,7 @@ def classify_tier(kernel_source: str) -> str:
 # reuse whitelist, and filling a deliberately-absent key from another
 # backend's rows silently reroutes the SDK onto the wrong kernel.
 #
-# The one known family (kda, review 2026-08-04): the sglang K3 fused-decode
+# The one known family (kda, review): the sglang K3 fused-decode
 # routing selects `kda_fused_decode` for a shard exactly when that shard has
 # NO Triton-pair generation key — "The SDK's per-key fused routing requires
 # the Triton key to be ABSENT for the covered shard" (b200_sxm kda sglang
@@ -141,8 +141,7 @@ def classify_tier(kernel_source: str) -> str:
 # {shared, shared_fallback} admission, so they never join a cross-backend
 # kernel_source filter.
 #
-# GRADUATION CRITERION (owner decision 2026-08-04): this denylist is a
-# one-off. If a SECOND absence-dependent kernel family appears, do not
+# GRADUATION CRITERION: this list is a one-off. If a SECOND absence-dependent kernel family appears, do not
 # extend the list — promote the SDK to a primary-only routing view instead
 # (per-key rerouting must consult only the active backend's own rows).
 ABSENCE_LOAD_BEARING = {
@@ -591,13 +590,13 @@ def render_manifest(summaries: list[dict]) -> str:
         "#                                routes on these keys being absent)",
         "#   systems:                     systems where rows for this (op_file, kernel_source) exist",
         "#   frameworks:                  backends that produce rows (= the inheritance whitelist)",
-        "#   total_raw_rows:              row count across all systems and frameworks",
-        "#   within_framework_dedup_rows: rows that duplicate prior versions within the same framework",
-        "#   median_pct_divergence:       optional; cross-framework latency spread for overlapping shapes",
+        "#",
+        "#   Row counts, dedup counts and divergence stats are analysis output; they",
+        "#   live in the --out-json / --out-md artifacts, not here, so a data refresh",
+        "#   only touches this file when the resolver-visible contract changes.",
         "groups:",
     ]
     for (_op, _ks), agg in sorted(by_pair.items()):
-        med = statistics.median(agg["median_pct_divergence"]) if agg["median_pct_divergence"] else None
         # Absence-load-bearing pairs are demoted to a resolver-inert tier so
         # they can never join a cross-backend inheritance filter (see the
         # ABSENCE_LOAD_BEARING docstring for the invariant and evidence).
@@ -607,10 +606,6 @@ def render_manifest(summaries: list[dict]) -> str:
         lines.append(f"    tier: {tier}")
         lines.append(f"    systems: [{', '.join(sorted(agg['systems']))}]")
         lines.append(f"    frameworks: [{', '.join(sorted(agg['frameworks']))}]")
-        lines.append(f"    total_raw_rows: {agg['total_raw_rows']}")
-        lines.append(f"    within_framework_dedup_rows: {agg['within_framework_dedup_rows']}")
-        if med is not None:
-            lines.append(f"    median_pct_divergence: {med:.2f}")
     return "\n".join(lines) + "\n"
 
 

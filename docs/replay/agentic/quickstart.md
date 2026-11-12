@@ -221,6 +221,19 @@ qualification boundaries.
 | `prediction.json` | Aggregate predictions, snapshot information, preparation/barrier audit, profile duration/cutoff accounting, and play outcomes |
 | `requests.jsonl` | Measured profile requests, including per-request timing and identity |
 
+Add `--capture-telemetry` to export all-phase request records,
+scheduler/cache/traffic samples, and agentic lifecycle events. The interval
+defaults to 1,000 simulated milliseconds and can be set with
+`--telemetry-sample-interval-ms`. See the
+[native telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
+
+For an offline HTML dashboard, add `--export-html` instead. It enables telemetry
+automatically and writes `report.html` alongside these files. The standalone file
+embeds UTF-8 renderer assets shared with the accuracy dashboard; it requires no
+network access. Silicon comparisons appear only when qualified reference data is
+supplied by the accuracy publisher. Open it in a browser
+to inspect profiling, warmup, caches, throughput, and the scrolling request timeline.
+
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
 for the resolved duration and grace settings, admission cutoff, recycled play

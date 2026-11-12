@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+     SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AISimulate replay</title>
+    <style>__REPLAY_CSS__</style>
+    <script>
+      __PLOTLY_JS__;
+    </script>
+  </head>
+  <body class="replay-dashboard">
+__REPLAY_BODY__
+    <template id="plotly-license">__PLOTLY_LICENSE__</template>
+    <script id="report-data" type="application/json">
+      __REPORT_DATA_JSON__
+    </script>
+    <script>__REPLAY_JS__</script>
+    <script>AISimReplay.mount(document.querySelector(".replay-dashboard"), JSON.parse(document.getElementById("report-data").textContent));</script>
+  </body>
+</html>

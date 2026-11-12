@@ -21,8 +21,8 @@ use super::*;
 use crate::fpm::tests::TEST_MODEL;
 use crate::{
     BackendKind, FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
-    LinearFitConfig, RegressionFeatureAxis, RegressionFitKind, RegressionUpdatePolicy,
-    ScheduledRequestMetrics, SplineFitConfig, SplineSearchConfig,
+    LinearFitConfig, RegressionFeatureAxis, RegressionFeatureSet, RegressionFitKind,
+    RegressionUpdatePolicy, ScheduledRequestMetrics, SplineFitConfig, SplineSearchConfig,
 };
 
 type Iteration = Vec<ForwardPassMetrics>;
@@ -304,7 +304,7 @@ fn check_round_trip(
         .unwrap();
     assert_state_files(&root.join("resaved"), &before);
 
-    let mut resumed = load(continue_config(pinned)).unwrap();
+    let mut resumed = load(continue_config(pinned.clone())).unwrap();
     for chunk in next.chunks(7) {
         original.tune_with_fpms(chunk).unwrap();
         resumed.tune_with_fpms(chunk).unwrap();
@@ -337,7 +337,65 @@ fn check_round_trip(
         &root.join("resumed-final"),
         &state_files(&root.join("original-final")),
     );
+    check_relocation(&root.join("saved"), &pinned, load, queries, &expected);
     dir
+}
+
+/// The saved `config.json` of the snapshot directory `dir`, naming `dir`:
+/// what `best_available(state_snapshot=dir)` passes to construction.
+fn config_at(dir: &Path) -> ForwardPassPerfModelConfig {
+    let mut config: ForwardPassPerfModelConfig =
+        serde_json::from_slice(&std::fs::read(dir.join(CONFIG_FILE)).unwrap()).unwrap();
+    config
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = dir.to_path_buf();
+    config
+}
+
+/// Copy `saved`, take the original away and restore the copy through its
+/// `config.json` and through the returned configuration renamed to the copy;
+/// both still name the original's owned paths. The original is put back
+/// afterwards.
+fn check_relocation(
+    saved: &Path,
+    pinned: &ForwardPassPerfModelConfig,
+    load: Loader<'_>,
+    queries: &[Iteration],
+    expected: &str,
+) {
+    let moved = saved.with_file_name("moved");
+    copy_dir(saved, &moved);
+    let away = saved.with_file_name("original-away");
+    std::fs::rename(saved, &away).unwrap();
+    let config = config_at(&moved);
+    let resolved = config.clone().resolve().unwrap();
+    let source = resolved.estimator_config.state_snapshot.as_ref().unwrap();
+    assert_eq!(source.path, snapshot::normalized_absolute(&moved).unwrap());
+    let pinned_source = pinned.estimator_config.state_snapshot.as_ref().unwrap();
+    assert_eq!(
+        (&source.sha256, source.on_tune),
+        (&pinned_source.sha256, pinned_source.on_tune)
+    );
+    let mut restored = load(config).unwrap();
+    assert_eq!(observables(&restored, queries), expected);
+    if let Some(provenance) = restored.provenance() {
+        assert_eq!(provenance.config, resolved);
+    }
+    let error = restored.flush_updates().unwrap_err();
+    assert!(error.to_string().contains("on_tune='reject'"), "{error}");
+    let mut renamed = pinned.clone();
+    renamed
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved.clone();
+    assert_eq!(observables(&load(renamed).unwrap(), queries), expected);
+    std::fs::rename(&away, saved).unwrap();
+    std::fs::remove_dir_all(&moved).unwrap();
 }
 
 fn assert_state_files(dir: &Path, expected: &[(String, Vec<u8>)]) {
@@ -396,6 +454,98 @@ fn regression_linear_round_trips_for_dedicated_and_aggregated_roles() {
     check_regression(AGG, false, |_| {});
 }
 
+/// A Dynamo planner's identity: facts it did not know are `"unknown"`, the
+/// limits it recorded are known.
+fn unknown_identity(config: &mut ForwardPassPerfModelConfig) {
+    config.system = crate::UNKNOWN_IDENTITY.into();
+    config.backend_version = Some(crate::UNKNOWN_IDENTITY.into());
+    (config.tp, config.pp, config.attention_dp) = (
+        crate::UNKNOWN_SIZE,
+        crate::UNKNOWN_SIZE,
+        crate::UNKNOWN_SIZE,
+    );
+    (config.moe_tp_size, config.moe_ep_size) = (Some(crate::UNKNOWN_SIZE), Some(4));
+    config.gemm_quant_mode = Some(crate::UNKNOWN_IDENTITY.into());
+    config.attention_backend = Some(crate::UNKNOWN_IDENTITY.into());
+    config.deployment_limits = Some(crate::DeploymentLimits {
+        num_gpus: crate::DeploymentLimit::Known(8),
+        max_num_batched_tokens: crate::DeploymentLimit::Known(8192),
+        max_kv_tokens: crate::DeploymentLimit::Known(1 << 20),
+        ..Default::default()
+    });
+}
+
+#[test]
+fn regression_with_unknown_identity_round_trips_and_pins_it_exactly() {
+    check_regression(AGG, false, unknown_identity);
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = best(regression_config(AGG, unknown_identity)).unwrap();
+    model
+        .tune_with_fpms(&stream(AGG, 101, 80, true, false))
+        .unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .unwrap();
+    // The literal is what the manifest, config.json and inspection record.
+    let identity = &read_json(&dir.path().join("snap").join(MANIFEST_FILE))["identity"];
+    for field in [
+        "system",
+        "backend_version",
+        "tp",
+        "pp",
+        "attention_dp",
+        "moe_tp_size",
+    ] {
+        assert_eq!(identity[field], "unknown", "{field}");
+    }
+    assert_eq!(identity["moe_ep_size"], 4);
+    assert_eq!(
+        identity["deployment_limits"],
+        serde_json::json!({
+            "num_gpus": 8, "max_num_batched_tokens": 8192, "max_num_seqs": "unknown",
+            "max_kv_tokens": 1 << 20, "context_length": "unknown"
+        })
+    );
+    assert_eq!(
+        read_json(&dir.path().join("snap").join(CONFIG_FILE))["tp"],
+        "unknown"
+    );
+    let summary = ForwardPassPerfModel::inspect_state_snapshot(dir.path().join("snap")).unwrap();
+    let topology = serde_json::to_value(summary.topology.unwrap()).unwrap();
+    assert_eq!(
+        (&topology["tp"], &topology["moe_ep_size"]),
+        (&"unknown".into(), &4.into())
+    );
+    // Restoration compares every recorded fact and limit exactly.
+    for (edit, field) in [
+        (
+            Box::new(|config: &mut ForwardPassPerfModelConfig| config.tp = 2)
+                as Box<dyn Fn(&mut ForwardPassPerfModelConfig)>,
+            "tp",
+        ),
+        (
+            Box::new(|config| config.system = "h200_sxm".into()),
+            "system",
+        ),
+        (
+            Box::new(|config| config.deployment_limits = None),
+            "deployment_limits",
+        ),
+        (
+            Box::new(|config| {
+                config.deployment_limits.as_mut().unwrap().max_num_seqs =
+                    crate::DeploymentLimit::Known(256)
+            }),
+            "deployment_limits.max_num_seqs",
+        ),
+    ] {
+        let mut changed = pinned.clone();
+        edit(&mut changed);
+        expect_error(changed, &format!("pinned identity at {field}"));
+    }
+    best(pinned).unwrap();
+}
+
 #[test]
 fn regression_error_threshold_round_trips_lazy_update_clocks() {
     check_regression(AGG, false, |config| {
@@ -441,6 +591,49 @@ fn selected_regression_round_trips_one_three_and_six_dimensions() {
             feature_axes: vec![Attention, Moe, Count, Extend, Past, MaxPast],
             ..LinearFitConfig::default()
         });
+    });
+    // The axis constants are configuration-only; restoration takes them from it.
+    check_regression(AGG, true, |config| {
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_axes: vec![Attention, Moe, Count, Past, LongestPerSplit, EagerPass],
+            non_negative: false,
+            max_kv_splits: Some(1024),
+            max_cudagraph_capture_size: Some(512),
+            ..LinearFitConfig::default()
+        });
+    });
+}
+
+fn fpm5_regression(config: &mut ForwardPassPerfModelConfig) {
+    config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+        feature_set: Some(RegressionFeatureSet::Fpm5),
+        ..LinearFitConfig::default()
+    });
+}
+
+#[test]
+fn fpm5_aggregate_regression_round_trips_fits_and_lazy_clocks() {
+    check_regression(DECODE, false, fpm5_regression);
+    check_regression(AGG, false, fpm5_regression);
+    // Signed slopes, lazy publication and request-list retention axes.
+    check_regression(AGG, true, |config| {
+        fpm5_regression(config);
+        let regression = &mut config.estimator_config.fpm_regression;
+        let linear = regression.fit.linear.as_mut().unwrap();
+        linear.non_negative = false;
+        linear.update_policy = RegressionUpdatePolicy::ErrorThreshold {
+            relative_tolerance: 0.02,
+            absolute_tolerance_ms: 0.01,
+            window: 6,
+            trigger: 2,
+            cooldown: 3,
+            startup_observations: 4,
+        };
+        regression.sampling.axes = vec![
+            RegressionFeatureAxis::Attention,
+            RegressionFeatureAxis::Past,
+        ];
+        regression.sampling.bins_per_axis = vec![3, 3];
     });
 }
 
@@ -810,6 +1003,15 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
         predictions(&load(reference.clone()).unwrap(), &queries),
         expected
     );
+    // The parquet's location is environment, but whether one is configured
+    // is identity.
+    let mut dropped = reference.clone();
+    dropped.estimator_config.fpm_interpolation.fpm_parquet_path = None;
+    expect_load_error(
+        &load,
+        dropped,
+        "pinned identity at estimator_config.fpm_interpolation.fpm_parquet_path",
+    );
 
     // Changing the parquet or its sidecar after load invalidates the
     // reference snapshot and any further save from this process.
@@ -860,6 +1062,307 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
             .to_string()
             .contains("no load-time performance-data fingerprint"),
         "{error}"
+    );
+}
+
+/// Rewrite a snapshot in the path-pinned version 1 form, which recorded the
+/// owned inputs of its identity as absolute paths below the save location,
+/// with the matching `config.json`.
+fn as_version_1(config: &ForwardPassPerfModelConfig) -> ForwardPassPerfModelConfig {
+    let root = config
+        .estimator_config
+        .state_snapshot
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
+    let legacy = repin(config, |manifest| {
+        manifest["schema_version"] = 1.into();
+        for pointer in [
+            "/identity/systems_paths/0",
+            "/identity/estimator_config/fpm_interpolation/fpm_parquet_path",
+            "/identity/estimator_config/op_level/execution_profile/path",
+            "/identity/estimator_config/fpm_learned/artifact_path",
+            "/identity/estimator_config/fpm_learned/checkpoint_path",
+        ] {
+            if let Some(value) = manifest.pointer_mut(pointer) {
+                let absolute = value
+                    .as_str()
+                    .filter(|path| Path::new(path).is_relative())
+                    .map(|path| root.join(path).to_str().unwrap().to_owned());
+                if let Some(absolute) = absolute {
+                    *value = absolute.into();
+                }
+            }
+        }
+    });
+    std::fs::write(
+        root.join(CONFIG_FILE),
+        serde_json::to_vec_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    legacy
+}
+
+fn expect_load_error(load: Loader<'_>, config: ForwardPassPerfModelConfig, needle: &str) {
+    let error = load(config).unwrap_err().to_string();
+    assert!(error.contains(needle), "expected {needle:?} in {error}");
+}
+
+/// A packed FPM-interpolation snapshot owns two inputs (systems root and
+/// external parquet). Version 1 recorded both below the save location;
+/// relocation recovers that location from their fixed suffixes.
+#[test]
+fn version_1_snapshots_relocate_from_their_recorded_save_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("systems");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("b200_sxm.yaml"), "data_dir: data/b200_sxm\n").unwrap();
+    let parquet = dir.path().join("measured/fpm.parquet");
+    std::fs::create_dir_all(parquet.parent().unwrap()).unwrap();
+    std::fs::write(&parquet, b"rows").unwrap();
+    let mut config = native_config(&root, CorrectionMode::Fixed);
+    config.estimation_mode = EstimationMode::FpmInterpolation;
+    config.estimator_config.fpm_interpolation.fpm_parquet_path = Some(parquet.clone());
+    let mut model = native_select(fixture_engine())(config.resolve().unwrap(), None).unwrap();
+    model
+        .tune_with_fpms(&native_stream(&model, 47, 30))
+        .unwrap();
+    let saved = dir.path().join("saved");
+    let pinned = model
+        .save_state_snapshot(
+            &saved,
+            &StateSnapshotOptions {
+                include_perf_db: true,
+            },
+        )
+        .unwrap();
+    // Version 2 names owned inputs relative to the snapshot; config.json
+    // keeps the absolute configuration at the save location.
+    let identity = read_json(&saved.join(MANIFEST_FILE))["identity"].clone();
+    assert_eq!(
+        identity["systems_paths"],
+        serde_json::json!([perf_db::PACKED_SYSTEMS_DIR])
+    );
+    assert_eq!(
+        identity["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"],
+        "perf_db/fpm/fpm.parquet"
+    );
+    assert_eq!(
+        pinned.systems_paths,
+        vec![saved.join(perf_db::PACKED_SYSTEMS_DIR)]
+    );
+
+    let legacy = as_version_1(&pinned);
+    let moved = dir.path().join("moved");
+    copy_dir(&saved, &moved);
+    for gone in [&saved, &root, &parquet.parent().unwrap().to_path_buf()] {
+        std::fs::remove_dir_all(gone).unwrap();
+    }
+    let load = native_load_with(fixture_engine());
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+    let config = config_at(&moved).resolve().unwrap();
+    assert_eq!(
+        config.systems_paths,
+        vec![moved.join(perf_db::PACKED_SYSTEMS_DIR)]
+    );
+    assert_eq!(
+        config.estimator_config.fpm_interpolation.fpm_parquet_path,
+        Some(moved.join("perf_db/fpm/fpm.parquet"))
+    );
+    assert_eq!(
+        predictions(&load(config.clone()).unwrap(), &queries),
+        expected
+    );
+    let mut renamed = legacy;
+    renamed
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved.clone();
+    assert_eq!(predictions(&load(renamed).unwrap(), &queries), expected);
+    let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
+    assert_eq!(
+        summary.identity.unwrap().systems_paths,
+        config.systems_paths
+    );
+
+    // Owned inputs that do not share one save location, or that do not end
+    // with their fixed layout, cannot be relocated.
+    let split = repin(&config, |manifest| {
+        manifest["identity"]["systems_paths"][0] = "/elsewhere/perf_db/systems".into()
+    });
+    expect_load_error(&load, split, "below different directories");
+    let foreign = repin(&config, |manifest| {
+        manifest["identity"]["systems_paths"][0] = "/elsewhere/systems".into()
+    });
+    expect_load_error(&load, foreign, "cannot be relocated");
+
+    // Whether an owned parquet is configured stays identity, and a different
+    // saved model is reported before any owned input is relocated or read.
+    let mut config = config_at(&moved);
+    config = repin(&config, |manifest| {
+        manifest["identity"]["systems_paths"][0] = saved
+            .join(perf_db::PACKED_SYSTEMS_DIR)
+            .to_str()
+            .unwrap()
+            .into()
+    });
+    config.estimator_config.fpm_interpolation.fpm_parquet_path = None;
+    expect_load_error(
+        &load,
+        config.clone(),
+        "pinned identity at estimator_config.fpm_interpolation.fpm_parquet_path",
+    );
+    config.estimation_mode = EstimationMode::OpLevel;
+    expect_load_error(&load, config, "differs from the saved model");
+}
+
+#[test]
+fn relocated_snapshots_verify_content_and_take_systems_roots_from_the_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fake_systems_root(dir.path());
+    let mut model = native_model(&root, CorrectionMode::Hybrid);
+    model
+        .tune_with_fpms(&native_stream(&model, 49, 30))
+        .unwrap();
+    let load = native_load_with(fixture_engine());
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+
+    // Identical data under another root restores: where the referenced data
+    // lives is environment, verified by content.
+    let reference = model
+        .save_state_snapshot(
+            dir.path().join("reference"),
+            &StateSnapshotOptions::default(),
+        )
+        .unwrap();
+    let copy = dir.path().join("copy/systems");
+    copy_dir(&root, &copy);
+    let mut elsewhere = reference.clone();
+    elsewhere.systems_paths = vec![copy.clone()];
+    let restored = load(elsewhere).unwrap();
+    assert_eq!(predictions(&restored, &queries), expected);
+    assert_eq!(
+        restored.provenance().unwrap().config.systems_paths,
+        vec![copy.clone()]
+    );
+    std::fs::write(
+        copy.join("data/b200_sxm/vllm/0.24.0/gemm_perf.parquet"),
+        b"other rows",
+    )
+    .unwrap();
+    let mut changed = reference.clone();
+    changed.systems_paths = vec![copy];
+    expect_load_error(&load, changed, "differs from the snapshot fingerprint");
+    // A missing external root is a configuration error, not snapshot I/O.
+    let mut absent = reference.clone();
+    absent.systems_paths = vec![dir.path().join("absent")];
+    expect_load_error(
+        &load,
+        absent,
+        "is not a directory; a snapshot saved without include_perf_db",
+    );
+    // Semantic fields remain identity.
+    let mut resized = reference.clone();
+    resized.kv_block_size = Some(resized.kv_block_size.unwrap_or(16) * 2);
+    expect_load_error(&load, resized, "pinned identity at kv_block_size");
+
+    // A packed snapshot reads only its own data, whatever root is supplied.
+    let packed = model
+        .save_state_snapshot(
+            dir.path().join("packed"),
+            &StateSnapshotOptions {
+                include_perf_db: true,
+            },
+        )
+        .unwrap();
+    let moved = dir.path().join("moved");
+    copy_dir(&dir.path().join("packed"), &moved);
+    let mut ignored = packed.clone();
+    ignored.systems_paths = vec![dir.path().join("missing")];
+    let restored = load(ignored).unwrap();
+    assert_eq!(predictions(&restored, &queries), expected);
+    assert_eq!(
+        restored.provenance().unwrap().config.systems_paths,
+        packed.systems_paths
+    );
+    // Engine launch validates an external timing configuration without
+    // constructing it; a moved snapshot's configuration passes.
+    let mut renamed = packed.clone();
+    renamed
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved.clone();
+    std::fs::rename(dir.path().join("packed"), dir.path().join("packed-away")).unwrap();
+    assert_eq!(
+        crate::engine::EngineLaunchConfig::timing_config_mismatches(
+            serde_json::json!({}),
+            &renamed
+        )
+        .unwrap(),
+        Vec::<String>::new()
+    );
+    // A stale original that still exists with different data is never read.
+    std::fs::rename(dir.path().join("packed-away"), dir.path().join("packed")).unwrap();
+    std::fs::write(
+        dir.path()
+            .join("packed")
+            .join(perf_db::PACKED_SYSTEMS_DIR)
+            .join("b200_sxm.yaml"),
+        "data_dir: data/b200_sxm\n# stale\n",
+    )
+    .unwrap();
+    assert_eq!(predictions(&load(renamed).unwrap(), &queries), expected);
+    // Owned inputs must use their fixed relative layout.
+    for recorded in [
+        "/elsewhere/perf_db/systems",
+        "perf_db/../perf_db/systems",
+        "../packed/perf_db/systems",
+    ] {
+        let tampered = repin(&packed, |manifest| {
+            manifest["identity"]["systems_paths"][0] = recorded.into()
+        });
+        expect_load_error(&load, tampered, "instead of the snapshot's");
+    }
+
+    // A copy is verified like the original: tampered state or packed data,
+    // or a config.json from another snapshot, is rejected.
+    let config = config_at(&moved);
+    assert_eq!(
+        predictions(&load(config.clone()).unwrap(), &queries),
+        expected
+    );
+    std::fs::write(
+        moved
+            .join(perf_db::PACKED_SYSTEMS_DIR)
+            .join("b200_sxm.yaml"),
+        "data_dir: data/b200_sxm\n# edit\n",
+    )
+    .unwrap();
+    expect_load_error(
+        &load,
+        config.clone(),
+        "differs from the snapshot fingerprint",
+    );
+    let mut state = std::fs::read(moved.join(STATE_FILE)).unwrap();
+    state[0] ^= 1;
+    std::fs::write(moved.join(STATE_FILE), state).unwrap();
+    expect_load_error(&load, config, "does not match its manifest size or SHA-256");
+    std::fs::copy(
+        dir.path().join("reference").join(CONFIG_FILE),
+        moved.join(CONFIG_FILE),
+    )
+    .unwrap();
+    expect_load_error(
+        &load,
+        config_at(&moved),
+        "sha256 does not match manifest.json",
     );
 }
 
@@ -1568,12 +2071,38 @@ fn identity_and_estimator_control_mismatches_are_rejected_with_their_location() 
 }
 
 #[test]
+fn snapshots_that_read_no_performance_data_ignore_their_systems_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fake_systems_root(dir.path());
+    let mut model = best(regression_config(AGG, |config| {
+        config.systems_paths = vec![root.clone()]
+    }))
+    .unwrap();
+    model
+        .tune_with_fpms(&stream(AGG, 103, 80, true, false))
+        .unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .unwrap();
+    assert_eq!(pinned.systems_paths, vec![root.clone()]);
+    // The recorded root may be gone on the restoring host, or be another one.
+    std::fs::remove_dir_all(&root).unwrap();
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+    let restored = best(config_at(&dir.path().join("snap"))).unwrap();
+    assert_eq!(predictions(&restored, &queries), expected);
+    let mut elsewhere = pinned;
+    elsewhere.systems_paths = vec![dir.path().join("other")];
+    assert_eq!(predictions(&best(elsewhere).unwrap(), &queries), expected);
+}
+
+#[test]
 fn incompatible_versions_and_manifest_shapes_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let pinned = saved_regression(dir.path());
     for (edit, needle) in [
         (
-            Box::new(|m: &mut serde_json::Value| m["schema_version"] = 2.into())
+            Box::new(|m: &mut serde_json::Value| m["schema_version"] = 3.into())
                 as Box<dyn FnOnce(&mut serde_json::Value)>,
             "unsupported manifest schema",
         ),
@@ -1600,18 +2129,18 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
         // A newer release may add fields; its versions are reported first.
         (
             Box::new(|m: &mut serde_json::Value| {
-                m["schema_version"] = 2.into();
+                m["schema_version"] = 3.into();
                 m["future_field"] = true.into();
                 m["kind"] = "future_kind".into();
             }),
-            "unsupported manifest schema aisimulate_fpm_state_snapshot version 2",
+            "unsupported manifest schema aisimulate_fpm_state_snapshot version 3",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
-                m["state_layout_version"] = 2.into();
+                m["state_layout_version"] = 4.into();
                 m["files"][0]["future_field"] = true.into();
             }),
-            "state layout version 2 is not supported",
+            "state layout version 4 is not supported",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
@@ -2010,6 +2539,72 @@ fn corrupted_online_checkpoint_behind_repinned_digests_never_panics() {
 }
 
 #[test]
+fn fpm5_aggregate_state_violations_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = best(regression_config(AGG, fpm5_regression)).unwrap();
+    model
+        .tune_with_fpms(&stream(AGG, 107, 80, true, false))
+        .unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .unwrap();
+    fn aggregate(value: &mut serde_json::Value) -> &mut serde_json::Value {
+        &mut value["state"]["Regression"]["stores"]["stores"][0][1]["Aggregate"]
+    }
+    type Edit = Box<dyn Fn(&mut serde_json::Value)>;
+    let cases: Vec<(Edit, &str)> = vec![
+        (
+            Box::new(|value| aggregate(value)["fit"]["coefficients"][5] = (-1.0).into()),
+            "published regression fit",
+        ),
+        (
+            Box::new(|value| {
+                aggregate(value)["sampling_axes"] = serde_json::json!(["moe", "attention"])
+            }),
+            "aggregate regression controls differ",
+        ),
+        (
+            Box::new(|value| {
+                aggregate(value)["samples"]["buckets"][0][1][0][1]["raw_x"][3] = (-1.0).into()
+            }),
+            "retained regression observation is invalid",
+        ),
+        (
+            Box::new(|value| aggregate(value)["update"]["accepted"] = 4.into()),
+            "eager regression updates carry lazy-update state",
+        ),
+    ];
+    for (edit, needle) in cases {
+        let snapshot = tempfile::tempdir().unwrap();
+        copy_dir(&dir.path().join("snap"), &snapshot.path().join("s"));
+        let mut config = pinned.clone();
+        config
+            .estimator_config
+            .state_snapshot
+            .as_mut()
+            .unwrap()
+            .path = snapshot.path().join("s");
+        expect_error(mutate_state(&config, edit), needle);
+    }
+    // Valid default linear state under the fpm5 configuration.
+    let linear = saved_regression(&dir.path().join("linear"));
+    let bytes = std::fs::read(
+        linear
+            .estimator_config
+            .state_snapshot
+            .as_ref()
+            .unwrap()
+            .path
+            .join(STATE_FILE),
+    )
+    .unwrap();
+    expect_error(
+        replace_state(&pinned, &bytes),
+        "regression fit kind differs from configuration",
+    );
+}
+
+#[test]
 fn state_invariant_violations_are_rejected_before_they_can_panic() {
     let dir = tempfile::tempdir().unwrap();
     let pinned = saved_regression(dir.path());
@@ -2119,7 +2714,7 @@ fn state_invariant_violations_are_rejected_before_they_can_panic() {
         ),
         (
             Box::new(|value| {
-                value["layout_version"] = 2.into();
+                value["layout_version"] = 4.into();
             }),
             "layout version differs",
         ),
@@ -2593,11 +3188,13 @@ fn pathdiff(path: &Path, base: &Path) -> PathBuf {
 // Format stability
 // ---------------------------------------------------------------------------
 
-/// Independent mirror of the version-1 `state.bin` layout for the regression,
+/// Independent mirror of the version-3 `state.bin` layout for the regression,
 /// fixed/dynamic/hybrid correction and selector envelopes. A change to any
 /// encoded field, order, type or variant fails this decode: bump
-/// `STATE_SNAPSHOT_LAYOUT_VERSION` and update the mirror together.
-mod layout_v1 {
+/// `STATE_SNAPSHOT_LAYOUT_VERSION` and update the mirror together. Version 2
+/// appended the `fpm5` aggregate regression store, and version 3 the
+/// `longest_split` and `eager` regression axes.
+mod layout_v3 {
     use serde::Deserialize;
 
     type Map<K, V> = Vec<(K, V)>;
@@ -2683,10 +3280,18 @@ mod layout_v1 {
         pub factors: Map<[usize; 2], f64>,
     }
 
+    /// Variant indices are positional. The selected-axes and spline stores
+    /// are not mirrored; this golden never writes them.
     #[derive(Deserialize)]
     pub(super) enum Store {
-        Linear(Linear),
+        Linear(Box<Linear>),
+        Selected(Unmirrored),
+        Spline(Unmirrored),
+        Aggregate(Box<Aggregate>),
     }
+
+    #[derive(Deserialize)]
+    pub(super) struct Unmirrored;
 
     #[derive(Deserialize)]
     pub(super) struct Observation {
@@ -2733,6 +3338,33 @@ mod layout_v1 {
     }
 
     #[derive(Deserialize)]
+    pub(super) struct AggregateObservation {
+        pub raw_x: [f64; 17],
+        pub observed_ms: f64,
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct AggregateFit {
+        pub intercept: f64,
+        pub coefficients: [f64; 17],
+        pub means: [f64; 17],
+        pub scales: [f64; 17],
+        pub active: [bool; 17],
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct Aggregate {
+        /// `RegressionFeatureAxis` variant indices.
+        pub sampling_axes: Vec<u32>,
+        pub samples: Samples<AggregateObservation>,
+        pub min_observations: usize,
+        pub ridge_scale: f64,
+        pub non_negative: bool,
+        pub fit: Option<AggregateFit>,
+        pub update: Update,
+    }
+
+    #[derive(Deserialize)]
     pub(super) struct Evidence {
         pub observations: u64,
         pub stable_ewma: f64,
@@ -2743,20 +3375,20 @@ mod layout_v1 {
     }
 }
 
-fn decode_v1(path: &Path) -> layout_v1::StateFile {
+fn decode_v3(path: &Path) -> layout_v3::StateFile {
     use bincode::Options;
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .deserialize(&std::fs::read(path).unwrap())
-        .expect("state.bin no longer matches layout v1: bump STATE_SNAPSHOT_LAYOUT_VERSION")
+        .expect("state.bin no longer matches layout v3: bump STATE_SNAPSHOT_LAYOUT_VERSION")
 }
 
 #[test]
-fn state_layout_v1_matches_an_independent_decoder() {
+fn state_layout_v3_matches_an_independent_decoder() {
     assert_eq!(
-        STATE_SNAPSHOT_LAYOUT_VERSION, 1,
-        "update the layout_v1 mirror and this golden with the version"
+        STATE_SNAPSHOT_LAYOUT_VERSION, 3,
+        "update the layout_v3 mirror and this golden with the version"
     );
     let dir = tempfile::tempdir().unwrap();
     let mut regression = best(regression_config(DECODE, |config| {
@@ -2772,15 +3404,17 @@ fn state_layout_v1_matches_an_independent_decoder() {
             &StateSnapshotOptions::default(),
         )
         .unwrap();
-    let state = decode_v1(&dir.path().join("regression").join(STATE_FILE));
-    assert_eq!(state.layout_version, 1);
-    let layout_v1::State::Regression { stores } = state.state else {
+    let state = decode_v3(&dir.path().join("regression").join(STATE_FILE));
+    assert_eq!(state.layout_version, 3);
+    let layout_v3::State::Regression { stores } = state.state else {
         panic!("regression variant index changed")
     };
     assert_eq!(stores.len(), 1);
     // `ForwardPassRegressionWorkloadKind::PureDecode` is variant 0.
     assert_eq!(stores[0].0, 0);
-    let layout_v1::Store::Linear(linear) = &stores[0].1;
+    let layout_v3::Store::Linear(linear) = &stores[0].1 else {
+        panic!("linear store variant index changed")
+    };
     assert_eq!(linear.samples.total_observations, 64);
     assert_eq!(linear.samples.max_observations, 64);
     assert_eq!(linear.samples.buckets_per_axis, [4, 4]);
@@ -2801,6 +3435,55 @@ fn state_layout_v1_matches_an_independent_decoder() {
     assert_eq!(linear.min_observations, 5);
     assert!(linear.fit.is_some());
 
+    let mut aggregate = best(regression_config(DECODE, |config| {
+        fpm5_regression(config);
+        config.estimator_config.fpm_regression.sampling.axes = vec![RegressionFeatureAxis::Count];
+        config
+            .estimator_config
+            .fpm_regression
+            .sampling
+            .bins_per_axis = vec![8];
+    }))
+    .unwrap();
+    aggregate
+        .tune_with_fpms(&stream(DECODE, 183, 70, false, false))
+        .unwrap();
+    aggregate
+        .save_state_snapshot(dir.path().join("fpm5"), &StateSnapshotOptions::default())
+        .unwrap();
+    let layout_v3::State::Regression { stores } =
+        decode_v3(&dir.path().join("fpm5").join(STATE_FILE)).state
+    else {
+        panic!("regression variant index changed")
+    };
+    let layout_v3::Store::Aggregate(aggregate) = &stores[0].1 else {
+        panic!("aggregate store must be variant 3")
+    };
+    // `RegressionFeatureAxis::Count` is variant 2.
+    assert_eq!(aggregate.sampling_axes, [2]);
+    assert_eq!(aggregate.samples.total_observations, 64);
+    assert_eq!(aggregate.samples.buckets_per_axis, [8]);
+    assert_eq!(
+        (aggregate.min_observations, aggregate.ridge_scale),
+        (5, 1e-9)
+    );
+    assert!(aggregate.non_negative);
+    assert_eq!(aggregate.update.accepted, 0);
+    let row = &aggregate.samples.buckets[0].1[0].1;
+    // Single-rank decode: one active rank and no prefill work.
+    assert_eq!(row.raw_x[..4], [1.0, 0.0, 0.0, 0.0]);
+    assert!(row.raw_x[4] >= 1.0 && row.observed_ms > 0.0);
+    let fit = aggregate.fit.as_ref().unwrap();
+    assert!(fit.intercept.is_finite());
+    assert_eq!(fit.means[0], 1.0);
+    // Decode requests, KV tokens, their mean and log1p(KV) vary.
+    let active = [4, 5, 12, 15];
+    for index in 0..17 {
+        assert_eq!(fit.active[index], active.contains(&index), "{index}");
+        assert!(fit.active[index] || fit.coefficients[index] == 0.0);
+        assert!(fit.coefficients[index] >= 0.0 && fit.scales[index] >= 0.0);
+    }
+
     let artifact = dir.path().join("forest.json");
     std::fs::write(&artifact, forest_artifact(AGG, None, None)).unwrap();
     for (mode, expected) in [
@@ -2816,18 +3499,18 @@ fn state_layout_v1_matches_an_independent_decoder() {
         learned
             .save_state_snapshot(&path, &StateSnapshotOptions::default())
             .unwrap();
-        let layout_v1::State::Learned { corrections } = decode_v1(&path.join(STATE_FILE)).state
+        let layout_v3::State::Learned { corrections } = decode_v3(&path.join(STATE_FILE)).state
         else {
             panic!("learned variant index changed")
         };
         let observed = match &corrections.decode {
-            layout_v1::Correction::Fixed(fixed) => {
+            layout_v3::Correction::Fixed(fixed) => {
                 assert_eq!(fixed.min_observations, 3);
                 assert_eq!((fixed.min_faster, fixed.max_slower), (Some(0.5), Some(2.0)));
                 assert!(fixed.samples.fixed_bounds);
                 "fixed"
             }
-            layout_v1::Correction::Dynamic(dynamic) => {
+            layout_v3::Correction::Dynamic(dynamic) => {
                 assert_eq!((dynamic.ndim, dynamic.bins), (2, [4, 4]));
                 assert_eq!(
                     (dynamic.primary_capacity, dynamic.recent_capacity),
@@ -2837,7 +3520,7 @@ fn state_layout_v1_matches_an_independent_decoder() {
                 assert!(dynamic.next_admission > 0 && dynamic.log_bounds.is_some());
                 "dynamic"
             }
-            layout_v1::Correction::Hybrid(pair) => {
+            layout_v3::Correction::Hybrid(pair) => {
                 assert_eq!(pair.1.recent_capacity, 16);
                 "hybrid"
             }
@@ -2855,10 +3538,10 @@ fn state_layout_v1_matches_an_independent_decoder() {
             &StateSnapshotOptions::default(),
         )
         .unwrap();
-    let layout_v1::State::CausalSelector {
+    let layout_v3::State::CausalSelector {
         corrections,
         selector,
-    } = decode_v1(&dir.path().join("selector").join(STATE_FILE)).state
+    } = decode_v3(&dir.path().join("selector").join(STATE_FILE)).state
     else {
         panic!("selector variant index changed")
     };
@@ -2892,7 +3575,7 @@ fn state_layout_v1_matches_an_independent_decoder() {
     );
     let manifest = read_json(&dir.path().join("regression").join(MANIFEST_FILE));
     assert_eq!(manifest["schema"], "aisimulate_fpm_state_snapshot");
-    assert_eq!(manifest["schema_version"], 1);
+    assert_eq!(manifest["schema_version"], 2);
     assert_eq!(manifest["producer"]["state_encoding"], "bincode1_fixint");
     assert_eq!(
         manifest["producer"]["aisimulate_core_version"],

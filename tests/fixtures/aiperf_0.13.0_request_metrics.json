@@ -1,0 +1,116 @@
+{
+ "aiperf_revision": "v0.13.0 (794f8bb75f8582f22e412d7e650fc71ca2a3d21a)",
+ "generator": "benchmarks/evidence/aiperf-metrics/aiperf_expected.py",
+ "row_fields": ["first_token_ms", "last_token_ms", "output_length", "first_content_chunk_tokens", "terminal_status"],
+ "cases": [
+  {
+   "per_chunk_usage": false,
+   "rows": [
+    [10, 20, 2, 1, "completed"]
+   ],
+   "expected": {
+    "aiperf.time_to_first_token.count": 1.0,
+    "aiperf.time_to_first_token.avg": 10.0,
+    "aiperf.time_to_first_token.p50": 10.0,
+    "aiperf.time_to_first_token.p90": 10.0,
+    "aiperf.time_to_first_token.p95": 10.0,
+    "aiperf.time_to_first_token.p99": 10.0,
+    "aiperf.request_latency.count": 1.0,
+    "aiperf.request_latency.avg": 20.0,
+    "aiperf.request_latency.p50": 20.0,
+    "aiperf.request_latency.p90": 20.0,
+    "aiperf.request_latency.p95": 20.0,
+    "aiperf.request_latency.p99": 20.0,
+    "aiperf.inter_token_latency.count": 1.0,
+    "aiperf.inter_token_latency.avg": 10.0,
+    "aiperf.inter_token_latency.p50": 10.0,
+    "aiperf.inter_token_latency.p90": 10.0,
+    "aiperf.inter_token_latency.p95": 10.0,
+    "aiperf.inter_token_latency.p99": 10.0,
+    "aiperf.output_token_throughput_per_user.count": 1.0,
+    "aiperf.output_token_throughput_per_user.avg": 100.0,
+    "aiperf.output_token_throughput_per_user.p50": 100.0,
+    "aiperf.output_token_throughput_per_user.p90": 100.0,
+    "aiperf.output_token_throughput_per_user.p95": 100.0,
+    "aiperf.output_token_throughput_per_user.p99": 100.0
+   }
+  },
+  {
+   "per_chunk_usage": false,
+   "rows": [
+    [10, 20, 2, 1, "completed"],
+    [20, 110, 4, 1, "completed"]
+   ],
+   "expected": {
+    "aiperf.time_to_first_token.count": 2.0,
+    "aiperf.time_to_first_token.avg": 15.0,
+    "aiperf.time_to_first_token.p50": 15.0,
+    "aiperf.time_to_first_token.p90": 19.0,
+    "aiperf.time_to_first_token.p95": 19.5,
+    "aiperf.time_to_first_token.p99": 19.9,
+    "aiperf.request_latency.count": 2.0,
+    "aiperf.request_latency.avg": 65.0,
+    "aiperf.request_latency.p50": 65.0,
+    "aiperf.request_latency.p90": 101.0,
+    "aiperf.request_latency.p95": 105.5,
+    "aiperf.request_latency.p99": 109.1,
+    "aiperf.inter_token_latency.count": 2.0,
+    "aiperf.inter_token_latency.avg": 20.0,
+    "aiperf.inter_token_latency.p50": 20.0,
+    "aiperf.inter_token_latency.p90": 28.0,
+    "aiperf.inter_token_latency.p95": 29.0,
+    "aiperf.inter_token_latency.p99": 29.8,
+    "aiperf.output_token_throughput_per_user.count": 2.0,
+    "aiperf.output_token_throughput_per_user.avg": 66.66666666666666,
+    "aiperf.output_token_throughput_per_user.p50": 66.66666666666666,
+    "aiperf.output_token_throughput_per_user.p90": 93.33333333333334,
+    "aiperf.output_token_throughput_per_user.p95": 96.66666666666666,
+    "aiperf.output_token_throughput_per_user.p99": 99.33333333333333
+   }
+  },
+  {
+   "per_chunk_usage": false,
+   "rows": [
+    [10, 20, 2, 1, "completed"],
+    [20, 110, 4, 1, "completed"],
+    [10, 10, 1, 1, "completed"],
+    [5, 5, 2, 2, "completed"],
+    [10, 40, 5, 2, "completed"],
+    [10, 40, 5, null, "completed"],
+    [10, 40, 5, 5, "completed"],
+    [10, 40, 5, 0, "completed"],
+    [3, 63, 31, 3, "completed"],
+    [1, 2, 100, 1, "failed"],
+    [1, 2, 100, 1, "canceled"],
+    [1, 2, 100, 1, "rejected"],
+    [null, null, 0, null, "completed"]
+   ],
+   "expected": {
+    "aiperf.time_to_first_token.count": 9.0,
+    "aiperf.time_to_first_token.avg": 9.777777777777779,
+    "aiperf.time_to_first_token.p50": 10.0,
+    "aiperf.time_to_first_token.p90": 12.000000000000002,
+    "aiperf.time_to_first_token.p95": 15.999999999999996,
+    "aiperf.time_to_first_token.p99": 19.2,
+    "aiperf.request_latency.count": 9.0,
+    "aiperf.request_latency.avg": 40.888888888888886,
+    "aiperf.request_latency.p50": 40.0,
+    "aiperf.request_latency.p90": 72.4,
+    "aiperf.request_latency.p95": 91.19999999999999,
+    "aiperf.request_latency.p99": 106.24,
+    "aiperf.inter_token_latency.count": 8.0,
+    "aiperf.inter_token_latency.avg": 9.0,
+    "aiperf.inter_token_latency.p50": 7.5,
+    "aiperf.inter_token_latency.p90": 15.999999999999996,
+    "aiperf.inter_token_latency.p95": 22.99999999999999,
+    "aiperf.inter_token_latency.p99": 28.599999999999994,
+    "aiperf.output_token_throughput_per_user.count": 7.0,
+    "aiperf.output_token_throughput_per_user.avg": 166.66666666666666,
+    "aiperf.output_token_throughput_per_user.p50": 133.33333333333331,
+    "aiperf.output_token_throughput_per_user.p90": 280.0000000000001,
+    "aiperf.output_token_throughput_per_user.p95": 389.9999999999997,
+    "aiperf.output_token_throughput_per_user.p99": 477.99999999999983
+   }
+  }
+ ]
+}

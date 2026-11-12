@@ -20,6 +20,11 @@ DATA = ROOT / "python/aisimulate/src/aisimulate_core/systems/data"
 EVIDENCE = ROOT / "benchmarks/evidence/collector/pr244"
 SOURCE = "1f29ee459882796db312b8a288c040b83edbb211"
 SYSTEMS = ("b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm")
+# Tables PR #244 shipped that were later removed from the tree. The ledger keeps their reported
+# hashes (it records what was collected); the inventory check compares the remaining tables.
+RETIRED_TABLES = {
+    "dsv4_hca_attn_module_perf.parquet": "hca_attn FMLA sidecar removed with its SDK reader (#649)",
+}
 
 
 def sha256(data):
@@ -165,7 +170,8 @@ def build_manifest():
     systems = summarize_cases(ledger)
     for system, summary in systems.items():
         tables = {path.name: summarize_table(path) for path in sorted((DATA / system).glob("*/vllm/0.25.0/*.parquet"))}
-        reported = ledger["systems"][system]["reported_tables"]
+        reported_tables = ledger["systems"][system]["reported_tables"]
+        reported = {name: table for name, table in reported_tables.items() if name not in RETIRED_TABLES}
         require(set(tables) == set(reported), f"Table inventory drift: {system}")
         for name, table in tables.items():
             require(

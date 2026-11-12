@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{EngineConfig, TimingModelConfig, WorkerType, normalize_conditional_accept_rates};
-use crate::ForwardPassPerfModelConfig;
+use crate::{ForwardPassPerfModelConfig, UNKNOWN_SIZE};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -69,10 +69,11 @@ impl EngineLaunchConfig {
             result.num_gpu_blocks_is_explicit = value.pointer("/engine/num_gpu_blocks").is_some();
         }
         if let Some(config) = result.performance_config()? {
-            if value.get("tensor_parallel_size").is_none() {
+            // A size the identity records as unknown leaves the launch value.
+            if value.get("tensor_parallel_size").is_none() && config.tp != UNKNOWN_SIZE {
                 result.tensor_parallel_size = config.tp as usize;
             }
-            if value.get("dp_size").is_none() {
+            if value.get("dp_size").is_none() && config.attention_dp != UNKNOWN_SIZE {
                 result.dp_size = config.attention_dp;
             }
             if value.pointer("/engine/aic_nextn").is_none() && config.nextn > 0 {
@@ -120,16 +121,17 @@ impl EngineLaunchConfig {
         config: &ForwardPassPerfModelConfig,
     ) -> Result<Vec<String>> {
         let mut mismatches = Vec::new();
-        if config.pp != 1 {
+        // An unknown size cannot conflict with the launch.
+        if config.pp != 1 && config.pp != UNKNOWN_SIZE {
             mismatches.push(format!(
                 "engine launch supports only pp=1; got pp={}",
                 config.pp
             ));
         }
-        if config.tp as usize != self.tensor_parallel_size {
+        if config.tp != UNKNOWN_SIZE && config.tp as usize != self.tensor_parallel_size {
             mismatches.push("tensor_parallel_size conflicts with canonical tp".into());
         }
-        if config.attention_dp != self.dp_size {
+        if config.attention_dp != UNKNOWN_SIZE && config.attention_dp != self.dp_size {
             mismatches.push("dp_size conflicts with canonical attention_dp".into());
         }
         let identity = serde_json::to_value(config)?;
@@ -377,5 +379,28 @@ mod tests {
         launch["engine"] =
             json!({"timing_model": {"type": "external", "provider": "ais", "config": config}});
         EngineLaunchConfig::from_value(launch).unwrap();
+    }
+
+    #[test]
+    fn unknown_timing_sizes_neither_conflict_nor_derive_launch_controls() {
+        let mut config = timing();
+        (config.tp, config.pp, config.attention_dp) = (UNKNOWN_SIZE, UNKNOWN_SIZE, UNKNOWN_SIZE);
+        let args = json!({"tensor_parallel_size": 4, "dp_size": 2, "engine": {}});
+        assert!(
+            EngineLaunchConfig::timing_config_mismatches(args.clone(), &config)
+                .unwrap()
+                .is_empty()
+        );
+        let mut launch = args;
+        launch["engine"]["timing_model"] =
+            json!({"type": "external", "provider": "ais", "config": config});
+        let launched = EngineLaunchConfig::from_value(launch).unwrap();
+        assert_eq!((launched.tensor_parallel_size, launched.dp_size), (4, 2));
+        // Omitted controls keep the launch defaults instead of the sentinel.
+        let mut launch = json!({"engine": {}});
+        launch["engine"]["timing_model"] =
+            json!({"type": "external", "provider": "ais", "config": config});
+        let launched = EngineLaunchConfig::from_value(launch).unwrap();
+        assert_eq!((launched.tensor_parallel_size, launched.dp_size), (1, 1));
     }
 }

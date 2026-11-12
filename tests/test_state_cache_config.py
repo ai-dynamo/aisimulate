@@ -3,6 +3,7 @@
 
 """Manual G1 state-cache geometry reaches replay without AIC estimation."""
 
+import copy
 import json
 from dataclasses import replace
 
@@ -12,7 +13,7 @@ from pydantic import ValidationError
 from aisimulate import capacity, compiler, runner
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.engine import KvCachePredictionConfig, StateCacheConfig
+from aisimulate.config.engine import KvCachePredictionConfig, StateCacheConfig, WorkerPredictionConfig
 from aisimulate.runner import EngineReplayRunnerFactory, _materialize_engine_role
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
@@ -606,6 +607,21 @@ def test_auto_pd_state_resolves_each_role_and_transfer_bytes(auto_k3_payload, fo
         assert deployment.performance_model_metadata[role]["state_cache"]["source"] == "inferred"
 
 
+@pytest.mark.parametrize("role", ["aggregated", "prefill"])
+@pytest.mark.parametrize("window", [{"lookahead_tokens": 1}, {"retention_interval": 128, "lookahead_tokens": 1}])
+def test_resolved_state_config_keeps_its_sliding_window(window, role):
+    raw = _public() if role == "aggregated" else _public_pd()
+    # A typed worker is lifted to the host-aware role config.
+    workers = raw["engine"]["workers"]
+    workers[role]["kv_cache"]["state_cache"] = StateCacheConfig(bytes_per_request=1500, sliding_window=window)
+    workers[role] = WorkerPredictionConfig.model_validate(workers[role])
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    args = deployment.agg_engine_args if role == "aggregated" else deployment.prefill_engine_args
+    assert args["state_cache"] == {"bytes_per_request": 1500, "sliding_window": window}
+    with pytest.raises(ValidationError):
+        StateCacheConfig(bytes_per_request=10, sliding_window={"lookahead_tokens": 1 << 64})
+
+
 @pytest.fixture
 def auto_dsv4_payload():
     return _auto_payload(FLASH, {"blocks": 64})
@@ -623,7 +639,7 @@ def test_auto_dsv4_geometry_reaches_native_wire(
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(config.model_dump_json()))
     args = spec.backend_deployment.agg_engine_args
     assert (args["block_size"], args["kv_cache_bytes_per_token"], args["num_gpu_blocks"]) == (256, token_bytes, 64)
-    assert args["state_cache"] == {"bytes_per_request": state_bytes}
+    assert args["state_cache"] == {"bytes_per_request": state_bytes, "sliding_window": {"lookahead_tokens": 64}}
     info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
     indexer = state_cache.get("indexer_cache_dtype", "fp8")
     assert (info["source"], info["state_blocks"], info["indexer_cache_dtype"]) == ("inferred", 26, indexer)
@@ -643,7 +659,20 @@ def test_auto_state_sizes_the_worker_kv_dtype(auto_dsv4_payload, forbid_estimato
             prediction_to_replay_spec(config)
         return
     args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
-    assert args["state_cache"] == {"bytes_per_request": 26058240}
+    assert args["state_cache"] == {"bytes_per_request": 26058240, "sliding_window": {"lookahead_tokens": 64}}
+
+
+@pytest.mark.parametrize(
+    "changes,error",
+    [
+        ({"prefix_match_unit": 64}, "leave prefix_match_unit unset"),
+        ({"state_cache": {"retention_interval": 384}}, "multiple of the resolved block_size"),
+    ],
+)
+def test_auto_dsv4_validates_sliding_window_inputs(auto_dsv4_payload, forbid_estimators, changes, error):
+    auto_dsv4_payload["engine"]["workers"]["aggregated"]["kv_cache"].update(changes)
+    with pytest.raises(ValueError, match=error):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
 
 
 def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estimators):
@@ -651,8 +680,13 @@ def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estim
     auto_dsv4_payload["engine"].update(hardware="b200_sxm", nextn=1, nextn_accepted=1.0)
     worker = auto_dsv4_payload["engine"]["workers"]["aggregated"]
     worker.update(timing={"type": "default"}, parallelism={"tensor": 8, "moe_expert": 8})
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
-    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 30067200}
+    worker["kv_cache"]["state_cache"] = {"retention_interval": 32768}
+    config = CorePredictionConfig.model_validate(auto_dsv4_payload)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(config.model_dump_json()))
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {
+        "bytes_per_request": 30067200,
+        "sliding_window": {"lookahead_tokens": 64, "retention_interval": 32768},
+    }
 
 
 def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimators):
@@ -660,7 +694,7 @@ def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimat
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload)).backend_deployment
     for args in (deployment.prefill_engine_args, deployment.decode_engine_args):
         assert args["kv_transfer_bytes_per_token"] == 3915
-        assert args["state_cache"] == {"bytes_per_request": 26058240}
+        assert args["state_cache"] == {"bytes_per_request": 26058240, "sliding_window": {"lookahead_tokens": 64}}
 
 
 @pytest.mark.parametrize(
@@ -668,6 +702,8 @@ def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimat
     [
         ({"capacity": {"type": "fixed", "bytes": 4 * 21233664 - 1}}, "capacity must fit"),
         ({"prefix_match_unit": 512}, "divisor"),
+        ({"state_cache": {"retention_interval": 768}}, "requires inferred DeepSeek V4"),
+        ({"state_cache": {"sliding_window_lookahead_tokens": 64}}, "requires bytes_per_request"),
     ],
 )
 def test_auto_state_validates_capacity_and_prefix_after_resolution(auto_k3_payload, changes, error):
@@ -701,3 +737,73 @@ def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid
         assert metrics["total_output_tokens"] == 4
         assert metrics["committed_prefill_tokens"] == 48600 - 24192
         assert metrics["prefix_cache_reused_ratio"] == pytest.approx(24192 / 48600)
+
+
+def _runtime_memory_profile(kv_cache_bytes):
+    def deployment(system, kv_cache_bytes):
+        runtime = {"kv_cache_bytes": kv_cache_bytes, "gpu_memory_utilization": 0.92, "max_model_len": 2048}
+        resources = {"kv_bytes_per_token": 3585, "cache_layout": "linear", "max_num_tokens": 8192}
+        return {
+            "system": system, "backend": "vllm", "backend_version": "0.25.1", "tp": 8, "pp": 1, "dp": 1,
+            "moe_tp": 8, "moe_ep": 1, "cp": 1, "gemm_quant_mode": "fp8_block", "moe_quant_mode": "fp8_block",
+            "fmha_quant_mode": "fp8", "comm_quant_mode": "half", "kv_cache_dtype": "fp8", "worker_type": "aggregated",
+            "resources": {**resources, "max_batch_size": 256, "provenance": "test"}
+            | {"runtime_memory": {**runtime, "provenance": "test"}},
+        }  # fmt: skip
+
+    return {
+        "schema_version": 1, "model": FLASH, "model_revision": "1" * 40, "architecture": "DeepseekV4ForCausalLM",
+        "context_length": 2048, "num_experts": 256, "provenance": "test",
+        # The other system's pool must not be read for this worker.
+        "deployments": [deployment("h200_sxm", kv_cache_bytes), deployment("b200_sxm", 1 << 40)],
+    }  # fmt: skip
+
+
+def test_auto_dsv4_state_sizes_its_pool_from_profile_runtime_memory(auto_dsv4_payload, forbid_estimators):
+    payload = auto_dsv4_payload
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["kv_cache"]["state_cache"] = {"indexer_cache_dtype": "mxfp4"}
+    worker["kv_cache"]["capacity"] = {"memory_fraction": 0.92}
+    worker["timing"] = {"type": "default"}
+    worker["parallelism"]["moe_tensor"] = 8
+    profile = _runtime_memory_profile(256 * 3585 * 50 + 7)
+    # "max" resolves to the profile's context_length, which equals the recorded max_model_len.
+    payload["engine"].update(backend_version="0.25.1", fpm_profile=profile, context_length="max")
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    # The recorded bytes in whole blocks of the resolved geometry: a derived, not a user-fixed, capacity.
+    assert spec.backend_deployment.agg_engine_args["num_gpu_blocks"] == 50
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["num_gpu_blocks_is_explicit"] is False
+
+    # Each setting that describes a pool other than the recorded one is rejected when the config is validated.
+    def cache(engine):
+        return engine["workers"]["aggregated"]["kv_cache"]
+
+    def resources(engine):
+        return engine["fpm_profile"]["deployments"][0]["resources"]
+
+    def parallelism(engine):
+        return engine["workers"]["aggregated"]["parallelism"]
+
+    def grouped(engine):
+        group = {"name": "kv", "kind": "attention", "num_layers": 1, "block_size_tokens": 256, "page_size_bytes": 1}
+        resources(engine).update(cache_layout="grouped", cache_groups=[group], kv_bytes_per_token=None)
+        cache(engine).update(prefix_caching=False)
+
+    for match, change in (
+        ("memory_fraction must match", lambda e: cache(e).pop("capacity")),
+        (
+            "exceeds .* runtime_memory.max_model_len",
+            lambda e: resources(e)["runtime_memory"].update(max_model_len=2047),
+        ),
+        ("records runtime_memory", lambda e: resources(e).pop("runtime_memory")),
+        ("unset cuda_graph_reserved_bytes", lambda e: cache(e)["capacity"].update(cuda_graph_reserved_bytes=1)),
+        ("requires .*prefill_context=1", lambda e: parallelism(e).update(prefill_context=2)),
+        ("requires .*decode_context=1", lambda e: parallelism(e).update(decode_context=2)),
+        ("requires a linear FPM cache", grouped),
+    ):
+        invalid = copy.deepcopy(payload)
+        change(invalid["engine"])
+        with pytest.raises(ValueError, match=match):
+            CorePredictionConfig.model_validate(invalid)

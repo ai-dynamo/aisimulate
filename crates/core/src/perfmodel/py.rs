@@ -31,7 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::PyType;
@@ -49,6 +49,86 @@ use crate::{BackendKind, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION};
 #[pyfunction]
 fn _build_smoke() -> u32 {
     ENGINE_CONFIG_SCHEMA_VERSION
+}
+
+/// Shared hardware precision normalization used by compilation and memory.
+#[pyfunction]
+#[pyo3(signature = (system_spec_json, gemm=None, moe=None))]
+fn resolve_execution_quantization(
+    system_spec_json: &str,
+    gemm: Option<&str>,
+    moe: Option<&str>,
+) -> PyResult<(Option<String>, Option<String>)> {
+    let spec: crate::common::system_spec::SystemSpec = serde_json::from_str(system_spec_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid GPU system spec: {e}")))?;
+    let parse = |s: &str| serde_json::Value::String(s.to_owned());
+    let gemm = gemm
+        .map(|s| serde_json::from_value(parse(s)))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("invalid GEMM precision: {e}")))?;
+    let moe = moe
+        .map(|s| serde_json::from_value(parse(s)))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("invalid MoE precision: {e}")))?;
+    let (gemm, moe) =
+        crate::common::system_spec::execution_quantization(&spec, gemm, moe).map_err(aic_to_py)?;
+    Ok((
+        gemm.map(|q| q.name().to_owned()),
+        moe.map(|q| q.name().to_owned()),
+    ))
+}
+
+/// Shared AFD execution preflight, without constructing a model or loading data.
+#[pyfunction]
+fn validate_afd_routing_location(location: &str) -> PyResult<()> {
+    let location: crate::AfdRoutingLocation = serde_json::from_value(location.into())
+        .map_err(|error| PyValueError::new_err(format!("invalid routing_location: {error}")))?;
+    location.ensure_supported().map_err(aic_to_py)
+}
+
+#[pyfunction]
+fn validate_afd_attention_tp(a_tp_size: u32) -> PyResult<()> {
+    crate::perfmodel::afd::validate_afd_attention_tp(a_tp_size).map_err(aic_to_py)
+}
+
+#[pyfunction]
+#[pyo3(signature = (a_tp_size, n_a_nodes, n_f_nodes, gpus_per_node, f_moe_ep_size=None, num_experts=None, *, f_gpus_per_node=None))]
+fn resolve_afd_parallelism(
+    a_tp_size: u32,
+    n_a_nodes: u32,
+    n_f_nodes: u32,
+    gpus_per_node: u32,
+    f_moe_ep_size: Option<u32>,
+    num_experts: Option<u32>,
+    f_gpus_per_node: Option<u32>,
+) -> PyResult<String> {
+    let resolved = crate::perfmodel::afd::resolve_afd_parallelism(
+        a_tp_size,
+        n_a_nodes,
+        n_f_nodes,
+        gpus_per_node,
+        f_moe_ep_size,
+        num_experts,
+        f_gpus_per_node,
+    )
+    .map_err(aic_to_py)?;
+    serde_json::to_string(&resolved).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn validate_afd_model_shape(
+    num_layers: u32,
+    num_experts: u32,
+    topk: u32,
+    num_shared_experts: u32,
+    num_moe_layers: u32,
+) -> PyResult<()> {
+    crate::perfmodel::afd::AfdModelShape {
+        num_shared_experts,
+        num_moe_layers,
+    }
+    .validate(num_layers, num_experts, topk)
+    .map_err(aic_to_py)
 }
 
 /// Cached handles to the canonical SDK exception classes
@@ -121,6 +201,9 @@ pub(crate) fn aic_to_py(e: AicError) -> PyErr {
             }
             _ => pyo3::exceptions::PyOSError::new_err(message),
         };
+    }
+    if let AicError::NotImplemented(message) = e {
+        return PyNotImplementedError::new_err(message);
     }
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
@@ -1086,6 +1169,7 @@ fn glm53_cache_bytes(spec_json: &str, seq_len: u32) -> PyResult<f64> {
 /// config API.
 #[derive(Clone, Debug)]
 struct EngineBuildRequest {
+    afd_pool_role: Option<crate::AfdPoolRole>,
     model_path: String,
     system: String,
     backend: String,
@@ -1149,6 +1233,7 @@ impl AicEngineBuilder {
     ) -> Self {
         Self {
             request: EngineBuildRequest {
+                afd_pool_role: None,
                 model_path: model_path.into(),
                 system: system.into(),
                 backend: backend.as_str().to_owned(),
@@ -1552,6 +1637,15 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         let engine_mod = py.import("aisimulate_core.sdk.engine")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("backend_version", request.backend_version.as_deref())?;
+        if let Some(role) = request.afd_pool_role {
+            kwargs.set_item(
+                "afd_pool_role",
+                match role {
+                    crate::AfdPoolRole::A => "a",
+                    crate::AfdPoolRole::F => "f",
+                },
+            )?;
+        }
         kwargs.set_item("tp_size", request.tp_size)?;
         kwargs.set_item("pp_size", request.pp_size)?;
         kwargs.set_item("attention_dp_size", request.attention_dp_size)?;
@@ -1747,6 +1841,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         )
     })?;
     compile_engine_from_request(EngineBuildRequest {
+        afd_pool_role: config.afd_pool_role,
         model_path: config.model.clone(),
         system: config.system.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -1909,6 +2004,12 @@ fn engine_build_request(
         .and_then(|s| s.nextn)
         .unwrap_or(0);
     Ok(EngineBuildRequest {
+        afd_pool_role: config
+            .extra
+            .get("afd_pool_role")
+            .map(|role| serde_json::from_value(serde_json::Value::String(role.clone())))
+            .transpose()
+            .map_err(|e| AicError::InvalidEngineConfig(format!("invalid AFD pool role: {e}")))?,
         model_path: config.model_name.clone(),
         system: config.system_name.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -2042,6 +2143,26 @@ fn parse_forward_pass_config(config_json: &str) -> PyResult<crate::ForwardPassPe
     de.end()
         .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config: {e}")))?;
     Ok(config)
+}
+
+/// Do not silently accept booleans or truncate a nonintegral draft length.
+fn parse_speculative_draft_length(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<u32>> {
+    let Some(value) = value else { return Ok(None) };
+    if value.is_instance_of::<pyo3::types::PyBool>()
+        || !value.is_instance_of::<pyo3::types::PyInt>()
+    {
+        return Err(PyValueError::new_err(
+            "draft_length must be a positive integer",
+        ));
+    }
+    let depth = value
+        .extract::<u32>()
+        .ok()
+        .filter(|&depth| depth > 0 && depth < u32::MAX)
+        .ok_or_else(|| {
+            PyValueError::new_err("draft_length must be a positive integer smaller than 2**32 - 1")
+        })?;
+    Ok(Some(depth))
 }
 
 /// Parse an FPM payload JSON into one iteration's per-rank list. Accepts either
@@ -2219,6 +2340,8 @@ impl PyForwardPassPerfModel {
             }
         };
         let config = crate::ForwardPassPerfModelConfig {
+            afd_routing_location: None,
+            afd_pool_role: request.afd_pool_role,
             model: request.model_path,
             system: request.system,
             backend: legacy.backend,
@@ -2265,6 +2388,7 @@ impl PyForwardPassPerfModel {
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
             encoder_parallel: None,
+            deployment_limits: None,
         };
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -2343,8 +2467,64 @@ impl PyForwardPassPerfModel {
             .map_err(aic_to_py)
     }
 
+    fn append_mixed_learned_checkpoint(&mut self, py: Python<'_>, path: &str) -> PyResult<usize> {
+        py.allow_threads(|| self.inner.append_mixed_learned_checkpoint(path))
+            .map_err(aic_to_py)
+    }
+
     fn export_learned_artifact(&self) -> PyResult<String> {
         self.inner.export_learned_artifact().map_err(aic_to_py)
+    }
+
+    fn learned_expert_artifacts(&self) -> PyResult<String> {
+        let value = self.inner.learned_expert_artifacts().map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn mixed_composition_route(&self, fpm_json: &str) -> PyResult<Option<String>> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        self.inner
+            .mixed_composition_route(&metrics)
+            .map_err(aic_to_py)?
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn estimate_forward_pass_with_route(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        let value = py
+            .allow_threads(|| self.inner.estimate_forward_pass_with_route(&metrics))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn mixed_composition_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .mixed_composition_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn mixed_composition_state(&self) -> PyResult<Option<String>> {
+        self.inner
+            .mixed_composition_state()
+            .map_err(aic_to_py)?
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn restore_mixed_composition_state(&mut self, state_json: &str) -> PyResult<()> {
+        let state =
+            serde_json::from_str(state_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.inner
+            .restore_mixed_composition_state(state)
+            .map_err(aic_to_py)
     }
 
     fn save_online_checkpoint(&self, py: Python<'_>, path: &str) -> PyResult<()> {
@@ -2412,18 +2592,42 @@ impl PyForwardPassPerfModel {
     /// regression models without enough data yet and for learned models whose
     /// artifact has no store for the iteration's workload kind. Pure-Rust
     /// compute (GIL freed).
+    #[pyo3(signature = (fpm_json, *, draft_length=None))]
     fn estimate_forward_pass_time_ms(
         &self,
         py: Python<'_>,
         fpm_json: &str,
+        draft_length: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<f64>> {
         let metrics = parse_fpm_iteration(fpm_json)?;
-        py.allow_threads(|| self.inner.estimate_forward_pass_time_ms(&metrics))
-            .map_err(aic_to_py)
+        let draft_length = parse_speculative_draft_length(draft_length)?;
+        py.allow_threads(|| match draft_length {
+            Some(depth) => self
+                .inner
+                .estimate_speculative_forward_pass_time_ms(&metrics, depth),
+            None => self.inner.estimate_forward_pass_time_ms(&metrics),
+        })
+        .map_err(aic_to_py)
     }
 
-    fn estimate_forward_pass_detailed(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+    #[pyo3(signature = (fpm_json, *, draft_length=None))]
+    fn estimate_forward_pass_detailed(
+        &self,
+        py: Python<'_>,
+        fpm_json: &str,
+        draft_length: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<String> {
         let metrics = parse_fpm_iteration(fpm_json)?;
+        if let Some(depth) = parse_speculative_draft_length(draft_length)? {
+            let result = py
+                .allow_threads(|| {
+                    self.inner
+                        .estimate_speculative_forward_pass_detailed(&metrics, depth)
+                })
+                .map_err(aic_to_py)?;
+            return serde_json::to_string(&result)
+                .map_err(|error| PyValueError::new_err(error.to_string()));
+        }
         let result = py
             .allow_threads(|| self.inner.estimate_forward_pass_detailed(&metrics))
             .map_err(aic_to_py)?;
@@ -2508,6 +2712,15 @@ impl PyForwardPassPerfModel {
             .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
     }
 
+    /// Preparation-only normalization of marked targets in the native FPM profile.
+    fn fpm_seed_target_normalization(&self, py: Python<'_>) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| self.inner.fpm_seed_target_normalization())
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result)
+            .map_err(|error| PyValueError::new_err(format!("FPM seed targets serialize: {error}")))
+    }
+
     fn predict_prefill_latency_total(
         &self,
         py: Python<'_>,
@@ -2575,6 +2788,15 @@ impl PyForwardPassPerfModel {
 /// The removed `build_aic_engine` flat adapter is intentionally not exposed;
 /// embedded callers use `AicEngineBuilder`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "AFD_DEFAULT_ROUTING_LOCATION",
+        crate::AfdRoutingLocation::default().as_str(),
+    )?;
+    m.add_function(wrap_pyfunction!(validate_afd_routing_location, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_afd_attention_tp, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_afd_parallelism, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_execution_quantization, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_afd_model_shape, m)?)?;
     m.add_function(wrap_pyfunction!(_build_smoke, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_bincode_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_json_from_bincode, m)?)?;
@@ -3066,6 +3288,10 @@ mod tests {
                 assert_eq!(error.get_type(py).name().unwrap().to_string(), name);
                 assert!(error.value(py).to_string().contains("/snapshot"));
             }
+
+            let unsupported = aic_to_py(AicError::NotImplemented("AFD unsupported surface".into()));
+            assert!(unsupported.is_instance_of::<PyNotImplementedError>(py));
+            assert_eq!(unsupported.value(py).to_string(), "AFD unsupported surface");
 
             // The message survives the mapping.
             let msg_err = aic_to_py(AicError::PerfDatabase("missing table xyz".to_string()));

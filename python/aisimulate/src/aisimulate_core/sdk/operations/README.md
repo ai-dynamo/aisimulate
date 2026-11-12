@@ -66,7 +66,9 @@ loop — not a public per-call query API.)
    Python bindings so the Python shell inherits a Rust `Operation` subclass.
    It serializes itself through `_spec_json` / `ops_json_from_ops`; the old
    Python `_to_opspec` dispatcher has been removed. The existing whole-forward
-   FPM wrapper is adapted by `sdk/engine.py::_as_engine_op`. Add the corresponding
+   FPM wrapper is adapted by `sdk/engine.py::_as_engine_op` and requires the
+   original phase's `sol_ops` list, with every nested operation convertible
+   through that adapter. A Python `sol_fn` callback is not supported. Add the corresponding
    `Op` variant in `crates/core/src/perfmodel/operators/op.rs` — **append at the enum tail**
    to preserve existing bincode variant indices. Assess compatibility even
    for tail appends; a compatible append need not bump the version.

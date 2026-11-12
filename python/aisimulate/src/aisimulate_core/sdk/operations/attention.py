@@ -127,6 +127,7 @@ def _source_tiered_lane_walk_order(
     density: dict[str, tuple[int, int]],
     primary_density: dict[str, tuple[int, int]],
     lane_order: tuple[str, ...],
+    override_lanes: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Rank requested-version lanes before shared donor-version lanes.
 
@@ -137,11 +138,27 @@ def _source_tiered_lane_walk_order(
     ranking. Within a lane, Rust's existing first-source-wins fold still
     preserves requested-version rows when the same label also appears in a
     donor. A pinned lane remains first even when it exists only in a donor.
+
+    ``override_lanes`` are the stored labels of an explicit
+    ``attention_backend`` (an override maps to every label the backend has
+    collected under across versions). Only those synonyms are re-ranked: the
+    ones the requested version collected itself come before labels that only
+    a donor version carries, so the override never selects an older
+    measurement when the requested version has its own rows for that backend.
+    The rest of the pinned head (the framework-default lane) is a different
+    backend, so the override group stays ahead of it whatever the primary
+    coverage (PR #517 review, simone-chen).
     """
     shared_order = lane_walk_order(density, lane_order)
     if not primary_density:
         return shared_order
     pinned, _ = split_attention_lane_tiers(lane_order)
+    synonyms = tuple(lane for lane in pinned if lane in override_lanes)
+    pinned = (
+        tuple(lane for lane in synonyms if lane in primary_density)
+        + tuple(lane for lane in synonyms if lane not in primary_density)
+        + tuple(lane for lane in pinned if lane not in override_lanes)
+    )
     primary_order = tuple(
         lane for lane in lane_walk_order(primary_density, lane_order) if lane in primary_density and lane not in pinned
     )
@@ -207,6 +224,7 @@ def resolved_lane_order_for_op(
         from aisimulate_core.sdk.engine_table_view import fetch_attention_lane_density
 
         density = fetch_attention_lane_density(database, table_attr)
+        override_lanes: tuple[str, ...] = ()
         if override not in (None, "default"):
             override_lanes = resolve_attention_override_lanes(database.backend, override)
             if not any(lane in density for lane in override_lanes):
@@ -218,7 +236,7 @@ def resolved_lane_order_for_op(
                     f"available lanes: {sorted(density)!r}."
                 )
         primary_density = fetch_attention_lane_density(database, table_attr, shared_layer=False)
-        return list(_source_tiered_lane_walk_order(density, primary_density, order))
+        return list(_source_tiered_lane_walk_order(density, primary_density, order, override_lanes))
     except UnsupportedAttentionBackendError:
         raise
     except Exception:

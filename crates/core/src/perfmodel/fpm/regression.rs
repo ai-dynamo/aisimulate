@@ -4,17 +4,21 @@
 //! Worker-type-bound regression fallback for the forward-pass perf model.
 //!
 //! Regression defaults to critical attention work and global FFN/MoE work.
-//! Linear models can select independent fitting and retention coordinates.
+//! Linear models can select independent fitting and retention coordinates,
+//! or fit the learned model's `fpm5` cross-rank aggregates instead.
 //! Samples are retained using `log1p`-transformed bucket
 //! coordinates, while fitting and prediction use standardized raw features.
 
 use serde::{Deserialize, Serialize};
 
-use super::estimator::{RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig};
+use super::estimator::{
+    RegressionFeatureSet, RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig,
+};
 use super::options::ForwardPassPerfOptions;
 use super::samples::{BucketedSamples, SampleInsertion, StoreStats};
 use crate::{AicError, ForwardPassMetrics};
 
+mod aggregate;
 mod feature_axes;
 mod recursive;
 mod selected;
@@ -44,6 +48,8 @@ pub(crate) enum RegressionStore {
     Linear(BucketedRegression),
     Selected(Box<selected::SelectedRegression>),
     Spline(Box<spline::BucketedSpline>),
+    /// Appended: snapshot variant indices are positional.
+    Aggregate(Box<aggregate::AggregateRegression>),
 }
 
 impl RegressionStore {
@@ -53,6 +59,14 @@ impl RegressionStore {
         sampling: &RegressionSamplingConfig,
     ) -> Self {
         match fit.kind {
+            RegressionFitKind::StandardizedNnls
+                if fit.linear.as_ref().and_then(|linear| linear.feature_set)
+                    == Some(RegressionFeatureSet::Fpm5) =>
+            {
+                Self::Aggregate(Box::new(aggregate::AggregateRegression::new(
+                    options, fit, sampling,
+                )))
+            }
             RegressionFitKind::StandardizedNnls => {
                 let axes = [
                     super::estimator::RegressionFeatureAxis::Attention,
@@ -89,6 +103,7 @@ impl RegressionStore {
             Self::Selected(store) => store.add(raw_x, observed_ms, metrics),
             Self::Linear(store) => Ok(store.add_observation(raw_x, observed_ms)),
             Self::Spline(store) => Ok(store.add_observation(raw_x, observed_ms)),
+            Self::Aggregate(store) => store.add(raw_x, observed_ms, metrics),
         }
     }
     pub(crate) fn predict_metrics(
@@ -100,6 +115,7 @@ impl RegressionStore {
             Self::Selected(store) => store.predict(raw_x, metrics),
             Self::Linear(store) => Ok(store.predict(&raw_x)),
             Self::Spline(store) => Ok(store.predict(&raw_x)),
+            Self::Aggregate(store) => Ok(store.predict(metrics)),
         }
     }
 
@@ -109,6 +125,7 @@ impl RegressionStore {
             Self::Linear(store) => store.add_observation(raw_x, observed_ms),
             Self::Selected(store) => store.add(raw_x, observed_ms, &[]).unwrap_or(false),
             Self::Spline(store) => store.add_observation(raw_x, observed_ms),
+            Self::Aggregate(store) => store.add(raw_x, observed_ms, &[]).unwrap_or(false),
         }
     }
 
@@ -118,12 +135,13 @@ impl RegressionStore {
             Self::Linear(store) => store.predict(raw_x),
             Self::Selected(store) => store.predict(*raw_x, &[]).ok().flatten(),
             Self::Spline(store) => store.predict(raw_x),
+            Self::Aggregate(store) => store.predict(&[]),
         }
     }
 
     pub(crate) fn spline_diagnostics(&self) -> Option<ForwardPassSplineDiagnostics> {
         match self {
-            Self::Linear(_) | Self::Selected(_) => None,
+            Self::Linear(_) | Self::Selected(_) | Self::Aggregate(_) => None,
             Self::Spline(store) => Some(store.diagnostics()),
         }
     }
@@ -134,6 +152,8 @@ impl RegressionStore {
             Self::Linear(store) => store.mutations_since_rebuild(),
             Self::Selected(store) => store.mutations_since_rebuild(),
             Self::Spline(store) => store.mutations_since_rebuild(),
+            // Batch refits keep no incremental statistics to rebuild.
+            Self::Aggregate(_) => 0,
         }
     }
 }
@@ -144,6 +164,7 @@ impl StoreStats for RegressionStore {
             Self::Linear(store) => store.observation_count(),
             Self::Selected(store) => store.observation_count(),
             Self::Spline(store) => store.observation_count(),
+            Self::Aggregate(store) => store.observation_count(),
         }
     }
 
@@ -152,6 +173,7 @@ impl StoreStats for RegressionStore {
             Self::Linear(store) => store.is_ready(),
             Self::Selected(store) => store.is_ready(),
             Self::Spline(store) => store.is_ready(),
+            Self::Aggregate(store) => store.is_ready(),
         }
     }
 }
@@ -171,6 +193,7 @@ impl RegressionStore {
             }
             (Self::Selected(saved), Self::Selected(fresh)) => saved.restore_snapshot(fresh),
             (Self::Spline(saved), Self::Spline(fresh)) => saved.restore_snapshot(fresh),
+            (Self::Aggregate(saved), Self::Aggregate(fresh)) => saved.restore_snapshot(fresh),
             _ => Err("regression fit kind differs from configuration".into()),
         }
     }

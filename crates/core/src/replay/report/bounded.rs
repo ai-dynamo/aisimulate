@@ -144,9 +144,10 @@ pub(super) struct BoundedSummary {
     ttft: Samples,
     ttst: Samples,
     tpot: Samples,
+    user_tps: Samples,
     e2e: Samples,
     /// Per-stage TTFT sums of host-aware engines, as in the per-request path.
-    ttft_stage_sums: [f64; 6],
+    ttft_stage_sums: [f64; TTFT_STAGE_COUNT],
     ttft_stage_samples: usize,
     /// Arrival-to-embeddings-delivered sums of requests that crossed an encoder pool.
     encoder_sum_ms: f64,
@@ -211,6 +212,9 @@ impl BoundedSummary {
         }
         if let Some(value) = stats.mean_tpot_ms() {
             self.tpot.push(value)?;
+            if value > 0.0 {
+                self.user_tps.push(1000.0 / value)?;
+            }
         }
         if sla.is_set() && sla.is_good(ttft, e2e, output) {
             self.good_requests += 1;
@@ -264,6 +268,8 @@ impl BoundedSummary {
         report.latency.ttft = self.ttft.finish()?;
         report.latency.ttst = self.ttst.finish()?;
         report.latency.tpot = self.tpot.finish()?;
+        report.latency.itl = TraceInterTokenLatencyStats::per_request(&report.latency.tpot);
+        report.latency.output_token_throughput_per_user = self.user_tps.finish()?;
         report.latency.e2e = self.e2e.finish()?;
         report.latency.ttft_milestones =
             TraceTtftStageStats::from_sums(&self.ttft_stage_sums, self.ttft_stage_samples);

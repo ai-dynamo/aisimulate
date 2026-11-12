@@ -38,8 +38,10 @@ The built-in engine supports offline vLLM and SGLang with aggregated or separate
 prefill/decode workers and HBM-only KV cache, including speculative decoding
 with explicit acceptance assumptions and a compatible timing model.
 vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
-single aggregated worker or 1P1D, with attention DP=1 on every role and
-speculative decoding disabled.
+single aggregated worker or 1P1D, or local G2 on several static aggregated workers,
+with attention DP=1 on every role and speculative decoding disabled. The supported
+exception is canonical MTP on a single aggregated worker with local G2 and prefix
+caching; see the [combined scope](../engine/speculation.md#registered-schemes).
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
 other backends, and Dynamo-owned routing need their own qualified integration.
 
@@ -85,6 +87,14 @@ The supported offline runtimes acknowledge cancellation synchronously, so their
 client drain ends immediately and `cancel_drain_timed_out` is false even when
 the report records unsettled server work. The configured drain deadline is an
 upper bound, not a minimum run duration.
+
+Telemetry reports `server_unsettled` when client completion leaves committed
+server work. This label alone does not establish a replay failure: inspect
+`client_in_flight_requests`, `cancel_drain_timed_out`, request terminals and
+lifecycle cleanup alongside the profile deadlines. Benchmark qualification can
+accept fully accounted grace-boundary cancellations while retaining this status
+and excluding canceled requests from accuracy scoring. Finite cohorts still
+require complete replay; do not extend the measured window to hide cleanup.
 
 ## Results and limits
 
@@ -134,13 +144,18 @@ Then run:
 ```bash
 python/aisimulate/.venv/bin/aisimulate predict \
   --config examples/cli/agentic-profile.yaml \
-  --capture-per-request --format json --output-dir /tmp/agentic-profile
+  --capture-per-request --capture-telemetry --format json --output-dir /tmp/agentic-profile
 ```
 
 The example uses the repository's self-authored two-play trace and fixed timing
 to exercise control flow without downloading a model or dataset. To change the
 duration on the existing CLI, use
 `--set traffic.load.agentic_profile.duration_seconds=3600`.
+
+`--capture-telemetry` additionally preserves preparation requests and lifecycle
+events and samples scheduler/cache/traffic state across the full run. It writes
+three native telemetry JSONL files; `requests.jsonl` and summary metrics remain
+profiling-only. See the [output contract](../../getting-started/understand-results.md#replay-telemetry).
 
 ## Behavioral reference
 
@@ -171,6 +186,10 @@ Known release differences:
   measured from its parent request's recorded end, while the fork measures it
   from the earliest subagent spawned with it. An inner subagent chain without a
   detected fork is anchored to the play root instead of the subagent's spawn.
+  Streams of a play also share their whole common hash prefix, while the fork
+  renders each stream as its own chat conversation. Set
+  `traffic.source.client: agentx` to lower the corpus as the fork does; see
+  [Weka client](../workloads.md#weka-client).
 - The fork's per-tree guard shifts again only when its earliest timer lands on
   a request held by a replay barrier. When it lands on a joining turn whose
   children still wait on later timers, the fork leaves that tree idle until its

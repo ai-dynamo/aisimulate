@@ -4,8 +4,10 @@
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use crate::engine::offload_transfer::{Direction, FairTransfers, Job, Link};
 use crate::engine::{Backend, Command, CommandResult, KvHintSource, LifecycleEvent};
 use anyhow::{Context, Result, anyhow, bail};
+use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use super::components::EncoderPool;
@@ -19,9 +21,9 @@ pub(super) use super::components::ReplayMode;
 #[cfg(test)]
 use super::components::TrafficStats;
 use super::components::{
-    AdmissionEvent, AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode,
-    ReplayAdmissionMetadata, ReplayEngineObservation, TokenizationLatency, TokenizationStage,
-    TrafficAccumulators,
+    AdmissionEvent, AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects,
+    EnginePassMode, PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation,
+    TokenizationLatency, TokenizationStage, TrafficAccumulators,
 };
 #[cfg(test)]
 use super::core::NoEngineEvents;
@@ -49,8 +51,9 @@ use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot
 use super::state::DisaggRequestSnapshot;
 use super::state::{DisaggPhase, DisaggRequestState};
 use super::telemetry::{
-    ReplaySchedulerIntervalMetrics, ReplayTelemetryObserver, ReplayTelemetryRuntime,
-    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+    ReplaySchedulerIntervalMetrics, ReplayTelemetryCaptureSink, ReplayTelemetryHostCache,
+    ReplayTelemetryObserver, ReplayTelemetryRuntime, ReplayTelemetrySampleKind,
+    ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };
 use crate::replay::handoff::{
     HandoffAction, HandoffActionOutcome, HandoffCompletion, HandoffFact, HandoffId, HandoffOrder,
@@ -289,6 +292,8 @@ struct DisaggFlowState {
     action_queues: DisaggActionQueues,
     logical_in_flight: usize,
     stale_transfer_events: usize,
+    /// Shared links for bandwidth-priced transfers; `None` keeps fixed delays.
+    links: Option<TransferLinks>,
     conformance_capture: Option<HandoffConformanceCapture>,
 }
 
@@ -303,10 +308,135 @@ struct ScheduledTransfer {
     handoff_id: HandoffId,
 }
 
+enum TransferStart {
+    Completed,
+    Scheduled(ScheduledTransfer),
+    Linked,
+}
+
+/// Bandwidth-priced P/D transfers in flight.
+///
+/// Each prefill rank sends and each decode rank receives over one link at its
+/// role's `kv_transfer_bandwidth`, and concurrent transfers share those links
+/// max-min fairly. Work is measured in milliseconds at the source bandwidth:
+/// a sending link moves 1 unit per ms and a receiving link its bandwidth
+/// relative to the source. A transfer alone on its links therefore finishes
+/// exactly at its standalone delay unless the destination link is slower.
+struct TransferLinks {
+    /// Receiving link rate relative to the sending link.
+    destination_rate: f64,
+    transfers: FairTransfers,
+    handoffs: FxHashMap<u64, HandoffId>,
+    jobs: FxHashMap<HandoffId, u64>,
+    next_job: u64,
+    completed: Vec<HandoffId>,
+}
+
+impl TransferLinks {
+    /// Links exist only when the prefill role prices transfers by bandwidth;
+    /// a decode role without bandwidth leaves receivers unlimited.
+    fn new(source_gbps: Option<f64>, destination_gbps: Option<f64>) -> Option<Self> {
+        let source_gbps = source_gbps.filter(|gbps| *gbps > 0.0)?;
+        Some(Self {
+            destination_rate: destination_gbps
+                .filter(|gbps| *gbps > 0.0)
+                .map_or(f64::INFINITY, |gbps| gbps / source_gbps),
+            transfers: FairTransfers::default(),
+            handoffs: FxHashMap::default(),
+            jobs: FxHashMap::default(),
+            next_job: 0,
+            completed: Vec::new(),
+        })
+    }
+
+    fn next_event_ms(&self) -> Option<f64> {
+        self.transfers.next_event()
+    }
+
+    fn submit(
+        &mut self,
+        handoff_id: HandoffId,
+        delay_ms: f64,
+        source: usize,
+        destination: usize,
+        now_ms: f64,
+    ) {
+        self.advance(now_ms);
+        let id = self.next_job;
+        self.next_job += 1;
+        self.transfers.submit(Job {
+            id,
+            direction: Direction::Write,
+            ready: now_ms,
+            bytes: delay_ms,
+            links: [
+                Link {
+                    id: source as u64,
+                    rate: 1.0,
+                },
+                Link {
+                    id: destination as u64,
+                    rate: self.destination_rate,
+                },
+            ],
+        });
+        self.handoffs.insert(id, handoff_id);
+        self.jobs.insert(handoff_id, id);
+    }
+
+    /// Release the share of a retiring handoff's transfer, if still in flight.
+    fn cancel(&mut self, handoff_id: HandoffId, now_ms: f64) {
+        if self.jobs.contains_key(&handoff_id) {
+            // The transfer may finish at `now_ms`; settle it before removal.
+            self.advance(now_ms);
+        }
+        self.completed.retain(|completed| *completed != handoff_id);
+        let Some(id) = self.jobs.remove(&handoff_id) else {
+            return;
+        };
+        self.handoffs.remove(&id);
+        self.transfers.cancel(id);
+    }
+
+    /// Report transfers finished by `now_ms`. Service between events is
+    /// linear, so the clock only moves once an event is due.
+    fn complete_due(&mut self, now_ms: f64) {
+        if self
+            .next_event_ms()
+            .is_some_and(|event_ms| event_ms <= now_ms)
+        {
+            self.advance(now_ms);
+        }
+    }
+
+    /// Move service to `now_ms`, as required before the transfer set changes.
+    fn advance(&mut self, now_ms: f64) {
+        // Changes at the links' own instant need no service. A step that
+        // stopped short of an event can leave a residual below one clock ULP,
+        // so a known event due at this instant still needs a step.
+        let due = self.transfers.known_event_due(now_ms);
+        if now_ms < self.transfers.now() || (now_ms == self.transfers.now() && !due) {
+            return;
+        }
+        let first = self.completed.len();
+        for (id, _) in self.transfers.advance(now_ms) {
+            let handoff_id = self
+                .handoffs
+                .remove(&id)
+                .expect("linked transfer must have a handoff");
+            self.jobs.remove(&handoff_id);
+            self.completed.push(handoff_id);
+        }
+        // Same-time completions follow handoff order, as heap events do.
+        self.completed[first..].sort_unstable();
+    }
+}
+
 impl DisaggFlowState {
     fn new(
         handoff_order: HandoffOrder,
         handoff_latency_ms: f64,
+        links: Option<TransferLinks>,
         capture_conformance: bool,
     ) -> Self {
         Self {
@@ -318,6 +448,7 @@ impl DisaggFlowState {
             action_queues: DisaggActionQueues::default(),
             logical_in_flight: 0,
             stale_transfer_events: 0,
+            links,
             conformance_capture: capture_conformance.then(HandoffConformanceCapture::default),
         }
     }
@@ -720,7 +851,7 @@ impl DisaggFlowState {
         delay_ms: f64,
         now_ms: f64,
         collector: &mut TraceCollector,
-    ) -> Result<Option<ScheduledTransfer>> {
+    ) -> Result<TransferStart> {
         self.acknowledge_action(
             uuid,
             action,
@@ -729,12 +860,21 @@ impl DisaggFlowState {
             collector,
         )?;
         self.state_mut(uuid)?.transfer_pending();
-        let handoff_id = self.state(uuid)?.handoff_id;
+        let state = self.state(uuid)?;
+        let handoff_id = state.handoff_id;
+        let ranks = (state.prefill_worker_idx(), state.decode_worker_idx());
         if delay_ms > 0.0 {
-            return Ok(Some(ScheduledTransfer {
-                at_ms: now_ms + delay_ms,
-                handoff_id,
-            }));
+            let Some(links) = &mut self.links else {
+                return Ok(TransferStart::Scheduled(ScheduledTransfer {
+                    at_ms: now_ms + delay_ms,
+                    handoff_id,
+                }));
+            };
+            let (Some(source), Some(destination)) = ranks else {
+                bail!("offline disagg transfer for {uuid} has no prefill or decode rank");
+            };
+            links.submit(handoff_id, delay_ms, source, destination, now_ms);
+            return Ok(TransferStart::Linked);
         }
         self.apply_handoff_fact(
             uuid,
@@ -742,7 +882,7 @@ impl DisaggFlowState {
             now_ms,
             collector,
         )?;
-        Ok(None)
+        Ok(TransferStart::Completed)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -813,12 +953,12 @@ impl DisaggFlowState {
     fn complete_successful_handoff(
         &mut self,
         uuid: Uuid,
-        _now_ms: f64,
+        now_ms: f64,
         _stats: &mut DisaggRuntimeStats,
     ) -> Result<bool> {
         #[cfg(test)]
         {
-            _stats.handoff_ms.insert(uuid, _now_ms);
+            _stats.handoff_ms.insert(uuid, now_ms);
             _stats
                 .transition_log
                 .push(DisaggTransition::HandoffCompleted { uuid });
@@ -826,9 +966,10 @@ impl DisaggFlowState {
         if let Some(capture) = self.conformance_capture.as_mut() {
             capture.lifecycle.push(NormalizedHandoffEvent::Completed);
         }
-        self.retire_completed_request(uuid)
+        self.retire_completed_request(uuid, now_ms)
     }
 
+    /// `record_terminal: false` leaves the collector's terminal to detokenization.
     #[inline(never)]
     fn record_decode_terminal(
         &mut self,
@@ -836,6 +977,7 @@ impl DisaggFlowState {
         now_ms: f64,
         collector: &mut TraceCollector,
         traffic: &mut TrafficAccumulators,
+        record_terminal: bool,
     ) -> Result<()> {
         if !signal.rejected {
             let (input_tokens, requested_output_tokens) = {
@@ -859,7 +1001,9 @@ impl DisaggFlowState {
         } else {
             ReplayTerminalStatus::Completed
         };
-        collector.on_terminal(signal.uuid, now_ms, terminal_status);
+        if record_terminal {
+            collector.on_terminal(signal.uuid, now_ms, terminal_status);
+        }
         self.requests
             .get_mut(&signal.uuid)
             .ok_or_else(|| {
@@ -888,7 +1032,9 @@ impl DisaggFlowState {
             .logical_in_flight
             .checked_sub(1)
             .expect("logical in-flight request count underflow");
-        if transfer_was_pending {
+        // With links, every priced transfer is linked and keeps moving until
+        // its handoff retires; only heap completion events can go stale.
+        if transfer_was_pending && self.links.is_none() {
             self.stale_transfer_events = self
                 .stale_transfer_events
                 .checked_add(1)
@@ -901,7 +1047,7 @@ impl DisaggFlowState {
     }
 
     #[inline(never)]
-    fn retire_completed_request(&mut self, uuid: Uuid) -> Result<bool> {
+    fn retire_completed_request(&mut self, uuid: Uuid, now_ms: f64) -> Result<bool> {
         let ready = {
             let state = self.state(uuid)?;
             !state.counted_in_flight && state.coordinator.is_complete()
@@ -915,6 +1061,9 @@ impl DisaggFlowState {
 
         let handoff_id = self.state(uuid)?.handoff_id;
         self.state_mut(uuid)?.mark_done();
+        if let Some(links) = &mut self.links {
+            links.cancel(handoff_id, now_ms);
+        }
         let removed = self.requests_by_handoff.remove(&handoff_id);
         if removed != Some(uuid) {
             bail!("offline disagg replay handoff index is inconsistent for {uuid}");
@@ -963,10 +1112,17 @@ where
     max_sim_time_ms: Option<f64>,
     /// Optional per-worker tokenization between prefill placement and the prefill engine.
     tokenization: Option<TokenizationStage<TokenizingPrefill>>,
+    /// Optional detokenization after the decode engine.
+    detokenization: Option<DetokenizationStage>,
+    /// Requests whose decode terminal the client has not received yet, and
+    /// whether they became quiescent meanwhile. The workload sees their
+    /// quiescence only after their causal terminal.
+    awaiting_receipt: HashMap<Uuid, bool>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
     telemetry: Option<ReplayTelemetryRuntime>,
+    telemetry_capture: Option<ReplayTelemetryCaptureSink>,
     /// Whether to retain the latest FPM snapshot per worker/rank in the buffers
     /// above. Only the planner consumes them, so the plain `run()` path leaves this
     /// `false`.
@@ -1056,6 +1212,8 @@ where
             CoreAdmissionSource::total_requests(&admission),
             "offline disagg replay",
         );
+        let prefill_bandwidth = prefill_factory.kv_transfer_bandwidth();
+        let decode_bandwidth = decode_factory.kv_transfer_bandwidth();
         let prefill_dp_size = prefill_factory.dp_size();
         let decode_dp_size = decode_factory.dp_size();
         let prefill_gpus = prefill_factory.gpus_per_worker()?;
@@ -1098,6 +1256,7 @@ where
             flow: DisaggFlowState::new(
                 handoff_order,
                 config.handoff_latency_ms(),
+                TransferLinks::new(prefill_bandwidth, decode_bandwidth),
                 capture_conformance,
             ),
             collector,
@@ -1113,8 +1272,11 @@ where
             traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
             tokenization: None,
+            detokenization: None,
+            awaiting_receipt: HashMap::new(),
             scaling_policy: None,
             telemetry: None,
+            telemetry_capture: None,
             collect_fpm: false,
             drive_started: false,
             drive_finalized: false,
@@ -1181,6 +1343,15 @@ where
         self
     }
 
+    /// Detokenize decode outputs for the client and hold finished requests until the client receives them.
+    pub(crate) fn with_detokenization(
+        mut self,
+        detokenization: Option<DetokenizationStage>,
+    ) -> Self {
+        self.detokenization = detokenization;
+        self
+    }
+
     /// Attach a scaling policy and enable tick-scoped FPM collection.
     pub(crate) fn with_scaling_policy(mut self, policy: Box<dyn ReplayScalingPolicy>) -> Self {
         self.collect_fpm = true;
@@ -1196,6 +1367,18 @@ where
         }
         self.scaling_policy = Some(policy);
         self
+    }
+
+    pub(crate) fn with_telemetry_capture(
+        self,
+        interval_ms: f64,
+        sink: ReplayTelemetryCaptureSink,
+    ) -> Self {
+        sink.set_preparing(self.admission.is_agentic_preparing());
+        let mut runtime = self.with_telemetry_observer(interval_ms, Box::new(sink.clone()));
+        runtime.telemetry_capture = Some(sink);
+        runtime.collector.set_capture_per_request(true);
+        runtime
     }
 
     pub(crate) fn with_telemetry_observer(
@@ -1219,7 +1402,12 @@ where
 
     /// Count all requests consuming cluster capacity across prefill, decode, and router queues.
     fn cluster_in_flight(&self) -> usize {
-        self.flow.logical_in_flight + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
+        self.flow.logical_in_flight
+            + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
+            + self
+                .detokenization
+                .as_ref()
+                .map_or(0, DetokenizationStage::len)
     }
 
     fn record_prefill_fpm(
@@ -1300,6 +1488,9 @@ where
         self.notify_causal_terminal(uuid)
     }
 
+    /// Notify the workload of `uuid`'s terminal now. A terminal without output,
+    /// such as a rejection, skips detokenization: the client learns of it
+    /// when it happens.
     fn notify_causal_terminal(&mut self, uuid: Uuid) -> Result<()> {
         let status = self.state_mut(uuid)?.take_unnotified_terminal_status();
         let Some(status) = status else {
@@ -1309,8 +1500,28 @@ where
             .defer_causal_terminal(uuid, self.now_ms, status)
     }
 
+    /// Notify the workload of the terminal of `uuid`, whose response ended in a
+    /// decode pass and reaches the client at `received_ms`. With detokenization
+    /// the client records and acts on it then.
+    fn notify_received_terminal(&mut self, uuid: Uuid, received_ms: f64) -> Result<()> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return self.notify_causal_terminal(uuid);
+        };
+        let status = self.flow.state_mut(uuid)?.take_unnotified_terminal_status();
+        let Some(status) = status else {
+            return Ok(());
+        };
+        detokenization.defer_terminal(received_ms, uuid, status);
+        self.awaiting_receipt.insert(uuid, false);
+        Ok(())
+    }
+
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
-        self.admission.defer_quiescent(uuid, self.now_ms)?;
+        match self.awaiting_receipt.get_mut(&uuid) {
+            // Released right after the client receives the request.
+            Some(quiescent) => *quiescent = true,
+            None => self.admission.defer_quiescent(uuid, self.now_ms)?,
+        }
         if !self.collector.is_batch_reporting() {
             return Ok(());
         }
@@ -1723,20 +1934,23 @@ where
                 self.route_destination(uuid, issued)?;
             }
             HandoffAction::StartTransfer { delay_ms, .. } => {
-                if let Some(transfer) = self.flow.start_transfer(
+                let start = self.flow.start_transfer(
                     uuid,
                     issued,
                     delay_ms,
                     self.now_ms,
                     &mut self.collector,
-                )? {
+                )?;
+                if let TransferStart::Scheduled(transfer) = &start {
                     push_transfer_complete(
                         &mut self.events,
                         &mut self.next_event_seq,
                         transfer.at_ms,
                         transfer.handoff_id,
                     );
-                    #[cfg(test)]
+                }
+                #[cfg(test)]
+                if !matches!(start, TransferStart::Completed) {
                     self.stats
                         .transition_log
                         .push(DisaggTransition::TransferQueued { uuid });
@@ -1975,7 +2189,7 @@ where
                     // argument above would have. A request retired twice still
                     // fails loudly on the handoff index.
                     self.flow.action_queues.remove(uuid);
-                    if self.flow.retire_completed_request(uuid)? {
+                    if self.flow.retire_completed_request(uuid, self.now_ms)? {
                         self.notify_quiescent(uuid)?;
                     }
                 }
@@ -2001,7 +2215,7 @@ where
                     .push(DisaggTransition::WorkloadCompleted { uuid });
             }
         }
-        if self.flow.retire_completed_request(uuid)? {
+        if self.flow.retire_completed_request(uuid, self.now_ms)? {
             self.notify_quiescent(uuid)?;
         }
         Ok(())
@@ -2095,19 +2309,32 @@ where
                 });
         let next_arrival_ms = choose_next_timestamp(
             choose_next_timestamp(
-                CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-                profile_deadline,
+                choose_next_timestamp(
+                    CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+                    profile_deadline,
+                ),
+                self.tokenization
+                    .as_ref()
+                    .and_then(TokenizationStage::next_release_ms),
             ),
-            self.tokenization
+            self.detokenization
                 .as_ref()
-                .and_then(TokenizationStage::next_release_ms),
+                .and_then(DetokenizationStage::next_release_ms),
         );
+        let next_transfer_ms = self
+            .flow
+            .links
+            .as_ref()
+            .and_then(TransferLinks::next_event_ms);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
             next_non_telemetry_event_ms(&mut self.events)
         } else {
             next_event_ms
         };
+        let next_event_ms = choose_next_timestamp(next_event_ms, next_transfer_ms);
+        let next_canonical_event_ms =
+            choose_next_timestamp(next_canonical_event_ms, next_transfer_ms);
         // Host transfers and frontend deliveries are engine-internal deadlines
         // for either role; the encoder pool delivers embeddings on its own clock.
         let next_internal_deadline_ms = choose_next_timestamp(
@@ -2233,7 +2460,8 @@ where
     }
 
     /// Process one decode output signal, including decode router frees and request completion.
-    fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
+    /// The client receives the signal's output at `received_ms`.
+    fn process_decode_signal(&mut self, signal: OutputSignal, received_ms: f64) -> Result<()> {
         if !self.admission.is_agentic_preparing()
             && self.admission.knows_preparation_request(signal.uuid)
         {
@@ -2245,7 +2473,15 @@ where
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
             // semantics without giving the engine ownership of report state.
-            self.collector.on_token(signal.uuid, self.now_ms);
+            if self.detokenization.is_some() {
+                self.collector
+                    .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
+            } else {
+                self.collector.on_token(signal.uuid, received_ms);
+            }
+            if let Some(telemetry) = &mut self.telemetry {
+                telemetry.on_output_token(self.now_ms, received_ms);
+            }
         }
         if !signal.completed {
             return Ok(());
@@ -2263,13 +2499,20 @@ where
                 .push(DisaggTransition::DecodeFree { uuid: signal.uuid });
         }
         self.record_router_pending();
+        // A rejection carries no output and skips detokenization.
+        let via_detokenization = self.detokenization.is_some() && !signal.rejected;
         self.flow.record_decode_terminal(
             &signal,
             self.now_ms,
             &mut self.collector,
             &mut self.traffic,
+            !via_detokenization,
         )?;
-        self.notify_causal_terminal(signal.uuid)?;
+        if via_detokenization {
+            self.notify_received_terminal(signal.uuid, received_ms)?;
+        } else {
+            self.notify_causal_terminal(signal.uuid)?;
+        }
         self.finish_logical_request(signal.uuid, false)?;
         self.dispatch_decode_placements(placements)?;
         Ok(())
@@ -2292,9 +2535,10 @@ where
         Ok(())
     }
 
-    /// Apply the side effects of a finished decode pass.
+    /// Apply the side effects of a finished decode pass on rank `rank_id`.
     fn process_decode_pass(
         &mut self,
+        rank_id: usize,
         output_signals: Vec<OutputSignal>,
         lifecycle_events: Vec<LifecycleEvent>,
         engine_events: Observation::Batch,
@@ -2307,11 +2551,59 @@ where
         self.apply_decode_observations(engine_events, KvIngestBoundary::PassEnd)?;
         self.traffic
             .on_accept_length_sample(accept_length_output_tokens, accept_length_decode_forwards);
+        let receipt = self.receive_decode_pass(rank_id, &output_signals)?;
         for signal in output_signals {
-            self.process_decode_signal(signal)?;
+            let received_ms = receipt.received_ms(signal.uuid);
+            self.process_decode_signal(signal, received_ms)?;
         }
         self.process_lifecycle_events(lifecycle_events)?;
         Ok(())
+    }
+
+    /// When the client receives the outputs of the pass that decode rank
+    /// `rank_id` finished now: at the pass end without detokenization.
+    /// Rejections carry no output and take no server time.
+    fn receive_decode_pass(
+        &mut self,
+        rank_id: usize,
+        signals: &[OutputSignal],
+    ) -> Result<PassReceipt> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return Ok(PassReceipt::Together(self.now_ms));
+        };
+        // The detokenizer servers belong to the decode worker, shared by its attention-DP ranks.
+        let worker_id = self
+            .decode_engine
+            .rank_identity(rank_id)
+            .map(|(worker_id, _)| worker_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("offline decode output references unknown scheduler {rank_id}")
+            })?;
+        // A request's consecutive signals in one pass are one output.
+        let outputs = signals
+            .chunk_by(|left, right| left.uuid == right.uuid)
+            .filter(|output| !output.iter().any(|signal| signal.rejected))
+            .map(|output| output[0].uuid);
+        detokenization.receive_pass(worker_id, self.now_ms, outputs)
+    }
+
+    /// Record every response the client has received by now and hand its
+    /// request back to the workload.
+    fn release_received_terminals(&mut self) -> Result<bool> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return Ok(false);
+        };
+        let released = detokenization.release_due(self.now_ms);
+        let changed = !released.is_empty();
+        for (at_ms, uuid, status) in released {
+            self.collector.on_terminal(uuid, at_ms, status);
+            self.admission
+                .defer_causal_terminal(uuid, self.now_ms, status)?;
+            if self.awaiting_receipt.remove(&uuid) == Some(true) {
+                self.admission.defer_quiescent(uuid, self.now_ms)?;
+            }
+        }
+        Ok(changed)
     }
 
     /// Drain all worker-completion events scheduled for the current logical timestamp.
@@ -2344,6 +2636,9 @@ where
         if let Some(fpm) = &payload.fpm {
             self.collector
                 .on_completed_prefill_work(fpm.sum_prefill_tokens);
+            if let Some(telemetry) = &mut self.telemetry {
+                telemetry.on_prefill_work(fpm.sum_prefill_tokens);
+            }
         }
         match payload.stage {
             SimulationWorkerStage::Prefill => {
@@ -2369,6 +2664,7 @@ where
                     self.record_decode_fpm(payload.worker_idx, fpm)?;
                 }
                 self.process_decode_pass(
+                    payload.worker_idx,
                     payload.output_signals,
                     payload.lifecycle_events,
                     payload.engine_events,
@@ -2385,6 +2681,16 @@ where
     /// Drain transfer completions scheduled for the current logical timestamp.
     fn apply_transfer_completions(&mut self) -> Result<bool> {
         let mut changed = false;
+        if let Some(links) = &mut self.flow.links {
+            links.complete_due(self.now_ms);
+            for handoff_id in std::mem::take(&mut links.completed) {
+                let Some(uuid) = self.flow.requests_by_handoff.get(&handoff_id).copied() else {
+                    continue;
+                };
+                self.apply_handoff_fact(uuid, HandoffFact::TransferCompleted { handoff_id })?;
+                changed = true;
+            }
+        }
         while let Some(handoff_id) = pop_ready_transfer_complete(&mut self.events, self.now_ms) {
             let Some(uuid) = self.flow.requests_by_handoff.get(&handoff_id).copied() else {
                 continue;
@@ -2540,7 +2846,7 @@ where
         &mut self,
         effects: EngineEffects<Observation::Batch>,
     ) -> Result<()> {
-        self.record_prefill_admissions(effects.admissions);
+        self.record_prefill_admissions(&effects.admissions);
         for pressure in effects.pressure_events {
             self.evidence.record_native_pressure(
                 &mut self.collector,
@@ -2551,6 +2857,9 @@ where
             );
         }
         self.apply_prefill_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
+        for admission in &effects.admissions {
+            self.notify_prefill_started(admission)?;
+        }
         for payload in effects.immediate_completions {
             self.process_worker_completion_payload(payload)?;
         }
@@ -2560,8 +2869,18 @@ where
         Ok(())
     }
 
-    fn record_prefill_admissions(&mut self, admissions: Vec<AdmissionEvent>) {
+    fn record_prefill_admissions(&mut self, admissions: &[AdmissionEvent]) {
         for admission in admissions {
+            if let (Some(telemetry), Some(input)) = (
+                &mut self.telemetry,
+                self.collector.first_admission_input(admission.uuid),
+            ) {
+                telemetry.on_first_admission(
+                    input,
+                    admission.reused_input_tokens,
+                    admission.cache_tier_attribution,
+                );
+            }
             self.collector.on_prefill_admit(
                 admission.uuid,
                 self.now_ms,
@@ -2574,6 +2893,22 @@ where
                 self.now_ms,
             );
         }
+    }
+
+    /// Tell the prefill placement policy about a request's first prefill
+    /// admission. Later admissions re-run a preempted or retracted prefill.
+    fn notify_prefill_started(&mut self, admission: &AdmissionEvent) -> Result<()> {
+        let state = self.state_mut(admission.uuid)?;
+        if state.prefill_started {
+            return Ok(());
+        }
+        state.prefill_started = true;
+        let placements = self.prefill_placement.prefill_started(
+            admission.uuid,
+            admission.reused_input_tokens,
+            self.now_ms,
+        )?;
+        self.dispatch_prefill_placements(placements)
     }
 
     fn record_decode_admissions(&mut self, admissions: Vec<AdmissionEvent>) -> Result<()> {
@@ -2778,6 +3113,7 @@ where
                 // Pass completion can expose another deadline at this timestamp.
                 changed |= settle(self)?;
             }
+            changed |= self.release_received_terminals()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
             changed |= self.drive_pending_actions()?;
@@ -2792,6 +3128,9 @@ where
             changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.release_tokenized()?;
+            // Submit arrivals released at this boundary before a worker commits
+            // its next pass. The engine still enforces async batch eligibility.
+            changed |= self.drive_pending_actions()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self
@@ -2972,7 +3311,28 @@ where
                 )
             }
         };
+        let mut host_caches: Vec<_> = self
+            .prefill_engine
+            .host_cache_snapshots(true)
+            .into_iter()
+            .map(|metrics| ReplayTelemetryHostCache {
+                role: (metrics.scope != crate::engine::G2Scope::ClusterShared).then_some("prefill"),
+                metrics,
+            })
+            .collect();
+        let include_shared = !host_caches.iter().any(|row| row.role.is_none());
+        host_caches.extend(
+            self.decode_engine
+                .host_cache_snapshots(include_shared)
+                .into_iter()
+                .map(|metrics| ReplayTelemetryHostCache {
+                    role: (metrics.scope != crate::engine::G2Scope::ClusterShared)
+                        .then_some("decode"),
+                    metrics,
+                }),
+        );
         let snapshot = ReplayTelemetrySnapshot {
+            host_caches,
             sample_ordinal,
             kind,
             interval_start_ms,
@@ -3006,7 +3366,9 @@ where
 
     fn start_profile_observers(&mut self) -> Result<()> {
         if !self.profile_observers_started {
-            self.seed_first_telemetry_tick()?;
+            if !self.telemetry.as_ref().is_some_and(|t| t.started()) {
+                self.seed_first_telemetry_tick()?;
+            }
             self.seed_first_scaling_tick()?;
             self.profile_observers_started = true;
         }
@@ -3046,12 +3408,15 @@ where
         {
             return Ok(false);
         }
-        let Some(transition) =
-            self.admission
-                .finish_agentic_preparation(self.now_ms, &self.collector, || {
-                    self.prefill_engine.reset_timing_evidence()?;
-                    self.decode_engine.reset_timing_evidence()
-                })?
+        let Some(transition) = self.admission.finish_agentic_preparation(
+            self.now_ms,
+            &self.collector,
+            self.telemetry_capture.as_ref(),
+            || {
+                self.prefill_engine.reset_timing_evidence()?;
+                self.decode_engine.reset_timing_evidence()
+            },
+        )?
         else {
             return Ok(false);
         };
@@ -3062,7 +3427,25 @@ where
         let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
-        self.collector.take_report(self.now_ms);
+        if self.telemetry_capture.is_some() {
+            if !self.telemetry.as_ref().is_some_and(|t| t.started()) {
+                self.seed_first_telemetry_tick()?;
+            }
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Final)?;
+        }
+        let preparation_report = self.collector.take_report(self.now_ms);
+        if let Some(sink) = &self.telemetry_capture {
+            sink.record_preparation(
+                preparation_report,
+                &self
+                    .admission
+                    .agentic_phase_evidence()
+                    .expect("preparation evidence"),
+            );
+        }
+        if let Some(telemetry) = &mut self.telemetry {
+            telemetry.reset_counters();
+        }
         self.collector.set_agentic_phases(
             self.admission
                 .agentic_phase_evidence()
@@ -3099,6 +3482,9 @@ where
                 );
             }
             self.start_profile_observers()?;
+            if self.telemetry_capture.is_some() {
+                self.publish_telemetry_sample(ReplayTelemetrySampleKind::Baseline)?;
+            }
         }
         Ok(true)
     }
@@ -3136,13 +3522,14 @@ where
     }
 
     fn publish_final_telemetry_sample(&mut self) -> Result<()> {
-        if !self.profile_observers_started {
+        if !self.profile_observers_started && self.telemetry_capture.is_none() {
             return Ok(());
         }
         let Some(telemetry) = self.telemetry.as_ref() else {
             return Ok(());
         };
         if self.now_ms > telemetry.interval_start_ms()
+            || telemetry.has_observations()
             || self.traffic.telemetry_has_observations()
             || self.prefill_engine.telemetry_has_interval_observations()
             || self.decode_engine.telemetry_has_interval_observations()
@@ -3691,6 +4078,10 @@ where
         if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with an encoder pool");
         }
+        // Profile cancellation does not know about responses still on their way to the client.
+        if self.detokenization.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with detokenization");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -3699,6 +4090,10 @@ where
         self.drain_current_timestamp()?;
         if self.admission.agentic_phase_evidence().is_none() {
             self.start_profile_observers()?;
+        } else if self.telemetry_capture.is_some()
+            && !self.telemetry.as_ref().is_some_and(|t| t.started())
+        {
+            self.seed_first_telemetry_tick()?;
         }
         // Keep the baseline before the first scaling decision, but settle any
         // tick seeded at this instant before exposing a settled step boundary.
@@ -3749,6 +4144,9 @@ where
                 && !self.admission.is_agentic_preparing()
                 && canonical_timestamp_ms > cap_ms
             {
+                if let Some(capture) = &self.telemetry_capture {
+                    capture.mark_time_limited();
+                }
                 return Ok(ReplayStepOutcome::TimeLimitReached {
                     now_ms: self.now_ms,
                 });
@@ -3889,6 +4287,7 @@ fn direct_to_native(
     kv_hint: Option<KvHintSource>,
 ) -> Result<crate::engine::Request> {
     Ok(crate::engine::Request {
+        cache_salt: request.cache_salt,
         request_id: request
             .uuid
             .ok_or_else(|| anyhow!("offline replay request must have a UUID before dispatch"))?,

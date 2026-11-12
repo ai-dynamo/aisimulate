@@ -189,10 +189,7 @@ def get_vllm_moe_a2a_shapes(
     """Resolve correlated WideEP shapes through the vLLM case population."""
     from collector.case_generator import get_common_moe_test_cases
 
-    recipes = get_common_moe_test_cases(
-        backend="vllm",
-        required_expert_parallel_size=required_expert_parallel_size,
-    )
+    recipes = get_common_moe_test_cases(required_expert_parallel_size=required_expert_parallel_size)
     ordered = resolve_moe_a2a_shapes(recipes)
     if not ordered:
         raise VllmMoeA2ADeclarationError(
@@ -1243,10 +1240,9 @@ def _write_sidecar(
 
     if not case_ids:
         raise VllmMoeA2ADeclarationError("refusing to attest an empty case plan")
-    closures = provenance.load_closures(_REPO_ROOT / "collector" / "hash_closures.yaml")
     table = {
         "collector_ref": collector_ref or _git_collector_ref(_REPO_ROOT),
-        "collector_hash": provenance.collector_hash(MODULE_NAME, _REPO_ROOT, closures),
+        "collector_hash": provenance.collector_hash(_REPO_ROOT),
         "case_plan_hash": provenance.case_plan_hash(case_ids),
         "collected_at": date.today().isoformat(),
         "rows": pq.read_metadata(parquet_path).num_rows,

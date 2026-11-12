@@ -1,0 +1,19 @@
+{
+  "base_revision": "2effbae7688b7916e206125bed6c2d63a93bb756",
+  "head_production_revision": "b8621b4af777292f55597ea16f6d526211f86daf",
+  "sglang_reference_revision": "baa9befa381511cd4d56f83980951e5a45fffc6d",
+  "probe": "crates/core/src/engine/scheduler/sglang/semantic_evidence.rs",
+  "probe_sha256": "f705f2021c75543af5976b808d766ca396cfd287a4dedd07d5543ae8af49e667",
+  "report_sha256": {
+    "base.json": "1e31aa9658a379d35dd5d7eb2d581c01ee6559d20e80532262c8ddd8caa64157",
+    "head.json": "128dbc77ce9f39b1b70233f179789158823a03fddf5e698569d55f627c63789c"
+  },
+  "base_instrumentation": "Identical probe plus cfg(test) module declaration; no production changes.",
+  "head_instrumentation": "Probe and module declaration; production tree matches head_production_revision.",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "timing_model": {
+    "prefill_ms": 10,
+    "decode_ms": 2
+  },
+  "gpu_or_model_execution": false
+}

@@ -1,0 +1,78 @@
+# Excerpt (2026-10-30): _meta plus the models collector comments cite; _meta.summary
+# counts the full matrix, which lands with the op-probe harness.
+_meta:
+  platform: b200_sm100
+  framework: sglang
+  version: 0.5.21
+  what: the MoE cells of results/sm100/<fw>-<ver>.yaml re-probed with the generator's hardware moe_backend fact removed from the rendered config; the as-rendered cells fail with cause 'generator fact rejected
+    by framework'. This file is the identity the framework picks on sm100 when it is allowed to choose.
+  override: --moe-runner-backend deepep_moe (hardware.yaml b200) dropped -> 0.5.21 AUTO
+  summary:
+    pass+override: 72
+    fail: 3
+  evidence: archive/retests/moe_auto/{raw,*.engine.yaml} in the B200 workspace (umbriel-b200-040, 2026-10-04)
+results:
+  deepseek-ai/DeepSeek-V4-Flash:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Pro:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: pass+override
+    attention: DeepseekV4AttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 4
+    topology: tp1
+  moonshotai/Kimi-K2.5:
+    verdict: pass+override
+    attention: TRTLLMMLABackend
+    moe_runner: FLASHINFER_TRTLLM
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  openai/gpt-oss-120b:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1
+  openai/gpt-oss-20b:
+    verdict: pass+override
+    attention: TRTLLMHAAttnBackend
+    moe_runner: FLASHINFER_MXFP4
+    moe_kernel_families:
+    - trtllm_gen_moe
+    moe_kernels_seen: 5
+    topology: tp1

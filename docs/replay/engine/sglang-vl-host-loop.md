@@ -147,10 +147,11 @@ stages:
 Consequences the tests pin: a request's first token is observed one iteration
 after the forward that produced it; the radix cache learns a completed
 prefill's prefix only when that forward is observed, so a request selected one
-iteration later reuses nothing from it; a request that finished in forward `k`
-still occupies a slot in batch `k+1` and, when that batch is a decode, is
-allocated its row's KV slot, which is committed and cached with the request
-when the finish is observed (only an unaligned tail page is freed); a request
+iteration later reuses nothing from it. Following SGLang v0.5.22, aggregated
+non-speculative decode excludes rows whose queued result finishes them by
+length. Their KV stays owned until that result is observed; if survivors
+need that memory, the scheduler skips this decode without retraction or ratio
+decay. PD decode retains its ghost-row behavior. A request
 that needs no output token completes when its prefill is observed, not when it
 launches; a request retracted or cancelled while its forward is in flight
 neither receives that forward's token nor keeps it, while the device work stays
@@ -188,16 +189,19 @@ Reports add the mean time to first token split by milestone: `mean_frontend_ms`
 `mean_scheduler_inbox_wait_ms` (frontend exit to the scheduler draining the
 request), `mean_receive_to_admit_ms` (received to selected, the waiting-queue
 time when the batch budget is full), `mean_prefill_elapsed_ms` (selected to the
-prompt's last forward finishing on the device, across all its chunks), and
+prompt's last forward finishing on the device, across all its chunks),
 `mean_result_observation_delay_ms` (device completion to the scheduler
 observing the result: the first token on an aggregated rank, the prefill rank
-releasing the request to the KV handoff in disaggregated prefill), and
+releasing the request to the KV handoff in disaggregated prefill),
 `mean_handoff_to_first_token_ms` (that release to the decode rank's first
-token; zero on an aggregated rank). The six spans sum to per-request TTFT for
-requests that reached every milestone; with a native encoder pool they start
-at the pool's delivery and `encoder_latency_ms` covers the wait. These are
-server-internal latencies to scheduler observation, not client-visible ones,
-and they are reported with or without per-request capture. Stage means
+token; zero on an aggregated rank), and `mean_detokenization_ms` (the engine emitting
+the first token to the client receiving it with
+[`engine.detokenization`](README.md#detokenization); zero without it). The seven spans
+sum to per-request TTFT for requests that reached every milestone; with a
+native encoder pool they start at the pool's delivery and `encoder_latency_ms`
+covers the wait. Without `engine.detokenization` these are server-internal
+latencies to scheduler observation, not client-visible ones. They are reported
+with or without per-request capture. Stage means
 describe a request's first prefill attempt; a retraction before the first
 token lands in the result-observation span.
 
@@ -273,7 +277,7 @@ language worker's own tower would see:
 | --- | --- |
 | CPU preprocessing | Extrapolated from the `process` stage of the encoder host's cost table (`host_profile`, Python frontend), divided by the images that stage was measured with: the encoder servers run the same HF image processor as the tokenizer manager, so a batch of `n` images costs `n` times the per-image term. The report labels it `preprocess_source: frontend_process_extrapolated`; the encoder's own batch preprocessing and its four parallel image loaders are not measured. |
 | Encoder forward | The canonical timing model at the pool's `tensor` width prices one forward over the batch's images (`predict_vision_ms`), the same oracle a language rank uses for its vision tower; the pool's power evidence enters the report like a language rank's. |
-| Transfer | `embedding bytes per image x language tensor-parallel width` at `transfer.bandwidth_gb_per_second`: `zmq_to_scheduler` fans the embeddings out to every rank. Each part is timed at the full configured bandwidth from the end of its batch, with no contention between parts, encoder servers or the P/D KV link: the same precision boundary as the prefill-to-decode KV handoff, with which it shares the bytes-over-bandwidth arithmetic. The device-to-host copy SGLang makes before the push is not modeled. |
+| Transfer | `embedding bytes per image x language tensor-parallel width` at `transfer.bandwidth_gb_per_second`: `zmq_to_scheduler` fans the embeddings out to every rank. Each part is timed at the full configured bandwidth from the end of its batch, with no contention between parts, encoder servers or the P/D KV links. It shares the bytes-over-bandwidth arithmetic of a prefill-to-decode KV transfer alone on its links. The device-to-host copy SGLang makes before the push is not modeled. |
 
 The language worker runs `--language-only`: it neither hosts the vision tower
 nor prices image frontend stages (`vision`, `frontend`, and `host_profile` are
@@ -333,8 +337,9 @@ the model; a deployment matches its table only when launched with that flag.
 
 Not modeled: the GPU image processor path, video, speculative decoding, mixed image resolutions in one
 workload, and the output side (detokenizer and tokenizer-manager work after the
-scheduler observes a token): the reported latencies end at scheduler
-observation. Every replica is assumed to have its own, sufficient CPU for its
+scheduler observes a token) unless
+[`engine.detokenization`](README.md#detokenization) prices it: without that block the
+reported latencies end at scheduler observation. Every replica is assumed to have its own, sufficient CPU for its
 frontend stages; a search over TP and replicas on one shared node has no common
 CPU budget in this model.
 
@@ -370,6 +375,11 @@ the worker.
 
 ## Behavior source and validation
 
+Finishing-row filtering and its overlap-loop handling follow SGLang v0.5.22 at
+immutable revision `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+[`filter_batch`](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_batch.py)
+and the [overlap scheduler](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/scheduler.py).
+
 The host loop, embedding cache, and frontend pools are independent
 implementations of the observed behavior of sgl-project/sglang v0.5.19 at
 immutable revision `0bcd822377da7b5718e674eaf9c870d349424dd1`:
@@ -395,7 +405,7 @@ No upstream source or tests are copied;
 attribution. The collector (`python -m aisimulate.vl.collect`) instantiates the
 pinned upstream frontend objects unmodified on the serving host and times them
 from the outside. Deterministic Rust tests cover the iteration structure,
-mid-iteration arrivals, ghost decode members and their KV slot, deferred
+mid-iteration arrivals, finishing-row filtering, PD ghost decode members, deferred
 prefix-cache commits, retraction and cancellation of forwards in flight, the
 equivalence with the pass model (`host_loop: false`), cache-miss selection per
 chunk, pool ownership and arrivals settling past completions, the

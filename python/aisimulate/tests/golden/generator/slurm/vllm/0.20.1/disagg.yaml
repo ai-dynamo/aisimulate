@@ -35,7 +35,7 @@ deployment.json: |-
           "--max-num-seqs",
           "8",
           "--max-num-batched-tokens",
-          "1628",
+          "1664",
           "--disaggregation-mode",
           "prefill",
           "--kv-transfer-config",
