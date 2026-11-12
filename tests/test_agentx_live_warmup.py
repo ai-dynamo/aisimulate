@@ -1,9 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from aisimulate.config.traffic import (
@@ -218,15 +222,13 @@ def test_live_warmup_workload_serialization_keeps_the_policy_explicit():
     assert Workload.model_validate(data).model_dump()["agentic_warmup_policy"] == "live_trajectory_v1"
 
 
-@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
-@pytest.mark.parametrize("stack,online", [("legacy", False), ("engine", True)])
-def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(
-    tmp_path, monkeypatch, capsys, stack, online, policy
-):
+class ReachedExecution(Exception):
+    pass
+
+
+def supervise_warmup_prediction(tmp_path, monkeypatch, policy, *extra):
     from aisimulate import cli_args, supervision
 
-    prior = tmp_path / "prediction.json"
-    prior.write_bytes(b"previous valid results\n")
     raw = {
         "engine": {
             "model": "example/model",
@@ -238,31 +240,169 @@ def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(
     raw["traffic"]["load"]["agentic_warmup_policy"] = policy
     monkeypatch.setattr(cli_args, "_load_mapping", lambda _: raw)
     monkeypatch.setattr(supervision, "_installed_names", lambda _: ["legacy"])
-    calls = []
 
-    def forbidden_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        pytest.fail("unsupported policy reached execution")
+    def observe_run(*args, **kwargs):
+        raise ReachedExecution
 
-    monkeypatch.setattr(supervision, "run_process", forbidden_run)
-    arguments = [
-        "predict",
-        "--config",
-        "unused.yaml",
-        "--stack",
-        stack,
-        "--output-dir",
-        str(tmp_path),
-        "--overwrite",
-    ]
-    if online:
-        arguments.append("--online")
+    monkeypatch.setattr(supervision, "run_process", observe_run)
+    supervision.main(
+        [
+            "predict",
+            "--config",
+            "unused.yaml",
+            "--stack",
+            "legacy",
+            "--output-dir",
+            str(tmp_path),
+            "--overwrite",
+            *extra,
+        ]
+    )
+
+
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_supervisor_leaves_warmup_support_to_the_installed_stack(tmp_path, monkeypatch, policy):
+    with pytest.raises(ReachedExecution):
+        supervise_warmup_prediction(tmp_path, monkeypatch, policy)
+
+
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_supervisor_rejects_online_warmup_before_overwrite(tmp_path, monkeypatch, capsys, policy):
+    prior = tmp_path / "prediction.json"
+    prior.write_bytes(b"previous valid results\n")
     with pytest.raises(SystemExit) as exc:
-        supervision.main(arguments)
+        supervise_warmup_prediction(tmp_path, monkeypatch, policy, "--online")
     assert exc.value.code == 2
-    assert f"{policy} CLI requires offline --stack engine" in capsys.readouterr().err
-    assert not calls
+    assert f"{policy} requires offline execution" in capsys.readouterr().err
     assert prior.read_bytes() == b"previous valid results\n"
+
+
+@pytest.mark.parametrize(
+    "policy,capability",
+    [("live_trajectory_v1", "supports_agentic_live_warmup"), ("primers_only", "supports_agentic_primers_only")],
+)
+def test_recommendation_refuses_unsupported_warmup_before_any_candidate(policy, capability):
+    from aisimulate.config.cli import CoreRecommendationConfig
+    from aisimulate.recommend import recommendation_to_sweeper
+    from aisimulate.sweeper.search import Sweeper
+
+    class Factory:
+        def capabilities(self):
+            return replace(EngineReplayRunnerFactory().capabilities(), **{capability: False})
+
+        def create(self, worker_id):
+            pytest.fail("a candidate ran")
+
+    raw = {
+        "engine": {
+            "model": str(Path(__file__).parent / "e2e/configs/unified_cli/fixtures/tiny-model"),
+            "hardware": "h200_sxm",
+            "mode": "aggregated",
+            "workers": {"aggregated": {}},
+        },
+        "traffic": traffic(),
+        "optimization": {"target": "throughput_per_gpu", "constraints": {"max_candidate_gpus": 1}},
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1},
+    }
+    raw["traffic"]["load"]["agentic_warmup_policy"] = policy
+    smart = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
+    with pytest.raises(ValueError, match=f"before selecting {policy}"):
+        Sweeper(runner_factory=Factory(), show_progress=False).run(smart)
+
+
+class WarmupStack:
+    """Engine stack that may hide its warmup support; its runners log each replayed policy to ``log``."""
+
+    def __init__(self, advertise, log):
+        self.advertise = advertise
+        self.log = log
+        self.engine = EngineReplayRunnerFactory()
+
+    def capabilities(self):
+        capabilities = self.engine.capabilities()
+        if self.advertise:
+            return capabilities
+        return replace(capabilities, supports_agentic_live_warmup=False, supports_agentic_primers_only=False)
+
+    def create(self, worker_id):
+        return LoggingRunner(self.engine.create(worker_id), self.log)
+
+
+class LoggingRunner:
+    def __init__(self, runner, log):
+        self.runner = runner
+        self.log = log
+
+    def run(self, spec, **kwargs):
+        with self.log.open("a") as log:
+            log.write(spec.workload.get("agentic_warmup_policy", "repeated_prefixes") + "\n")
+        return self.runner.run(spec, **kwargs)
+
+    def close(self):
+        self.runner.close()
+
+
+def run_warmup_cli(tmp_path, monkeypatch, command, stack, policy):
+    from aisimulate import main as cli
+
+    fixtures = Path(__file__).parent / "e2e/configs/unified_cli/fixtures"
+    raw = {
+        "traffic": traffic(),
+        "engine": {
+            "mode": "aggregated",
+            "model": str(fixtures / "tiny-model"),
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "context_length": 2048,
+            "workers": {
+                "aggregated": {
+                    "kv_cache": {"block_size": 64, "capacity": {"type": "fixed", "blocks": 256}},
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+            },
+        },
+    }
+    raw["traffic"]["source"]["paths"] = [str(fixtures / "traces/weka-two-plays.jsonl")]
+    raw["traffic"]["load"].update(
+        agentic_warmup_policy=policy,
+        agentic_profile={"duration_seconds": 0.05, "response_grace_seconds": 0.01},
+    )
+    if command == "recommend":
+        raw["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+        raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 11}
+    config = tmp_path / f"{command}.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    log = tmp_path / f"{stack}.log"
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: WarmupStack(name == "advertising", log))
+    argv = [command, "--stack", stack, "--config", str(config), "--output-dir", str(tmp_path / stack)]
+    return cli.main([*argv, "--format", "json"]), log
+
+
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_cli_runs_warmup_only_on_a_stack_that_advertises_it(tmp_path, monkeypatch, capsys, command, policy):
+    # Call the CLI as the supervisor's child: agentic profiles have no static memory bound.
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 4_000_000_000,
+                "cpu_limit": 1,
+                "reserved_host_memory_bytes": 1_000_000_000,
+                "events_path": str(tmp_path / "events.jsonl"),
+                "ready_path": str(tmp_path / "ready"),
+            }
+        ),
+    )
+    status, log = run_warmup_cli(tmp_path, monkeypatch, command, "advertising", policy)
+    assert status == 0
+    assert set(log.read_text().split()) == {policy}
+
+    with pytest.raises(SystemExit) as exc:
+        run_warmup_cli(tmp_path, monkeypatch, command, "silent", policy)
+    assert exc.value.code == 2
+    assert f"before selecting {policy}" in capsys.readouterr().err
 
 
 def test_supervisor_default_recommendation_without_traffic_keeps_existing_path(tmp_path, monkeypatch):

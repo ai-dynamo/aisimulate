@@ -546,6 +546,18 @@ class RunnerCapabilities:
                 f"runner version {self.replay_spec_api_version}"
             )
 
+    def require_agentic_warmup_policy(self, policy: str) -> None:
+        """Raise when the runner does not advertise an agentic warmup policy."""
+
+        if policy == "live_trajectory_v1" and not self.supports_agentic_live_warmup:
+            raise ValueError(
+                "runner does not support live agentic warmup; update the adapter before selecting live_trajectory_v1"
+            )
+        if policy == "primers_only" and not self.supports_agentic_primers_only:
+            raise ValueError(
+                "runner does not support primers-only agentic warmup; update the adapter before selecting primers_only"
+            )
+
     def require_compatible(self, spec: ReplaySpec) -> None:
         """Raise a clear error when this runner cannot execute ``spec``."""
 
@@ -776,22 +788,11 @@ class RunnerCapabilities:
             "primers_only",
         }:
             raise ValueError("unknown agentic_warmup_policy")
-        if warmup_policy == "live_trajectory_v1":
-            if not agentic_warmup or agentic_profile is None:
-                raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
-            if not self.supports_agentic_live_warmup:
-                raise ValueError(
-                    "runner does not support live agentic warmup; "
-                    "update the adapter before selecting live_trajectory_v1"
-                )
-        if warmup_policy == "primers_only":
-            if not agentic_warmup:
-                raise ValueError("primers_only requires agentic_warmup")
-            if not self.supports_agentic_primers_only:
-                raise ValueError(
-                    "runner does not support primers-only agentic warmup; "
-                    "update the adapter before selecting primers_only"
-                )
+        if warmup_policy == "live_trajectory_v1" and (not agentic_warmup or agentic_profile is None):
+            raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if warmup_policy == "primers_only" and not agentic_warmup:
+            raise ValueError("primers_only requires agentic_warmup")
+        self.require_agentic_warmup_policy(warmup_policy)
         if agentic_snapshot is not None:
             try:
                 snapshot = AgenticSnapshotOptions.model_validate(agentic_snapshot)

@@ -1271,6 +1271,8 @@ class Sweeper:
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
+        # Each candidate's runner check would only mark it failed, so refuse unsupported warmup once here.
+        capabilities.require_agentic_warmup_policy(config.workload.agentic_warmup_policy)
         encoder_catalog = None
         output_requirements = self._output_requirements
         language_replays: dict[str, _ReplayEvaluation] | None = None
