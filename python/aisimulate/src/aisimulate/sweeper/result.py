@@ -459,7 +459,7 @@ def make_run_provenance(
     fingerprint = hashlib.sha256(canonical_json(config_payload).encode()).hexdigest()
     if implementation_version is None:
         try:
-            implementation_version = version("aisimulate")
+            implementation_version = version("aisim")
         except PackageNotFoundError:
             implementation_version = None
     return SweepRunProvenance(

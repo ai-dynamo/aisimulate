@@ -157,7 +157,23 @@ def main() -> None:
     architecture = env["STORAGE_ARCHITECTURE"]
     if architecture not in ("amd64", "arm64"):
         raise ValueError("unsupported wheel architecture")
-    base = f"{env['STORAGE_URL'].rstrip('/')}/{repo}/ci-wheels/{repository_id}/{run_id}/"
+    scope = env["STORAGE_SCOPE"]
+    pr_number = env.get("STORAGE_PR_NUMBER", "")
+    if scope == "pr":
+        if not re.fullmatch(r"[1-9][0-9]*", pr_number):
+            raise ValueError("PR wheel handoff requires an explicit positive PR number")
+        prefix = f"pr/{pr_number}/{source_sha}/{run_id}/"
+    elif scope == "preview":
+        if pr_number:
+            raise ValueError("non-PR preview cannot carry a PR number")
+        prefix = f"preview/{source_sha}/{run_id}/"
+    elif scope == "official":
+        if pr_number:
+            raise ValueError("official wheel handoff cannot carry a PR number")
+        prefix = f"ci-wheels/{repository_id}/{run_id}/"
+    else:
+        raise ValueError("unsupported wheel storage scope")
+    base = f"{env['STORAGE_URL'].rstrip('/')}/{repo}/{prefix}"
     manifest_path = Path(env["STORAGE_MANIFEST"])
     mode = env["STORAGE_MODE"]
     if mode == "upload":
@@ -191,7 +207,9 @@ def main() -> None:
         manifest_path.write_text(
             json.dumps(
                 {
-                    "schema": 3,
+                    "schema": 4,
+                    "scope": scope,
+                    "pr_number": pr_number,
                     "repository": repository,
                     "repository_id": repository_id,
                     "storage_repo": repo,
@@ -214,7 +232,9 @@ def main() -> None:
         if not isinstance(manifest, dict):
             raise ValueError("invalid wheel manifest")
         if (
-            manifest.get("schema") != 3
+            manifest.get("schema") != 4
+            or manifest.get("scope") != scope
+            or manifest.get("pr_number") != pr_number
             or manifest.get("repository_id") != repository_id
             or manifest.get("storage_repo") != repo
             or manifest.get("run_id") != run_id

@@ -52,6 +52,7 @@ from .output_adapter import (
 from .power import normalize_power_summary
 from .predict import PredictionExecutionError, run_prediction
 from .replay.dashboard import write_replay_dashboard
+from .resource_worker import _exception_message
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -162,8 +163,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     capture_telemetry = args.capture_telemetry or args.export_html
     if capture_telemetry and (args.stack != "engine" or args.online):
         raise ValueError("telemetry capture requires offline --stack engine")
-    if config.traffic.load.agentic_warmup_policy == "live_trajectory_v1" and (args.stack != "engine" or args.online):
-        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
+    if config.traffic.load.agentic_warmup_policy != "repeated_prefixes" and (args.stack != "engine" or args.online):
+        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
     if (
         config.engine.speculation is not None
         and config.engine.speculation.kind == "ngram"
@@ -243,7 +244,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             raise RuntimeError("selected stack did not provide replay telemetry")
         native = {**native, "telemetry": write_telemetry(root, telemetry)}
     report_path = write_prediction_report(root, native)
-    write_afd_qualification_artifacts(root, spec)
+    write_afd_qualification_artifacts(root, spec, memory=native.get("afd_memory"))
     if args.capture_per_request:
         records = native.get("per_request")
         if not isinstance(records, list):
@@ -317,10 +318,10 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     config = CoreRecommendationConfig.model_validate(core_raw)
     if (
         config.traffic is not None
-        and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+        and config.traffic.load.agentic_warmup_policy != "repeated_prefixes"
         and args.stack != "engine"
     ):
-        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
+        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,
@@ -472,7 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"aisimulate {args.command} failed: {message}\n")
         return 1
     except Exception as exc:
-        sys.stderr.write(f"aisimulate {args.command} failed: {type(exc).__name__}: {exc}\n")
+        sys.stderr.write(f"aisimulate {args.command} failed: {_exception_message(exc)}\n")
         return 1
 
 

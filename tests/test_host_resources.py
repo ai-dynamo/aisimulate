@@ -519,7 +519,8 @@ def test_recommendation_reports_progress_callback_failures_to_failure_hook(monke
     assert failures == [raised.value]
 
 
-def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch):
+@pytest.mark.parametrize("entrypoint", ["api", "cli"])
+def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch, tmp_path, capsys, entrypoint):
     import threading
 
     import aisimulate.recommend as recommendation
@@ -592,25 +593,37 @@ def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypat
             raise search_error
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    adapters = {"first": FailingCleanupAdapter(), "publisher": PublisherAdapter()}
 
     try:
-        with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
-            recommendation._run_recommendation(
-                config,
-                stack="engine",
-                runner_factory=object(),
-                output_configs={"first": {}, "publisher": {}},
-                output_adapters={
-                    "first": FailingCleanupAdapter(),
-                    "publisher": PublisherAdapter(),
-                },
+        if entrypoint == "api":
+            with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
+                recommendation._run_recommendation(
+                    config,
+                    stack="engine",
+                    runner_factory=object(),
+                    output_configs={"first": {}, "publisher": {}},
+                    output_adapters=adapters,
+                )
+            assert raised.value is search_error
+            message = _exception_message(raised.value)
+        else:
+            monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
+            monkeypatch.setattr(cli, "resolve_output_adapters", lambda _: adapters)
+            monkeypatch.setattr(
+                recommendation,
+                "run_recommendation",
+                lambda config, **kwargs: recommendation._run_recommendation(config, output_adapters=adapters, **kwargs),
             )
+            path = tmp_path / "recommend.yaml"
+            path.write_text(yaml.safe_dump({**_config(), "first": {}, "publisher": {}}))
+            assert cli.main(["recommend", "-c", str(path), "--output", "first", "--output", "publisher"]) == 1
+            message = capsys.readouterr().err.removeprefix("aisimulate recommend failed: ")
     finally:
         stop.set()
         for publisher in publishers:
             publisher.join(timeout=1)
 
-    assert raised.value is search_error
     assert events == [
         ("publisher_started",),
         ("first_failure", search_error),
@@ -619,7 +632,6 @@ def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypat
         ("publisher_joined",),
     ]
     assert all(not publisher.is_alive() for publisher in publishers)
-    message = _exception_message(raised.value)
     assert message.startswith("RuntimeError: ORIGINAL_SEARCH_FAILURE")
     assert "first" in message
     assert "on_failure" in message
@@ -683,6 +695,36 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
     assert actual.total_memory_bytes == 4 * GB
     assert actual.available_memory_bytes == 3 * GB
     assert actual.cpu_count == 0.5
+
+
+@pytest.mark.parametrize(
+    "membership,mount,limit,usage,stat",
+    [
+        ("0::/job", "cgroup2 cgroup rw", "memory.max", "memory.current", f"anon {GB}\ninactive_file {5 * GB}\n"),
+        (
+            "1:memory:/job",
+            "cgroup cgroup rw,memory",
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+            # v1 usage is hierarchical, like its total_ counters.
+            f"inactive_file 0\ntotal_rss {GB}\ntotal_inactive_file {5 * GB}\n",
+        ),
+    ],
+    ids=["v2", "v1"],
+)
+def test_cgroup_usage_excludes_inactive_page_cache(tmp_path, host, membership, mount, limit, usage, stat):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text(f"{membership}\n")
+    (proc / "self/mountinfo").write_text(f"42 30 0:27 / /sys/fs/cgroup rw - {mount}\n")
+    root = tmp_path / "sys/fs/cgroup"
+    (root / "job").mkdir(parents=True)
+    (root / limit).write_text(str(8 * GB))
+    (root / usage).write_text(str(7 * GB))
+    (root / "memory.stat").write_text(stat)
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 6 * GB
+    (root / "memory.stat").unlink()
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == GB
 
 
 def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host):
@@ -1136,6 +1178,7 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
             {
                 "type": "subagent",
                 "total_tokens": 10**12,
+                "in": "ignored",
                 "requests": [
                     {"type": "s", "in": 9, "out": 3, "hash_ids": [9]},
                 ],
@@ -1158,6 +1201,26 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
     # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
     assert estimate.lower_bound_bytes == 48 * copies
     assert estimate.estimated_peak_bytes is None
+
+
+@pytest.mark.parametrize(
+    "plays,reason",
+    [
+        ([{"block_size": 4}, {"block_size": 8}], "Weka corpus mixes block sizes"),
+        ([{}, {"block_size": 4}], "Weka trace requires a positive block_size"),
+        ([{"block_size": 4, "requests": [{"type": "n", "in": 4, "out": -1}]}, {}], "nonnegative integers"),
+    ],
+)
+def test_weka_corpus_validation_has_no_qualified_estimate(tmp_path, plays, reason):
+    # Files are inspected in path order; the first one supplies the block size.
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path, play in zip(paths, plays, strict=True):
+        play.setdefault("requests", [{"type": "s", "in": 4, "out": 1}])
+        path.write_text(json.dumps(play))
+    workload = {"trace_paths": [str(path) for path in paths], "trace_format": "weka"}
+    estimate = estimate_workload(workload, stack="dynamo")
+    assert estimate.allocation_model == "trace-unqualified-v1"
+    assert reason in estimate.reason
 
 
 @pytest.mark.parametrize("compressed", [False, True])
@@ -1370,7 +1433,11 @@ def test_added_agentic_formats_reject_oversized_arrays(
     else:
         row = _dynamo_row(input_length=input_length, output_tokens=output_length)
     # A parser failure after this object would hide the bound if inspection continued.
-    source.write_text(json.dumps(row) + "\nnot JSON")
+    text = json.dumps(row) + "\nnot JSON"
+    if trace_format == "weka":
+        # Inside the same play, so the native scan must stop at the oversized request.
+        text = json.dumps(row).removesuffix("]}") + ", not JSON"
+    source.write_text(text)
     plan = build_plan({"trace_path": str(source), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12

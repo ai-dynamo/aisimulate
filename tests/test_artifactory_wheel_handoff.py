@@ -4,6 +4,8 @@
 
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +26,8 @@ def handoff(tmp_path, monkeypatch):
     output = tmp_path / "installed"
     manifest = tmp_path / "wheel-manifest.json"
     env = {
+        "STORAGE_SCOPE": "official",
+        "STORAGE_PR_NUMBER": "",
         "STORAGE_MODE": "upload",
         "STORAGE_NAME": "simulation-wheel-base",
         "STORAGE_PATH": str(source),
@@ -119,6 +123,8 @@ def test_bundle_survives_consumer_only_rerun_and_cross_run(handoff, package):
         ("commit", "d" * 40),
         ("attempt", "../bad"),
         ("schema", 1),
+        ("scope", "pr"),
+        ("pr_number", "199"),
     ],
 )
 def test_wrong_producer_is_rejected_before_authenticated_download(handoff, field, value):
@@ -239,9 +245,44 @@ def test_curl_uses_private_config_without_redirects_or_token_arguments(tmp_path,
 
 
 def test_wheel_workflows_only_upload_manifests_and_preserve_credentials_boundary():
-    found = 0
+    expected = {
+        ("ci.yml", "application-test-wheel", "upload", "application-test-wheel-${{ matrix.arch }}"),
+        ("ci.yml", "application-tests", "download", "application-test-wheel-${{ matrix.arch }}"),
+        ("ci.yml", "application-wheel", "download", "application-test-wheel-${{ matrix.arch }}"),
+        ("ci.yml", "stage-application-wheel", "download", "application-test-wheel-${{ matrix.arch }}"),
+        ("nightly-ci.yml", "build-artifacts", "upload", "nightly-dist-${{ matrix.arch }}"),
+        ("fpe-support-matrix.yml", "prepare-wheel", "download", "${{ inputs.wheel_artifact }}"),
+        ("fpe-support-matrix.yml", "prepare-wheel", "upload", "fpe-qualified-wheel"),
+        ("fpe-support-matrix.yml", "discover-shards", "download", "fpe-qualified-wheel"),
+        ("fpe-support-matrix.yml", "generate", "download", "fpe-qualified-wheel"),
+        ("fpe-support-matrix.yml", "build-web-matrix", "download", "fpe-qualified-wheel"),
+        ("fpe-release-qualify.yml", "prepare", "upload", "fpe-release-wheel-${{ inputs.release }}"),
+        ("fpe-release-qualify.yml", "generate", "download", "fpe-release-wheel-${{ inputs.release }}"),
+        ("fpe-release-qualify.yml", "qualify", "download", "fpe-release-wheel-${{ inputs.release }}"),
+        ("fpm-accuracy-branch.yml", "wheel", "download", "nightly-dist-amd64"),
+        ("fpm-accuracy-branch.yml", "wheel", "upload", "fpm-accuracy-wheel-${{ inputs.artifact_key }}"),
+        ("fpm-accuracy-branch.yml", "campaign", "download", "fpm-accuracy-wheel-${{ inputs.artifact_key }}"),
+        ("e2e-accuracy-branch.yml", "wheel", "download", "nightly-dist-amd64"),
+        ("e2e-accuracy-branch.yml", "wheel", "upload", "e2e-accuracy-wheel-${{ inputs.artifact_key }}"),
+        ("e2e-accuracy-branch.yml", "shards", "download", "e2e-accuracy-wheel-${{ inputs.artifact_key }}"),
+        ("e2e-accuracy-branch.yml", "agentx", "download", "e2e-accuracy-wheel-${{ inputs.artifact_key }}"),
+        ("simulation-performance.yml", "build", "upload", "simulation-wheel-${{ matrix.side }}-${{ matrix.sha }}"),
+        (
+            "simulation-performance.yml",
+            "compare",
+            "download",
+            "simulation-wheel-base-${{ needs.select.outputs.base_sha }}",
+        ),
+        (
+            "simulation-performance.yml",
+            "compare",
+            "download",
+            "simulation-wheel-head-${{ needs.select.outputs.head_sha }}",
+        ),
+    }
+    found = set()
     for path in (ROOT / ".github/workflows").glob("*.yml"):
-        for job in yaml.safe_load(path.read_text()).get("jobs", {}).values():
+        for job_name, job in yaml.safe_load(path.read_text()).get("jobs", {}).items():
             for step in job.get("steps", []):
                 uses, settings = step.get("uses", ""), step.get("with", {})
                 if "upload-artifact@" in uses:
@@ -249,15 +290,12 @@ def test_wheel_workflows_only_upload_manifests_and_preserve_credentials_boundary
                         word in str(settings.get("path", "")) for word in ("*.whl", "nightly-dist/", "fpe-wheel/")
                     )
                 if uses.endswith("/wheel-storage"):
-                    found += 1
+                    found.add((path.name, job_name, settings["mode"], settings["name"]))
                     assert "environment" in job
                     assert settings["source-sha"] and settings["architecture"]
-                    expected = (
-                        "WHEEL_STORAGE_WRITE_TOKEN" if settings["mode"] == "upload" else "WHEEL_STORAGE_READ_TOKEN"
-                    )
-                    assert settings["token"] == "${{ secrets." + expected + " }}"
+                    assert settings["token"] == "${{ secrets.ARTIFACTORY_TOKEN }}"
                     assert "run_attempt" not in str(settings)
-    assert found == 22
+    assert found == expected
     action = yaml.safe_load((ACTION / "action.yml").read_text())
     upload = next(step for step in action["runs"]["steps"] if "upload-artifact@" in step.get("uses", ""))
     assert upload["with"]["name"] == "${{ inputs.name }}-manifest"
@@ -282,12 +320,13 @@ def test_rerun_producer_keeps_old_objects_and_publishes_a_new_attempt(handoff):
     assert (handoff.output / name).read_bytes() == b"first build"
 
 
-def selected_environment(job, *, ref="refs/heads/main", preview=False):
+def selected_environment(job, *, ref="refs/heads/main", preview=False, pr_number=""):
     expression = job["environment"]
     if not expression.startswith("${{"):
         return expression
     expression = expression[3:-2].strip()
     expression = expression.replace("github.ref", repr(ref)).replace("inputs.preview", repr(preview))
+    expression = expression.replace("inputs.pr_number", repr(pr_number))
     expression = expression.replace("&&", " and ").replace("||", " or ")
     return eval(expression, {"__builtins__": {}, "startsWith": str.startswith})
 
@@ -350,3 +389,103 @@ def test_manifest_pins_the_producer_storage_repository(handoff, repo):
     with pytest.raises(ValueError, match="producer mismatch"):
         download(handoff, run="202")
     assert not handoff.requests
+
+
+@pytest.mark.parametrize("scope,number,prefix", [("pr", "199", "pr/199"), ("preview", "", "preview")])
+@pytest.mark.parametrize("source", ["a" * 40, "c" * 40])
+def test_pr_and_preview_paths_bind_actual_source_and_consumer_context(handoff, scope, number, prefix, source):
+    handoff.monkeypatch.setenv("STORAGE_SCOPE", scope)
+    handoff.monkeypatch.setenv("STORAGE_PR_NUMBER", number)
+    handoff.monkeypatch.setenv("STORAGE_SOURCE_SHA", source)
+    (handoff.source / "aisim-0.14.0.whl").write_bytes(b"wheel")
+    transfer.main()
+    manifest = json.loads(handoff.manifest.read_text())
+    assert manifest["scope"] == scope and manifest["pr_number"] == number
+    assert manifest["source_sha"] == source and manifest["commit"] == "b" * 40
+    assert all(f"/ci-wheels-local/{prefix}/{source}/101/1/" in url for url in handoff.objects)
+    assert all("/ci-wheels/" not in url for url in handoff.objects)
+    download(handoff, run="202", attempt="7")
+    assert (handoff.output / "aisim-0.14.0.whl").read_bytes() == b"wheel"
+    handoff.requests.clear()
+    # A different PR or non-PR category must fail before authenticated requests.
+    handoff.monkeypatch.setenv("STORAGE_PR_NUMBER", "200" if scope == "pr" else "199")
+    with pytest.raises(ValueError):
+        download(handoff, run="202")
+    assert handoff.requests == []
+
+
+@pytest.mark.parametrize("number", ["", "0", "01", "-1", "199/../200", "not-a-pr"])
+def test_invalid_pr_identity_is_rejected_before_authentication(handoff, number):
+    handoff.monkeypatch.setenv("STORAGE_SCOPE", "pr")
+    handoff.monkeypatch.setenv("STORAGE_PR_NUMBER", number)
+    (handoff.source / "aisim.whl").write_bytes(b"wheel")
+    with pytest.raises(ValueError, match="explicit positive PR number"):
+        transfer.main()
+    assert handoff.requests == []
+
+
+@pytest.mark.parametrize("scope", ["official", "preview"])
+def test_non_pr_categories_cannot_carry_a_pr_identity(handoff, scope):
+    handoff.monkeypatch.setenv("STORAGE_SCOPE", scope)
+    handoff.monkeypatch.setenv("STORAGE_PR_NUMBER", "199")
+    with pytest.raises(ValueError, match="cannot carry a PR number"):
+        transfer.main()
+    assert handoff.requests == []
+
+
+def test_explicit_pr_number_selects_pr_environment_for_manual_fpe_from_main():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/fpe-support-matrix.yml").read_text())["jobs"]
+    for job in jobs.values():
+        if any(step.get("uses", "").endswith("/wheel-storage") for step in job.get("steps", [])):
+            assert selected_environment(job, pr_number="199") == "pr-wheel-staging"
+
+
+def test_pr_identity_is_propagated_from_verified_ci_and_preview_selectors():
+    workflows = ROOT / ".github/workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text())["jobs"]
+    assert ci["verify-target"]["outputs"]["pr-number"] == "${{ steps.pr-target.outputs.number }}"
+    verify = next(step for step in ci["verify-target"]["steps"] if step.get("id") == "pr-target")
+    assert '"${pr_head}" != "${RUN_SHA}"' in verify["run"]
+    assert "number=%s" in verify["run"]
+    assert ci["select-full-ci"]["outputs"]["pr-number"] == "${{ needs.verify-target.outputs.pr-number }}"
+    for name in ("application-wheel", "application-test-wheel", "application-tests"):
+        for step in ci[name]["steps"]:
+            if step.get("uses", "").endswith("/wheel-storage"):
+                assert step["with"]["pr-number"] == "${{ needs.select-full-ci.outputs.pr-number }}"
+    simulation = yaml.safe_load((workflows / "simulation-performance.yml").read_text())["jobs"]
+    for job in simulation.values():
+        for step in job.get("steps", []):
+            if step.get("uses", "").endswith("/wheel-storage"):
+                assert step["with"]["scope"] == "pr"
+                assert step["with"]["pr-number"] == "${{ needs.select.outputs.number }}"
+    accuracy = (workflows / "e2e-accuracy.yml").read_text()
+    assert "pr_number: prNumber" in accuracy
+    assert "pr_number: ${{ matrix.pr_number || '' }}" in accuracy
+
+
+@pytest.mark.parametrize(
+    "ref,number,allowed",
+    [
+        ("refs/heads/pull-request/199", "199", True),
+        ("refs/heads/pull-request/199", "", False),
+        ("refs/heads/pull-request/199", "200", False),
+        ("refs/heads/pull-request/199", "0199", False),
+        ("refs/heads/experiment", "", True),
+        ("refs/heads/main", "", True),
+        ("refs/heads/main", "199", True),
+        ("refs/heads/main", "199/../200", False),
+    ],
+)
+def test_standalone_fpe_requires_explicit_matching_copied_pr_identity(tmp_path, ref, number, allowed):
+    job = yaml.safe_load((ROOT / ".github/workflows/fpe-support-matrix.yml").read_text())["jobs"]["prepare-wheel"]
+    guard = next(step for step in job["steps"] if step.get("name") == "Validate wheel storage context")
+    result = subprocess.run(
+        ["bash", "-e", "-c", guard["run"]],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "GITHUB_REF": ref, "PR_NUMBER": number},
+    )
+    assert (result.returncode == 0) is allowed, result.stderr
+    first_transfer = next(i for i, step in enumerate(job["steps"]) if step.get("uses", "").endswith("/wheel-storage"))
+    assert job["steps"].index(guard) < first_transfer

@@ -19,7 +19,7 @@ inputs:
     description: Artifactory repository key
     required: true
   token:
-    description: Artifactory credential (read only for consumers)
+    description: Artifactory credential scoped to the selected environment and repository
     required: true
   run-id:
     description: Producer run for cross-run downloads
@@ -30,6 +30,12 @@ inputs:
   architecture:
     description: Producer architecture, checked by every consumer
     required: true
+  scope:
+    description: official, pr, or preview storage namespace
+    default: official
+  pr-number:
+    description: Explicit verified PR identity when scope is pr
+    default: ''
   github-token:
     description: GitHub token for cross-run manifest downloads
     default: ${{ github.token }}
@@ -54,6 +60,8 @@ runs:
     - name: Transfer and verify Artifactory files
       shell: bash
       env:
+        STORAGE_SCOPE: ${{ inputs.scope }}
+        STORAGE_PR_NUMBER: ${{ inputs.pr-number }}
         STORAGE_MODE: ${{ inputs.mode }}
         STORAGE_NAME: ${{ inputs.name }}
         STORAGE_PATH: ${{ inputs.path }}

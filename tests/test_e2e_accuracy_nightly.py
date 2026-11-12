@@ -1296,7 +1296,7 @@ def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkey
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
     dist = SimpleNamespace(locate_file=lambda name: tmp_path / name, version="test", files=list(members))
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: dist)
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: dist)
     imported = []
 
     def load(name):
@@ -1338,7 +1338,7 @@ def test_predictor_layout_rejects_multiple_baseline_apis(adapters):
 )
 def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_name):
     files = [api.replace(".", "/") + ".py", adapter_name.replace(".", "/") + "/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     calls = []
     request = SimpleNamespace(
@@ -1402,7 +1402,7 @@ def test_publication_checks_aic_success_count_against_point_statuses(artifact, s
 def test_campaign_does_not_infer_measured_output_from_total(monkeypatch, output):
     api, adapter_name = "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"
     monkeypatch.setattr(campaign, "predictor_module_names", lambda _: (api, adapter_name))
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[]))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=[]))
     monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     worker = SimpleNamespace(
         tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1, replicas=1, gpus_per_replica=4
@@ -1594,7 +1594,7 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
         "aisimulate.sdk.config_adapter": source_config_adapter,
     }
     files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
     result = campaign.predict_point(point)
     row = result["row"]
@@ -1680,7 +1680,7 @@ def test_old_wheel_incorrect_topology_cannot_publish(monkeypatch, dp_attention):
         "aisimulate.sdk.config_adapter": adapter,
     }
     files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
     monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     assert campaign.predict_point(point) == {
@@ -1988,7 +1988,7 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
         "aisimulate.sdk.perf_database": SimpleNamespace(get_latest_database_version=lambda **_: "database-2.0"),
     }
     files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     original_import = campaign.importlib.import_module
     monkeypatch.setattr(
         campaign.importlib,
@@ -2580,3 +2580,29 @@ def test_mtp_staleness_uses_current_cohort_without_changing_stp():
     assert points == stp
     assert stats["excluded"] == {"stale": 1}
     assert len(points) + sum(stats["excluded"].values()) == 2
+
+
+@pytest.mark.parametrize("wrong_checksum", [False, True])
+def test_v2_artifact_is_verified_before_normalizing_to_main_ui_v1(artifact, wrong_checksum):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    original, run = artifact
+    modern = normalize_summary(original, target_version=2)
+    assert modern["schema_version"] == 2
+    assert "aisim" in modern["totals"] and "aisimulate" not in modern["totals"]
+    before = deepcopy(modern)
+    qualification = None
+    if wrong_checksum:
+        qualification = {
+            **original["snapshot"]["campaign"],
+            "summary_sha256": hashlib.sha256(campaign.encoded(original)).hexdigest(),
+        }
+    payload = archive(modern, qualification=qualification)
+    if wrong_checksum:
+        with pytest.raises(ValueError, match="summary checksum mismatch"):
+            publish.validate_artifact(payload, run)
+    else:
+        normalized = publish.validate_artifact(payload, run)
+        assert normalized == original
+        assert normalized["snapshot"]["campaign"]["schema_version"] == 1
+    assert modern == before

@@ -146,6 +146,8 @@ local preview directory rather than replacing a checked-in qualified snapshot.
 When refreshing a preview with a branch catalog, update both `summary.json`
 and the selected catalog entry's summary path so the browser loads the new data.
 
+Main's dashboard currently consumes public summary v1 (`aisimulate` series fields). Pages readers also accept release summary v2 (`aisim` fields), converting only the public field names in memory before validation and generating the v1 representation for this UI. Original release artifacts and qualification checksums remain unchanged; checksums are verified before conversion. Unknown versions and mixed v1/v2 field names are rejected. This does not change AgentX schemas or raw InfX predictions.
+
 ## Branch selection
 
 The Pages build publishes a `branches.json` catalog containing `main` and every
@@ -659,3 +661,396 @@ change predictions, cohort selection, or accuracy metrics.
 
 The browser smoke check verifies that MTP summary values survive a page reload,
 as well as the selected filter.
+
+## AgentX beta
+
+Artifact paths allow symlinks above the trusted input root while rejecting
+symlinked bundle components and resolved paths outside that root. Timeline status
+values are escaped before rendering.
+
+The Hardware / backend column shows the recorded measured framework version,
+such as `sglang 0.5.20`. Grouped rows retain all distinct measured versions; missing
+versions stay unrecorded. The Performance model column identifies the prediction
+database version separately.
+
+Model and concurrency rows show a dedicated Performance model column, such as `Op-based
+(vllm 0.31.0)`. The detail page uses the full `Op-based perf model (vllm 0.31.0)`
+label after the run/lane/request counts.
+Labels use the recorded estimator and prediction database version; missing values
+stay unrecorded, and grouped runs retain each distinct model/version label.
+
+The replacement Qwen Weka campaign remains unpublished until all
+six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
+Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`
+silicon records in HF. Evidence displays that saved record separately from
+AISim replay settings; historical missing evidence remains unknown. Public
+projection rejects unrecognized feature fields and private values.
+`?campaign=finite-v1` selects the retained finite archive. After Weka activation,
+legacy Qwen URLs containing length/cache/repeat selectors route there, including
+the old 16-lane point. Weka profiles have no finite-workload selectors.
+The 2026-11-02 pilot stopped because qualification treated native
+`server_unsettled` as a failure. CPU investigation confirmed a normal grace-boundary
+cancellation; pilot and daily checks now accept it only with reconciled client
+terminals, deadlines and lifecycle cleanup. Native status and unsettled counts
+remain visible; active coverage remains the existing finite campaign until the
+full replacement campaign qualifies. Unrecorded cancellations retain
+explicit counts and unavailable timings. Evidence lists exclusions and metric
+denominators without a separate accounting section; incomplete failed/cancelled
+stream observations do not become zero-valued throughput comparisons.
+
+The resumed November 2–3 collection qualified the 1- and 4-lane profiles, but
+stopped when the 8-lane server exceeded its startup deadline while loading
+checkpoint weights. No 8-lane measurement started; 10/13/14 lanes remain
+unattempted. The two profiles and their feature records are retained privately
+as unscored incomplete-campaign evidence. They do not replace active coverage
+or satisfy the complete twelve-replay publication gate.
+
+The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
+It does not change InfX snapshots or calculate shape errors. The beta notice links
+to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).
+
+Initial coverage is explicitly selected in the reviewed private HF catalog
+`catalog/e2e/agentx.json`:
+
+- **AgentX:** B300, SGLang, GLM-5.3 NVFP4, TP8; points 446063, 446068,
+  446069, 446060, 446061, 446062 at 1, 4, 8, 10, 13, 14 lanes.
+- **Self-collected:** B300, vLLM, Qwen3.5-397B-A17B BF16, TP8; 4K/32K initial
+  prompts × cold/warm cache × 1/4/16 lanes × three repeats (36 runs).
+  The public dataset link is intentionally **coming soon**. TODO: add its public
+  HF URL after migration; never expose the private cache URL in the dashboard.
+
+GLM uses the recorded AgentX corpus, its live-trajectory warmup/snapshot, and a
+one-hour profiling run per point. It has no 4K/32K, cold/warm, or repeat sweep.
+Each Qwen run is a finite cohort of eight measured requests per lane: 8, 32, or
+128 requests at 1, 4, or 16 lanes. Its detail selectors choose one of 12 runs per
+concurrency; the concurrency summary still covers all 12.
+
+One table contains both sources, tagged beneath each model name. Model rows are
+expanded by default and remain collapsible. Concurrency rows open details; Qwen has exactly three such
+rows, combining all prompt/cache variants and repeats. Detail selectors default
+to 4K, cold, repeat 0 and persist in the URL. The selected run is labeled separately
+from the concurrency summary. Branches retain their own evidence, including
+unsupported outcomes; a release never borrows main's AgentX results.
+
+### Accuracy and accounting
+
+The five columns are point TPOT error, point TTFT error, point output-throughput
+error, request TTFT MAPE, and request TPOT MAPE. Throughput is **output tokens/s**.
+
+The information icon before **Point TPOT error** contrasts per-point and request
+averaging on hover, keyboard focus, or tap. Per-point compares the aggregate result
+across the benchmark's conversation requests; request MAPE averages individual
+matched-request errors. The tooltip explains that TTFT/TPOT exclude tool-call
+waits and that point error can be smaller because over- and under-predictions
+cancel when averaged. Metrics and provenance retain the calculation details.
+
+- Point error is `100 * abs(prediction - silicon) / silicon`, computed separately
+  for every run's mean metric. Model/concurrency rows average those errors equally,
+  not errors derived from averaged latencies. Null errors are not zeroes.
+- Request MAPE pools individual request errors directly across repeats and
+  variants. Each eligible request has equal weight, including in model summaries.
+  TTFT and TPOT have separate denominators; undefined or zero-denominator errors
+  remain unavailable.
+- Every measured request has a comparison record. Success, unique identity,
+  positive recorded output lengths, equal output lengths, and valid measurements
+  determine eligibility. Missing, failed, ambiguous, invalid-output, and
+  output-length-mismatched observations retain explicit counts. Different input
+  lengths are reported and do not imply identical prompts or cache histories.
+- GLM retains the successful profiling cohort span. Qwen retains the complete
+  finite measured cohort, including between-turn delays. Preparation and warmup
+  remain outside scoring. Qwen additionally requires native cache receipts to
+  match the measured trajectory before publishing accuracy.
+
+### Publication and detail data
+
+The runner fetches checksum-pinned inputs at one immutable HF revision, then runs
+observed-output replays using the evaluated wheel's native request, sample, and
+lifecycle telemetry. Measured framework versions and prediction database versions
+are recorded separately. No historical predictions, timing calibration, or GPU
+collection are used.
+
+`summary.json`, `details/<run-id>.json`, and `qualification.json` form one complete
+campaign. Qualification requires every catalog identity, consistent wheel,
+dataset, evaluated commit, and driver digests, and reconciled request accounting.
+Raw traces, token arrays, local paths, and logs remain private. Only explicit
+numerical projections and approved source links enter the public payload.
+
+The trusted Pages publisher checks the producer workflow and qualification job,
+branch ancestry, checksums, safe paths, allowed fields, and overview/detail
+agreement. Detail JSON loads on demand. The shared native renderer mounts directly
+inside the site header and theme, without an iframe. Dashboard, Request timeline,
+and Evidence tabs preserve their state in the URL. One Concurrency summary table
+appears above the Dashboard charts, covering all variants and repeats. The charts
+follow the selected run. Preparation remains unscored. The Request accounting section
+is omitted; request records remain available through timeline inspection. Older
+Accuracy-tab links open the Dashboard. Qwen selectors stay visible.
+A left-arrow link returns to the AgentX overview on the selected branch.
+System/Light/Dark preferences are shared with the overview.
+Manual theme choices on FPM and feature-support pages also set this shared override.
+AgentX availability is independent of InfX; InfX snapshot labels do not appear on
+the AgentX branch selector.
+Model summary rows use the overview's full-width tinted background and brighter
+text. Concurrency subrows use the page surface, with the same hover/focus accent.
+Source labels use compact, padded blue pills sized to their text, like the NEW badge.
+Comparison plots and request timelines use solid blue for silicon and solid yellow
+for AISim. Only Cumulative prompt token sources uses dotted lines, for cache misses;
+cache hits use solid lines. Failed timeline requests keep a red outline.
+Plots and expanded charts show compact MAPE badges without the comparison coverage
+and exclusions accordion. The numerical payload retains the coverage and exclusion counts.
+AgentX omits the Speculative acceptance length and Prefix cache hit rate per interval
+subplots. Both remain available in ordinary standalone replay exports.
+The comparison timeline shows ten minutes per screen: a one-hour phase spans six
+windows. Use the previous/next buttons or scroll horizontally; the current time
+range and window number stay visible. Up to one minute of terminal drain stays in
+the final window, with its actual end time shown. Longer phases add windows without
+clipping requests; shorter phases keep the same ten-minute scale. Conversation labels stay
+pinned, and resizing preserves the selected time range. Each 22-pixel row shows the conversation
+hash and request ID on one line, with silicon and AISim intervals on separate
+lines. Full identifiers and pairing status remain in the row tooltip and request
+inspection. Only pairs with at least one interval overlapping the visible time
+window appear; paging and scrolling trim other rows, while crossing intervals
+are clipped at the screen edges. Failed and unmatched requests follow the same
+overlap rule. Untimed requests remain in full-phase counts, without invented
+positions. Window filtering never changes the request scores or their denominators.
+The compact concurrency summary has one row per metric and columns for Silicon,
+AISim, error, and samples. All five metrics include both source values. Point rows
+average the metric's scored runs equally; request rows pool the individual pairs
+with a valid APE for that metric, using the same denominator as request MAPE.
+Errors still average individual errors, not the error between displayed means.
+The detail page loads and checks the qualified payloads for its concurrency once,
+then reuses them for workload selection. No other concurrency's details are fetched.
+On mobile, sample counts move below the error to keep the table within the screen.
+The separate selected-run accuracy table is omitted; changing the selected
+workload does not change the concurrency summary.
+A Feature Parity checklist sits to the left of the concurrency summary in
+one bordered row that fills the available width and aligns with the subplots.
+The panels share the row in a 1:1.1 ratio; the feature-name column uses 36% of
+its table, leaving 32% each for Silicon and AISim so notes wrap less. Both panels stretch to the same height; the summary table fills
+its panel. On smaller screens, they stack with the checklist first. The checklist
+follows the selected run and shows exactly eight fields: Prefix caching, Sub-block
+prefix reuse, Host offload (G2), Storage offload (G3), Hybrid KV/state cache,
+Speculative decoding, Dynamo - KVCR, and Dynamo - KV-aware routing. Model, backend,
+parallelism, and workload dimensions remain in configuration/evidence, outside
+this checklist. Evidence retains the full saved inventory for provenance.
+
+The checklist has separate Silicon and AISim columns. Feature names have no
+status icons; each status cell shows a green dot for On, a red dot for Off, or a
+question mark for Unrecorded, with text labels for accessibility. Unsupported is
+separate from Off. The explanatory footer is omitted; cell tooltips describe
+missing evidence, and the feature dataset revision remains visible.
+
+Silicon uses the saved `aisimulate.benchmark.features.v1` record. On, Off,
+N/A, and Unrecorded remain distinct. Unrecorded means the retained evidence
+cannot establish a setting; N/A means the feature does not apply to the selected
+execution. Missing silicon settings never fall back to AISim settings or support
+matrix defaults. Legacy Planner metadata cannot establish KV-aware router state.
+
+AISim uses the structured `aisimulate.agentx.simulation-features.v1` record
+exported by the evaluated wheel after defaults and compilation. All eight
+configured settings must be recorded for new completed runs; N/A is a resolved
+state, not a missing value. Native offline replay has no Dynamo router, so its
+KV-aware routing setting is N/A. Historical runs without this record show
+Legacy missing evidence. See Effective AISim feature evidence below for the
+qualification rules. Configured state and observed use remain separate: an On
+setting can have unknown observed use when attributable runtime counters are
+unavailable.
+
+Cell notes are generated by dashboard templates from recorded parameters and CI
+comparison results, without per-run agent-written annotations. They show details
+needed to interpret parity: offload scope, state-cache type, prefix match
+granularity, observed exercise, speculative token conventions, mismatches and
+unsupported bounds. Unknown observed use stays in Evidence and is omitted from
+Feature Parity cell notes; known observations remain visible. For example, the GLM seed-count note explains why silicon's
+raw draft value 4 matches AISim's three proposals. These notes remain automatic
+when collection and CI run unattended. Speculation badges retain method, draft
+length and AISim verification width; absent silicon parameters stay Unrecorded.
+
+The eight-feature checklist shows the selected run's settings together, without
+a separate Combination support section. On does not imply exercised or supported.
+The matrix link provides reference information, not a parity result for the
+evaluated wheel; these artifacts contain no scoped AISim support assessment.
+
+This is a UX-only update. New silicon metadata contracts, collectors/backfills,
+CI configuration/parity checks, and their publication contracts are deferred.
+Populated silicon method/draft values and an `Unsupported (actual: 7, AISim max: 5)` label
+require recorded actual settings and an applicable, revision-scoped CI limit;
+there is no universal maximum or inferred value in this UI. HF must contain only
+silicon truth/configuration/provenance; simulation settings, predictions, and
+support assessments belong in GitHub CI artifacts. The layout update does not
+claim that producer-to-dashboard feature parity is complete.
+Reviewed historical backfills may attach a separate `aisimulate.agentx.features.v1`
+sidecar through `scripts.pages.agentx_pages.attach_feature_evidence`. It pins the
+original measurement revision, the feature-record revision, both catalog hashes,
+and each canonical feature artifact hash. Publication requires the same complete
+run inventory and allowlisted metadata; it rejects mismatched datasets, duplicate
+identities, private fields, checksum failures, and unsafe destinations. The branch
+catalog advertises the sidecar path and checksum. Details verify that checksum and
+measurement revision before using the records, and show the supplemental HF revision
+separately. Prediction payloads, qualification hashes, and accuracy values stay intact.
+The beta support-matrix notice appears only on the AgentX overview. Self-collected
+evidence is labeled “AISim self-collected dataset: coming soon.”
+
+Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
+qualified numerical series, scores, phase-aligned requests and opaque joins.
+Historical payloads without it remain readable and show unavailable comparisons.
+Ordinary replay exports embed the same CSS, JavaScript and body template into one
+offline HTML file. Pages serves these assets and Plotly once.
+
+Curve MAPE uses positive silicon values at covered integer-second ticks in the
+common phase span, independently aligned to each recorded phase origin. Counter
+rebinning conserves counts; gauges preserve their measured interval meaning.
+Time series use trailing 50-second windows where labeled; latency percentiles use
+rolling 50-request or cumulative observations. Zoom never changes scoring.
+Missing intervals and zero denominators remain explicit. Preparation is unscored.
+Request MAPE is separate and retains the overview's equal-request denominators.
+Paired timelines include measured failures and unmatched requests. Unsupported
+metrics and descriptive distributions display N/A with a reason. Untimed requests
+remain inspectable by their row labels without inventing an interval.
+
+GLM server counters distinguish processed tokens from client output. Qwen's
+recorded stream timestamps and counts enable client-delivered output comparisons;
+cache snapshots do not establish continuous scheduler or cache observations.
+Charts without usable silicon observations explicitly label the prediction-only
+view. Input/output histograms describe AISim requests; their In-flight mode
+compares recorded silicon and AISim observations. The conversation footprint
+proxy also uses the retained silicon reference.
+The footprint comparison uses two stacked panels: Silicon/AISim above and their
+signed difference (AISim minus Silicon) below, in thousands of tokens. Long
+profiles default to 60-second averages of aligned one-second observations over
+the common recorded window. Zeros are included, bins missing any paired
+observation remain gaps, and a final shorter bin uses its available whole-second
+ticks. Raw mode retains the original observations, including each source's tail;
+differences require a paired timestamp within common coverage. Profiles shorter
+than a minute use Raw mode automatically. The toggle is available on the card
+and expanded chart; both panels share zoom. Curve MAPE continues using the
+original qualified one-second observations regardless of display mode or zoom.
+Ordinary replay exports without silicon comparisons retain their existing chart.
+
+The reviewed input configuration's `prediction_database_version` selects SGLang
+0.5.21 and vLLM 0.31.0 for this cohort, independently of measured framework
+versions. This is evaluator metadata, removed before compiling CorePredictionConfig.
+The wheel must contain the selected data; missing versions remain unsupported.
+The public payload records relevant Parquet checksums and the wheel checksum.
+GitHub repository commits and HF silicon revisions have distinct labels; private
+HF revisions are never public links.
+
+Validation:
+
+```bash
+python -m pytest -c /dev/null -p no:cacheprovider -W error tests/test_agentx_accuracy.py tests/test_agentx_curves.py -q
+python scripts/pages/check_agentx_browser.py
+```
+
+Public rollout requires a complete 42-replay preview and review/promotion of the
+private dataset candidate, plus op-data dependencies #664, #665, and #666 landing.
+Failed/unsupported outcomes remain in complete campaign
+accounting; accuracy is advisory. Source intake lives in `aisim-hf-dataset-ci`.
+
+The refreshed CPU preview completed all 42 replays using integration commit
+`1c753e4668310705b6451ba1ebf3061b3d5b30de` (dashboard plus pinned #664/#665/#666)
+and private candidate revision `da115d648f0be20a1c4e0408d552a4a1e8bebf9d`.
+Wheel SHA256: `dff8896a4c374c4e21597076cbf356e8611a0f021ba57ba85313e4ec6fa0530c`.
+All 2,016 Qwen measured requests matched. GLM retained 8,747 measured requests:
+8,624 matched, 37 measured failures, and 86 missing predictions; 295 extra
+predictions remain counted separately. An independent raw-record audit reproduced
+the five metrics, 828 curve scores, 21,907 native timestamp checks, and 2,142 Qwen
+cache checks. Two complete imports produced identical catalog checksum
+`02b2b26ff3dbaa1d83ee868903cce64c81dad655f6276d831b9337b8d14c96ec`.
+This validates provenance and arithmetic; accuracy remains advisory. Daily CI must
+generate new predictions. This preview is not a production snapshot.
+
+The AgentX overview displays Request TPOT MAPE before Request TTFT MAPE;
+column values and request denominators follow that order.
+
+Feature badges align left, with each label and value on the same line. Missing feature values display Unrecorded while internal unknown states remain unchanged.
+
+### Portable HF silicon bundles and candidate previews
+
+The AgentX HF reader consumes the thin `catalog/e2e/agentx.json` index, verifies
+its manifest checksums, then resolves each artifact relative to its configuration
+bundle. The current draft keeps the existing `v1` schema identifiers. It does
+not read the superseded opaque-object dataset layout. Existing published dashboard
+snapshots retain their original provenance and remain readable.
+
+HF contains silicon evidence only. CI reconstructs pinned upstream corpora from
+`data/e2e/agentx/corpus.json`, checks both source and derived hashes and filtering
+order, and applies observed output-length substitutions. Finite token traces are
+reconstructed from recorded token equality and dependencies. Replay configuration,
+prediction database selection, and simulator cache geometry belong to CI rather
+than the HF bundles. The reviewed policies currently cover B300 TP8 GLM/SGLang and
+Qwen/vLLM. They retain the existing op-level policy, correction disabled, SGLang
+0.5.21 / vLLM 0.31.0 databases, and GLM verification depth 3 with acceptance 1.99.
+These simulator choices are distinct from the silicon's configured draft length.
+Qwen cache geometry is requalified by `scripts/e2e_accuracy/agentx_inputs.py`
+from all recorded worker ranks using the shared-pool mapping. Receipts must contain
+each integer rank from zero through TP minus one exactly once. The accuracy driver
+loads no collection scripts from `benchmarks/evidence/`; historical producer
+fingerprints still use their original file closure.
+
+The HF feature inventory has eight entries: prefix caching, sub-block reuse,
+G2, G3, hybrid state cache, speculation, KVCR, and KV-aware routing. States, scopes,
+cache types, method and configured draft length come from measured evidence.
+Missing values stay unknown; Planner metadata cannot establish KV-aware routing.
+Feature and configuration evidence checksums and JSON pointers must resolve.
+
+For pre-merge validation, dispatch **E2E Accuracy Matrix** from the exact trusted
+`pull-request/<number>` copy with `preview=true`, the PR head `expected_sha` and
+`branch`, and an immutable `agentx_revision` from the reviewed HF candidate.
+The override applies only to AgentX; existing InfX selection remains unchanged.
+Candidate overrides are rejected outside trusted previews.
+
+An optional `agentx_campaign_catalog` may name a specific unscored failed/stopped
+campaign under `catalog/e2e/agentx/qualifications/`. This adds its retained profiles
+to a **partial preview**, without changing the HF active catalog or qualification
+status. Partial previews carry `measurement_campaign_status: partial`, display a
+warning on overview and detail pages, and cannot pass the public snapshot gate. Replay qualification confirms
+complete accounting of the explicitly selected profiles; it does not qualify the
+incomplete silicon campaign or authorize dataset promotion. No new GPU collection
+is part of this workflow.
+
+### Effective AISim feature evidence
+
+New AgentX executions export `aisimulate.agentx.simulation-features.v1` in GitHub
+CI artifacts. The recorder runs inside the exact evaluated wheel process, after
+that wheel resolves its typed defaults and compiles the replay. It retains the
+full resolved config and compiled replay privately, and publishes a strict
+projection of all eight feature settings with benchmark ID, evaluated revision,
+pinned silicon dataset revision, role, backend, model, and configuration hashes.
+HF remains silicon-only; the HF reader rejects simulation-feature artifacts.
+
+The AISim column reads this structured record, never human-readable
+`config_summary` labels or the silicon column. Each role retains its own states
+and parameters. Enabled, disabled, N/A, unsupported and recording failure remain
+distinct. Configured enablement does not establish observed use: for example,
+KVCR may be enabled but unused without router hints. Prefix-use observations
+cover the retained preparation and profile requests; other exercise states remain
+unknown unless the runtime provides attributable evidence. The current AgentX producer
+uses native offline replay without a Dynamo router adapter, so Dynamo KV-aware
+routing is N/A. Planner metadata cannot establish that routing setting.
+
+Prefix matching uses the compiled backend and cache geometry, including a
+resolved match unit. Missing `prefix_match_unit` alone is not treated as a
+universal off switch. Offload scopes and recurrent-state geometry retain their
+resolved role-specific values. Speculation uses the evaluated scheme's method
+and resolved depth; legacy `nextn` consults that evaluated SDK's architecture
+classification, including Kimi DSPARK. Acceptance remains a separate value.
+Bounds come from the evaluated method's typed API when available, never a
+universal hardcoded maximum; a known exceeded bound is displayed with actual
+and AISim maximum values. A parser bound is an upper bound, not a guarantee
+that every smaller model/backend/data combination is supported.
+
+For the recorded GLM NEXTN chain, SGLang's raw `speculative-num-draft-tokens=4`
+counts the seed plus three proposals. AISim `nextn=3` counts proposals, and its
+verification width is also four. Preserve the raw silicon value and normalize
+only when the retained recipe proves top-k one, three steps and width four.
+The matching convention is source-checked in
+[SGLang 0.5.20 tree construction](https://github.com/sgl-project/sglang/blob/d158602ff1d2cb953196c95158c488d503d2470c/python/sglang/srt/speculative/eagle_utils.py):
+selection takes width minus one proposals, then prepends the seed. Other
+methods, trees, or missing evidence do not inherit this normalization. Genuine
+normalized depth/method differences remain visible as mismatches.
+
+Legacy publications without a structured record show “Legacy missing evidence.”
+They are never filled using current defaults. Re-execute with the exact original
+wheel to obtain fresh effective evidence. New completed runs with missing or
+indeterminate knowable settings fail qualification; published records must bind
+to the same benchmark, evaluated revision and dataset revision as their result.

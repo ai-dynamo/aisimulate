@@ -25,7 +25,7 @@ verification round, including draft operations for schemes that model them.
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
 | `engine.speculation` | Unset (off) | Ngram only, fixed | Ngram block or registered-scheme block below. Rejected together with `nextn` or `nextn_accepted`; omit it to disable speculation. |
-| `engine.speculation.kind` | Required | Ngram only, fixed | `ngram` for prompt lookup; registered schemes include `mtp`, `eagle3`, `dflash`, `dspark`, and `draft_model`, subject to model/backend and replay limits below. |
+| `engine.speculation.kind` | Required | Ngram only, fixed | `ngram` for prompt lookup; registered schemes include `mtp`, `eagle3`, `dflash`, `dspark`, and `draft_model`, subject to model/backend and replay limits below. Only `mtp` supports the scoped G2 composition below. |
 | `engine.speculation.params` | `{}` | Rejected | Scheme-specific cost parameters. The scheme must resolve to 1–5 draft tokens; EAGLE requires a chain. |
 | `engine.speculation.draft_model_path` | Unset | Rejected | Draft checkpoint path or model ID, when required by the scheme. |
 | `engine.speculation.draft_config` | Unset | Rejected | Resolved draft geometry retained with the cost identity. See the [cost configuration](../../perf-model/configuration.md#speculative-decoding-configuration) for checkpoint requirements. |
@@ -33,7 +33,7 @@ verification round, including draft operations for schemes that model them.
 | `engine.speculation.num_speculative_tokens` | Required for flat ngram input | fixed | Integer from 1 to 5. |
 | `engine.speculation.acceptance_rates` | Required for flat ngram input | fixed | Exactly one conditional acceptance probability per draft token, each in `[0, 1]`. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
-| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. |
+| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. AFD decode communication also uses the model’s MTP work scale. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted **draft** tokens per round, excluding the base token, in `[0, nextn]`. |
 
 `recommend` retains the flat ngram and legacy `nextn` inputs, fixed for every
@@ -97,7 +97,8 @@ width, or draft offload behavior. The first-token, partial-round and preemption
 semantics described under [MTP](#mtp) still apply.
 
 Supported compositions use the offline `engine` stack, vLLM or SGLang language
-workers, aggregated or P/D topology, and synthetic or HBM-only agentic traffic.
+workers, aggregated or P/D topology, and synthetic or agentic traffic within
+the cache boundaries below.
 The selected scheme may impose a narrower backend/model constraint. Use default
 timing so the canonical constructor retains draft costs; fixed and polynomial
 timing are rejected for generic schemes. OP/SOL support and estimator fallback
@@ -105,7 +106,24 @@ follow the [cost-model contract](../../perf-model/configuration.md#speculative-d
 an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
-Grouped caches, G2/G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
+`kind: mtp` also supports [G2 host offload](kv-cache.md#host-offload-g2)
+on aggregated vLLM with `attention_data: 1`, prefix caching enabled and
+`host_offload.scope: dp_rank_local`. This uses synchronous, single-module MTP
+with a uniform shared FullAttention cache. Agentic G2 additionally requires a
+single static worker. Separate draft models, other speculative schemes,
+asynchronous scheduling, P/D, shared G2 pools, and G3 are outside this combined
+scope. Keep the canonical `engine.speculation` block, fixed KV capacity and
+default timing; acceptance and seed remain workload assumptions. This composition
+defaults `scheduler.async_scheduling` to `false` and rejects an explicit `true`.
+It is supported by `--stack engine`; the optional Dynamo stack retains its
+independent G2/speculation rejection until its consumer and dependency pins are updated.
+
+The combined scheduler and cache behavior is a modified simulation adaptation
+of [vLLM v0.32.0](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be),
+Copyright contributors to the vLLM project, Apache-2.0. It does not change the
+backend-version labels or provenance of the selected performance data.
+
+Grouped caches, other G2 speculation, G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
@@ -203,9 +221,18 @@ when benchmarking tiny token budgets.
 HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
 including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
-Rejected with MTP: grouped caches, G2/G3 offload, and state-cache prefix matching
-with `prefix_match_unit` smaller than `block_size`. Full-block alignment is supported.
-Combinations accepted by the
+For AFD, decode verification widens each request to `nextn + 1` tokens.
+Injected A/F transfers, F-node collectives, A-side combine, shared merge and
+all-gather also scale latency and energy by `(num_layers + nextn) / num_layers`,
+as generation compute does. This draft-work approximation distributes work
+across the target source layout, including its routed-layer fraction. It applies
+before pipeline evaluation and evidence, independently of `comm_overhead_factor`;
+compiled A-local TP collectives already carry the scale. Prefill and `nextn: 0`
+are unchanged. See [AFD batch pricing](../../sweeper/afd-topology.md#batch-pricing).
+
+For MTP with G2, use the scoped canonical `engine.speculation` composition
+above. Grouped caches, G3 offload, and state-cache prefix matching with
+`prefix_match_unit` smaller than `block_size` remain unsupported. Full-block alignment is supported. Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).
 

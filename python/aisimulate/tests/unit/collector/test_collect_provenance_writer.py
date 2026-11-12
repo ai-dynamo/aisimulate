@@ -58,9 +58,9 @@ pytestmark = pytest.mark.unit
 
 collect_mod.logger = logging.getLogger("test_collect_provenance_writer")
 
-# A real, already-hash_closures.yaml-covered module — using it lets the writer's
-# real load_closures()/collector_hash() calls run unmocked against the real repo
-# tree, instead of needing to fabricate a fake repo layout.
+# A real registered module — using it lets the writer's real collector_hash()
+# call run unmocked against the real repo tree, instead of needing to fabricate
+# a fake repo layout.
 REAL_MODULE = "collector.sglang.collect_gemm"
 MLA_MODULE = "collector.sglang.collect_mla_bmm"
 BACKEND = "sglang"
@@ -3572,7 +3572,7 @@ def test_writes_sidecar_with_rows_case_plan_hash_status_and_collector_ref(tmp_pa
 
 def test_status_complete_with_recorded_case_failures(tmp_path):
     """Recorded per-case failures are DATA and do not demote the table
-    (owner decision tianhaox 2026-08-08, PR #1486) — the failed case still
+    — the failed case still
     participates in case_plan_hash as an attempted case."""
     output_root = tmp_path / "out"
     parquet_path = output_root / "gemm_perf.parquet"

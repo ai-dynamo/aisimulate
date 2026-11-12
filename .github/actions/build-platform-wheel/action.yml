@@ -86,21 +86,36 @@ runs:
         uv pip install --quiet 'maturin>=1.12,<2' 'delocate>=0.13,<1'
         mkdir -p wheelhouse repaired-wheelhouse
         (cd python/aisimulate && maturin build --release --out ../../wheelhouse)
-        delocate-wheel --wheel-dir repaired-wheelhouse --verbose wheelhouse/aisimulate-*.whl
-        rm wheelhouse/aisimulate-*.whl
+        delocate-wheel --wheel-dir repaired-wheelhouse --verbose wheelhouse/*.whl
+        rm wheelhouse/*.whl
         mv repaired-wheelhouse/*.whl wheelhouse/
         python python/aisimulate/tools/verify_release_wheels.py wheelhouse
+
+    - name: Check exact wheel configuration provenance
+      shell: bash
+      run: |
+        python scripts/ci/check_bundled_configs.py extract --check \
+          --wheel wheelhouse/*.whl \
+          --output-dir "${RUNNER_TEMP}/bundled-configs-platform"
+
+    - name: Preserve wheel configuration inventory
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: bundled-configs-platform-${{ inputs.build_method }}-${{ inputs.python_architecture }}
+        # Reports are root files; extracted payloads live in files/.
+        path: ${{ runner.temp }}/bundled-configs-platform/*.*
+        if-no-files-found: error
 
     - name: Verify installed unified wheel
       shell: bash
       run: |
-        python -m pip install --quiet wheelhouse/aisimulate-*.whl
+        python -m pip install --quiet wheelhouse/*.whl
         python python/aisimulate/tools/verify_installed_package_layers.py --exercise-engine --exercise-fpe
 
     - name: Exercise installed public CLI round trip
       shell: bash
       run: |
-        python scripts/release/verify_installed_cli.py --wheel wheelhouse/aisimulate-*.whl --output installed-cli-verification.json
+        python scripts/release/verify_installed_cli.py --wheel wheelhouse/*.whl --output installed-cli-verification.json
 
     - name: Retain installed CLI evidence
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

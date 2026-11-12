@@ -36,7 +36,7 @@ from .config_profile import (
     validate_overrides,
 )
 from .fpm import run_fpm
-from .plan import create_plan, request_id
+from .plan import MEMORY_OBSERVATION_VERSIONS, audited_memory_release, create_plan, request_id
 from .schema import (
     AGENTX_REFERENCE_CONTEXT,
     CUDAGRAPH_MODES,
@@ -650,14 +650,25 @@ def _review_config_profile(
         if not memory.memory_ready:
             print("  No activation or non-KV byte estimate is required.")
             print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
-            if request.identity.framework_version == "0.27.0":
-                print("  Memory is observed during initialized vLLM 0.27.0 collection.")
+            version = request.identity.framework_version
+            release = audited_memory_release(version)
+            if release is not None:
+                if release == version:
+                    print(f"  Memory is observed during initialized vLLM {version} collection.")
+                else:
+                    print(
+                        f"  Memory is observed during initialized vLLM {version} collection if the vLLM files "
+                        f"that the observers read match audited vLLM {release}."
+                    )
                 print(
                     "  Collection policy: synchronous scheduling in both phases, "
                     "matching supported prefill benchmarking."
                 )
             else:
-                print("  Memory observation currently supports vLLM 0.27.0; this version can collect timings only.")
+                print(
+                    f"  Memory observation currently supports vLLM {', '.join(MEMORY_OBSERVATION_VERSIONS)}; "
+                    "this version can collect timings only."
+                )
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
         if draft.resolved.get("comm_quant_mode") != "half":

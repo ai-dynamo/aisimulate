@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
+      pr-number: ${{ steps.pr-target.outputs.number }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -84,7 +85,7 @@ jobs:
             echo "::error::PR comparison base must resolve to a full commit SHA"
             exit 1
           fi
-          printf 'base=%s\n' "${pr_base}" >> "${GITHUB_OUTPUT}"
+          printf 'base=%s\nnumber=%s\n' "${pr_base}" "${pr_number}" >> "${GITHUB_OUTPUT}"
       - name: Resolve immutable comparison base
         id: comparison-base
         shell: bash
@@ -120,6 +121,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      pr-number: ${{ needs.verify-target.outputs.pr-number }}
       run_all: ${{ steps.plan.outputs.run_all }}
       readme_commands: ${{ steps.plan.outputs.readme_commands }}
       platform_wheels: ${{ steps.plan.outputs.platform_wheels }}
@@ -248,7 +250,6 @@ jobs:
     uses: ./.github/workflows/collector-check.yml
     with:
       expected_sha: ${{ github.sha }}
-      base_sha: ${{ needs.verify-target.outputs.comparison-base }}
 
   prediction-regression:
     name: Prediction Regression
@@ -431,6 +432,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ needs.select-full-ci.outputs.pr-number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ needs.select-full-ci.outputs.pr-number }}
           mode: download
           name: application-test-wheel-${{ matrix.arch }}
           path: dist
@@ -438,13 +441,13 @@ jobs:
           architecture: ${{ matrix.arch }}
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Verify exact staged wheel
         run: python python/aisimulate/tools/verify_release_wheels.py dist
       - name: Smoke-test exact staged wheel
         run: |
           python -m venv staged-wheel-smoke
-          staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
+          staged-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
           staged-wheel-smoke/bin/python -c \
             "import aisimulate, aisimulate_core; \
             assert aisimulate_core._build_smoke() > 0"
@@ -483,7 +486,7 @@ jobs:
           architecture: ${{ matrix.arch }}
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Stage wheel in Artifactory
         shell: bash
         env:
@@ -629,8 +632,22 @@ jobs:
       - run: python -m pip install --require-hashes -r scripts/release/requirements.txt
       - name: Build the application test wheel once
         run: python scripts/release/build_manylinux_wheel.py --output-dir application-test-dist
+      - name: Check exact wheel configuration provenance
+        run: |
+          python scripts/ci/check_bundled_configs.py extract --check \
+            --wheel application-test-dist/*.whl \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-application"
+      - name: Preserve wheel configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-application-${{ matrix.arch }}
+          # Reports are root files; extracted payloads live in files/.
+          path: ${{ runner.temp }}/bundled-configs-application/*.*
+          if-no-files-found: error
       - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ needs.select-full-ci.outputs.pr-number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ needs.select-full-ci.outputs.pr-number }}
           mode: upload
           name: application-test-wheel-${{ matrix.arch }}
           path: application-test-dist/*.whl
@@ -638,7 +655,7 @@ jobs:
           architecture: ${{ matrix.arch }}
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
 
   application-tests:
     environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
@@ -679,6 +696,8 @@ jobs:
           python-version: "3.12"
       - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ needs.select-full-ci.outputs.pr-number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ needs.select-full-ci.outputs.pr-number }}
           mode: download
           name: application-test-wheel-${{ matrix.arch }}
           path: application-test-dist
@@ -686,13 +705,13 @@ jobs:
           architecture: ${{ matrix.arch }}
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Install the prebuilt application and test dependencies
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          wheels=(application-test-dist/aisimulate-*.whl)
+          wheels=(application-test-dist/*.whl)
           if [[ "${#wheels[@]}" -ne 1 ]]; then
             echo "::error::expected exactly one application test wheel, found ${#wheels[@]}"
             exit 1
@@ -871,6 +890,8 @@ jobs:
           python -m pytest -q -rx -n 4
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+          crates/core/parity_tests/perfmodel/test_afd_parity.py
+          crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py
       - name: Check native prediction numerical sentinels
         run: |
           python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
@@ -914,7 +935,7 @@ jobs:
       - run: python -m venv release-smoke
       - run: >-
           release-smoke/bin/python -m pip install
-          dist/aisimulate-*.whl
+          dist/*.whl
       - run: release-smoke/bin/python -m pip check
       - run: >-
           release-smoke/bin/python -c
@@ -922,9 +943,9 @@ jobs:
           expected = tomllib.loads(pathlib.Path('python/aisimulate/pyproject.toml').read_text())['project']['version'];
           import aisimulate, aisimulate_core;
           assert aisimulate.__version__ == aisimulate_core.__version__ == expected;
-          assert metadata.version('aisimulate') == expected;
+          assert metadata.version('aisim') == expected;
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
-          forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
+          forbidden = {'aisim-core', 'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version

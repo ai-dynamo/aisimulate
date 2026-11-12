@@ -24,6 +24,7 @@ import pandas as pd
 
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import RuntimeConfig, has_video_input
+from aisimulate_core.sdk.errors import UnsupportedVisionFamilyError
 from aisimulate_core.sdk.inference_summary import InferenceSummary
 from aisimulate_core.sdk.models import BaseModel
 from aisimulate_core.sdk.perf_database import PerfDatabase
@@ -157,7 +158,7 @@ def image_geometry(
     )
     fixed_tiles = enc_cfg.image_size > 0 and enc_cfg.max_num_tiles > 0
     if not (dynamic_qwen or fixed_tiles):
-        raise ValueError(
+        raise UnsupportedVisionFamilyError(
             f"{model_path}: the {model_info['architecture']} vision family is not supported by native VL replay"
         )
     overrides = {
@@ -1496,6 +1497,7 @@ class BaseBackend:
         max_seq_len: int | None = None,
         include_kvcache: bool = True,
         kvcache_multiplier: int = 1,
+        mtp_scaled_tokens: int | None = None,
     ) -> dict[str, float]:
         """Get backend memory with weights replaced by a model partition.
 
@@ -1515,8 +1517,8 @@ class BaseBackend:
         # — a prefill-only footprint, so it carries no decode share that
         # verifies nextn+1 draft tokens. Decode callers pass ``num_tokens > 0``
         # (one token per request) and keep the full ``(nextn+1)`` multiplier.
-        if num_tokens == 0 and "mtp_scaled_tokens" in memory_usage_params:
-            kwargs["mtp_scaled_tokens"] = 0
+        if "mtp_scaled_tokens" in memory_usage_params and (num_tokens == 0 or mtp_scaled_tokens is not None):
+            kwargs["mtp_scaled_tokens"] = 0 if num_tokens == 0 else mtp_scaled_tokens
 
         memory = self._get_memory_usage(
             model,

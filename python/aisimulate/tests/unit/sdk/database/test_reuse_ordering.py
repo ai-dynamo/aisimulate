@@ -157,6 +157,30 @@ def test_primary_only_when_no_siblings(systems_root: Path) -> None:
     assert db.data_provenance["gemm_perf.parquet"][0]["exists"] is True
 
 
+@pytest.mark.parametrize("op_layout", [None, "family", "legacy"], ids=["fpm-only", "family-op", "legacy-op"])
+def test_fpm_source_report_preserves_paths_and_warning_contract(systems_root: Path, caplog, op_layout) -> None:
+    caplog.set_level(logging.WARNING)
+    fpm_path = "data/h100_sxm/vllm/0.29.0/fpm_forward_perf.parquet"
+    _write(systems_root, fpm_path)
+    _write(systems_root, "data/h100_sxm/vllm/0.29.0/fpm_forward_perf.metadata.json", b"{}")
+    if op_layout is not None:
+        prefix = "gemm/" if op_layout == "family" else ""
+        _write(systems_root, f"data/h100_sxm/{prefix}vllm/0.29.0/gemm_perf.parquet")
+
+    db = _build_db(systems_root, backend="vllm", version="0.29.0")
+    for _ in range(2):
+        # Calls the real Rust resolver and Python warning consumer over FFI;
+        # stub contents suffice because source reports do not parse parquet.
+        assert _sources_for(db, systems_root, common.PerfDataFilename.fpm_forward) == [
+            (str(systems_root / fpm_path), None)
+        ]
+    assert db.data_provenance["fpm_forward_perf.parquet"] == [
+        {"version": "0.29.0", "path": str(systems_root / fpm_path), "channel": "primary", "exists": True}
+    ]
+    layout_warnings = [record for record in caplog.records if "Legacy perf-data layout" in record.getMessage()]
+    assert len(layout_warnings) == (1 if op_layout == "legacy" else 0)
+
+
 # ---------------------------------------------------------------------------
 # Channel 2 — declared reuse (reuse.yaml, same backend, any direction)
 # ---------------------------------------------------------------------------

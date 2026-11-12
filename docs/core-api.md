@@ -73,9 +73,13 @@ runner metrics remain available in `report` for debugging.
 
 After creating a runner, the call closes it even when execution fails. Runner
 execution exceptions are wrapped in `PredictionExecutionError`, preserving the
-cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt` and
-`ResourceLimitError` propagate unchanged; configuration, compilation, capability
-and runner-creation failures also propagate directly.
+cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt`,
+`ResourceLimitError`, and `UnsupportedVisionFamilyError` propagate unchanged;
+configuration, compilation, capability and runner-creation failures also
+propagate directly. `UnsupportedVisionFamilyError` is a `ValueError` subclass
+for image processors that native VL replay does not support. Diagnostics that
+include exception type names, such as failed sweep candidate reasons, report
+`UnsupportedVisionFamilyError` for this refusal; their reason category is unchanged.
 
 The call does not create output directories, save report files or print results.
 The caller owns those actions and resource budgets. Passing the plain engine
@@ -123,7 +127,6 @@ if __name__ == "__main__":
 | `adapter_configs` | Optional raw adapter blocks keyed by section name. |
 | `providers` | Resolved config adapters keyed by `"<stack>.<section>"`; required for every supplied adapter block. |
 | `output_configs` | Optional output-adapter configuration blocks for candidate and round callbacks. |
-| `afd_performance_model` | Optional performance-model provider for analytical AFD search. |
 | `show_progress` | Defaults to `True`; set `False` to disable progress display. |
 | `output_requirements` | Optional `ReplayOutputRequirements` forwarded to each candidate replay. |
 

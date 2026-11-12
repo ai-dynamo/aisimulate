@@ -228,7 +228,7 @@ test("PR preview requires an exact trusted copy of the open same-repository PR",
   const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisimulate"}}};
   const args = {event: "workflow_dispatch", ref: "refs/heads/pull-request/372", pr,
     inputs: {PREVIEW: "true", EXPECTED_SHA: sha, EVALUATED_BRANCH: branch}};
-  assert.deepEqual(await resolve(args), [{...entry(branch, sha), preview: true}]);
+  assert.deepEqual(await resolve(args), [{...entry(branch, sha), preview: true, pr_number: "372"}]);
   for (const ref of ["refs/heads/main", "refs/heads/simonec/preview", "refs/heads/pull-request/bad"]) {
     await assert.rejects(resolve({...args, ref}), /exact trusted/);
   }
@@ -239,4 +239,19 @@ test("PR preview requires an exact trusted copy of the open same-repository PR",
   }
   await assert.rejects(resolve({...args, pr: {...pr, state: "closed"}}), /does not match/);
   await assert.rejects(resolve({...args, inputs: {...args.inputs, PREVIEW: "false"}}), /must run from main/);
+});
+
+test("candidate and partial silicon inputs are restricted to pinned trusted previews", async () => {
+  const branch = "simonec/preview";
+  const pr = {state: "open", head: {sha, ref: branch, repo: {full_name: "ai-dynamo/aisimulate"}}};
+  const inputs = {PREVIEW: "true", EXPECTED_SHA: sha, EVALUATED_BRANCH: branch,
+    AGENTX_REVISION: "b".repeat(40), AGENTX_CAMPAIGN_CATALOG: "catalog/e2e/agentx/qualifications/campaign.json"};
+  const args = {event: "workflow_dispatch", ref: "refs/heads/pull-request/686", pr, inputs};
+  assert.deepEqual(await resolve(args), [{...entry(branch, sha), preview: true, pr_number: "686"}]);
+  await assert.rejects(resolve({...args, inputs: {...inputs, AGENTX_REVISION: "refs/pr/7"}}), /immutable SHA/);
+  await assert.rejects(resolve({...args, inputs: {...inputs, PREVIEW: "false"}}), /trusted preview/);
+  for (const path of ["../outside.json", "https://outside.invalid/catalog.json", "catalog/e2e/agentx/qualifications/../catalog.json"]) {
+    await assert.rejects(resolve({...args, inputs: {...inputs, AGENTX_CAMPAIGN_CATALOG: path}}), /pinned trusted preview/);
+  }
+  await assert.rejects(resolve({...args, inputs: {...inputs, AGENTX_REVISION: ""}}), /pinned trusted preview/);
 });

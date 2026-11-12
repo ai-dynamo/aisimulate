@@ -71,6 +71,7 @@ areas:
       - tests/test_state_cache_config.py
       - tests/test_host_offload_cli.py
       - tests/test_afd_*.py
+      - tests/golden/replay-v1-contracts.json
       - tests/golden/afd-*
       - tests/test_g3_offload_cli.py
       - tests/test_shared_g2_cli.py
@@ -78,6 +79,8 @@ areas:
       - tests/test_agentx_snapshot_export.py
       - tests/test_agentx_live_warmup.py
       - tests/test_runner.py
+      - tests/test_aiperf_metrics.py
+      - tests/fixtures/aiperf_0.13.0_request_metrics.json
       - tests/test_traffic.py
       - tests/e2e/
   - label: mocker
@@ -87,6 +90,7 @@ areas:
   - label: infra
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
+      - .cargo/
       - .github/
       - .dockerignore
       - .gitignore
@@ -95,6 +99,7 @@ areas:
       - Cargo.toml
       - deny.toml
       - crates/core/Cargo.toml
+      - crates/core/build.rs
       - crates/core/deny.toml
       - pytest.ini
       - scripts/
@@ -111,9 +116,15 @@ areas:
       - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
+      - tests/test_agentx_accuracy.py
+      - tests/test_agentx_inputs.py
+      - tests/test_simulation_features.py
+      - tests/test_agentx_curves.py
+      - tests/test_benchmark_features.py
       - tests/test_e2e_hf_measurements.py
       - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
+      - tests/test_bundled_configs.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -181,6 +192,16 @@ shared:
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_agentx_accuracy.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_agentx_inputs.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_simulation_features.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_agentx_curves.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_benchmark_features.py
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_e2e_hf_measurements.py
     owners: [forward-pass-engine, replay, infra, maintainers]
@@ -284,6 +305,8 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_afd_*.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/golden/replay-v1-contracts.json
+    owners: [replay, maintainers]
   - glob: tests/golden/afd-*
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_g3_offload_cli.py
@@ -298,6 +321,10 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
+  - glob: tests/test_aiperf_metrics.py
+    owners: [replay, sweeper, maintainers]
+  - glob: tests/fixtures/aiperf_0.13.0_request_metrics.json
+    owners: [replay, sweeper, maintainers]
   - glob: tests/test_traffic.py
     owners: [replay, maintainers]
   - glob: tests/e2e/
@@ -307,6 +334,8 @@ shared:
   - glob: crates/core/src/engine/timing.rs
     owners: [mocker, forward-pass-engine, maintainers]
   - glob: crates/core/Cargo.toml
+    owners: [mocker, replay, forward-pass-engine, infra, maintainers]
+  - glob: crates/core/build.rs
     owners: [mocker, replay, forward-pass-engine, infra, maintainers]
   - glob: crates/core/deny.toml
     owners: [mocker, replay, forward-pass-engine, infra, maintainers]

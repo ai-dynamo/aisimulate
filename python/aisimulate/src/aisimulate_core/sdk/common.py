@@ -765,6 +765,11 @@ DefaultHFModels = {
     "Qwen/Qwen3.5-397B-A17B",
     "nvidia/Qwen3.5-122B-A10B-NVFP4",
     "nvidia/Qwen3.5-397B-A17B-NVFP4",
+    # Unmodified copy of nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae (ModelOpt
+    # MIXED_PRECISION: static FP8 GDN, full-attention and shared-expert
+    # projections, NVFP4 routed experts). See
+    # model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md.
+    "nvidia/Qwen3.5-397B-A17B-NVFP4-V2",
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
@@ -777,6 +782,10 @@ DefaultHFModels = {
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    # Unmodified copy of nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650
+    # (ModelOpt MIXED_PRECISION, text path only). See
+    # model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md.
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -1127,115 +1136,6 @@ ColumnsDisagg = [
     "(e)parallel",
     "(e)memory",
     "power_w",  # NEW: E2E weighted average power in watts
-]
-
-"""
-Columns for AFD (Attention-FFN Disaggregated) inference summary dataframe
-
-AFD is orthogonal to P/D disaggregation: the same schema is used whether
-AFD is applied to the prefill phase, the decode phase, or both.
-
-Per-phase layer scalars (``t_a_layer`` / ``t_f_layer`` / ``t_a2f_layer`` /
-``t_f2a_layer`` / ``t_c_layer`` / ``t_step`` / ``balance_ratio`` /
-``comm_hidden``) appear in three forms:
-
-* ``<scalar>``                       -- un-prefixed "headline" value.
-* ``prefill_<scalar>`` / ``decode_<scalar>``  -- per-phase paired values.
-
-Filling rules:
-
-* ``phase="prefill"`` -- un-prefixed and ``prefill_*`` reflect the prefill
-  estimate; ``decode_*`` are NaN/None.
-* ``phase="decode"``  -- mirror of the above.
-* ``phase="both"``    -- ``prefill_*`` and ``decode_*`` carry the two
-  estimates; the un-prefixed scalars are NaN/None (refusing to pick a single
-  "headline" value when two phases run and may diverge).
-* AFD-with-PD combined runs always have ``phase`` set to the AFD side
-  (``"prefill"`` or ``"decode"``); the static side's scalars are NaN/None
-  in the corresponding ``prefill_*``/``decode_*`` slot to flag "this side
-  was not estimated under AFD".
-"""
-ColumnsAFD = [
-    "model",
-    "phase",
-    "isl",
-    "osl",
-    "gpus_per_node",
-    "(a)nodes",
-    "(a)tp",
-    "(a)bs",
-    "(a)micro_bs",
-    "(a)workers",
-    "(a)memory",
-    "(a)is_oom",
-    "(f)nodes",
-    "(f)tp",
-    "(f)ep",
-    "(f)workers",
-    "(f)memory",
-    "(f)is_oom",
-    "t_a_layer",
-    "t_f_layer",
-    "t_a2f_layer",
-    "t_f2a_layer",
-    "t_c_layer",
-    "t_step",
-    "balance_ratio",
-    "comm_hidden",
-    "prefill_t_a_layer",
-    "prefill_t_f_layer",
-    "prefill_t_a2f_layer",
-    "prefill_t_f2a_layer",
-    "prefill_t_c_layer",
-    "prefill_t_step",
-    "prefill_balance_ratio",
-    "prefill_comm_hidden",
-    "decode_t_a_layer",
-    "decode_t_f_layer",
-    "decode_t_a2f_layer",
-    "decode_t_f2a_layer",
-    "decode_t_c_layer",
-    "decode_t_step",
-    "decode_balance_ratio",
-    "decode_comm_hidden",
-    "ttft",
-    "tpot",
-    "request_latency",
-    "b_total",
-    "b_micro_total",
-    "tokens/s",
-    "tokens/s/gpu",
-    "tokens/s/user",
-    "seq/s",
-    "request_rate",
-    "concurrency",
-    "parallel",
-    "pipeline_model",
-    "num_microbatches",
-    "nextn",
-    "combined_with_pd",
-    "boundary_on_attn",
-    # Static prefill pool paired with the AFD pool in combined-with-PD
-    # default-mode sweeps; NaN for single-phase AFD-only estimates.
-    "(p)workers",
-    "(p)tp",
-    "(p)pp",
-    "(p)dp",
-    "(p)moe_tp",
-    "(p)ep",
-    "(p)bs",
-    "(p)num_gpus",
-    "(p)system",
-    "(p)backend",
-    "(p)version",
-    "(p)impl",
-    "(d)impl",
-    "num_total_gpus",
-    "memory",
-    "backend",
-    "version",
-    "system",
-    "power_w",
 ]
 
 

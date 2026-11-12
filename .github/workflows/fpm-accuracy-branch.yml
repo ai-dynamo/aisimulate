@@ -81,7 +81,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           run-id: ${{ inputs.nightly_run }}
           github-token: ${{ github.token }}
       - name: Verify wheel checksum and nightly producer revision
@@ -94,7 +94,8 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           directory = Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel'
-          wheels = list(directory.glob('aisimulate-*.whl'))
+          from scripts.release.package_identity import wheels as product_wheels
+          wheels = product_wheels(directory)
           if len(wheels) != 1:
               raise SystemExit('expected one unified wheel')
           wheel = wheels[0]
@@ -122,7 +123,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           retention-days: 7
 
   campaign:
@@ -155,7 +156,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Install the exact wheel shared by all predictors
         env:
           WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}

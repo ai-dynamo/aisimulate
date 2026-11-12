@@ -51,7 +51,7 @@ jobs:
           python -m pip install maturin==1.15.0
           python -m maturin build --release --locked --auditwheel skip --out "${RUNNER_TEMP}/release-raw-wheel"
           auditwheel repair --plat manylinux_2_28_x86_64 \
-            --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/aisimulate-*.whl
+            --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/*.whl
       - name: Record release and tooling provenance
         run: python scripts/fpe/run_release_fpe.py record-wheel
       - name: Install the release's locked dependencies and exact wheel
@@ -75,7 +75,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           retention-days: 7
 
   generate:
@@ -113,7 +113,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Install the release's locked dependencies and exact wheel
         run: |
           python -m pip install uv==0.12.6
@@ -165,7 +165,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: fpe-release-results-${{ inputs.release }}@*

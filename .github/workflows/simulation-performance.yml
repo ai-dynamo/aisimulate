@@ -248,7 +248,7 @@ jobs:
           "${RUNNER_TEMP}/callback-venv/bin/python" -m pip install --require-hashes \
             -r "${RUNNER_TEMP}/wheel/requirements.txt"
           "${RUNNER_TEMP}/callback-venv/bin/python" -m pip install --no-deps \
-            "${RUNNER_TEMP}"/wheel/aisimulate-*.whl
+            "$(python scripts/release/package_identity.py "${RUNNER_TEMP}/wheel")"
           "${RUNNER_TEMP}/callback-venv/bin/python" \
             scripts/performance/check_dynamo_callback.py source dynamo
           cp scripts/performance/simulation_dynamo_requirements.txt "${RUNNER_TEMP}/wheel/dynamo-requirements.txt"
@@ -258,6 +258,8 @@ jobs:
       - name: Upload exact wheel
         uses: ./.wheel-tooling/.github/actions/wheel-storage
         with:
+          scope: pr
+          pr-number: ${{ needs.select.outputs.number }}
           mode: upload
           name: simulation-wheel-${{ matrix.side }}-${{ matrix.sha }}
           path: ${{ runner.temp }}/wheel
@@ -265,7 +267,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           retention-days: 30
 
   compare:
@@ -327,6 +329,8 @@ jobs:
       - name: Download base wheel
         uses: ./.wheel-tooling/.github/actions/wheel-storage
         with:
+          scope: pr
+          pr-number: ${{ needs.select.outputs.number }}
           mode: download
           name: simulation-wheel-base-${{ needs.select.outputs.base_sha }}
           path: ${{ env.BASE_DIST }}
@@ -334,10 +338,12 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Download head wheel
         uses: ./.wheel-tooling/.github/actions/wheel-storage
         with:
+          scope: pr
+          pr-number: ${{ needs.select.outputs.number }}
           mode: download
           name: simulation-wheel-head-${{ needs.select.outputs.head_sha }}
           path: ${{ env.HEAD_DIST }}
@@ -345,7 +351,7 @@ jobs:
           architecture: amd64
           url: ${{ vars.WHEEL_STORAGE_URL }}
           repo: ${{ vars.WHEEL_STORAGE_REPO }}
-          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Verify and install both artifacts
         id: install
         run: |

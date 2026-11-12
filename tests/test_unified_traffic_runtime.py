@@ -31,7 +31,8 @@ def _engine(mode: str = "aggregated") -> dict:
         "context_length": 1024,
         "workers": {
             role: {
-                "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                # Include room for SGLang's default 512-token P/D decode reserve.
+                "kv_cache": {"capacity": {"type": "fixed", "blocks": 1024}},
                 "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
             }
             for role in (["aggregated"] if mode == "aggregated" else ["prefill", "decode"])
@@ -134,11 +135,14 @@ def test_native_continuous_agentic_profile_recycles_and_closes_admission(tmp_pat
         assert profile["profile_start_ms"] == 0
 
 
-def test_agentic_profile_releases_weka_requests_from_dependency_events(tmp_path):
+@pytest.mark.parametrize(("client", "spawn_gap_ms"), [(None, 5_000.0), ("agentx", 0.0)])
+def test_agentic_profile_releases_weka_requests_from_dependency_events(tmp_path, client, spawn_gap_ms):
     """AIPerf releases follow-ups, subagents and joins from actual events.
 
     The source API answered in 10-20 s, so every authored offset lies far
     behind what a 2 ms server allows. Times are relative to request events.
+    The AgentX client starts the subagent when its spawning turn returns,
+    without the recorded gap.
     """
 
     def request(t, hashes, api_time):
@@ -178,11 +182,14 @@ def test_agentic_profile_releases_weka_requests_from_dependency_events(tmp_path)
     path = tmp_path / "release-rules.jsonl"
     # The lane starts in the filler, then recycles into the play from turn zero.
     path.write_text(json.dumps(filler) + "\n" + json.dumps(play) + "\n")
+    source = {"type": "trace", "format": "weka", "paths": [str(path)]}
+    if client is not None:
+        source["client"] = client
     report = _run(
         {
             "engine": _engine(),
             "traffic": {
-                "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
+                "source": source,
                 "load": {
                     "type": "trace_timestamps",
                     "agentic_lanes": 1,
@@ -209,7 +216,7 @@ def test_agentic_profile_releases_weka_requests_from_dependency_events(tmp_path)
         return first[source]["arrival_time_ms"] - end(predecessor)
 
     assert gap_after("outer:1", "outer:0") == pytest.approx(30_000.0)
-    assert gap_after("outer:2:inner:0", "outer:1") == pytest.approx(5_000.0)
+    assert gap_after("outer:2:inner:0", "outer:1") == pytest.approx(spawn_gap_ms)
     assert gap_after("outer:2:inner:1", "outer:2:inner:0") == pytest.approx(1_000.0)
     # The joining turn waits for its own recorded delay; its child ended long before.
     assert end("outer:2:inner:1") < first["outer:3"]["arrival_time_ms"]
@@ -249,13 +256,23 @@ def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, 
     assert report.metrics["completed_requests"] == 2
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
-@pytest.mark.parametrize("prefill_limit,completed", [(32, 0), (33, 1)])
+@pytest.mark.parametrize(
+    "backend,prefill_limit,completed",
+    [
+        ("vllm", 32, 0),
+        ("vllm", 33, 1),
+        # SGLang requires input < context - 1 request token - 5 safety tokens.
+        ("sglang", 38, 0),
+        ("sglang", 39, 1),
+        ("trtllm", 32, 0),
+        ("trtllm", 33, 1),
+    ],
+)
 def test_disaggregated_prefill_context_requires_room_for_first_token(backend, prefill_limit, completed):
     engine = _engine("disaggregated")
     engine["backend"] = backend
     engine["workers"]["prefill"]["context_length"] = prefill_limit
-    engine["workers"]["decode"]["context_length"] = 36
+    engine["workers"]["decode"]["context_length"] = 64
     report = _run(
         {
             "engine": engine,
@@ -904,6 +921,28 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
     for key in ("agentic_graph", "agentic_lifecycle_digest", "agentic_play_outcomes", "per_request"):
         assert repeated[key] == native[key], key
     assert [outcome["status"] for outcome in native["agentic_play_outcomes"]] == ["completed"]
+
+
+def test_engine_stack_adds_weka_chat_template_tokens_to_every_prompt() -> None:
+    # Every request of the fixture opens its stream, so each prompt grows by
+    # exactly request_tokens; message and tail tokens apply to later requests only.
+    def input_lengths(chat_template: dict | None) -> list[int]:
+        source = {"type": "trace", "paths": [str(_TRACE_FIXTURES / "weka")], "format": "weka"}
+        if chat_template is not None:
+            source["chat_template"] = chat_template
+        report = _run(
+            {
+                "traffic": {"source": source, "load": {"type": "trace_timestamps", "agentic_lanes": 1}},
+                "engine": _engine(),
+            }
+        )
+        return sorted(record["input_length"] for record in report.metadata["native_report"]["per_request"])
+
+    plain = input_lengths(None)
+    templated = input_lengths(
+        {"request_tokens": 5, "user_tokens": 7, "assistant_tokens": 6, "tail_tokens": 2, "append_tail_tokens": 1}
+    )
+    assert templated == [length + 5 for length in plain]
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])

@@ -134,6 +134,9 @@ class ForwardPassPerfModelConfig:
     arrays ``scheduled_requests.extend_lengths`` and ``past_kv_lengths``;
     both must have one entry per scheduled request. Their sums may differ from
     aggregate token counters because backends use different counting conventions.
+    Fitted or sampled, the ``longest_split`` and ``eager`` axes also need a
+    positive ``fit.linear.max_kv_splits`` and
+    ``fit.linear.max_cudagraph_capture_size`` respectively.
 
     ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
     Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned
@@ -195,6 +198,8 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
+    afd_routing_location: str | None = dataclass_field(default=None, kw_only=True)
+    afd_pool_role: str | None = dataclass_field(default=None, kw_only=True)
     fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int | str = 1
     pp: int | str = 1
@@ -258,7 +263,7 @@ class ForwardPassPerfModelConfig:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         # Additive identity stays out of payloads that do not set it.
-        for name in ("encoder_parallel", "deployment_limits"):
+        for name in ("encoder_parallel", "deployment_limits", "afd_routing_location", "afd_pool_role"):
             if payload[name] is None:
                 payload.pop(name)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
@@ -713,8 +718,11 @@ class RustForwardPassPerfModel:
         (``pure_decode``, ``contains_locally_mixed``, ``cross_rank_aggregated``,
         ``pure_prefill`` for aggregated workers) with ``ready``,
         ``not_ready_reason`` (``insufficient_data``, ``no_usable_fit`` or
-        ``untrained_forest_store``) and ``retained_observations``. Native
-        estimators are always ready. Eligible mixed interpolation routes also
+        ``untrained_forest_store``) and ``retained_observations``.
+        ``no_usable_fit`` includes a valid zero-slope constrained optimum; it
+        does not necessarily mean a failed numerical solve. A spline component
+        can be ready while its required companion linear fit is unavailable.
+        Native estimators are always ready. Eligible mixed interpolation routes also
         count as ready when their learned forest store is absent. Readiness
         describes an available estimator route, not coverage for every query;
         interpolation may still return no estimate outside its support.
@@ -858,6 +866,17 @@ class RustForwardPassPerfModel:
         a reason; whole-model estimators reject operation decomposition.
         """
         return json.loads(self._inner.static_phase_diagnostics(batch_size, context_length, prefix, prefill))
+
+    def fpm_seed_target_normalization(self) -> dict[str, Any]:
+        """Return native effective targets for fake-KV rows in the loaded profile.
+
+        The preparation-only report contains source row indices, raw and effective
+        milliseconds, replacement status, and policy/counts. Genuine rows remain
+        unchanged and are omitted. This exposes the loader's existing correction,
+        not interpolation predictions or new measured telemetry. It honors the
+        native raw-profile escape hatch and rejects non-native/non-FPM models.
+        """
+        return json.loads(self._inner.fpm_seed_target_normalization())
 
     def diagnostics(self) -> dict[str, Any]:
         """API: ``model.diagnostics() -> dict[str, Any]``.
@@ -1577,7 +1596,7 @@ def evaluate_generation_ops_with_rust(
     """Evaluate an index-addressed sublist of the compiled generation op list
     at the decode-step shape (see ``evaluate_context_ops_with_rust``). The
     base decode walk carries no prefix; ``prefix`` exists for orchestrations
-    that thread it (AFD's ``_sum_latency``)."""
+    that thread it."""
     handle = _cached_engine_handle(model, database)
     result = handle.evaluate_generation_ops(
         list(indices),

@@ -124,6 +124,16 @@ def _cgroup_directories(proc: Path, root: Path) -> list[tuple[Path, str]]:
     return list(dict.fromkeys(result))
 
 
+def _inactive_file_bytes(directory: Path, kind: str) -> int:
+    """Page cache that cgroup usage counts although the kernel reclaims it on demand."""
+    key = "inactive_file" if kind == "cgroup2" else "total_inactive_file"
+    for line in (_read_text(directory / "memory.stat") or "").splitlines():
+        name, _, value = line.partition(" ")
+        if name == key and value.isdecimal():
+            return int(value)
+    return 0
+
+
 def constrain_to_cgroups(host: HostResources, *, proc: Path = Path("/proc"), root: Path = Path("/")) -> HostResources:
     total, available, cpus = host.total_memory_bytes, host.available_memory_bytes, host.cpu_count
     for directory, kind in _cgroup_directories(proc, root):
@@ -138,7 +148,8 @@ def constrain_to_cgroups(host: HostResources, *, proc: Path = Path("/proc"), roo
         if limit and limit.isdecimal():
             total = min(total, int(limit))
             # Missing usage must not make a finite cgroup appear entirely free.
-            available = min(available, max(0, int(limit) - int(usage)) if usage and usage.isdecimal() else 0)
+            used = int(usage) - _inactive_file_bytes(directory, kind) if usage and usage.isdecimal() else int(limit)
+            available = min(available, max(0, int(limit) - used))
         if len(cpu) == 2 and cpu[0] and cpu[1]:
             try:
                 quota, period = int(cpu[0]), int(cpu[1])
@@ -724,33 +735,22 @@ def _scan_dynamo(events: Any, counters: _TraceCounters, state: dict[str, Any], l
             row[key] = event == "start_map"
 
 
-def _scan_weka(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
-    """Count WekaEntry and WekaInnerEntry requests with generated hashes for each prompt."""
-    block_size = state["block_size"]
-    rows: dict[str, dict[str, Any]] = {}
-    for prefix, event, value in events:
-        if prefix.endswith(".hash_ids.item"):
-            continue
-        if prefix == "block_size" and event == "number" and value != block_size:
-            raise ValueError("Weka corpus mixes block sizes")
-        # Totals, provenance, and the subagent marker itself are not requests.
-        if prefix in {"requests.item", "requests.item.requests.item"}:
-            if event == "start_map":
-                rows[prefix] = {}
-            elif event == "end_map":
-                row = rows.pop(prefix)
-                if row.get("type") not in {"n", "s"}:
-                    continue
-                length = _token_length(row.get("in"))
-                counters.hashes += (length + block_size - 1) // block_size
-                counters.outputs += _token_length(row.get("out"))
-                counters.largest_input = max(counters.largest_input, length)
-                counters.requests += 1
-                _check_headroom(counters, limit)
-        else:
-            base, _, key = prefix.rpartition(".")
-            if key in {"type", "in", "out"} and base in rows:
-                rows[base][key] = value
+def _scan_weka(path: Path, counters: _TraceCounters, block_size: int, limit: int | None) -> None:
+    """Count WekaEntry and WekaInnerEntry requests with generated hashes for each prompt.
+
+    The native scan skips hash arrays and reports each request in source order;
+    a headroom stop ends it before more input is read.
+    """
+    from . import _runtime
+
+    def count(length: int, output: int) -> None:
+        counters.hashes += (length + block_size - 1) // block_size
+        counters.outputs += output
+        counters.largest_input = max(counters.largest_input, length)
+        counters.requests += 1
+        _check_headroom(counters, limit)
+
+    _runtime.scan_weka_requests(path, block_size, count)
 
 
 def _weka_block_size(path: Path) -> int:
@@ -772,7 +772,6 @@ _TRACE_SCANNERS = {
     "agentic_mooncake": _scan_mooncake,
     "applied_compute_agentic": _scan_applied_compute,
     "dynamo": _scan_dynamo,
-    "weka": _scan_weka,
 }
 
 
@@ -803,16 +802,20 @@ def _scan_finite_trace(
         expands_every_input=not snapshot,
     )
     limit = None if inspection_budget_bytes is None else inspection_budget_bytes - WORKER_BASELINE_BYTES
-    scan = _TRACE_SCANNERS[format_name]
     state: dict[str, Any] = {
         "omitted_input_block_size": configured_block_size if format_name in {"mooncake", "mooncake-delta"} else 0
     }
     for path in files:
-        if format_name == "weka" and "block_size" not in state:
-            state["block_size"] = _weka_block_size(path)
+        if format_name == "weka":
+            if "block_size" not in state:
+                state["block_size"] = _weka_block_size(path)
+            _scan_weka(path, counters, state["block_size"], limit)
+            continue
         # Streaming holds individual scalars, never request or token arrays.
         with gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb") as stream:
-            scan(ijson.parse(stream, multiple_values=True, buf_size=64 * 1024), counters, state, limit)
+            _TRACE_SCANNERS[format_name](
+                ijson.parse(stream, multiple_values=True, buf_size=64 * 1024), counters, state, limit
+            )
     return counters
 
 

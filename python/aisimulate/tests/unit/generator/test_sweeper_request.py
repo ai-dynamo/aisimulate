@@ -259,6 +259,27 @@ def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     assert request.backend.generated_config_version == "1.3.0rc14"
 
 
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")],
+)
+def test_disagg_candidate_renders_planner_entrypoint(backend, backend_version):
+    candidate = _disagg_candidate(backend=backend, backend_version=backend_version)
+    candidate["config"]["adapters"] = {"dynamo.planner": candidate["config"]["adapters"]["dynamo.planner"]}
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 8192, "osl": 1024},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": f"example/{backend}:{backend_version}"}},
+    )
+
+    artifacts = generate_from_request(request)
+
+    [dgd] = [doc for doc in yaml.safe_load_all(artifacts["k8s_deploy.yaml"]) if doc["kind"] == "DynamoGraphDeployment"]
+    container = dgd["spec"]["services"]["Planner"]["extraPodSpec"]["mainContainer"]
+    assert container["command"] == ["python3", "-m", "dynamo.planner"]
+
+
 def test_disagg_candidate_accepts_matching_effective_role_hardware():
     request = from_sweeper_candidate(
         _disagg_candidate(
@@ -298,14 +319,14 @@ def test_candidate_gpu_count_must_match_lowered_topology():
         )
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
 def test_afd_candidate_rejects_native_generation_with_analytical_artifact_path(mode):
     with pytest.raises(
         SweeperCandidateError,
         match="aisimulate predict.*afd-replay-spec.json.*afd-qualification.json",
     ):
         from_sweeper_candidate(
-            {"config": {"deployment_mode": mode}},
+            {"config": {"deployment_mode": mode, "afd_roles": {"aggregated" if mode == "agg" else "decode": {}}}},
             model_facts=ModelFacts(is_moe=False),
         )
 

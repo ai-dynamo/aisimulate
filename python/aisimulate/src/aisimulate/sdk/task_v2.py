@@ -35,7 +35,7 @@ import dataclasses
 import logging
 import math
 import warnings
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -51,7 +51,7 @@ from aisimulate.sdk.models import (
     resolve_vllm_moe_execution_mode,
 )
 from aisimulate.sdk.models.blocks.moe import LARGE_EP_READY_FAMILIES, MoEBlockShape
-from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute, trtllm_mla_runs_fp8
 from aisimulate.sdk.moe_comm_resolver import (
     a2a_covers_parallel,
     moe_compute_coverage,
@@ -139,7 +139,7 @@ _REMOVED_AFD_TASK_KEYS = frozenset(
     }
 )
 _AFD_MIGRATION_HINT = (
-    "Use `aisimulate recommend` with an `engine.afd` block, then `aisimulate predict`. "
+    "Use `aisimulate recommend` with a `workers.<role>.afd` block, then `aisimulate predict`. "
     "See docs/aic-backward-compatibility/migration.md#afd-translation."
 )
 _warned_removed_afd_keys = False
@@ -415,124 +415,6 @@ def build_disagg_parallel_lists(
         raise ValueError(f"Invalid backend: {backend_name}")
 
     return prefill_cfg, decode_cfg
-
-
-# ---------------------------------------------------------------------------
-# Frozen legacy AIC AFD topology enumeration, retained as the parity oracle
-# for aisimulate.sweeper.afd_parallel.enumerate_afd_topologies.  Test-only;
-# not part of the public API.
-# ---------------------------------------------------------------------------
-
-
-def _is_valid_afd_moe_ep_size(f_moe_ep_size: int, tp_f: int, num_experts: int) -> bool:
-    return (
-        f_moe_ep_size >= 1
-        and f_moe_ep_size <= tp_f
-        and tp_f % f_moe_ep_size == 0
-        and (num_experts <= 0 or (f_moe_ep_size <= num_experts and num_experts % f_moe_ep_size == 0))
-    )
-
-
-def build_afd_parallel_lists(
-    total_gpus: int,
-    gpus_per_node: int,
-    is_moe: bool,
-    num_experts: int = 0,
-    *,
-    search_config: Mapping[str, Any] | None = None,
-) -> list[tuple[int, int, int, int, int, str]]:
-    """Enumerate AFD candidate topologies (frozen legacy AIC implementation).
-
-    Retained as the parity oracle for
-    :func:`aisimulate.sweeper.afd_parallel.enumerate_afd_topologies`;
-    not part of the public API.
-
-    Returns a list of ``(n_a_nodes, n_f_nodes, tp_a, f_moe_ep_size,
-    num_microbatches, pipeline_model)`` tuples.
-
-    Candidates satisfy the hard constraints:
-    * GPU budget -- ``(n_a_nodes + n_f_nodes) * gpus_per_node <= total_gpus``
-    * ``tp_a`` divides ``gpus_per_node``
-    * ``f_moe_ep_size`` divides ``tp_f = n_f_nodes * gpus_per_node``
-    * ``num_experts % f_moe_ep_size == 0`` when known
-    """
-    if gpus_per_node < 1 or total_gpus < 1:
-        return []
-
-    total_nodes = total_gpus // gpus_per_node
-    if total_nodes < 2:
-        return []
-
-    search = dict(search_config or {})
-    tp_a_candidates = search.get("tp_a_list")
-    if tp_a_candidates is None:
-        tp_a_candidates = sorted({d for d in (1, 2, 4, gpus_per_node) if d >= 1 and gpus_per_node % d == 0})
-    else:
-        tp_a_candidates = sorted({int(tp) for tp in tp_a_candidates if gpus_per_node % int(tp) == 0})
-
-    microbatch_candidates = list(search.get("microbatch_list") or [2, 3, 4])
-    pipeline_candidates = list(search.get("pipeline_model_list") or ["optimistic", "conservative"])
-    f_moe_ep_size_list = search.get("f_moe_ep_size_list")
-    max_af_ratio = float(search.get("max_af_ratio", 4.0))
-    max_candidates = int(search.get("max_candidates", 10_000))
-    candidate_overflow = str(search.get("candidate_overflow", "error"))
-    if max_candidates < 1:
-        raise ValueError(f"afd_config.search.max_candidates must be >= 1, got {max_candidates}.")
-    if candidate_overflow not in {"error", "truncate"}:
-        raise ValueError("afd_config.search.candidate_overflow must be 'error' or 'truncate'.")
-
-    candidates: list[tuple[int, int, int, int, int, str]] = []
-    for n_a_nodes in range(1, total_nodes):
-        for n_f_nodes in range(1, total_nodes - n_a_nodes + 1):
-            if n_a_nodes / n_f_nodes > max_af_ratio:
-                continue
-            tp_f = n_f_nodes * gpus_per_node
-            if is_moe:
-                raw_ep_candidates = f_moe_ep_size_list or [1, 2, "n_f_nodes", "tp_f"]
-                resolved_ep_candidates: set[int] = set()
-                for ep in raw_ep_candidates:
-                    if ep == "n_f_nodes":
-                        resolved_ep_candidates.add(n_f_nodes)
-                    elif ep == "tp_f":
-                        resolved_ep_candidates.add(tp_f)
-                    else:
-                        resolved_ep_candidates.add(int(ep))
-                ep_candidates = sorted(
-                    ep for ep in resolved_ep_candidates if _is_valid_afd_moe_ep_size(ep, tp_f, num_experts)
-                )
-            else:
-                ep_candidates = [1]
-            for tp_a in tp_a_candidates:
-                for f_moe_ep_size in ep_candidates:
-                    for num_microbatches in microbatch_candidates:
-                        for pipeline_model in pipeline_candidates:
-                            # Skip optimistic + mb < 3: the K=3 pipeline
-                            # requires num_microbatches >= 2 + t_c/max(t_a,
-                            # t_f), which is >= 3 whenever t_c > 0 (the
-                            # normal case).  mb=2 + optimistic always degrades
-                            # to conservative, producing a duplicate of the
-                            # mb=2 + conservative candidate and a flood of
-                            # per-stride warnings.
-                            if pipeline_model == "optimistic" and num_microbatches < 3:
-                                continue
-                            candidates.append(
-                                (n_a_nodes, n_f_nodes, tp_a, f_moe_ep_size, num_microbatches, pipeline_model)
-                            )
-    if len(candidates) > max_candidates:
-        message = (
-            f"AFD topology enumeration produced {len(candidates)} candidates, "
-            f"exceeding max_candidates={max_candidates}."
-        )
-        if candidate_overflow == "truncate":
-            logger.warning("%s Truncating deterministically to the first %d candidates.", message, max_candidates)
-            candidates = candidates[:max_candidates]
-        else:
-            raise ValueError(
-                f"{message} Narrow the AFD search, increase search_config['max_candidates'], "
-                "or set search_config['candidate_overflow']='truncate'."
-            )
-    logger.info("AFD topology enumeration candidate count: %d", len(candidates))
-    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -1195,6 +1077,7 @@ class Task:
 
         self._fmha_explicit = fmha_explicit
         self._kvcache_explicit = kvcache_explicit
+        self._fmha_from_data: dict[str, bool] = {}
 
     def _apply_fmha_data_fallback(self) -> None:
         """Data-driven FMHA resolution (second half of quant resolution).
@@ -1217,6 +1100,31 @@ class Task:
                     self._set_role_attr(role, "gemm_quant_mode", common.GEMMQuantMode.nvfp4_wo)
                 if self._role_attr(role, "moe_quant_mode") == common.MoEQuantMode.nvfp4:
                     self._set_role_attr(role, "moe_quant_mode", common.MoEQuantMode.nvfp4_wo)
+
+        # TRT-LLM runs MLA attention in FP8 on an FP8 KV cache on SM90/100/103/120
+        # (helpers.trtllm_mla_runs_fp8), so a bfloat16 FMHA there, explicit or not,
+        # means the FP8 it runs. A whole-model FPM identity is caller-owned, as in
+        # the resolvers (helpers.resolve_trtllm_mla_compute): its fmha_quant_mode
+        # names the collected cell, not the kernel precision.
+        for role in roles:
+            if self.forward_model == "fpm":
+                break
+            if role == "decode" or self._role_attr(role, "fmha_quant_mode") != common.FMHAQuantMode.bfloat16:
+                continue
+            sm_version = load_system_spec(self._role_attr(role, "system_name")).get("gpu", {}).get("sm_version")
+            if trtllm_mla_runs_fp8(
+                self._role_attr(role, "backend_name"),
+                sm_version,
+                self._role_attr(role, "model_path"),
+                self._role_attr(role, "kvcache_quant_mode"),
+            ):
+                self._set_role_attr(role, "fmha_quant_mode", common.FMHAQuantMode.fp8)
+                logger.warning(
+                    "%s: TRT-LLM runs MLA attention in FP8 on an FP8 KV cache (SM%s); "
+                    "using fmha_quant_mode fp8 instead of bfloat16",
+                    role,
+                    sm_version,
+                )
 
         # Data-driven FMHA resolution: if an inferred fp8 has no fp8 slice in
         # the role's fmha-keyed context-attention table, fall back to bfloat16
@@ -1257,6 +1165,7 @@ class Task:
             if fp8_hits >= bf16_hits or bf16_hits == 0:
                 continue  # fp8 data present, or nothing safe to fall back to
             self._set_role_attr(role, "fmha_quant_mode", common.FMHAQuantMode.bfloat16)
+            self._fmha_from_data[role] = True
             missing = [op for op, modes in supported.items() if modes and common.FMHAQuantMode.fp8.name not in modes]
             field = "fmha_quant_mode" if self.serving_mode == "agg" else f"{role}_fmha_quant_mode"
             logger.warning(
@@ -2004,6 +1913,7 @@ class Task:
             system=self._role_attr(role, "system_name"),
         )
         model_config._gemm_quant_mode_is_explicit = self._gemm_quant_mode_explicit_by_role.get(role, False)
+        model_config._fmha_quant_mode_from_data = self._fmha_from_data.get(role, False)
         if parallel is not None:
             required_phases = tuple(dict.fromkeys((*self._role_phases(role), *self._required_large_ep_phases(role))))
             resolve_model_config_moe_comm(
