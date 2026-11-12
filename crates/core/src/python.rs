@@ -60,7 +60,7 @@ impl<'de> Deserialize<'de> for PayloadKeys {
             type Value = PayloadKeys;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("an AISimulate execution payload")
+                formatter.write_str("an AISim execution payload")
             }
 
             fn visit_map<A: serde::de::MapAccess<'de>>(
@@ -143,7 +143,7 @@ impl<'de> Deserialize<'de> for RepeatedSpecHoldsReplay {
             type Value = RepeatedSpecHoldsReplay;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("an AISimulate execution payload")
+                formatter.write_str("an AISim execution payload")
             }
 
             fn visit_map<A: serde::de::MapAccess<'de>>(
@@ -4850,7 +4850,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             )
         };
         let keys = serde_json::from_str::<PayloadKeys>(payload)
-            .context("invalid AISimulate execution payload")?;
+            .context("invalid AISim execution payload")?;
         // Repeated `spec` keys are legacy metadata only when none holds a
         // replay; otherwise the configured envelope is ambiguous. A probe
         // error (for example, too deep to buffer) counts as ambiguous.
@@ -4860,7 +4860,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     serde_json::from_str::<RepeatedSpecHoldsReplay>(payload),
                     Ok(RepeatedSpecHoldsReplay(false))
                 ),
-            "invalid AISimulate execution payload: duplicate field `spec`"
+            "invalid AISim execution payload: duplicate field `spec`"
         );
         // A configured key makes the payload a configured one: a bare
         // ReplaySpec would drop that setting without a word.
@@ -4872,9 +4872,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 && parsed.is_err()
                 && let Err(error) = serde_json::from_str::<ConfiguredExecutionPayload>(payload)
             {
-                return Err(error).context("invalid AISimulate execution payload");
+                return Err(error).context("invalid AISim execution payload");
             }
-            legacy(parsed.context("invalid AISimulate execution ReplaySpec")?)
+            legacy(parsed.context("invalid AISim execution ReplaySpec")?)
         } else {
             match serde_json::from_str::<ConfiguredExecutionPayload>(payload) {
                 Ok(ConfiguredExecutionPayload {
@@ -4909,7 +4909,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     {
                         legacy(spec)
                     } else {
-                        return Err(error).context("invalid AISimulate execution payload");
+                        return Err(error).context("invalid AISim execution payload");
                     }
                 }
             }
@@ -11325,7 +11325,7 @@ mod tests {
             execute_json(&payload.to_string(), false).unwrap_err()
         );
         assert!(
-            error.contains("invalid AISimulate execution payload: invalid type: null"),
+            error.contains("invalid AISim execution payload: invalid type: null"),
             "{error}"
         );
         // The sequence form of a legacy ReplaySpec (fields in declaration order) still runs.
@@ -11348,7 +11348,7 @@ mod tests {
         // Malformed JSON names the payload and the parse position.
         let error = format!("{:#}", execute_json("{\"spec\": ", false).unwrap_err());
         assert!(
-            error.starts_with("invalid AISimulate execution payload: EOF while parsing"),
+            error.starts_with("invalid AISim execution payload: EOF while parsing"),
             "{error}"
         );
         // Repeated `spec` metadata on a bare ReplaySpec: the legacy form still runs.
@@ -11413,8 +11413,7 @@ mod tests {
             let payload = format!(r#"{{{prefix}"capture_telemetry": true, {}"#, &bare[1..]);
             let error = format!("{:#}", execute_json(&payload, false).unwrap_err());
             assert!(
-                error.starts_with("invalid AISimulate execution payload")
-                    && error.contains(expected),
+                error.starts_with("invalid AISim execution payload") && error.contains(expected),
                 "{prefix}: {error}"
             );
         }
@@ -11429,7 +11428,7 @@ mod tests {
             .unwrap_err()
         );
         assert!(
-            error.starts_with("invalid AISimulate execution payload"),
+            error.starts_with("invalid AISim execution payload"),
             "{error}"
         );
         assert!(
@@ -11441,7 +11440,7 @@ mod tests {
             execute_json(r#"{"version": 1}"#, false).unwrap_err()
         );
         assert!(
-            error.starts_with("invalid AISimulate execution ReplaySpec"),
+            error.starts_with("invalid AISim execution ReplaySpec"),
             "{error}"
         );
         // The configured keys follow `ConfiguredExecutionPayload`.
