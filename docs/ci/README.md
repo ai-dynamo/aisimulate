@@ -252,11 +252,13 @@ marked it N/A.
 MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
 SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
 The [manifest](../../.github/prediction-numerical-sentinels.json)
-records each query's inputs and expected value. The expected values come from
-the code of the commit that last changed the manifest; find it in a clone with
-full history with `git log -1 -- .github/prediction-numerical-sentinels.json`. That commit is on
-the main branch of every clone and mirror, so the manifest records no separate
-commit: a commit from a squashed PR branch would not be.
+records each query's inputs and expected value, but no source commit: a commit
+from a squashed PR branch is not on `main`, and mirrors cannot fetch it. In a
+clone with full history, `git log -p -- .github/prediction-numerical-sentinels.json`
+shows each change to the expected values and the PR that made it; that PR holds
+the evidence of how the values were produced. The current values come from
+PR #728 (`e2d994bba` on `main`). CI checks on every change that the code still
+reproduces them within tolerance, which is not exact reproduction.
 
 Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes

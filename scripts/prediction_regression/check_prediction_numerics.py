@@ -7,9 +7,9 @@
 This is numerical stability coverage, not predictive accuracy against hardware.
 The broad old/new modeling report remains advisory for numerical drift.
 
-The expected values come from the code of the commit that last changed the
-manifest (`git log -1 -- .github/prediction-numerical-sentinels.json`). That
-commit is on the main branch of every clone, so no extra commit is recorded.
+The manifest records no source commit. The history of the manifest
+(`git log -p -- .github/prediction-numerical-sentinels.json`) shows which PR
+changed the expected values; see docs/ci/README.md.
 """
 
 from __future__ import annotations
