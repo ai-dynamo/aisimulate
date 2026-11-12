@@ -451,6 +451,8 @@ still recommend the GPUs needed for the target load.
 Load-match dataframes expose `sla_satisfied`, `load_satisfied` and
 `gpu_budget_satisfied`. These flags are recomputed when merging backends;
 missing or stale `load_served_pct` values do not establish feasibility.
+The flags are also preserved in saved `best_config_topn.csv`;
+`pareto.csv` contains the frontier before load-match selection.
 
 Despite the field name, load matching uses `1 / total_gpus_needed`, so a
 2-GPU recommendation scores `0.5` and a 4-GPU recommendation scores `0.25`.
@@ -458,7 +460,9 @@ Throughput mode uses `tokens/s/gpu_cluster`. GPU-capped load-match results and
 SLA diagnostics under a GPU budget also use `tokens/s/gpu_cluster`.
 `load_served_pct` appears when the budget prevents serving the complete target.
 Unbudgeted sizing retains inverse-GPU scores, including diagnostic results.
-When merging backends, fitting the GPU budget exactly remains normal load matching.
+For an SLA-compliant full-target result that fits the GPU budget exactly,
+`pick_load_match` now returns `1 / total_gpus_needed` instead of the former
+`tokens/s/gpu_cluster` score, matching merged-backend scoring.
 The two score units are not directly comparable: a full-target score of `0.5`
 takes priority over a capped score of `75` that serves only 10% of the target.
 Read the selected dataframe's throughput columns for token rates.
