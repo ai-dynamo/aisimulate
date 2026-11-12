@@ -20,13 +20,13 @@ from email import message_from_bytes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 PYTHON_PACKAGE = "aisim"
 CRATE_PACKAGE = "aisim-core"
 REQUIRE_CLI_ALIAS = True
 PYTHON_NAMESPACE = "aisim"
 # Nightly CI stamps a dev suffix via scripts/release/apply_dev_version.py:
-# PEP 440 `0.14.0.devYYYYMMDD` in the wheel, SemVer `0.14.0-dev.YYYYMMDD` in
+# PEP 440 `0.15.0.devYYYYMMDD` in the wheel, SemVer `0.15.0-dev.YYYYMMDD` in
 # the crate, optionally followed by a ten-digit run number in both formats.
 # Cargo rejects the PEP 440 spelling. The release contract still
 # anchors on VERSION; only this suffix pair is additionally accepted.
