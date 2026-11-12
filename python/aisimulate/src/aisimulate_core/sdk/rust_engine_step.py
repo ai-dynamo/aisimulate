@@ -134,6 +134,9 @@ class ForwardPassPerfModelConfig:
     arrays ``scheduled_requests.extend_lengths`` and ``past_kv_lengths``;
     both must have one entry per scheduled request. Their sums may differ from
     aggregate token counters because backends use different counting conventions.
+    Fitted or sampled, the ``longest_split`` and ``eager`` axes also need a
+    positive ``fit.linear.max_kv_splits`` and
+    ``fit.linear.max_cudagraph_capture_size`` respectively.
 
     ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
     Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned
@@ -195,6 +198,8 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
+    afd_routing_location: str | None = dataclass_field(default=None, kw_only=True)
+    afd_pool_role: str | None = dataclass_field(default=None, kw_only=True)
     fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int | str = 1
     pp: int | str = 1
@@ -258,7 +263,7 @@ class ForwardPassPerfModelConfig:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         # Additive identity stays out of payloads that do not set it.
-        for name in ("encoder_parallel", "deployment_limits"):
+        for name in ("encoder_parallel", "deployment_limits", "afd_routing_location", "afd_pool_role"):
             if payload[name] is None:
                 payload.pop(name)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
@@ -1591,7 +1596,7 @@ def evaluate_generation_ops_with_rust(
     """Evaluate an index-addressed sublist of the compiled generation op list
     at the decode-step shape (see ``evaluate_context_ops_with_rust``). The
     base decode walk carries no prefix; ``prefix`` exists for orchestrations
-    that thread it (AFD's ``_sum_latency``)."""
+    that thread it."""
     handle = _cached_engine_handle(model, database)
     result = handle.evaluate_generation_ops(
         list(indices),

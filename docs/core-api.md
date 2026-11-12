@@ -123,7 +123,6 @@ if __name__ == "__main__":
 | `adapter_configs` | Optional raw adapter blocks keyed by section name. |
 | `providers` | Resolved config adapters keyed by `"<stack>.<section>"`; required for every supplied adapter block. |
 | `output_configs` | Optional output-adapter configuration blocks for candidate and round callbacks. |
-| `afd_performance_model` | Optional performance-model provider for analytical AFD search. |
 | `show_progress` | Defaults to `True`; set `False` to disable progress display. |
 | `output_requirements` | Optional `ReplayOutputRequirements` forwarded to each candidate replay. |
 

@@ -1086,6 +1086,8 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
     config = ForwardPassPerfModelConfig(*legacy_fields.values())
     assert vars(config) == {
         **legacy_fields,
+        "afd_routing_location": None,
+        "afd_pool_role": None,
         "fpm_profile": None,
         "dcp": None,
         "fpm_fmha_quant_mode": None,
@@ -1099,6 +1101,8 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
     pinned = ForwardPassPerfModelConfig(*legacy_fields.values(), moe_kernel_source=source)
     assert vars(pinned) == {
         **legacy_fields,
+        "afd_routing_location": None,
+        "afd_pool_role": None,
         "fpm_profile": None,
         "dcp": None,
         "fpm_fmha_quant_mode": None,
