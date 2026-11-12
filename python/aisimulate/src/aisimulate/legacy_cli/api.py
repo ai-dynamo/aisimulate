@@ -112,9 +112,9 @@ class CLIResult:
     """Chosen experiment, preferring SLA-compliant results within the GPU budget.
 
     Load matching first prefers SLA-compliant full-target results, then
-    SLA-compliant partial-load results, then closest-SLA diagnostics. An empty
-    candidate set produces ``"none"``. Throughput mode selects the highest
-    throughput.
+    SLA-compliant partial-load results, then closest-SLA diagnostics. Public
+    CLI helpers raise ``NoFeasibleConfigError`` if no candidate is eligible
+    instead of returning a result. Throughput mode selects the highest throughput.
     """
 
     best_configs: dict[str, pd.DataFrame]
@@ -122,8 +122,9 @@ class CLIResult:
 
     Load-match rows expose ``sla_satisfied``, ``load_satisfied`` and
     ``gpu_budget_satisfied``; closest-SLA diagnostics are explicitly marked.
-    No row exceeds an explicit GPU budget. No replica fitting the budget
-    produces an empty frame.
+    No row exceeds an explicit GPU budget. Public CLI helpers raise
+    ``NoFeasibleConfigError`` if no feasible configurations remain instead
+    of returning an empty result.
     """
 
     pareto_fronts: dict[str, pd.DataFrame]
@@ -571,6 +572,9 @@ def cli_recommend(
         token throughput. This API performs unbudgeted sizing, including
         closest-SLA diagnostics; see :class:`CLIResult` for the general
         score units and selection rules.
+
+    Raises:
+        NoFeasibleConfigError: If no feasible configuration is found for the load target.
 
     Example:
         >>> result = cli_recommend(

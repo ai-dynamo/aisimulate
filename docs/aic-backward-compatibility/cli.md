@@ -444,8 +444,8 @@ For load matching, `CLIResult.chosen_exp` first prefers SLA-compliant
 configurations that serve the full target, then SLA-compliant partial-load
 results. Closest-SLA diagnostics are considered only when no SLA-compliant
 result exists. Every returned configuration respects an explicit GPU budget,
-including diagnostics. If no single replica fits, the result is empty; no
-eligible candidate produces `chosen_exp="none"`. Without a budget, sizing can
+including diagnostics. If no single replica fits, `cli_recommend` raises
+`NoFeasibleConfigError`; it does not return a `CLIResult`. Without a budget, sizing can
 still recommend the GPUs needed for the target load.
 
 Load-match dataframes expose `sla_satisfied`, `load_satisfied` and
