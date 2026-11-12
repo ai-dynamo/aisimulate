@@ -923,6 +923,28 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
     assert [outcome["status"] for outcome in native["agentic_play_outcomes"]] == ["completed"]
 
 
+def test_engine_stack_adds_weka_chat_template_tokens_to_every_prompt() -> None:
+    # Every request of the fixture opens its stream, so each prompt grows by
+    # exactly request_tokens; message and tail tokens apply to later requests only.
+    def input_lengths(chat_template: dict | None) -> list[int]:
+        source = {"type": "trace", "paths": [str(_TRACE_FIXTURES / "weka")], "format": "weka"}
+        if chat_template is not None:
+            source["chat_template"] = chat_template
+        report = _run(
+            {
+                "traffic": {"source": source, "load": {"type": "trace_timestamps", "agentic_lanes": 1}},
+                "engine": _engine(),
+            }
+        )
+        return sorted(record["input_length"] for record in report.metadata["native_report"]["per_request"])
+
+    plain = input_lengths(None)
+    templated = input_lengths(
+        {"request_tokens": 5, "user_tokens": 7, "assistant_tokens": 6, "tail_tokens": 2, "append_tail_tokens": 1}
+    )
+    assert templated == [length + 5 for length in plain]
+
+
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 def test_agentx_replay_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
     config = {

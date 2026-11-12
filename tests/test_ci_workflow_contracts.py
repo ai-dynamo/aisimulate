@@ -3962,8 +3962,9 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
         assert record["after_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("chat_template", [False, True])
 @pytest.mark.parametrize("client_type", [None, "WekaClient", "OtherClient"])
-def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type):
+def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type, chat_template):
     from scripts.performance import build_simulation_dynamo as builder
 
     site = next(site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "WekaImportOptions")
@@ -3972,6 +3973,8 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
     api.parent.mkdir(parents=True)
     adapter.parent.mkdir(parents=True)
     fields = f"pub client: {client_type}," if client_type else ""
+    if chat_template:
+        fields += " pub chat_template: Option<WekaChatTemplate>,"
     api.write_text(f"pub struct WekaImportOptions {{pub nested_timestamp_basis: WekaNestedTimestampBasis, {fields}}}")
     source = "fn parse_weka_import_options() {\n    WekaImportOptions {\n        nested_timestamp_basis,\n    }\n}\n"
     adapter.write_text(source)
@@ -3984,10 +3987,13 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
         assert adapter.read_text() == source
     else:
         [record] = builder.patch_optional_literal_fields(core, dynamo)
-        assert record["inserted_fields"] == (["client"] if client_type else [])
+        inserted = (["client"] if client_type else []) + (["chat_template"] if chat_template else [])
+        assert record["inserted_fields"] == inserted
         if client_type:
             assert "client: WekaImportOptions::default().client," in adapter.read_text()
-        else:
+        if chat_template:
+            assert "chat_template: None," in adapter.read_text()
+        if not inserted:
             assert adapter.read_text() == source
 
 
