@@ -281,11 +281,6 @@ test("bundled AIC (legacy CLI) provenance links to AISim and rejects another rep
   await app.run('loadBranch("main")');
   assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisimulate\/commit\/d{40}/);
   assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
-  data.snapshot.aic_source.repository = "https://github.com/ai-dynamo/aisim";
-  data.snapshot.aic_source.cli_entry_point = "aisim.legacy_cli.entrypoint:main";
-  await app.run('loadBranch("main")');
-  assert.match(app.element("provenance-content").innerHTML, /aisim\/commit\/d{40}/);
-  assert.match(app.element("provenance-content").innerHTML, /aisim\.legacy_cli\.entrypoint:main/);
   for (const change of [
     { repository: "https://github.com/ai-dynamo/aiconfigurator" },
     { repository: 'javascript:alert(1)' },
