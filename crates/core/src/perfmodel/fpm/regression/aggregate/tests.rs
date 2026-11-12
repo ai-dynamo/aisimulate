@@ -10,7 +10,7 @@ use super::super::super::learned::{
 use super::*;
 use crate::ScheduledRequestMetrics;
 
-/// Python `aisimulate_core.sdk.fpm_learned.FEATURE_PRESETS["fpm5"]`.
+/// Python `aisim_core.sdk.fpm_learned.FEATURE_PRESETS["fpm5"]`.
 const FPM5_PRESET: [&str; D] = [
     "num_active_ranks",
     "num_prefill_requests",

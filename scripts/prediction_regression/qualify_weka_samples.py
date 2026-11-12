@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Qualify AISimulate Weka ingestion against two public AgentX trace rows."""
+"""Qualify AISim Weka ingestion against two public AgentX trace rows."""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def fetch_two_rows() -> list[dict[str, Any]]:
 
 
 def qualify(root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="aisimulate-weka-samples-") as directory:
+    with tempfile.TemporaryDirectory(prefix="aisim-weka-samples-") as directory:
         path = Path(directory) / "traces.jsonl"
         with path.open("w", encoding="utf-8") as destination:
             for row in rows:

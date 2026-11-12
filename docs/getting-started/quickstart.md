@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Predict and recommend a deployment
 
-AISimulate runs on the host CPU; the selected GPU is the hardware being modeled.
+AISim runs on the host CPU; the selected GPU is the hardware being modeled.
 Follow [installation](installation.md) first. The examples below match the
 [executable repository README](../../README.md), which Full CI checks against
 source and pinned Dynamo profiles. Source documentation can require a newer
@@ -26,13 +26,13 @@ engine:
 ```
 
 ```bash
-aisimulate predict \
+aisim predict \
   --stack engine \
   --config prediction.yaml \
-  --output-dir ./aisimulate-prediction
+  --output-dir ./aisim-prediction
 ```
 
-Read `aisimulate-prediction/prediction.json` for the complete report. Add
+Read `aisim-prediction/prediction.json` for the complete report. Add
 `--capture-per-request` for `requests.jsonl`, or `--format json` for a JSON
 summary on standard output. The simulator's wall time and the modeled serving
 latencies are different quantities; see [understand results](understand-results.md).
@@ -53,7 +53,7 @@ Concurrency limits in-flight requests; `stop.requests` is the total workload.
 To model arrivals at eight requests per second, replace the whole load object:
 
 ```bash
-aisimulate predict --config prediction.yaml \
+aisim predict --config prediction.yaml \
   --set 'traffic.load={type: constant_rate, requests_per_second: 8}' \
   --set traffic.stop.requests=100 --output-dir ./prediction-8rps
 ```
@@ -91,10 +91,10 @@ optimizer:
 ```
 
 ```bash
-aisimulate recommend \
+aisim recommend \
   --stack engine \
   --config recommendation.yaml \
-  --output-dir ./aisimulate-recommendation
+  --output-dir ./aisim-recommendation
 ```
 
 This is an eight-trial search within an eight-GPU candidate budget. It evaluates
@@ -106,9 +106,9 @@ search or a guarantee of the optimal configuration.
 If the result contains a selected candidate:
 
 ```bash
-aisimulate predict \
-  --config ./aisimulate-recommendation/recommendations/0001.yaml \
-  --output-dir ./aisimulate-best-prediction
+aisim predict \
+  --config ./aisim-recommendation/recommendations/0001.yaml \
+  --output-dir ./aisim-best-prediction
 ```
 
 Each recommendation YAML is a concrete prediction input. It does not deploy

@@ -4,7 +4,7 @@
 //! Default generalized-engine construction for offline replay.
 //!
 //! This module contains configuration and conversion helpers only. Scheduler
-//! state lives in `aisimulate_core::engine`; virtual time and worker lifecycle live
+//! state lives in `aisim_core::engine`; virtual time and worker lifecycle live
 //! in the moved aggregated/disaggregated replay runtimes.
 
 use std::num::NonZeroU32;
@@ -40,7 +40,7 @@ fn default_parallel_size() -> u32 {
     1
 }
 
-/// Serializable execution-time descriptor for the AISimulate engine.
+/// Serializable execution-time descriptor for the AISim engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReplayEngineConfig {

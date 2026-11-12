@@ -233,7 +233,7 @@ impl ManifestHeader {
             || field("state_encoding") != current.state_encoding.as_str()
         {
             return Err(invalid(format!(
-                "snapshot was written by aisimulate-core {} (manifest schema version {}, engine spec schema {}, encoding {}); this binary is {} ({}, {}); a snapshot restores only in the aisimulate-core version that wrote it, so restore it with that version or tune and save a new snapshot with this one",
+                "snapshot was written by aisim-core {} (manifest schema version {}, engine spec schema {}, encoding {}); this binary is {} ({}, {}); a snapshot restores only in the aisim-core version that wrote it, so restore it with that version or tune and save a new snapshot with this one",
                 show(&field("aisimulate_core_version")),
                 text(&header.schema_version),
                 show(&field("engine_spec_schema_version")),

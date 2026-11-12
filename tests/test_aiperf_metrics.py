@@ -6,11 +6,11 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.aiperf_metrics import AIPerfMetric, NoSamplesError, metric_value
-from aisimulate.config.cli import CoreRecommendationConfig
-from aisimulate.recommend import _goal
-from aisimulate.sweeper.config import Candidate, OptimizationGoal
-from aisimulate.sweeper.score import aggregate_sla_violations, analyze_candidates, make_candidate
+from aisim.aiperf_metrics import AIPerfMetric, NoSamplesError, metric_value
+from aisim.config.cli import CoreRecommendationConfig
+from aisim.recommend import _goal
+from aisim.sweeper.config import Candidate, OptimizationGoal
+from aisim.sweeper.score import aggregate_sla_violations, analyze_candidates, make_candidate
 
 
 def native(value=10.0, count=2.0, **overrides):
