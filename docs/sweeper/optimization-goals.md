@@ -5,6 +5,10 @@ title: Sweeper Optimization Goals
 subtitle: Objective metrics, SLA constraints, and Pareto-front scoring
 ---
 
+<!-- Documentation corrections adapted and modified from AIConfigurator PR #1612:
+https://github.com/ai-dynamo/aiconfigurator/blob/bff1492d4f668232b9dd411f9b28d849a2776000/docs/dynamo_deployment_guide.md
+-->
+
 > [!WARNING]
 > **Experimental.** Sweeper's API, configuration schema, search results, and deployment output
 > may change without a standard deprecation period. Validate shortlisted configurations on the
@@ -251,6 +255,25 @@ tradeoff between the scalar targets in `pareto_objectives`.
   unset (`None`) — the **InferenceX tok/s/gpu (y) vs tok/s/user (x) frontier**. An
   explicit list is kept as-is so the validator can reject it: `>= 2` entries, distinct, no
   `pareto` among them, and `pareto_objectives` is only legal under a `pareto` target.
+
+For a single positive inter-token latency, `TPOT_ms <= limit_ms` is equivalent to
+`1000 / TPOT_ms >= 1000 / limit_ms`. Thus a 10 ms limit includes the 100 tokens/s/user
+boundary, and feasible points are at or to the right of that threshold when the
+x-axis is the reciprocal of the same TPOT value.
+
+Native Replay and analytical AFD Replay both calculate the Sweeper's
+`throughput_per_user` objective as the **mean of per-request reciprocal TPOTs**,
+`mean(1000 / request_tpot_ms)`, using requests with a positive TPOT. This is not
+generally `1000 / mean_tpot_ms`: averaging and reciprocation do not commute.
+For example, two requests with TPOTs of 5 ms and 15 ms have a 10 ms mean TPOT
+but a mean reciprocal rate of about 133.3 tokens/s/user, rather than 100.
+
+Do not use an x-axis cutoff as a substitute for the aggregate TPOT SLA.
+Configure `goal.sla.itl_ms` with `goal.strict_sla: true` in the SDK
+(or `evaluation.sla.itl_ms` with `optimization.strict_sla: true` in
+the unified CLI) to apply the inclusive aggregate-mean constraint before the
+Pareto front is selected. Choose a feasible candidate from that filtered front
+for [deployment generation](deployment-generation.md#3-render-the-selected-candidate).
 
 - **optimizer selection** — the historical SDK path (`sweep.max_trials: null`)
   creates round-based Vizier studies. Its default algorithm is `DEFAULT`, subject
