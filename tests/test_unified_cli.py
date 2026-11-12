@@ -836,6 +836,7 @@ def test_predict_unsupported_vision_family_is_input_error(tmp_path, monkeypatch,
     from aisim.runner import _image_traffic_fields
     from aisim_core.sdk import utils
     from aisim_core.sdk.common import VisionEncoderConfig
+    from aisim_core.sdk.errors import UnsupportedVisionFamilyError
 
     # Minimal unqualified Pixtral geometry exercises the actual SDK refusal,
     # without downloading a checkpoint or requiring performance measurements.
@@ -898,6 +899,13 @@ def test_predict_unsupported_vision_family_is_input_error(tmp_path, monkeypatch,
             "stop": {"requests": 1},
         },
     }
+    api_runner = ImageRunner()
+    with pytest.raises(UnsupportedVisionFamilyError, match="vision family is not supported"):
+        run_prediction(
+            CorePredictionConfig.model_validate(raw), stack="engine", runner_factory=ImageFactory(api_runner)
+        )
+    assert api_runner.closed
+
     runner = ImageRunner()
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: ImageFactory(runner))
     path = tmp_path / "predict.yaml"

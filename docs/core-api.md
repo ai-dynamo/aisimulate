@@ -73,9 +73,13 @@ runner metrics remain available in `report` for debugging.
 
 After creating a runner, the call closes it even when execution fails. Runner
 execution exceptions are wrapped in `PredictionExecutionError`, preserving the
-cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt` and
-`ResourceLimitError` propagate unchanged; configuration, compilation, capability
-and runner-creation failures also propagate directly.
+cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt`,
+`ResourceLimitError`, and `UnsupportedVisionFamilyError` propagate unchanged;
+configuration, compilation, capability and runner-creation failures also
+propagate directly. `UnsupportedVisionFamilyError` is a `ValueError` subclass
+for image processors that native VL replay does not support. Diagnostics that
+include exception type names, such as failed sweep candidate reasons, report
+`UnsupportedVisionFamilyError` for this refusal; their reason category is unchanged.
 
 The call does not create output directories, save report files or print results.
 The caller owns those actions and resource budgets. Passing the plain engine

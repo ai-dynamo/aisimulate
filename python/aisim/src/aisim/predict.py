@@ -110,7 +110,9 @@ def run_prediction(
         spec, and raw runner report.
 
     Raises:
-        PredictionExecutionError: If the runner fails while executing the spec.
+        UnsupportedVisionFamilyError: If native VL replay cannot support the
+            requested image processor. This ValueError subtype propagates unchanged.
+        PredictionExecutionError: If the runner fails with another execution error.
     """
     adapter_configs = dict(adapter_configs or {})
     providers = dict(providers or {})
