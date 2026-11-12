@@ -668,9 +668,13 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 ## Agentic traffic with G2
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
-one aggregated worker, one prefill and one decode worker, or several aggregated
-workers that each own a `dp_rank_local` G2. All need `attention_data: 1` and static
-workers. Without speculation, either G2 scope works with one worker per role.
+one aggregated worker, several aggregated workers that each own a
+`dp_rank_local` G2, or P/D with any number of prefill and decode workers. All
+need `attention_data: 1` and static workers. Without speculation, either G2 scope
+works with one aggregated worker or with P/D. With `dp_rank_local`, each prefill
+worker restores only prefixes it stored itself, so with several prefill workers
+reuse depends on which worker a request is routed to; `cluster_shared` lets any
+worker restore them.
 Canonical MTP additionally supports a single aggregated worker with local G2 and
 prefix caching, within the [combined scope](#supported) above. Other speculation
 and G3 are not supported. `kvcr` is accepted but never pulls, because agentic

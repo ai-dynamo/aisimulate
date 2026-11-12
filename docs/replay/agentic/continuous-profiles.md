@@ -38,7 +38,7 @@ The built-in engine supports offline vLLM and SGLang with aggregated or separate
 prefill/decode workers and HBM-only KV cache, including speculative decoding
 with explicit acceptance assumptions and a compatible timing model.
 vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
-single aggregated worker or 1P1D, or local G2 on several static aggregated workers,
+single aggregated worker or static P/D workers, or local G2 on several static aggregated workers,
 with attention DP=1 on every role and speculative decoding disabled. The supported
 exception is canonical MTP on a single aggregated worker with local G2 and prefix
 caching; see the [combined scope](../engine/speculation.md#registered-schemes).
