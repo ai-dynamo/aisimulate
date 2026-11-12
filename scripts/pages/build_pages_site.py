@@ -433,6 +433,10 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             "measurement source URL",
         )
         require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
+        require(
+            not {"aisim", "aisimulate"}.issubset(snapshot["aisimulate_packages"]),
+            "ambiguous AISim package identities",
+        )
         for date in ("measurement_date_through", "aisimulate_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
