@@ -36,13 +36,13 @@ Dynamo installations. Documentation on `main` may describe features newer than
 the latest published wheel. The optional Dynamo Planner integration requires
 additional dependencies described in that guide.
 
-## Migrate from the `aisim` distribution
+## Migrate from the `aisimulate` distribution
 
-The distributions share their Python files and CLI, so uninstall `aisim`
+The distributions share their Python files and CLI, so uninstall `aisimulate`
 **before** installing or upgrading to `aisim`:
 
 ```bash
-python3 -m pip uninstall -y aisim
+python3 -m pip uninstall -y aisimulate
 python3 -m pip install --upgrade aisim
 python3 -m pip check
 ```
@@ -51,7 +51,7 @@ If both names are already installed, use a fresh environment or uninstall
 `aisimulate` and force-reinstall your selected `aisim` wheel to repair overlapping
 files. Keep a Dynamo environment on the old distribution until its Dynamo
 release requires `aisim`; otherwise dependency resolution can reinstall
-`aisim`. Import names remain `aisim` and `aisim_core`.
+`aisimulate`. Import names remain `aisim` and `aisim_core`.
 
 ## Predict one deployment
 

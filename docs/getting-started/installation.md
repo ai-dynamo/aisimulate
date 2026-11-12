@@ -33,7 +33,7 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install 'aisimulate==0.12.1'
-aisim --help
+aisimulate --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
