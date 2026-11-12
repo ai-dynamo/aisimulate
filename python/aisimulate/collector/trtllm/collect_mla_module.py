@@ -217,6 +217,42 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
         raise ValueError(f"Unknown gemm_type: {gemm_type!r}")
 
 
+def _give_index_scores_magnitude(attn_module) -> None:
+    """Bring a sparse module's index scores to the magnitude a trained checkpoint gives them.
+
+    initialize_dummy_weights draws every float parameter from U(-1e-3, 1e-3), normalization
+    gains included, so the indexer's scores came out near 1e-6. Its top-k bins the scores as
+    fp16 first and restarts as an fp32 radix when that pass cannot resolve the threshold bin
+    (processHistogramStep, "Step 0 is the fp16 fast path", cpp/tensorrt_llm/kernels/
+    indexerTopK.cu): scores that small share a few fp16 bins, so every row took the restart,
+    where the same scores at unit magnitude finish in the first pass in a fraction of the
+    time. Unit normalization gains in the attention module and U(-0.1, 0.1) parameters in the
+    indexer put the scores near 1. Values only: no kernel in the module is chosen by them.
+
+    An NVFP4 projection needs one more thing to produce scores at all: NVFP4LinearMethod
+    creates input_scale, inv_input_scale and alpha with torch.empty (modules/linear.py) and
+    initialize_dummy_weights leaves those names alone, taking their create_weights value for
+    a usable default (its _SKIP_NAME_SUFFIXES note), so they held whatever the allocation
+    did: the index query was zero in most layer builds and not in a few. They are set to 1.
+    """
+    indexer = getattr(attn_module, "indexer", None)
+    if indexer is None:
+        return
+    initialize_dummy_weights(indexer, low=-0.1, high=0.1)
+    with torch.no_grad():
+        for module in attn_module.modules():
+            if type(module).__name__ in ("RMSNorm", "LayerNorm"):
+                module.weight.fill_(1.0)
+                if getattr(module, "bias", None) is not None:
+                    module.bias.zero_()
+            # Only the NVFP4 linear methods give a module an alpha parameter.
+            if isinstance(getattr(module, "alpha", None), torch.nn.Parameter):
+                for name in ("input_scale", "inv_input_scale", "alpha"):
+                    scalar = getattr(module, name, None)
+                    if isinstance(scalar, torch.nn.Parameter):
+                        scalar.fill_(1.0)
+
+
 def create_attention_layer(
     model_path: str,
     num_heads: int = 128,
@@ -340,6 +376,7 @@ def create_attention_layer(
     layer.to(device)
 
     initialize_dummy_weights(layer)
+    _give_index_scores_magnitude(layer.self_attn)
     for module in layer.modules():
         if hasattr(module, "post_load_weights") and not getattr(module, "_weights_removed", False):
             module.post_load_weights()
@@ -445,6 +482,67 @@ def _cached_attention_layer(model_path: str, num_heads: int, use_fp8_kv_cache: b
     )
     _LAYER_CACHE[key] = entry
     return entry
+
+
+# Distinct history rows: a longer history repeats them, so writing it costs one scatter per
+# this many tokens and no further sampling. A row then recurs a handful of times in the
+# longest histories, far below the tie counts the top-k kernels treat specially.
+_HISTORY_ROWS = 1 << 18
+
+
+def _write_indexer_history(indexer, attn_metadata, device: str) -> None:
+    """Write the index K of the cached history the DSA indexer scores and selects from.
+
+    add_dummy_requests only assigns blocks. Nothing here runs the forwards that would have
+    written the history, so the indexer K-cache held zeros there: every cached candidate
+    scored exactly 0.0 and the top-k was timed on ties, a case serving does not have (a
+    history of exactly index_topk tokens took several times the top-k time of a longer one,
+    and every other indexed row timed the cheapest top-k). Serving writes a token's index K
+    when it computes it: the k_norm output goes through Indexer._prep_q_or_k (fused cat and
+    FP8/FP4 quantize) and Indexer._update_k_cache (indexer_k_cache_scatter_op) at the slots
+    the metadata derives with _compute_slot_mappings (attention/backends/sparse/dsa/indexer.py;
+    on_update_kv_lens, dsa/metadata.py). Seeded N(0, 1) rows take the same quantizer and
+    scatter op at the history positions, outside the measurement. They stand for no particular
+    checkpoint distribution. Same treatment as the SGLang DSA modules.
+    """
+    params = type(indexer).build_indexer_params(attn_metadata)
+    if params is None:
+        return
+    cached = params.cached_kv_tokens.to(device=device, dtype=torch.int64)
+    total = int(cached.sum())
+    if total == 0:
+        return
+    rows = min(total, _HISTORY_ROWS)
+    generator = torch.Generator(device=device).manual_seed(0)
+    k = torch.randn((rows, indexer.head_dim), generator=generator, device=device).to(torch.bfloat16)
+    k_data, k_scale = indexer._prep_q_or_k(*k.split([indexer.rope_dim, indexer.head_dim - indexer.rope_dim], dim=-1))
+    if k_scale.element_size() == 1:
+        k_scale = k_scale.view(torch.int32)
+    # The module of the DSA Indexer, which a DeepSeek-V4 indexer derives from.
+    compute_slot_mappings = next(
+        sys.modules[cls.__module__]._compute_slot_mappings
+        for cls in type(indexer).__mro__
+        if hasattr(sys.modules[cls.__module__], "_compute_slot_mappings")
+    )
+    slot_dtype = attn_metadata.slot_mapping_fp8.dtype
+    k_cache = attn_metadata.kv_cache_manager.get_indexer_k_cache_buffers(indexer.layer_idx)
+    ends = torch.cumsum(cached, 0)
+    for start in range(0, total, rows):
+        # History tokens in request order: the request and the position in its sequence.
+        token = torch.arange(start, min(start + rows, total), device=device)
+        request = torch.searchsorted(ends, token, right=True)
+        data_slots, scale_slots = compute_slot_mappings(
+            token - (ends - cached)[request],
+            attn_metadata.indexer_k_cache_block_offsets,
+            request,
+            params.head_dim,
+            params.tokens_per_block,
+            params.quant_block_size,
+            data_bytes_per_token=params.data_bytes_per_token,
+        )
+        torch.ops.trtllm.indexer_k_cache_scatter_op(
+            k_data, k_scale, k_cache, data_slots.to(slot_dtype), scale_slots.to(slot_dtype), token.numel()
+        )
 
 
 def create_kv_cache_and_metadata(
@@ -616,6 +714,14 @@ def create_kv_cache_and_metadata(
         attn_metadata.indexer = attn_module.indexer
 
     attn_metadata.prepare()
+
+    if getattr(attn_module, "indexer", None) is not None:
+        try:
+            with torch.inference_mode():
+                _write_indexer_history(attn_module.indexer, attn_metadata, device)
+        except Exception:
+            kv_cache_manager.shutdown()
+            raise
 
     return kv_cache_manager, attn_metadata
 

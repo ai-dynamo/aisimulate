@@ -229,7 +229,7 @@ class _CapturingMetadata:
 
 
 def _install_trtllm_stubs(monkeypatch, module):
-    captured = {"kv_cache_config": []}
+    captured = {"kv_cache_config": [], "history": []}
 
     def _mod(name):
         m = ModuleType(name)
@@ -267,6 +267,9 @@ def _install_trtllm_stubs(monkeypatch, module):
     # the create function re-imports this locally (relative-or-plain fallback)
     mla_stub = _mod("collect_mla_module")
     mla_stub.get_kv_cache_manager_cls = lambda mc, cfg: _CapturingManager
+    mla_stub._write_indexer_history = lambda indexer, metadata, device: captured["history"].append(
+        (indexer, metadata.prepared, device)
+    )
 
     # torch stub surface used by the create function
     torch_stub = sys.modules["torch"]
@@ -275,6 +278,7 @@ def _install_trtllm_stubs(monkeypatch, module):
     torch_stub.cuda = SimpleNamespace(mem_get_info=lambda dev: (100 * 2**30, 128 * 2**30), empty_cache=lambda: None)
     torch_stub.tensor = lambda data, **kw: SimpleNamespace(data=data, **kw)
     torch_stub.device = lambda d: d
+    torch_stub.inference_mode = contextlib.nullcontext
     return captured
 
 
@@ -502,6 +506,26 @@ def test_hopper_pool_is_the_packed_fp8_sparse_mla_cache(monkeypatch, sm, dtype):
     )
     (kw,) = captured["kv_cache_config"]
     assert kw.get("dtype") == dtype
+
+
+@pytest.mark.parametrize("indexer", [None, "csa-indexer"])
+def test_the_history_index_k_is_written_for_a_module_with_an_indexer(monkeypatch, indexer):
+    """A CSA module's indexer scores the cached history, so its index K is written once the
+    metadata is prepared; HCA builds no indexer and has nothing to write."""
+    module = _load_module_with_torch_stub(monkeypatch)
+    _CapturingManager.instances.clear()
+    _CapturingMetadata.instances.clear()
+    captured = _install_trtllm_stubs(monkeypatch, module)
+    module.create_dsv4_kv_cache_and_metadata(
+        model_config=_fake_model_config(),
+        attn_module=SimpleNamespace(indexer=indexer),
+        batch_size=2,
+        seq_len=64,
+        is_context=True,
+        prefix_len=4096,
+        device="cuda:0",
+    )
+    assert captured["history"] == ([] if indexer is None else [(indexer, True, "cuda:0")])
 
 
 def test_a_pool_that_cannot_hold_the_requests_is_a_classified_capacity_refusal(monkeypatch):

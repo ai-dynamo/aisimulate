@@ -535,6 +535,38 @@ def _kv_pool_tokens(
     return _round_up(tokens + _ceil_div(_M3_POOL_ROUNDING_BYTES, kv_bytes_per_token), tokens_per_block)
 
 
+# Index-key elements written per copy: bounds the temporary of a large pool.
+_HISTORY_CHUNK_ELEMENTS = 1 << 25
+
+
+def _write_index_key_history(kv_cache_manager, device: str) -> None:
+    """Write the index keys of the cached history the indexer scores and selects blocks from.
+
+    The manager zeroes the paged index keys when it is built (cache_manager.py, the
+    zero_() over _index_k_buffers) and nothing here runs the forwards that would have
+    written the history, so every history block scored exactly 0.0 and the block
+    selection was timed on ties. Its kernel takes more than kNumFinalItems (2048)
+    bit-identical scores in one row as a case callers never produce
+    (minimaxM3SelectBlocks.cu), and a history of 2048 blocks took several times the time
+    of a longer one. Serving stores a token's index key at its slot when it computes it
+    (write_layer_caches, msa_backend.py, called from modeling_minimaxm3.py). Seeded
+    N(0, 1) keys fill the view outside the measurement and the timed forward writes its
+    own tokens over them, as in serving. They stand for no particular checkpoint
+    distribution. Slots past a request's length hold them too, where serving has zeros:
+    at most one partial block per request.
+    """
+    view = kv_cache_manager.get_index_k_buffer(0)
+    if view is None:
+        return
+    if view.dtype != torch.bfloat16:
+        raise RuntimeError(f"index-key history is written for bf16 index keys only, the pool holds {view.dtype}")
+    generator = torch.Generator(device=device).manual_seed(0)
+    rows = max(1, _HISTORY_CHUNK_ELEMENTS // max(1, view[0].numel()))
+    for start in range(0, view.shape[0], rows):
+        part = view[start : start + rows]
+        part.copy_(torch.randn(part.shape, generator=generator, device=device))
+
+
 def create_kv_cache_and_metadata(
     model_config: ModelConfig,
     batch_size: int,
@@ -690,6 +722,9 @@ def create_kv_cache_and_metadata(
             total_tokens=total_tokens,
             is_context=is_context,
         )
+        if kv_cache_len > 0:
+            with torch.inference_mode():
+                _write_index_key_history(kv_cache_manager, device)
     except BaseException:
         kv_cache_manager.shutdown()
         raise

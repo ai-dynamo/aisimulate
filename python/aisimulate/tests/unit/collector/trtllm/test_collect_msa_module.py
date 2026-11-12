@@ -27,8 +27,9 @@ _HELPERS = (
     "_shard_head_counts",
     "_kv_pool_tokens",
     "_autotune_projections",
+    "_write_index_key_history",
 )
-_CONSTANTS = ("_M3_POOL_ROUNDING_BYTES", "_TUNED_NUM_TOKENS")
+_CONSTANTS = ("_M3_POOL_ROUNDING_BYTES", "_TUNED_NUM_TOKENS", "_HISTORY_CHUNK_ELEMENTS")
 
 
 def _load(**namespace):
@@ -185,3 +186,47 @@ def test_the_decode_contract_names_the_rc2_metadata_fields():
     assert "span.row_first == 0" in text
     # build_attention_metadata passes max_num_heads_per_kv; num_heads_per_kv is gone.
     assert "max_num_heads_per_kv=" in text and not re.search(r"(?<!max_)num_heads_per_kv", text)
+
+
+def _history_torch():
+    return SimpleNamespace(
+        bfloat16="bf16",
+        Generator=lambda device: SimpleNamespace(manual_seed=lambda seed: (device, seed)),
+        randn=lambda shape, generator, device: (shape, generator, device),
+    )
+
+
+def test_the_index_key_history_fills_the_whole_view_in_bounded_copies():
+    """The indexer scores the cached history's index keys, which the manager zeroes and
+    nothing else writes: seeded rows fill the view before the forward writes its own tokens."""
+    copies = []
+
+    class Part:
+        def __init__(self, rows):
+            self.shape = (rows, 1, 4)
+
+        def copy_(self, source):
+            copies.append((self.shape, source))
+
+    class View:
+        dtype = "bf16"
+        shape = (10, 1, 4)
+
+        def __getitem__(self, key):
+            if isinstance(key, int):
+                return SimpleNamespace(numel=lambda: 4)
+            return Part(min(key.stop, 10) - key.start)
+
+    namespace = _load(torch=_history_torch())
+    namespace["_HISTORY_CHUNK_ELEMENTS"] = 12  # three rows of four elements per copy
+    namespace["_write_index_key_history"](SimpleNamespace(get_index_k_buffer=lambda layer: View()), "cuda:0")
+    assert [shape for shape, _ in copies] == [(3, 1, 4), (3, 1, 4), (3, 1, 4), (1, 1, 4)]
+    assert all(source == (shape, ("cuda:0", 0), "cuda:0") for shape, source in copies)
+
+
+def test_the_index_key_history_refuses_a_pool_it_does_not_know_how_to_write():
+    namespace = _load(torch=_history_torch())
+    manager = SimpleNamespace(get_index_k_buffer=lambda layer: SimpleNamespace(dtype="fp8"))
+    with pytest.raises(RuntimeError, match="bf16 index keys only"):
+        namespace["_write_index_key_history"](manager, "cuda:0")
+    namespace["_write_index_key_history"](SimpleNamespace(get_index_k_buffer=lambda layer: None), "cuda:0")
