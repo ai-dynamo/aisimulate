@@ -13,23 +13,11 @@ tables:
     rows: 65220
     status: complete
     collections:
-    - collector_ref: d20b994910f188355ec44ce3f109242df3874026
-      collector_hash: sha256:44d0c5fe1d3d3a80dc28633bfb69f3bc5377d189ed9e08100969e916ad0987ee
-      case_plan_hash: sha256:80fa284c5be912b0bbee0f82d882f5ecc03b7db71bdc96a0d4aa93ca4df08a96
-      collected_at: '2026-11-12'
-      rows: 11860
-      status: complete
-    - collector_ref: d20b994910f188355ec44ce3f109242df3874026
-      collector_hash: sha256:44d0c5fe1d3d3a80dc28633bfb69f3bc5377d189ed9e08100969e916ad0987ee
-      case_plan_hash: sha256:6e6a8767baeed6b3fcf047fa5e5da33fa089666fc6ae64a5b2eb2ab54770a3ff
-      collected_at: '2026-11-12'
-      rows: 9880
-      status: complete
     - collector_ref: ac3df2a90
       collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:7e05e3ec04805367ca2e89c2ef8b8a456b30e19ac3e62f1e71aa04f899dd328f
       collected_at: '2026-11-12'
-      rows: 43480
+      rows: 65220
       status: complete
   dsa_generation_module_perf:
     rows: 10152
@@ -45,8 +33,8 @@ tables:
     rows: 9880
     status: complete
     collections:
-    - collector_ref: d20b994910f188355ec44ce3f109242df3874026
-      collector_hash: sha256:44d0c5fe1d3d3a80dc28633bfb69f3bc5377d189ed9e08100969e916ad0987ee
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:1002d8f1ae5d40ba8473b47424e45d322769f23872fddad7eedad935765f99c6
       collected_at: '2026-11-12'
       rows: 9880
@@ -55,8 +43,8 @@ tables:
     rows: 1600
     status: complete
     collections:
-    - collector_ref: d20b994910f188355ec44ce3f109242df3874026
-      collector_hash: sha256:44d0c5fe1d3d3a80dc28633bfb69f3bc5377d189ed9e08100969e916ad0987ee
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:1b915a2e5c8e592617b82c3b38f02f77f330d866a6712e1c2bc2198d24a0479e
       collected_at: '2026-11-12'
       rows: 1600
