@@ -537,9 +537,9 @@ impl Dsv4Table {
     /// table. Mirror of Python
     /// `ContextDeepSeekV4AttentionModule._lookup_sparse_kernel` with the
     /// kernel FIXED to `"paged_mqa_logits"` — the quadratic pair-count SOL
-    /// below is valid only for the causal indexer logits; the windowed
-    /// sidecars (hca_attn / csa_attn) must NOT route here (Python raises on
-    /// any other kernel name; Rust simply has no other entry point).
+    /// below is valid only for the causal indexer logits, the one sparse
+    /// kernel table left (the windowed hca_attn / csa_attn sidecars were
+    /// retired 2026-10-15; Rust has no other entry point).
     ///
     /// Table shape `[native_heads][tp][past_kv][isl][bs]`; `tp` falls back to
     /// 1 (the kernel is collected at tp=1 only and its work is

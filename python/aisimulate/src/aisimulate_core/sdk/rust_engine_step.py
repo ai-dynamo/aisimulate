@@ -90,6 +90,11 @@ def _python_step_fallback_reset() -> None:
         _PYTHON_BACKEND_DEPRECATION_WARNED = False
 
 
+# The literal a saved identity records for a fact its producer did not know;
+# only fpm_regression and fpm_learned configurations accept it.
+UNKNOWN_IDENTITY = "unknown"
+
+
 class RustEngineUnsupportedError(RuntimeError):
     """The model's op graph cannot be expressed as a compiled ``EngineSpec``
     (``engine.OpConversionError``). For op-level models this is a hard error —
@@ -114,7 +119,10 @@ class ForwardPassPerfModelConfig:
     ``sampling.axes`` selects 1 to 6 retention coordinates; its length must
     match ``sampling.bins_per_axis``. The defaults remain attention/MoE,
     ``[4, 4]`` bins, and 64 retained observations per store. Independent
-    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates. Omitted
+    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates; alternatively,
+    ``fit.linear.feature_set="fpm5"`` fits the 17 cross-rank aggregates of the
+    learned ``fpm5`` preset from scalar counters (it needs
+    ``sampling.max_observations >= 18`` and default ``feature_axes``). Omitted
     ``fit.linear`` retains the existing attention/MoE fit, nonnegative slopes,
     and eager updates. ``fit.linear.non_negative=False`` permits signed slopes.
     ``fit.linear.update_policy`` accepts ``{"kind": "always"}`` or an explicit
@@ -126,6 +134,9 @@ class ForwardPassPerfModelConfig:
     arrays ``scheduled_requests.extend_lengths`` and ``past_kv_lengths``;
     both must have one entry per scheduled request. Their sums may differ from
     aggregate token counters because backends use different counting conventions.
+    Fitted or sampled, the ``longest_split`` and ``eager`` axes also need a
+    positive ``fit.linear.max_kv_splits`` and
+    ``fit.linear.max_cudagraph_capture_size`` respectively.
 
     ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
     Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned
@@ -165,10 +176,21 @@ class ForwardPassPerfModelConfig:
 
     ``estimator_config["state_snapshot"]`` restores a model saved by
     ``save_state_snapshot``: ``{"path": ..., "sha256": ..., "on_tune": "reject"}``. Rust
-    resolves ``path``, pins ``sha256`` to the snapshot manifest and requires
-    the rest of the configuration to equal the saved identity, an explicit
+    resolves ``path``, pins ``sha256`` to the snapshot manifest, reads the
+    inputs the snapshot owns from ``path`` and requires the rest of the
+    configuration to equal the saved identity, an explicit
     ``estimation_mode`` and ``fallback_policy="deny"``. ``on_tune="reject"``
     (the default) makes tuning an error; ``"continue"`` resumes it.
+
+    With ``estimation_mode`` ``"fpm_regression"`` or ``"fpm_learned"``, identity
+    facts the producer did not know (``system``, ``backend_version``, ``tp``,
+    ``pp``, ``attention_dp``, ``moe_tp_size``, ``moe_ep_size``, the quantization
+    modes and ``attention_backend``) may be the literal ``"unknown"``; every
+    other mode rejects it. ``deployment_limits`` optionally records the
+    calibrated deployment's ``num_gpus``, ``max_num_batched_tokens``,
+    ``max_num_seqs``, ``max_kv_tokens`` (per attention-DP rank) and
+    ``context_length``, each a positive integer or ``"unknown"``. Rust owns
+    their validation and round trip; ``None`` omits the block.
     """
 
     model: str
@@ -176,13 +198,15 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
+    afd_routing_location: str | None = dataclass_field(default=None, kw_only=True)
+    afd_pool_role: str | None = dataclass_field(default=None, kw_only=True)
     fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
-    tp: int = 1
-    pp: int = 1
-    attention_dp: int = 1
+    tp: int | str = 1
+    pp: int | str = 1
+    attention_dp: int | str = 1
     dcp: int | None = dataclass_field(default=None, kw_only=True)
-    moe_tp_size: int | None = None
-    moe_ep_size: int | None = None
+    moe_tp_size: int | str | None = None
+    moe_ep_size: int | str | None = None
     # Prefill context parallelism (widens the attention side) and decode
     # context parallelism (stripes the decode KV across the TP ranks); None
     # keeps both at one and out of the serialized identity.
@@ -213,6 +237,8 @@ class ForwardPassPerfModelConfig:
     # Compile the vision tower with this layout ("tp" or "dp") so the estimator
     # prices encoder calls; None prices the language model only.
     encoder_parallel: str | None = None
+    # Recorded limits of the calibrated deployment; identity only.
+    deployment_limits: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
 
     @classmethod
     def from_legacy_engine_config(
@@ -236,11 +262,15 @@ class ForwardPassPerfModelConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        if self.encoder_parallel is None:
-            payload.pop("encoder_parallel")
+        # Additive identity stays out of payloads that do not set it.
+        for name in ("encoder_parallel", "deployment_limits", "afd_routing_location", "afd_pool_role"):
+            if payload[name] is None:
+                payload.pop(name)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
         if self.estimation_mode not in {"fpm_regression", "fpm_learned"} or self.systems_paths:
-            payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(
+                self.systems_paths, require_directories=not _carries_state_snapshot(self.estimator_config)
+            )
         return payload
 
 
@@ -424,16 +454,18 @@ class RustForwardPassPerfModel:
 
         Pass exactly one of ``config`` and ``state_snapshot``.
         ``state_snapshot`` names a snapshot directory written by
-        :meth:`save_state_snapshot`; its ``config.json`` is passed to the same
-        Rust constructor unchanged, so ``best_available(state_snapshot=path)``
-        and ``best_available(config=json.load(open(path / "config.json")))``
-        are equivalent. Snapshots are pinned to the path they were saved to:
-        ``state_snapshot`` must be that directory (compared with
-        ``os.path.samefile``), otherwise ``ValueError`` is raised. A configuration with
-        ``estimator_config.state_snapshot`` restores the saved model and fails
-        on any mismatch instead of selecting another estimator. Snapshot I/O
-        failures raise ``OSError`` subclasses such as ``FileNotFoundError``,
-        never ``PerfDataNotAvailableError``.
+        :meth:`save_state_snapshot`, wherever it was copied or moved: its
+        ``config.json`` is passed to the same Rust constructor with
+        ``estimator_config.state_snapshot.path`` naming that directory. A
+        configuration with ``estimator_config.state_snapshot`` restores the
+        saved model from the directory it names, reading the inputs the
+        snapshot owns (packed performance data, an execution profile, learned
+        artifacts and checkpoints) from there whatever paths the
+        configuration gives for them, and fails on any other mismatch instead
+        of selecting another estimator. ``systems_paths`` of a snapshot saved
+        without ``include_perf_db`` only locates the data, which must match
+        the snapshot's content fingerprint. Snapshot I/O failures raise ``OSError`` subclasses
+        such as ``FileNotFoundError``, never ``PerfDataNotAvailableError``.
         """
         import aisimulate_core
 
@@ -449,10 +481,11 @@ class RustForwardPassPerfModel:
 
         Returns ``kind``, ``manifest_sha256``, ``aisimulate_core_version``,
         ``state_layout_version``, ``worker_type``, ``selected_estimation_mode``,
-        the pinned ``identity`` configuration (``None`` for ``from_learned``
-        snapshots), its deployment ``topology``, and the ``readiness`` report
-        recorded at save time, which restoration verifies. Requires the same
-        format versions as restoration; the state file is not read.
+        the pinned ``identity`` configuration with owned inputs resolved
+        against ``path`` (``None`` for ``from_learned`` snapshots), its
+        deployment ``topology``, and the ``readiness`` report recorded at save
+        time, which restoration verifies. Requires the same format versions as
+        restoration; the state file is not read.
         """
         import aisimulate_core
 
@@ -591,6 +624,56 @@ class RustForwardPassPerfModel:
         """Fit partial pending batches and expire globally aged feedback in every store."""
         self._inner.flush_updates()
 
+    def append_mixed_learned_checkpoint(self, path: str | os.PathLike[str]) -> int:
+        """Add one eligible mixed class's C-trained online GBDT or selector store.
+
+        The existing A+C mixed selector keeps calibrated interpolation as its
+        stable expert. The checkpoint must contain exactly one absent eligible
+        mixed store with at least 20 training rows and match the model's identity,
+        features, and target. Rust validates the complete training checkpoint
+        before changing either expert.
+        Bootstrap labels are training data, not retrospective selector evidence.
+        Online GBDT also preserves its calibration and optional quality gate.
+        Returns the number of added stores (one); frozen models reject this call.
+        """
+        return self._inner.append_mixed_learned_checkpoint(os.fspath(path))
+
+    def estimate_forward_pass_with_route(self, metrics_by_rank: Any) -> dict[str, Any]:
+        """Predict once and return latency with the actual mixed expert route.
+
+        The result contains ``latency_ms`` and ``temporary_mixed_composition``.
+        Expert availability is ``None`` when that expert was not queried.
+        The returned route describes this prediction; it admits no feedback.
+        """
+        return json.loads(self._inner.estimate_forward_pass_with_route(_json_dumps(metrics_by_rank)))
+
+    def learned_expert_artifacts(self) -> dict[str, Any]:
+        """Inspect frozen and online selector forests; not a resumable checkpoint."""
+        return json.loads(self._inner.learned_expert_artifacts())
+
+    def mixed_composition_route(self, metrics_by_rank: Any) -> dict[str, Any] | None:
+        """Resolve mixed eligibility and the current route without learning.
+
+        This may query an expert. Use ``estimate_forward_pass_with_route`` when
+        both the prediction and its actual route are needed in one dispatch.
+        """
+        raw = self._inner.mixed_composition_route(_json_dumps(metrics_by_rank))
+        return None if raw is None else json.loads(raw)
+
+    def mixed_composition_diagnostics(self) -> dict[str, Any] | None:
+        """Inspect mixed routes, pinned sources, score bounds, and calibration."""
+        raw = self._inner.mixed_composition_diagnostics()
+        return None if raw is None else json.loads(raw)
+
+    def mixed_composition_state(self) -> dict[str, Any] | None:
+        """Snapshot mixed calibration and quality evidence, without ordinary or selector state."""
+        raw = self._inner.mixed_composition_state()
+        return None if raw is None else json.loads(raw)
+
+    def restore_mixed_composition_state(self, state: dict[str, Any]) -> None:
+        """Restore matching mixed state atomically; caller owns admission replay."""
+        self._inner.restore_mixed_composition_state(_json_dumps(state))
+
     def export_learned_artifact(self) -> dict[str, Any]:
         """Return the current forest as an inference artifact, without fitting state.
 
@@ -635,8 +718,15 @@ class RustForwardPassPerfModel:
         (``pure_decode``, ``contains_locally_mixed``, ``cross_rank_aggregated``,
         ``pure_prefill`` for aggregated workers) with ``ready``,
         ``not_ready_reason`` (``insufficient_data``, ``no_usable_fit`` or
-        ``untrained_forest_store``) and ``retained_observations``. Native
-        estimators are always ready. ``corrections`` lists correction stores
+        ``untrained_forest_store``) and ``retained_observations``.
+        ``no_usable_fit`` includes a valid zero-slope constrained optimum; it
+        does not necessarily mean a failed numerical solve. A spline component
+        can be ready while its required companion linear fit is unavailable.
+        Native estimators are always ready. Eligible mixed interpolation routes also
+        count as ready when their learned forest store is absent. Readiness
+        describes an available estimator route, not coverage for every query;
+        interpolation may still return no estimate outside its support.
+        ``corrections`` lists correction stores
         by ``query_type`` (per forest ``workload_kind`` for the causal selector)
         with ``enabled``, ``ready``, ``retained_observations`` and
         ``ready_buckets``. Gate on the stores a caller actually queries.
@@ -676,8 +766,10 @@ class RustForwardPassPerfModel:
         """
         self._inner.save_online_checkpoint(os.fspath(path))
 
-    def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
-        """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
+    def estimate_forward_pass_time_ms(
+        self, metrics: dict[str, Any] | list[dict[str, Any]], *, draft_length: int | None = None
+    ) -> float | None:
+        """Estimate an iteration, optionally approximating speculative decode.
 
         Description: estimate one forward-pass iteration in milliseconds.
 
@@ -691,16 +783,46 @@ class RustForwardPassPerfModel:
         predictions also require an available linear prediction for the query;
         otherwise they return ``None`` even inside retained raw-feature bounds.
         Empty scheduled work returns ``0.0``.
+
+        On an ordinary STP FPM estimator, supplying a positive ``draft_length=d``
+        estimates a complete SD decode iteration as
+        ``(1.25 + 0.08*d) * F_STP((d+1)*B, K_total)``. B is each rank's logical
+        decode request count; its total past KV is preserved. This works with
+        interpolation, regression and learned FPMs, without a draft checkpoint
+        or algorithm selection. Missing STP support/readiness still fails or
+        returns ``None``. Ranks that schedule fresh prefill tokens and
+        already-speculative estimators are rejected; a fully prefix-cached
+        prefill record is decode-only. A measured speculative-round profile
+        already includes speculative decoding, so query it without
+        ``draft_length``. Omit the argument for STP. Calibration covered
+        d=1..4; other depths are extrapolation. Tuning continues to consume
+        STP data.
         """
+        if draft_length is not None:
+            return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics), draft_length=draft_length)
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
 
-    def estimate_forward_pass_detailed(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+    def estimate_forward_pass_detailed(
+        self, metrics: dict[str, Any] | list[dict[str, Any]], *, draft_length: int | None = None
+    ) -> dict[str, Any]:
         """Return timing with direct-FPM support, rank composition and correction.
 
         Measurement weights explain raw lookups. ``ranks`` records mixed-pass
         subtraction and ``max_rank`` identifies the native rank maximum, before
-        ``correction_factor``. Other estimators have no direct lookup evidence.
+        ``correction_factor``. Operation graphs record each rank's name-folded
+        ``operations`` (the ``static_phase_diagnostics`` fields), which sum to
+        the rank's uncorrected latency. Learned and regression estimators have
+        no rank evidence.
+
+        With ``draft_length``, return the estimated SD ``latency_ms``, the
+        ``draft_length`` and ``scaling_factor``, and the original detailed
+        ``stp_reference``. Its support remains STP measurements. The same
+        restrictions as ``estimate_forward_pass_time_ms`` apply.
         """
+        if draft_length is not None:
+            return json.loads(
+                self._inner.estimate_forward_pass_detailed(_json_dumps(metrics), draft_length=draft_length)
+            )
         return json.loads(self._inner.estimate_forward_pass_detailed(_json_dumps(metrics)))
 
     def tune_with_fpms(self, iterations: dict[str, Any] | list[Any]) -> None:
@@ -745,6 +867,17 @@ class RustForwardPassPerfModel:
         """
         return json.loads(self._inner.static_phase_diagnostics(batch_size, context_length, prefix, prefill))
 
+    def fpm_seed_target_normalization(self) -> dict[str, Any]:
+        """Return native effective targets for fake-KV rows in the loaded profile.
+
+        The preparation-only report contains source row indices, raw and effective
+        milliseconds, replacement status, and policy/counts. Genuine rows remain
+        unchanged and are omitted. This exposes the loader's existing correction,
+        not interpolation predictions or new measured telemetry. It honors the
+        native raw-profile escape hatch and rejects non-native/non-FPM models.
+        """
+        return json.loads(self._inner.fpm_seed_target_normalization())
+
     def diagnostics(self) -> dict[str, Any]:
         """API: ``model.diagnostics() -> dict[str, Any]``.
 
@@ -763,6 +896,12 @@ class RustForwardPassPerfModel:
         model, not an individual query's coverage. A combined selector keeps
         ``learned_causal_selector`` across expert switches; inspect
         ``learned_selector_diagnostics()`` for per-key selection.
+
+        When the mixed fallback policy is enabled,
+        ``temporary_mixed_composition`` contains the same value as
+        ``mixed_composition_diagnostics()``: original-A eligibility, pinned
+        sources, selection policy, and mixed calibration state. The field is
+        omitted when the policy is disabled.
         """
         return json.loads(self._inner.diagnostics())
 
@@ -790,13 +929,17 @@ class RustForwardPassPerfModel:
         return self._inner.fpm_decode_kv_ceiling()
 
     def regression_store_diagnostics(self) -> list[dict[str, Any]]:
-        """Return each regression store's label, readiness, and retained count.
+        """Return each regression or learned store's label, readiness, and retained count.
 
         Entries have ``workload_kind``, ``ready``, and ``retained_observations``.
         Aggregated models include all four stores, including empty ones, in
         order: ``pure_decode``, ``contains_locally_mixed``,
         ``cross_rank_aggregated``, ``pure_prefill``. Dedicated models return
         their single store; native AIC models return an empty list.
+
+        Learned stores include eligible mixed interpolation routes in
+        ``ready``, consistently with ``readiness_report()``. An available
+        route does not guarantee coverage for every query.
 
         Only spline stores add ``spline`` with ``initialized``, ``ready``,
         ``accepted_observations``, ``knot_searches``,
@@ -846,35 +989,36 @@ def _json_dumps(value: Any) -> str:
 
 
 def _snapshot_config(state_snapshot: str | os.PathLike[str]) -> dict[str, Any]:
-    """Read a snapshot's pinned configuration and require ``state_snapshot`` to be its pinned directory.
+    """Read a snapshot's ``config.json`` and name the snapshot directory in it.
 
-    Restoration reads the pinned path, not ``state_snapshot``, so a moved or
-    copied snapshot directory would otherwise silently restore the original.
+    The saved manifest digest and ``on_tune`` are kept; Rust points the inputs
+    the snapshot owns into the named directory during construction.
     """
-    directory = os.fspath(state_snapshot)
-    with open(os.path.join(directory, "config.json"), encoding="utf-8") as handle:
+    directory = os.path.abspath(os.fspath(state_snapshot))
+    path = os.path.join(directory, "config.json")
+    with open(path, encoding="utf-8") as handle:
         config = json.load(handle)
     estimator = config.get("estimator_config") if isinstance(config, dict) else None
     snapshot = estimator.get("state_snapshot") if isinstance(estimator, dict) else None
-    pinned = snapshot.get("path") if isinstance(snapshot, dict) else None
-    if not isinstance(pinned, str):
-        raise ValueError(f"{os.path.join(directory, 'config.json')} does not pin a state snapshot")
-    try:
-        same = os.path.samefile(directory, pinned)
-    except FileNotFoundError:
-        same = False
-    if not same:
-        raise ValueError(
-            f"state snapshot {directory} is pinned to {pinned}; snapshots are pinned to the path "
-            "they were saved to and cannot be restored after being moved or copied"
-        )
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"{path} does not pin a state snapshot")
+    snapshot["path"] = directory
     return config
+
+
+def _carries_state_snapshot(estimator_config: Any) -> bool:
+    return isinstance(estimator_config, Mapping) and estimator_config.get("state_snapshot") is not None
 
 
 def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
     payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
     if payload.get("estimation_mode") not in {"fpm_regression", "fpm_learned"} or payload.get("systems_paths"):
-        payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
+        # A snapshot owns its packed performance data; Rust points those paths
+        # into the snapshot before it reads them.
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(
+            tuple(payload.get("systems_paths") or ()),
+            require_directories=not _carries_state_snapshot(payload.get("estimator_config")),
+        )
     if "transfer_policy" in payload:
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
     estimator_config = payload.get("estimator_config")
@@ -910,7 +1054,7 @@ def _validate_worker_type(worker_type: str) -> str:
     return worker_type
 
 
-def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
+def _resolve_forward_pass_systems_paths(entries: tuple[str, ...], *, require_directories: bool = True) -> list[str]:
     packaged = os.fspath(pkg_resources.files("aisimulate_core") / "systems")
     if not entries:
         from aisimulate_core.sdk.perf_database import get_systems_paths
@@ -923,7 +1067,7 @@ def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
         if not isinstance(entry, str) or not entry.strip():
             raise ValueError("systems_paths entries must be nonempty strings")
         path = packaged if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
-        if not os.path.isdir(path):
+        if require_directories and not os.path.isdir(path):
             raise ValueError(f"forward-pass systems path is not a directory: {path}")
         if path not in resolved:
             resolved.append(path)
@@ -1452,7 +1596,7 @@ def evaluate_generation_ops_with_rust(
     """Evaluate an index-addressed sublist of the compiled generation op list
     at the decode-step shape (see ``evaluate_context_ops_with_rust``). The
     base decode walk carries no prefix; ``prefix`` exists for orchestrations
-    that thread it (AFD's ``_sum_latency``)."""
+    that thread it."""
     handle = _cached_engine_handle(model, database)
     result = handle.evaluate_generation_ops(
         list(indices),

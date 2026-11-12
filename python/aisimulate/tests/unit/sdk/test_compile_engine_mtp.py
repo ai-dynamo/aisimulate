@@ -16,15 +16,18 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
-    ("system", "explicit", "expected"),
+    ("system", "version", "explicit", "expected"),
     [
-        ("h200_sxm", None, common.FMHAQuantMode.bfloat16),
-        ("h200_sxm", "fp8", common.FMHAQuantMode.fp8),
-        ("b200_sxm", None, common.FMHAQuantMode.fp8),
-        ("b300_sxm", None, common.FMHAQuantMode.fp8),
+        # The audited SM90 MLA execution-dtype mapping (FA3 keeps absorbed MLA in bf16) is
+        # keyed to SGLang 0.5.14 exactly (helpers.resolve_sglang_mla_compute); pin that
+        # literal so a fleet `current` bump does not silently change what is under test.
+        ("h200_sxm", "0.5.14", None, common.FMHAQuantMode.bfloat16),
+        ("h200_sxm", "0.5.14", "fp8", common.FMHAQuantMode.fp8),
+        ("b200_sxm", "current", None, common.FMHAQuantMode.fp8),
+        ("b300_sxm", "current", None, common.FMHAQuantMode.fp8),
     ],
 )
-def test_compile_sglang_mla_resolves_compute_before_building_ops(monkeypatch, system, explicit, expected):
+def test_compile_sglang_mla_resolves_compute_before_building_ops(monkeypatch, system, version, explicit, expected):
     captured = {}
 
     def capture(model, **kwargs):
@@ -38,7 +41,7 @@ def test_compile_sglang_mla_resolves_compute_before_building_ops(monkeypatch, sy
         "deepseek-ai/DeepSeek-V3",
         system,
         "sglang",
-        "current",
+        version,
         tp_size=8,
         moe_tp_size=8,
         fmha_quant_mode=explicit,

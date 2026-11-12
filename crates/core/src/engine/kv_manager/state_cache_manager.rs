@@ -3,6 +3,9 @@
 
 //! Metadata-only recurrent-state caching for the manual G1 model.
 //!
+//! A sliding-window state (DeepSeek V4) instead copies the state at each
+//! retained boundary; see `sliding_window_boundaries` and `publish_window`.
+//!
 //! Default align retention is modified from vLLM (Apache-2.0).
 //! Copyright contributors to the vLLM project.
 //! https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
@@ -19,6 +22,7 @@ use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, VllmBlockPool,
 };
 use crate::engine::common::hashing::SequenceHash;
+use crate::engine::config::SlidingWindowStateConfig;
 use rustc_hash::FxHashSet;
 
 #[derive(Debug, Default)]
@@ -28,6 +32,10 @@ pub(crate) struct StateRequest {
     // Align mode rotates the working allocation when the destination slot
     // changes. The previous slot remains a real input until the next pass.
     pub(crate) working_slot: Option<usize>,
+    // Whether `working` carries a published checkpoint identity. Only this
+    // manager moves working copies between private and cached, so the flag
+    // spares decode a pool lookup per state block on every capacity check.
+    working_cached: bool,
     previous: Vec<BlockCopyId>,
     previous_step: u64,
     // Indices into the manager's per-step copy-reference queue, not extra refs.
@@ -44,6 +52,7 @@ pub(crate) struct StateCacheManager {
     pub(crate) blocks_per_state: usize,
     pub(crate) mtp_enabled: bool,
     pub(crate) align_block_size: Option<usize>,
+    pub(crate) sliding_window: Option<SlidingWindowStateConfig>,
     // Preserve insertion order for deterministic LRU release. A cancelled
     // request takes its own entries; holes disappear at the next begin_step.
     step_copy_holds: Vec<Option<BlockCopyId>>,
@@ -58,6 +67,7 @@ impl StateCacheManager {
             blocks_per_state,
             mtp_enabled,
             align_block_size: None,
+            sliding_window: None,
             step_copy_holds: Vec::new(),
             published_this_step: FxHashSet::default(),
             step: 0,
@@ -77,8 +87,125 @@ impl StateCacheManager {
     }
 
     pub(crate) fn has_snapshot(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
-        !self.published_this_step.contains(&prefix)
-            && self.keys(prefix).all(|key| pool.key_hit(key).is_some())
+        !self.published_this_step.contains(&prefix) && self.snapshot_cached(pool, prefix)
+    }
+
+    /// Whether every block of `prefix`'s snapshot is cached.
+    fn snapshot_cached(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
+        self.snapshot_keys(pool, prefix)
+            .all(|key| pool.key_hit(key).is_some())
+    }
+
+    /// Cache keys of `prefix`'s snapshot. A sliding-window copy is published
+    /// as one grouped entry where the pool supports it.
+    pub(crate) fn snapshot_keys(
+        &self,
+        pool: &VllmBlockPool,
+        prefix: SequenceHash,
+    ) -> impl ExactSizeIterator<Item = CacheKey> {
+        let slots = if self.groups_windows(pool) {
+            1
+        } else {
+            self.blocks_per_state
+        };
+        (0..slots).map(move |slot| CacheKey::State { prefix, slot })
+    }
+
+    fn groups_windows(&self, pool: &VllmBlockPool) -> bool {
+        self.sliding_window.is_some() && pool.groups_state_copies()
+    }
+
+    /// Sliding-window boundaries whose window the pass `(before, after]`
+    /// completed and that vLLM's retention keeps cached.
+    ///
+    /// Modified Rust simulation of vLLM v0.32.0 (Apache-2.0),
+    /// `replay_boundaries` in `vllm/v1/core/kv_cache_coordinator.py` and
+    /// `SlidingWindowManager.reachable_block_mask` in
+    /// `vllm/v1/core/single_type_kv_cache_manager.py`. Copyright contributors
+    /// to the vLLM project. See the root THIRD_PARTY_NOTICES.md.
+    pub(crate) fn sliding_window_boundaries(
+        &self,
+        block_size: usize,
+        prompt_tokens: usize,
+        before: usize,
+        after: usize,
+    ) -> impl Iterator<Item = usize> {
+        let window = self.sliding_window.expect("sliding-window state");
+        // The MTP group must also cache the block after the boundary.
+        let lookahead = if self.mtp_enabled {
+            window.lookahead_tokens
+        } else {
+            0
+        };
+        // Where a resend (capped at the prompt minus one token) or a longer
+        // prompt resumes. With MTP vLLM keeps one block below each, so the
+        // MTP group's dropped block stays inside the prompt.
+        let resend = prompt_tokens.saturating_sub(1) / block_size * block_size;
+        let replay = if self.mtp_enabled {
+            [
+                resend.saturating_sub(block_size),
+                (prompt_tokens / block_size * block_size).saturating_sub(block_size),
+            ]
+        } else {
+            [resend; 2]
+        };
+        let first = before.saturating_sub(lookahead) / block_size + 1;
+        let last = after
+            .checked_sub(lookahead)
+            .map_or(0, |tokens| tokens / block_size);
+        (first..=last)
+            .map(move |index| index * block_size)
+            .filter(move |&boundary| {
+                let kept = match window.retention_interval {
+                    None => true,
+                    Some(interval) => {
+                        replay.contains(&boundary)
+                            || (interval > 0 && boundary.is_multiple_of(interval))
+                    }
+                };
+                kept
+            })
+    }
+
+    /// Cache one sliding-window checkpoint as reclaimable state blocks.
+    /// vLLM keeps these window blocks after the request moves past them, so
+    /// they cost capacity only while nothing evicts them. Appends token
+    /// hashes evicted to make room to `removed`. vLLM keeps these blocks
+    /// in the request's own allocation; replay copies the whole state, so a
+    /// pool with no free or evictable room skips the checkpoint.
+    pub(crate) fn publish_window(
+        &mut self,
+        pool: &mut VllmBlockPool,
+        state: &mut StateRequest,
+        hash: SequenceHash,
+        removed: &mut Vec<SequenceHash>,
+    ) {
+        if self.published_this_step.contains(&hash) || self.snapshot_cached(pool, hash) {
+            return;
+        }
+        let Some(mut outcome) = pool.reserve(&[], self.blocks_per_state) else {
+            return;
+        };
+        if state.snapshot_step != self.step {
+            state.snapshot.clear();
+            state.snapshot_step = self.step;
+        }
+        if self.groups_windows(pool) {
+            let id =
+                pool.publish_state_group(hash, self.blocks_per_state, &mut outcome.reservation);
+            // Non-owning: a same-pass preemption discards it.
+            state.snapshot.push(id);
+        } else {
+            for key in self.keys(hash) {
+                let id = pool.allocate_private(&mut outcome.reservation);
+                pool.cache_private_key(id, key);
+                pool.release(id);
+                state.snapshot.push(id);
+            }
+        }
+        pool.cancel(outcome.reservation);
+        self.published_this_step.insert(hash);
+        removed.append(&mut outcome.removed);
     }
 
     pub(crate) fn release_previous(&self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
@@ -121,26 +248,29 @@ impl StateCacheManager {
         previous + copies
     }
 
+    fn debug_assert_working_cached(pool: &VllmBlockPool, state: &StateRequest) {
+        debug_assert_eq!(
+            state.working_cached,
+            state.working.iter().any(|&id| !pool.is_private(id)),
+            "working-state cache flag diverged from the pool"
+        );
+    }
+
     pub(crate) fn write_blocks(
         &self,
         pool: &VllmBlockPool,
         state: &StateRequest,
         target: usize,
     ) -> usize {
-        if let Some(block_size) = self.align_block_size {
-            if target <= state.computed_tokens || state.working.is_empty() {
-                return 0;
-            }
-            let slot = target.saturating_sub(1) / block_size;
-            return if state.working_slot != Some(slot)
-                || state.working.iter().any(|&id| !pool.is_private(id))
-            {
-                self.blocks_per_state
-            } else {
-                0
-            };
+        Self::debug_assert_working_cached(pool, state);
+        if target <= state.computed_tokens || state.working.is_empty() {
+            return 0;
         }
-        if target > state.computed_tokens && state.working.iter().any(|&id| !pool.is_private(id)) {
+        // Align mode writes into a new working allocation when the slot changes.
+        let new_slot = self.align_block_size.is_some_and(|block_size| {
+            state.working_slot != Some(target.saturating_sub(1) / block_size)
+        });
+        if new_slot || state.working_cached {
             self.blocks_per_state
         } else {
             0
@@ -167,6 +297,7 @@ impl StateCacheManager {
                 for id in previous {
                     self.hold_previous(state, id);
                 }
+                state.working_cached = false;
                 state.working_slot = Some(slot);
             } else {
                 // Producer partial-tail CoW: keep the running slot, move its
@@ -181,6 +312,7 @@ impl StateCacheManager {
                 for &id in &state.working {
                     pool.make_state_private(id);
                 }
+                state.working_cached = false;
                 for &id in &saved {
                     self.hold_copy(state, id);
                 }
@@ -200,6 +332,7 @@ impl StateCacheManager {
         for &id in &state.working {
             pool.make_state_private(id);
         }
+        state.working_cached = false;
         state.snapshot = preserved;
         state.snapshot_owned = true;
         state.snapshot_step = self.step;
@@ -217,8 +350,9 @@ impl StateCacheManager {
         if computed_tokens == state.computed_tokens || state.working.is_empty() {
             return;
         }
+        Self::debug_assert_working_cached(pool, state);
         assert!(
-            state.working.iter().all(|&id| pool.is_private(id)),
+            !state.working_cached,
             "state write must reserve its transition before compute"
         );
         if self.align_block_size.is_some() {
@@ -229,6 +363,7 @@ impl StateCacheManager {
                 for (&id, key) in state.working.iter().zip(self.keys(hash)) {
                     pool.cache_private_key(id, key);
                 }
+                state.working_cached = true;
                 state.snapshot.clone_from(&state.working);
                 state.snapshot_hash = Some(hash);
                 state.snapshot_step = self.step;
@@ -252,6 +387,7 @@ impl StateCacheManager {
         for (&id, key) in state.working.iter().zip(self.keys(hash)) {
             pool.cache_private_key(id, key);
         }
+        state.working_cached = true;
         // This is a non-owning alias: the request holds only its working refs.
         state.snapshot.clone_from(&state.working);
         state.snapshot_hash = Some(hash);
@@ -295,6 +431,7 @@ impl StateCacheManager {
         for id in state.working.drain(..) {
             pool.release(id);
         }
+        state.working_cached = false;
         // Published checkpoints remain reclaimable cross-request cache entries.
         state.snapshot.clear();
         state.snapshot_hash = None;

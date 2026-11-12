@@ -36,13 +36,19 @@ _KNOWN_LANE_VALUES: frozenset[str] = frozenset(ATTENTION_BACKEND_CHOICES)
 # minus the universal ``"default"``) -> the stored ``kernel_source`` labels
 # each backend collects under, most specific first. sglang collects under the
 # user-facing names themselves; vllm prefixes its labels. vllm's flashinfer
-# entry lists every label the shipped tables use across versions (0.24.0
-# splits the lane into trtllm prefill/decode kernels, 0.22.0-era tables carry
-# the single ``vllm_flashinfer`` label) — the table walk serves the first
-# listed lane that carries the queried slice, so one pinned order covers all
-# shipped versions and both the context and generation tables. A backend
-# absent from this map supports NO override (trtllm collects ``torch_flow*``
-# lanes that correspond to no user-facing choice).
+# entry lists every label the shipped tables use across versions, newest
+# label first: 0.30.0 persists the FlashInfer trtllm-gen decode kernel as
+# ``vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen``, 0.25.0 as
+# ``vllm_flashinfer_flashinfertrtllmapidecode``, 0.24.0 splits the lane into
+# trtllm prefill/decode kernels, 0.22.0-era tables carry the single
+# ``vllm_flashinfer`` label. The table walk serves the first listed lane that
+# carries the queried slice and, among these pinned labels, ranks the ones the
+# requested version collected itself ahead of labels that only an earlier
+# version's backward-filled rows carry (``_source_tiered_lane_walk_order``),
+# so one pinned order covers all shipped versions and both the context and
+# generation tables without an older donor lane shadowing the new primary
+# lane. A backend absent from this map supports NO override (trtllm collects
+# ``torch_flow*`` lanes that correspond to no user-facing choice).
 _OVERRIDE_LANES: dict[str, dict[str, tuple[str, ...]]] = {
     "sglang": {
         "fa3": ("fa3",),
@@ -54,6 +60,8 @@ _OVERRIDE_LANES: dict[str, dict[str, tuple[str, ...]]] = {
     "vllm": {
         "triton": ("vllm_triton_attn",),
         "flashinfer": (
+            "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "vllm_flashinfer_flashinfertrtllmapidecode",
             "vllm_flashinfer_trtllmprefill",
             "vllm_flashinfer_trtllmdecode",
             "vllm_flashinfer",

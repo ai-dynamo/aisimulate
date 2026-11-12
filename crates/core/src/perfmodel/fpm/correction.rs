@@ -10,9 +10,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::dynamic_correction::DynamicCorrection;
-use super::options::{CorrectionMode, ForwardPassPerfOptions};
-use super::samples::{AxisRange, BucketedSamples, StoreStats, WithOptions, median_ratio};
+use super::dynamic_correction::{DynamicCorrection, DynamicCorrectionSnapshot};
+use super::options::{CorrectionMode, ForwardPassPerfOptions, validate_options};
+use super::samples::{
+    AxisRange, BucketedSamples, FixedSamplesSnapshot, StoreStats, WithOptions, median_ratio,
+};
+use crate::AicError;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FixedCorrectionBuckets {
@@ -22,7 +25,8 @@ pub(crate) struct FixedCorrectionBuckets {
     max_slower_correction_factor: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CorrectionObservation {
     correction_factor: f64,
 }
@@ -206,6 +210,19 @@ impl CorrectionBuckets {
     }
 }
 
+/// Exact retained state for the new deterministic mixed calibrators. Restore
+/// additionally checks these settings against the model's constructed policy.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HybridCorrectionSnapshot {
+    schema_version: u32,
+    min_observations: usize,
+    min_faster_correction_factor: Option<f64>,
+    max_slower_correction_factor: Option<f64>,
+    fixed: FixedSamplesSnapshot<CorrectionObservation>,
+    dynamic: DynamicCorrectionSnapshot,
+}
+
 impl WithOptions for CorrectionBuckets {
     fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
         match options.correction_mode {
@@ -244,6 +261,92 @@ impl StoreStats for CorrectionBuckets {
 }
 
 impl CorrectionBuckets {
+    pub(crate) fn new_mixed_hybrid(
+        options: &ForwardPassPerfOptions,
+        axis_ranges: &[AxisRange],
+    ) -> Result<Self, AicError> {
+        validate_options(options)?;
+        if options.correction_mode != CorrectionMode::Hybrid || axis_ranges.len() != 2 {
+            return Err(invalid_mixed_snapshot(
+                "mixed correction requires hybrid mode and two score axes",
+            ));
+        }
+        let mut result = Self::with_options(options, axis_ranges);
+        let Self::Hybrid(value) = &mut result else {
+            unreachable!("validated hybrid correction");
+        };
+        value.fixed.samples.use_deterministic_fixed_ties()?;
+        Ok(result)
+    }
+
+    pub(crate) fn mixed_admission_count(&self) -> Result<u64, AicError> {
+        let Self::Hybrid(value) = self else {
+            return Err(invalid_mixed_snapshot(
+                "admission count requires a hybrid calibrator",
+            ));
+        };
+        Ok(value.dynamic.admission_count())
+    }
+
+    pub(crate) fn snapshot_mixed_hybrid(&self) -> Result<HybridCorrectionSnapshot, AicError> {
+        let Self::Hybrid(value) = self else {
+            return Err(invalid_mixed_snapshot(
+                "snapshot requires a hybrid calibrator",
+            ));
+        };
+        Ok(HybridCorrectionSnapshot {
+            schema_version: 1,
+            min_observations: value.fixed.min_observations,
+            min_faster_correction_factor: value.fixed.min_faster_correction_factor,
+            max_slower_correction_factor: value.fixed.max_slower_correction_factor,
+            fixed: value.fixed.samples.fixed_snapshot()?,
+            dynamic: value.dynamic.snapshot(),
+        })
+    }
+
+    pub(crate) fn restore_mixed_hybrid(
+        &mut self,
+        snapshot: HybridCorrectionSnapshot,
+    ) -> Result<(), AicError> {
+        let Self::Hybrid(value) = self else {
+            return Err(invalid_mixed_snapshot(
+                "restore requires a hybrid calibrator",
+            ));
+        };
+        if snapshot.schema_version != 1
+            || snapshot.min_observations != value.fixed.min_observations
+            || snapshot.min_faster_correction_factor != value.fixed.min_faster_correction_factor
+            || snapshot.max_slower_correction_factor != value.fixed.max_slower_correction_factor
+        {
+            return Err(invalid_mixed_snapshot(
+                "schema or calibration settings differ",
+            ));
+        }
+        for (_, row) in &snapshot.fixed.rows {
+            let ratio = row.correction_factor;
+            if !ratio.is_finite()
+                || ratio <= 0.0
+                || snapshot
+                    .min_faster_correction_factor
+                    .is_some_and(|bound| ratio < bound)
+                || snapshot
+                    .max_slower_correction_factor
+                    .is_some_and(|bound| ratio > bound)
+            {
+                return Err(invalid_mixed_snapshot("invalid fixed correction ratio"));
+            }
+        }
+        // Validate both policies before replacing either history.
+        let mut restored = value.clone();
+        restored
+            .fixed
+            .samples
+            .restore_fixed_snapshot(snapshot.fixed)?;
+        restored.dynamic.restore_snapshot(snapshot.dynamic)?;
+        *value = restored;
+        Ok(())
+    }
+
     pub(crate) fn add_observation(&mut self, x: Vec<f64>, observed_ms: f64, base_ms: f64) {
         match self {
             Self::Fixed(value) => value.add_observation(x, observed_ms, base_ms),
@@ -296,9 +399,130 @@ impl CorrectionBuckets {
     }
 }
 
+fn invalid_mixed_snapshot(reason: &str) -> AicError {
+    AicError::InvalidEngineConfig(format!(
+        "invalid mixed hybrid calibration snapshot: {reason}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_hybrid_snapshot_preserves_predictions_and_future_admissions() {
+        let options = ForwardPassPerfOptions {
+            correction_mode: CorrectionMode::Hybrid,
+            max_observations: 8,
+            min_observations: 2,
+            bucket_shape: Some([2, 2]),
+            ..Default::default()
+        };
+        let ranges = [AxisRange::from_zero_to_f64(100.5).unwrap(); 2];
+        let mut original = CorrectionBuckets::new_mixed_hybrid(&options, &ranges).unwrap();
+        let feed = |model: &mut CorrectionBuckets, index: usize| {
+            let x = [
+                [0.0, 0.0],
+                [20.0, 80.0],
+                [80.0, 20.0],
+                [100.5, 100.5],
+                [200.0, 50.0],
+                [50.0, 1000.0],
+            ][index % 6];
+            model.add_observation(x.to_vec(), [5.0, 10.0, 15.0, 20.0][index % 4], 10.0);
+        };
+        for index in 0..13 {
+            feed(&mut original, index);
+        }
+        let snapshot = original.snapshot_mixed_hybrid().unwrap();
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let mut restored = CorrectionBuckets::new_mixed_hybrid(&options, &ranges).unwrap();
+        restored
+            .restore_mixed_hybrid(serde_json::from_str(&json).unwrap())
+            .unwrap();
+        assert_eq!(restored.snapshot_mixed_hybrid().unwrap(), snapshot);
+        // Continue beyond the age horizon, with full grids and tied buckets.
+        for index in 13..100 {
+            for x in [
+                [0.0, 0.0],
+                [50.0, 50.0],
+                [100.5, 100.5],
+                [500.0, 50.0],
+                [1e6, 1e6],
+            ] {
+                assert_eq!(
+                    original.correction_factor_for(&x),
+                    restored.correction_factor_for(&x)
+                );
+            }
+            feed(&mut original, index);
+            feed(&mut restored, index);
+            assert_eq!(
+                original.snapshot_mixed_hybrid().unwrap(),
+                restored.snapshot_mixed_hybrid().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_hybrid_snapshot_rejects_incompatible_or_corrupt_state_atomically() {
+        let options = ForwardPassPerfOptions {
+            correction_mode: CorrectionMode::Hybrid,
+            min_observations: 1,
+            ..Default::default()
+        };
+        let ranges = [AxisRange::from_zero_to(100); 2];
+        let mut model = CorrectionBuckets::new_mixed_hybrid(&options, &ranges).unwrap();
+        model.add_observation(vec![10.0, 20.0], 15.0, 10.0);
+        let before = model.snapshot_mixed_hybrid().unwrap();
+        let value = serde_json::to_value(&before).unwrap();
+        for (pointer, replacement) in [
+            ("/schema_version", serde_json::json!(2)),
+            ("/min_observations", serde_json::json!(2)),
+            ("/fixed/axis_max/0", serde_json::json!(200.0)),
+            ("/fixed/rows/0/0/0", serde_json::json!(-1.0)),
+            ("/fixed/rows/0/1/correction_factor", serde_json::json!(0.0)),
+            ("/dynamic/next_admission", serde_json::json!(0)),
+            ("/dynamic/recent/0/ratio", serde_json::json!(1.6)),
+            ("/dynamic/primary/0/admission", serde_json::json!(4)),
+            ("/dynamic/log_bounds/0/0", serde_json::json!(-1.0)),
+        ] {
+            let mut corrupt = value.clone();
+            *corrupt.pointer_mut(pointer).unwrap() = replacement;
+            let snapshot = serde_json::from_value(corrupt).unwrap();
+            assert!(model.restore_mixed_hybrid(snapshot).is_err(), "{pointer}");
+            assert_eq!(model.snapshot_mixed_hybrid().unwrap(), before, "{pointer}");
+        }
+        let legacy = CorrectionBuckets::with_options(&options, &ranges);
+        assert!(legacy.snapshot_mixed_hybrid().is_err());
+    }
+
+    #[test]
+    fn mixed_hybrid_keeps_existing_factors_before_capacity_eviction() {
+        let options = ForwardPassPerfOptions {
+            correction_mode: CorrectionMode::Hybrid,
+            ..Default::default()
+        };
+        let ranges = [AxisRange::from_zero_to(100); 2];
+        let mut mixed = CorrectionBuckets::new_mixed_hybrid(&options, &ranges).unwrap();
+        let mut legacy = CorrectionBuckets::with_options(&options, &ranges);
+        // Five historical ratios of 1.1 populate one fixed cell; the current
+        // measured 18/16 ratio is admitted only after its 17.6 prediction.
+        for _ in 0..5 {
+            mixed.add_observation(vec![10.0, 10.0], 17.6, 16.0);
+            legacy.add_observation(vec![10.0, 10.0], 17.6, 16.0);
+        }
+        assert_eq!(16.0 * mixed.correction_factor_for(&[10.0, 10.0]), 17.6);
+        assert_eq!(mixed.correction_factor_for(&[80.0, 80.0]), 1.0);
+        for x in [[10.0, 10.0], [80.0, 80.0], [200.0, 200.0]] {
+            assert_eq!(
+                mixed.correction_factor_for(&x),
+                legacy.correction_factor_for(&x)
+            );
+        }
+        mixed.add_observation(vec![10.0, 10.0], 18.0, 16.0);
+        assert_eq!(16.0 * mixed.correction_factor_for(&[10.0, 10.0]), 17.6);
+    }
 
     #[test]
     fn hybrid_uses_fixed_geometry_even_for_cold_and_empty_cells() {

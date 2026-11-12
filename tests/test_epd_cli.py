@@ -19,6 +19,7 @@ from aisimulate.recommend import _candidate_prediction, recommendation_to_sweepe
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper import SmartSearchConfig, Sweeper, SweepResult
 from aisimulate.sweeper.result import CandidateStatus
+from aisimulate_core.sdk.perf_database import get_version_slots
 
 
 def _prediction(mode="aggregated"):
@@ -43,7 +44,7 @@ def _prediction(mode="aggregated"):
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "hardware": "h200_sxm",
             "backend": "sglang",
-            "backend_version": "0.5.14",
+            "backend_version": get_version_slots("h200_sxm", "sglang")["current"],
             "context_length": 4096,
             "mode": mode,
             "workers": {
@@ -567,16 +568,12 @@ def test_cli_examples_parse():
 def test_public_cli_rejects_afd_encoder_composition(tmp_path, capsys, command, combined_with_pd):
     raw = _prediction() if command == "predict" else _recommendation()
     encoder = raw["engine"]["workers"]["encoder"]
-    raw["engine"]["mode"] = "afd"
-    raw["engine"]["afd"] = {
-        "phase": "decode" if combined_with_pd else "both",
-        "combined_with_pd": combined_with_pd,
-    }
+    role = "decode" if combined_with_pd else "aggregated"
+    raw["engine"]["mode"] = "disaggregated" if combined_with_pd else "aggregated"
+    afd = {"a_batch_size": 8}
     if command == "predict":
-        raw["engine"]["afd"].update(n_a_nodes=1, n_f_nodes=1, tp_a=8, a_batch_size=8)
-    else:
-        raw["engine"]["afd"]["a_batch_size"] = {"choices": [8]}
-    raw["engine"]["workers"] = {"encoder": encoder}
+        afd.update(n_a_nodes=1, n_f_nodes=1, tp_a=1)
+    raw["engine"]["workers"] = {"encoder": encoder, role: {"type": "afd", "afd": afd}}
     if combined_with_pd:
         raw["engine"]["workers"]["prefill"] = {}
     path = tmp_path / "hybrid.yaml"

@@ -5,17 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Release artifacts and qualification
 
-AISimulate 0.13.0 has one product version and exactly two release artifacts:
+AISimulate 0.14.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
-| `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Application, CLI, estimator SDK, model/performance data, FPM Collector workflow/runtime, Replay, Sweeper, and the unified native runtime |
-| `aisimulate-core` crate | `crates/core/Cargo.toml` | Engine-neutral estimator, simulation, and deterministic Replay for Rust consumers |
+| `aisim` wheel | `python/aisimulate/pyproject.toml` | Application, CLI, estimator SDK, model/performance data, FPM Collector workflow/runtime, Replay, Sweeper, and the unified native runtime |
+| `aisim-core` crate | `crates/core/Cargo.toml` | Engine-neutral estimator, simulation, and deterministic Replay for Rust consumers |
 
 The external public-API test fixture is `publish = false` and excluded from the
 product workspace. Imported AIConfigurator source does not retain another buildable `aiconfigurator`,
 `aiconfigurator-core`, or Python `aisimulate-core` manifest. The
-`aisimulate` and `aisimulate_core` namespaces live inside the `aisimulate` wheel.
+`aisimulate` and `aisimulate_core` namespaces live inside the `aisim` wheel.
 The legacy `aiconfigurator` executable uses `aisimulate.legacy_cli`; the old
 Python import namespaces are removed. See the [migration guide](../aic-backward-compatibility/migration.md#python-imports-and-resources).
 
@@ -23,13 +23,34 @@ Python import namespaces are removed. See the [migration guide](../aic-backward-
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.
 
-Both artifacts use version `0.13.0`. The wheel builds its native extension from
+Both artifacts use version `0.14.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
 For published versions, wheel platform tags, source installation, and internal
 nightly consumption, see the [installation guide](../getting-started/installation.md). The product
 version in a manifest does not establish publication on an index.
+
+The current distribution names are `aisim` (Python) and `aisim-core` (Rust).
+Python imports remain `aisimulate` and `aisimulate_core`; `aisim` and
+`aisimulate` invoke the same CLI. Current release tooling also validates and
+qualifies historical `aisimulate` / `aisimulate-core` sources by their committed
+manifest identities. Nightly GitLab triggers select the project from the built
+wheel identity; renamed builds require release-automation MR !84 before cutover.
+
+## Distribution migration
+
+The renamed `aisim` wheel owns the same Python packages and CLI files as the
+historical `aisimulate` wheel. Existing users must uninstall `aisimulate` before
+installing `aisim`, including upgrades; mixed installations must be repaired
+by removing the old distribution and force-reinstalling the selected new wheel,
+or by creating a fresh environment. See the [migration procedure](../getting-started/installation.md#migrate-to-the-renamed-distribution).
+
+Coordinate downstream dependency declarations, especially Dynamo, before the
+cutover. A consumer requiring `aisimulate` can reinstall the old distribution
+and recreate the overlap. New-name environments require compatible consumers
+that declare `aisim`, followed by `pip check`. Historical release qualification
+continues using its original distribution in a separate environment.
 
 ## Packaged license files
 
@@ -41,9 +62,91 @@ do not create a separate licensing boundary. `scripts/ci/check_packaged_legal_fi
 fails CI if either packaging copy differs byte-for-byte from its root original,
 and the release-artifact validator checks the bytes installed in the wheel.
 
+### Bundled model configuration provenance
+
+Python and Cargo dependency inventories do not describe model configuration files
+copied into the wheel. `scripts/ci/bundled_configs.json` records each configuration's
+packaged path, SHA256, origin, upstream file URL and immutable commit, modification
+status, license, copyright owner and canonical notice reference. The checker
+validates the complete referenced license text against its recorded digest;
+whitespace-only reflow is ignored. License identifiers are bound to registered
+legal-text digests, so a custom agreement cannot accidentally be labelled MIT
+without changing the license registry too. Explicit required attribution is checked
+in notice prose outside the agreement itself. Canonical attribution remains in the root legal
+files and their byte-identical packaging copies.
+
+Fast CI runs `scripts/ci/check_bundled_configs.py` against source files. Full CI,
+platform-wheel jobs (including macOS), and nightly builds check the exact repaired
+wheel before it is staged or its runtime dependencies execute. These checks do not
+import the wheel. New files without an inventory entry, changed bytes without
+updated provenance, missing source/license information, incomplete notices, and
+unexpected or missing wheel configurations fail validation. Inventory and checker
+changes use the repository's existing code-owner review process; metadata is a
+declaration to review, not proof of legal clearance.
+
+The enforced scope is configuration files under `model_configs/`, plus JSON model
+descriptors with top-level `architectures` or `model_type` found elsewhere in the
+packaged source and wheel. This detects a Hugging Face config copied to another
+package directory, but does not infer arbitrary copied data's origin from numbers
+or detect every possible third-party asset. Project-authored files require an
+explicit origin and description; generated files also require recorded inputs.
+
+For an existing file whose provenance has not been individually established,
+`origin: legacy_unresolved` and `license: UNKNOWN` preserve that uncertainty in
+the report. This exception is limited to exact path/hash pairs in
+`scripts/ci/bundled_config_legacy.json`, frozen at the recorded bootstrap commit.
+The checker pins the baseline file's digest. Adding a file or editing its bytes
+cannot use this exception, even if its inventory hash is updated. Resolving an
+entry replaces it with verified source/license metadata; do not label unknown
+content Apache-2.0 to make CI pass. The baseline is not an OSRB approval.
+
+To validate and collect evidence locally:
+
+```bash
+python scripts/ci/check_bundled_configs.py check --output-dir /tmp/bundled-config-source
+python scripts/ci/check_bundled_configs.py extract --check --wheel dist/*.whl \
+  --output-dir /tmp/bundled-config-wheel
+```
+
+The `extract` subcommand unpacks the detected configurations and legal files
+without importing or installing the wheel. Files retain their archive-relative
+paths beneath `files/`; `extracted-files.json` records the wheel SHA256 and each
+file's size, hash, and kind. Legal files include the wheel's `.dist-info/licenses/`
+contents and conventional LICENSE, LICENCE, COPYING, NOTICE, and
+THIRD_PARTY_NOTICES filenames. Use a new or empty output directory.
+
+For inspection of an unrecorded or historical wheel, omit `--check`. Extraction
+alone does not validate provenance or produce a compliance assessment. An
+explicit `--inventory` can include declared configurations outside the usual
+model-config locations. With `--check`, the same invocation applies the existing
+source/wheel policy and writes the reports below; a failed check leaves no
+extracted output. Existing invocations without a subcommand still mean `check`.
+
+CI uses `extract --check` and retains only `bundled-deps.csv`,
+`bundled-provenance.json`, and `extracted-files.json` as report artifacts. The raw
+configuration and license copies remain in the runner's temporary directory.
+
+The generated `bundled-deps.csv` uses the existing OSRB columns
+`dependency_type,name,version,spdx_license`; each config has type
+`bundled_model_config` and a content SHA256 as its version. Content changes
+therefore appear in the existing nightly added/removed diff. The accompanying
+`bundled-provenance.json` retains the upstream revision, complete metadata,
+unresolved entries, and the exact wheel SHA256. Custom licenses keep their
+`LicenseRef-*` identifiers and are not silently classified as permissive. These
+checks establish inventory coverage and notice integrity, not contractual
+compliance or automatic license approval.
+
+Nightly CI uploads each architecture's report and includes both in the combined
+`license-artifacts/deps.csv` and diff. Missing architecture reports fail evidence
+generation. Historical source builds without their own inventory can use an
+explicit trusted inventory with `--allow-subset`: every configuration actually
+present must still match a catalog path/hash and its notices. A historical file
+with different or unrecorded bytes fails; backport its provenance rather than
+silently skipping the check.
+
 Nightly builds stamp a dev suffix with `scripts/release/apply_dev_version.py` before
-building: the wheel becomes `0.13.0.devYYYYMMDD` (PEP 440) and the crate
-`0.13.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
+building: the wheel becomes `0.14.0.devYYYYMMDD` (PEP 440) and the crate
+`0.14.0-dev.YYYYMMDD` (SemVer — cargo rejects the PEP 440 spelling, and the
 dotted date is a numeric identifier so pre-release versions order
 numerically). The wheel form follows the ai-dynamo/dynamo nightly
 convention. The release script accepts only this suffix pair and still
@@ -70,11 +173,11 @@ manifest compiles the Rust trees. See [AIC synchronization](aic-sync.md).
 
 ## Nightly CI and FPE qualification
 
-Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
-architecture and one `aisimulate-core` Rust source crate. A changes guard compares
+Main branch nightly CI builds the approved release surface: one `aisim` wheel per Linux
+architecture and one `aisim-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
-`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+`0.14.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
 
@@ -116,6 +219,12 @@ Two kinds of validation then run:
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
   [required native probes](../../.github/fpe-required-probes.json).
+  Before probing, discovery resolves each required probe's `current` version
+  through the selected source's installed SDK and checks it against that source's
+  inventory. The resulting plan binds concrete versions to the source, tooling,
+  and wheel identities; packaging validates that plan and records its versions in
+  `fpe-qualification.json`. A passing older version cannot replace a failing
+  required version. Release branches resolve their own `current` versions.
 
 FPE generates deterministic web-matrix artifacts. Its standalone manual mode
 builds one wheel for the requested source SHA and uses that same wheel for all
@@ -132,14 +241,14 @@ as workflow artifacts; publishing dashboard pages is a separate Pages workflow
 that consumes successful nightlies.
 
 The GitLab request contract was checked against release-automation revision
-`cdabacabb50e589c08b97b776b5c2f2644b5473e`, specifically the root
-`.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
+`cc63ecf80165209f630d4a5b3868983e980c6cc2` (release-automation MR !84), specifically
+the root `.gitlab-ci.yml` variable forwarding and `projects/aisim.yml` consumer.
 The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
 request selects `ref=main` and forwards these fields:
 
 | Variable | Nightly value |
 | --- | --- |
-| `PROJECT` | `aisimulate` |
+| `PROJECT` | Built wheel identity: `aisim`, or `aisimulate` for historical source |
 | `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
 | `NIGHTLY_TAG` | `nightly-YYYYMMDDNNNNNNNNNN-<first-seven-commit-characters>` |
 | `WHEEL_VERSION` | Exact stamped wheel version |

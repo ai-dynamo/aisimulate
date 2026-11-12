@@ -582,6 +582,8 @@ fn snapshot_pin_report(
         block_size: 4,
         max_num_seqs: 4,
         max_num_batched_tokens: 64,
+        // The pins cover snapshot plays, not async-scheduling admission.
+        async_scheduling: Some(false),
         timing_model: TimingModelConfig::Fixed {
             prefill_ms: 2.0,
             decode_ms: 1.0,
@@ -682,10 +684,13 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         "two-plays snapshot disagg: 3 a01db8613f512a83",
         "two-plays warmup agg: 3 0f7ad48710c5d7c6",
         "two-plays warmup disagg: 3 26a20280546a6cc7",
-        "two-plays profile agg: 821 e20edce760494c3c",
-        "two-plays profile disagg: 667 53b97fda7fd727e0",
-        "two-plays profile-cold agg: 820 556b4f20c32324af",
-        "two-plays profile-cold disagg: 601 21257dffb47e3779",
+        "two-plays profile agg: 821 10a719a78e167cd4",
+        "two-plays profile disagg: 667 c737d31ab004240b",
+        "two-plays profile-cold agg: 820 720a0b2eb0c2c09b",
+        // Same-timestamp arrivals now join the synchronous prefill pass: the
+        // first affected recycled request admits at 13 ms instead of 15 ms,
+        // allowing 667 requests to issue before the 1 s profiling cutoff.
+        "two-plays profile-cold disagg: 667 126b8310bccd00f3",
     ];
     assert_eq!(actual, expected);
 }

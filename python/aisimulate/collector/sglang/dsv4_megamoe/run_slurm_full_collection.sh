@@ -249,7 +249,7 @@ if [[ "${COPY_VALIDATED}" == "1" ]]; then
   fi
   COLLECTOR_HASH="$(
     PYTHONPATH="${LOCAL_REPO}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c \
-      'import sys; from pathlib import Path; from collector import provenance; root = Path(sys.argv[1]); closures = provenance.load_closures(root / "collector/hash_closures.yaml"); print(provenance.collector_hash("collector.sglang.collect_dsv4_megamoe", root, closures))' \
+      'import sys; from pathlib import Path; from collector import provenance; print(provenance.collector_hash(Path(sys.argv[1])))' \
       "${LOCAL_REPO}"
   )"
 fi

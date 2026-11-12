@@ -41,6 +41,7 @@ from .output import (
     write_recommendation_result,
     write_recommendations,
     write_requests,
+    write_telemetry,
 )
 from .output_adapter import (
     OutputAdapterExecutionError,
@@ -50,6 +51,7 @@ from .output_adapter import (
 )
 from .power import normalize_power_summary
 from .predict import PredictionExecutionError, run_prediction
+from .replay.dashboard import write_replay_dashboard
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -157,8 +159,11 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
-    if config.traffic.load.agentic_warmup_policy == "live_trajectory_v1" and (args.stack != "engine" or args.online):
-        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
+    capture_telemetry = args.capture_telemetry or args.export_html
+    if capture_telemetry and (args.stack != "engine" or args.online):
+        raise ValueError("telemetry capture requires offline --stack engine")
+    if config.traffic.load.agentic_warmup_policy != "repeated_prefixes" and (args.stack != "engine" or args.online):
+        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
     if (
         config.engine.speculation is not None
         and config.engine.speculation.kind == "ngram"
@@ -197,6 +202,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         output_requirements=ReplayOutputRequirements(
             include_raw_report=not analytical_epd,
             capture_per_request=args.capture_per_request,
+            capture_telemetry=capture_telemetry,
+            telemetry_sample_interval_ms=args.telemetry_sample_interval_ms,
             capture_memory_diagnostics="memory" in args.detail,
             capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
         ),
@@ -230,8 +237,13 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     details = build_prediction_details(native, args.detail) if args.detail else None
     if details is not None:
         native = {**native, "details": details}
+    if capture_telemetry:
+        telemetry = native.get("telemetry")
+        if not isinstance(telemetry, dict):
+            raise RuntimeError("selected stack did not provide replay telemetry")
+        native = {**native, "telemetry": write_telemetry(root, telemetry)}
     report_path = write_prediction_report(root, native)
-    write_afd_qualification_artifacts(root, spec)
+    write_afd_qualification_artifacts(root, spec, memory=native.get("afd_memory"))
     if args.capture_per_request:
         records = native.get("per_request")
         if not isinstance(records, list):
@@ -240,11 +252,21 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
     phases = result.report.metadata.get("agentic_phases")
-    if isinstance(phases, dict) and phases.get("phase") == "aborted":
+    preparation_aborted = isinstance(phases, dict) and phases.get("phase") == "aborted"
+    if preparation_aborted:
         sys.stderr.write(
             f"ERROR: agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}; "
             f"saved full report to: {report_path}\n"
         )
+    dashboard_path = None
+    if args.export_html:
+        try:
+            dashboard_path = write_replay_dashboard(
+                root, native, telemetry, config=config.model_dump(mode="json", exclude_none=True)
+            )
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(f"HTML dashboard rendering failed; native outputs saved to {root}: {exc}") from exc
+    if preparation_aborted:
         return 1
     write_prediction_stdout(
         sys.stdout,
@@ -257,6 +279,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
+        if dashboard_path is not None:
+            sys.stdout.write(f"Saved dashboard to: {dashboard_path}\n")
     if summary.get("prediction_status") == "invalid":
         sys.stderr.write(f"ERROR: {summary['diagnostic']} Saved full report to: {report_path}\n")
         return 1
@@ -293,10 +317,10 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     config = CoreRecommendationConfig.model_validate(core_raw)
     if (
         config.traffic is not None
-        and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+        and config.traffic.load.agentic_warmup_policy != "repeated_prefixes"
         and args.stack != "engine"
     ):
-        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
+        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,

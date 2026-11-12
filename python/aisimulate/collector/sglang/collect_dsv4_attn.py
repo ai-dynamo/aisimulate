@@ -12,23 +12,24 @@ ONE file containing both:
      ``layer.self_attn(...)`` (Q/KV proj + norm/rope + cache store +
      compressor + C4 indexer/topk for CSA + final FlashMLA).
   2. The registry-facing entrypoints — ``run_dsv4_attn_worker``
-     (per-(kind, tp, gemm, bs) test case) which spawns a subprocess that
-     internally sweeps every valid sl for that bs.
+     (one (kind, tp, gemm, bs) row of the op plan) which spawns a
+     subprocess that measures the row's (prefix, seq_len) points.
 
-Test cases (sweep grids + ``get_*_test_cases`` functions) live in
-``dsv4_test_cases`` and are re-exported below for registry use.
-
-Manual CLI use::
+Test cases are the op plans' rows (collector/op_plans.py). The manual CLI
+runs the plan's rows too::
 
     python collect_dsv4_attn.py --mode generation --attn-kind csa
     python collect_dsv4_attn.py --mode context --attn-kind hca \
-        --batch-sizes 1,4 --seq-lens 128,1024
+        --batch-sizes 1,4 --tp-sizes 1
 """
 
-# Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
+# Requires stock SGLang 0.5.21 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file; earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import argparse
 import contextlib
@@ -41,6 +42,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from collections.abc import Iterable
 from fractions import Fraction
@@ -56,12 +58,41 @@ os.environ.setdefault("SGLANG_APPLY_CONFIG_BACKUP", "none")
 # few shapes which the bench's own warmup JIT-compiles on first use.
 os.environ["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
 try:
-    from helper import _resolve_local_model_path, benchmark_with_power, log_perf
+    from helper import (
+        PeriodicGarbageCollector,
+        PhaseClock,
+        _resolve_local_model_path,
+        benchmark_with_power,
+        get_sm_version,
+        log_perf,
+        render_phase_totals,
+        worker_heartbeat,
+    )
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import _resolve_local_model_path, benchmark_with_power, log_perf
+    from helper import (
+        PeriodicGarbageCollector,
+        PhaseClock,
+        _resolve_local_model_path,
+        benchmark_with_power,
+        get_sm_version,
+        log_perf,
+        render_phase_totals,
+        worker_heartbeat,
+    )
 
 try:
+    from collector.sglang.runtime_limits import (
+        KERNEL_LIMIT,
+        kernel_limit_error,
+        over_chunk,
+        over_kv_pool,
+        refusal_summary,
+        refuse,
+        required_kv_alloc_tokens,
+        required_prefill_extend_tokens,
+        required_swa_kv_alloc_tokens,
+    )
     from collector.sglang.runtime_limits import (
         alloc_prefix_indices as _alloc_prefix_indices,
     )
@@ -70,12 +101,6 @@ try:
     )
     from collector.sglang.runtime_limits import (
         kv_pool_page_size as _kv_pool_page_size,
-    )
-    from collector.sglang.runtime_limits import (
-        required_kv_alloc_tokens,
-        required_kv_tokens,
-        required_prefill_extend_tokens,
-        required_swa_kv_alloc_tokens,
     )
     from collector.sglang.runtime_limits import (
         runtime_chunk_size as _runtime_chunk_size,
@@ -88,6 +113,17 @@ try:
     )
 except ModuleNotFoundError:
     from runtime_limits import (
+        KERNEL_LIMIT,
+        kernel_limit_error,
+        over_chunk,
+        over_kv_pool,
+        refusal_summary,
+        refuse,
+        required_kv_alloc_tokens,
+        required_prefill_extend_tokens,
+        required_swa_kv_alloc_tokens,
+    )
+    from runtime_limits import (
         alloc_prefix_indices as _alloc_prefix_indices,
     )
     from runtime_limits import (
@@ -95,12 +131,6 @@ except ModuleNotFoundError:
     )
     from runtime_limits import (
         kv_pool_page_size as _kv_pool_page_size,
-    )
-    from runtime_limits import (
-        required_kv_alloc_tokens,
-        required_kv_tokens,
-        required_prefill_extend_tokens,
-        required_swa_kv_alloc_tokens,
     )
     from runtime_limits import (
         runtime_chunk_size as _runtime_chunk_size,
@@ -113,197 +143,30 @@ except ModuleNotFoundError:
     )
 
 
-# Re-export test case generators from the centralized case generator module so
-# collect.py's registry (``module="collector.sglang.collect_dsv4_attn"``) can
-# resolve them via getattr.
 try:
-    from collector.case_generator import (
-        _DSV4_MODULE_BATCH_SIZES as _BATCH_SIZES,
-    )
-    from collector.case_generator import (
-        _DSV4_MODULE_PAST_KV_LIST as _PREFIX_LENGTHS,
-    )
-    from collector.case_generator import (
-        _DSV4_MODULE_SEQ_LENGTHS as _SEQ_LENGTHS,
-    )
-    from collector.case_generator import (
-        _DSV4_MODULE_TP_SIZES as _TP_SIZES,
-    )
-    from collector.case_generator import (
-        DSV4_ATTN_KINDS as ATTN_KINDS,
-    )
-    from collector.case_generator import _dsv4_context_structural_manifest
-    from collector.case_generator import (
-        _dsv4_module_filter_pairs as _filter_pairs,
-    )
-    from collector.case_generator import (
-        _dsv4_module_is_valid_shape as _is_valid_shape,
-    )
-    from collector.case_generator import get_dsv4_csa_context_test_cases as _get_dsv4_csa_context_test_cases_impl
-    from collector.case_generator import get_dsv4_csa_generation_test_cases as _get_dsv4_csa_generation_test_cases_impl
-    from collector.case_generator import get_dsv4_hca_context_test_cases as _get_dsv4_hca_context_test_cases_impl
-    from collector.case_generator import get_dsv4_hca_generation_test_cases as _get_dsv4_hca_generation_test_cases_impl
+    from collector.case_generator import _DSV4_MODULE_TP_SIZES as _TP_SIZES
+    from collector.case_generator import DSV4_ATTN_KINDS as ATTN_KINDS
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import (
-        _DSV4_MODULE_BATCH_SIZES as _BATCH_SIZES,
-    )
-    from case_generator import (
-        _DSV4_MODULE_PAST_KV_LIST as _PREFIX_LENGTHS,
-    )
-    from case_generator import (
-        _DSV4_MODULE_SEQ_LENGTHS as _SEQ_LENGTHS,
-    )
-    from case_generator import (
-        _DSV4_MODULE_TP_SIZES as _TP_SIZES,
-    )
-    from case_generator import (
-        DSV4_ATTN_KINDS as ATTN_KINDS,
-    )
-    from case_generator import _dsv4_context_structural_manifest
-    from case_generator import (
-        _dsv4_module_filter_pairs as _filter_pairs,
-    )
-    from case_generator import (
-        _dsv4_module_is_valid_shape as _is_valid_shape,
-    )
-    from case_generator import get_dsv4_csa_context_test_cases as _get_dsv4_csa_context_test_cases_impl
-    from case_generator import get_dsv4_csa_generation_test_cases as _get_dsv4_csa_generation_test_cases_impl
-    from case_generator import get_dsv4_hca_context_test_cases as _get_dsv4_hca_context_test_cases_impl
-    from case_generator import get_dsv4_hca_generation_test_cases as _get_dsv4_hca_generation_test_cases_impl
-
-
-def _expand_grid():
-    """Return ``(batch_sizes, seq_lens)`` for the module-level sweep."""
-    return list(_BATCH_SIZES), list(_SEQ_LENGTHS)
-
-
-def _load_dsv4_model_config(model_path: str) -> dict:
-    try:
-        from collector.sglang.deepseekv4_sparse_modules import _dsv4_model_config
-    except ModuleNotFoundError:
-        from deepseekv4_sparse_modules import _dsv4_model_config
-
-    return _dsv4_model_config(model_path)
-
-
-def _dsv4_max_position_embeddings(model_path: str) -> int:
-    """Read the context boundary from the selected model config."""
-    value = _load_dsv4_model_config(model_path).get("max_position_embeddings")
-    if value in (None, "") or int(value) <= 0:
-        raise ValueError(f"invalid max_position_embeddings={value!r} for {model_path!r}")
-    return int(value)
-
-
-def _attach_dsv4_context_memory_manifest(cases: list[list], attn_kind: str) -> list[list]:
-    """Bind context inner shapes whose mandatory BF16 input fits the device budget."""
-    if not cases:
-        return []
-
-    device_count = torch.cuda.device_count()
-    if device_count <= 0:
-        raise RuntimeError("DSV4 context memory filtering requires a live CUDA device")
-    total_memory = min(int(torch.cuda.get_device_properties(device).total_memory) for device in range(device_count))
-    if total_memory <= 0:
-        raise RuntimeError(f"invalid CUDA total memory for DSV4 context filtering: {total_memory}")
-    # Leave 20% for the loaded layer, KV pools, graph state, and other mandatory
-    # tensors.  This is one device-capacity factor, not a model/SM shape limit.
-    budget_bytes = total_memory * 4 // 5
-
-    filtered = []
-    source_count = 0
-    raw_count = 0
-    retained_count = 0
-    smoke = "--smoke" in sys.argv
-    for case in cases:
-        batch_size = int(case[1])
-        model_path = str(case[6])
-        config = _load_dsv4_model_config(model_path)
-        hidden_size = config.get("hidden_size")
-        max_position_embeddings = config.get("max_position_embeddings")
-        if hidden_size in (None, "") or int(hidden_size) <= 0:
-            raise ValueError(f"invalid hidden_size={hidden_size!r} for {model_path!r}")
-        if max_position_embeddings in (None, "") or int(max_position_embeddings) <= 0:
-            raise ValueError(f"invalid max_position_embeddings={max_position_embeddings!r} for {model_path!r}")
-        hidden_size = int(hidden_size)
-        max_position_embeddings = int(max_position_embeddings)
-
-        seq_lens = sorted(
-            {seq_len for _, seq_len in _filter_pairs("context", [batch_size], _SEQ_LENGTHS)},
-            reverse=True,
-        )
-        if smoke:
-            seq_lens = [seq_len for seq_len in seq_lens if seq_len in (1, 128)]
-        prefix_lens = [prefix_len for prefix_len in _PREFIX_LENGTHS if not smoke or prefix_len in (0, 512)]
-        source_count += len(seq_lens) * len(prefix_lens)
-        structural_manifest = _dsv4_context_structural_manifest(
-            batch_size,
-            seq_lens,
-            prefix_lens,
-            max_position_embeddings,
-        )
-        manifest = []
-        for prefix_len, raw_seq_lens in structural_manifest:
-            retained_seq_lens = tuple(
-                seq_len for seq_len in raw_seq_lens if batch_size * seq_len * hidden_size * 2 <= budget_bytes
-            )
-            raw_count += len(raw_seq_lens)
-            retained_count += len(retained_seq_lens)
-            if retained_seq_lens:
-                manifest.append((int(prefix_len), retained_seq_lens))
-        if manifest:
-            filtered.append([*case, tuple(manifest)])
-
-    dropped_count = raw_count - retained_count
-    print(
-        f"[dsv4-memory-filter] {attn_kind} context structurally_admitted={raw_count}/{source_count} "
-        f"structural_dropped={source_count - raw_count}/{source_count} "
-        f"retained={retained_count}/{raw_count} memory_dropped={dropped_count}/{raw_count} "
-        f"outer_tasks={len(filtered)}/{len(cases)} "
-        f"budget_bytes={budget_bytes} total_memory_bytes={total_memory} devices={device_count} "
-        "formula=batch_size*sequence_length*hidden_size*2 (BF16 hidden-state lower bound, 80% budget)"
-    )
-    return filtered
+    from case_generator import _DSV4_MODULE_TP_SIZES as _TP_SIZES
+    from case_generator import DSV4_ATTN_KINDS as ATTN_KINDS
+from collector.op_plans import plan, plan_cases
 
 
 def get_dsv4_csa_context_test_cases():
-    return _attach_dsv4_context_memory_manifest(_get_dsv4_csa_context_test_cases_impl(), "csa")
+    return plan_cases("dsv4_csa_context_module", "sglang", get_sm_version())
 
 
 def get_dsv4_csa_generation_test_cases():
-    return _get_dsv4_csa_generation_test_cases_impl()
+    return plan_cases("dsv4_csa_generation_module", "sglang", get_sm_version())
 
 
 def get_dsv4_hca_context_test_cases():
-    return _attach_dsv4_context_memory_manifest(_get_dsv4_hca_context_test_cases_impl(), "hca")
+    return plan_cases("dsv4_hca_context_module", "sglang", get_sm_version())
 
 
 def get_dsv4_hca_generation_test_cases():
-    return _get_dsv4_hca_generation_test_cases_impl()
-
-
-get_dsv4_flash_csa_context_test_cases = get_dsv4_csa_context_test_cases
-get_dsv4_flash_csa_generation_test_cases = get_dsv4_csa_generation_test_cases
-get_dsv4_flash_hca_context_test_cases = get_dsv4_hca_context_test_cases
-get_dsv4_flash_hca_generation_test_cases = get_dsv4_hca_generation_test_cases
-
-
-__all__ = [
-    "ATTN_KINDS",
-    "_BATCH_SIZES",
-    "_SEQ_LENGTHS",
-    "_TP_SIZES",
-    "_filter_pairs",
-    "get_dsv4_csa_context_test_cases",
-    "get_dsv4_csa_generation_test_cases",
-    "get_dsv4_flash_csa_context_test_cases",
-    "get_dsv4_flash_csa_generation_test_cases",
-    "get_dsv4_flash_hca_context_test_cases",
-    "get_dsv4_flash_hca_generation_test_cases",
-    "get_dsv4_hca_context_test_cases",
-    "get_dsv4_hca_generation_test_cases",
-    "run_dsv4_attn_worker",
-]
+    return plan_cases("dsv4_hca_generation_module", "sglang", get_sm_version())
 
 
 _DSV4_CUDA_PAGE_SIZE = 256
@@ -506,7 +369,16 @@ def _resolve_model_path(
     # model_type to "deepseek_v3" mirrors what sglang's
     # _load_deepseek_temp_model produces internally, so AutoConfig succeeds
     # and the V4 model class is still selected via the architectures field.
-    config["model_type"] = "deepseek_v3"
+    try:
+        # sglang>=0.5.21 ships a native DeepseekV4Config (configs/deepseek_v4.py, model_type
+        # "deepseek_v4") and its DSV4 model reads V4-only fields from it
+        # (hc_pre_from_prev_sublayer, models/deepseek_v4.py:2679); the v3 rewrite below
+        # would hand the model a DeepseekV3Config and fail there.
+        import sglang.srt.configs.deepseek_v4  # noqa: F401
+
+        config["model_type"] = "deepseek_v4"
+    except ImportError:
+        config["model_type"] = "deepseek_v3"
 
     # gemm_type "fp8_block" overrides disable_weight_quant: we MUST keep the
     # fp8 quantization_config so sglang dispatches projections to DeepGEMM.
@@ -641,7 +513,7 @@ def _effective_prefill_chunk_size(model_runner) -> int:
     query rows (``layers/attention/dsv4/metadata.py``). On H20 the derived
     chunk (8,192) sat below the old bound (11,622), so removing it changes
     nothing on SM90; on B200 the derived chunk is 16,384 and a probe
-    (2026-07-05, bs=1, prefix=0) executed 8,192/12,288/16,384 fresh-token CSA
+    executed 8,192/12,288/16,384 fresh-token CSA
     context cells through the JIT metadata path with zero errors.
     """
     return _runtime_chunk_size(model_runner)
@@ -691,7 +563,11 @@ def _derive_csa_context_pool_cap(
     if not isinstance(configurator, DSV4PoolConfigurator):
         raise TypeError(f"expected SGLang 0.5.14 DSV4PoolConfigurator, got {type(configurator).__name__}")
 
-    page_size = int(model_runner.server_args.page_size)
+    from collector.sglang.runtime_compat import resolved_arg
+
+    page_size = int(
+        resolved_arg(model_runner.server_args, "page_size")
+    )  # 0.5.21: derived, read through the resolving view
     if page_size != _DSV4_CUDA_PAGE_SIZE:
         raise RuntimeError(f"expected DSV4 CUDA page_size={_DSV4_CUDA_PAGE_SIZE}, got {page_size}")
     window_size = int(model_runner.model_config.window_size)
@@ -707,7 +583,17 @@ def _derive_csa_context_pool_cap(
     if not chunk_eligible_shapes:
         raise RuntimeError(f"DSV4 CSA context pool derivation has no shape within effective_chunk={effective_chunk}")
 
-    profiled_bytes = int(model_runner._profile_available_bytes(model_runner.pre_model_load_memory))
+    # sglang>=0.5.21 moved the pool profiling off ModelRunner onto the KV-cache
+    # configurator (mem_cache/kv_cache_configurator.py:2177 _profile_available_bytes,
+    # same free-memory-minus-slack arithmetic). Serving builds that object inside
+    # alloc_memory_pool (model_runner.py:885 init_kv_cache_configurator, then
+    # configure); build it the same way here, before the pool exists.
+    _profile = getattr(model_runner, "_profile_available_bytes", None)
+    if _profile is None:
+        if getattr(model_runner, "kv_cache_configurator", None) is None:
+            model_runner.init_kv_cache_configurator()
+        _profile = model_runner.kv_cache_configurator._profile_available_bytes
+    profiled_bytes = int(_profile(model_runner.pre_model_load_memory))
     profiled_config = configurator.calculate_pool_sizes(profiled_bytes, page_size)
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO["csa"]
     if page_size % compress_ratio != 0:
@@ -910,20 +796,18 @@ def _load_model_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     with _tp_load_model_patch(tp_size):
         model_runner = ModelRunner(
             model_config=model_config,
             # Use sglang's own __post_init__-derived value, not a collector knob.
             mem_fraction_static=server_args.mem_fraction_static,
             gpu_id=gpu_id,
-            tp_rank=0,
-            tp_size=1,
-            pp_rank=0,
-            pp_size=1,
-            moe_ep_rank=0,
-            moe_ep_size=1,
             nccl_port=nccl_port,
             server_args=server_args,
+            **_runner_parallel_kwargs,
         )
     derived_requirements = None
     if csa_context_shapes is not None:
@@ -933,7 +817,18 @@ def _load_model_runner(
             model_runner,
             csa_context_shapes,
         )
-        model_runner.server_args.max_total_tokens = derived_requirements[0]
+        try:
+            model_runner.server_args.max_total_tokens = derived_requirements[0]
+        except AttributeError:
+            # sglang>=0.5.21: ServerArgs is read-only once resolved (server_args.py:396);
+            # post-publish config changes go through the context's config bags
+            # (runtime_context.py:1080 override(source, **fields) — the same call
+            # serving uses for control-plane updates, tokenizer_manager.py:2204). The
+            # configurator reads the cap from get_schedule().max_total_tokens
+            # (kv_cache_configurator.py:2269 _apply_token_constraints).
+            from sglang.srt.runtime_context import get_context
+
+            get_context().override("collector-dsv4-csa-context", max_total_tokens=derived_requirements[0])
     # SGLang 0.5.14 separates model construction from serving-state setup.
     model_runner.alloc_memory_pool()
     if derived_requirements is not None:
@@ -1038,7 +933,11 @@ def _make_reqs(
         req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
         req.fill_len = full_len
         req.logprob_start_len = 0
-        req.set_extend_input_len(seq_len if prefix_len else full_len)
+        _n = seq_len if prefix_len else full_len
+        if hasattr(req, "set_extend_input_len"):
+            req.set_extend_input_len(_n)
+        else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
+            req.set_extend_range(full_len - _n, full_len)
         req.swa_evicted_seqlen = swa_evicted_seqlen
         if decode:
             req.cached_tokens = 0
@@ -1115,7 +1014,16 @@ def _build_forward_batch(
                 req.output_ids.append(0)
             batch.prepare_for_decode()
 
-    forward_batch = ForwardBatch.init_new(batch, model_runner)
+    import inspect as _inspect
+
+    # sglang 0.5.16: return_hidden_states_before_norm is a required keyword of
+    # ForwardBatch.init_new; older pins reject it (collect_msa_module.py:1015 pattern)
+    _fb_kw = (
+        {"return_hidden_states_before_norm": False}
+        if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+        else {}
+    )
+    forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
     model_runner.attn_backend.init_forward_metadata(forward_batch)
     return forward_batch
 
@@ -1211,11 +1119,12 @@ def _bench_cuda_events(
         "used_cuda_graph": True,
         "power_stats": result.get("power_stats"),
         "throttled": bool(result.get("throttled", False)),
+        "phase_seconds": result.get("phase_seconds"),
     }
 
 
 def _resolve_local_heads(*, native_heads: int, module_heads: int | None, tp_size: int) -> int:
-    """Resolve the rank-LOCAL head count persisted as ``num_heads`` (#1429).
+    """Resolve the rank-LOCAL head count persisted as ``num_heads``.
 
     The unified convention persists the head count this rank's module actually
     runs with; consumers derive the model-native count as
@@ -1284,7 +1193,7 @@ def _log_result(
                 "mla_dtype": "bfloat16",
                 "kv_cache_dtype": kv_cache_dtype,
                 "gemm_type": gemm_type,
-                # Rank-LOCAL by the unified #1429 convention (native = num_heads * tp_size).
+                # Rank-LOCAL by the unified convention (native = num_heads * tp_size).
                 "num_heads": num_heads,
                 "batch_size": batch_size,
                 "isl": seq_len if is_prefill else 1,
@@ -1309,11 +1218,11 @@ def _log_result(
 
 def run_dsv4_mla_module(
     *,
-    model_path: str = CLI_DEFAULT_MODEL,
+    model_path: str,
     mode: str,
     attn_kind: str,
-    batch_sizes: Iterable[int],
-    seq_lens: Iterable[int],
+    batch_size: int,
+    seq_lens_by_prefix: dict[int, list[int]],
     layer_id: int = 0,
     num_layers: int = 1,
     kv_cache_dtype: str = "fp8_e4m3",
@@ -1327,39 +1236,63 @@ def run_dsv4_mla_module(
     perf_filename_prefix: str = "dsv4",
     gemm_type: str = "bfloat16",
     tp_size: int = 1,
-    prefix_len: int = 0,
-    prefix_lens: Iterable[int] | None = None,
-    seq_lens_by_prefix: dict[int, list[int]] | None = None,
     max_total_tokens: int | None = None,
 ) -> list[dict[str, float]]:
-    is_prefill = mode == "context"
-    batch_sizes = list(batch_sizes)
-    default_seq_lens = list(seq_lens)
-    if prefix_lens is None:
-        prefix_values = [prefix_len]
-    else:
-        prefix_values = list(prefix_lens)
-    if not is_prefill:
-        prefix_values = [0]
-    if any(p > 0 for p in prefix_values) and not is_prefill:
-        raise ValueError("prefix_len is only supported for context/extend collection")
+    """Measure one batch's (prefix, seq_len) points on one ModelRunner.
 
+    A point the device cannot run is refused with its reason before anything is
+    allocated for it; the refusals end the run on one classified error once the
+    other points are measured.
+    """
+    is_prefill = mode == "context"
+    if not is_prefill and set(seq_lens_by_prefix) != {0}:
+        raise ValueError("prefix_len is only supported for context/extend collection")
     case_shapes = [
-        (batch_size, seq_len, cur_prefix)
-        for cur_prefix in prefix_values
-        for batch_size in batch_sizes
-        for seq_len in (
-            seq_lens_by_prefix.get(cur_prefix, default_seq_lens) if seq_lens_by_prefix is not None else default_seq_lens
-        )
+        (batch_size, seq_len, prefix_len) for prefix_len, seq_lens in seq_lens_by_prefix.items() for seq_len in seq_lens
     ]
+    if not case_shapes:
+        raise RuntimeError(f"dsv4-flash mode={mode} bs={batch_size}: the row lists no points")
+    phase_totals: dict[str, float] = {}
+    # gc.collect() after every point cost 0.2-0.4 s (half of a context sweep); collect periodically instead.
+    point_gc = PeriodicGarbageCollector()
+
+    refused: dict[tuple, str] = {}
+    if is_prefill:
+        # SGLang derives its prefill chunk from device memory (ServerArgs), and
+        # serving chunks a longer prefill.
+        try:
+            from collector.sglang.deepseekv4_sparse_modules import _sglang_chunked_prefill_size
+        except ModuleNotFoundError:
+            from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
+        chunk = _sglang_chunked_prefill_size()
+        refuse(case_shapes, refused, lambda shape: over_chunk(shape, chunk))
+    runnable = [shape for shape in case_shapes if shape not in refused]
+    if not runnable:
+        raise RuntimeError(refusal_summary(refused, len(case_shapes)))
 
     # SGLang derives compressed-pool sizes from max_total_tokens. Direct
     # probes with an explicit value must account for both the full pool and
     # the smaller page-rounded SWA tail pool before ModelRunner construction.
+    #
+    # HCA always takes this path since sglang 0.5.21: the ratio-128 stage prices a
+    # full token at ~1/128 of a paged slot (pool_configurator.py:1264-1283
+    # _compressed_bytes_per_full_token / _get_bytes_per_full_token), so the
+    # framework-derived pool on an otherwise empty 140 GB device reaches ~2e9 full
+    # tokens, and the hybrid allocator's int64 full_to_swa_index_mapping
+    # (mem_cache/allocator/swa.py:99-108, size + page_size entries, not priced by the
+    # configurator) then needs ~15 GiB that the sizing already handed to the pools
+    # (OOM in SWATokenToKVPoolAllocator.__init__, kv_cache_configurator.py:2080,
+    # on H20). Serving never meets this corner because weights leave far
+    # less free memory; the collector sizes the pool to what the planned shapes
+    # allocate instead. sglang treats the value as an upper bound only
+    # (kv_cache_configurator.py:2269-2277 _apply_token_constraints: min(profiled,
+    # user cap)), so no cell gains capacity it would not have in serving.
+    if max_total_tokens is None and attn_kind == "hca":
+        max_total_tokens = 0
     if max_total_tokens is not None:
         max_full_alloc = 0
         max_swa_alloc = 0
-        for batch_size, seq_len, cur_prefix in case_shapes:
+        for batch_size, seq_len, cur_prefix in runnable:
             max_full_alloc = max(
                 max_full_alloc,
                 required_kv_alloc_tokens(
@@ -1400,7 +1333,7 @@ def run_dsv4_mla_module(
         gemm_type=gemm_type,
         tp_size=tp_size,
         max_total_tokens=max_total_tokens,
-        csa_context_shapes=(case_shapes if is_prefill and attn_kind == "csa" and max_total_tokens is None else None),
+        csa_context_shapes=(runnable if is_prefill and attn_kind == "csa" and max_total_tokens is None else None),
     )
 
     attention_module = model_runner.model.model.layers[layer_id].self_attn
@@ -1415,204 +1348,159 @@ def run_dsv4_mla_module(
 
     print(
         f"[dsv4-collector] layer={layer_id}, attn_kind={attn_kind}, "
-        f"compress_ratio={actual_ratio}, mode={mode}, prefix_lens={prefix_values}"
+        f"compress_ratio={actual_ratio}, mode={mode}, prefix_lens={sorted(seq_lens_by_prefix)}"
     )
 
     version = get_version("sglang")
     device_name = torch.cuda.get_device_name(device)
     results = []
-    skipped_shapes: list[tuple[int, int, int, str]] = []
-    sweep_label = f"kind={attn_kind} mode={mode} tp={tp_size} gemm={gemm_type}"
+    failures: list[tuple[int, int, str]] = []
+    sweep_label = f"kind={attn_kind} mode={mode} tp={tp_size} gemm={gemm_type} bs={batch_size}"
     try:
         kv_capacity = _kv_pool_capacity_tokens(model_runner)
         kv_page_size = _kv_pool_page_size(model_runner)
         swa_capacity = _swa_kv_pool_capacity_tokens(model_runner)
         swa_window_size = getattr(getattr(model_runner, "model_config", None), "window_size", None)
-        # The current 0.5.14 collector preserves its existing sched-meta limit.
-        # Use the same live value for pool derivation and execution so shapes
-        # that are later skipped cannot inflate the reserved workspace.
-        runtime_chunk = _effective_prefill_chunk_size(model_runner) if is_prefill else None
-        for cur_prefix in prefix_values:
-            seq_lens_for_prefix = (
-                seq_lens_by_prefix.get(cur_prefix, default_seq_lens)
-                if seq_lens_by_prefix is not None
-                else default_seq_lens
+        # Refuse what the built runner cannot run: a prefill beyond the chunk it
+        # resolved (the same live value sized the CSA pool), or a point beyond its
+        # full or sliding-window KV pool. Paged alloc_extend rounds each request's KV
+        # span up to a page and reserves one more, so the pools are checked in pages.
+        if is_prefill:
+            runtime_chunk = _effective_prefill_chunk_size(model_runner)
+            refuse(case_shapes, refused, lambda shape: over_chunk(shape, runtime_chunk))
+        if kv_capacity is not None:
+            refuse(case_shapes, refused, lambda shape: over_kv_pool(shape, kv_page_size, kv_capacity, is_prefill))
+        if swa_capacity is not None and isinstance(swa_window_size, int) and swa_window_size > 0:
+            refuse(
+                case_shapes,
+                refused,
+                lambda shape: _over_swa_pool(shape, kv_page_size, swa_window_size, swa_capacity, is_prefill),
             )
-            for batch_size in batch_sizes:
-                for seq_len in seq_lens_for_prefix:
-                    fresh_tokens = required_prefill_extend_tokens(batch_size, seq_len)
-                    if runtime_chunk is not None and fresh_tokens > runtime_chunk:
-                        print(
-                            f"[SKIP] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                            f"prefix={cur_prefix}: fresh_tokens={fresh_tokens} exceeds "
-                            f"SGLang runtime chunked_prefill_size={runtime_chunk}"
+        runnable = [shape for shape in case_shapes if shape not in refused]
+        if not runnable:
+            raise RuntimeError(refusal_summary(refused, len(case_shapes)))
+        for _batch, seq_len, cur_prefix in runnable:
+            print(f"\n{mode}: batch_size={batch_size}, seq_len={seq_len}, prefix_len={cur_prefix}")
+            point_clock = PhaseClock()
+            try:
+                forward_batch = _build_forward_batch(
+                    model_runner,
+                    batch_size,
+                    seq_len,
+                    is_prefill=is_prefill,
+                    prefix_len=cur_prefix,
+                )
+                point_clock.mark("forward_batch")
+                hidden_states, positions = _make_inputs(
+                    model_runner,
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    is_prefill=is_prefill,
+                    device=device,
+                    prefix_len=cur_prefix,
+                )
+                point_clock.mark("inputs")
+
+                def kernel_func(model_runner=model_runner):
+                    from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
+                    from sglang.srt.model_executor.runner import model_capture_mode
+
+                    # Production decode graphs enter model_capture_mode,
+                    # which selects DSV4's multi-stream overlap path.
+                    capture_context = model_capture_mode() if not is_prefill else contextlib.nullcontext()
+                    with (
+                        capture_context,
+                        forward_context(ForwardContext(attn_backend=model_runner.attn_backend)),
+                    ):
+                        return attention_module(
+                            x=hidden_states,
+                            positions=positions,
+                            forward_batch=forward_batch,
                         )
-                        skipped_shapes.append((batch_size, seq_len, cur_prefix, "ChunkedPrefillSize"))
-                        continue
-                    total_tokens = required_kv_tokens(
-                        batch_size,
-                        seq_len,
-                        cur_prefix,
-                        is_prefill=is_prefill,
-                    )
-                    if kv_capacity is not None and total_tokens > kv_capacity:
-                        print(
-                            f"[SKIP] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                            f"prefix={cur_prefix}: total_tokens={total_tokens} exceeds actual "
-                            f"KV pool capacity={kv_capacity}"
-                        )
-                        skipped_shapes.append((batch_size, seq_len, cur_prefix, "KVPoolCapacity"))
-                        continue
-                    # Paged alloc_extend over-estimate: each request rounds its KV
-                    # span up to a page and reserves one extra page (bs*page_size),
-                    # so large-bs cases pass the naive capacity check above yet still
-                    # fail alloc_extend with "Prefill out of memory". Skip them here
-                    # instead of letting the forward raise (read page_size at runtime;
-                    # this is a no-op for page_size==1 token allocators).
-                    alloc_tokens = required_kv_alloc_tokens(
-                        batch_size,
-                        seq_len,
-                        cur_prefix,
-                        kv_page_size,
-                        is_prefill=is_prefill,
-                    )
-                    if kv_capacity is not None and alloc_tokens > kv_capacity:
-                        print(
-                            f"[SKIP] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                            f"prefix={cur_prefix}: alloc_tokens={alloc_tokens} (page_size="
-                            f"{kv_page_size}) exceeds KV pool capacity={kv_capacity}"
-                        )
-                        skipped_shapes.append((batch_size, seq_len, cur_prefix, "KVPoolAllocPaged"))
-                        continue
-                    if swa_capacity is not None and isinstance(swa_window_size, int) and swa_window_size > 0:
-                        swa_alloc_tokens = required_swa_kv_alloc_tokens(
-                            batch_size,
-                            seq_len,
-                            cur_prefix,
-                            kv_page_size,
-                            swa_window_size,
-                            is_prefill=is_prefill,
-                        )
-                        if swa_alloc_tokens > swa_capacity:
-                            print(
-                                f"[SKIP] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                                f"prefix={cur_prefix}: swa_alloc_tokens={swa_alloc_tokens} exceeds "
-                                f"SWA KV pool capacity={swa_capacity}"
-                            )
-                            skipped_shapes.append((batch_size, seq_len, cur_prefix, "KVPoolSWACapacity"))
-                            continue
-                    print(f"\n{mode}: batch_size={batch_size}, seq_len={seq_len}, prefix_len={cur_prefix}")
+
+                stats = _bench_cuda_events(
+                    kernel_func,
+                    num_warmup=num_warmup,
+                    num_iterations=num_iterations,
+                    graph_repeat=graph_repeat,
+                    device=device,
+                )
+                point_clock.mark("bench")
+                point_clock.absorb(stats.get("phase_seconds"), prefix="bench_")
+                print(
+                    f"  latency mean={stats['mean_ms']:.4f} ms, "
+                    f"median={stats['median_ms']:.4f} ms, "
+                    f"min={stats['min_ms']:.4f} ms, max={stats['max_ms']:.4f} ms, "
+                    f"std={stats['std_ms']:.4f} ms, n={stats['n']}"
+                )
+                _log_result(
+                    output_path=output_path,
+                    model_path=model_path,
+                    mode=mode,
+                    attn_kind=attn_kind,
+                    compress_ratio=compress_ratio,
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    kv_cache_dtype=kv_cache_dtype,
+                    latency_ms=stats["mean_ms"],
+                    version=version,
+                    device_name=device_name,
+                    power_stats=stats.get("power_stats"),
+                    perf_filename_prefix=perf_filename_prefix,
+                    gemm_type=gemm_type,
+                    tp_size=tp_size,
+                    step=cur_prefix if is_prefill else None,
+                    num_heads=local_attention_heads,
+                )
+                stats.update(
+                    {
+                        "batch_size": batch_size,
+                        "seq_len": seq_len,
+                        "compress_ratio": compress_ratio,
+                        "prefix_len": cur_prefix,
+                    }
+                )
+                results.append(stats)
+            except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
+                print(
+                    f"[WARN] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
+                    f"prefix={cur_prefix}: OOM; skipping this shape"
+                )
+                failures.append((seq_len, cur_prefix, "OOM"))
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+            except Exception as exc:
+                traceback.print_exc()
+                print(
+                    f"[WARN] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
+                    f"prefix={cur_prefix}: {type(exc).__name__}; skipping this shape"
+                )
+                failures.append((seq_len, cur_prefix, type(exc).__name__))
+            finally:
+                cleanup_errors = []
+                for _cleanup_label, _cleanup_step in (
+                    ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
+                    ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
+                    ("torch.cuda.empty_cache", torch.cuda.empty_cache),
+                    ("gc.collect", point_gc.maybe_collect),
+                ):
                     try:
-                        forward_batch = _build_forward_batch(
-                            model_runner,
-                            batch_size,
-                            seq_len,
-                            is_prefill=is_prefill,
-                            prefix_len=cur_prefix,
-                        )
-                        hidden_states, positions = _make_inputs(
-                            model_runner,
-                            batch_size=batch_size,
-                            seq_len=seq_len,
-                            is_prefill=is_prefill,
-                            device=device,
-                            prefix_len=cur_prefix,
-                        )
-
-                        def kernel_func(model_runner=model_runner):
-                            from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
-                            from sglang.srt.model_executor.runner import model_capture_mode
-
-                            # Production decode graphs enter model_capture_mode,
-                            # which selects DSV4's multi-stream overlap path.
-                            capture_context = model_capture_mode() if not is_prefill else contextlib.nullcontext()
-                            with (
-                                capture_context,
-                                forward_context(ForwardContext(attn_backend=model_runner.attn_backend)),
-                            ):
-                                return attention_module(
-                                    x=hidden_states,
-                                    positions=positions,
-                                    forward_batch=forward_batch,
-                                )
-
-                        stats = _bench_cuda_events(
-                            kernel_func,
-                            num_warmup=num_warmup,
-                            num_iterations=num_iterations,
-                            graph_repeat=graph_repeat,
-                            device=device,
-                        )
-                        print(
-                            f"  latency mean={stats['mean_ms']:.4f} ms, "
-                            f"median={stats['median_ms']:.4f} ms, "
-                            f"min={stats['min_ms']:.4f} ms, max={stats['max_ms']:.4f} ms, "
-                            f"std={stats['std_ms']:.4f} ms, n={stats['n']}"
-                        )
-                        _log_result(
-                            output_path=output_path,
-                            model_path=model_path,
-                            mode=mode,
-                            attn_kind=attn_kind,
-                            compress_ratio=compress_ratio,
-                            batch_size=batch_size,
-                            seq_len=seq_len,
-                            kv_cache_dtype=kv_cache_dtype,
-                            latency_ms=stats["mean_ms"],
-                            version=version,
-                            device_name=device_name,
-                            power_stats=stats.get("power_stats"),
-                            perf_filename_prefix=perf_filename_prefix,
-                            gemm_type=gemm_type,
-                            tp_size=tp_size,
-                            step=cur_prefix if is_prefill else None,
-                            num_heads=local_attention_heads,
-                        )
-                        stats.update(
-                            {
-                                "batch_size": batch_size,
-                                "seq_len": seq_len,
-                                "compress_ratio": compress_ratio,
-                                "prefix_len": cur_prefix,
-                            }
-                        )
-                        results.append(stats)
-                    except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
-                        print(
-                            f"[WARN] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                            f"prefix={cur_prefix}: OOM; skipping this shape"
-                        )
-                        skipped_shapes.append((batch_size, seq_len, cur_prefix, "OOM"))
-                        try:
-                            torch.cuda.empty_cache()
-                        except Exception:
-                            pass
-                    except Exception as exc:
-                        traceback.print_exc()
-                        print(
-                            f"[WARN] dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                            f"prefix={cur_prefix}: {type(exc).__name__}; skipping this shape"
-                        )
-                        skipped_shapes.append((batch_size, seq_len, cur_prefix, type(exc).__name__))
-                    finally:
-                        cleanup_errors = []
-                        for _cleanup_label, _cleanup_step in (
-                            ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
-                            ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
-                            ("torch.cuda.empty_cache", torch.cuda.empty_cache),
-                            ("gc.collect", gc.collect),
-                        ):
-                            try:
-                                _cleanup_step()
-                            except Exception as _cleanup_exc:
-                                cleanup_errors.append(
-                                    f"{_cleanup_label}: {type(_cleanup_exc).__name__}: {_cleanup_exc}"
-                                )
-                        if cleanup_errors:
-                            raise RuntimeError(
-                                f"dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
-                                f"prefix={cur_prefix}: cleanup failed: {'; '.join(cleanup_errors)}"
-                            )
+                        _cleanup_step()
+                    except Exception as _cleanup_exc:
+                        cleanup_errors.append(f"{_cleanup_label}: {type(_cleanup_exc).__name__}: {_cleanup_exc}")
+                if cleanup_errors:
+                    raise RuntimeError(
+                        f"dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
+                        f"prefix={cur_prefix}: cleanup failed: {'; '.join(cleanup_errors)}"
+                    )
+                point_clock.mark("cleanup")
+                point_clock.add_to(phase_totals)
+                print(
+                    f"  [dsv4 point timing] {sweep_label} bs={batch_size} sl={seq_len} prefix={cur_prefix}: "
+                    + point_clock.render()
+                )
     finally:
         final_cleanup_errors = []
         del model_runner
@@ -1626,24 +1514,25 @@ def run_dsv4_mla_module(
                 final_cleanup_errors.append(f"{cleanup_name}: {type(cleanup_exc).__name__}: {cleanup_exc}")
         if final_cleanup_errors:
             raise RuntimeError(f"dsv4-flash {sweep_label}: final cleanup failed: {'; '.join(final_cleanup_errors)}")
-    capacity_skip_reasons = {
-        "ChunkedPrefillSize",
-        "KVPoolCapacity",
-        "KVPoolAllocPaged",
-        "KVPoolSWACapacity",
-    }
-    skip_count = sum(reason in capacity_skip_reasons for _, _, _, reason in skipped_shapes)
-    error_count = len(skipped_shapes) - skip_count
-    ok_count = len(results)
-    total_count = ok_count + error_count + skip_count
-    summary = f"ok={ok_count} error={error_count} skip={skip_count} total={total_count}"
-    if skipped_shapes:
-        skipped_str = ", ".join(f"(bs={b},sl={s},prefix={p},reason={r})" for b, s, p, r in skipped_shapes)
-        print(f"[WARN] dsv4-flash {sweep_label}: skipped or errored shapes: {skipped_str}")
+    summary = f"ok={len(results)} error={len(failures)} refused={len(refused)} total={len(case_shapes)}"
+    if failures:
+        errored = ", ".join(f"(bs={batch_size},sl={s},prefix={p},reason={r})" for s, p, r in failures)
+        print(f"[WARN] dsv4-flash {sweep_label}: errored shapes: {errored}")
+    print(f"[dsv4 timing] {sweep_label}: {render_phase_totals(phase_totals)}")
     print(f"[dsv4-collector] {sweep_label}: {summary}")
-    if ok_count == 0 or error_count > 0:
+    if not results or failures:
         raise RuntimeError(f"dsv4-flash {sweep_label}: {summary}")
+    if refused:
+        raise RuntimeError(refusal_summary(refused, len(case_shapes)))
     return results
+
+
+def _over_swa_pool(shape: tuple, page_size: int, window_size: int, capacity: int, is_prefill: bool) -> str | None:
+    """Why this point's sliding-window KV cannot fit SGLang's SWA KV pool on this device, or None."""
+    needed = required_swa_kv_alloc_tokens(*shape, page_size, window_size, is_prefill=is_prefill)
+    if needed <= capacity:
+        return None
+    return f"{KERNEL_LIMIT}: does not fit: the point needs {needed} SWA KV tokens, the SWA KV pool holds {capacity}"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1660,18 +1549,14 @@ def _run_subprocess(
     batch_size: int,
     output_path: str,
     gpu_id: int,
+    inner_shapes: Iterable[tuple[int, Iterable[int]]],
     gemm_type: str = "bfloat16",
     tp_size: int = 1,
-    prefix_len: int = 0,
-    prefix_lens: Iterable[int] | None = None,
-    inner_shapes: Iterable[tuple[int, Iterable[int]]] | None = None,
-    smoke: bool = False,
 ):
-    """Run one (attn_kind, tp, gemm, bs) subprocess that sweeps valid sl/prefix.
+    """Run one (attn_kind, tp, gemm, bs) row in a subprocess: its (prefix, seq_lens) points.
 
-    Builds one ``ModelRunner`` sized for ``(bs, max_sl_for_this_bs)`` and
-    iterates every valid sl for that bs.  Per-sl crash isolation is
-    handled by ``run_dsv4_mla_module``'s try/except per forward.
+    Builds one ``ModelRunner`` for the batch and measures every point.  Per-point
+    crash isolation is handled by ``run_dsv4_mla_module``'s try/except per forward.
     """
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -1687,11 +1572,8 @@ def _run_subprocess(
     # wo_a path would fail model construction due to missing weight_scale_inv.
     env["SGLANG_OPT_FP8_WO_A_GEMM"] = "1" if gemm_type == "fp8_block" else "0"
 
-    prefix_lens_arg = list(prefix_lens) if prefix_lens is not None else None
-    inner_shapes_arg = (
-        tuple((int(prefix), tuple(int(seq_len) for seq_len in seq_lens)) for prefix, seq_lens in inner_shapes)
-        if inner_shapes is not None
-        else None
+    inner_shapes_arg = tuple(
+        (int(prefix), tuple(int(seq_len) for seq_len in seq_lens)) for prefix, seq_lens in inner_shapes
     )
     code = (
         f'import sys; sys.path.insert(0, "{os.path.dirname(os.path.abspath(__file__))}")\n'
@@ -1705,10 +1587,7 @@ def _run_subprocess(
         f'    output_path="{output_path}",\n'
         f'    gemm_type="{gemm_type}",\n'
         f"    tp_size={tp_size!r},\n"
-        f"    prefix_len={prefix_len!r},\n"
-        f"    prefix_lens={prefix_lens_arg!r},\n"
         f"    inner_shapes={inner_shapes_arg!r},\n"
-        f"    smoke={smoke!r},\n"
         f")\n"
     )
 
@@ -1716,11 +1595,7 @@ def _run_subprocess(
     # even when the child dies before stdout is streamed (e.g. OOM kill).
     log_dir = os.path.join(tempfile.gettempdir(), "dsv4_subproc_logs")
     os.makedirs(log_dir, exist_ok=True)
-    prefix_label = "sweep" if prefix_lens_arg is not None else str(prefix_len)
-    log_path = os.path.join(
-        log_dir,
-        f"{attn_kind}_{mode}_prefix{prefix_label}_bs{batch_size}_tp{tp_size}_{gemm_type}_gpu{gpu_id}.log",
-    )
+    log_path = os.path.join(log_dir, f"{attn_kind}_{mode}_bs{batch_size}_tp{tp_size}_{gemm_type}_gpu{gpu_id}.log")
 
     def _run_once(nccl_port: int) -> tuple[int, str]:
         attempt_env = env.copy()
@@ -1733,11 +1608,20 @@ def _run_subprocess(
                 stderr=subprocess.STDOUT,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
             )
-            try:
-                proc.wait(timeout=3600)  # up to 1 hour per (kind, tp, gemm, bs)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            # Up to 1 hour per (kind, tp, gemm, bs). The child reports no liveness of its
+            # own, so beat while waiting: the executor's stall watchdog
+            # (STALL_TIMEOUT_SEC, 1800 s default) would otherwise fail a healthy sweep.
+            deadline = time.monotonic() + 3600
+            while True:
+                try:
+                    proc.wait(timeout=60)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        proc.kill()
+                        proc.wait()
+                        break
+                    worker_heartbeat()
 
         try:
             with open(log_path, encoding="utf-8", errors="replace") as logf:
@@ -1766,10 +1650,13 @@ def _run_subprocess(
             )
             continue
 
+        # Keep the kernel-limit classification of points the device refused.
+        error = kernel_limit_error(log_text.splitlines())
+        if error is not None:
+            raise RuntimeError(error)
         raise RuntimeError(
             f"dsv4_{attn_kind}_{mode} subprocess failed for "
-            f"(bs={batch_size}, prefix={prefix_label}, tp={tp_size}, gemm={gemm_type}); "
-            f"exit={returncode}; log: {log_path}"
+            f"(bs={batch_size}, tp={tp_size}, gemm={gemm_type}); exit={returncode}; log: {log_path}"
         )
 
 
@@ -1781,74 +1668,27 @@ def _subprocess_entry(
     kv_cache_dtype: str,
     batch_size: int,
     output_path: str,
+    inner_shapes: Iterable[tuple[int, Iterable[int]]],
     gemm_type: str = "bfloat16",
     tp_size: int = 1,
-    prefix_len: int = 0,
-    prefix_lens: Iterable[int] | None = None,
-    inner_shapes: Iterable[tuple[int, Iterable[int]]] | None = None,
-    smoke: bool = False,
 ):
-    """In-subprocess runner: build model once for fixed bs, sweep valid sl/prefix."""
-    if inner_shapes is not None:
-        seq_lens_by_prefix = {
-            int(cur_prefix): [int(seq_len) for seq_len in seq_lens] for cur_prefix, seq_lens in inner_shapes if seq_lens
-        }
-    else:
-        _, sl_grid = _expand_grid()
-        if smoke:
-            sl_grid = [sl for sl in sl_grid if sl in (1, 128)]
+    """In-subprocess runner: build the model once for the batch and measure the row's points.
 
-        prefix_values = list(prefix_lens) if prefix_lens is not None else [prefix_len]
-        if mode == "context" and smoke:
-            prefix_values = [p for p in prefix_values if p in (0, 512)]
-        elif mode != "context":
-            prefix_values = [0]
-
-        max_position_embeddings = _dsv4_max_position_embeddings(model_path) if mode == "context" else None
-        seq_lens_by_prefix: dict[int, list[int]] = {}
-        for cur_prefix in prefix_values:
-            pairs = [
-                (bs, sl)
-                for bs, sl in _filter_pairs(mode, [batch_size], sl_grid)
-                if _is_valid_shape(mode, bs, sl, cur_prefix)
-                and (max_position_embeddings is None or cur_prefix + sl <= max_position_embeddings)
-            ]
-            if not pairs:
-                # Silently continuing would let the task succeed with partial
-                # prefix coverage — runtime filtering by another name. Admission
-                # belongs to the getter-retained manifest; on this worker-side
-                # grid path (generation / manual CLI) an unresolvable prefix
-                # group fails the task so it is classified.
-                raise RuntimeError(
-                    f"dsv4-flash mode={mode} bs={batch_size} prefix_len={cur_prefix}: "
-                    "no valid sl values for a requested prefix group"
-                )
-            seq_lens_by_prefix[cur_prefix] = sorted({sl for _, sl in pairs}, reverse=True)
-
-    if not seq_lens_by_prefix:
-        raise RuntimeError(
-            f"dsv4-flash mode={mode} bs={batch_size}: no valid prefix/sl values; ok=0 error=0 skip=0 total=0"
-        )
-
-    # Let SGLang derive its full/SWA/DSV4 auxiliary pools, then use the live
-    # allocator capacities and page size to skip over-capacity cells.
-    max_total_tokens = None
-
+    SGLang derives its full/SWA/DSV4 auxiliary pools; the live allocator capacities
+    and page size then refuse the points beyond them.
+    """
     run_dsv4_mla_module(
         model_path=model_path,
         mode=mode,
         attn_kind=attn_kind,
-        batch_sizes=[batch_size],
-        seq_lens=[],
+        batch_size=batch_size,
+        seq_lens_by_prefix={int(prefix): [int(seq_len) for seq_len in seq_lens] for prefix, seq_lens in inner_shapes},
         kv_cache_dtype=kv_cache_dtype,
         device="cuda:0",
         output_path=output_path,
         perf_filename_prefix="dsv4",
         gemm_type=gemm_type,
         tp_size=tp_size,
-        prefix_lens=tuple(seq_lens_by_prefix),
-        seq_lens_by_prefix=seq_lens_by_prefix,
-        max_total_tokens=max_total_tokens,
     )
 
 
@@ -1867,60 +1707,51 @@ def run_dsv4_attn_worker(
     perf_filename: str,
     device: str = "cuda:0",
 ):
-    """collect.py-compatible worker — runs ONE (kind, tp, gemm, bs) test case.
+    """collect.py-compatible worker — runs ONE (kind, tp, gemm, bs) row of the op plan.
 
-    Context test cases carry a tenth element containing the getter-retained
-    ``(prefix, sequence_lengths)`` manifest. ``perf_filename`` is bound by
+    The tenth element is the row's points as ``(prefix, sequence_lengths)`` groups
+    (op_plans._sglang_dsv4_rows); the subprocess measures them, or refuses one with
+    its reason, and never re-derives the grid. ``perf_filename`` is bound by
     collect.py via OpEntry, not in the tuple.
 
     ``tp_size`` triggers single-process TP simulation in the spawned subprocess
     via ``collect_dsv4_mla_module._tp_load_model_patch``: ColumnParallel /
     RowParallel weights allocate at 1/N shape; FMLA sees h_q=64 (zero-padded).
     """
-    del seq_len, attention_backend  # context sweeps prefix/isl inside subprocess.
+    del seq_len, attention_backend  # the row's points replace seq_len; SGLang picks the backend.
 
     if attn_kind not in ATTN_KINDS:
         raise ValueError(f"unknown attn_kind={attn_kind}; expected one of {ATTN_KINDS}")
     if tp_size not in _TP_SIZES:
         raise ValueError(f"unsupported tp_size={tp_size}; expected one of {_TP_SIZES}")
 
-    is_prefill = "context" in perf_filename
-    mode = "context" if is_prefill else "generation"
-    if is_prefill and inner_shapes is None:
-        raise RuntimeError("DSV4 context worker requires the getter-retained inner-shape manifest")
-    if inner_shapes is not None:
-        inner_shapes = tuple(
-            (int(prefix), tuple(int(seq_len) for seq_len in seq_lens)) for prefix, seq_lens in inner_shapes
-        )
-    prefix_lens = tuple(prefix for prefix, _ in inner_shapes) if inner_shapes is not None else None
+    mode = "context" if "context" in perf_filename else "generation"
+    if not inner_shapes:
+        raise RuntimeError("DSV4 worker requires the plan row's (prefix, sequence_lengths) points")
+    inner_shapes = tuple(
+        (int(prefix), tuple(int(seq_len) for seq_len in seq_lens)) for prefix, seq_lens in inner_shapes
+    )
 
     device_str = str(device)
     gpu_id = int(device_str.split(":")[-1]) if ":" in device_str else 0
 
     print(
         f"[dsv4-flash {mode}] kind={attn_kind} tp={tp_size} gemm={gemm_type} "
-        f"bs={batch_size} prefix_lens={'swept' if prefix_lens is not None else [0]} "
-        f"(sl swept internally) GPU={gpu_id}"
+        f"bs={batch_size} prefix_lens={[prefix for prefix, _ in inner_shapes]} GPU={gpu_id}"
     )
 
     output_path = os.path.dirname(perf_filename) or os.getcwd()
-    kv_dtype_sglang = _kv_dtype_db_to_sglang(kv_cache_dtype)
-    smoke = "--smoke" in sys.argv
-
     _run_subprocess(
         mode=mode,
         attn_kind=attn_kind,
         model_path=model_path,
-        kv_cache_dtype_sglang=kv_dtype_sglang,
+        kv_cache_dtype_sglang=_kv_dtype_db_to_sglang(kv_cache_dtype),
         batch_size=batch_size,
         output_path=output_path,
         gpu_id=gpu_id,
+        inner_shapes=inner_shapes,
         gemm_type=gemm_type,
         tp_size=tp_size,
-        prefix_len=0,
-        prefix_lens=prefix_lens,
-        inner_shapes=inner_shapes,
-        smoke=smoke,
     )
 
 
@@ -1935,84 +1766,61 @@ def _parse_int_list(value: str) -> list[int]:
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Collect DeepSeek-V4-Flash HCA/CSA attention-module latency on SGLang."
+        description="Collect DeepSeek-V4 HCA/CSA attention-module latency on SGLang: the op plan's rows."
     )
-    parser.add_argument("--model-path", default=CLI_DEFAULT_MODEL)
+    parser.add_argument(
+        "--model-path", default=None, help="Run this checkpoint's rows (COLLECTOR_MODEL_PATH); default: the plan's."
+    )
     parser.add_argument("--mode", choices=["context", "generation"], required=True)
     parser.add_argument(
         "--attn-kind",
         choices=ATTN_KINDS,
         default=None,
-        help="If unset, sweeps csa/hca in turn.",
+        help="If unset, runs csa and hca in turn.",
     )
-    parser.add_argument("--batch-sizes", default=None)
-    parser.add_argument("--seq-lens", default=None)
-    parser.add_argument("--kv-cache-dtype", default="fp8_e4m3")
+    parser.add_argument("--batch-sizes", default=None, help="Comma-separated batch sizes; default: every row's.")
+    parser.add_argument("--tp-sizes", default=None, help="Comma-separated TP sizes; default: every row's.")
+    parser.add_argument("--gemm-type", choices=["bfloat16", "fp8_block"], default=None)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-path", default=None)
-    parser.add_argument(
-        "--gemm-type",
-        choices=["bfloat16", "fp8_block"],
-        default="bfloat16",
-        help="Projection-GEMM dispatch path.  fp8_block matches production.",
-    )
-    parser.add_argument(
-        "--tp-sizes",
-        default=",".join(str(t) for t in _TP_SIZES),
-        help=(
-            f"Comma-separated TP sizes to sweep.  Default '{','.join(str(t) for t in _TP_SIZES)}'.  "
-            "Each value runs the in-process TP simulation; FMLA always sees "
-            "h_q=64 (V4 zero-pads), so any TP power-of-2 in [1, 32] is valid."
-        ),
-    )
     return parser
 
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
-
-    if args.batch_sizes is not None:
-        batch_sizes = _parse_int_list(args.batch_sizes)
-    else:
-        batch_sizes, _ = _expand_grid()
-    if args.seq_lens is not None:
-        seq_lens = _parse_int_list(args.seq_lens)
-    else:
-        _, seq_lens = _expand_grid()
-
-    pairs = _filter_pairs(args.mode, batch_sizes, seq_lens)
-    _bs_grid = sorted({bs for bs, _ in pairs})
-    kinds = [args.attn_kind] if args.attn_kind else list(ATTN_KINDS)
-    tp_sizes = _parse_int_list(args.tp_sizes)
-    for tp_size in tp_sizes:
-        if tp_size not in _TP_SIZES and tp_size not in (16, 32):
-            raise ValueError(f"tp_size={tp_size} not in supported set; pick from 1/2/4/8/16/32")
-
+    if args.model_path:
+        os.environ["COLLECTOR_MODEL_PATH"] = args.model_path
+    batch_sizes = set(_parse_int_list(args.batch_sizes)) if args.batch_sizes else None
+    tp_sizes = set(_parse_int_list(args.tp_sizes)) if args.tp_sizes else None
     device_str = str(args.device)
     gpu_id = int(device_str.split(":")[-1]) if ":" in device_str else 0
     output_path = args.output_path or os.getcwd()
-    # Each (kind, tp, bs) is one subprocess that internally sweeps all valid
-    # sl values for that bs.  Mirrors the registry-driven path used by
-    # collect.py (one test case per (kind, tp, gemm, bs)).
-    bs_unique = sorted({bs for bs, _ in pairs})
-    for kind in kinds:
-        for tp_size in tp_sizes:
-            for bs in bs_unique:
-                try:
-                    _run_subprocess(
-                        mode=args.mode,
-                        attn_kind=kind,
-                        model_path=args.model_path,
-                        kv_cache_dtype_sglang=args.kv_cache_dtype,
-                        batch_size=bs,
-                        output_path=output_path,
-                        gpu_id=gpu_id,
-                        gemm_type=args.gemm_type,
-                        tp_size=tp_size,
-                    )
-                except Exception:
-                    traceback.print_exc()
-                    print(f"[dsv4-flash] FAILED kind={kind} tp={tp_size} bs={bs}; continuing")
+    # The plan's rows, so a CLI reproduction runs the exact planned points.
+    for kind in [args.attn_kind] if args.attn_kind else list(ATTN_KINDS):
+        rows = plan(f"dsv4_{kind}_{args.mode}_module", "sglang", get_sm_version()).rows
+        for _0, batch, tp_size, kv_dtype, _compute, gemm, model, _kind, _backend, points in rows:
+            if batch_sizes is not None and batch not in batch_sizes:
+                continue
+            if tp_sizes is not None and tp_size not in tp_sizes:
+                continue
+            if args.gemm_type is not None and gemm != args.gemm_type:
+                continue
+            try:
+                _run_subprocess(
+                    mode=args.mode,
+                    attn_kind=kind,
+                    model_path=model,
+                    kv_cache_dtype_sglang=_kv_dtype_db_to_sglang(kv_dtype),
+                    batch_size=batch,
+                    output_path=output_path,
+                    gpu_id=gpu_id,
+                    inner_shapes=points,
+                    gemm_type=gemm,
+                    tp_size=tp_size,
+                )
+            except Exception:
+                traceback.print_exc()
+                print(f"[dsv4-flash] FAILED kind={kind} tp={tp_size} gemm={gemm} bs={batch}; continuing")
 
 
 if __name__ == "__main__":

@@ -169,7 +169,7 @@ fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
 
 /// Synthetic measured timings with no SOL operations. The fixture's expected
 /// answers are its literal measurements and raw linear midpoints.
-fn direct_coverage_model(dir: &std::path::Path) -> ForwardPassPerfModel {
+pub(super) fn direct_coverage_model(dir: &std::path::Path) -> ForwardPassPerfModel {
     use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
     use crate::perf_database::fpm_forward::tests::{RowSpec, default_identity, write_pair};
     let mut rows = Vec::new();
@@ -2415,6 +2415,35 @@ fn native_model_starts_ready_with_aic_source() {
 }
 
 #[test]
+fn canonical_detailed_estimate_reports_operation_graph_ranks() {
+    let model = native_model(ForwardPassPerfOptions::default());
+    let metrics = [decode_fpm(4, 4 * 513, 0.0), mixed_fpm(256, 513, 0.0)];
+    let detailed = model.estimate_forward_pass_detailed(&metrics).unwrap();
+    assert_eq!(
+        detailed.latency_ms,
+        model.estimate_forward_pass_time_ms(&metrics).unwrap()
+    );
+    assert_eq!(detailed.ranks.len(), 2);
+    for rank in &detailed.ranks {
+        let sum: f64 = rank.operations.iter().map(|op| op.latency_ms).sum();
+        assert!(!rank.operations.is_empty());
+        assert!((sum - rank.latency_ms).abs() <= 1e-12 * rank.latency_ms);
+    }
+    // Oracle: the canonical static diagnostics at the decode rank's shape.
+    assert_eq!(
+        detailed.ranks[0].operations,
+        model.static_phase_diagnostics(4, 512, 0, false).unwrap()
+    );
+    // The field is additive: evidence serialized before it existed still
+    // deserializes, and an empty list is omitted.
+    let mut legacy = serde_json::to_value(&detailed.ranks[0]).unwrap();
+    legacy.as_object_mut().unwrap().remove("operations");
+    let restored: crate::FpmRankEstimate = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(restored.operations.is_empty());
+    assert_eq!(serde_json::to_value(&restored).unwrap(), legacy);
+}
+
+#[test]
 fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
     let model = native_model(ForwardPassPerfOptions::default());
     let engine = model.native_engine().unwrap();
@@ -2530,6 +2559,162 @@ fn learned_model_predicts_from_artifact_json() {
         ForwardPassRegressionWorkloadKind::PureDecode
     );
     assert!(stores[0].ready);
+}
+
+#[test]
+fn speculative_scaling_uses_stp_learned_predictions_without_mutating_tuning() {
+    let model =
+        ForwardPassPerfModel::from_learned(&learned_decode_artifact_json(), Default::default())
+            .unwrap();
+    let query = [decode_fpm(2, 1000, 0.0)];
+    // The fixture's split is at B=4.5: STP B=2 costs 10ms, widened B=6 costs
+    // 20ms. This catches scaling the original batch or multiplying KV by width.
+    assert_close(
+        model
+            .estimate_speculative_forward_pass_time_ms(&query, 2)
+            .unwrap()
+            .unwrap(),
+        28.2,
+    );
+    assert_close(
+        model
+            .estimate_forward_pass_time_ms(&query)
+            .unwrap()
+            .unwrap(),
+        10.0,
+    );
+    let detail = model
+        .estimate_speculative_forward_pass_detailed(&query, 2)
+        .unwrap();
+    assert_close(detail.stp_reference.latency_ms.unwrap(), 20.0);
+    assert_close(detail.latency_ms.unwrap(), 28.2);
+    assert_eq!(model.diagnostics().retained_observations, 0);
+    assert_eq!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&[ForwardPassMetrics::default()], 2)
+            .unwrap(),
+        Some(0.0)
+    );
+}
+
+#[test]
+fn speculative_scaling_preserves_regression_readiness_and_uses_stp_training() {
+    let options = ForwardPassPerfOptions {
+        min_observations: 3,
+        ..Default::default()
+    };
+    let mut model = regression_model(ForwardPassWorkerType::Decode, options).unwrap();
+    let query = [decode_fpm(2, 2000, 0.0)];
+    assert_eq!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&query, 2)
+            .unwrap(),
+        None
+    );
+    for b in 1..=10 {
+        for kv in [1000, 2000, 3000] {
+            model
+                .tune_with_fpms(&[vec![decode_fpm(
+                    b,
+                    kv,
+                    (f64::from(b) + f64::from(kv) / 1000.0) / 1000.0,
+                )]])
+                .unwrap();
+        }
+    }
+    let baseline = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(6, 2000, 0.0)])
+        .unwrap()
+        .unwrap();
+    assert_close(
+        model
+            .estimate_speculative_forward_pass_time_ms(&query, 2)
+            .unwrap()
+            .unwrap(),
+        1.41 * baseline,
+    );
+    assert_eq!(model.diagnostics().retained_observations, 30);
+}
+
+#[test]
+fn speculative_direct_fpm_preserves_raw_support_and_missing_coverage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    // Exact fixture STP row: B=8, K_total=64 -> 8ms. Original B=2, d=3.
+    let query = [decode_fpm(2, 64, 0.0)];
+    let detail = model
+        .estimate_speculative_forward_pass_detailed(&query, 3)
+        .unwrap();
+    assert_close(detail.latency_ms.unwrap(), 11.92);
+    assert_close(detail.stp_reference.latency_ms.unwrap(), 8.0);
+    let support = &detail.stp_reference.ranks[0].queries[0];
+    assert_eq!(support.query.batch_size, 8.0);
+    assert_eq!(support.query.total_kv_read_tokens, 64.0);
+    assert_eq!(support.support[0].latency_ms, 8.0);
+    assert!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&[decode_fpm(8, 1000, 0.0)], 3)
+            .is_err()
+    );
+    assert_eq!(
+        model
+            .fpm_query_coverage()
+            .unwrap()
+            .unwrap()
+            .queries
+            .unsupported,
+        1
+    );
+}
+
+#[test]
+fn speculative_scaling_treats_a_fully_cached_prefill_as_decode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    let learned =
+        ForwardPassPerfModel::from_learned(&learned_decode_artifact_json(), Default::default())
+            .unwrap();
+    // A fully prefix-cached prefill keeps request/KV metadata but schedules
+    // no fresh prefill token, so the rank is decode-only like every rank
+    // dispatch. Fixture oracles: direct B=8/K=64 is 8ms * 1.49 (d=3); the
+    // learned stump prices B=6 at 20ms * 1.41 (d=2).
+    let mut cached = decode_fpm(2, 64, 0.0);
+    cached.scheduled_requests.num_prefill_requests = 1;
+    cached.scheduled_requests.sum_prefill_kv_tokens = 4096;
+    for (model, depth, expected) in [(&model, 3, 11.92), (&learned, 2, 28.2)] {
+        assert_close(
+            model
+                .estimate_speculative_forward_pass_time_ms(std::slice::from_ref(&cached), depth)
+                .unwrap()
+                .unwrap(),
+            expected,
+        );
+    }
+    let detail = model
+        .estimate_speculative_forward_pass_detailed(std::slice::from_ref(&cached), 3)
+        .unwrap();
+    assert_eq!(detail.stp_reference.ranks[0].prefill_ms, None);
+    // Fresh prefill tokens are still prefill work.
+    cached.scheduled_requests.sum_prefill_tokens = 100;
+    assert!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&[cached], 3)
+            .unwrap_err()
+            .to_string()
+            .contains("pure decode")
+    );
+}
+
+#[test]
+fn speculative_scaling_rejects_operation_level_estimator() {
+    let model = ForwardPassPerfModel::from_engine(fixture_engine(), Default::default());
+    assert!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&[decode_fpm(1, 1024, 0.0)], 2)
+            .unwrap_err()
+            .to_string()
+            .contains("ordinary STP FPM")
+    );
 }
 
 #[test]

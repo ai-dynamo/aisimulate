@@ -12,6 +12,14 @@ cost estimation, and accepted-token projection together.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from aisimulate.legacy_cli.api import cli_estimate
@@ -49,6 +57,137 @@ COMMON = dict(
     kvcache_quant_mode="bfloat16",
     fmha_quant_mode="bfloat16",
 )
+
+
+@pytest.fixture
+def hybrid_warning_systems(tmp_path):
+    """Synthetic target timing with the checked-in OP tables for draft work."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import aisimulate_core
+
+    packaged = Path(aisimulate_core.__file__).parent / "systems"
+    system = COMMON["system_name"]
+    shutil.copy(packaged / f"{system}.yaml", tmp_path)
+    data_dir = tmp_path / "data" / system
+    data_dir.mkdir(parents=True)
+    for family in (packaged / "data" / system).iterdir():
+        if family.name == COMMON["backend_name"]:
+            continue  # Keep the synthetic legacy FPM directory local, never a symlink.
+        (data_dir / family.name).symlink_to(family, target_is_directory=family.is_dir())
+    output = data_dir / COMMON["backend_name"] / COMMON["backend_version"]
+    output.mkdir(parents=True)
+    rows = []
+    for kind, batch, tokens, kv, latency in (
+        ("prefill", 1, 64, 0, 20.0),
+        ("prefill", 1, 92, 0, 20.0),
+        ("decode", 32, 0, 520, 10.0),
+        ("decode", 28, 0, 455, 10.0),
+        ("decode", 28, 0, 462, 10.0),
+    ):
+        rows.append(
+            dict(
+                cell_id=f"warning-{kind}",
+                model_path=COMMON["model_path"],
+                system=system,
+                backend=COMMON["backend_name"],
+                backend_version=COMMON["backend_version"],
+                gemm_quant_mode="bfloat16",
+                moe_quant_mode="bfloat16",
+                fmha_quant_mode="bfloat16",
+                comm_quant_mode="half",
+                kv_cache_dtype="bfloat16",
+                weight_quantization="bfloat16",
+                tp=1,
+                pp=1,
+                dp=1,
+                cp=1,
+                moe_tp=1,
+                moe_ep=1,
+                moe_backend="auto",
+                attention_backend="auto",
+                enable_wideep=False,
+                enable_eplb=False,
+                workload_kind=kind,
+                batch_size=batch,
+                total_prefill_tokens=tokens,
+                total_kv_read_tokens=kv,
+                partition_policy="balanced_v1",
+                latency_ms=latency,
+            )
+        )
+    parquet = output / "fpm_forward_perf.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), parquet)
+    parquet.with_suffix(".metadata.json").write_text(
+        json.dumps(
+            dict(
+                schema_name="aic_fpm_forward_perf",
+                schema_version=6,
+                coordinate_system="iteration_totals_balanced_v1",
+                measurement_policy="dynamo_native_single_sample_v1",
+                row_count=len(rows),
+                parquet_sha256=hashlib.sha256(parquet.read_bytes()).hexdigest(),
+                system=system,
+                backend=COMMON["backend_name"],
+                backend_version=COMMON["backend_version"],
+            )
+        )
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize("mode", ["static_gen", "agg"])
+def test_hybrid_warning_survives_cli_import_with_default_filters(hybrid_warning_systems, mode):
+    # A subprocess avoids pytest's warning filters and already-imported session
+    # module. cli_estimate imports InferenceSession before constructing the model.
+    script = """
+import json
+import sys
+from aisimulate.legacy_cli.api import cli_estimate
+
+args = json.loads(sys.argv[1])
+result = cli_estimate(**args)
+costs = (result.summary.get_generation_latency_dict() if args["mode"] == "static_gen"
+         else result.per_ops_data["mix_step"])
+print(json.dumps({"tpot": result.tpot, "costs": costs}))
+"""
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONWARNINGS"}
+    env["HF_HUB_OFFLINE"] = "1"
+    timings = {}
+    for forward_model in ("fpm", "op_level"):
+        args = dict(
+            **{**COMMON, "osl": 2},
+            mode=mode,
+            speculative=SPEC_BLOCK,
+            forward_model=forward_model,
+            systems_paths=str(hybrid_warning_systems),
+            engine_step_backend="rust",
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, json.dumps(args)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert ("FutureWarning: Hybrid FPM/OP speculative decoding" in result.stderr) == (forward_model == "fpm")
+        timings[forward_model] = json.loads(result.stdout.splitlines()[-1])
+        assert timings[forward_model]["tpot"] > 0
+
+    hybrid = timings["fpm"]
+    hybrid_drafts = {name: cost for name, cost in hybrid["costs"].items() if name.startswith("draft_")}
+    op_drafts = {name: cost for name, cost in timings["op_level"]["costs"].items() if name.startswith("draft_")}
+    assert hybrid_drafts == pytest.approx(op_drafts)
+    assert sum(hybrid_drafts.values()) > 0
+    # The warning preserves the synthetic target + native OP draft composition
+    # and the 2.8 accepted-token projection. Static summaries round to 3 decimals
+    # both before and after projection (at most 0.0005 / 2.8 + 0.0005 error).
+    target_key, target_ms = ("fpm_forward_decode", 10.0) if mode == "static_gen" else ("fpm_forward_prefill", 20.0)
+    assert hybrid["costs"][target_key] == pytest.approx(target_ms)
+    assert hybrid["tpot"] == pytest.approx((target_ms + sum(op_drafts.values())) / 2.8, abs=0.0005 / 2.8 + 0.0005)
 
 
 @pytest.mark.parametrize("consumer", ["cli_estimate", "task"])
