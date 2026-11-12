@@ -2607,6 +2607,77 @@ mod tests {
         assert_eq!(bare.csa_topk_top_last(2048, 0, 64, 1).unwrap(), None);
     }
 
+    /// A calib table with only top_last rows (no flat rows for any shape):
+    /// (a) no DELTA pair forms, so CSA context and generation module rows
+    /// come back uncorrected (the module leaves 1.0 and 0.5 exactly), and
+    /// (b) the raw top_last rows still serve the CP composition lookup.
+    #[test]
+    fn topk_calib_with_only_top_last_rows_has_no_delta_and_serves_cp() {
+        let spec = b200_sxm_spec();
+        let dir = tempfile::tempdir().unwrap();
+        // (num_heads, batch_size, isl, step, latency)
+        write_module_parquet(
+            &dir.path().join("dsv4_csa_context_module_perf.parquet"),
+            &[(64, 8, 512, 0, 1.0)],
+        );
+        write_module_parquet(
+            &dir.path().join("dsv4_csa_generation_module_perf.parquet"),
+            &[(64, 16, 1, 384, 0.5)], // s_total = 385
+        );
+        write_calib_parquet_with_heads(
+            &dir.path().join("dsv4_csa_topk_calib_perf.parquet"),
+            &[
+                ("v1_top_last", 0, 512, 8, 64, 0.18),
+                ("v1_top_last", 0, 4096, 8, 64, 1.5),
+                ("v2_top_last", 384, 1, 16, 64, 0.02),
+            ],
+        );
+        let table = Dsv4Table::new(dir.path().to_path_buf());
+
+        let calib = table.load_topk_calib().unwrap().expect("calib must load");
+        assert!(calib.delta_v1.is_empty());
+        assert!(calib.delta_v2.is_empty());
+
+        let context = table
+            .query_context(
+                &spec,
+                AttnKind::Csa,
+                8,
+                512,
+                64,
+                64,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Fp8Block,
+                "DeepseekV4ForCausalLM",
+                0,
+                None,
+            )
+            .unwrap()
+            .latency;
+        assert_eq!(context, 1.0);
+        let generation = table
+            .query_generation(
+                &spec,
+                AttnKind::Csa,
+                16,
+                385,
+                64,
+                64,
+                KvCacheQuantMode::Fp8,
+                GemmQuantMode::Fp8Block,
+                "DeepseekV4ForCausalLM",
+                None,
+            )
+            .unwrap()
+            .latency;
+        assert_eq!(generation, 0.5);
+
+        // The context (v1) top_last rows the CP composition reads.
+        assert_eq!(table.csa_topk_top_last(512, 0, 64, 8).unwrap(), Some(0.18));
+        assert_eq!(table.csa_topk_top_last(4096, 0, 64, 8).unwrap(), Some(1.5));
+    }
+
     /// Rows without a `num_heads` key cell never load — for the top_last
     /// grid AND the DELTA pairs alike. Since issue #1498 Python's CP loader
     /// projects the generic `load_dsv4_sparse_op_data` nesting, whose

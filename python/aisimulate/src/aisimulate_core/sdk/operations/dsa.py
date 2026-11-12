@@ -197,12 +197,18 @@ class ContextDSAModule(_core.ContextDSAModule, OpShellKit):
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Context-Parallel (CP) prefill model — GLM-5 DSA only.
-    # See docs/CONTEXT_PARALLEL_DSA_MODELING.md. Per-card =
-    #   base dsa_module(isl/cp, bf16-KV row)
-    #   + mqa(isl/cp)*(cp-1)                          (mqa ∝ isl², xcp identity)
-    #   - [topk_full(flat) - topk_full(top_last)]/cp  (topk ∝ full/cp; module is dummy/flat)
-    #   + AG_KV + AG_LSE                              (the two small attention all-gathers)
+    # Context-Parallel (CP) prefill model — DSA (DeepSeek-V3.2 / GLM-5.x).
+    # The compiled engine computes it (``operators/dsa.rs``, ``query_cp_with``);
+    # see docs/perf-model/methods/context-parallel-dsa.md. Per layer:
+    #   dsa_module(isl/cp, prefix)
+    #   + [mqa(isl, prefix)/cp       - mqa(isl/cp, prefix)]
+    #   + [topk_last(isl, prefix)/cp - topk_module(isl/cp, prefix)]
+    #   + AG_KV + AG_LSE             (the two small attention all-gathers)
+    # topk_module is the top-k calibration matching how the module table was
+    # collected, chosen from the loaded top-k table: ``flat`` when the table
+    # has ``flat`` score_mode rows (module timed on degenerate all-tie scores),
+    # ``top_last`` when it has none (module timed on written history with
+    # non-degenerate scores). The table decides as a whole.
     # AG_hidden + RS belong to the MoE comm (modeled by MoEDispatch), not here.
     # ------------------------------------------------------------------
 

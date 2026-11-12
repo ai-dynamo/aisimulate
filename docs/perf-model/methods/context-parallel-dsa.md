@@ -24,9 +24,21 @@ For a layer that executes its indexer:
 ```text
 DSA = module(s_local, P)
     + mqa(S, P)/C - mqa(s_local, P)
-    + topk_last(S, P)/C - topk_flat(s_local, P)
+    + topk_last(S, P)/C - topk_module(s_local, P)
     + AG_index_keys + AG_compressed_kv
 ```
+
+The top-k term swaps the top-k time embedded in the per-card module for the
+full-context share. `topk_module` is the top-k calibration that matches how the
+module table was collected, and the loaded top-k table (`score_mode` column)
+selects it. A table with `flat` rows belongs to a module timed on degenerate,
+all-tie index scores, so `topk_module = topk_flat`. A table with only
+`top_last` rows belongs to a module timed on written history with
+non-degenerate scores, so `topk_module = topk_last`. The table decides as a
+whole: one with `flat` rows for only some shapes uses `topk_flat` for every
+query. When earlier releases fill missing shapes, the highest-priority source
+that carries top-k rows decides, and a release collected without `flat` rows
+does not inherit them.
 
 Sparse corrections are queried at the actual batch slice, without an extra
 assumed linear batch multiplier. Both full and local lookups use the real cached
@@ -37,8 +49,8 @@ and top-k deltas are omitted.
 
 Projections and sparse FMHA keep their per-card module contribution. The
 sparse attention is capped by the selected-key geometry; indexer scoring is
-still over its full causal domain. Missing required sparse mqa/flat/top-last
-tables raises a data error rather than silently leaving the uncorrected base.
+still over its full causal domain. Missing required sparse mqa or top-last
+rows raise a data error rather than silently leaving the uncorrected base.
 
 ## Communication and MoE
 
