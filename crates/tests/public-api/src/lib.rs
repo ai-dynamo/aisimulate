@@ -1220,6 +1220,157 @@ mod tests {
     }
 
     #[test]
+    fn external_workload_sources_drive_replay_through_the_public_api() {
+        // An embedder outside the crate implements the source with
+        // single-threaded state and runs it without private constructors.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use aisimulate_core::replay::{
+            DirectRequest, ReplayEngineFactory, ReplayError, ReplaySpec, ReplayTerminalStatus,
+            ReplayTopology, ReplayWorkloadSource, Replayer,
+        };
+        use uuid::Uuid;
+
+        const FIRST: Uuid = Uuid::from_u128(1);
+        const SECOND: Uuid = Uuid::from_u128(2);
+
+        #[derive(Default)]
+        struct Seen {
+            tokens: usize,
+            terminals: Vec<(Uuid, f64, ReplayTerminalStatus)>,
+        }
+
+        /// Submits `FIRST`, then `SECOND` the instant `FIRST` ends.
+        struct FollowUp {
+            ready: Vec<Uuid>,
+            outstanding: usize,
+            started: bool,
+            seen: Rc<RefCell<Seen>>,
+        }
+
+        impl ReplayWorkloadSource for FollowUp {
+            fn next_wakeup_ms(&mut self) -> Option<f64> {
+                (!self.started).then_some(0.0)
+            }
+
+            fn pop_ready(
+                &mut self,
+                _now_ms: f64,
+                _cluster_in_flight: usize,
+            ) -> anyhow::Result<Vec<DirectRequest>> {
+                self.started = true;
+                let ready = std::mem::take(&mut self.ready);
+                self.outstanding += ready.len();
+                Ok(ready
+                    .into_iter()
+                    .map(|uuid| DirectRequest {
+                        tokens: vec![1, 2, 3, 4],
+                        max_output_tokens: 2,
+                        uuid: Some(uuid),
+                        ..Default::default()
+                    })
+                    .collect())
+            }
+
+            fn on_output_token(
+                &mut self,
+                _request_id: Uuid,
+                _token_id: u32,
+                _now_ms: f64,
+            ) -> anyhow::Result<()> {
+                self.seen.borrow_mut().tokens += 1;
+                Ok(())
+            }
+
+            fn on_causal_terminal(
+                &mut self,
+                request_id: Uuid,
+                now_ms: f64,
+                status: ReplayTerminalStatus,
+            ) -> anyhow::Result<()> {
+                self.outstanding -= 1;
+                self.seen
+                    .borrow_mut()
+                    .terminals
+                    .push((request_id, now_ms, status));
+                if request_id == FIRST {
+                    self.ready.push(SECOND);
+                }
+                Ok(())
+            }
+
+            fn is_drained(&self) -> bool {
+                self.started && self.ready.is_empty() && self.outstanding == 0
+            }
+        }
+
+        let spec = || ReplaySpec {
+            version: 1,
+            topology: ReplayTopology::aggregated(1),
+            engine: Default::default(),
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: None,
+            record_per_request: true,
+            sla: Default::default(),
+            encoder: None,
+            requests: Vec::new(),
+        };
+        let factory =
+            || ReplayEngineFactory::with_timing_model(std::sync::Arc::new(LatencyOnlyProvider));
+        let source = |seen: &Rc<RefCell<Seen>>| {
+            Box::new(FollowUp {
+                ready: vec![FIRST],
+                outstanding: 0,
+                started: false,
+                seen: seen.clone(),
+            })
+        };
+
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let report = Replayer::new(spec(), factory())
+            .unwrap()
+            .with_max_source_steps_per_instant(std::num::NonZeroU32::new(16).unwrap())
+            .run_with_source(source(&seen))
+            .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 2);
+        let seen = seen.borrow();
+        assert_eq!(seen.tokens, 4);
+        let ids: Vec<_> = seen.terminals.iter().map(|(id, ..)| *id).collect();
+        assert_eq!(ids, [FIRST, SECOND]);
+        assert!(
+            seen.terminals
+                .iter()
+                .all(|(.., status)| *status == ReplayTerminalStatus::Completed)
+        );
+        let record = |uuid: Uuid| {
+            report
+                .per_request
+                .iter()
+                .find(|record| record.uuid == uuid.to_string())
+                .unwrap()
+        };
+        // The follow-up arrives at the instant its predecessor ended, which is
+        // also the terminal time the source was told.
+        assert_eq!(
+            record(SECOND).arrival_time_ms,
+            record(FIRST).terminal_time_ms
+        );
+        assert_eq!(seen.terminals[0].1, record(FIRST).terminal_time_ms);
+
+        // The source owns concurrency: a spec-level limit is refused, typed.
+        let limited = ReplaySpec {
+            max_in_flight: Some(1),
+            ..spec()
+        };
+        let refused = Replayer::new(limited, factory())
+            .unwrap()
+            .run_with_source(source(&Rc::default()));
+        assert!(matches!(refused, Err(ReplayError::InvalidSpec(_))));
+    }
+
+    #[test]
     fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
         use aisimulate_core::engine::EngineLaunchConfig;
         use aisimulate_core::{

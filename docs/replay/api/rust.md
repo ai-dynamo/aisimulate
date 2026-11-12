@@ -170,8 +170,8 @@ capture is absent, or preserve the field when rebuilding a captured report.
 ## Errors and stability
 
 `ReplayResult<T>` is `Result<T, ReplayError>`. Errors distinguish `InvalidSpec`,
-`Engine`, `Placement`, `Scaling`, `Telemetry`, `Deadlock`, `ResourceLimited`, and
-`Invariant`. Handle typed variants instead of parsing display messages.
+`Engine`, `Placement`, `Scaling`, `Telemetry`, `WorkloadSource`, `Deadlock`,
+`ResourceLimited`, and `Invariant`. Handle typed variants instead of parsing display messages.
 `ResourceLimited` can represent exact-latency spill storage failure; it does
 not produce a successful partial native report.
 
@@ -179,7 +179,60 @@ The authoritative exports are in
 [`replay/mod.rs`](../../../crates/core/src/replay/mod.rs). Several cross-crate
 integration seams are `pub` but marked `#[doc(hidden)]` (runtime input,
 request payloads, engine observations and internal collectors). They are not
-promoted here as stable end-user APIs. In-tree workload import and snapshot
+promoted here as stable end-user APIs.
+
+`ReplayWorkloadSource` and `Replayer::run_with_source(source)` are one such
+seam. They let a reactive workload owned by another crate drive Replay through
+the same admission queue as `WorkloadDriver`, on aggregated and disaggregated
+topologies. Replay owns the clock: the next instant is the earliest of the next
+engine event and the source's `next_wakeup_ms`, a request to be stepped then
+that may produce nothing, so empty steps are legal. A step is one `pop_ready`
+call, and Replay stamps each returned request's arrival as that instant. Each
+instant `t` runs four phases:
+
+1. **Wakeup step**, only if `t` is the source's wakeup or feedback awaits it:
+   the source is stepped once, before engine work at `t` settles. Its
+   submissions are scheduled arrivals, admitted exactly as native arrivals at
+   `t`: Replay holds them and releases them where it releases native arrivals.
+2. **Settle**: engine work due at `t` settles (pass ends, output tokens,
+   terminals), delivered through `on_output_token` (with its instant),
+   `on_causal_terminal` and `on_quiescent`.
+3. **Reaction fixpoint**: the source is stepped again while a step left new
+   feedback at `t`. These submissions are reactions.
+4. **Pass starts**: idle workers start passes one at a time, each start taking
+   the lowest-numbered ready worker (so ascending worker order); a worker's
+   attention-DP ranks start together as its one pass, scheduled in ascending
+   rank order. Native replay starts passes in this order, and so does a run
+   with a source. Feedback from a pass start, such as an admission rejection,
+   is delivered and the source stepped before the next worker starts, so a
+   reaction joins every pass not yet started and none that has. On
+   disaggregated topologies prefill workers start before decode workers.
+
+An instant whose only activity is an empty wakeup step leaves engine state
+untouched, so idle wakeups never change engine timing. Worker removal,
+telemetry and scaling never run at an instant while delivered feedback still
+awaits a step. Feedback that only emerges in a later drain pass at that instant
+(a prefill rejection, say) can still bring a reaction after a telemetry or
+scaling tick already ran at it, exactly where a native arrival known only at
+that point would land; scheduled arrivals keep native tick ordering exactly.
+
+Progress rules: after every step at `t` the next wakeup is `None` or finite and
+strictly later than `t` (before the first step it must be finite and no earlier
+than the first instant); a source not drained, with nothing in flight and no
+wakeup, has stalled. Both fail the run with `WorkloadSource`, as do an error the
+source returns, a reused request `uuid` and a rank out of range (ranks are
+validated like spec ranks when the source submits the request). Steps at one
+instant are bounded by `Replayer::with_max_source_steps_per_instant` (default
+1,000,000); exceeding it, which only a reaction loop such as a rejected request
+resubmitted at once can, fails with `ResourceLimited` naming the budget and the
+instant. The run takes ownership of the source, which need not be `Send`. The
+source owns its concurrency and duration, so `run_with_source` refuses
+spec-authored requests or a second runtime input, `max_in_flight`,
+`max_sim_time_ms`, Belady eviction, detokenization latency and
+`ReplayDeterminism::CanonicalV1` with `InvalidSpec`.
+Cancelling requests from the source is not part of this seam.
+
+In-tree workload import and snapshot
 APIs live under `replay::loadgen`; see [workloads](../workloads.md#agentic-load-controls) and
 [agentic warmup](../agentic/warmup.md#seeded-request-boundary-snapshots) for their semantics. To build snapshots directly, call
 `ValidatedAgenticGraph::prepare_snapshots(lanes, options)` with a positive lane
