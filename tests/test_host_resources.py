@@ -217,6 +217,41 @@ def test_native_estimate_is_distinct_from_eager_dynamo():
     assert engine.allocation_model != dynamo.allocation_model
     assert engine.input_token_bytes == 10 * 100 * 4
     assert dynamo.input_token_bytes == 1000 * 100 * 4
+    # Single requests carry no session history, so their charge is unchanged.
+    assert engine.estimated_peak_bytes == resources.WORKER_BASELINE_BYTES + 1000 * (4096 + 32 * 105) + 10 * 100 * 4
+
+
+def test_session_estimate_charges_each_turn_once_and_history_per_active_session():
+    workload = {"request_count": 6144, "turns_per_session": 10, "isl": 4096, "osl": 256, "concurrency": 32}
+    estimate = estimate_workload(workload, stack="engine")
+    turn, history = 4096 + 256, 9 * (4096 + 256)
+    retained, carried = 6144 * 10 * (4096 + 32 * turn), 32 * history + 4 * (history + 4096)
+    assert estimate.allocation_model == "engine-session-metadata-v2"
+    assert estimate.input_token_bytes == 32 * (history + 4096) * 4
+    assert estimate.estimated_peak_bytes == resources.WORKER_BASELINE_BYTES + retained + 32 * carried
+    # Without a session cap, every session may carry its history at once.
+    uncapped = estimate_workload({**workload, "concurrency": None}, stack="engine")
+    assert uncapped.estimated_peak_bytes - estimate.estimated_peak_bytes == (6144 - 32) * carried
+
+
+def test_long_sessions_fit_a_workstation_budget():
+    # This workload peaks near 2.2 GB RSS; v1 charged every turn for its
+    # whole session and estimated 86 GB against this 83.7 GB budget.
+    workstation = HostResources(128 * GB, 93 * GB, 24)
+    workload = {
+        "source_type": "synthetic-session",
+        "request_count": 6144,
+        "turns_per_session": 10,
+        "isl": 4096,
+        "osl": 256,
+        "concurrency": 32,
+    }
+    plan = build_plan(workload, stack="engine", host=workstation)
+    assert plan["status"] == "admitted"
+    assert plan["estimate"]["estimated_peak_bytes"] < 10 * GB
+    longer = build_plan({**workload, "turns_per_session": 100}, stack="engine", host=workstation)
+    assert longer["status"] == "resource_limited"
+    assert longer["estimate"]["estimated_peak_bytes"] > longer["budget"]["memory_limit_bytes"]
 
 
 def test_plugin_estimate_is_versioned(host):
