@@ -18,3 +18,13 @@ Timing and RSS in the file come from a single repeat and are within noise.
 
 The converter fix that made the refreshed tree possible (`reuse-manifest` analysis statistics are optional in
 `aisim-op-reuse-manifest/v1`) is the first commit of the cutover PR.
+
+## After the AISim rename (rebase onto #796)
+
+`parity-after-rename.json` repeats the run on the rebased stack (packaged tables still present, same real revision
+`07d52645`). Predictions (924 values, 0.0 ms) and every table's row hash are unchanged; `offline` is true. `rows` and
+`lookup` report text-only drift that #796 introduced into the packaged files and the published copies do not have: six
+`collection_meta.yaml` sidecars (`sparse_attention/vllm/0.24.0` on b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm),
+two non-runtime READMEs under `data/b200_sxm`, and the header comment of `perf_data_reuse_manifest.yaml` (renamed
+`python/aisimulate/...` paths). Republishing the tree from the renamed sources, then moving `op_latency_pin.json`, makes
+the byte gates true again; nothing a predictor reads changes.
