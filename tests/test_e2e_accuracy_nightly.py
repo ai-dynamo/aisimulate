@@ -570,6 +570,37 @@ def test_complete_artifact_contains_only_derived_accuracy_and_provenance(artifac
     assert summary["snapshot"]["campaign"]["selected"] == 2
 
 
+def v2_summary(summary):
+    text = json.dumps(summary).replace('"aisimulate": {', '"aisim": {')
+    for suffix in ("completed_at", "method", "packages", "sot_sha256"):
+        text = text.replace(f'"aisimulate_{suffix}":', f'"aisim_{suffix}":')
+    result = json.loads(text)
+    result["schema_version"] = 2
+    return result
+
+
+def test_v2_artifact_preserves_provenance_and_checks_original_bytes(artifact):
+    summary, run = artifact
+    summary["snapshot"]["aic_source"].update(
+        repository="https://github.com/ai-dynamo/aisim", cli_entry_point="aisim.legacy_cli.entrypoint:main"
+    )
+    summary["snapshot"]["aisimulate_packages"] = {"aisim": "0.14.0"}
+    wire = v2_summary(summary)
+    assert publish.validate_artifact(archive(wire), run) == summary
+    wrong_hash = hashlib.sha256(campaign.encoded(summary)).hexdigest()
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        publish.validate_artifact(
+            archive(wire, qualification={**wire["snapshot"]["campaign"], "summary_sha256": wrong_hash}), run
+        )
+    ambiguous = deepcopy(wire)
+    ambiguous["snapshot"]["aisim_packages"]["aisimulate"] = "0.12.0"
+    with pytest.raises(ValueError, match="exactly one AISim package identity"):
+        publish.validate_artifact(archive(ambiguous), run)
+    wire["snapshot"]["private_data"] = "must not be published"
+    with pytest.raises(ValueError, match="unexpected public artifact fields"):
+        publish.validate_artifact(archive(wire), run)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -639,12 +670,13 @@ def test_ambiguous_json_rejected(text):
         publish.strict_json(text)
 
 
-def test_qualified_main_updates_catalog_and_legacy_download_together(artifact, tmp_path):
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_qualified_main_updates_catalog_and_legacy_download_together(artifact, tmp_path, schema_version):
     summary, _ = artifact
     artifacts = tmp_path / "qualified"
     artifacts.mkdir()
     key = hashlib.sha256(b"main").hexdigest()[:16]
-    (artifacts / (key + ".json")).write_bytes(campaign.encoded(summary))
+    (artifacts / (key + ".json")).write_bytes(campaign.encoded(v2_summary(summary) if schema_version == 2 else summary))
     output = tmp_path / "site"
     fpe = tmp_path / "qualified-fpe"
     fpe.mkdir()

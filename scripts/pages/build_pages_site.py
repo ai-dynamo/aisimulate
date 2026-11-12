@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -184,6 +185,58 @@ def _git(repo_root: Path, *args: str) -> str:
         raise PagesBuildError("timed out reading accuracy branch evidence") from exc
     except subprocess.CalledProcessError as exc:
         raise PagesBuildError(f"cannot read accuracy branch evidence: {exc.stderr.strip()}") from exc
+
+
+def _normalize_accuracy_summary(summary: dict) -> dict:
+    """Adapt v2 field names to the v1 UI contract without rewriting evidence.
+
+    Only series keys and four snapshot keys changed in v2. Package names,
+    source URLs, hashes, campaign metadata, and metric values retain their
+    original identities. Callers must check source checksums on original bytes.
+    """
+    if not isinstance(summary, dict) or type(summary.get("schema_version")) is not int:
+        raise ValueError("invalid or missing summary schema")
+    version = summary["schema_version"]
+    if version not in (1, 2):
+        raise ValueError("unsupported summary schema")
+    result = deepcopy(summary)
+
+    def rename(item, legacy, current):
+        if not isinstance(item, dict):
+            return  # The semantic validator diagnoses malformed containers.
+        source, unexpected = (legacy, current) if version == 1 else (current, legacy)
+        if unexpected in item:
+            raise ValueError(f"summary v{version} contains unexpected field {unexpected}")
+        if version == 2 and source in item:
+            item[legacy] = item.pop(source)
+
+    def aggregate(item):
+        rename(item, "aisimulate", "aisim")
+
+    def children(item, name):
+        values = item.get(name, []) if isinstance(item, dict) else []
+        return values if isinstance(values, list) else []
+
+    for suffix in ("completed_at", "method", "packages", "sot_sha256"):
+        rename(result.get("snapshot"), f"aisimulate_{suffix}", f"aisim_{suffix}")
+    totals = result.get("totals")
+    aggregate(totals)
+    quality = totals.get("by_configuration_quality", {}) if isinstance(totals, dict) else {}
+    if isinstance(quality, dict):
+        for group in quality.values():
+            aggregate(group)
+    for model in children(result, "models"):
+        aggregate(model)
+        for workload in children(model, "workloads"):
+            aggregate(workload)
+            for gpu in children(workload, "gpus"):
+                aggregate(gpu)
+                for topology in children(gpu, "topologies"):
+                    aggregate(topology)
+                    for point in children(topology, "points"):
+                        aggregate(point)
+    result["schema_version"] = 1
+    return result
 
 
 def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
@@ -365,7 +418,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require(aic_successes == item["aic"]["points"], "AIC topology coverage (AIC point count)")
 
     try:
-        summary = json.loads(text)
+        summary = _normalize_accuracy_summary(json.loads(text))
         metric_contract = summary.get("snapshot", {}).get("campaign", {}).get("metric_contract")
         require(metric_contract in (None, "serving-metrics-v1"), "metric contract")
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
@@ -396,7 +449,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             aic_source = snapshot.get("aic_source")
             require(
                 isinstance(aic_source, dict)
-                and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"
+                and aic_source.get("repository")
+                in ("https://github.com/ai-dynamo/aisimulate", "https://github.com/ai-dynamo/aisim")
                 and isinstance(aic_source.get("branch"), str)
                 and isinstance(aic_source.get("commit_sha"), str)
                 and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))
@@ -404,7 +458,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                 and (
                     "cli_entry_point" not in aic_source
                     or aic_source["cli_entry_point"]
-                    in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main")
+                    in (
+                        "aiconfigurator.main:main",
+                        "aisimulate.legacy_cli.entrypoint:main",
+                        "aisim.legacy_cli.entrypoint:main",
+                    )
                 )
                 and (revision is None or all(aic_source[key] == revision[key] for key in ("branch", "commit_sha"))),
                 "legacy AIC CLI source",
@@ -553,8 +611,6 @@ def _build_accuracy_catalog(
                 raise PagesBuildError("qualified accuracy artifact belongs to another branch")
             # The artifact was produced by a campaign, not read from a Git blob.
             # Its evaluated revision is recorded separately below.
-            if branch == "main":
-                (output_dir / "e2e-accuracy" / "summary.json").write_text(content)
         elif ref is None:
             source = repo_root / relative_path
             if source.is_symlink():
@@ -592,6 +648,8 @@ def _build_accuracy_catalog(
         destination = output_dir / "e2e-accuracy" / entry["summary_path"]
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        if branch == "main":
+            (output_dir / "e2e-accuracy" / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         entries.append(entry)
     status_path = artifacts / "status/updates.json" if artifacts else None
     if status_path is not None and status_path.exists():

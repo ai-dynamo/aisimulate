@@ -1052,7 +1052,18 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) -> None:
+def _accuracy_v2(summary):
+    # Construct a v2 wire payload independently of the production tree walker.
+    text = json.dumps(summary).replace('"aisimulate": {', '"aisim": {')
+    for suffix in ("completed_at", "method", "packages", "sot_sha256"):
+        text = text.replace(f'"aisimulate_{suffix}":', f'"aisim_{suffix}":')
+    result = json.loads(text)
+    result["schema_version"] = 2
+    return result
+
+
+@pytest.mark.parametrize("release_schema", [1, 2])
+def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path, release_schema) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -1075,7 +1086,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
         "repository": "https://github.com/ai-dynamo/aisimulate",
         **release_summary["snapshot"]["evaluated_revision"],
     }
-    source.write_text(json.dumps(release_summary))
+    source.write_text(json.dumps(_accuracy_v2(release_summary) if release_schema == 2 else release_summary))
     legacy_source = repo / "python/aisimulate/docs/e2e-accuracy/summary.json"
     legacy_source.parent.mkdir(parents=True)
     source.rename(legacy_source)
@@ -1122,6 +1133,40 @@ def test_missing_local_accuracy_summary_raises_pages_build_error(tmp_path: Path)
         PAGES._build_accuracy_catalog(tmp_path, output, False)
     assert isinstance(raised.exception.__cause__, FileNotFoundError)
     assert not (output / "e2e-accuracy/branches.json").exists()
+
+
+def test_accuracy_v2_preserves_metrics_and_evidence():
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["totals"]["by_configuration_quality"] = {
+        "not_recorded": {key: summary["totals"][key] for key in ("rows", "aic", "aisimulate")}
+    }
+    wire = _accuracy_v2(summary)
+    original = json.dumps(wire, sort_keys=True)
+    assert PAGES._accuracy_summary(json.dumps(wire)) == summary
+    assert json.dumps(wire, sort_keys=True) == original
+
+
+@pytest.mark.parametrize("version", [None, True, 1.0, 2.0, "2", 0, 3])
+def test_accuracy_rejects_unknown_or_noninteger_schema(version):
+    with pytest.raises(PAGES.PagesBuildError, match="summary schema"):
+        PAGES._accuracy_summary(json.dumps({"schema_version": version}))
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("location", ["snapshot", "totals", "point"])
+def test_accuracy_rejects_mixed_schema_fields(version, location):
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    if version == 2:
+        summary = _accuracy_v2(summary)
+    unexpected = "aisim" if version == 1 else "aisimulate"
+    if location == "snapshot":
+        summary["snapshot"][unexpected + "_packages"] = {}
+    elif location == "totals":
+        summary["totals"][unexpected] = {}
+    else:
+        summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0][unexpected] = {}
+    with pytest.raises(PAGES.PagesBuildError, match="unexpected field"):
+        PAGES._accuracy_summary(json.dumps(summary))
 
 
 def test_accuracy_git_timeout_raises_pages_build_error(tmp_path: Path) -> None:
