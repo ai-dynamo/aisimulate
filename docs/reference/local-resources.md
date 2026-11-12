@@ -94,7 +94,9 @@ termination outcome. Fields that could not be observed because resource discover
 failed are null. Errors loading configuration, applying overrides, or validating
 the core schema preserve existing artifacts, including with `--overwrite`.
 `execution-events.jsonl` checkpoints recorded candidates and batch decisions so
-evidence survives a supervisor interruption. A completed sweep writes
+evidence survives a supervisor interruption. `candidate_completed` events omit
+`provenance.runner_metadata`, which can grow with the replay;
+`recommendation.json` keeps it. A completed sweep writes
 `recommendation.json` and selected prediction files as usual, and exits with
 status 3 if any candidates were resource-limited. If the entire tree is stopped,
 the event log contains the candidates recorded so far; it is not a finalized

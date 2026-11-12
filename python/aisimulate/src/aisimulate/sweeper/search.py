@@ -1646,7 +1646,11 @@ class Sweeper:
                 if resource_aware:
                     from ..supervision import checkpoint
 
-                    checkpoint("candidate_completed", record.model_dump(mode="json"))
+                    # Runner metadata grows with the trace; recommendation.json keeps it.
+                    checkpoint(
+                        "candidate_completed",
+                        record.model_dump(mode="json", exclude={"provenance": {"runner_metadata"}}),
+                    )
                 if on_candidate is not None:
                     # Detach: on_candidate must not be able to mutate the ledger
                     # entry that SweepResult is built from.

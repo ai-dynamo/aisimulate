@@ -3,6 +3,7 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+import json
 from concurrent.futures import Future
 from copy import deepcopy
 from pathlib import Path
@@ -537,6 +538,38 @@ def test_resource_aware_candidates_are_checkpointed_then_reported_in_suggestion_
         ("candidate_completed", 768.0),
         ("on_candidate", 768.0),
     ]
+
+
+def test_checkpoints_omit_runner_metadata_that_grows_with_the_trace(monkeypatch, tmp_path):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    snapshots = ["x" * 2**21]  # agentic snapshots outgrow the 1 MiB event cap on long traces
+
+    class AgenticRunner(_FakeRunner):
+        def run(self, spec):
+            return ReplayReport(metrics=super().run(spec).metrics, metadata={"agentic_snapshots": snapshots})
+
+    class ResourceFactory(_FakeRunnerFactory):
+        def admit_wave(self, specs):
+            raise AssertionError("scheduler boundary is replaced below")
+
+    def in_order(specs, *, factory, **kwargs):
+        runner = factory.create(0)
+        for index, spec in enumerate(specs):
+            yield index, search_mod._run_replay_detailed(spec, runner)
+
+    events = tmp_path / "events.jsonl"
+    monkeypatch.setattr("aisimulate.supervision.runtime_budget", lambda: {"events_path": str(events)})
+    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", in_order)
+
+    result = Sweeper(
+        runner_factory=ResourceFactory(AgenticRunner()), sampler_factory=_FakeSampler, show_progress=False
+    ).run(_config(parallel_evals=3), top_n=None)
+
+    lines = events.read_text().splitlines()
+    assert len(lines) == 3
+    assert all("runner_metadata" not in json.loads(line)["value"]["provenance"] for line in lines)
+    assert all(record.provenance.runner_metadata["agentic_snapshots"] == snapshots for record in result.candidates)
 
 
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
