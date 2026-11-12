@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,22 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _predict_generated_config(command: list[str]) -> int:
+    """Run the ordinary supervised predict command on a config that onboarding wrote.
+
+    The same compiler, capacity checks, timing provider, source importer and
+    host limits apply as for a prediction the user starts. Onboarding still
+    writes the old estimator fields, so their deprecation warning is silenced
+    here: the user did not write this file and has nothing to convert.
+    """
+    from aisimulate.supervision import main as predict
+    from aisimulate_core.ais_perf_model import AisPerfModelDeprecationWarning
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", AisPerfModelDeprecationWarning)
+        return predict(command)
+
+
 def run_validation(args: argparse.Namespace) -> int:
     request = SupportRequest.from_yaml(args.config)
     plan = Path(args.output_dir).expanduser().resolve()
@@ -168,10 +185,6 @@ def run_validation(args: argparse.Namespace) -> int:
         "issues": ["replay has not completed"],
     }
     _write_report(report_path, report)
-    # Use the existing supervised CLI: the same compiler, capacity checks,
-    # timing provider, source importer and host limits apply to ordinary predict.
-    from aisimulate.supervision import main as predict
-
     command = [
         "predict",
         "--config",
@@ -185,7 +198,7 @@ def run_validation(args: argparse.Namespace) -> int:
     if args.overwrite:
         command.append("--overwrite")
     try:
-        exit_code = predict(command)
+        exit_code = _predict_generated_config(command)
     except SystemExit as exc:
         exit_code = int(exc.code) if isinstance(exc.code, int) else 1
     except KeyboardInterrupt:

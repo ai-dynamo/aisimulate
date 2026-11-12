@@ -27,9 +27,13 @@ from aisimulate.sweeper.replay import (
     canonical_json,
 )
 from aisimulate.sweeper.sample import unroll_sample
+from aisimulate_core.ais_perf_model import AisPerfModelDeprecationWarning
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
+
+# AISimulate still writes the old estimator fields into the configs it saves, so reading one back warns.
+reads_saved_config = pytest.mark.filterwarnings("ignore::aisimulate_core.ais_perf_model.AisPerfModelDeprecationWarning")
 
 FITS = [
     {"kind": "linear"},
@@ -85,7 +89,8 @@ def test_spline_cli_yaml_and_replay_preserve_authored_settings(tmp_path, fit):
     assert config.engine.estimator_config == expected
     saved = tmp_path / "prediction.yaml"
     saved.write_text(yaml.safe_dump(prediction_mapping(config)))
-    restored = CorePredictionConfig.from_yaml(saved)
+    with pytest.warns(AisPerfModelDeprecationWarning):
+        restored = CorePredictionConfig.from_yaml(saved)
     deployment = prediction_to_replay_spec(restored).backend_deployment
     request = deployment.agg_engine_args["timing_model"]["config"]
     assert request["estimation_mode"] == "fpm_regression"
@@ -131,6 +136,7 @@ def test_spline_role_settings_replace_global_dictionary_without_cross_role_mutat
     assert config.engine.estimator_config == global_controls
 
 
+@reads_saved_config
 @pytest.mark.parametrize("fit", FITS[1:])
 def test_spline_recommendation_candidate_preserves_resolved_settings(tmp_path, fit):
     source = CoreRecommendationConfig.model_validate(

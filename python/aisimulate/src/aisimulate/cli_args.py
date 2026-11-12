@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from .detail import parse_detail_sections
+from .perf_model_cli import add_perf_model_parser
 from .support.cli import add_support_parser
 
 
@@ -118,6 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="write additional artifacts using an installed output adapter",
     )
     add_support_parser(subparsers)
+    add_perf_model_parser(subparsers)
     return parser
 
 

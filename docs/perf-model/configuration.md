@@ -890,6 +890,395 @@ identity with unknown facts must then set `num_gpu_blocks`. A `tp` or
 so takes the engine's single pipeline stage, including for `kv_cache.kvcr`.
 Replay reads no other `deployment_limits` entry.
 
+## Unified perf-model input
+
+`ais_perf_model` is one value that describes the perf model of each worker
+type. You write it once and use it everywhere: in the `aisimulate perf-model`
+tools, as `engine.ais_perf_model` in `predict` and `recommend` YAML, and as
+`search_space.ais_perf_model` in a Sweeper search. Dynamo components that take
+a perf model read the same value.
+
+```yaml
+# perf-model.yaml: one entry per worker type
+- worker_type: prefill
+  from: {dataset: {root: /opt/aisim-data, manifest: metadata/prefill-manifest.json}}
+- worker_type: decode
+  model: Qwen/Qwen3-32B
+  system: h200_sxm
+  backend: vllm
+```
+
+Check a file before you use it. `check` builds every entry in it:
+
+```bash
+aisimulate perf-model check ./perf-model.yaml
+```
+
+A consumer builds only the entry for its own worker type, so run `check` in
+CI. See [perf-model tools](../reference/cli.md#perf-model) for `check`,
+`migrate` and `fetch`.
+
+### Entries
+
+The value is one perf-model config, or a list with one config per worker type.
+Each config is an entry.
+
+| Key | Meaning |
+|---|---|
+| `worker_type` | `prefill`, `decode`, or `aggregated`. Required in a list, and each worker type may appear once. One config alone may leave it out; the consumer then fills in its own worker type. |
+| `from` | Optional. Starts the entry from a template file, a dataset, or a state snapshot. See [Start an entry with `from`](#start-an-entry-with-from). |
+| Any other key | A `ForwardPassPerfModelConfig` field, such as `model`, `system`, `backend`, `tp`, `estimation_mode`, or `estimator_config`. |
+
+- A key written as `null` counts as not written. So does an empty
+  `systems_paths` or an empty `estimator_config`.
+- A `null` inside `estimator_config` is a value. `transfer_policy: []` is a
+  value too.
+- An entry with only `worker_type` is valid.
+- An empty config, an empty list, a repeated key, and an unknown or repeated
+  worker type are errors.
+- When a consumer needs a worker type the value does not have, the error lists
+  the worker types the value does have.
+
+### File or inline JSON
+
+A tool or component that takes the value as text reads it like this:
+
+| Value | Read as |
+|---|---|
+| Starts with `{` or `[` | Inline JSON. |
+| Anything else | A file path. A `.json` file is read as JSON, any other file as YAML. |
+
+```bash
+aisimulate perf-model check \
+  '{"model": "Qwen/Qwen3-32B", "system": "h200_sxm", "backend": "vllm"}' \
+  --worker-type aggregated
+```
+
+Inline YAML is not supported. For a file whose name starts with `{` or `[`,
+write `./NAME`.
+
+In `predict`, `recommend` and search YAML, write the content directly under
+the key. A string there is an error. To reuse a file, write `from: <file>`.
+
+### Start an entry with `from`
+
+```yaml
+- worker_type: decode
+  from: ./base.yaml          # a template file
+  tp: 4                      # the entry wins over the template
+```
+
+| `from` | The entry starts from |
+|---|---|
+| `./base.yaml` | A template file. Keys in the entry win over keys in the file. `estimator_config` is merged mapping by mapping; lists and scalars are replaced. When the file is a list, the entry takes the config with its own `worker_type`. A template cannot use `from` itself. |
+| `{dataset: {root, manifest}}` | A [dataset](methods/op-level.md#shared-dataset-layout-and-local-preparation) on local disk. `manifest` is a path relative to `root`. The dataset is prepared once in a workspace folder and reused after that. |
+| `{state_snapshot: {path}}` | A saved perf-model state; see [State snapshots](#state-snapshots). Optional `sha256` must match the saved state. Optional `on_tune: continue` lets the restored model keep tuning; without it the saved `reject` stays. |
+
+What you write wins over a template file. Both win over a consumer's
+defaults. A consumer adds what it observes only when the entry leaves it out.
+It never overrides: a written value that differs from the observed one is an
+error that names the field and both values.
+
+A dataset and a state snapshot are fixed. They record the model, hardware and
+settings they were built for. Other keys in such an entry are only compared
+with the saved values:
+
+- A different value is an error that names the field and both values.
+- A key that the source does not record cannot be added.
+- `systems_paths` next to a state snapshot is allowed. It says where the data
+  is, not what the model is.
+
+### Relative paths
+
+| Where the value is written | Relative paths start at |
+|---|---|
+| A file: a perf-model file, a template file, or a `predict`, `recommend` or search configuration file | That file's folder |
+| Inline JSON, a `--set` override, or Python data passed to `model_validate` | The current working directory |
+
+`manifest` in a dataset `from` always starts at `root`.
+
+The rule covers `from`, the items of `systems_paths` (the word `default` is
+kept), and these `estimator_config` fields: `state_snapshot.path`,
+`fpm_learned.artifact_path`, `fpm_learned.checkpoint_path`,
+`temporary_mixed_composition.original_a.manifest_path`,
+`op_level.execution_profile.path` and `fpm_interpolation.fpm_parquet_path`.
+
+This differs from the old estimator fields. Their relative paths start at the
+working directory. `aisimulate perf-model migrate` rewrites them to start at
+the folder of the converted file.
+
+### In predict, recommend and search configurations
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode: {}
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      fallback_policy: deny
+      systems_paths: [./fpm-data, default]
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+In this release, `engine.ais_perf_model` and `search_space.ais_perf_model` are
+another spelling of the existing estimator fields. Validation rewrites the
+entries into those fields. Saved configurations, candidate YAML and
+`model_dump()` output show the existing fields and leave `ais_perf_model` out.
+
+An entry has two kinds of keys here:
+
+| Kind | Keys | What happens |
+|---|---|---|
+| Estimator keys | `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy`, `fpm_profile` | They set the estimator. They are written into the existing fields. |
+| Identity keys | Every other key, such as `model`, `system`, `backend`, `tp` or `kv_block_size` | They are only checked. The engine section, or the search space, still states them. A different value is an error. |
+
+#### Worker types
+
+The configuration decides which worker types are active:
+
+| Configuration | Active worker types |
+|---|---|
+| Aggregated mode | `aggregated` |
+| Disaggregated mode | `prefill` and `decode` |
+| Several modes in `recommend` or in a search | The worker types of every listed mode |
+| Mode left out | `predict`: `aggregated`. `recommend` and search: all three. |
+
+- One config without `worker_type` applies to every active worker type.
+- A list, or one config that writes `worker_type`, needs an entry for every
+  active worker type and none for an inactive one.
+
+#### Estimator keys
+
+Entries that agree are the engine-level spelling, entries that differ the
+per-worker spelling. The rule is applied to each key on its own:
+
+- Every active entry gives the key, and all give the same value: the value is
+  written to `engine.<key>`.
+- Otherwise it is written to `engine.workers.<role>.timing.<key>` for each
+  entry that gives the key.
+
+The example above is the same as `estimation_mode: fpm_interpolation`,
+`fallback_policy: deny` and `systems_paths` under
+`engine.workers.prefill.timing`, and `estimation_mode: op_level` under
+`engine.workers.decode.timing`. A single config without `worker_type` is the
+same as the `engine.<key>` fields.
+
+- `fpm_profile` is engine-wide. All active entries must give the same value.
+  An entry that leaves it out next to one that gives it is an error too.
+- In a search, the engine level is the top-level `SearchSpace` field and the
+  per-worker level is `role_estimator_controls`; see
+  [Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
+
+#### Identity keys
+
+Identity keys use the perf-model field names, such as `tp`, not
+`parallelism.tensor`.
+
+| Command | Keys an entry may state | Compared with |
+|---|---|---|
+| `predict` | Any `ForwardPassPerfModelConfig` field except `afd_routing_location` and `afd_pool_role` | The value the engine section gives that worker, or the field's default when the engine section does not set it. |
+| `recommend` | `model`, `system`, `backend`, `backend_version`, `nextn`, and the engine-wide precision and model controls: the five `*_quant_mode` fields, `attention_backend`, `moe_backend`, `moe_kernel_source`, `enable_eplb` and `wideep_num_slots` | `engine.model`; `engine.workers.<role>.hardware`, else `engine.hardware`; `engine.backend`; the `engine` field of the same name, or its default. |
+| Search | `model`, `system`, `backend` | `model_name`; `prefill_hardware_sku` or `decode_hardware_sku` when set, else `hardware_sku`; `backend`. |
+
+- `predict` compares `backend_version` as written. An entry that states it
+  needs the same text in `engine.backend_version`.
+- In `predict`, a key that is not a `ForwardPassPerfModelConfig` field is an
+  error when the configuration is validated:
+  `engine.ais_perf_model entry for aggregated: estimaton_mode: not a perf model field (did you mean estimation_mode?). Correct the key or drop it from the entry, or from the template file when 'from: <file>' brings it in.`
+- In `predict`, an entry that sets `afd_routing_location` or `afd_pool_role`
+  is an error at the same point. Only the pools of an AFD worker have these
+  fields:
+  `engine.ais_perf_model entry for aggregated: afd_pool_role is set, and ais_perf_model does not cover AFD yet. Drop the key from the entry, or from the template file when 'from: <file>' brings it in.`
+- `predict` compares the values of identity keys later, when it builds the
+  workers of a run. `CorePredictionConfig.model_validate` alone does not
+  report a different value. With `--overwrite`, the known outputs are already
+  removed by then; see
+  [Existing Output Directories](../reference/cli.md#existing-output-directories).
+- `recommend` and search need one stated value to compare with. An entry that
+  states `system` is an error with `hardware: auto`. An entry that states
+  `backend` is an error unless the configuration names exactly one backend.
+- In `recommend`, a snapshot entry that states an engine-wide control needs
+  that control set in `engine`. The default is not used for it.
+- Any other identity key, such as `tp`, is an error in `recommend` and in a
+  search. They choose those values for each candidate. Drop the key from the
+  entry, or from the template file when `from: <file>` brings it in. A `null`
+  in the entry does not remove a template key.
+
+#### State snapshot entries
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode: {}
+  ais_perf_model:
+    - worker_type: prefill
+    - worker_type: decode
+      from: {state_snapshot: {path: /mnt/planner/decode-snapshot}}
+```
+
+A state snapshot belongs to one worker. A snapshot entry is an entry with
+`from: {state_snapshot: ...}`, or one that writes
+`estimator_config.state_snapshot`. When any active entry is a snapshot entry,
+every estimator key is written at the per-worker level, even when the entries
+agree. `fpm_profile` stays engine-wide.
+
+- One config without `worker_type` can be a snapshot entry only when exactly
+  one worker type is active.
+- Name the snapshot once. `from.state_snapshot` together with
+  `estimator_config.state_snapshot` is an error.
+- The snapshot is then judged like the per-worker field; see
+  [Recommending with a calibrated snapshot](#recommending-with-a-calibrated-snapshot).
+  Its error messages name
+  `engine.workers.<role>.timing.estimator_config.state_snapshot`.
+
+#### Overrides with `--set`
+
+```bash
+aisimulate predict -c prediction.yaml \
+  --set engine.ais_perf_model.estimation_mode=op_level
+```
+
+- `--set engine.ais_perf_model.<key>=VALUE` changes one config, or creates it.
+- A list can only be replaced as a whole.
+- `--set engine.ais_perf_model=null` removes the key.
+- A relative path given with `--set` starts at the working directory.
+
+### Old and new fields together
+
+State a setting with the old field or with the new key, not with both. A
+written old estimator field next to `ais_perf_model` is an error:
+
+```text
+engine.ais_perf_model cannot be combined with old estimator fields that say something else: engine.estimation_mode. Remove the old fields.
+```
+
+One case is allowed. An old field may hold exactly the value that the entries
+produce at the same level. This keeps a saved configuration valid when you add
+the key back to it.
+
+`transfer_policy` is compared by the transfer kinds it names, not by spelling.
+`engine.transfer_policy: [xshape]` next to an entry with
+`transfer_policy: xshape` is the same value. So is a preset name next to the
+list of kinds it stands for. A text is read as a preset name, a kind name, or
+several of them separated by commas, in any letter case. A list must hold kind
+names, written exactly: `[balanced]` and `[XSHAPE]` are not lists of kinds. A
+value that does not work on its own, such as `other`, and a list that holds
+anything but kind names, is the same value only as a value written
+identically. The configuration keeps the spelling of the entry. A search space
+follows the same rule; see
+[Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
+
+An old field that repeats the key still prints the deprecation warning. The
+warning then says to remove the old field; see
+[Old estimator fields](#old-estimator-fields).
+
+### Limits in this release
+
+- **Dataset entries.** `from: {dataset: ...}` works in
+  `aisimulate perf-model check` and in Dynamo components. `predict` and
+  `recommend` configurations reject it:
+  `dataset entries are not supported in predict and recommend configs yet; use 'aisimulate perf-model check' or a Dynamo component`.
+  A search configuration rejects it with the same message for search configs.
+- **AFD, encoder pools, fixed and polynomial timing.** These keep the old
+  fields. A configuration with an AFD worker
+  (`engine.workers.<role>.type: afd`), with `engine.workers.encoder`, or with
+  `timing.type: fixed` or `polynomial` on an active worker rejects
+  `ais_perf_model`. Its old fields do not print the deprecation warning. The
+  same holds for a search with `afd_roles`, with `encoder`, or with a
+  `<role>_timing_model`.
+- **Snapshot entries in `predict`.** The entry only re-spells the per-worker
+  field. `predict` still needs every saved estimator control written out, and
+  `engine.backend_version` equal to the saved one. `recommend` takes them from
+  the snapshot.
+- **Identity keys in `recommend`.** Only the keys in the table above can be
+  checked. Every other identity key is an error.
+- **Generated files.** Candidate files written by `recommend`
+  (`recommendations/NNNN.yaml`) and replay configurations written by
+  `aisimulate onboard` still use the old fields. Reading one back prints the
+  deprecation warning. Do not migrate a replay configuration written by
+  `aisimulate onboard`.
+- **Simulated router.** The key sets the simulated engines. A `router`
+  section is read only by the router adapter of a serving-stack integration;
+  the `engine` stack rejects a configuration that has one. The adapter defines
+  the keys of the section, and AISimulate hands the section to it without
+  reading them.
+
+### Old estimator fields
+
+The estimator fields under `engine` and in the search space are deprecated.
+They work as before in this release. The next release removes them. Use
+`engine.ais_perf_model` or `search_space.ais_perf_model`.
+
+Loading a configuration file that writes an old field prints one warning that
+lists every old field:
+
+```text
+ais-perf-model: engine.estimation_mode, engine.workers.decode.timing.systems_paths are deprecated and will be removed in the next release; use engine.ais_perf_model (run 'aisimulate perf-model migrate prediction.yaml' to convert the file)
+```
+
+Convert the file with:
+
+```bash
+aisimulate perf-model migrate prediction.yaml
+```
+
+| Old field | In an entry |
+|---|---|
+| `engine.estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy`, `fpm_profile` | The same key, in one config or in every entry. |
+| `engine.workers.<role>.timing.estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy` | The same key, in the entry for that worker type. |
+| `engine.systems_path: P` | `systems_paths: [P]` |
+| `engine.workers.<role>.timing.forward_model: op_level` | `estimation_mode: op_level` with `fallback_policy: deny` |
+| `engine.workers.<role>.timing.forward_model: fpm` | `estimation_mode: fpm_interpolation` with `fallback_policy: deny` |
+| `engine.workers.<role>.timing.fpm_parquet_path: P` | `estimator_config.fpm_interpolation.fpm_parquet_path: P` |
+| Search space: the top-level fields of the same names, `role_estimator_controls`, `<role>_forward_model`, `<role>_fpm_parquet_path` | The same keys under `search_space.ais_perf_model`. |
+
+- With one old field the warning says `is deprecated`. A path with a space or
+  a character such as `&` is quoted for the shell, as in
+  `migrate 'my configs/prediction.yaml'`.
+- A field counts as written when it is present, not `null`, and differs from
+  its default. A saved configuration that only lists defaults does not warn.
+  `systems_path`, `forward_model` and `fpm_parquet_path` count whenever they
+  are set.
+- One search field counts also when it is `null`:
+  `role_estimator_controls.<role>.transfer_policy`. A `null` there replaces
+  the top-level policy for that role with every transfer kind; see
+  [Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
+- `aisimulate predict` and `aisimulate recommend` print the warning. So do
+  `CorePredictionConfig.from_yaml`, `CoreRecommendationConfig.from_yaml` and
+  `SmartSearchConfig.from_yaml`. Validating Python data with `model_validate`
+  does not warn.
+- When every old field comes from `--set` and the file has none, the warning
+  ends with `(set engine.ais_perf_model.<key> with --set instead)` in place of
+  the `migrate` command. When the file also has an old field, the warning
+  names every old field and ends with the `migrate` command.
+- When the configuration also sets `ais_perf_model`, the warning ends with
+  `(it is already set, so remove the old fields)`. When the file holds the
+  key and old fields, and `--set engine.ais_perf_model=null` removes the key
+  for the run, the ending is
+  `(the file already sets it, so remove the old fields from the file)`.
+  `migrate` does not merge old fields into a key that is already set.
+  To set the key again in a run that has `--set engine.ais_perf_model=null`,
+  write it as one mapping
+  (`--set 'engine.ais_perf_model={transfer_policy: xshape}'`) or drop the
+  null override. `--set engine.ais_perf_model.<key>` after the null override
+  is an error, also when the warning of that run ends with the `--set` hint
+  above.
+- The warning category is `AisPerfModelDeprecationWarning`, a `FutureWarning`
+  in `aisimulate_core.ais_perf_model`. With `PYTHONWARNINGS=error` the command
+  fails with exit code `1`.
+- `timing.type`, `timing.prefill_ms` and `timing.decode_ms` are not
+  deprecated.
+
 ## Unified CLI timing fields
 
 The `engine` block of `predict` and `recommend` YAML is documented in
@@ -898,16 +1287,23 @@ select the forward-pass timing provider. SDK constructor names differ (for
 example, `parallelism.tensor` becomes `tp`). A Default Range of `x` is
 concrete-only.
 
+The estimator fields in this table are deprecated, and their rows say so. They
+work as before in this release. The next release removes them.
+`engine.ais_perf_model` replaces them; see
+[Unified perf-model input](#unified-perf-model-input) and its
+[list of old fields](#old-estimator-fields). `timing.type`,
+`timing.prefill_ms` and `timing.decode_ms` are not deprecated.
+
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned`. Regression and learned roles are priced per iteration (see [engine replay timing](#engine-replay-timing)). |
-| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same five modes; omission inherits the global selection. |
+| `engine.estimation_mode` | `auto` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). `auto`, `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned`. Regression and learned roles are priced per iteration (see [engine replay timing](#engine-replay-timing)). |
+| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). Optional role override using the same five modes; omission inherits the global selection. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
-| `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
-| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and ordinary prefill/decode companions of AFD roles. |
-| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
+| `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and ordinary prefill/decode companions of AFD roles. |
+| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
 
 AFD replay prices every decode pass at its actual batch, context length and
 MTP verification width. The former `estimator_config.afd.frozen_decode_identity`
@@ -947,6 +1343,10 @@ engine:
           state_snapshot:
             path: /mnt/planner/decode-snapshot  # sha256 optional
 ```
+
+This per-worker field is deprecated. The same role is written as a
+[snapshot entry](#state-snapshot-entries) of `engine.ais_perf_model`, and the
+rules below apply to it unchanged.
 
 A snapshot restores exactly one engine identity, so the role is pinned to it.
 Before the search starts, the backend and backend version, the role's tensor,

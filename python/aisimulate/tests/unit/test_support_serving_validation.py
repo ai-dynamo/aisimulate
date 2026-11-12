@@ -8,6 +8,8 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,6 +57,57 @@ def test_serving_scope_rejects_hicache_before_hbm_only_qualification(tmp_path, h
             serving._scope(prediction, trace)
         return
     assert serving._scope(prediction, trace)["cache_storage"] == "hbm_only"
+
+
+STRICT_DIRECT_FPM = {
+    "estimation_mode": "fpm_interpolation",
+    "fallback_policy": "deny",
+    "estimator_config": {"fpm_interpolation": {"method": "direct"}},
+}
+FALLBACK_ALLOWED = {**STRICT_DIRECT_FPM, "fallback_policy": "allow"}
+
+
+@pytest.mark.parametrize(
+    ("engine_fields", "timing", "qualifies"),
+    [
+        pytest.param({}, STRICT_DIRECT_FPM, True, id="stated on the worker"),
+        pytest.param(STRICT_DIRECT_FPM, {}, True, id="stated on the engine"),
+        pytest.param(
+            {"estimation_mode": "fpm_interpolation"},
+            {key: STRICT_DIRECT_FPM[key] for key in ("fallback_policy", "estimator_config")},
+            True,
+            id="mode on the engine, the rest on the worker",
+        ),
+        pytest.param(FALLBACK_ALLOWED, STRICT_DIRECT_FPM, True, id="strict worker over an engine that allows fallback"),
+        pytest.param({}, {}, False, id="stated nowhere"),
+        pytest.param(FALLBACK_ALLOWED, {}, False, id="engine allows fallback"),
+        pytest.param(STRICT_DIRECT_FPM, {"fallback_policy": "allow"}, False, id="worker allows fallback"),
+        pytest.param({"ais_perf_model": STRICT_DIRECT_FPM}, {}, True, id="ais_perf_model"),
+        pytest.param({"ais_perf_model": FALLBACK_ALLOWED}, {}, False, id="ais_perf_model allows fallback"),
+    ],
+)
+def test_serving_scope_reads_estimator_settings_from_the_worker_or_the_engine(
+    tmp_path, engine_fields, timing, qualifies
+):
+    trace = tmp_path / "trace.json"
+    prediction = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            **engine_fields,
+            "workers": {"aggregated": {"timing": timing}},
+        },
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+    }
+    if not qualifies:
+        with pytest.raises(ValueError, match="ordinary strict direct-FPM prediction"):
+            serving._scope(prediction, trace)
+        return
+    assert serving._scope(prediction, trace)["qualification"] == "one_complete_single_stream_weka_play"
 
 
 @pytest.fixture
@@ -116,11 +169,25 @@ def write_server_tokenization(recipe_path, recipe):
 
 @pytest.fixture
 def serving_case(request, tmp_path, materialized_workload):
+    return _prepared_case(request, tmp_path)
+
+
+def _prepared_case(request, tmp_path, respell=None):
+    """Replay the onboarding config, prepare serving validation for it and add synthetic serving evidence.
+
+    ``respell`` rewrites the config onboarding wrote before serving validation
+    reads it. It gets the config mapping and the folder of the config file and
+    returns the mapping to save there, so a test can state the same estimator
+    settings in another place of the config.
+    """
     args, request, _plan, trace, prediction_output = request.getfixturevalue("_replay_validation_case")
     # This invokes the actual ordinary prediction/compiler/native FPM path;
     # imported AIPerf-shaped observations below are synthetic contract fixtures.
     assert cli.main(args) == 0
     config = yaml.safe_load((prediction_output / "predict.yaml").read_text())
+    if respell is not None:
+        config = respell(config, prediction_output)
+        (prediction_output / "predict.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     worker = config["engine"]["workers"]["aggregated"]
     tokenizer = tmp_path / "tokenizer"
     tokenizer.mkdir()
@@ -609,8 +676,8 @@ def test_matched_replay_preserves_prefix_inside_source_block(serving_case, tmp_p
     assert coverage["queries"]["unsupported"] == 0
 
 
-def test_supplied_forward_samples_are_separate_from_request_latency(serving_case):
-    case = serving_case
+def _forward_samples(case):
+    """Save one measured prefill pass that is far from the prediction and one decode pass that is close to it."""
     forward = case.recipe_path.parent / "forward.json"
     _save(
         forward,
@@ -635,8 +702,294 @@ def test_supplied_forward_samples_are_separate_from_request_latency(serving_case
             },
         },
     )
-    report = _assess(case, forward_evidence_path=forward)
+    return forward
+
+
+def test_supplied_forward_samples_are_separate_from_request_latency(serving_case):
+    case = serving_case
+    report = _assess(case, forward_evidence_path=_forward_samples(case))
     assert report["status"] == "failed"
     assert report["forward"]["phases"]["prefill"]["status"] == "failed"
     assert report["forward"]["phases"]["decode"]["status"] == "passed"
     assert report["metrics"]["ttft"]["status"] == "passed"
+
+
+ESTIMATOR_FIELDS = ("estimation_mode", "fallback_policy", "estimator_config")
+COLLECTED_FORWARD_DATA = [
+    "collection/systems/data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+    "collection/systems/data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+]
+COPIED_FORWARD_DATA = ["validation/external/forward.metadata.json", "validation/external/forward.parquet"]
+ANOTHER_REVISION = ["expected execution model_revision differs from ordinary prediction configuration"]
+
+
+def _copied_forward_data(engine, folder):
+    """Copy the forward pass data under the engine's systems path to ``folder/external`` and return the parquet copy."""
+    (collected,) = Path(engine["systems_paths"][0]).rglob("fpm_forward_perf.parquet")
+    external = folder / "external"
+    external.mkdir()
+    shutil.copy(collected, external / "forward.parquet")
+    shutil.copy(collected.with_suffix(".metadata.json"), external / "forward.metadata.json")
+    return external / "forward.parquet"
+
+
+def _estimator_on_the_engine(config, folder):
+    """State the estimator once for the engine and leave the worker without a timing key."""
+    engine = config["engine"]
+    timing = engine["workers"]["aggregated"].pop("timing")
+    engine.update({key: timing[key] for key in ESTIMATOR_FIELDS})
+    return config
+
+
+def _estimator_on_the_engine_with_a_parquet_file(config, folder):
+    """State the estimator once for the engine with one more parquet file and leave the worker's timing empty."""
+    engine = config["engine"]
+    worker = engine["workers"]["aggregated"]
+    engine.update({key: worker["timing"][key] for key in ESTIMATOR_FIELDS})
+    worker["timing"] = {}
+    engine["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] = str(_copied_forward_data(engine, folder))
+    return config
+
+
+def _estimator_under_ais_perf_model(config, folder):
+    """State the estimator, the data paths and the profile under ``engine.ais_perf_model`` only.
+
+    The systems path and one more parquet file are written relative to the
+    folder of the config file, the way a hand-written config names them.
+    """
+    engine = config["engine"]
+    timing = engine["workers"]["aggregated"].pop("timing")
+    estimator_config = copy.deepcopy(timing["estimator_config"])
+    estimator_config["fpm_interpolation"]["fpm_parquet_path"] = os.path.relpath(
+        _copied_forward_data(engine, folder), folder
+    )
+    engine["ais_perf_model"] = {
+        "estimation_mode": timing["estimation_mode"],
+        "fallback_policy": timing["fallback_policy"],
+        "estimator_config": estimator_config,
+        "systems_paths": [os.path.relpath(root, folder) for root in engine.pop("systems_paths")],
+        "fpm_profile": engine.pop("fpm_profile"),
+    }
+    return config
+
+
+def _work_in_an_unrelated_folder(tmp_path, monkeypatch):
+    """Leave the folder of the config, so that a path read from the working directory names nothing."""
+    elsewhere = tmp_path / "elsewhere" / "deeper"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+
+
+def _timing_artifacts(recipe, tmp_path):
+    return [Path(item["path"]).relative_to(tmp_path.resolve()).as_posix() for item in recipe["timing_artifacts"]]
+
+
+# How the config states the estimator, and the timing artifacts its data paths name.
+STATED_OUTSIDE_THE_WORKER_TIMING = {
+    "engine fields, worker without timing": (_estimator_on_the_engine, COLLECTED_FORWARD_DATA),
+    "engine fields with a parquet file, empty worker timing": (
+        _estimator_on_the_engine_with_a_parquet_file,
+        COLLECTED_FORWARD_DATA + COPIED_FORWARD_DATA,
+    ),
+    "ais_perf_model with paths relative to the config": (
+        _estimator_under_ais_perf_model,
+        COLLECTED_FORWARD_DATA + COPIED_FORWARD_DATA,
+    ),
+}
+
+
+@pytest.mark.parametrize("stated", STATED_OUTSIDE_THE_WORKER_TIMING)
+def test_timing_artifacts_are_found_for_an_estimator_stated_outside_the_worker_timing(
+    request, tmp_path, monkeypatch, materialized_workload, stated
+):
+    respell, timing_artifacts = STATED_OUTSIDE_THE_WORKER_TIMING[stated]
+    _work_in_an_unrelated_folder(tmp_path, monkeypatch)
+    case = _prepared_case(request, tmp_path, respell)
+    assert (case.recipe["status"], case.recipe["issues"]) == ("ready", [])
+    assert _timing_artifacts(case.recipe, tmp_path) == timing_artifacts
+
+
+@pytest.mark.parametrize("stated", STATED_OUTSIDE_THE_WORKER_TIMING)
+def test_forward_samples_are_priced_for_an_estimator_stated_outside_the_worker_timing(
+    request, tmp_path, monkeypatch, materialized_workload, stated
+):
+    respell, _ = STATED_OUTSIDE_THE_WORKER_TIMING[stated]
+    _work_in_an_unrelated_folder(tmp_path, monkeypatch)
+    case = _prepared_case(request, tmp_path, respell)
+    report = _assess(case, forward_evidence_path=_forward_samples(case))
+    # The same data prices the samples as for the config onboarding wrote.
+    assert {phase: result["status"] for phase, result in report["forward"]["phases"].items()} == {
+        "prefill": "failed",
+        "decode": "passed",
+    }
+
+
+def _systems_paths_on_the_worker_timing_only(config, folder):
+    """Move the systems paths from the engine to the worker's timing."""
+    engine = config["engine"]
+    engine["workers"]["aggregated"]["timing"]["systems_paths"] = engine.pop("systems_paths")
+    return config
+
+
+def _systems_paths_of_the_engine_name_a_folder_without_data(config, folder):
+    """State the systems paths on the worker's timing too and point those of the engine at an empty folder."""
+    engine = config["engine"]
+    empty = folder / "no-data"
+    empty.mkdir()
+    engine["workers"]["aggregated"]["timing"]["systems_paths"] = engine["systems_paths"]
+    engine["systems_paths"] = [str(empty)]
+    return config
+
+
+def _estimator_config_of_the_engine_names_one_more_parquet_file(config, folder):
+    """State the estimator config for the engine too, with a parquet file the worker's timing does not name."""
+    engine = config["engine"]
+    stated_for_the_engine = copy.deepcopy(engine["workers"]["aggregated"]["timing"]["estimator_config"])
+    stated_for_the_engine["fpm_interpolation"]["fpm_parquet_path"] = str(_copied_forward_data(engine, folder))
+    engine["estimator_config"] = stated_for_the_engine
+    return config
+
+
+def test_forward_samples_are_priced_for_systems_paths_stated_only_on_the_worker_timing(
+    request, tmp_path, materialized_workload
+):
+    case = _prepared_case(request, tmp_path, _systems_paths_on_the_worker_timing_only)
+    assert (case.recipe["status"], case.recipe["issues"]) == ("ready", [])
+    report = _assess(case, forward_evidence_path=_forward_samples(case))
+    assert {phase: result["status"] for phase, result in report["forward"]["phases"].items()} == {
+        "prefill": "failed",
+        "decode": "passed",
+    }
+
+
+@pytest.mark.parametrize(
+    "respell",
+    [
+        pytest.param(_systems_paths_of_the_engine_name_a_folder_without_data, id="systems_paths"),
+        pytest.param(_estimator_config_of_the_engine_names_one_more_parquet_file, id="estimator_config"),
+    ],
+)
+def test_setting_stated_on_the_worker_timing_and_on_the_engine_is_read_from_the_worker_timing(
+    request, tmp_path, materialized_workload, respell
+):
+    # Replay uses the worker's value when it has one, so only the data that value names is in the recipe.
+    case = _prepared_case(request, tmp_path, respell)
+    assert (case.recipe["status"], case.recipe["issues"]) == ("ready", [])
+    assert _timing_artifacts(case.recipe, tmp_path) == COLLECTED_FORWARD_DATA
+
+
+def test_matched_config_for_old_fields_is_the_source_config_with_the_derived_trace(serving_case, tmp_path):
+    matched = serving_case.recipe["matched_workload"]
+    expected = yaml.safe_load(serving_case.prediction_config.read_text())
+    assert "ais_perf_model" not in expected["engine"]
+    expected["traffic"]["source"] = {"type": "trace", "paths": [matched["trace"]["path"]], "format": "agentic_mooncake"}
+    assert Path(matched["prediction_config"]["path"]).read_text() == yaml.safe_dump(expected, sort_keys=False)
+    assert _timing_artifacts(serving_case.recipe, tmp_path) == COLLECTED_FORWARD_DATA
+
+
+def test_matched_config_keeps_ais_perf_model_with_paths_that_name_the_same_files(
+    request, tmp_path, monkeypatch, materialized_workload
+):
+    _work_in_an_unrelated_folder(tmp_path, monkeypatch)
+    case = _prepared_case(request, tmp_path, _estimator_under_ais_perf_model)
+    source = yaml.safe_load(case.prediction_config.read_text())
+    written = source["engine"]["ais_perf_model"]
+    assert written["systems_paths"] == ["../collection/systems"]
+    assert written["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == "external/forward.parquet"
+
+    matched = case.recipe["matched_workload"]
+    assert Path(matched["prediction_config"]["path"]) == tmp_path / "serving/matched/predict.yaml"
+    assert Path(matched["prediction_report"]["path"]) == tmp_path / "serving/matched/prediction/prediction.json"
+    # The matched config is saved in another folder, so it names the files by
+    # their full paths. Everything else is the config as it was written.
+    written["systems_paths"] = [str(tmp_path / "collection/systems")]
+    written["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] = str(
+        tmp_path / "validation/external/forward.parquet"
+    )
+    source["traffic"]["source"] = {"type": "trace", "paths": [matched["trace"]["path"]], "format": "agentic_mooncake"}
+    assert yaml.safe_load(Path(matched["prediction_config"]["path"]).read_text()) == source
+
+
+def _prepared_again(case, output, **expected_changes):
+    """Prepare serving validation for the case once more, for a serving stack that differs in ``expected_changes``."""
+    recipe_path = serving.prepare_serving_validation(
+        trace=case.trace,
+        prediction_config=case.prediction_config,
+        output=output,
+        endpoint="http://127.0.0.1:8000",
+        tokenizer=case.tokenizer,
+        expected_execution={**case.observed["observed_execution"], **expected_changes},
+        aiperf_python=Path("/benchmark/bin/python"),
+    )
+    return json.loads(recipe_path.read_text())
+
+
+@pytest.mark.parametrize(
+    "respell",
+    [
+        pytest.param(None, id="fpm_profile on the engine"),
+        pytest.param(_estimator_under_ais_perf_model, id="fpm_profile under ais_perf_model"),
+    ],
+)
+def test_another_model_revision_than_the_configured_profile_is_reported(
+    request, tmp_path, materialized_workload, respell
+):
+    case = _prepared_case(request, tmp_path, respell)
+    recipe = _prepared_again(case, tmp_path / "another-revision", model_revision="another-revision")
+    assert (recipe["status"], recipe["issues"]) == ("incomplete", ANOTHER_REVISION)
+
+
+def _systems_paths_on_the_timing(folder):
+    return {"workers": {"aggregated": {"timing": {**STRICT_DIRECT_FPM, "systems_paths": [str(folder / "systems")]}}}}
+
+
+def _systems_paths_in_an_entry_with_a_state_snapshot(folder):
+    """Such an entry keeps every setting for its own worker; its path starts at the folder of the config."""
+    entry = {
+        **STRICT_DIRECT_FPM,
+        "systems_paths": ["systems"],
+        "from": {"state_snapshot": {"path": "snapshot", "sha256": "0" * 64}},
+    }
+    return {"ais_perf_model": entry, "workers": {"aggregated": {}}}
+
+
+@pytest.mark.parametrize(
+    "engine_fields",
+    [
+        pytest.param(_systems_paths_on_the_timing, id="timing.systems_paths"),
+        pytest.param(_systems_paths_in_an_entry_with_a_state_snapshot, id="ais_perf_model entry with a state snapshot"),
+    ],
+)
+def test_systems_paths_stated_for_the_worker_are_searched_for_timing_artifacts(tmp_path, monkeypatch, engine_fields):
+    _work_in_an_unrelated_folder(tmp_path, monkeypatch)
+    folder = tmp_path / "configs"
+    collected = folder / "systems/data/h200_sxm/sglang/1.0/fpm_forward_perf.parquet"
+    collected.parent.mkdir(parents=True)
+    collected.write_bytes(b"PAR1")
+    trace = tmp_path / "trace.json"
+    trace.write_text("{}\n")
+    tokenizer = tmp_path / "tokenizer"
+    tokenizer.mkdir()
+    (tokenizer / "tokenizer.json").write_text("{}")
+    prediction = {
+        "engine": {"model": "example/model", "hardware": "h200_sxm", "backend": "sglang", **engine_fields(folder)},
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+    }
+    config = folder / "predict.yaml"
+    config.write_text(yaml.safe_dump(prediction))
+
+    recipe_path = serving.prepare_serving_validation(
+        trace=trace,
+        prediction_config=config,
+        output=tmp_path / "serving",
+        endpoint="http://127.0.0.1:8000",
+        tokenizer=tokenizer,
+        expected_execution={},
+    )
+
+    recipe = json.loads(recipe_path.read_text())
+    assert _timing_artifacts(recipe, tmp_path) == ["configs/systems/data/h200_sxm/sglang/1.0/fpm_forward_perf.parquet"]
+    assert "the prediction's collected FPM timing artifacts could not be located" not in recipe["issues"]

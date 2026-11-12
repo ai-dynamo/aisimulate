@@ -17,9 +17,11 @@ from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
 from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
+from .config.ais_perf_model import anchor_paths
 from .config.cli import (
     CorePredictionConfig,
     CoreRecommendationConfig,
+    config_folder,
     prediction_mapping,
 )
 from .config.common import split_config_sections
@@ -49,6 +51,7 @@ from .output_adapter import (
     resolve_output_adapters,
     write_output_adapters,
 )
+from .perf_model_cli import run_perf_model_command
 from .power import normalize_power_summary
 from .predict import PredictionExecutionError, run_prediction
 from .replay.dashboard import write_replay_dashboard
@@ -440,6 +443,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         except KeyboardInterrupt:
             return 130
+    if args.command == "perf-model":
+        try:
+            return run_perf_model_command(args)
+        except (ValidationError, ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)
@@ -447,6 +457,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     try:
         raw = _load_mapping(args.config)
+        # Paths written in the file start at the file's folder; --set paths start at the working directory.
+        raw = anchor_paths(raw, config_folder(args.config), args.command)
         _apply_overrides(raw, args.overrides, command=args.command)
         if args.command == "predict":
             return _predict(args, raw, factory)

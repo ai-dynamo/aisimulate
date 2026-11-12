@@ -30,6 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
 from ..aiperf_metrics import AIPerfMetric, MetricConstraint
+from ..config.ais_perf_model import anchor_paths, warn_old_keys
+from ..config.cli import config_folder
 from ..config.common import (
     AFD_UNSUPPORTED_MODEL_CONTROLS,
     ENGINE_MODEL_CONTROL_FIELDS,
@@ -39,6 +41,7 @@ from ..config.common import (
     requested_backend_version,
 )
 from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
+from .ais_perf_model import lower_search_space
 
 
 class OptimizationTarget(str, Enum):
@@ -615,6 +618,10 @@ class SearchSpace(BaseModel):
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
     role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Another spelling of the estimator fields above. It is rewritten into them
+    # before validation and is never dumped.
+    # It is left out of repr() too, so the repr of an existing space stays what it was before this field.
+    ais_perf_model: dict[str, Any] | list[dict[str, Any]] | None = Field(default=None, exclude=True, repr=False)
     prefill_hardware_sku: str | None = Field(default=None, min_length=1)
     decode_hardware_sku: str | None = Field(default=None, min_length=1)
     gpu_budget: int = 32  # max GPUs per candidate
@@ -716,6 +723,9 @@ class SearchSpace(BaseModel):
         from ..afd_config import normalize_afd_search_input
         from .state_snapshot import derive_snapshot_roles, reject_engine_wide_snapshot
 
+        # ais_perf_model becomes the estimator fields first, so every rule below
+        # sees one spelling.
+        value = lower_search_space(value)
         if not isinstance(value, dict):
             return value
         value = normalize_afd_search_input(value)
@@ -1462,6 +1472,13 @@ class SmartSearchConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> SmartSearchConfig:
-        """Load + validate one YAML file into the nested config."""
-        data = yaml.safe_load(Path(path).read_text())
-        return cls.model_validate(data)
+        """Load + validate one YAML file into the nested config.
+
+        Relative paths inside ``search_space.ais_perf_model`` start at the
+        folder of the file. Old estimator fields in the file give one
+        deprecation warning, raised only after the file validated.
+        """
+        data = anchor_paths(yaml.safe_load(Path(path).read_text()), config_folder(path), "search")
+        config = cls.model_validate(data)
+        warn_old_keys(data, "search", source=path)
+        return config

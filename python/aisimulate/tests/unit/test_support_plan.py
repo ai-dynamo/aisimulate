@@ -30,7 +30,11 @@ from aisimulate.support.fpm import run_fpm
 from aisimulate.support.plan import check_plan, create_plan, plan_lock, request_id, validation_id
 from aisimulate.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisimulate_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 
 class _OfflineRunner:

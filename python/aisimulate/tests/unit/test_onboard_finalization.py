@@ -23,7 +23,11 @@ from aisimulate.support.finalization import finalize
 from aisimulate.support.plan import check_plan
 from aisimulate.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisimulate_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 
 def _write(path, value):

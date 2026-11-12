@@ -57,6 +57,7 @@ search_space:
     fpm_regression:
       min_observations: 5
   systems_paths: [default]
+  # The six estimator fields above are deprecated; ais_perf_model replaces them.
 
 workload:
   isl: 1024
@@ -95,13 +96,14 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
 | `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
-| `database_mode` | `SILICON` | forward-pass estimator data-source policy; see [performance-model configuration](../perf-model/configuration.md) |
-| `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
-| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned` explicitly. Regression and learned roles are priced per iteration; see [engine replay timing](../perf-model/configuration.md#engine-replay-timing). |
-| `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
-| `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
-| `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
-| `role_estimator_controls` | `{}` | per-role (`agg`, `prefill`, `decode`) `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode` and `transfer_policy` overrides. `{"estimator_config": {"state_snapshot": {"path": ...}}}` times the role with a calibrated snapshot and pins the role's engine identity to it; see [snapshot roles](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot) |
+| `ais_perf_model` | `None` | one perf-model config, or a list with one config per worker type; sets the estimator of each role and replaces the deprecated estimator fields below. See [Perf model](#ais-perf-model) |
+| `database_mode` | `SILICON` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Forward-pass estimator data-source policy; see [performance-model configuration](../perf-model/configuration.md) |
+| `transfer_policy` | `None` (all) | Deprecated; use [`ais_perf_model`](#ais-perf-model). Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
+| `estimation_mode` | `auto` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned` explicitly. Regression and learned roles are priced per iteration; see [engine replay timing](../perf-model/configuration.md#engine-replay-timing). |
+| `fallback_policy` | `deny` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Constrain explicit estimator selection; auto always searches the full priority order |
+| `estimator_config` | `{}` (Core defaults) | Deprecated; use [`ais_perf_model`](#ais-perf-model). Runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
+| `systems_paths` | omitted | Deprecated; use [`ais_perf_model`](#ais-perf-model). Preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
+| `role_estimator_controls` | `{}` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Per-role (`agg`, `prefill`, `decode`) `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode` and `transfer_policy` overrides. A role's `transfer_policy` may be `null`: it replaces the top-level `transfer_policy` for that role with every transfer kind. `{"estimator_config": {"state_snapshot": {"path": ...}}}` times the role with a calibrated snapshot and pins the role's engine identity to it; see [snapshot roles](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot) |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
@@ -110,6 +112,94 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
+
+<a id="ais-perf-model"></a>
+
+### Perf model
+
+`ais_perf_model` sets the perf model of each worker type in one place:
+
+```yaml
+search_space:
+  model_name: example/model
+  hardware_sku: h200_sxm
+  deployment_mode: [disagg]
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      fallback_policy: deny
+      systems_paths: [./fpm-data, default]
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+One config without `worker_type` applies to every role:
+
+```yaml
+search_space:
+  ais_perf_model:
+    estimation_mode: op_level
+    fallback_policy: deny
+```
+
+- **Worker types.** They are `aggregated`, `prefill` and `decode`. The
+  `aggregated` worker type is the `agg` role. `deployment_mode: [agg]` uses
+  `aggregated`, and `[disagg]` uses `prefill` and `decode`. Both modes, or an
+  omitted `deployment_mode`, use all three. A list needs an entry for each of
+  these worker types and none for another.
+- **Estimator keys.** In this release the field is another spelling of the
+  estimator fields. A key that every entry gives with the same value becomes
+  the top-level field. Any other key becomes
+  `role_estimator_controls.<role>.<key>`. A state snapshot entry
+  (`from: {state_snapshot: {path: ...}}`) always uses
+  `role_estimator_controls`.
+- **Other keys.** `model`, `system` and `backend` are only checked: against
+  `model_name`, the hardware SKU of the role, and `backend` when it lists one
+  backend. A different value is an error. So is an entry that states `backend`
+  when the search lists several backends, and any other key that is not an
+  estimator key, such as `tp`.
+- **Dumps.** `model_dump()` leaves `ais_perf_model` out and shows the
+  estimator fields.
+- **Relative paths.** In a file read by `SmartSearchConfig.from_yaml` they
+  start at that file's folder. In Python data passed to `model_validate` they
+  start at the working directory.
+- **Not supported in this release.** A search with `afd_roles`, an `encoder`
+  search, and a role with `<role>_timing_model` set reject the field and keep
+  the estimator fields. A dataset entry (`from: {dataset: ...}`) is rejected
+  too.
+
+The deprecated fields are `database_mode`, `transfer_policy`,
+`estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`,
+`systems_path`, `fpm_profile`, `role_estimator_controls`,
+`<role>_forward_model` and `<role>_fpm_parquet_path`. They work as before in
+this release. The next release removes them.
+
+- `SmartSearchConfig.from_yaml` gives one deprecation warning that lists the
+  old fields the file writes. A field that only repeats its default does not
+  count. `model_validate` does not warn.
+- `role_estimator_controls.<role>.transfer_policy` counts whenever the key is
+  written, also as `null`. A `null` there is a setting: it replaces the
+  top-level `transfer_policy` for that role with every transfer kind.
+- `aisimulate perf-model migrate search.yaml` shows the converted block; see
+  [perf-model tools](../reference/cli.md#perf-model).
+- An old field next to `ais_perf_model` is an error, unless it holds the value
+  the entries produce. Such a field still gets the warning, which then says to
+  remove it.
+- `transfer_policy`, at the top level and in `role_estimator_controls`, is
+  compared by the transfer kinds it names, not by spelling. `[xshape]` next to
+  an entry with `xshape` is the same value. So is a preset name next to the
+  list of kinds it stands for. A text is read as a preset name, a kind name,
+  or several of them separated by commas, in any letter case. A list must hold
+  kind names, written exactly: `[balanced]` and `[XSHAPE]` are not lists of
+  kinds. A value that does not work on its own, and a list that holds anything
+  but kind names, is the same value only as a value written identically.
+- A `null` role `transfer_policy` names every kind. Next to the key it is an
+  error, unless the entries produce every kind for that role in
+  `role_estimator_controls`. An example is a `decode` entry with
+  `transfer_policy: aggressive` next to a `prefill` entry with another value.
+
+The entry format and the full rules are in
+[Unified perf-model input](../perf-model/configuration.md#unified-perf-model-input).
 
 Sweeper accepts `fpm_learned` in both the global `estimation_mode` and
 `role_estimator_controls.<role>.estimation_mode`; each candidate constructs the
@@ -132,6 +222,8 @@ or `fpm` for whole-forward timing from a collected FPM cell). Set `<role>_fpm_pa
 external parquet for that role (`agg`, `prefill`, or `decode`); the adjacent same-stem
 `.metadata.json` sidecar is required. The path requires default timing with `forward_model: fpm`
 and is preserved in deployment metadata, runtime arguments, and candidate YAML.
+`<role>_forward_model` and `<role>_fpm_parquet_path` are deprecated; use
+[`ais_perf_model`](#ais-perf-model).
 A one-item list pins a searched field.
 
 `prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either

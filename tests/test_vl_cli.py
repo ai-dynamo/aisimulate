@@ -20,6 +20,10 @@ from aisimulate.main import main
 from aisimulate.recommend import recommendation_to_sweeper
 from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError
 from aisimulate.sweeper import SweepResult
+from aisimulate_core.ais_perf_model import AisPerfModelDeprecationWarning
+
+# AISimulate still writes the old estimator fields into the configs it saves, so reading one back warns.
+reads_saved_config = pytest.mark.filterwarnings("ignore::aisimulate_core.ais_perf_model.AisPerfModelDeprecationWarning")
 
 
 def _prediction():
@@ -354,7 +358,8 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     assert candidate.config["agg_frontend"]["stages"][0]["service_ms"] == 3.0
 
     saved = root / "recommendations" / "0001.yaml"
-    concrete = CorePredictionConfig.from_yaml(saved)
+    with pytest.warns(AisPerfModelDeprecationWarning):
+        concrete = CorePredictionConfig.from_yaml(saved)
     assert concrete.engine.workers.aggregated.host_loop is True
     assert concrete.engine.workers.aggregated.frontend.stages[0].service_ms == 3.0
     assert concrete.engine.workers.aggregated.vision.cache_mib == 100
@@ -390,6 +395,7 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
         validate_vl_prediction_mapping(raw, spec)
 
 
+@reads_saved_config
 def test_profile_backed_recommendation_pins_the_resolved_stages(tmp_path, capsys):
     path = tmp_path / "table.json"
     path.write_text(json.dumps(_host_table()))
@@ -484,6 +490,7 @@ def test_rust_profiles_resolve_only_the_transports_the_tp_domain_uses(tmp_path):
     assert transports(4) == {"shm": 5.0}
 
 
+@reads_saved_config
 def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsys):
     raw = _prediction()
     del raw["traffic"]["source"]["images"]
@@ -621,6 +628,7 @@ def test_native_vl_schema_rejects_host_fields_on_the_decode_worker():
         CorePredictionConfig.model_validate(raw)
 
 
+@reads_saved_config
 def test_native_vl_disaggregated_recommend_keys_the_prefill_worker(tmp_path, capsys):
     raw = _disaggregated_prediction()
     for role in ("prefill", "decode"):

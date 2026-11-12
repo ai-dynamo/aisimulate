@@ -21,7 +21,11 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.fpm_profile import load_fpm_profile
 from aisimulate.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisimulate_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 # Original synthetic decoder geometries, not downloaded checkpoints or measurements.
 _SMALL = {
