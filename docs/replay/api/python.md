@@ -130,6 +130,14 @@ handling, especially for long agentic profiles. Use
 through the CLI or guarded Sweeper. The native JSON bridge and private runner
 lowering helpers are implementation interfaces, not replacements for this API.
 
+`run_replay_json` reads a payload with one `spec` key that holds a replay, or a
+configured key such as `capture_telemetry` or `traffic`, as a configured
+payload. A field error in a configured payload is reported, never replaced by
+a bare `ReplaySpec` run. Any other payload is a bare `ReplaySpec`, whose extra
+keys (also non-replay `spec` keys) are ignored. Repeated `spec` keys are
+refused when one holds a replay. The Engine runner always sends a configured
+payload.
+
 Source: [compiler](../../../python/aisimulate/src/aisimulate/compiler.py),
 [runner](../../../python/aisimulate/src/aisimulate/runner.py), and
 [contract definitions](../../../python/aisimulate/src/aisimulate/sweeper/replay.py).
