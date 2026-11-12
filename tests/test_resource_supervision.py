@@ -1352,3 +1352,110 @@ def test_supervisor_entry_point_groups_match_their_resolvers():
     assert supervision._OUTPUT_ADAPTER_GROUP == OUTPUT_ADAPTER_ENTRY_POINT_GROUP
     for stack in supervision._BUILTIN_STACKS:
         resolve_runner_factory(stack, entry_points=[])
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize("input_kind", ["file", "directory_alias"])
+def test_worker_cleanup_preserves_trace_created_after_parent_preflight(
+    tmp_path, monkeypatch, capsys, command, input_kind
+):
+    import subprocess
+
+    from aisimulate import supervision
+
+    fixture = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces/mooncake.jsonl"
+    trace_bytes = fixture.read_bytes()
+    config = _small_cli_config(tmp_path, command)
+    output = tmp_path / "output"
+    output.mkdir()
+    cleanup = output / "requests.jsonl"
+    if input_kind == "directory_alias":
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "trace.jsonl").write_bytes(trace_bytes)
+        trace = cleanup / "trace.jsonl"
+
+        def produce():
+            cleanup.symlink_to(inputs, target_is_directory=True)
+    else:
+        trace = cleanup
+
+        def produce():
+            trace.write_bytes(trace_bytes)
+
+    produce()
+    raw = yaml.safe_load(config.read_text())
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "mooncake", "paths": [str(trace)]},
+        "load": {"type": "trace_timestamps"},
+    }
+    config.write_text(yaml.safe_dump(raw))
+    control = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            command,
+            "--config",
+            str(config),
+            "--output-dir",
+            str(tmp_path / "control"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert control.returncode == 0, control.stderr
+    cleanup.unlink()
+    original_run = supervision.run_process
+
+    def produce_then_run(*args, **kwargs):
+        assert not cleanup.exists()
+        assert not cleanup.is_symlink()
+        produce()
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(supervision, "run_process", produce_then_run)
+    result = supervision.main([command, "--config", str(config), "--output-dir", str(output), "--overwrite"])
+    assert trace.exists()
+    assert trace.read_bytes() == trace_bytes
+    if input_kind == "directory_alias":
+        assert cleanup.is_symlink()
+        assert cleanup.readlink() == inputs
+    assert result != 0
+    assert "would remove input file" in capsys.readouterr().err
+
+
+def test_resource_plan_cleanup_preserves_trace_input(tmp_path, monkeypatch, capsys):
+    from aisimulate import main as cli
+    from aisimulate.resources import ResourceLimitError
+
+    fixture = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces/mooncake.jsonl"
+    trace_bytes = fixture.read_bytes()
+    config = _small_cli_config(tmp_path, "predict")
+    output = tmp_path / "output"
+    output.mkdir()
+    trace = output / "requests.jsonl"
+    trace.write_bytes(trace_bytes)
+    previous = output / "prediction.json"
+    previous.write_text("previous prediction")
+    plan = output / "resource-plan.json"
+    plan.write_text("previous plan")
+    raw = yaml.safe_load(config.read_text())
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "mooncake", "paths": [str(trace)]},
+        "load": {"type": "trace_timestamps"},
+    }
+    config.write_text(yaml.safe_dump(raw))
+
+    def reject_admission(*args):
+        raise ResourceLimitError("test admission rejection")
+
+    monkeypatch.setattr(cli, "_predict", reject_admission)
+    result = cli.main(["predict", "--config", str(config), "--output-dir", str(output), "--overwrite"])
+    assert result == 3
+    assert trace.exists()
+    assert trace.read_bytes() == trace_bytes
+    assert previous.read_text() == "previous prediction"
+    assert plan.read_text() == "previous plan"
+    assert "would remove input file" in capsys.readouterr().err
