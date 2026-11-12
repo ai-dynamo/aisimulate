@@ -83,6 +83,13 @@ SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
 SPARSE_KERNEL_TO_PERF_FILE = {"paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE}
 MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
+# Values drawn per host sample, which bounds the host temporary.
+_SAMPLE_CHUNK_ELEMENTS = 1 << 20
+# Distinct history keys: a longer history repeats them, so writing it costs one cache
+# write per this many keys and no further sampling. A request scores only its own
+# history, and no request in the plan holds more compressed tokens than this, so no
+# score recurs within a row today.
+_HISTORY_ROWS = 1 << 18
 
 
 def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
@@ -174,10 +181,40 @@ def _tp_simulation(tp_size: int):
             setattr(module, name, original)
 
 
+def _move_to_device(module: torch.nn.Module, device: str) -> torch.nn.Module:
+    """Move the module to the device with the rotary tables its constructor computed.
+
+    Module.to cannot copy meta parameters and to_empty reallocates every tensor, the
+    buffers included, so a module moved with to_empty would hold an uninitialized
+    cos_sin_cache (a non-persistent buffer, DeepseekV4ScalingRotaryEmbedding.__init__,
+    model_executor/layers/rotary_embedding/deepseek_scaling_rope.py:237-242). The tables
+    are held aside and put back.
+    """
+    if not any(p.is_meta for p in module.parameters()):
+        return module.to(device)
+    tables = [
+        (owner, owner.cos_sin_cache)
+        for owner in module.modules()
+        if isinstance(getattr(owner, "cos_sin_cache", None), torch.Tensor)
+    ]
+    module = module.to_empty(device=torch.device(device))
+    for owner, table in tables:
+        owner.cos_sin_cache = table.to(device)
+    return module
+
+
 def _init_dummy_module_tensors(module: torch.nn.Module) -> None:
     with torch.no_grad():
         for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
             if tensor.is_meta:
+                continue
+            if name.endswith("cos_sin_cache"):
+                # The RoPE table is the constructor's (build_deepseek_v4_rope,
+                # models/deepseek_v4/common/rope.py:9-52), not a weight. Filled with a
+                # constant it rotated every position alike, so no index query or key
+                # depended on its position; get_rope also hands the same module to every
+                # later build in the process (_ROPE_DICT, model_executor/layers/
+                # rotary_embedding/__init__.py:84-85,351), so the fill was permanent.
                 continue
             if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8):
                 tensor.zero_()
@@ -185,6 +222,45 @@ def _init_dummy_module_tensors(module: torch.nn.Module) -> None:
                 tensor.fill_(1.0)
             else:
                 tensor.fill_(0.01)
+
+
+def _give_index_query_values(attn_module: DeepseekV4Attention) -> None:
+    """Give the CSA indexer a non-zero index query that differs between its heads.
+
+    The index query is indexer.wq_b applied to qr, the q_norm output of the fused_wqa_wkv
+    projection (DeepseekV4Attention.forward -> _split_qkv_and_norm -> DeepseekV4Indexer
+    .forward, models/deepseek_v4/attention.py:483-486,519-536,1109-1120). Both projections
+    are FP8 in the FP8 checkpoints and _init_dummy_module_tensors zeroes FP8 tensors, so qr
+    and the index query were zero and every candidate scored the same. The top-k that
+    follows depends on the scores (top_k_per_row_prefill and the decode radix top-k,
+    model_executor/layers/sparse_attn_indexer.py:711,869): the prefill one bins them as
+    fp16 first (csrc/sampler.cu, "Step 0: Process first 11 bits of half representation")
+    and equal scores never leave one bin.
+
+    Seeded N(0, 0.02) values in the two projections, as collect_mla_module gives the DSA
+    indexer, and unit gains in the two norms that set the magnitude of the query (q_norm)
+    and of the compressed index keys the forward writes (indexer.compressor.norm,
+    models/deepseek_v4/compressor.py:280), so those keys match the unit-variance history
+    keys of _write_indexer_history. The values stand for no checkpoint; no kernel is
+    chosen by them. A module without an indexer (HCA) is left alone. The other index
+    inputs keep their constants: with the constant hidden states the collector feeds,
+    weights_proj gives every head the same positive weight and the compressor gives
+    every new key the same vector before RoPE, which the position then rotates.
+    """
+    indexer = attn_module.indexer
+    if indexer is None:
+        return
+    # Sampled on the host as collect_mla_module does, a bounded block at a time.
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    with torch.no_grad():
+        for weight in (attn_module.fused_wqa_wkv.weight, indexer.wq_b.weight):
+            flat = weight.view(-1)
+            for start in range(0, flat.numel(), _SAMPLE_CHUNK_ELEMENTS):
+                part = flat[start : start + _SAMPLE_CHUNK_ELEMENTS]
+                values = torch.randn(part.shape, generator=generator, dtype=torch.float32, device="cpu") * 0.02
+                part.copy_(values.to(device=part.device, dtype=part.dtype))
+        for norm in (attn_module.q_norm, indexer.compressor.norm):
+            norm.weight.fill_(1.0)
 
 
 def _process_quantized_weights(module: torch.nn.Module, vllm_config) -> None:
@@ -286,13 +362,11 @@ def _create_dsv4_attention_module(
         finally:
             torch.set_default_device("cpu")
 
-        if any(p.is_meta for p in attn_module.parameters()):
-            attn_module = attn_module.to_empty(device=torch.device(device))
-        else:
-            attn_module = attn_module.to(device)
+        attn_module = _move_to_device(attn_module, device)
         attn_module.eval()
         attn_module.requires_grad_(False)
         _init_dummy_module_tensors(attn_module)
+        _give_index_query_values(attn_module)
         _process_quantized_weights(attn_module, vllm_config)
         yield attn_module, vllm_config
 
@@ -470,6 +544,72 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
     return metadata
 
 
+def _write_indexer_history(attn_module, common, *, context_len: int) -> None:
+    """Write the compressed index keys of the cached history the CSA indexer selects from.
+
+    _allocate_attention_kv_cache zero-fills the indexer cache and nothing here runs the
+    forwards that would have written the history, so every history candidate scored
+    exactly 0.0 and the top-k was timed on ties. Serving writes a compressed key when the
+    last of its compress_ratio tokens is computed: DeepseekCompressor.forward ->
+    _fused_kv_compress_norm_rope_insert_indexer_attn (models/deepseek_v4/compressor.py:
+    354-499, common/ops/fused_compress_quant_cache.py:711-883), at the slot
+    block_table[request, state // states_per_block] * states_per_block + state %
+    states_per_block (CompressedSlotMappingKernel, v1/attention/backends/mla/
+    compressor_utils.py:91-100). A cached prefix of context_len tokens therefore holds
+    context_len // compress_ratio keys per request, the count the indexer reads back
+    (seq_lens // compress_ratio, v1/attention/backends/mla/indexer.py:1488-1491,1723-1731).
+
+    That kernel only takes the compressor's own state, so seeded N(0, 1) rows go through
+    ops.indexer_k_quant_and_cache instead: the DeepSeek-V3.2 indexer's cache writer
+    (model_executor/layers/sparse_attn_indexer.py:523-541), whose FP8 layout the
+    DeepSeek-V4 indexer cache shares (DeepseekV4Indexer.__init__, "FP8 indexer cache uses
+    the same layout as V3.2", models/deepseek_v4/attention.py:1010-1014). Both write a
+    block as states_per_block * head_dim FP8 values, then one float32 ue8m0 scale per
+    key, with blocks kv_cache.stride(0) apart (csrc/cache_kernels.cu:624-683,1917-1946
+    against fused_compress_quant_cache.py:826-832,865-883). The rows are written outside
+    the measurement and stand for no particular checkpoint distribution. Same treatment
+    as _populate_indexer_kv_cache in collect_mla_module and the SGLang and TensorRT-LLM
+    collectors.
+
+    The MXFP4 indexer cache (attention_config.indexer_kv_dtype="mxfp4") has another
+    layout and no standalone writer; this collector never selects it (the default "auto"
+    resolves to fp8, dsa_indexer_uses_fp4, v1/attention/backends/mla/indexer.py:59-97),
+    so it is refused rather than left unwritten.
+    """
+    indexer = getattr(attn_module, "indexer", None)
+    history = context_len // indexer.compress_ratio if indexer is not None else 0
+    if history == 0:
+        return
+    from vllm import _custom_ops as ops
+
+    k_cache = indexer.k_cache.kv_cache
+    head_dim = indexer.head_dim
+    entry_bytes = head_dim + head_dim // indexer.quant_block_size * 4
+    if indexer.use_fp4_kv or k_cache.dtype != torch.uint8 or k_cache.shape[2] != entry_bytes:
+        raise RuntimeError(
+            "the indexer history is written for the FP8 indexer cache only "
+            f"({entry_bytes} bytes per key); the module holds {k_cache.dtype} entries of {k_cache.shape[2]} bytes"
+        )
+    block_table = common.block_table_tensor
+    states_per_block = k_cache.shape[1]
+    device = k_cache.device
+    total = history * block_table.shape[0]
+    rows = min(total, _HISTORY_ROWS)
+    generator = torch.Generator(device="cpu").manual_seed(1234)
+    keys = torch.empty((rows, head_dim), dtype=torch.bfloat16, device=device)
+    chunk_rows = max(1, _SAMPLE_CHUNK_ELEMENTS // head_dim)
+    for start in range(0, rows, chunk_rows):
+        part = keys[start : start + chunk_rows]
+        part.copy_(torch.randn(part.shape, generator=generator, dtype=torch.float32, device="cpu"))
+    for start in range(0, total, rows):
+        # History keys in request order: the request and the key's compressed position.
+        key = torch.arange(start, min(start + rows, total), dtype=torch.long, device=device)
+        request, state = key // history, key % history
+        blocks = block_table[request, state // states_per_block].to(torch.long)
+        slots = blocks * states_per_block + state % states_per_block
+        ops.indexer_k_quant_and_cache(keys[: key.numel()], k_cache, slots, indexer.quant_block_size, indexer.scale_fmt)
+
+
 def _positions(
     batch_size: int,
     seq_len: int,
@@ -527,6 +667,7 @@ def _bench_attention_shape(
             query_len=query_len,
         )
         metadata = _build_metadata_and_bind_caches(attn_module, vllm_config, common, device=device)
+        _write_indexer_history(attn_module, common, context_len=metadata_seq_len - query_len)
 
         hf_config = vllm_config.model_config.hf_config
         concrete_layer = vllm_config.compilation_config.static_forward_context[attn_module.prefix]

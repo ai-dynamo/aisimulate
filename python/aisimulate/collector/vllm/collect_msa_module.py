@@ -108,6 +108,17 @@ _M3_INDEX_DIM = 128
 
 _MEMORY_BUDGET_SAFETY_FACTOR = 0.9
 
+# Values drawn per host sample, which bounds the host temporary.
+_SAMPLE_CHUNK_ELEMENTS = 1 << 20
+# Distinct history tokens: a larger index cache repeats them, so writing it costs one
+# copy per this many tokens and no further sampling. A request scores only its own
+# blocks, so a block's keys recur within a row only for a request longer than this:
+# two to four times at the plan's 524288- and 1048575-token histories, against the
+# thousands of candidate blocks of such a row.
+_HISTORY_TOKENS = 1 << 18
+# The worker's sampled history keys by (device, block size, key width).
+_HISTORY_KEYS: dict = {}
+
 
 def _emulated_kv_heads(num_heads: int) -> int:
     return max(1, num_heads // _NATIVE_GQA_RATIO)
@@ -200,6 +211,64 @@ def _create_gemm_quant_config(gemm_type: str):
 
 _ATTN_LAYER_NAME = "model.layers.0.self_attn.attn"
 _INDEX_CACHE_LAYER_NAME = "model.layers.0.self_attn.attn.index_cache"
+
+
+def _move_to_device(module, device: str):
+    """Move the module to the device with the rotary table its constructor computed.
+
+    Module.to cannot copy meta parameters and to_empty reallocates every tensor, the
+    buffers included, so a module moved with to_empty would hold an uninitialized
+    cos_sin_cache (a non-persistent buffer, RotaryEmbeddingBase.__init__,
+    model_executor/layers/rotary_embedding/base.py:58-63). The tables are held aside
+    and put back.
+    """
+    if not any(p.is_meta for p in module.parameters()):
+        return module.to(device)
+    tables = [
+        (owner, owner.cos_sin_cache)
+        for owner in module.modules()
+        if isinstance(getattr(owner, "cos_sin_cache", None), torch.Tensor)
+    ]
+    module = module.to_empty(device=torch.device(device))
+    for owner, table in tables:
+        owner.cos_sin_cache = table.to(device)
+    return module
+
+
+def _give_index_projection_values(attn_module) -> None:
+    """Give the index query and key projections non-zero rows that differ between heads.
+
+    The fused projection emits [q | k | v | index_q | index_k] (MinimaxM3QKVParallelLinear
+    WithIndexer.output_sizes, model_executor/layers/linear.py:1416-1422), so the index
+    branch is its last index_q_size + idx_head_dim output rows (MiniMaxM3SparseAttention
+    .__init__, nvidia/model.py:437-455; one rank here, so the rows are the layer's own).
+    Under the dummy fill those rows were one constant (bf16 GEMMs: every index head got
+    the same query) or zero (FP8 and NVFP4 GEMMs: index query and key were zero), and
+    every block scored the same. The block selection that follows depends on the scores
+    (sparse_topk_select on the SM100 family, nvidia/indexer_msa.py:347-355).
+
+    Seeded N(0, 0.02) values go into the rows of a bf16 or FP8 weight. A packed NVFP4
+    weight holds two E2M1 values per byte with one E4M3 scale per 16 inputs (KNvfp4Static
+    .create_weights, model_executor/layers/quantization/modelopt.py:1992-2035): every
+    byte is a valid pair, so its rows take seeded bytes and a block scale of 1. The Gemma
+    norms that follow bring either to unit magnitude (x * rsqrt(mean(x^2) + eps) *
+    (1 + w), csrc/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu:135-146). The values
+    stand for no checkpoint; no kernel is chosen by them. The q, k and v rows keep the
+    dummy fill.
+    """
+    projection = attn_module.qkv_proj
+    rows = attn_module.index_q_size + attn_module.idx_head_dim
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    with torch.no_grad():
+        weight = projection.weight[-rows:]
+        if weight.dtype == torch.uint8:
+            values = torch.randint(0, 256, weight.shape, generator=generator, dtype=torch.uint8, device="cpu")
+            scale = projection.weight_scale[-rows:]
+            ones = torch.ones(scale.shape, dtype=torch.float32, device="cpu")
+            scale.copy_(ones.to(device=scale.device, dtype=scale.dtype))
+        else:
+            values = torch.randn(weight.shape, generator=generator, dtype=torch.float32, device="cpu") * 0.02
+        weight.copy_(values.to(device=weight.device, dtype=weight.dtype))
 
 
 def _create_msa_attention_module(
@@ -362,19 +431,26 @@ def _create_msa_attention_module(
 
     # Serialized quant configs create weight params on meta device; to()
     # cannot copy meta tensors, so use to_empty() when needed.
-    if any(p.is_meta for p in attn_module.parameters()):
-        attn_module = attn_module.to_empty(device=torch.device(device))
-    else:
-        attn_module = attn_module.to(device)
+    attn_module = _move_to_device(attn_module, device)
     attn_module.eval()
     attn_module.requires_grad_(False)
 
-    # Deterministic dummy weights (fill_, not RNG — same precedent as
-    # collect_mla_module.py): fp8/uint8 → 0, fp32 scales → 0.5, rest 0.01.
-    # Kernel latency depends on shapes/dtypes, not values.
+    # Deterministic dummy weights: fp8/uint8 → 0, fp32 scales → 0.5, rest 0.01.
+    # The GEMM, norm and attend kernels depend on shapes and dtypes, not values.
+    # The indexer's block selection depends on the scores, so the RoPE table is
+    # left as built and the index projections get values of their own.
     with torch.no_grad():
         for name, tensor in list(attn_module.named_parameters()) + list(attn_module.named_buffers()):
             if tensor.is_meta:
+                continue
+            if name.endswith("cos_sin_cache"):
+                # The RoPE table is the constructor's (get_rope in
+                # MiniMaxM3SparseAttention.__init__, nvidia/model.py:473-480), not
+                # a weight. Filled with a constant it rotated every position alike,
+                # so no index query or key depended on its position; get_rope also
+                # hands the same module to every later build in the process
+                # (_ROPE_DICT, model_executor/layers/rotary_embedding/__init__.py:
+                # 84-85,351), so the fill was permanent.
                 continue
             if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8):
                 tensor.data.zero_()
@@ -382,6 +458,7 @@ def _create_msa_attention_module(
                 tensor.data.fill_(0.5)
             else:
                 tensor.data.fill_(0.01)
+    _give_index_projection_values(attn_module)
 
     # Process weights, mimicking vLLM's model loader (quantized-layout
     # conversion; no-op for unquantized linears).
@@ -481,6 +558,51 @@ def _layer_kv_cache(spec, num_blocks: int, layout, device):
     order = layout.layer_view_order
     physical = torch.zeros([logical[axis] for axis in order], dtype=torch.uint8, device=device)
     return physical.permute(*(order.index(axis) for axis in range(len(order)))).view(spec.dtype)
+
+
+def _write_index_key_history(index_kv_cache) -> None:
+    """Write the index keys of the cached history the indexer selects blocks from.
+
+    _layer_kv_cache zero-fills the index cache and nothing here runs the forwards that
+    would have written the history, so every history block scored exactly 0.0 and the
+    block selection was timed on ties. Serving stores a token's index key when it
+    computes it: the fused insert writes the normed, rotated index_k as one bf16 row at
+    its slot, index_cache[slot * 128 + dim] (ops.fused_minimax_m3_qknorm_rope_kv_insert
+    from MiniMaxM3SparseAttention.forward, nvidia/model.py:625-650; csrc/
+    fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu:753-760), and the indexers read the
+    cache as those rows ([num_blocks, 128, 128], nvidia/indexer_msa.py:325, common/
+    indexer.py:425-481). That kernel has no key-only entry, so seeded N(0, 1) rows, the
+    magnitude the Gemma norm gives a key, fill the cache directly through its logical
+    [num_blocks, 1, block_size, 128] view. The fill is outside the measurement and the
+    timed forward writes its own tokens over it, as in serving. The rows stand for no
+    particular checkpoint distribution. Slots past a request's length hold them too,
+    where serving has whatever an earlier request left: at most one partial block per
+    request, beyond every query's causal bound. Same treatment as the SGLang and
+    TensorRT-LLM MSA collectors.
+
+    Off the SM100 family the Triton indexer's top-k is a bitonic merge network
+    (_topk_index_kernel, common/ops/index_topk.py:208-306), whose work does not depend
+    on the scores: the fill changes no timing there.
+    """
+    num_blocks, _, block_size, index_dim = index_kv_cache.shape
+    distinct = max(1, _HISTORY_TOKENS // block_size)
+    # Sampled on the host once per worker and kept on the device: a point then pays one
+    # device copy, where sampling it again would cost a point more than its measurement.
+    memo = (str(index_kv_cache.device), block_size, index_dim)
+    keys = _HISTORY_KEYS.get(memo)
+    if keys is None:
+        keys = torch.empty(
+            (distinct, 1, block_size, index_dim), dtype=index_kv_cache.dtype, device=index_kv_cache.device
+        )
+        chunk = max(1, _SAMPLE_CHUNK_ELEMENTS // (block_size * index_dim))
+        generator = torch.Generator(device="cpu").manual_seed(1234)
+        for start in range(0, distinct, chunk):
+            part = keys[start : start + chunk]
+            part.copy_(torch.randn(part.shape, generator=generator, dtype=torch.float32, device="cpu"))
+        _HISTORY_KEYS[memo] = keys
+    for start in range(0, num_blocks, distinct):
+        part = index_kv_cache[start : start + distinct]
+        part.copy_(keys[: part.shape[0]])
 
 
 def _rebase_block_table_and_slots(common_attn_metadata, block_size: int):
@@ -758,6 +880,9 @@ def run_msa_module(
             f"index cache {index_kv_cache.dtype} "
             f"(layer cache_dtype={attn_module.kv_cache_dtype!r})"
         )
+
+    # 2d. The cached history's index keys (bf16 rows, checked above).
+    _write_index_key_history(index_kv_cache)
 
     # 3. Input tensors. Positions are absolute (cached prefix precedes the
     # current chunk); generation decodes position seq_len with seq_len

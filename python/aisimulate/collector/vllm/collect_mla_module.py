@@ -451,18 +451,24 @@ def _initialize_synthetic_parameters(module):
         for name, tensor in module.named_parameters():
             if tensor.is_meta:
                 continue
-            if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-                if name.rsplit(".", 1)[-1] != "weight":
-                    # NVFP4's weight_scale also uses FP8 storage (KNvfp4Static,
-                    # modelopt.py:2019-2035 @v0.32.0). It is a scale, not a
-                    # projection weight; retain its previous policy.
-                    tensor.zero_()
-                    continue
+            is_fp8 = tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+            if is_fp8 and name.rsplit(".", 1)[-1] != "weight":
+                # NVFP4's weight_scale also uses FP8 storage (KNvfp4Static,
+                # modelopt.py:2019-2035 @v0.32.0). It is a scale, not a
+                # projection weight; retain its previous policy.
+                tensor.zero_()
+                continue
+            if is_fp8 or (name.endswith("wq_b.weight") and torch.is_floating_point(tensor)):
                 # Serialized FP8 weights feed the real indexer query projection
                 # (DeepseekV32Indexer.wq_b, models/deepseek_v32/attention.py:71-77
                 # @v0.32.0). Zero weights
                 # make every query/logit zero even with valid historical keys;
-                # top-k latency depends on that distribution. Generate on CPU
+                # top-k latency depends on that distribution. An unquantized wq_b
+                # takes the same draw: under the 0.01 fill every index head had the
+                # same query, so a key scored relu(q.k) times the summed head weights,
+                # exactly 0.0 for about half the history, and while a row had fewer
+                # than about twice index_topk candidates the top-k threshold fell
+                # inside that tie group. Generate on CPU
                 # because CUDA RNG can be unavailable after module construction.
                 flat = tensor.view(-1)
                 for start in range(0, flat.numel(), 1048576):
