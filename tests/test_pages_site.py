@@ -1052,7 +1052,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("release_schema", [1, 2])
+def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path, release_schema: int) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -1075,7 +1076,10 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
         "repository": "https://github.com/ai-dynamo/aisimulate",
         **release_summary["snapshot"]["evaluated_revision"],
     }
-    source.write_text(json.dumps(release_summary))
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    saved_release = normalize_summary(release_summary, target_version=release_schema)
+    source.write_text(json.dumps(saved_release))
     legacy_source = repo / "python/aisimulate/docs/e2e-accuracy/summary.json"
     legacy_source.parent.mkdir(parents=True)
     source.rename(legacy_source)
@@ -1108,6 +1112,7 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     assert len({entry["summary_path"] for entry in entries.values() if entry["summary_path"]}) == 3
     published = json.loads((output / "e2e-accuracy" / entries["release/0.12.0"]["summary_path"]).read_text())
     assert published == release_summary
+    assert json.loads(git("show", f"{release_sha}:python/aisimulate/docs/e2e-accuracy/summary.json")) == saved_release
     # A deleted release disappears on the next catalog build.
     git("update-ref", "-d", "refs/remotes/origin/release/0.12.0")
     PAGES._build_accuracy_catalog(repo, output, True)
@@ -1490,3 +1495,26 @@ def test_feature_matrix_omits_invalid_release_data_but_rejects_invalid_main(tmp_
     (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
     with pytest.raises(PAGES.PagesBuildError, match="invalid feature support matrix"):
         PAGES._build_feature_matrix(repo, tmp_path / "site-broken-main", True)
+
+
+@pytest.mark.parametrize("version", [0, 3, True, None, "2"])
+def test_accuracy_reader_rejects_unknown_summary_versions(version):
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["schema_version"] = version
+    with pytest.raises(PAGES.PagesBuildError, match="unsupported accuracy summary schema"):
+        PAGES._accuracy_summary(json.dumps(summary))
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("location", ["totals", "snapshot"])
+def test_accuracy_reader_rejects_mixed_summary_fields(version, location):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    summary = normalize_summary(
+        json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text()), target_version=version
+    )
+    source, other = ("aisimulate", "aisim") if version == 1 else ("aisim", "aisimulate")
+    suffix = "_packages" if location == "snapshot" else ""
+    summary[location][other + suffix] = summary[location][source + suffix]
+    with pytest.raises(PAGES.PagesBuildError, match="unexpected field"):
+        PAGES._accuracy_summary(json.dumps(summary))

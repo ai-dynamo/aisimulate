@@ -22,6 +22,7 @@ from pathlib import Path
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy.summary_contract import normalize_summary
 from scripts.pages.build_pages_site import _accuracy_summary, committed_accuracy
 
 REPO = "ai-dynamo/aisimulate"
@@ -92,6 +93,7 @@ def completion_time(value):
 
 def public_contract(summary):
     """Apply a recursive allowlist before the existing semantic validator."""
+    summary = normalize_summary(summary, target_version=1)
     keys(summary, {"schema_version", "title", "snapshot", "scope", "totals", "models"})
     snapshot = summary["snapshot"]
     keys(
@@ -274,13 +276,13 @@ def unpack_artifact(archive: bytes) -> dict:
         ):
             raise ValueError("invalid accuracy artifact ZIP")
         data = z.read("summary.json")
-        summary = public_contract(strict_json(data))
         qualification = strict_json(z.read("qualification.json"))
     keys(qualification, CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS | {"summary_sha256"})
     if set(qualification) - OPTIONAL_CAMPAIGN_KEYS != CAMPAIGN_KEYS | {"summary_sha256"}:
         raise ValueError("incomplete qualification")
     if qualification.pop("summary_sha256") != hashlib.sha256(data).hexdigest():
         raise ValueError("summary checksum mismatch")
+    summary = public_contract(strict_json(data))
     if qualification != summary["snapshot"]["campaign"]:
         raise ValueError("summary and qualification disagree")
     q = qualification
