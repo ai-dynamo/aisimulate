@@ -523,8 +523,21 @@ impl ReplayEngineFactory {
             ));
         }
         if pipeline_size > 1 {
+            let fill_passes = (pipeline_size - 1) as f64;
+            if fill_passes > crate::engine::MAX_PIPELINE_FILL_PASSES {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "pp {pipeline_size} exceeds the supported pipeline stage count"
+                )));
+            }
+            // The stage count sets the fill; zero is the unset default.
+            let supplied = role.rank.pipeline_fill_passes;
+            if supplied != 0.0 && supplied != fill_passes {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "pipeline_fill_passes {supplied} conflicts with pp {pipeline_size}; expected 0 or {fill_passes}"
+                )));
+            }
             role.rank.speedup_ratio = pipeline_speedup_ratio(&role.rank)?;
-            role.rank.pipeline_fill_passes = (pipeline_size - 1) as f64;
+            role.rank.pipeline_fill_passes = fill_passes;
         }
         // A pull moves G2 bytes times the tensor-parallel size; it does not
         // model how prefill context parallelism shards the prompt's KV.
@@ -1157,6 +1170,32 @@ mod kvcr_tests {
             .role_factory(&unscaled, WorkerStage::Prefill, false)
             .unwrap();
         assert_eq!(prefill.factory.config().speedup_ratio, 4.0);
+        // A supplied fill must agree with the stage count; an oversized stage count is rejected.
+        let mut matching = config(Backend::Sglang);
+        matching.rank.pipeline_fill_passes = 3.0;
+        ReplayEngineFactory::with_timing_model(Arc::new(Unit))
+            .role_factory(&matching, WorkerStage::Prefill, false)
+            .unwrap();
+        let mut conflicting = config(Backend::Sglang);
+        conflicting.rank.pipeline_fill_passes = 1.0;
+        let error = ReplayEngineFactory::with_timing_model(Arc::new(Unit))
+            .role_factory(&conflicting, WorkerStage::Prefill, false)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("conflicts with pp 4"), "{error}");
+        let mut oversized = config(Backend::Sglang);
+        oversized.rank.timing_model = crate::engine::TimingModelConfig::External {
+            provider: "aic".into(),
+            config: serde_json::json!({"model": "m", "system": "s", "pp": 4096}),
+        };
+        let error = ReplayEngineFactory::with_timing_model(Arc::new(Unit))
+            .role_factory(&oversized, WorkerStage::Prefill, false)
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("exceeds the supported"),
+            "{error}"
+        );
         // Diagnostics scale the timing evidence by the ratio replay charged.
         assert_eq!(pipeline_speedup_ratio(&unscaled.rank).unwrap(), 4.0);
         let mut doubled = config(Backend::Sglang);

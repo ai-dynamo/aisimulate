@@ -26,6 +26,9 @@ const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8_192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4_096;
 const DEFAULT_SCHEDULE_CONSERVATIVENESS: f64 = 1.0;
 const DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 32.0;
+/// Later pipeline stages one rank tracks. A stage holds at least one layer, so this is far
+/// above any served model's depth; it bounds the per-stage state a rank allocates.
+pub(crate) const MAX_PIPELINE_FILL_PASSES: f64 = 1024.0;
 
 fn serialize_scheduler_limit<S: serde::Serializer>(
     value: &usize,
@@ -1555,6 +1558,10 @@ impl EngineConfig {
                 && self.pipeline_fill_passes >= 0.0
                 && self.pipeline_fill_passes.fract() == 0.0,
             "pipeline_fill_passes must be a non-negative whole number"
+        );
+        ensure!(
+            self.pipeline_fill_passes <= MAX_PIPELINE_FILL_PASSES,
+            "pipeline_fill_passes must be at most {MAX_PIPELINE_FILL_PASSES}"
         );
         if let Some(nextn) = self.aic_nextn {
             normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
@@ -3272,5 +3279,16 @@ mod tests {
                 "{stages}"
             );
         }
+        let config = EngineConfig {
+            pipeline_fill_passes: MAX_PIPELINE_FILL_PASSES + 1.0,
+            ..EngineConfig::default()
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("pipeline_fill_passes must be at most 1024")
+        );
     }
 }
