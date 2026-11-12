@@ -160,16 +160,15 @@ include = [
     # Ship estimator models and profiles with their canonical implementation.
     "src/aisim_core/sdk/**/*.md",
     "src/aisim_core/data/schema_snapshots/*.json",
+    "src/aisim_core/data/op_latency_pin.json",
     "src/aisim_core/systems/*.yaml",
     "src/aisim_core/systems/*.csv",
     "src/aisim_core/systems/**/*.csv",
     "src/aisim_core/systems/**/*.json",
     "src/aisim_core/systems/**/*.txt",
     "src/aisim_core/systems/**/*.parquet",
-    "src/aisim_core/systems/data/**/*.yaml",
     "src/aisim_core/systems/profiles/**/*.yaml",
     "src/aisim_core/systems/profiles/**/*.md",
-    "src/aisim_core/systems/data/**/README.md",
     "src/aisim_core/model_configs/*.json",
 ]
 

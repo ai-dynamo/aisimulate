@@ -43,10 +43,10 @@ def run(request: dict) -> dict:
     config = deepcopy(item["config"])
     if request["phase"] != "measure":
         raise ValueError("unknown benchmark phase")
-    import aisim_core
     from aisim import CorePredictionConfig, ReplayOutputRequirements
     from aisim.compiler import prediction_to_replay_spec
     from aisim.sweeper.provider import AdapterReplaySpec, RuntimeHookSpec
+    from aisim_core.data.default_systems import default_systems_path
 
     if item.get("fixture"):
         trace = Path(__file__).parent / item["fixture"]["path"]
@@ -78,7 +78,7 @@ def run(request: dict) -> dict:
                 or model.get("enable_shared_layer") is not True
             ):
                 raise ValueError(f"{role} did not retain the pinned real-model policy")
-            identity[role] = portable_model_identity(model, Path(aisim_core.__file__).parent / "systems")
+            identity[role] = portable_model_identity(model, Path(default_systems_path()))
             provenance[role] = {**model, "provider": timing["provider"]}
     if not identity:
         raise ValueError("replay has no real forward model")
