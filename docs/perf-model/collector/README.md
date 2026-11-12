@@ -19,11 +19,11 @@ pair. Collection success, data coverage, and serving accuracy are distinct gates
 
 Read the repository [collector rules](../../../AGENTS.md#required-collector-first-step)
 before changing collector code, cases, or the data contract. The executable
-[collector README](../../../python/aisimulate/collector/README.md) documents current
+[collector README](../../../python/aisim/collector/README.md) documents current
 commands; `framework_manifest.yaml` pins runtimes and `op_backend_catalog.yaml`
 maps registry operations to storage families.
 
-Run collector commands from `python/aisimulate/` unless a command explicitly uses
+Run collector commands from `python/aisim/` unless a command explicitly uses
 a repository-root path. Keep campaign checkpoints and raw logs in a run-specific
 output directory, separate from published data. The packaged data root is
-`python/aisimulate/src/aisimulate_core/systems/data/`.
+`python/aisim/src/aisim_core/systems/data/`.

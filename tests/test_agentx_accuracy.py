@@ -174,11 +174,11 @@ def test_reviewed_database_pin_overrides_current_slot_and_never_borrows_data(tmp
         ),
     )
     modules = {
-        "aisimulate": api,
-        "aisimulate.compiler": SimpleNamespace(prediction_to_replay_spec=lambda value: value),
+        "aisim": api,
+        "aisim.compiler": SimpleNamespace(prediction_to_replay_spec=lambda value: value),
         # No get_latest_database_version: the reviewed pin must take precedence.
-        "aisimulate.sdk.perf_database": SimpleNamespace(),
-        "aisimulate.replay.dashboard": SimpleNamespace(),
+        "aisim.sdk.perf_database": SimpleNamespace(),
+        "aisim.replay.dashboard": SimpleNamespace(),
     }
     monkeypatch.setattr(
         agentx_predict,
@@ -654,8 +654,8 @@ def test_publisher_requires_successful_trusted_job_and_exact_driver(tmp_path, mo
         "head_sha": "a" * 40,
         "path": ".github/workflows/e2e-accuracy.yml",
         "conclusion": "success",
-        "repository": {"full_name": "ai-dynamo/aisimulate"},
-        "head_repository": {"full_name": "ai-dynamo/aisimulate"},
+        "repository": {"full_name": "ai-dynamo/aisim"},
+        "head_repository": {"full_name": "ai-dynamo/aisim"},
     }
     key = publisher.artifact_key("main")
     job = {

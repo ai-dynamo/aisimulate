@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/ai-dynamo/aisimulate/blob/main/docs/schemas/power-metrics-v1.schema.json",
-  "title": "AISimulate modeled-power metrics v1",
+  "$id": "https://github.com/ai-dynamo/aisim/blob/main/docs/schemas/power-metrics-v1.schema.json",
+  "title": "AISim modeled-power metrics v1",
   "description": "Required, nullable modeled-power fields planned for replay reports and Sweeper candidate metrics, using AIC-compatible power and coverage semantics.",
   "$comment": "This schema formalizes field semantics; it does not add a runtime producer. JSON numbers are finite. Producers validating host-language objects must reject NaN and positive or negative infinity before serialization.",
   "type": "object",

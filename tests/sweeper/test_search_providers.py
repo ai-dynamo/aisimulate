@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-import aisimulate.sweeper.search as search_module
-from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.parallel_enum import (
+import aisim.sweeper.search as search_module
+from aisim.sweeper.config import SmartSearchConfig
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.provider import (
+from aisim.sweeper.provider import (
     AdapterReplaySpec,
     AdapterSearchPlan,
     ConditionalSearchSpace,
@@ -22,10 +22,10 @@ from aisimulate.sweeper.provider import (
     RuntimeHookSpec,
     SearchSpaceFragment,
 )
-from aisimulate.sweeper.replay import HookCapability, ReplayReport, RunnerCapabilities
-from aisimulate.sweeper.result import ReasonCategory
-from aisimulate.sweeper.sampler import Suggestion
-from aisimulate.sweeper.search_space import BranchSpace
+from aisim.sweeper.replay import HookCapability, ReplayReport, RunnerCapabilities
+from aisim.sweeper.result import ReasonCategory
+from aisim.sweeper.sampler import Suggestion
+from aisim.sweeper.search_space import BranchSpace
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 _HOOK = RuntimeHookSpec(
@@ -865,6 +865,6 @@ def test_adapter_parameter_separator_collisions_are_rejected() -> None:
 def _isolate_estimator_data_for_orchestration(monkeypatch):
     # These tests use synthetic models/runners. Native construction is exercised
     # by the estimator contract tests and CLI round trips.
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})

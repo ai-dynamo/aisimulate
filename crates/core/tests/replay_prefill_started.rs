@@ -7,9 +7,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModelConfig};
-use aisimulate_core::replay::loadgen::ReplayRequestPayload;
-use aisimulate_core::replay::{
+use aisim_core::engine::{Backend, EngineConfig, TimingModelConfig};
+use aisim_core::replay::loadgen::ReplayRequestPayload;
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, CURRENT_REPLAY_SPEC_VERSION, NoEngineEvents, NoReplayMetadata,
     PerRequestRecord, Placement, PlacementDecision, PlacementEffects, PlacementPolicy,
     PoolRoundRobinPlacement, ReplayCaptureOptions, ReplayComposition, ReplayDeterminism,

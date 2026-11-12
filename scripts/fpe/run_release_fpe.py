@@ -25,8 +25,8 @@ from scripts.release.package_identity import installed_distribution, wheels
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = ("aisim/", "aisim_core/", "aisimulate/", "aisimulate_core/")
-PROBES = Path("python/aisimulate/tools/support_matrix")
-DATA = Path("python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix")
+PROBES = Path("python/aisim/tools/support_matrix")
+DATA = Path("python/aisim/src/aisim_core/systems/fpe_support_matrix")
 
 
 def list_releases(root: Path) -> list[dict]:
@@ -188,7 +188,7 @@ def package_reports(
     # Keep copyable reproducers tied to the same release and tooling checkouts.
     import csv
 
-    prefix = "python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py"
+    prefix = "python python/aisim/tools/support_matrix/generate_fpe_support_matrix.py"
     command = (
         " ".join(
             f"{name}={shlex.quote(value)}"
@@ -198,7 +198,7 @@ def package_reports(
                 ("FPE_BRANCH", expected["source_branch"]),
             ]
         )
-        + " release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py probe"
+        + " release-source/python/aisim/.venv/bin/python scripts/fpe/run_release_fpe.py probe"
     )
     for path in (destination / DATA).glob("*.csv"):
         with path.open(newline="") as handle:
