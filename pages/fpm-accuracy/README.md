@@ -2,7 +2,7 @@
 
 The public [FPM Accuracy Overview](https://ai-dynamo.org/aisim/fpm-accuracy/?branch=main)
 compares forward-pass predictions with measurements from the public
-[nvidia/aisimulate-fpm-dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+[ai-dynamo/aisim-data](https://huggingface.co/datasets/ai-dynamo/aisim-data) (FPM category under `data/fpm/`).
 
 Details, 3D Visualization, and Scenario Comparison are separate tabs with independent controls.
 

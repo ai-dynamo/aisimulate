@@ -544,7 +544,17 @@ def test_cli_qualifies_only_complete_pinned_snapshots(
         assert not (output / "qualification.json").exists()
         return
     cli.main()
-    assert source_calls == [((tmp_path,) if mode == "local" else (), {"revision": revision})]
+    selection = {
+        "models": None,
+        "hardware": None,
+        "configuration_paths": [source_case.configuration.configuration_path] if mode == "smoke" else None,
+    }
+    expected = (
+        ((tmp_path,), {"revision": revision, "repo_id": cli.HF_REPO, **selection})
+        if mode == "local"
+        else ((cli.HF_REPO,), {"revision": revision, **selection})
+    )
+    assert source_calls == [expected]
     files = {file.name: file.read_bytes() for file in output.iterdir()}
     if mode == "smoke":
         assert "SMOKE_ONLY.txt" in files

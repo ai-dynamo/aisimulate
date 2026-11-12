@@ -26,9 +26,9 @@ def main():
     sha(args.hf_revision)
     sha(args.evaluator_sha)
     dataset = (
-        HfDataset.from_local(args.local_dataset, revision=args.hf_revision)
+        HfDataset.from_local(args.local_dataset, revision=args.hf_revision, repo_id=HF_REPO)
         if args.local_dataset
-        else HfDataset.from_hub(revision=args.hf_revision)
+        else HfDataset.from_hub(HF_REPO, revision=args.hf_revision)
     )
     writer = VisualizationWriter(args.output, repo_id=HF_REPO, revision=dataset.revision)
     for configuration in dataset.configurations():

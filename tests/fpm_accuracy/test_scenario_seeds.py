@@ -134,6 +134,7 @@ def test_balanced_self_benchmark_repeats_rank_workloads_and_preserves_one_group_
 
 @pytest.mark.parametrize("phase", ["prefill", "decode"])
 def test_balanced_self_benchmark_features_match_canonical_replicated_collection(case, phase):
+    pytest.importorskip("aisim._runtime")
     trainer = pytest.importorskip("aisim_core.sdk.fpm_learned")
     case = replace(case, worker_role="aggregated")
     dp = 16

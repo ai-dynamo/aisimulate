@@ -18,7 +18,7 @@
   const collapsed = new Set();
   const integer = (value) => Number(value).toLocaleString("en-US");
   const escape = (value) => String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
-  const hf = (snapshot, path) => `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/${snapshot.hf_revision}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const hf = (snapshot, path) => window.fpmHf.blob(snapshot, path);
   const link = (url, label) => `<a href="${escape(url)}" target="_blank" rel="noopener">${escape(label)}</a>`;
   let catalog, summary, request = 0;
   let sort = { key: "model", direction: 1 };

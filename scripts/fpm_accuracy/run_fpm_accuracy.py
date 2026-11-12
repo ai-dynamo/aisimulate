@@ -45,6 +45,8 @@ def main():
         type=Path,
         help="Separate notification evidence; not a Pages artifact",
     )
+    parser.add_argument("--model", action="append", help="Smoke only: select models (HF IDs) before downloading")
+    parser.add_argument("--hardware", action="append", help="Smoke only: select system IDs before downloading")
     parser.add_argument(
         "--configuration",
         action="append",
@@ -66,10 +68,13 @@ def main():
     wheel_hash = hashlib.sha256(args.wheel.read_bytes()).hexdigest()
     if installed_hash != wheel_hash:
         raise ValueError("installed AISim distribution does not match the supplied wheel")
+    # Select before downloading: only the chosen configurations' evaluation artifacts leave the Hub.
+    smoke = bool(args.configuration or args.model or args.hardware)
+    selection = {"models": args.model, "hardware": args.hardware, "configuration_paths": args.configuration}
     dataset = (
-        HfDataset.from_local(args.local_dataset, revision=args.hf_revision)
+        HfDataset.from_local(args.local_dataset, revision=args.hf_revision, repo_id=HF_REPO, **selection)
         if args.local_dataset
-        else HfDataset.from_hub(revision=args.hf_revision)
+        else HfDataset.from_hub(HF_REPO, revision=args.hf_revision, **selection)
     )
     if dataset.revision != args.hf_revision:
         raise ValueError("resolved HF revision differs from the pinned campaign revision")
@@ -127,7 +132,7 @@ def main():
         if len(scenario_data) > MAX_FILE:
             raise ValueError("scenario artifact exceeds the public asset size limit; campaign cannot qualify")
         (args.output / "scenarios.json").write_bytes(scenario_data)
-    if args.configuration:
+    if smoke:
         (args.output / "SMOKE_ONLY.txt").write_text("Partial dataset smoke; not qualified for publication.\n")
     else:
         qualification = {

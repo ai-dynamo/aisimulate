@@ -18,9 +18,20 @@ from urllib.parse import quote
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from huggingface_hub import HfApi, snapshot_download
+from pydantic import ValidationError
 
-from scripts.fpm_accuracy.contract import strict_json
+from aisim_core.data import CategoryIndex, DatasetIndex, Entry, Manifest
+from aisim_core.data.fetch import (
+    Cache,
+    DataFetchError,
+    HfTransport,
+    Selection,
+    fetch,
+    load_category_index,
+)
+from aisim_core.data.fpm_layout import logical_path, physical_path
+from aisim_core.data.loaders import FpmLoader
+from scripts.fpm_accuracy.contract import HF_REPO, LEGACY_HF_REPO, strict_json
 from scripts.fpm_accuracy.exceptions import ConfigurationError, DataError
 from scripts.fpm_accuracy.hf.models import (
     CaseStatus,
@@ -42,7 +53,16 @@ from scripts.fpm_accuracy.hf.protocols import (
 from scripts.fpm_accuracy.types.forward_pass import WorkloadKind
 from scripts.fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
 
-DEFAULT_REPO_ID = "nvidia/aisimulate-fpm-dataset"
+# The unified public dataset. Pin changes go through ``scripts/fpm_accuracy/dataset_pin.py`` only.
+DEFAULT_REPO_ID = HF_REPO
+# Catalogs written before the repository move still name this ID; the commit pin, not the name, is the identity.
+LEGACY_REPO_ID = LEGACY_HF_REPO
+_ACCEPTED_CATALOG_IDS = frozenset({DEFAULT_REPO_ID, LEGACY_REPO_ID})
+UNIFIED_CATALOG = "catalog/dataset.json"
+LEGACY_CATALOG = "catalog/index.json"
+# Artifact roles no FPM evaluation reads: the source tarballs and logs of an FPM library (75 % of the bytes).
+EVALUATION_EXCLUDED_ROLES = ("fpm-provenance",)
+_LEGACY_LEAF_ROLE = "legacy-configuration-manifest"
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _TRUTH_ROLES = frozenset({"truth", "derived_truth"})
@@ -110,6 +130,7 @@ class HfDataset:
         overrides: HfOverrides,
         overrides_sha256: str | None,
         allowed_file_roots: Sequence[Path] = (),
+        configuration_ids: Sequence[str] | None = None,
     ) -> None:
         if _FULL_SHA.fullmatch(revision) is None:
             raise ConfigurationError("HF dataset revision must resolve to a full 40-character commit SHA")
@@ -119,13 +140,21 @@ class HfDataset:
         self.revision = revision
         self._overrides = overrides
         self._overrides_sha256 = overrides_sha256
-        self._index = self._read_json("catalog/index.json")
-        if self._index.get("catalog_version") not in (5, 6):
-            raise DataError(f"unsupported HF catalog version: {self._index.get('catalog_version')!r}")
-        if self._index.get("dataset_id") != repo_id:
-            raise DataError(
-                f"HF catalog dataset_id {self._index.get('dataset_id')!r} does not match requested repo {repo_id!r}"
-            )
+        # ``unified``: catalog/dataset.json + envelope manifests under data/fpm/ (logical paths inside the
+        # moved files are mapped to physical ones). ``legacy``: catalog/index.json, paths used as written.
+        self.layout = "unified" if (self.root / UNIFIED_CATALOG).is_file() else "legacy"
+        if self.layout == "unified":
+            self._index = self._unified_index(configuration_ids)
+        else:
+            if configuration_ids is not None:
+                raise ConfigurationError("configuration selection needs the unified FPM layout")
+            self._index = self._read_json(LEGACY_CATALOG)
+            if self._index.get("catalog_version") not in (5, 6):
+                raise DataError(f"unsupported HF catalog version: {self._index.get('catalog_version')!r}")
+            if self._index.get("dataset_id") not in {repo_id, *_ACCEPTED_CATALOG_IDS}:
+                raise DataError(
+                    f"HF catalog dataset_id {self._index.get('dataset_id')!r} does not match requested repo {repo_id!r}"
+                )
         self._configuration_cache: dict[bool, tuple[ConfigurationSnapshot, ...]] = {}
 
     @classmethod
@@ -136,6 +165,9 @@ class HfDataset:
         revision: str | None = None,
         overrides_path: str | Path | None = None,
         repo_id: str = DEFAULT_REPO_ID,
+        models: Sequence[str] | None = None,
+        hardware: Sequence[str] | None = None,
+        configuration_paths: Sequence[str] | None = None,
     ) -> HfDataset:
         local_root = Path(root).expanduser().resolve()
         if not local_root.is_dir():
@@ -144,12 +176,16 @@ class HfDataset:
         override_file = Path(overrides_path).expanduser() if overrides_path is not None else None
         overrides = load_overrides(override_file)
         overrides_sha256 = _file_sha256(override_file) if override_file is not None else None
+        ids = None
+        if models or hardware or configuration_paths:
+            ids = _select_ids_from_local(local_root, models, hardware, configuration_paths)
         return cls(
             local_root,
             repo_id=repo_id,
             revision=resolved_revision,
             overrides=overrides,
             overrides_sha256=overrides_sha256,
+            configuration_ids=ids,
         )
 
     @classmethod
@@ -161,30 +197,104 @@ class HfDataset:
         overrides_path: str | Path | None = None,
         token: str | None = None,
         cache_dir: str | Path | None = None,
+        models: Sequence[str] | None = None,
+        hardware: Sequence[str] | None = None,
+        configuration_paths: Sequence[str] | None = None,
+        exclude_roles: Sequence[str] = EVALUATION_EXCLUDED_ROLES,
     ) -> HfDataset:
-        info = HfApi(token=token).repo_info(repo_id, repo_type="dataset", revision=revision)
-        resolved_revision = info.sha
-        if not isinstance(resolved_revision, str) or _FULL_SHA.fullmatch(resolved_revision) is None:
+        """Select configurations from the catalog, then download only their evaluation artifacts.
+
+        ``revision`` is resolved to one commit SHA. The few-KB dataset and category indexes are read
+        first; ``models``/``hardware``/``configuration_paths`` (all optional, combined with AND) pick
+        the configuration IDs, and only those configurations' files outside ``exclude_roles`` are
+        fetched, hash-verified, into the library cache (``AISIM_DATA_CACHE``).
+        """
+        transport = HfTransport(token=token)
+        cache = Cache(cache_dir)
+        try:
+            resolved_revision, index, _ = load_category_index(
+                "fpm", repo=repo_id, revision=revision, transport=transport, cache=cache
+            )
+            entries = _select_entries(index, models, hardware, configuration_paths)
+            if not entries:
+                raise ConfigurationError("no FPM configuration matches the requested selection")
+            ids = tuple(sorted(entry.configuration_id for entry in entries))
+            result = fetch(
+                Selection(category="fpm", configuration_ids=ids, exclude_roles=tuple(exclude_roles)),
+                repo=repo_id,
+                revision=resolved_revision,
+                transport=transport,
+                cache=cache,
+            )
+        except DataFetchError as exc:
+            raise DataError(f"cannot fetch {repo_id}@{revision}: {exc}") from exc
+        if _FULL_SHA.fullmatch(resolved_revision) is None:
             raise DataError(f"Hugging Face did not resolve {repo_id}@{revision} to a full commit SHA")
-        root = snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            revision=resolved_revision,
-            token=token,
-            cache_dir=str(cache_dir) if cache_dir is not None else None,
-        )
-        local_root = Path(root).expanduser().resolve()
         override_file = Path(overrides_path).expanduser() if overrides_path is not None else None
         overrides = load_overrides(override_file)
         overrides_sha256 = _file_sha256(override_file) if override_file is not None else None
         return cls(
-            local_root,
+            result.root.resolve(),
             repo_id=repo_id,
             revision=resolved_revision,
             overrides=overrides,
             overrides_sha256=overrides_sha256,
-            allowed_file_roots=_hub_cache_blob_roots(local_root, resolved_revision),
+            configuration_ids=ids,
         )
+
+    def _unified_index(self, configuration_ids: Sequence[str] | None) -> dict[str, Any]:
+        """Build the legacy index shape from ``catalog/dataset.json`` and the envelope manifests.
+
+        The trust chain is dataset index -> category index (hash in the dataset index) -> envelope
+        (hash in the category entry) -> legacy leaf manifest (hash in the envelope). Everything the
+        leaf manifest names is then verified exactly as before.
+        """
+        try:
+            dataset = DatasetIndex.model_validate_json(self._safe_path(UNIFIED_CATALOG).read_bytes())
+        except (ValidationError, ValueError) as exc:
+            raise DataError(f"invalid {UNIFIED_CATALOG}: {exc}") from exc
+        if dataset.dataset_id not in {self.repo_id, *_ACCEPTED_CATALOG_IDS}:
+            raise DataError(
+                f"HF catalog dataset_id {dataset.dataset_id!r} does not match requested repo {self.repo_id!r}"
+            )
+        reference = dataset.categories.get("fpm")
+        if reference is None:
+            raise DataError("HF dataset has no fpm category")
+        index_path = self._safe_path(reference.index.path)
+        self._verify_file(index_path, reference.index.sha256, description=reference.index.path)
+        try:
+            index = CategoryIndex.model_validate_json(index_path.read_bytes())
+        except ValidationError as exc:
+            raise DataError(f"invalid {reference.index.path}: {exc.error_count()} error(s)") from exc
+        wanted = None if configuration_ids is None else set(configuration_ids)
+        known = {entry.configuration_id for entry in index.entries}
+        if wanted is not None and not wanted <= known:
+            raise ConfigurationError(f"unknown FPM configuration IDs: {sorted(wanted - known)}")
+        current: list[str] = []
+        history: dict[str, str] = {}
+        for entry in index.entries:
+            if wanted is not None and entry.configuration_id not in wanted:
+                continue
+            envelope_path = self._safe_path(entry.manifest.path)
+            self._verify_file(envelope_path, entry.manifest.sha256, description=entry.manifest.path)
+            envelope = Manifest.model_validate_json(envelope_path.read_bytes())
+            if envelope.configuration_id != entry.configuration_id:
+                raise DataError(f"envelope {entry.manifest.path} does not match its catalog entry")
+            leaves = [artifact for artifact in envelope.artifacts if artifact.role == _LEGACY_LEAF_ROLE]
+            if len(leaves) != 1:
+                raise DataError(f"envelope {entry.manifest.path} must declare one {_LEGACY_LEAF_ROLE} artifact")
+            leaf = leaves[0]
+            self._verify_file(self._safe_path(leaf.path), leaf.sha256, description=leaf.path)
+            logical = logical_path(leaf.path)
+            current.append(logical)
+            for value in self._read_json(logical).get("history") or ():
+                if isinstance(value, Mapping) and isinstance(value.get("manifest_path"), str):
+                    history[value["manifest_path"]] = str(value.get("manifest_sha256"))
+        return {
+            "catalog_version": 6,
+            "configuration_manifests": sorted(current),
+            "history_manifests": sorted(history),
+        }
 
     def configurations(self, *, include_history: bool = False) -> tuple[ConfigurationSnapshot, ...]:
         if include_history not in self._configuration_cache:
@@ -940,7 +1050,7 @@ class HfDataset:
         pure = PurePosixPath(relative)
         if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
             raise DataError(f"unsafe HF path: {relative!r}")
-        path = self.root.joinpath(*pure.parts)
+        path = self.root.joinpath(*PurePosixPath(self._physical(relative)).parts)
         if not path.is_file():
             raise DataError(f"HF dataset file is missing: {relative}")
         try:
@@ -966,8 +1076,58 @@ class HfDataset:
         if actual != expected_sha256:
             raise DataError(f"HF dataset hash mismatch for {description}: expected {expected_sha256}, got {actual}")
 
+    def _physical(self, relative: str) -> str:
+        """Repository path of a dataset path; the moved files still embed the legacy ``data/`` spelling."""
+        if self.layout == "unified" and relative.startswith("data/"):
+            return physical_path(relative)
+        return relative
+
     def _provenance_url(self, relative: str) -> str:
-        return f"https://huggingface.co/datasets/{self.repo_id}/blob/{self.revision}/{quote(relative, safe='/')}"
+        physical = quote(self._physical(relative), safe="/")
+        return f"https://huggingface.co/datasets/{self.repo_id}/blob/{self.revision}/{physical}"
+
+
+def _entry_configuration_path(entry: Entry) -> str:
+    """Logical ``configuration_path`` of a catalog entry (the envelope's directory)."""
+    return logical_path(entry.manifest.path.rsplit("/", 1)[0])
+
+
+def _select_entries(
+    index: CategoryIndex,
+    models: Sequence[str] | None,
+    hardware: Sequence[str] | None,
+    configuration_paths: Sequence[str] | None,
+) -> list[Entry]:
+    """Catalog entries matching every given filter; a model filter uses the loader's selection rule."""
+    entries: list[Entry] = []
+    for entry in index.entries:
+        if hardware and entry.identity.hardware not in set(hardware):
+            continue
+        if configuration_paths and _entry_configuration_path(entry) not in set(configuration_paths):
+            continue
+        if models and not any(
+            FpmLoader().select({"system": entry.identity.hardware, "model": model}).matches(entry) for model in models
+        ):
+            continue
+        entries.append(entry)
+    return entries
+
+
+def _select_ids_from_local(
+    root: Path,
+    models: Sequence[str] | None,
+    hardware: Sequence[str] | None,
+    configuration_paths: Sequence[str] | None,
+) -> tuple[str, ...]:
+    if not (root / UNIFIED_CATALOG).is_file():
+        raise ConfigurationError("configuration selection needs the unified FPM layout")
+    dataset = DatasetIndex.model_validate_json((root / UNIFIED_CATALOG).read_bytes())
+    reference = dataset.categories["fpm"]
+    index = CategoryIndex.model_validate_json((root / reference.index.path).read_bytes())
+    entries = _select_entries(index, models, hardware, configuration_paths)
+    if not entries:
+        raise ConfigurationError("no FPM configuration matches the requested selection")
+    return tuple(sorted(entry.configuration_id for entry in entries))
 
 
 def _resolve_local_revision(root: Path, requested: str | None) -> str:
@@ -1017,33 +1177,6 @@ def _resolve_local_revision(root: Path, requested: str | None) -> str:
     if status_result.stdout.strip():
         raise ConfigurationError("local HF checkout must be clean so its pinned revision describes the bytes read")
     return revision
-
-
-def _hub_cache_blob_roots(root: Path, revision: str) -> tuple[Path, ...]:
-    """Allow the Hub blob stores backing this exact cache snapshot.
-
-    ``snapshot_download`` normally returns ``.../snapshots/<sha>`` where files
-    are symlinks into the same repository cache's ``blobs`` directory. Local
-    Hub 1.32 can link those blobs into the cache-wide shared store. Local
-    dataset checkouts do not receive either exception; content hashes are
-    still verified independently of these storage locations.
-    """
-
-    if root.name != revision or root.parent.name != "snapshots":
-        return ()
-    blobs = root.parent.parent / "blobs"
-    roots = [blobs.resolve()] if blobs.is_dir() else []
-    shared = root.parents[2] / "blobs"
-    marker = shared / ".huggingface-shared-blobs"
-    if (
-        shared.is_dir()
-        and not shared.is_symlink()
-        and marker.is_file()
-        and not marker.is_symlink()
-        and marker.read_text() == "1\n"
-    ):
-        roots.append(shared.resolve())
-    return tuple(roots)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

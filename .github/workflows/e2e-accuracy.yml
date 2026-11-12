@@ -57,6 +57,9 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.preview && startsWith(github.ref, 'refs/heads/pull-request/')))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # Holds the private HF read token. Preview runs use their own environment (and may scope their own token);
+    # the credential only ever reaches steps that run code checked out from main (path: trusted).
+    environment: ${{ inputs.preview && 'e2e-accuracy-preview' || 'e2e-accuracy-private' }}
     permissions:
       contents: read
       actions: read
@@ -154,24 +157,27 @@ jobs:
             }
             core.setOutput('matrix', JSON.stringify({include: entries}));
 
+      # Credentialed steps run main's code only. A pull-request/* preview copy never executes with the token.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: main
+          path: trusted
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       - name: Install HF input tooling
         run: |
-          python -m venv "${RUNNER_TEMP}/accuracy-venv"
-          "${RUNNER_TEMP}/accuracy-venv/bin/pip" install --require-hashes -r scripts/e2e_accuracy/requirements.txt
-          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
-      - name: Resolve the reviewed HF revision once for all branches
+          python -m venv "${RUNNER_TEMP}/trusted-venv"
+          "${RUNNER_TEMP}/trusted-venv/bin/pip" install --require-hashes -r trusted/scripts/e2e_accuracy/requirements.txt
+      - name: Resolve the reviewed HF revision and snapshot once for all branches
         env:
           HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
           HF_HOME: ${{ runner.temp }}/accuracy-hf
+          AISIM_DATA_CACHE: ${{ runner.temp }}/accuracy-data
         run: |
-          python3 scripts/e2e_accuracy/fetch_accuracy_measurements.py \
-            --manifest .github/e2e-accuracy-dataset.json --resolve-latest \
+          "${RUNNER_TEMP}/trusted-venv/bin/python" trusted/scripts/e2e_accuracy/fetch_accuracy_measurements.py \
+            --manifest trusted/.github/e2e-accuracy-dataset.json --resolve-latest \
             --output "${RUNNER_TEMP}/e2e-accuracy-dataset.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

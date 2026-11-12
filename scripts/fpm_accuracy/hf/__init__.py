@@ -4,6 +4,7 @@
 
 """Hugging Face source-evidence access for AISim FPM Gym."""
 
+from scripts.fpm_accuracy import evaluator_library  # noqa: F401  (binds aisim_core.data first)
 from scripts.fpm_accuracy.hf.dataset import DEFAULT_REPO_ID, HfDataset
 from scripts.fpm_accuracy.hf.models import (
     CaseStatus,

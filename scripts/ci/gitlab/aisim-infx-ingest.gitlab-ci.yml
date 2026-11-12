@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Weekly + manual InferenceX ingestion for the PRIVATE aisim-infx-cache (AISIM-2334, DEP #435).
+# DEFINITION ONLY: this file is not registered anywhere. Install it per
+# scripts/ci/gitlab/README.md in the internal project `aisim-hf-dataset-ci`.
+#
+# Guarantees (asserted by tests/unit/data/test_infx_job_definition.py):
+#   * runs the library at AISIM_REVIEWED_COMMIT (a full SHA) and nothing else;
+#   * only `publish_candidate` and `promote` see the scoped cache token;
+#   * an unchanged refresh makes no commit; a candidate goes to a candidate/* branch, never the default branch;
+#   * promotion is manual and needs a named reviewer; failures never touch the last qualified snapshot;
+#   * failures and staleness alert Slack #swdl-dynamo-aisim-daily and the owner (Simone Chen) by email.
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
+
+stages: [ingest, promote, staleness, notify]
+
+variables:
+  # Required, set as protected CI/CD variables (changed only through a reviewed MR to this project):
+  #   AISIM_REVIEWED_COMMIT   40-hex commit of ai-dynamo/aisim that was code-reviewed
+  #   AISIM_REPO_URL          fetch URL for that repository (read-only)
+  #   INFX_CACHE_REPO_URL     git URL of the private aisim-infx-cache repository
+  #   INFX_CACHE_WRITE_TOKEN  fine-grained token: write on aisim-infx-cache ONLY (masked, protected)
+  #   SLACK_WEBHOOK_URL       incoming webhook for #swdl-dynamo-aisim-daily (masked, protected)
+  #   SMTP_HOST, SMTP_FROM, AISIM_JOB_OWNER_EMAIL   owner email alerts (owner: Simone Chen)
+  GIT_STRATEGY: none
+  GIT_TERMINAL_PROMPT: "0"
+
+.pinned:
+  before_script:
+    - |
+      set -eu
+      case "$AISIM_REVIEWED_COMMIT" in
+        *[!0-9a-f]*|"") echo "AISIM_REVIEWED_COMMIT must be a lowercase hex SHA" >&2; exit 2 ;;
+      esac
+      test "${#AISIM_REVIEWED_COMMIT}" -eq 40 || { echo "AISIM_REVIEWED_COMMIT must be 40 hex chars" >&2; exit 2; }
+      rm -rf aisim && mkdir aisim && cd aisim
+      git init -q && git remote add origin "$AISIM_REPO_URL"
+      git fetch -q --depth 1 origin "$AISIM_REVIEWED_COMMIT"
+      git checkout -q --detach FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "$AISIM_REVIEWED_COMMIT"
+      uv sync --project python/aisim --frozen
+  variables:
+    JOB_PY: "uv run --project aisim/python/aisim python -m aisim_core.data.infx_job"
+
+# Clone helper: the token is passed as a one-shot header and never written to the clone's config.
+.cache_clone: &cache_clone |
+  git -c http.extraHeader="Authorization: Bearer ${INFX_CACHE_WRITE_TOKEN}" clone -q --depth 1 "$INFX_CACHE_REPO_URL" cache-repo
+
+publish_candidate:
+  stage: ingest
+  extends: .pinned
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $AISIM_JOB == "ingest"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $AISIM_JOB != "staleness"'
+  script:
+    - set -eu
+    - *cache_clone
+    # Acquisition is public and needs no credential; the token is only used by git below.
+    - env -u INFX_CACHE_WRITE_TOKEN $JOB_PY run --root cache-repo --cache-dir "$CI_PROJECT_DIR/infx-acquisition" --report run-report.json
+    - |
+      cd cache-repo
+      if [ -z "$(git status --porcelain)" ]; then echo "unchanged refresh: no commit, no snapshot"; exit 0; fi
+      SID=$(python3 -c "import json;print(json.load(open('../run-report.json'))['snapshot_id'])")
+      git checkout -q -b "candidate/${SID}"
+      git add -A
+      git -c user.name="aisim-infx-ingest" -c user.email="noreply@nvidia.com" commit -q -m "candidate: InferenceX snapshot ${SID} (not qualified)"
+      git -c http.extraHeader="Authorization: Bearer ${INFX_CACHE_WRITE_TOKEN}" push -q origin "candidate/${SID}"
+  cache:
+    key: infx-acquisition
+    paths: [infx-acquisition/]
+  artifacts:
+    when: always
+    paths: [run-report.json]
+    expire_in: 30 days
+  timeout: 3h
+  retry: 0
+
+promote:
+  stage: promote
+  extends: .pinned
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $AISIM_JOB == "promote"'
+      when: manual
+  allow_failure: false
+  script:
+    - set -eu
+    - 'test -n "${CANDIDATE_SNAPSHOT_ID:-}" || { echo "set CANDIDATE_SNAPSHOT_ID" >&2; exit 2; }'
+    - git -c http.extraHeader="Authorization: Bearer ${INFX_CACHE_WRITE_TOKEN}" clone -q --depth 1 --branch "candidate/${CANDIDATE_SNAPSHOT_ID}" "$INFX_CACHE_REPO_URL" cache-repo
+    - $JOB_PY promote --root cache-repo --snapshot-id "$CANDIDATE_SNAPSHOT_ID" --reviewer "$GITLAB_USER_NAME"
+    - |
+      cd cache-repo
+      git -c user.name="aisim-infx-ingest" -c user.email="noreply@nvidia.com" commit -qam "qualify: ${CANDIDATE_SNAPSHOT_ID} (reviewer ${GITLAB_USER_NAME})"
+      git -c http.extraHeader="Authorization: Bearer ${INFX_CACHE_WRITE_TOKEN}" push -q origin "HEAD:refs/heads/candidate/${CANDIDATE_SNAPSHOT_ID}"
+    # Merging the candidate branch into the default branch stays a reviewed merge request, not this job.
+
+staleness:
+  stage: staleness
+  extends: .pinned
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $AISIM_JOB == "staleness"'
+  script:
+    - set -eu
+    - *cache_clone
+    # Alert only: exit 10 = warn (>= 8 days), 11 = stale (>= 14 days) since the last qualified snapshot.
+    - $JOB_PY staleness --root cache-repo || test $? -ge 10
+  allow_failure:
+    exit_codes: [10, 11]
+
+alert_failure:
+  stage: notify
+  extends: .pinned
+  when: on_failure
+  needs: []
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $AISIM_JOB == "ingest"'
+      when: on_failure
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_failure
+  script:
+    - $JOB_PY notify --subject "job failed" --text "pipeline ${CI_PIPELINE_URL}; last qualified snapshot retained"

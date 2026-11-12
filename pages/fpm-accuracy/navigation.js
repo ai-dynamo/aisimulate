@@ -1,5 +1,17 @@
 /* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0 */
+window.fpmHf = (() => {
+  // Summaries name their dataset repository. Evaluations of the unified dataset (ai-dynamo/aisim-data) carry the
+  // logical `data/<model>/...` keys stored inside the moved files; their files live at `data/fpm/<rest>`.
+  const retired = 'nvidia/aisimulate-fpm-dataset';
+  const repo = (snapshot) => snapshot.hf_repo || retired;
+  const base = (snapshot) => `https://huggingface.co/datasets/${repo(snapshot)}`;
+  const physical = (snapshot, path) =>
+    repo(snapshot) === retired || !path.startsWith('data/') || path.startsWith('data/fpm/') ? path : `data/fpm/${path.slice(5)}`;
+  const blob = (snapshot, path) =>
+    `${base(snapshot)}/blob/${snapshot.hf_revision}/${physical(snapshot, path).split('/').map(encodeURIComponent).join('/')}`;
+  return { repo, base, blob };
+})();
 (() => {
   const page = location.pathname.split('/').pop() || 'index.html';
   const branch = document.getElementById('branch');
@@ -34,7 +46,7 @@
       item('span', 'Daily evaluation'), time,
       item('a', 'Evaluation run', `https://github.com/ai-dynamo/aisim/actions/runs/${snapshot.run_id}/attempts/${snapshot.run_attempt}`, 'evaluation-run'),
       item('a', `AISim ${snapshot.commit_sha.slice(0,8)}`, `https://github.com/ai-dynamo/aisim/commit/${encodeURIComponent(snapshot.commit_sha)}`, 'evaluation-aisim'),
-      item('a', `HF ${snapshot.hf_revision.slice(0,8)}`, `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/${encodeURIComponent(snapshot.hf_revision)}`, 'evaluation-hf'),
+      item('a', `HF ${snapshot.hf_revision.slice(0,8)}`, `${window.fpmHf.base(snapshot)}/tree/${encodeURIComponent(snapshot.hf_revision)}`, 'evaluation-hf'),
     ];
     items.forEach((element, index) => {
       if (index) {

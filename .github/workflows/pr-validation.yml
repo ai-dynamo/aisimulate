@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Public PR Validation
+
+# Maintainer-dispatched validation of a PR's public Hugging Face candidate
+# (DEP #435, "CI and public evaluation"). Trust model:
+#   * Runs only from the default branch, dispatched by a maintainer.
+#   * The PR is data. Its head is resolved to a SHA and only the small request
+#     file is read from it through the API; no PR code is checked out, imported
+#     or executed, and the evaluator comes from this trusted checkout.
+#   * No secrets and no Hugging Face token. The read-only GITHUB_TOKEN is only
+#     given to the steps that call the GitHub API.
+#   * The report binds the PR head SHA, evaluator revision, dataset SHA and
+#     request digest. The PR head is checked again after evaluation; a changed
+#     head fails the run and the report must not be used.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        type: string
+        required: true
+      expected_head_sha:
+        description: Full PR head SHA the maintainer reviewed; the run fails if the head differs
+        type: string
+        required: true
+      request_path:
+        description: Path of the validation request file inside the PR head
+        type: string
+        default: .aisim/pr-validation.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'ai-dynamo/aisim' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      EXPECTED_HEAD: ${{ inputs.expected_head_sha }}
+      REQUEST_PATH: ${{ inputs.request_path }}
+      # Replace with a trusted factory when one exists; the default fails closed.
+      PREDICTOR_FACTORY: aisim_core.data.validate:no_predictor
+    steps:
+      - name: Require a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          permission="$(gh api "repos/${GH_REPO}/collaborators/${GITHUB_ACTOR}/permission" --jq .permission)"
+          case "${permission}" in
+            admin | maintain) ;;
+            *) echo "::error::${GITHUB_ACTOR} is not a maintainer"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Install evaluator dependencies
+        run: pip install pydantic==2.12.5 pyarrow==24.0.0 huggingface_hub==0.36.0
+
+      - name: Read the PR head and request as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || { echo "::error::invalid PR number"; exit 1; }
+          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::head must be a full SHA"; exit 1; }
+          [[ "${REQUEST_PATH}" =~ ^[A-Za-z0-9._/-]+$ && "${REQUEST_PATH}" != *..* ]] \
+            || { echo "::error::invalid request path"; exit 1; }
+          mkdir -p "${RUNNER_TEMP}/pr"
+          gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr/pr.json"
+          head_sha="$(jq -r .head.sha "${RUNNER_TEMP}/pr/pr.json")"
+          [[ "${head_sha}" == "${EXPECTED_HEAD}" ]] \
+            || { echo "::error::PR head is ${head_sha}, dispatched for ${EXPECTED_HEAD}"; exit 1; }
+          # Contents are fetched at the resolved SHA, never at a branch name.
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$(jq -r .head.repo.full_name "${RUNNER_TEMP}/pr/pr.json")/contents/${REQUEST_PATH}?ref=${head_sha}" \
+            > "${RUNNER_TEMP}/pr/request.json"
+
+      - name: Evaluate without credentials
+        env:
+          PYTHONPATH: python/aisim/src
+          AISIM_DATA_CACHE: ${{ runner.temp }}/aisim-cache
+        run: |
+          python -m aisim_core.data.validate run \
+            --pr-json "${RUNNER_TEMP}/pr/pr.json" --repo "${GH_REPO}" \
+            --request-file "${RUNNER_TEMP}/pr/request.json" \
+            --trusted-sha "${GITHUB_SHA}" --expected-head "${EXPECTED_HEAD}" \
+            --predictor-factory "${PREDICTOR_FACTORY}" \
+            --cache-dir "${AISIM_DATA_CACHE}" \
+            --output "${RUNNER_TEMP}/pr/report.json" --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Re-read the PR head and invalidate on change
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: python/aisim/src
+        run: |
+          [[ -f "${RUNNER_TEMP}/pr/report.json" ]] || { echo "no report to recheck"; exit 0; }
+          gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr/pr-after.json"
+          python -m aisim_core.data.validate recheck \
+            --pr-json "${RUNNER_TEMP}/pr/pr-after.json" --repo "${GH_REPO}" \
+            --request-file "${RUNNER_TEMP}/pr/request.json" \
+            --trusted-sha "${GITHUB_SHA}" --report "${RUNNER_TEMP}/pr/report.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: pr-validation-report-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/pr/report.json
+          if-no-files-found: ignore
