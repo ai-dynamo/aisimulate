@@ -162,8 +162,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     capture_telemetry = args.capture_telemetry or args.export_html
     if capture_telemetry and (args.stack != "engine" or args.online):
         raise ValueError("telemetry capture requires offline --stack engine")
-    if config.traffic.load.agentic_warmup_policy != "repeated_prefixes" and (args.stack != "engine" or args.online):
-        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
+    if config.traffic.load.agentic_warmup_policy != "repeated_prefixes" and args.online:
+        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} requires offline execution")
     if (
         config.engine.speculation is not None
         and config.engine.speculation.kind == "ngram"
@@ -315,12 +315,6 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     output_adapters = resolve_output_adapters(output_configs)
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
-    if (
-        config.traffic is not None
-        and config.traffic.load.agentic_warmup_policy != "repeated_prefixes"
-        and args.stack != "engine"
-    ):
-        raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,
