@@ -253,8 +253,8 @@ MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
 SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
 The [manifest](../../.github/prediction-numerical-sentinels.json)
 records each query's inputs and expected value. The expected values come from
-the code of the commit that last changed the manifest; find it with
-`git log -1 -- .github/prediction-numerical-sentinels.json`. That commit is on
+the code of the commit that last changed the manifest; find it in a clone with
+full history with `git log -1 -- .github/prediction-numerical-sentinels.json`. That commit is on
 the main branch of every clone and mirror, so the manifest records no separate
 commit: a commit from a squashed PR branch would not be.
 
@@ -284,8 +284,9 @@ prediction-stability values, not measured whole-model accuracy.
 
 After the PR #244 squash merge, its original baseline commit was no longer
 reachable in fresh CI checkouts. All eight sentinels were revalidated at
-`ba64235a645580a8a1b20a424fffef6514ff0103`; the manifest now references that
-permanent main-branch merge commit, which survives subsequent squash merges.
+`ba64235a645580a8a1b20a424fffef6514ff0103`, and the manifest then recorded that
+main-branch merge commit. A later refresh recorded a squashed-PR commit again,
+which mirrors could not fetch, so the manifest no longer records a commit.
 Expected values, query inputs, and tolerances are unchanged.
 
 The 16-case manifest was reproduced from runtime and packaged data at
