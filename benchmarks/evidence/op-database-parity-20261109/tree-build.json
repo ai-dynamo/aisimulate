@@ -1,0 +1,15 @@
+{
+  "declared_reuse": {
+    "resolved": 59
+  },
+  "n_converted_tables": 946,
+  "n_copied": 649,
+  "n_files": 1595,
+  "n_manifests": 625,
+  "n_skipped": 4,
+  "out": "<scratch>/tree",
+  "published_bytes": 111100703,
+  "source_bytes": 124065605,
+  "source_commit": "242e71a3f6f68061242506310cdfd9b4a71d53d8",
+  "source_map": "data/op-latency/source_map.parquet"
+}

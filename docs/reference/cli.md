@@ -109,6 +109,15 @@ root = materialize_systems_root(
 The root holds the packaged specs and support files plus the verified pinned `data/` tables (hard-linked from
 the cache when possible); it never mixes in packaged tables. The call fails if the destination exists.
 
+To load every operation table of a local dataset-layout tree (for example one built by
+`tools/perf_database/publish_op_latency_tree.py build`) into one root, use
+`aisim_core.data.op_tree.load_op_latency_tree(tree, destination)`. It verifies each manifest, copies the
+runtime tables, rebuilds `perf_data_reuse_manifest.yaml` and `query_versions.yaml` byte-for-byte from their Parquet
+tables and copies the packaged specs; the packaged data is not read or changed. The per-configuration path above
+selects one family and version, so a configuration that omits `operation_family` matches several catalog entries and
+fails with `data-conflict`. `tools/perf_database/op_database_parity.py` compares such a root with the packaged
+database; no default reads this root yet.
+
 | Consumer | Preparation |
 |---|---|
 | Python predict/recommend/replay | Automatic through the pin; `data fetch` only prefetches. |

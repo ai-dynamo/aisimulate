@@ -1,0 +1,359 @@
+{
+  "gates": {
+    "lookup": true,
+    "offline": true,
+    "predictions": true,
+    "rows": true
+  },
+  "load": {
+    "bytes": 105828523,
+    "entries": 625,
+    "files": 1587,
+    "lookup_files": [
+      "perf_data_reuse_manifest.yaml",
+      "query_versions.yaml"
+    ],
+    "root_bytes": 118107113,
+    "seconds": 1.0024526109918952
+  },
+  "lookup": {
+    "byte_identical": {
+      "perf_data_reuse_manifest.yaml": true,
+      "query_versions.yaml": true
+    },
+    "ok": true
+  },
+  "offline": {
+    "hf_pin_offline_empty_cache": {
+      "detail": "MissingDataError (no packaged fallback): offline: nvidia/aisim-data@0000000000000000000000000000000000000000 is not fully cached for system=h200_sxm, backend=vllm, backend_version=0",
+      "ok": true
+    },
+    "local_pin_single_entry": {
+      "configuration_id": "cfg-280bde1f755ba638aa8fd4e022e6c4318da0b690d163cc075e0e52bb3e7d98de",
+      "ok": true,
+      "systems_paths": [
+        "<scratch>/parity/offline/cache/materialized/local-b946b27aab2e2b8d/cfg-280bde1f755ba638aa8fd4e022e6c4318da0b690d163cc075e0e52bb3e7d98de/systems"
+      ]
+    },
+    "local_pin_without_family": {
+      "detail": "DataConflictError: 12 op-latency entries match system=h200_sxm, backend=vllm, backend_version=0.24.0 in /tmp/claude-1776682970/-home-simone",
+      "ok": true
+    },
+    "ok": true
+  },
+  "ok": true,
+  "packaged_systems": "/home/simonec/repo/aisim-worktree/2063-2342/python/aisimulate/src/aisimulate_core/systems",
+  "predictions": {
+    "compared_values": 924,
+    "max_abs_diff_ms": 0.0,
+    "max_rel_diff": 0.0,
+    "mismatches": [],
+    "ok": true,
+    "scenarios": [
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-32B h200_sxm vllm",
+        "ops": 84,
+        "scenario": {
+          "backend": "vllm",
+          "model": "Qwen/Qwen3-32B",
+          "system": "h200_sxm",
+          "tp": 2
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-32B h100_sxm trtllm",
+        "ops": 84,
+        "scenario": {
+          "backend": "trtllm",
+          "model": "Qwen/Qwen3-32B",
+          "system": "h100_sxm",
+          "tp": 2
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-32B b200_sxm sglang",
+        "ops": 84,
+        "scenario": {
+          "backend": "sglang",
+          "model": "Qwen/Qwen3-32B",
+          "system": "b200_sxm",
+          "tp": 2
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-32B gb300 trtllm",
+        "ops": 84,
+        "scenario": {
+          "backend": "trtllm",
+          "model": "Qwen/Qwen3-32B",
+          "system": "gb300",
+          "tp": 2
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-32B l40s vllm",
+        "ops": 84,
+        "scenario": {
+          "backend": "vllm",
+          "model": "Qwen/Qwen3-32B",
+          "system": "l40s",
+          "tp": 4
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "meta-llama/Meta-Llama-3.1-8B a100_sxm trtllm",
+        "ops": 84,
+        "scenario": {
+          "backend": "trtllm",
+          "model": "meta-llama/Meta-Llama-3.1-8B",
+          "system": "a100_sxm",
+          "tp": 1
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "meta-llama/Meta-Llama-3.1-70B h100_sxm vllm",
+        "ops": 84,
+        "scenario": {
+          "backend": "vllm",
+          "model": "meta-llama/Meta-Llama-3.1-70B",
+          "system": "h100_sxm",
+          "tp": 4
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-30B-A3B h200_sxm vllm",
+        "ops": 75,
+        "scenario": {
+          "backend": "vllm",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "moe_ep_size": 1,
+          "moe_tp_size": 2,
+          "system": "h200_sxm",
+          "tp": 2
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "Qwen/Qwen3-235B-A22B b200_sxm trtllm",
+        "ops": 75,
+        "scenario": {
+          "backend": "trtllm",
+          "model": "Qwen/Qwen3-235B-A22B",
+          "moe_ep_size": 8,
+          "moe_tp_size": 1,
+          "system": "b200_sxm",
+          "tp": 8
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "deepseek-ai/DeepSeek-V3 b200_sxm sglang",
+        "ops": 60,
+        "scenario": {
+          "attention_dp": 8,
+          "backend": "sglang",
+          "model": "deepseek-ai/DeepSeek-V3",
+          "moe_ep_size": 8,
+          "moe_tp_size": 1,
+          "system": "b200_sxm",
+          "tp": 1
+        },
+        "usable": true
+      },
+      {
+        "build_error": null,
+        "cases": 6,
+        "name": "deepseek-ai/DeepSeek-V3 h200_sxm trtllm",
+        "ops": 60,
+        "scenario": {
+          "attention_dp": 8,
+          "backend": "trtllm",
+          "model": "deepseek-ai/DeepSeek-V3",
+          "moe_ep_size": 8,
+          "moe_tp_size": 1,
+          "system": "h200_sxm",
+          "tp": 1
+        },
+        "usable": true
+      }
+    ],
+    "tree_run_selected_roots": [
+      "<scratch>/parity/loaded-systems"
+    ],
+    "tree_run_used_loaded_root_only": true,
+    "usable_scenarios": 11
+  },
+  "rows": {
+    "byte_equal": 643,
+    "not_runtime_published": [
+      "data/b200_sxm/README.md",
+      "data/b200_sxm/power_upstream/context_attention.parquet.source",
+      "data/b200_sxm/power_upstream/generation_attention.parquet.source",
+      "data/b200_sxm/vllm-0.25.0-collection-report.json",
+      "data/b200_sxm/vllm-0.25.0-collection.md",
+      "data/b200_sxm/vllm-0.25.0-failures.json.gz"
+    ],
+    "ok": true,
+    "packaged_files": 1597,
+    "problems": [],
+    "row_equal_tables": 944,
+    "rows": 17360711,
+    "skipped_placeholders": 4
+  },
+  "schema": "aisim-op-parity-report/v1",
+  "startup": {
+    "delta": {
+      "build_s": {
+        "abs": 0.006791338324546814,
+        "pct": 0.779193871748822
+      },
+      "first_prediction_s": {
+        "abs": -0.000613831914961338,
+        "pct": -0.2784342468027642
+      },
+      "peak_rss_mib": {
+        "abs": -0.02734375,
+        "pct": -0.019875635310485817
+      },
+      "wall_s": {
+        "abs": 0.01497062761336565,
+        "pct": 1.21467556812951
+      }
+    },
+    "hf-layout": {
+      "build_s": 0.8783765202388167,
+      "first_prediction_s": 0.21984465047717094,
+      "imports_s": 0.07576260436326265,
+      "peak_rss_mib": 137.546875,
+      "runs": [
+        {
+          "build_s": 0.8795780641958117,
+          "first_prediction_s": 0.21683960035443306,
+          "imports_s": 0.07506328634917736,
+          "peak_rss_mib": 137.546875,
+          "wall_s": 1.2421654891222715
+        },
+        {
+          "build_s": 0.8911898285150528,
+          "first_prediction_s": 0.2214914308860898,
+          "imports_s": 0.07576260436326265,
+          "peak_rss_mib": 137.51953125,
+          "wall_s": 1.2597885383293033
+        },
+        {
+          "build_s": 0.8702221643179655,
+          "first_prediction_s": 0.23249886091798544,
+          "imports_s": 0.0778569970279932,
+          "peak_rss_mib": 137.58203125,
+          "wall_s": 1.2485092161223292
+        },
+        {
+          "build_s": 0.8714189603924751,
+          "first_prediction_s": 0.21984465047717094,
+          "imports_s": 0.07600956317037344,
+          "peak_rss_mib": 137.515625,
+          "wall_s": 1.2422022949904203
+        },
+        {
+          "build_s": 0.8783765202388167,
+          "first_prediction_s": 0.21788442134857178,
+          "imports_s": 0.07560350745916367,
+          "peak_rss_mib": 137.65234375,
+          "wall_s": 1.247450147755444
+        }
+      ],
+      "wall_s": 1.247450147755444
+    },
+    "packaged": {
+      "build_s": 0.8715851819142699,
+      "first_prediction_s": 0.22045848239213228,
+      "imports_s": 0.07559044752269983,
+      "peak_rss_mib": 137.57421875,
+      "runs": [
+        {
+          "build_s": 0.872733298689127,
+          "first_prediction_s": 0.2212599078193307,
+          "imports_s": 0.07559044752269983,
+          "peak_rss_mib": 137.5859375,
+          "wall_s": 1.242375641129911
+        },
+        {
+          "build_s": 0.8536451244726777,
+          "first_prediction_s": 0.22045848239213228,
+          "imports_s": 0.07391279563307762,
+          "peak_rss_mib": 137.546875,
+          "wall_s": 1.220428455621004
+        },
+        {
+          "build_s": 0.85083123203367,
+          "first_prediction_s": 0.21925218869000673,
+          "imports_s": 0.0771410558372736,
+          "peak_rss_mib": 137.4453125,
+          "wall_s": 1.221907828003168
+        },
+        {
+          "build_s": 0.8728935830295086,
+          "first_prediction_s": 0.21523912530392408,
+          "imports_s": 0.0736219072714448,
+          "peak_rss_mib": 137.65625,
+          "wall_s": 1.2324795201420784
+        },
+        {
+          "build_s": 0.8715851819142699,
+          "first_prediction_s": 0.2229862380772829,
+          "imports_s": 0.07563675101846457,
+          "peak_rss_mib": 137.57421875,
+          "wall_s": 1.2421274948865175
+        }
+      ],
+      "wall_s": 1.2324795201420784
+    },
+    "repeats": 5,
+    "scenario": {
+      "backend": "vllm",
+      "model": "Qwen/Qwen3-32B",
+      "system": "h200_sxm",
+      "tp": 2
+    }
+  },
+  "sweep": {
+    "hf-layout": {
+      "peak_rss_mib": 251.7734375,
+      "total_s": 6.6099551152437925
+    },
+    "packaged": {
+      "peak_rss_mib": 251.80859375,
+      "total_s": 6.42069523409009
+    }
+  },
+  "tree": "<scratch>/tree",
+  "tree_catalog_sha256": "c78668ca017857ea8a3477128420dd6171b6bf5f67fbd051c7698ff0dee63d3a",
+  "tree_op_index_sha256": "1fda6e5266c3833490b528c8e267152d11f0c47d5867e703397dcb7684c32404"
+}

@@ -1,0 +1,13 @@
+{
+  "checks": {
+    "no_pin_leaves_config_unchanged": true,
+    "pin_set_builds_a_pin": true,
+    "pin_unset_is_no_pin": true,
+    "rolled_back_predictions_identical": true,
+    "rolled_back_uses_packaged_root": true
+  },
+  "compared_values": 924,
+  "max_abs_diff_ms": 0.0,
+  "ok": true,
+  "schema": "aisim-op-rollback-drill/v1"
+}
