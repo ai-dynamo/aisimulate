@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
+from aisim_core.sdk.errors import UnsupportedVisionFamilyError
 from aisim_core.sdk.utils import get_model_config_from_model_path
 
 from .compiler import prediction_to_replay_spec
@@ -144,9 +145,11 @@ def run_prediction(
     try:
         try:
             report = runner.run(spec, output_requirements=output_requirements)
-        except (KeyboardInterrupt, ResourceLimitError):
+        except (KeyboardInterrupt, ResourceLimitError, UnsupportedVisionFamilyError):
             # ResourceLimitError from a guarded runner must reach the caller
             # unwrapped so it can be handled distinctly from execution failures.
+            # A known unsupported vision family is likewise an input rejection,
+            # even though its geometry is resolved while preparing the runner.
             raise
         except Exception as exc:
             raise PredictionExecutionError(

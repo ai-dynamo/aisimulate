@@ -811,17 +811,109 @@ def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, ou
     assert runner.closed
 
 
-def test_run_prediction_wraps_runner_failure() -> None:
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_run_prediction_wraps_runner_failure(error_type, tmp_path, monkeypatch, capsys) -> None:
     class _FailingRunner(_Runner):
         def run(self, spec, *, output_requirements=None):
             self.spec = spec
-            raise RuntimeError("boom")
+            raise error_type("boom")
 
     runner = _FailingRunner()
-    with pytest.raises(PredictionExecutionError, match="RuntimeError: boom"):
+    with pytest.raises(PredictionExecutionError, match=f"{error_type.__name__}: boom"):
         run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(runner))
     # The runner is closed even when the run raises.
     assert runner.closed is True
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    assert cli.main(["predict", "--config", str(path), "--output-dir", str(tmp_path / "out")]) == 1
+    assert f"{error_type.__name__}: boom" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_predict_unsupported_vision_family_is_input_error(tmp_path, monkeypatch, capsys, mode):
+    from aisim.runner import _image_traffic_fields
+    from aisim_core.sdk import utils
+    from aisim_core.sdk.common import VisionEncoderConfig
+
+    # Minimal unqualified Pixtral geometry exercises the actual SDK refusal,
+    # without downloading a checkpoint or requiring performance measurements.
+    encoder = VisionEncoderConfig(
+        depth=1,
+        hidden_size=16,
+        num_heads=2,
+        intermediate_size=32,
+        patch_size=14,
+        temporal_patch_size=1,
+        spatial_merge_size=2,
+        out_hidden_size=16,
+        resize_mode="pixtral",
+    )
+
+    class ImageRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            if images := spec.workload.get("images"):
+                with monkeypatch.context() as patch:
+                    patch.setattr(
+                        utils,
+                        "get_model_config_from_model_path",
+                        lambda _: {
+                            "architecture": "Mistral3ForConditionalGeneration",
+                        },
+                    )
+                    patch.setattr(utils, "get_vision_encoder_config_from_model_info", lambda _: encoder)
+                    _image_traffic_fields(spec.backend_deployment, images)
+            return super().run(spec, output_requirements=output_requirements)
+
+    class ImageFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("sglang", "agg"), ("sglang", "disagg")),
+                supports_sglang_host_loop=True,
+            )
+
+    raw = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            "context_length": 4096,
+            "mode": mode,
+            "workers": {
+                role: {
+                    "kv_cache": {"block_size": 1, "bytes_per_token": 16, "capacity": {"type": "fixed", "blocks": 4096}}
+                }
+                for role in (["aggregated"] if mode == "aggregated" else ["prefill", "decode"])
+            },
+        },
+        "traffic": {
+            "source": {
+                "type": "synthetic",
+                "input_tokens": 128,
+                "output_tokens": 2,
+                "images": {"height": 70, "width": 70},
+            },
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+    }
+    runner = ImageRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: ImageFactory(runner))
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "images"
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["predict", "--config", str(path), "--output-dir", str(output)])
+    assert raised.value.code == 2
+    assert "Mistral3ForConditionalGeneration vision family is not supported" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
+    assert runner.closed
+
+    del raw["traffic"]["source"]["images"]
+    path.write_text(yaml.safe_dump(raw))
+    assert cli.main(["predict", "--config", str(path), "--output-dir", str(tmp_path / "text")]) == 0
+    assert (tmp_path / "text" / "prediction.json").exists()
 
 
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
