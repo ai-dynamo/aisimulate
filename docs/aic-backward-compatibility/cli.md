@@ -116,9 +116,9 @@ result = cli_generate(
     total_gpus=8,
     system="h200_sxm",
     backend="trtllm",
-    save_dir="./output",
+    output_dir="./output",
 )
-print(result["parallelism"])  # {'tp': 1, 'pp': 1, 'replicas': 8, 'gpus_used': 8}
+print(result["parallelism"])  # {'tp': 1, 'pp': 1, 'gpus_per_worker': 1, 'replicas': 8, 'gpus_used': 8}
 ```
 
 > **Note:** This is a naive configuration without memory validation or performance optimization. For production deployments, use `aiconfigurator cli default` to run the full parameter sweep with SLA optimization.
@@ -224,7 +224,8 @@ result = cli_estimate(
     batch_size=64, isl=2048, osl=512, tp_size=2,
 )
 print(f"TTFT: {result.ttft:.2f} ms, TPOT: {result.tpot:.2f} ms")
-print(f"Power: {result.power_w:.1f} W")
+power = "unavailable" if result.power_w is None else f"{result.power_w:.1f} W"
+print(f"Power: {power}")
 print(f"Throughput: {result.tokens_per_second_per_gpu:,.2f} tokens/s/gpu")
 
 # Disaggregated estimation
@@ -435,7 +436,9 @@ result = cli_recommend(
     tpot=30,
 )
 for mode, df in result.best_configs.items():
-    print(f"{mode}: {df[['total_gpus_needed', 'replicas_needed', 'tp', 'tpot']].head()}")
+    parallelism = ["tp"] if mode == "agg" else ["(p)tp", "(d)tp"]
+    columns = ["total_gpus_needed", "replicas_needed", *parallelism, "tpot"]
+    print(f"{mode}: {df[columns].head()}")
 ```
 
 ### Default mode
@@ -666,12 +669,11 @@ results/Qwen_Qwen3-32B-FP8_h200_sxm_trtllm_isl4000_osl1000_ttft1000_tpot20_90449
 │   ├── config.yaml
 │   ├── pareto.csv
 │   ├── top1
-│   │   ├── agg
-│   │   │   ├── agg_config.yaml
-│   │   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
-│   │   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
-│   │   │   ├── k8s_deploy.yaml
-│   │   │   └── node_0_run.sh
+│   │   ├── agg_config.yaml
+│   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
+│   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
+│   │   ├── k8s_deploy.yaml
+│   │   ├── run_0.sh
 │   │   └── generator_config.yaml
 │   ...
 ├── disagg
@@ -679,19 +681,18 @@ results/Qwen_Qwen3-32B-FP8_h200_sxm_trtllm_isl4000_osl1000_ttft1000_tpot20_90449
 │   ├── config.yaml
 │   ├── pareto.csv
 │   ├── top1
-│   │   ├── disagg
-│   │   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
-│   │   │   ├── decode_config.yaml
-│   │   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
-│   │   │   ├── k8s_deploy.yaml
-│   │   │   ├── node_0_run.sh
-│   │   │   └── prefill_config.yaml
+│   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
+│   │   ├── decode_config.yaml
+│   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
+│   │   ├── k8s_deploy.yaml
+│   │   ├── run_0.sh
+│   │   ├── prefill_config.yaml
 │   │   └── generator_config.yaml
 │   ...
 └── pareto_frontier.png
 ```
 By default, we output the top 5 configs we have found. You can get the configs and scripts to deploy under each experiment's folder. The generated files depend on your `--deployment-target`:
-- **Dynamo** (default): `k8s_deploy.yaml` for Kubernetes deployment, plus engine configs (`agg_config.yaml`, `prefill_config.yaml`, `decode_config.yaml`) and run scripts (`node_0_run.sh`)
+- **Dynamo** (default): `k8s_deploy.yaml` for Kubernetes deployment, plus engine configs (`agg_config.yaml`, `prefill_config.yaml`, `decode_config.yaml`) and run scripts (`run_0.sh`)
 - **llm-d**: `llm-d-values.yaml` for Helm deployment with the llm-d-modelservice chart
 - **FPM V1**: exactly `k8s_deploy.yaml` (a reusable keepalive Pod, LeaderWorkerSet, or Grove PodCliqueSet), `fpm_env.sh` (rank discovery plus the per-cell collection facts), and `run.sh` (the launch-only vLLM command)
 - **Slurm**: `deploy.sbatch`, `benchmark.sbatch`, `submit.sh`, `environment.sh`, `deployment.json`, `slurm_runtime.py`, and `bench_run.sh`, plus TRT-LLM engine configs when applicable. See [Generate a Slurm deployment](#generate-a-slurm-deployment).
@@ -1062,14 +1063,19 @@ For Dynamo and llm-d deployment targets, each `topN` directory includes two benc
 
 - **`bench_run.sh`** -- A shell script for bare-metal benchmarking. It loops over a concurrency array and calls [`aiperf profile`](https://github.com/ai-dynamo/aiperf) for each level. Before running it, make sure the deployed service is reachable at the endpoint printed in the script, and that `aiperf` is installed (`pip install aiperf`). Usage:
   ```bash
-  cd results/.../disagg/top1/disagg/
+  cd results/.../disagg/top1/
   bash bench_run.sh
   ```
 
 - **`k8s_bench.yaml`** -- A Kubernetes Job manifest that runs the same `aiperf` concurrency sweep inside the cluster. Apply it after the service is up:
   ```bash
-  kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
+  kubectl apply -f results/.../disagg/top1/k8s_bench.yaml
   ```
+
+For offline clients, set the benchmark tokenizer and mount its complete cache as
+explained in [Offline benchmark tokenizers](../sweeper/deployment-generation.md#offline-benchmark-tokenizers).
+A locally mounted serving model does not guarantee that the selected AIPerf
+version can load its tokenizer by filesystem path.
 
 **Concurrency sweep.** The Dynamo and llm-d benchmark artifacts iterate over a base concurrency list `[1, 2, 8, 16, 32, 64, 128]`. When an estimated concurrency is available from the AIConfigurator run, three additional points are added: the estimate itself and its +/-5% neighbors. This targets the operating point AIConfigurator found optimal. Slurm uses `SlurmConfig.benchmark_concurrency` and `SlurmConfig.benchmark_rounds`.
 
@@ -1348,15 +1354,15 @@ Use the generated artifacts to launch the service. For bare-metal (single-node):
 
 ```bash
 mkdir -p /workspace/engine_configs
-cp results/.../disagg/top1/disagg/*_config.yaml /workspace/engine_configs/
-cd results/.../disagg/top1/disagg/
-bash node_0_run.sh
+cp results/.../disagg/top1/*_config.yaml /workspace/engine_configs/
+cd results/.../disagg/top1/
+bash run_0.sh
 ```
 
 For Kubernetes (Dynamo):
 
 ```bash
-kubectl apply -f results/.../disagg/top1/disagg/k8s_deploy.yaml
+kubectl apply -f results/.../disagg/top1/k8s_deploy.yaml
 ```
 
 For llm-d (Helm):
@@ -1374,10 +1380,10 @@ After the service is healthy, run the generated benchmark sweep to validate perf
 
 ```bash
 # Bare-metal
-bash results/.../disagg/top1/disagg/bench_run.sh
+bash results/.../disagg/top1/bench_run.sh
 
 # Or Kubernetes
-kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
+kubectl apply -f results/.../disagg/top1/k8s_bench.yaml
 ```
 
 Compare the measured TTFT, TPOT, and tokens/s/gpu against the AIConfigurator estimates printed in Step 2. See [Benchmark Artifacts](#benchmark-artifacts) for details on the generated scripts.
