@@ -42,12 +42,28 @@
       "type": "string"
     },
     "total_raw_rows": {
-      "title": "Total Raw Rows",
-      "type": "integer"
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Raw Rows"
     },
     "within_framework_dedup_rows": {
-      "title": "Within Framework Dedup Rows",
-      "type": "integer"
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Within Framework Dedup Rows"
     }
   },
   "required": [
@@ -55,9 +71,7 @@
     "kernel_source",
     "tier",
     "systems",
-    "frameworks",
-    "total_raw_rows",
-    "within_framework_dedup_rows"
+    "frameworks"
   ],
   "title": "OpReuseManifestRow",
   "type": "object"
