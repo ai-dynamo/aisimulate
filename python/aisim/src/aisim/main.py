@@ -52,6 +52,7 @@ from .output_adapter import (
 from .power import normalize_power_summary
 from .predict import PredictionExecutionError, run_prediction
 from .replay.dashboard import write_replay_dashboard
+from .resource_worker import _exception_message
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -472,7 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"aisim {args.command} failed: {message}\n")
         return 1
     except Exception as exc:
-        sys.stderr.write(f"aisim {args.command} failed: {type(exc).__name__}: {exc}\n")
+        sys.stderr.write(f"aisim {args.command} failed: {_exception_message(exc)}\n")
         return 1
 
 
