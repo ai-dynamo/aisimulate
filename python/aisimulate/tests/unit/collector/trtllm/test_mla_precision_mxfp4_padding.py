@@ -56,7 +56,10 @@ class ReachedNativeBuilder(Exception):
 @pytest.mark.parametrize("model_name", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "other-mxfp4-model"])
 def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name):
     tree = ast.parse((COLLECTOR / "collect_moe.py").read_text())
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_moe_torch")
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_moe_case")
+    capacity_guard = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_refuse_moe_weight_capacity"
+    )
     native_builder = MagicMock(side_effect=ReachedNativeBuilder)
     namespace = {
         "torch": MagicMock(),
@@ -72,17 +75,22 @@ def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name)
         "get_sm_version": lambda: sm,
         "_MXFP4_MOE_TYPES": {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"},
         "RenormalizeMoeRoutingMethod": MagicMock(),
+        # Declared-routing lookup (DeepSeek-V3-family gate) is not exercised by
+        # these MXFP4 checkpoints; keep the softmax-top-k path under test.
+        "_declared_moe_routing": lambda _model_name: None,
+        "DeepseekV3Gate": MagicMock(),
         "create_moe": native_builder,
         "inspect": SimpleNamespace(signature=lambda _: SimpleNamespace(parameters={})),
     }
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "collect_moe.py", "exec"), namespace)
+    namespace["torch"].cuda.get_device_properties.return_value = SimpleNamespace(total_memory=80 * 2**30)
+    exec(compile(ast.Module(body=[capacity_guard, function], type_ignores=[]), "collect_moe.py", "exec"), namespace)
     if sm in (90, 120):
         with pytest.raises(ValueError, match="weight-layout alignment"):
-            namespace["run_moe_torch"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
+            namespace["_run_moe_case"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
         native_builder.assert_not_called()
         return
     with pytest.raises(ReachedNativeBuilder):
-        namespace["run_moe_torch"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
+        namespace["_run_moe_case"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
     assert native_builder.call_args.kwargs["intermediate_size"] == 2880
     assert native_builder.call_args.kwargs["model_config"].mapping.moe_tp_size == tp
     assert native_builder.call_args.kwargs["bias"] == model_name.startswith("openai/gpt-oss-")
@@ -95,7 +103,7 @@ def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name)
 @pytest.mark.parametrize("outcomes", ["fail,fail", "fail,pass", "pass,fail", "pass,pass", "fatal", "cached"])
 def test_moe_autotuning_requires_success_or_loaded_cache(outcomes):
     tree = ast.parse((COLLECTOR / "collect_moe.py").read_text())
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_moe_torch")
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_moe_case")
     tuning = next(
         node
         for node in ast.walk(function)
@@ -120,7 +128,7 @@ def test_moe_autotuning_requires_success_or_loaded_cache(outcomes):
             inference_mode=nullcontext,
         ),
         "cache_loaded": outcomes == "cached",
-        "num_tokens_lists": [2, 4, 8],
+        "num_tokens_lists": [2, 4],
         "max_tokens": 4,
         "inspect": inspect,
         "autotune": nullcontext,
@@ -130,15 +138,15 @@ def test_moe_autotuning_requires_success_or_loaded_cache(outcomes):
         "min_latency_mode": False,
     }
     block = compile(ast.Module(body=[tuning], type_ignores=[]), "collect_moe.py", "exec")
-    if outcomes == "fail,fail":
-        with pytest.raises(RuntimeError, match="any eligible token count") as caught:
+    if "fail" in outcomes:
+        with pytest.raises(RuntimeError, match="ordinary tuning failure") as caught:
             exec(block, namespace)
-        assert caught.value.__cause__ is failure
+        assert caught.value is failure
     elif outcomes == "fatal":
         with pytest.raises(AcceleratorError) as caught:
             exec(block, namespace)
         assert caught.value is fatal
     else:
         exec(block, namespace)
-    expected_calls = 0 if outcomes == "cached" else 1 if outcomes == "fatal" else 2
+    expected_calls = 0 if outcomes == "cached" else 1 if outcomes.startswith(("fatal", "fail")) else 2
     assert forward.call_count == expected_calls

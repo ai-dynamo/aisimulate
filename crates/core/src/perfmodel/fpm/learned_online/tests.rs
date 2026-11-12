@@ -723,6 +723,120 @@ fn public_online_publication_and_checkpoint_resume_pending() {
 }
 
 #[test]
+fn frozen_runtime_checkpoint_rejects_saved_mixed_state_even_without_policy() {
+    use crate::{EstimationMode, ForwardPassPerfModel};
+
+    let (learner, seed_model) = fixture(
+        controls(LearnedUpdateMode::LeafOnly, LearnedDerivativeRefresh::Eager),
+        &[&[1.0]],
+        &[10.0],
+        10.0,
+        vec![leaf(0.0)],
+        settings(1.0, 0.0),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let ordinary = directory.path().join("ordinary");
+    learner.save(&ordinary, &seed_model, "{}").unwrap();
+    let mut config = canonical();
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned.checkpoint_path = Some(ordinary.clone());
+    config.estimator_config.fpm_learned.adaptation = LearnedAdaptation::Frozen;
+    // Freezing an ordinary checkpoint continues to ignore fitting controls.
+    config.estimator_config.fpm_learned.seed = 987;
+    assert!(
+        config
+            .estimator_config
+            .temporary_mixed_composition
+            .is_none()
+    );
+    let ordinary_model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+    let exported =
+        LearnedForwardPassModel::from_json(&ordinary_model.export_learned_artifact().unwrap())
+            .unwrap();
+    assert_eq!(exported.store(KIND), seed_model.store(KIND));
+
+    let mixed = directory.path().join("mixed");
+    let saved_mixed = serde_json::json!({
+        "version": "original_a_composition_attention_moe_v1",
+        "binding": {"policy": {"scenario": "a_c", "mode": "compose_calibrated"}},
+        "admissions": {}, "corrections": {}
+    });
+    learner
+        .save(&mixed, &seed_model, &saved_mixed.to_string())
+        .unwrap();
+    config.estimator_config.fpm_learned.checkpoint_path = Some(mixed.clone());
+    let error = ForwardPassPerfModel::best_available(config.clone()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cannot discard saved mixed composition state")
+    );
+    std::fs::remove_file(mixed.join("state.bin")).unwrap();
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("cannot discard saved mixed composition state")
+    );
+
+    // Frozen inference needs only the saved forest, including when the online
+    // training state is corrupt or omitted from a deployment.
+    std::fs::write(ordinary.join("state.bin"), b"corrupted runtime state").unwrap();
+    config.estimator_config.fpm_learned.checkpoint_path = Some(ordinary.clone());
+    assert!(ForwardPassPerfModel::best_available(config.clone()).is_ok());
+    std::fs::remove_file(ordinary.join("state.bin")).unwrap();
+    assert!(ForwardPassPerfModel::best_available(config.clone()).is_ok());
+    // Version-5 checkpoints written before mixed composition have no marker.
+    let manifest_path = ordinary.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("has_mixed_composition_state");
+    std::fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(ForwardPassPerfModel::best_available(config).is_ok());
+}
+
+#[test]
+fn runtime_checkpoint_rejects_inconsistent_mixed_state_marker() {
+    let (learner, seed_model) = fixture(
+        controls(LearnedUpdateMode::LeafOnly, LearnedDerivativeRefresh::Eager),
+        &[&[1.0]],
+        &[10.0],
+        10.0,
+        vec![leaf(0.0)],
+        settings(1.0, 0.0),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    for (name, corrections, expected) in [
+        ("ordinary", "{}", false),
+        (
+            "mixed",
+            r#"{"version":"original_a_composition_attention_moe_v1"}"#,
+            true,
+        ),
+    ] {
+        let path = directory.path().join(name);
+        learner.save(&path, &seed_model, corrections).unwrap();
+        let manifest_path = path.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["has_mixed_composition_state"], expected);
+        manifest["has_mixed_composition_state"] = (!expected).into();
+        std::fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let mut model = checkpoint_model(&path).unwrap();
+        let error =
+            OnlineLearner::load(&path, &mut model, &learner.config, &canonical()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("mixed composition state differs from its manifest")
+        );
+    }
+}
+
+#[test]
 fn runtime_checkpoint_rejects_checksummed_but_inconsistent_state() {
     type Mutation = (&'static str, fn(&mut OnlineLearner));
     let (mut learner, mut model) = feature_change_fixture(LearnedDerivativeRefresh::Lazy);

@@ -170,8 +170,9 @@ and unsupported mappings still block resolution. Predictor failures stay visible
 
 The assumptions and topology/model mapping follow `research_defaults.py`,
 `mapping.py`, and `filter.py` under the gym source directory above at immutable
-revision `a5862f9d0e516fd920c130dfa8d6828c7ac319c4`. The original repository is
-[aisim-e2e-gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-e2e-gym).
+revision `a5862f9d0e516fd920c130dfa8d6828c7ac319c4`. See the
+[public migrated source](https://github.com/ai-dynamo/aisimulate/tree/127f0eed39754adad20cbf890f2a9cc1f19c7d61/scripts/e2e_accuracy/source),
+a modified public copy of the predecessor implementation.
 They fill preparation inputs, never the replay request/token loop.
 
 `--fetch-runtime-evidence` downloads public InferenceX artifacts and fixed

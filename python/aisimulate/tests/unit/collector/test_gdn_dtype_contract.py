@@ -41,7 +41,7 @@ def _dtype_expression(call: ast.Call) -> str | None:
 def test_vllm_gdn_temporal_state_matches_qwen35_fp32_cache(function_name):
     """All Qwen3.5 checkpoints declare mamba_ssm_dtype=float32, and vLLM's
     Qwen3_5ForConditionalGenerationConfig.verify_and_update_config
-    (vllm/model_executor/models/config.py:603-628 @ v0.24.0) adopts it when
+    (vllm/model_executor/models/config.py:603-628) adopts it when
     --mamba-ssm-cache-dtype is left at 'auto' — serving ssm state is fp32."""
     source_path = REPO_ROOT / "collector" / "vllm" / "collect_gdn.py"
     calls = _assigned_torch_call(_function(source_path, function_name), "gdn_state")
@@ -52,7 +52,7 @@ def test_vllm_gdn_temporal_state_matches_qwen35_fp32_cache(function_name):
 
 def test_sglang_gdn_generation_matches_bf16_model_dt_bias():
     """sglang's Qwen3_5GatedDeltaNet creates dt_bias without an explicit
-    dtype (python/sglang/srt/models/qwen3_5.py:237-239 @ v0.5.14), so the
+    dtype (python/sglang/srt/models/qwen3_5.py:237-239), so the
     parameter follows the model dtype (bf16), not fp32."""
     source_path = REPO_ROOT / "collector" / "sglang" / "collect_gdn.py"
     function = _function(source_path, "run_gdn_generation_benchmark")

@@ -169,8 +169,9 @@ The native engine export supports this evidence path with op-level timing on
 supported topologies. The external Dynamo Python adapter's diagnostics export
 requires separate qualification: native Rust compatibility aliases do not establish
 adapter parity. If a selected runner exports no typed evidence, energy details
-state that reason. FPM, fixed, polynomial, AFD, and analytical EPD energy remain
-unavailable; their summary fields are explicit nulls where unsupported.
+state that reason. Native AFD exports operation-energy evidence; numeric power
+depends on operation-energy coverage. FPM, fixed, polynomial, and analytical EPD
+energy remain unavailable; their summary fields are explicit nulls where unsupported.
 
 <a id="prediction-directory"></a>
 
@@ -196,7 +197,7 @@ unavailable; their summary fields are explicit nulls where unsupported.
   or workload estimates. `resource-runtime.json` records the effective budget and supervision
   outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
   [local execution resources](local-resources.md) for their interpretation.
-- `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
+- `afd-replay-spec.json` is the exact, deterministic native replay contract for an AFD run,
   including topology, measurement provenance, workload, goal, and any P/D companion.
 - `afd-qualification.json` validates and summarizes the A/F pools, routing order, backend version,
   measurement coverage, and GPU accounting. It explicitly records that native launch generation is
@@ -234,8 +235,9 @@ one JSON value for shell automation. Durable artifact formats do not change with
 Prediction JSON without `--detail` on standard output is a summary object. SGLang workers with
 `host_loop` add the mean time to first token split by stage: `mean_frontend_ms`,
 `mean_scheduler_inbox_wait_ms`, `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`,
-`mean_result_observation_delay_ms` and `mean_handoff_to_first_token_ms`. The six spans sum to
-per-request TTFT for requests that reached every milestone; with a native encoder pool they start
+`mean_result_observation_delay_ms`, `mean_handoff_to_first_token_ms` and `mean_detokenization_ms` (the
+engine emitting the first token to the client receiving it with `engine.detokenization`, otherwise
+zero). The seven spans sum to per-request TTFT for requests that reached every milestone; with a native encoder pool they start
 at the pool's delivery and `encoder_latency_ms` covers the wait. Encoder pools also report
 `encoder_gpus` and `total_gpus`. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
@@ -319,7 +321,7 @@ section with only some estimated roles is `partial` and records
 why other roles are unavailable. Energy retains an explicit unavailable status and reason when
 the runner exports no typed evidence. Missing measurements are never invented as zero;
 energy-aware runs with no covered operations report numeric zero coverage. Whole-model FPM,
-fixed/polynomial timing, analytical EPD/AFD overlays, and adapters without the native export
+fixed/polynomial timing, analytical EPD overlays, and adapters without the native export
 report operation timing/source evidence unavailable. Serving time statistics remain available
 where exported. See [diagnostic availability](../aic-backward-compatibility/migration.md#prediction-details-and-power).
 

@@ -177,8 +177,10 @@ class ContextDeepSeekV4AttentionModule(_core.ContextDeepSeekV4AttentionModule, O
 
             # paged_mqa_logits is the only sparse-kernel sidecar with a live
             # consumer (the CP chunk walk). The hca_attn/csa_attn sidecars
-            # were design placeholders with no query path and were retired
-            # (csa_attn never even shipped data).
+            # were design placeholders with no query path; they were retired
+            # here first and removed end to end (collector ops, PerfFile /
+            # PerfDataFilename, shipped tables) on 2026-10-15 — csa_attn never
+            # even shipped data.
             sparse_loaded = {
                 "paged_mqa_logits": _load_sparse("paged_mqa_logits", PerfDataFilename.dsv4_paged_mqa_logits_module),
             }

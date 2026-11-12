@@ -86,7 +86,8 @@ def test_untrained_regression_preserves_source_but_cannot_run_offline(tmp_path, 
     }
     # Explicit regression has no other cause to report; the other modes name the missing data.
     reason = (
-        "regression estimator is not ready; replay requires training observations"
+        "fpm_regression estimator is not ready: no workload store has a usable fit; tune it with observed "
+        "forward passes or restore a calibrated state snapshot"
         if mode == "fpm_regression"
         else "no timing data for sglang on gb300; backends with data on gb300: none"
     )

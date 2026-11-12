@@ -132,6 +132,8 @@ class MeasurementObservation:
     source_row: int
     iteration: ForwardPassIteration
     event_time: str | None = None
+    # Protocol-normalized chronology; preserve original event_time for identity.
+    event_time_ms: int | float | None = None
 
     @property
     def scheduled(self) -> RequestMetrics:

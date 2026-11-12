@@ -123,14 +123,56 @@ rejects pending resources. Rust exposes `FpmRuntimeMemoryConfig` and
 `FpmResourceConfig::require_memory()`. See [Rust literal migration](../aic-backward-compatibility/migration.md#rust-resource-and-memory-literals)
 for resource construction changes.
 
-Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
-`num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
-`sliding_window`. An omitted or null window retains full history; convolution
-groups require a window. `page_size_bytes` is the **rank-local aggregate for all
-layers in the group**, including runtime padding. Do not multiply it by
-`num_layers` again. Runtime block sizes and padding are deployment inputs; model
-geometry alone does not establish them. See the
+A runtime memory record can also keep the prefix-caching settings of the
+[runtime probe](fpm-self-service/implementation.md#resolve-cache-geometry-with-a-runtime-probe)
+that observed it: `enable_prefix_caching` (a boolean), `mamba_cache_mode`
+(`none` or `align`) and `hash_block_size_tokens` (the positive hash block size,
+in tokens, that the runtime resolved). All three are optional, and an absent
+field is left out of the serialized record. `align` requires
+`enable_prefix_caching` to be `true`. vLLM's `all` mode is not modeled and is
+rejected. Rust exports the mode type as `FpmMambaCacheMode`. These fields are
+evidence of the probe's settings. Selection, sizing and replay do not read them
+yet. The simulated deployment decides prefix caching.
+
+Each group has a unique `name`, `kind` (`attention`, `convolution` or `state`),
+positive `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional
+positive `sliding_window`. An omitted or null window retains full history;
+convolution groups require a window. In an attention or convolution group,
+`page_size_bytes` is the **rank-local aggregate for all layers in the group**,
+including runtime padding. Do not
+multiply it by `num_layers` again. Runtime block sizes and padding are deployment
+inputs; model geometry alone does not establish them. See the
 [grouped-profile review workflow](fpm-self-service/implementation.md#review-grouped-cache-resources).
+
+A `state` group holds fixed per-request state, such as the recurrent state of
+linear-attention layers. It has no `sliding_window`, and no other kind accepts
+`blocks_per_request`. Three fields have their own meaning in a `state` group:
+
+- `page_size_bytes` is one pool block: every byte that one block ID reserves in
+  the shared pool. This can be more than the bytes of the group's own layers.
+  vLLM pads each Mamba page to the attention page, and the group with the most
+  bytes per block sets the size of a pool block.
+- `block_size_tokens` is the block size of vLLM's state spec, as the runtime
+  probe records it. For a Mamba spec, that is the Mamba block: the scheduler
+  block in `align` mode and `max_model_len` in mode `none`. For a ring spec,
+  such as an indexer tail, it is the ring block. Sizing and replay do not read
+  this field yet. Planned grouped prefix caching will read it as the Mamba
+  block of `align` mode. So it stays part of the group shape that onboarding
+  compares with the runtime probe.
+- `blocks_per_request` is the positive number of pool blocks that a running
+  request holds between block boundaries. For a Mamba spec, that is `1 + k`,
+  where `k` is the spec's `num_speculative_blocks`. Grouped execution forbids
+  speculative decoding, so `k` is 0 there. A ring spec, such as
+  `KpoolTailSpec` or `CircularBufferSpec` in vLLM 0.31.0, holds 1 block for
+  the whole life of the request in every mode. The count does not change with
+  the request length. When a request crosses a block boundary in `align` mode,
+  a Mamba group also holds the previous block for one or two steps. vLLM's
+  startup sizing in that mode counts `2 + k + c` blocks per request for a
+  Mamba group, where `c` is the spec's `num_prefill_checkpoint_blocks`. It
+  counts 1 block for a ring group. See vLLM v0.31.0
+  [`kv_cache_interface.py:1083-1094`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/kv_cache_interface.py#L1083-L1094)
+  and
+  [`single_type_kv_cache_manager.py:1658-1675`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py#L1658-L1675).
 
 Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
 same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes
@@ -192,8 +234,11 @@ is atomic across all groups against one shared rank-local byte budget. A window
 of `W` keeps the blocks covering the last `W - 1` computed tokens and all tokens
 scheduled for the next forward. Expired completed pages are evicted before
 subsequent forwards; temporary prefill pages remain charged through completion.
-Full-attention groups retain full history. This physical retention never truncates
-logical request progress or the context coordinates sent to FPM timing queries.
+Full-attention groups retain full history. A `state` group holds its
+`blocks_per_request` blocks from the request's first scheduled forward until the
+request finishes, is cancelled or is preempted. A resumed request reserves them
+again once. This physical retention never truncates logical request progress or
+the context coordinates sent to FPM timing queries.
 
 The Rust Replay observer's `ReplaySchedulerMetricsSnapshot` reports optional
 `kv_cache_used_bytes` and `kv_cache_capacity_bytes` for grouped caches; its

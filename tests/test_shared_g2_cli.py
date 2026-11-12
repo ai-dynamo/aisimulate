@@ -32,15 +32,18 @@ from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolv
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplaySpec
 from aisimulate.sweeper.sample import unroll_sample
+from aisimulate_core.sdk.perf_database import get_version_slots
 
 SHARED = {"scope": "cluster_shared", "shared_d2h_bandwidth_gbps": 40.0, "latency_to_first_byte_ms": 0.5}
 OPTIMIZATION = {"constraints": {"max_candidate_gpus": 8}}
 EXPLICIT_PARALLELISM = "cluster_shared host_offload on both roles requires explicit integer tensor and pipeline"
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "cli" / "shared-g2-predict.yaml"
-# Default AIC timing resolves against the checked-in h200_sxm vLLM 0.24.0 data.
+# Default AIC timing resolves against the checked-in h200_sxm vLLM data of the populated
+# ``current`` slot (a version literal here would break on every full-collection promotion).
+AIC_VERSION = get_version_slots("h200_sxm", "vllm")["current"]
 AIC_LAYOUT = {
     "backend": "vllm",
-    "backend_version": "0.24.0",
+    "backend_version": AIC_VERSION,
     "block_size": 16,
     "bytes_per_token": 131_072,
     "model": "Qwen/Qwen3-32B-FP8",
@@ -68,7 +71,7 @@ def _layouts(execution: dict) -> dict[str, dict]:
 
 def _aic_engine(mode: str = "disaggregated", **engine_fields) -> dict:
     engine = _prediction_engine(mode=mode)
-    engine.update({"model": AIC_LAYOUT["model"], "backend_version": "0.24.0", **engine_fields})
+    engine.update({"model": AIC_LAYOUT["model"], "backend_version": AIC_VERSION, **engine_fields})
     for worker in engine["workers"].values():
         worker["parallelism"]["tensor"] = 2
         worker["timing"] = {"type": "default"}
@@ -284,7 +287,7 @@ def test_default_timing_layout_follows_each_workers_resolved_identity(
     assert _layouts(_recorded_prediction(tmp_path, monkeypatch, engine)) == {"prefill": layout, "decode": layout}
 
 
-@pytest.mark.parametrize("version", [None, "current", "0.24.0"])
+@pytest.mark.parametrize("version", [None, "current", AIC_VERSION])
 def test_default_timing_layout_uses_the_canonical_backend_version(tmp_path, monkeypatch, version: str | None) -> None:
     native = _recorded_prediction(tmp_path, monkeypatch, _aic_engine(backend_version=version))["spec"]["engine"]
     layouts = {native[role]["rank"]["native_host_offload"]["kv_layout_id"] for role in ("prefill", "decode")}

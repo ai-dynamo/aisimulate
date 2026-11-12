@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guard the MNNVL dtype gate in the all-reduce collectors (issue #1416).
+"""Guard the MNNVL dtype gate in the all-reduce collectors.
 
 TRT-LLM `AllReduce(mapping, dtype)` only builds the MNNVL path when dtype is
 passed at construction; dtype=None silently falls back to the heuristic path.

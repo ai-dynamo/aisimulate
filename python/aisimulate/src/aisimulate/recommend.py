@@ -13,10 +13,12 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
-from .config.engine import resolve_block_size
+from .config.engine import is_afd_worker, resolve_block_size
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
@@ -25,11 +27,37 @@ from .config_adapter import (
 )
 from .output_adapter import RecommendationOutputAdapter, RecommendationOutputContext, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
-from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
+from .sweeper.state_snapshot import packed_systems_root, state_snapshot_reference
+
+# Estimators fitted to forward-pass telemetry, which read no performance data.
+_FITTED_MODES = frozenset({"fpm_regression", "fpm_learned"})
+# Engine fields whose omission differs from an explicit default: a role timed
+# by a state snapshot takes an omitted one from the snapshot, while an explicit
+# one must agree with it. An omitted `backend` likewise yields to the snapshot.
+EXPLICIT_ENGINE_CONTROLS = (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
+
+
+def recommendation_payload(config: CoreRecommendationConfig) -> tuple[dict, list[str]]:
+    """The configuration a supervised worker rebuilds, and the engine fields the caller left unset.
+
+    Validating the payload marks every field it holds set, while
+    ``recommendation_to_sweeper`` tells an omitted engine control or backend
+    from an explicit one by the fields set. Every value travels, including
+    edits to objects created by default, and the names restore the omissions.
+    """
+    unset = sorted({*EXPLICIT_ENGINE_CONTROLS, "backend"} - config.engine.model_fields_set)
+    return config.model_dump(mode="json"), unset
+
+
+def recommendation_from_payload(raw: dict, unset: list[str]) -> CoreRecommendationConfig:
+    """Rebuild the configuration :func:`recommendation_payload` sent, with the same fields set."""
+    config = CoreRecommendationConfig.model_validate(raw)
+    config.engine.__pydantic_fields_set__.difference_update(unset)
+    return config
 
 
 def run_recommendation(
@@ -40,7 +68,6 @@ def run_recommendation(
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     output_configs: Mapping[str, Mapping[str, Any]] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
     output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
@@ -54,7 +81,6 @@ def run_recommendation(
         runner_factory=runner_factory,
         providers=providers,
         output_configs=output_configs,
-        afd_performance_model=afd_performance_model,
         show_progress=show_progress,
         output_requirements=output_requirements,
     )
@@ -72,7 +98,6 @@ def _run_recommendation(
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     output_configs: Mapping[str, Mapping[str, Any]] | None = None,
     output_adapters: Mapping[str, RecommendationOutputAdapter] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
     output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
@@ -142,7 +167,6 @@ def _run_recommendation(
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
             config, sample, spec, adapter_sections=adapter_sections
         ),
-        afd_performance_model=afd_performance_model,
     )
     output_callbacks = resolve_output_callbacks(
         output_configs or {},
@@ -180,11 +204,6 @@ def recommendation_to_sweeper(
     optimization = config.optimization
     mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"])
     modes = [_legacy_mode(str(value)) for value in mode_values]
-    afd = engine.get("afd")
-    if modes == ["afd"]:
-        if not isinstance(afd, dict):
-            raise ValueError("engine.mode='afd' requires engine.afd")
-        modes = ["afd+pd" if afd["combined_with_pd"] else "afd"]
     backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"])
     model = engine.get("model")
     if not isinstance(model, str) or not model:
@@ -229,11 +248,14 @@ def recommendation_to_sweeper(
     ):
         if name in engine:
             search_space[name] = deepcopy(engine[name])
+    # Only controls the caller set: a role timed by a state snapshot takes an
+    # omitted control from the snapshot, while an explicit default such as
+    # enable_eplb=false must agree with it. The Sweeper has the same defaults.
     search_space.update(
         {
             name: deepcopy(engine[name])
-            for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
-            if name in engine
+            for name in EXPLICIT_ENGINE_CONTROLS
+            if name in engine and name in config.engine.model_fields_set
         }
     )
     if engine.get("nextn"):
@@ -252,10 +274,16 @@ def recommendation_to_sweeper(
             if name in raw.get("timing", {})
         }
         for role, raw in workers.items()
-        if role in {"aggregated", "prefill", "decode"}
-        and not set(modes) & {"afd", "afd+pd"}
-        and workers.get("encoder") is None
+        if role in {"aggregated", "prefill", "decode"} and raw.get("type") != "afd" and workers.get("encoder") is None
     }
+    active_roles = ({"agg"} if "agg" in modes else set()) | ({"prefill", "decode"} if "disagg" in modes else set())
+    if "backend" not in config.engine.model_fields_set and any(
+        role in active_roles and state_snapshot_reference(controls) is not None
+        for role, controls in search_space["role_estimator_controls"].items()
+    ):
+        # A role timed by a state snapshot takes the backend from the snapshot,
+        # not from the default backend domain.
+        del search_space["backend"]
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
@@ -263,26 +291,9 @@ def recommendation_to_sweeper(
             search_space[f"{role}_context_length"] = workers[role]["context_length"]
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
-    if isinstance(afd, dict):
-        search_space.update(_afd_search_space(afd))
-        if modes == ["afd+pd"]:
-            companion_role = "decode" if afd["phase"] == "prefill" else "prefill"
-            workers.setdefault(companion_role, {})
-            kind, value = _parallel_entries(companion_role, workers[companion_role])
-            if kind == "flat":
-                search_space["afd_companion_parallel_configs"] = [_legacy_parallel(entry) for entry in value]
-            elif kind == "independent":
-                raise ValueError(
-                    f"engine.workers.{companion_role}.parallelism supports preset=default or a concrete "
-                    "preset list for AFD recommendations"
-                )
-    search_space.update(
-        _role_search_space(
-            workers,
-            modes,
-            afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
-        )
-    )
+    search_space["afd_roles"] = {role: deepcopy(raw) for role, raw in workers.items() if raw.get("type") == "afd"}
+    search_space["max_topology_candidates"] = optimization.max_topology_candidates
+    search_space.update(_role_search_space(workers, modes))
     search_space.update(_native_vl_search_space(config, workers))
     if engine.get("workers", {}).get("encoder") is not None:
         encoder = workers["encoder"]
@@ -310,7 +321,9 @@ def recommendation_to_sweeper(
         independent_parallel,
         independent_parallel_log_ranges,
         custom_parallel,
-    ) = _parallel_config_choices(workers, modes)
+    ) = _parallel_config_choices(
+        {role: ({} if raw.get("type") == "afd" else raw) for role, raw in workers.items()}, modes
+    )
     if pinned_parallel:
         search_space["parallel_configs_by_mode"] = pinned_parallel
     if flat_modes:
@@ -395,35 +408,9 @@ def _legacy_mode(mode: str) -> str:
     return {"aggregated": "agg", "disaggregated": "disagg"}.get(mode, mode)
 
 
-def _afd_search_space(afd: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "afd_phase": afd["phase"],
-        "afd_batch_size_candidates": [int(value) for value in _choices(afd["a_batch_size"], default=[])],
-        "afd_microbatch_candidates": [int(value) for value in _choices(afd.get("num_microbatches"), default=[2, 3, 4])],
-        "afd_pipeline_model_candidates": [
-            str(value)
-            for value in _choices(
-                afd.get("pipeline_model"),
-                default=["optimistic", "conservative"],
-            )
-        ],
-        "afd_comm_overhead_factor": afd.get("comm_overhead_factor", 1.0),
-        "afd_boundary_on_attn": afd.get("boundary_on_attn", True),
-        "afd_max_af_ratio": afd.get("max_af_ratio", 4.0),
-        "afd_max_candidates": afd.get("max_candidates", 10_000),
-    }
-    if afd.get("tp_a") is not None:
-        result["afd_tp_a_candidates"] = [int(value) for value in _choices(afd["tp_a"], default=[])]
-    if afd.get("f_moe_ep_size") is not None:
-        result["afd_f_moe_ep_size_candidates"] = _choices(afd["f_moe_ep_size"], default=[])
-    return result
-
-
 def _role_search_space(
     workers: dict[str, Any],
     modes: list[str],
-    *,
-    afd_phase: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "engine_float_ranges": {},
@@ -433,16 +420,8 @@ def _role_search_space(
     }
     specifications = (
         ("aggregated", "agg", "agg" in modes),
-        (
-            "prefill",
-            "prefill",
-            "disagg" in modes or ("afd+pd" in modes and afd_phase == "decode"),
-        ),
-        (
-            "decode",
-            "decode",
-            "disagg" in modes or ("afd+pd" in modes and afd_phase == "prefill"),
-        ),
+        ("prefill", "prefill", "disagg" in modes or "prefill" in modes),
+        ("decode", "decode", "disagg" in modes or "decode" in modes),
     )
     for public_role, legacy_role, required in specifications:
         raw = workers.get(public_role)
@@ -450,6 +429,8 @@ def _role_search_space(
             continue
         if not isinstance(raw, dict):
             raise ValueError(f"engine.workers.{public_role} is required")
+        if raw.get("type") == "afd":
+            continue
         scheduler = raw.get("scheduler") or {}
         if not isinstance(scheduler, dict):
             raise ValueError(f"engine.workers.{public_role}.scheduler must be a mapping")
@@ -497,6 +478,8 @@ def _role_search_space(
         else:
             result[memory_name] = memory_value
         result[f"{legacy_role}_enable_prefix_caching"] = cache.get("prefix_caching", True)
+        if legacy_role == "decode":
+            result["decode_radix_cache"] = cache.get("decode_radix_cache", False)
         result[f"{legacy_role}_kv_bytes_per_token"] = cache.get("bytes_per_token", "auto")
         result[f"{legacy_role}_native_host_offload"] = deepcopy(cache.get("host_offload"))
         capacity_type = capacity.get("type", "default")
@@ -554,7 +537,7 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
     for public_role, role in (("aggregated", "agg"), ("prefill", "prefill")):
         worker = getattr(config.engine.workers, public_role)
         raw = workers.get(public_role) if isinstance(workers, dict) else None
-        if worker is None or not isinstance(raw, dict):
+        if worker is None or is_afd_worker(worker) or not isinstance(raw, dict):
             continue
         source = config.traffic.source if config.traffic is not None else None
         images = getattr(source, "images", None)
@@ -807,6 +790,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
         )
         if source.get("nested_timestamp_basis") is not None:
             result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
+        if source.get("client") is not None:
+            result["weka_client"] = source["client"]
         if load_type == "concurrency":
             _configure_load_domain(
                 result,
@@ -934,6 +919,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.metrics:
+        payload["metric_constraints"] = [c.model_dump(mode="json") for c in config.optimization.constraints.metrics]
     if config.optimization.constraints.min_goodput_rps is not None:
         payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla
@@ -951,17 +938,13 @@ def _candidate_prediction(
 ) -> dict[str, Any]:
     deployment = replay_spec.backend_deployment
     engine: dict[str, Any] = {
-        "mode": (
-            "aggregated"
-            if deployment.deployment_mode == "agg"
-            else "afd"
-            if deployment.deployment_mode in {"afd", "afd+pd"}
-            else "disaggregated"
-        ),
+        "mode": ("aggregated" if deployment.deployment_mode == "agg" else "disaggregated"),
         "model": sample["model_name"],
         "hardware": sample["hardware_sku"],
         "backend": sample["backend"],
-        "backend_version": sample.get("backend_version") or None,
+        # Save the concrete deployment identity, including AFD roles whose
+        # sampled topology does not itself carry a backend-version field.
+        "backend_version": deployment.backend_version or sample.get("backend_version") or None,
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
@@ -969,13 +952,13 @@ def _candidate_prediction(
         engine["systems_paths"] = sample["systems_paths"]
     if sample.get("fpm_profile") is not None:
         engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
-    for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
+    for name in EXPLICIT_ENGINE_CONTROLS:
         if sample.get(name) is not None:
             engine[name] = sample[name]
     if sample.get("aic_nextn"):
         engine["nextn"] = sample["aic_nextn"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
-    if deployment.forward_pass_estimators:
+    if deployment.forward_pass_estimators or deployment.has_afd:
         for name in (
             "database_mode",
             "transfer_policy",
@@ -992,35 +975,46 @@ def _candidate_prediction(
         from .config.epd import encoder_prediction_fields
 
         engine["workers"]["encoder"] = encoder_prediction_fields(deployment.encoder)
-    if deployment.deployment_mode in {"afd", "afd+pd"}:
-        raw_afd = sample.get("afd")
-        if not isinstance(raw_afd, dict):
-            raise InfeasibleCandidate("AFD candidate omitted its concrete topology")
-        engine["afd"] = {
-            name: raw_afd[name]
-            for name in (
-                "phase",
-                "combined_with_pd",
-                "n_a_nodes",
-                "n_f_nodes",
-                "tp_a",
-                "a_batch_size",
-                "f_moe_ep_size",
-                "num_microbatches",
-                "pipeline_model",
-                "comm_overhead_factor",
-                "boundary_on_attn",
-            )
-        }
-        roles = (str(sample["afd_companion_role"]),) if deployment.deployment_mode == "afd+pd" else ()
-    else:
-        roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
+    roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"
         public_role = "aggregated" if role == "agg" else role
         raw_worker = (
             raw_engine.get("workers", {}).get(public_role, {}) if isinstance(raw_engine.get("workers"), dict) else {}
         )
+        if public_role in sample.get("afd_roles", {}):
+            raw_afd = sample["afd_roles"][public_role]
+            afd = {
+                name: raw_afd[name]
+                for name in (
+                    "n_a_nodes",
+                    "n_f_nodes",
+                    "a_tp_size",
+                    "batch_size_per_a_replica",
+                    "f_moe_ep_size",
+                    "num_microbatches",
+                    "pipeline_layout",
+                    "comm_overhead_factor",
+                    "routing_location",
+                    "a_system",
+                    "f_system",
+                )
+                if name in raw_afd and raw_afd[name] is not None
+            }
+            afd["tp_a"] = afd.pop("a_tp_size")
+            afd["a_batch_size"] = afd.pop("batch_size_per_a_replica")
+            if raw_worker.get("afd", {}).get("chunked_prefill_size") is not None:
+                afd["chunked_prefill_size"] = raw_worker["afd"]["chunked_prefill_size"]
+            engine["workers"][public_role] = {
+                "type": "afd",
+                "afd": afd,
+                **{
+                    k: v
+                    for k, v in sample.get("afd_worker_settings", {}).get(public_role, {}).items()
+                    if k != "parallelism"
+                },
+            }
+            continue
         block_size = resolve_block_size(sample["backend"], sample[f"{role}_block_size"])
         memory_fraction = sample[f"{role}_gpu_memory_utilization"]
         if memory_fraction is None:
@@ -1048,7 +1042,15 @@ def _candidate_prediction(
                 "estimator_config": deepcopy(resolved["estimator_config"]),
             }
             # Per-role roots can differ; preserve them next to the role's timing.
-            timing["systems_paths"] = list(resolved["systems_paths"])
+            # A packed snapshot's own root moves with the snapshot, which the
+            # timing already names. A regression or learned model reads no
+            # performance data, so its prediction names no root to relocate.
+            if (
+                resolved["systems_paths"]
+                and resolved["estimation_mode"] not in _FITTED_MODES
+                and packed_systems_root(resolved["estimator_config"]) is None
+            ):
+                timing["systems_paths"] = list(resolved["systems_paths"])
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None
@@ -1063,7 +1065,9 @@ def _candidate_prediction(
                         "comm_quant_mode",
                         "attention_backend",
                     )
-                    if resolved.get(field) is not None
+                    # A fact the snapshot does not know stays in its identity;
+                    # predict would read an unknown KV dtype for byte estimates.
+                    if resolved.get(field) not in (None, UNKNOWN_IDENTITY)
                 }
             )
         kv_cache = {
@@ -1072,6 +1076,8 @@ def _candidate_prediction(
             "bytes_per_token": sample[f"{role}_kv_bytes_per_token"],
             "capacity": capacity,
         }
+        if role == "decode" and sample["backend"] == "sglang" and sample.get("decode_radix_cache"):
+            kv_cache["decode_radix_cache"] = True
         role_args = (
             deployment.agg_engine_args
             if role == "agg"
@@ -1151,6 +1157,11 @@ def _candidate_prediction(
     except ValueError as exc:
         raise InfeasibleCandidate(f"generated prediction config is infeasible: {exc}") from exc
     public = prediction.model_dump(mode="python", exclude_none=True)
+    # Recommendation has no decoder_replay setting. Leaving it unset lets
+    # predict take each snapshot role's saved value; a written default would
+    # read back as an explicit false.
+    if "decoder_replay" not in prediction.engine.model_fields_set:
+        public["engine"].pop("decoder_replay", None)
     public.update(concrete_adapters)
     return public
 

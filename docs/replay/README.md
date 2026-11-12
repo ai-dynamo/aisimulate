@@ -25,7 +25,8 @@ The native runtime executes in process without a network plane or asynchronous
 worker tasks. At each meaningful timestamp it settles engine completions,
 worker readiness, transfers and admission, then telemetry and scaling. A
 logical worker can contain multiple attention-DP rank schedulers; the grouped
-pass completes at the slowest rank's latency.
+pass completes at the slowest rank's latency, priced once for all ranks when
+the timing provider supports it.
 
 The built-in `engine` stack provides offline execution with round-robin
 placement and fixed worker pools. Dynamo supplies its own Router and Planner
