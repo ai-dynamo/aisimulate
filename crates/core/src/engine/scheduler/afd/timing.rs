@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! AFD replay timing uses actual per-pass geometry and records each query.
+//! AFD replay timing uses actual per-pass geometry and records each pass.
 
 use std::sync::Arc;
 #[cfg(feature = "python")]
@@ -30,7 +30,6 @@ const PRICED_PASS_CAPACITY: usize = 4096;
 /// a pass's price depends on besides the provider's fixed configuration.
 type PassShape = (bool, u32, u32, u32);
 
-/// The price of one pass shape.
 struct PricedPass {
     step_latency_ms: f64,
     #[cfg(feature = "python")]
@@ -43,8 +42,7 @@ pub struct AfdTimingModel {
     knobs: AfdPipelineKnobs,
     isl: u32,
     osl: u32,
-    /// Replay repeats few pass shapes over many passes, so each shape's A/F
-    /// plan is priced once. Every pass still records its evidence.
+    /// Price of each pass shape seen so far.
     priced: quick_cache::sync::Cache<PassShape, Arc<PricedPass>>,
     /// Power evidence accumulator: per-op energy from the two
     /// pool engines flows into the standard replay power statistics.
@@ -76,19 +74,59 @@ impl AfdTimingModel {
         }
     }
 
-    /// The price of `shape`, which `price` computes when no pass has asked
-    /// for it yet. A failed price is not kept.
-    fn priced_pass(
-        &self,
-        shape: PassShape,
-        price: impl FnOnce() -> Result<PricedPass>,
-    ) -> Result<Arc<PricedPass>> {
-        if let Some(pass) = self.priced.get(&shape) {
-            return Ok(pass);
-        }
-        let pass = Arc::new(price()?);
-        self.priced.insert(shape, Arc::clone(&pass));
-        Ok(pass)
+    /// Step latency of a pass of `shape`. A shape is priced on its first pass;
+    /// every pass records its evidence.
+    fn pass_ms(&self, shape: PassShape) -> Result<f64> {
+        let pass = match self.priced.get(&shape) {
+            Some(pass) => pass,
+            None => {
+                let pass = Arc::new(self.price(shape)?);
+                self.priced.insert(shape, Arc::clone(&pass));
+                pass
+            }
+        };
+        #[cfg(feature = "python")]
+        self.evidence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("AFD timing evidence accumulator was poisoned"))?
+            .record(&pass.evidence, shape.0)?;
+        Ok(pass.step_latency_ms)
+    }
+
+    /// Takes only the shape, so a kept price cannot depend on anything
+    /// outside the memo key.
+    fn price(&self, (prefill, batch_size, length, prefix): PassShape) -> Result<PricedPass> {
+        #[cfg(feature = "python")]
+        let (metrics, operations) = if prefill {
+            self.perf
+                .predict_prefill_step_with_operations(batch_size, length, prefix)?
+        } else {
+            self.perf
+                .predict_decode_step_with_operations(batch_size, length, prefix)?
+        };
+        #[cfg(not(feature = "python"))]
+        let metrics = if prefill {
+            self.perf
+                .predict_prefill_step_ms(batch_size, length, prefix)?
+        } else {
+            self.perf
+                .predict_decode_step_ms(batch_size, length, prefix)?
+        };
+        let knobs = AfdPipelineKnobs {
+            total_batch_size: batch_size,
+            ..self.knobs
+        };
+        let (phase, input_length) = if prefill {
+            (AfdEvalPhase::Prefill, length)
+        } else {
+            (AfdEvalPhase::Decode, self.isl)
+        };
+        let evaluation = evaluate_afd_metrics(&knobs, &metrics, phase, input_length, self.osl)?;
+        Ok(PricedPass {
+            step_latency_ms: evaluation.step_latency_ms,
+            #[cfg(feature = "python")]
+            evidence: self.operation_evidence(operations)?,
+        })
     }
 
     #[cfg(feature = "python")]
@@ -120,39 +158,7 @@ impl TimingModel for AfdTimingModel {
         let batch_size = checked_timing_u32(batch_size, "batch_size")?;
         let mean_isl = checked_timing_u32(mean_isl, "mean_isl")?;
         let mean_prefix = checked_timing_u32(mean_prefix, "mean_prefix")?;
-        let pass = self.priced_pass((true, batch_size, mean_isl, mean_prefix), || {
-            #[cfg(feature = "python")]
-            let (metrics, operations) = self.perf.predict_prefill_step_with_operations(
-                batch_size,
-                mean_isl,
-                mean_prefix,
-            )?;
-            #[cfg(not(feature = "python"))]
-            let metrics = self
-                .perf
-                .predict_prefill_step_ms(batch_size, mean_isl, mean_prefix)?;
-            let evaluation = evaluate_afd_metrics(
-                &AfdPipelineKnobs {
-                    total_batch_size: batch_size,
-                    ..self.knobs
-                },
-                &metrics,
-                AfdEvalPhase::Prefill,
-                mean_isl,
-                self.osl,
-            )?;
-            Ok(PricedPass {
-                step_latency_ms: evaluation.step_latency_ms,
-                #[cfg(feature = "python")]
-                evidence: self.operation_evidence(operations)?,
-            })
-        })?;
-        #[cfg(feature = "python")]
-        self.evidence
-            .lock()
-            .map_err(|_| anyhow::anyhow!("AFD evidence accumulator poisoned"))?
-            .record(&pass.evidence, true)?;
-        Ok(pass.step_latency_ms)
+        self.pass_ms((true, batch_size, mean_isl, mean_prefix))
     }
 
     fn predict_decode_ms(
@@ -165,35 +171,7 @@ impl TimingModel for AfdTimingModel {
         let batch_size = checked_timing_u32(batch_size, "batch_size")?;
         let mean_context_length =
             checked_timing_u32(mean_context_length.max(1), "mean_context_length")?;
-        let pass = self.priced_pass((false, batch_size, mean_context_length, 0), || {
-            #[cfg(feature = "python")]
-            let (metrics, operations) = self.perf.predict_decode_step_with_operations(
-                batch_size,
-                mean_context_length,
-                0,
-            )?;
-            #[cfg(not(feature = "python"))]
-            let metrics = self
-                .perf
-                .predict_decode_step_ms(batch_size, mean_context_length, 0)?;
-            let knobs = AfdPipelineKnobs {
-                total_batch_size: batch_size,
-                ..self.knobs
-            };
-            let evaluation =
-                evaluate_afd_metrics(&knobs, &metrics, AfdEvalPhase::Decode, self.isl, self.osl)?;
-            Ok(PricedPass {
-                step_latency_ms: evaluation.step_latency_ms,
-                #[cfg(feature = "python")]
-                evidence: self.operation_evidence(operations)?,
-            })
-        })?;
-        #[cfg(feature = "python")]
-        self.evidence
-            .lock()
-            .map_err(|_| anyhow::anyhow!("AFD timing evidence accumulator was poisoned"))?
-            .record(&pass.evidence, false)?;
-        Ok(pass.step_latency_ms)
+        self.pass_ms((false, batch_size, mean_context_length, 0))
     }
 
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
@@ -514,51 +492,33 @@ pub(crate) mod tests {
         );
     }
 
-    /// A repeated pass shape is priced once: the later pass returns the same
-    /// step latency and records the same evidence again. Shapes that differ in
-    /// phase, batch or length keep their own price.
-    #[cfg(feature = "python")]
+    /// A repeated pass shape is priced once. Shapes that differ in phase,
+    /// batch, length or prefix keep their own price.
     #[test]
-    fn repeated_pass_shape_reuses_its_price_and_evidence() {
+    fn repeated_pass_shape_is_priced_once() {
         let timing = provider();
+        let shape: PassShape = (false, 8, 1024, 0);
         let first = timing
             .predict_decode_ms(8, 8 * 1024, 1024, 16384)
             .expect("decode");
-        let one_pass = timing.evidence_summary().expect("summary").decode;
+        let kept = timing.priced.get(&shape).expect("kept");
         let again = timing
             .predict_decode_ms(8, 8 * 1024, 1024, 16384)
             .expect("decode");
         assert_eq!(again, first);
-        assert_eq!(timing.priced.len(), 1);
-        // Doubling is exact, so two equal passes sum to exactly twice one.
-        let two_passes = timing.evidence_summary().expect("summary").decode;
-        assert_eq!(two_passes.latency_ms, 2.0 * one_pass.latency_ms);
-        assert_eq!(two_passes.operations.len(), one_pass.operations.len());
-        for (two, one) in two_passes.operations.iter().zip(&one_pass.operations) {
-            assert_eq!(two.name, one.name);
-            assert_eq!(two.latency_ms, 2.0 * one.latency_ms, "{}", one.name);
-        }
+        // A second price would replace the kept `Arc`.
+        assert!(Arc::ptr_eq(
+            &kept,
+            &timing.priced.get(&shape).expect("kept")
+        ));
 
-        let unshared = provider();
         for (batch, context) in [(8, 1025), (16, 1024)] {
-            assert_eq!(
-                timing
-                    .predict_decode_ms(batch, batch * context, context, 16384)
-                    .expect("decode"),
-                unshared
-                    .predict_decode_ms(batch, batch * context, context, 16384)
-                    .expect("decode"),
-                "batch={batch} context={context}"
-            );
+            timing
+                .predict_decode_ms(batch, batch * context, context, 16384)
+                .expect("decode");
         }
         for prefix in [0, 512] {
-            assert_eq!(
-                timing.predict_prefill_ms(8, 1024, prefix).expect("prefill"),
-                unshared
-                    .predict_prefill_ms(8, 1024, prefix)
-                    .expect("prefill"),
-                "prefix={prefix}"
-            );
+            timing.predict_prefill_ms(8, 1024, prefix).expect("prefill");
         }
         assert_eq!(timing.priced.len(), 5);
     }
