@@ -21,6 +21,7 @@ from pathlib import Path
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
+from scripts.e2e_accuracy.summary_contract import normalize_summary
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 from scripts.fpm_accuracy.scenario_contract import validate_scenarios
 from scripts.pages import feature_support_matrix as feature_matrix
@@ -365,7 +366,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require(aic_successes == item["aic"]["points"], "AIC topology coverage (AIC point count)")
 
     try:
-        summary = json.loads(text)
+        summary = normalize_summary(json.loads(text), target_version=1)
         metric_contract = summary.get("snapshot", {}).get("campaign", {}).get("metric_contract")
         require(metric_contract in (None, "serving-metrics-v1"), "metric contract")
         require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
