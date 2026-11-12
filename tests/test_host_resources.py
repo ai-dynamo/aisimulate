@@ -519,7 +519,8 @@ def test_recommendation_reports_progress_callback_failures_to_failure_hook(monke
     assert failures == [raised.value]
 
 
-def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch):
+@pytest.mark.parametrize("entrypoint", ["api", "cli"])
+def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch, tmp_path, capsys, entrypoint):
     import threading
 
     import aisimulate.recommend as recommendation
@@ -592,25 +593,37 @@ def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypat
             raise search_error
 
     monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    adapters = {"first": FailingCleanupAdapter(), "publisher": PublisherAdapter()}
 
     try:
-        with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
-            recommendation._run_recommendation(
-                config,
-                stack="engine",
-                runner_factory=object(),
-                output_configs={"first": {}, "publisher": {}},
-                output_adapters={
-                    "first": FailingCleanupAdapter(),
-                    "publisher": PublisherAdapter(),
-                },
+        if entrypoint == "api":
+            with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
+                recommendation._run_recommendation(
+                    config,
+                    stack="engine",
+                    runner_factory=object(),
+                    output_configs={"first": {}, "publisher": {}},
+                    output_adapters=adapters,
+                )
+            assert raised.value is search_error
+            message = _exception_message(raised.value)
+        else:
+            monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
+            monkeypatch.setattr(cli, "resolve_output_adapters", lambda _: adapters)
+            monkeypatch.setattr(
+                recommendation,
+                "run_recommendation",
+                lambda config, **kwargs: recommendation._run_recommendation(config, output_adapters=adapters, **kwargs),
             )
+            path = tmp_path / "recommend.yaml"
+            path.write_text(yaml.safe_dump({**_config(), "first": {}, "publisher": {}}))
+            assert cli.main(["recommend", "-c", str(path), "--output", "first", "--output", "publisher"]) == 1
+            message = capsys.readouterr().err.removeprefix("aisimulate recommend failed: ")
     finally:
         stop.set()
         for publisher in publishers:
             publisher.join(timeout=1)
 
-    assert raised.value is search_error
     assert events == [
         ("publisher_started",),
         ("first_failure", search_error),
@@ -619,7 +632,6 @@ def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypat
         ("publisher_joined",),
     ]
     assert all(not publisher.is_alive() for publisher in publishers)
-    message = _exception_message(raised.value)
     assert message.startswith("RuntimeError: ORIGINAL_SEARCH_FAILURE")
     assert "first" in message
     assert "on_failure" in message
