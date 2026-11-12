@@ -349,6 +349,7 @@ fn request_features_are_explicit_and_projection_failures_do_not_mutate_store() {
             Axis::LogCount,
             Axis::CountSquared,
         ],
+        feature_axes::AxisConstants::default(),
     )
     .unwrap();
     assert_eq!(&projected[..3], &[7.0, 11.0, 3.0]);
@@ -375,6 +376,7 @@ fn request_features_are_explicit_and_projection_failures_do_not_mutate_store() {
             Axis::PastCvSquared,
             Axis::MeanPast,
         ],
+        feature_axes::AxisConstants::default(),
     )
     .unwrap();
     // Requests (extend,past)=(1,3),(1,7),(2,4): F=3.5+7.5+10;
@@ -422,4 +424,61 @@ fn request_features_are_explicit_and_projection_failures_do_not_mutate_store() {
     assert!(store.add_metrics([3.0, 5.0], 25.0, &malformed).is_err());
     assert!(!store.add_metrics([3.0, 5.0], f64::NAN, &requests).unwrap());
     assert_eq!(format!("{store:?}"), before);
+}
+
+/// The `longest_split` and `eager` constants: 66 KV splits for a request
+/// running alone, and CUDA graphs up to 512 scheduled tokens.
+fn gpu_constants() -> feature_axes::AxisConstants {
+    feature_axes::AxisConstants::of(&RegressionFitConfig {
+        linear: Some(LinearFitConfig {
+            max_kv_splits: Some(66),
+            max_cudagraph_capture_size: Some(512),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn longest_split_divides_each_ranks_longest_sequence_by_its_kv_splits() {
+    let longest = |ranks: &[ForwardPassMetrics]| {
+        let axes = [Axis::LongestPerSplit];
+        feature_axes::project([0.0, 0.0], ranks, &axes, gpu_constants()).unwrap()[0]
+    };
+    // Three requests verifying 6 tokens get floor(66 / 3) = 22 splits each.
+    let decode = metric(
+        serde_json::json!({"num_decode_requests": 3, "sum_decode_kv_tokens": 1300, "extend_lengths": [6,6,6], "past_kv_lengths": [100,900,300]}),
+    );
+    close(longest(std::slice::from_ref(&decode)), 906.0 / 22.0);
+    // A prefill chunk beside a long decode request: two requests, 33 splits.
+    let mixed = metric(
+        serde_json::json!({"num_prefill_requests": 1, "sum_prefill_tokens": 2000, "num_decode_requests": 1, "sum_decode_kv_tokens": 50000, "extend_lengths": [2000,6], "past_kv_lengths": [0,50000]}),
+    );
+    close(longest(std::slice::from_ref(&mixed)), 50_006.0 / 33.0);
+    // Each attention-DP rank splits its own batch, not the five requests of
+    // both (13 splits); the slower rank decides.
+    close(longest(&[decode, mixed]), 50_006.0 / 33.0);
+    // More requests than splits leave one split each.
+    let wide = metric(
+        serde_json::json!({"num_decode_requests": 80, "sum_decode_kv_tokens": 80_000, "extend_lengths": vec![6; 80], "past_kv_lengths": vec![1000; 80]}),
+    );
+    close(longest(&[wide]), 1006.0);
+}
+
+#[test]
+fn eager_marks_a_rank_scheduling_more_tokens_than_a_cuda_graph_covers() {
+    let eager = |ranks: &[ForwardPassMetrics]| {
+        feature_axes::project([0.0, 0.0], ranks, &[Axis::EagerPass], gpu_constants()).unwrap()[0]
+    };
+    // A prefill chunk and one decode request verifying 6 tokens.
+    let rank = |tokens: u64| {
+        metric(
+            serde_json::json!({"num_prefill_requests": 1, "sum_prefill_tokens": tokens - 6, "num_decode_requests": 1, "sum_decode_kv_tokens": 100, "extend_lengths": [tokens - 6, 6], "past_kv_lengths": [0, 100]}),
+        )
+    };
+    assert_eq!(eager(&[rank(512)]), 0.0);
+    assert_eq!(eager(&[rank(513)]), 1.0);
+    // Ranks are not pooled: two ranks of 512 tokens each run graphs.
+    assert_eq!(eager(&[rank(512), rank(512)]), 0.0);
+    assert_eq!(eager(&[rank(512), rank(513)]), 1.0);
 }

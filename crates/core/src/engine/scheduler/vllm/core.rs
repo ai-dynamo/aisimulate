@@ -173,8 +173,9 @@ pub(super) struct PreemptedRequest {
 struct ScheduledWork {
     /// Known tokens plus scheduled speculative verification tokens.
     total_tokens: usize,
+    /// Scheduled speculative positions; native MTP work's valid drafts.
     draft_tokens: usize,
-    mtp: Option<policy::MtpWork>,
+    native_mtp: bool,
     from_waiting: bool,
     prompt_tokens: usize,
     prefix_tokens: usize,
@@ -186,6 +187,11 @@ struct ScheduledWork {
     /// removed from state before `compute_fpm` runs.
     sequence_len: usize,
 }
+
+// Every pass writes one entry per scheduled request and reads it back several
+// times: keep feature-specific plans out of it.
+#[cfg(test)]
+const _: () = assert!(std::mem::size_of::<ScheduledWork>() == 7 * std::mem::size_of::<usize>());
 
 /// One ready request's speculative burst inputs for a pass.
 struct SpeculativeBurst {
@@ -668,6 +674,8 @@ pub(crate) struct VllmCore {
     pub(super) state: SchedulerState,
     pub(super) kv_manager: G1Manager,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
+    /// Native MTP lookahead depth, fixed by the worker configuration.
+    native_mtp_depth: Option<usize>,
     kv_event_buffer: Option<CapturedKvEventBuffer>,
     source_holds: SourceHolds<HeldVllmPrefill>,
     pending_destinations: PendingDestinations<VllmRequestState>,
@@ -720,6 +728,8 @@ struct ForwardWork {
 struct DecodeBatch {
     /// Context length of each request priced as decode work.
     lengths: Vec<usize>,
+    /// Tokens each of those requests verifies: one plus its scheduled drafts.
+    widths: Vec<usize>,
 }
 
 impl DecodeBatch {
@@ -731,14 +741,16 @@ impl DecodeBatch {
         self.lengths.iter().sum()
     }
 
-    /// Add one request's context length. The first push reserves `max`, the
-    /// most the pass can add, so a pass allocates once, or not at all without
-    /// decode work.
-    fn push(&mut self, length: usize, max: usize) {
+    /// Add one request's context length and verification width. The first
+    /// push reserves `max`, the most the pass can add, so a pass allocates
+    /// once, or not at all without decode work.
+    fn push(&mut self, length: usize, width: usize, max: usize) {
         if self.lengths.capacity() == 0 {
             self.lengths.reserve_exact(max);
+            self.widths.reserve_exact(max);
         }
         self.lengths.push(length);
+        self.widths.push(width);
     }
 }
 
@@ -961,6 +973,14 @@ impl VllmCore {
                     .expect("validated grouped cache capacity"),
             ));
         }
+        let native_mtp_depth = if args.worker_type == WorkerType::Aggregated
+            && args.prefix_match_unit.is_none()
+            && kv_manager.supports_native_speculative_slots()
+        {
+            policy::native_mtp_depth(args.scheduling_policy(), args.aic_nextn)
+        } else {
+            None
+        };
         Ok(Self {
             kv_manager,
             belady_oracle: None,
@@ -968,6 +988,7 @@ impl VllmCore {
             dp_rank,
             state: SchedulerState::default(),
             speculative_sampler,
+            native_mtp_depth,
             kv_event_buffer,
             source_holds: SourceHolds::default(),
             pending_destinations: PendingDestinations::default(),
@@ -1802,14 +1823,19 @@ impl VllmCore {
     }
 
     fn remaining_prefill_blocks(&self, request: &VllmRequestState) -> usize {
-        if self.native_mtp_depth().is_some() {
+        if self.native_mtp_depth.is_some() {
             policy::inflight_footprint_blocks(
                 request.sequence.len(),
                 self.args.max_model_len,
-                self.native_mtp_depth(),
+                self.native_mtp_depth,
                 self.args.block_size,
             )
-            .saturating_sub(request.sequence.lease.physical_owned_block_count())
+            .saturating_sub(
+                request
+                    .sequence
+                    .lease
+                    .watermark_owned_block_count(self.args.block_size),
+            )
         } else {
             request.sequence.current_known_blocks().saturating_sub(
                 request
@@ -2142,7 +2168,7 @@ impl VllmCore {
         let scheduling_policy = self.args.scheduling_policy();
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
         let mut host_step_skipped = Vec::new();
-        let native_mtp_depth = self.native_mtp_depth();
+        let native_mtp_depth = self.native_mtp_depth;
         // Agent-style workloads can keep many requests in both collections.
         // Scan once, then update only the selected request's contribution as
         // this pass queues/consumes a host load or admits a new prefill.
@@ -2727,6 +2753,7 @@ impl VllmCore {
                 mean_context_length: forward.total_length / forward.decode_count,
                 kv_bound_tokens: self.decode_kv_context_bound(forward.total_length),
                 lengths: decode.lengths,
+                widths: decode.widths,
                 verify_width,
             }),
         };
@@ -3022,16 +3049,6 @@ impl VllmCore {
         end.saturating_sub(start)
     }
 
-    fn native_mtp_depth(&self) -> Option<usize> {
-        if self.args.worker_type != WorkerType::Aggregated
-            || self.args.prefix_match_unit.is_some()
-            || !self.kv_manager.supports_native_speculative_slots()
-        {
-            return None;
-        }
-        policy::native_mtp_depth(self.args.scheduling_policy(), self.args.aic_nextn)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn schedule_request(
         &mut self,
@@ -3102,8 +3119,7 @@ impl VllmCore {
             return Ok(ScheduleOutcome::Blocked);
         }
 
-        let native_depth = self.native_mtp_depth();
-        let mtp = if let Some(nextn) = native_depth {
+        let mtp = if let Some(nextn) = self.native_mtp_depth {
             let pad_waiting = from_waiting
                 && *batch_count == 0
                 && (effective_computed_before > 0
@@ -3264,7 +3280,7 @@ impl VllmCore {
                     *batch_count = batch_count.saturating_sub(1);
                     *batch_total_isl = batch_total_isl.saturating_sub(
                         undone.prefix_tokens
-                            + if undone.mtp.is_some() {
+                            + if undone.native_mtp {
                                 undone.total_tokens
                             } else {
                                 undone.prompt_tokens
@@ -3332,7 +3348,7 @@ impl VllmCore {
             ScheduledWork {
                 total_tokens: tokens_used,
                 draft_tokens: scheduled_drafts,
-                mtp,
+                native_mtp: mtp.is_some(),
                 from_waiting,
                 prompt_tokens,
                 prefix_tokens: prompt_before,
@@ -3483,7 +3499,7 @@ impl VllmCore {
                 continue;
             };
             if request.num_computed_tokens < request.sequence.len()
-                || (self.native_mtp_depth().is_some() && !scheduled.contains_key(&uuid))
+                || (self.native_mtp_depth.is_some() && !scheduled.contains_key(&uuid))
             {
                 continue;
             }
@@ -3500,7 +3516,7 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
-                decode.push(request.sequence.len(), self.state.running.len());
+                decode.push(request.sequence.len(), 1, self.state.running.len());
             }
         }
 
@@ -3637,21 +3653,16 @@ impl VllmCore {
                 continue;
             };
             let work = scheduled.get(&uuid);
-            let native = work.and_then(|work| work.mtp);
-            let limit = native.map_or_else(
-                || {
-                    policy::speculative_burst_limit(
-                        scheduling_policy,
-                        worker_type,
-                        nextn,
-                        work.map_or(0, |work| work.draft_tokens),
-                    )
-                },
-                |work| work.valid_drafts + 1,
-            );
+            let native = work.is_some_and(|work| work.native_mtp);
+            let draft_tokens = work.map_or(0, |work| work.draft_tokens);
+            let limit = if native {
+                draft_tokens + 1
+            } else {
+                policy::speculative_burst_limit(scheduling_policy, worker_type, nextn, draft_tokens)
+            };
             let remaining =
                 policy::remaining_generation_tokens(&request.sequence, self.args.max_model_len);
-            if native.is_none() {
+            if !native {
                 match self.kv_manager.decode_requirement(
                     &request.sequence.lease,
                     request.sequence.len(),
@@ -3697,7 +3708,7 @@ impl VllmCore {
         let mut bursts = Vec::with_capacity(ready.len());
         let mut rejected_signals = Vec::new();
         let mut running_changed = false;
-        let native_depth = self.native_mtp_depth();
+        let native_depth = self.native_mtp_depth;
         let mut reservation = loop {
             let mut impossible = Vec::new();
             let required_blocks =
@@ -3756,8 +3767,11 @@ impl VllmCore {
         };
 
         let mut decode = DecodeBatch::default();
-        for length in bursts.iter().filter_map(|burst| burst.decode_length) {
-            decode.push(length, bursts.len());
+        // A burst's limit is the round's verification width.
+        for burst in &bursts {
+            if let Some(length) = burst.decode_length {
+                decode.push(length, burst.limit, bursts.len());
+            }
         }
 
         let sampler = self
@@ -4254,6 +4268,7 @@ mod state_cache_tests {
             .kv_cache_bytes_per_token(Some(16))
             .state_cache(Some(StateCacheConfig {
                 bytes_per_request: 64,
+                sliding_window: None,
             }))
             .build()
             .unwrap()
@@ -4469,6 +4484,7 @@ mod state_cache_tests {
         config.block_size = 64;
         config.state_cache = Some(StateCacheConfig {
             bytes_per_request: 1500,
+            sliding_window: None,
         });
         let mut core = VllmCore::new(config);
         let ids = (0..3)
