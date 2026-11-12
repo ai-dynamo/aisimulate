@@ -1071,8 +1071,11 @@ For Dynamo and llm-d deployment targets, each `topN` directory includes two benc
   kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
   ```
 
-For offline clients, set the benchmark tokenizer and mount its complete cache as
-explained in [Offline benchmark tokenizers](../sweeper/deployment-generation.md#offline-benchmark-tokenizers).
+For Slurm jobs or direct shell benchmarks, see
+[Offline benchmark tokenizers](../sweeper/deployment-generation.md#offline-benchmark-tokenizers).
+The Slurm container mounts and environment settings described there do not
+configure `k8s_bench.yaml`; a Kubernetes benchmark needs its cache volume mounts
+and offline environment settings in the benchmark Job itself.
 A locally mounted serving model does not guarantee that the selected AIPerf
 version can load its tokenizer by filesystem path.
 
