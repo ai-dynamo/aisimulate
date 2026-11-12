@@ -29,7 +29,7 @@ use crate::engine::{HostCacheMetrics, SglangHiCacheConfig};
 use hicache::{HiCache, HostLoad};
 
 /// SGLang serves DeepSeek-V4 with 256-token KV pages and a 128-token sliding window.
-const SWA_PAGE_TOKENS: usize = 256;
+pub(crate) const SWA_PAGE_TOKENS: usize = 256;
 const SWA_WINDOW_TOKENS: usize = 128;
 
 /// Move-only ownership of a request's SGLang KV state.

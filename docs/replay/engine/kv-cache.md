@@ -220,7 +220,8 @@ tokens, a chunk end's partial page is not tracked, and the pool shares no
 capacity with full KV.
 A decode worker's radix cache matches full KV as before. Native engine
 configurations set the resolved count as `sglang.swa_prefix_tails` (a positive
-integer, SGLang only; unset turns it off).
+integer, SGLang only; unset turns it off). It requires a `block_size` that
+divides the 256-token SWA page.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

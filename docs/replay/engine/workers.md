@@ -177,8 +177,10 @@ you raise it.
 
 > **SGLang note.** On a disaggregated `prefill` or an `aggregated` worker,
 > `max_batched_tokens` is the worker's `chunked_prefill_size`
-> (`--chunked-prefill-size`), as SGLang launches it. A decode worker keeps
-> SGLang's 8192-token default.
+> (`--chunked-prefill-size`), as SGLang launches it. With attention DP,
+> SGLang splits that launch value across the ranks, so each rank chunks at
+> `max_batched_tokens / attention_data`. A decode worker keeps SGLang's
+> 8192-token default.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a

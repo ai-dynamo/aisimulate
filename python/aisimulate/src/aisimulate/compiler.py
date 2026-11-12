@@ -905,11 +905,6 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
-    swa_prefix_tails = _swa_prefix_tails(engine, worker, role)
-    if swa_prefix_tails is not None:
-        sglang = payload.setdefault("sglang", {})
-        assert isinstance(sglang, dict)
-        sglang["swa_prefix_tails"] = swa_prefix_tails
     if backend == "sglang" and role == "decode" and cache.decode_radix_cache:
         payload["sglang"] = {"disaggregation_decode_enable_radix_cache": True}
     if worker.scheduler.async_scheduling is not None:
@@ -1117,6 +1112,12 @@ def _worker_engine_args(
                 frontend=worker.frontend,
             )
         )
+    # After the host arguments, which replace the `sglang` entry.
+    swa_prefix_tails = _swa_prefix_tails(engine, worker, role)
+    if swa_prefix_tails is not None:
+        sglang = payload.setdefault("sglang", {})
+        assert isinstance(sglang, dict)
+        sglang["swa_prefix_tails"] = swa_prefix_tails
     if cache.hicache is not None:
         payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
     if worker.scheduler.load_balance_method != "round_robin":

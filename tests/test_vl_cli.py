@@ -185,6 +185,14 @@ def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):
         )
 
 
+def test_host_aware_rank_keeps_the_swa_prefix_tail_bound():
+    raw = _prediction()
+    raw["engine"]["workers"]["aggregated"]["kv_cache"]["swa_prefix_tails"] = 100
+    args = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment.agg_engine_args
+    assert args["sglang"]["host_loop"] is True
+    assert args["sglang"]["swa_prefix_tails"] == 100
+
+
 def test_images_encode_on_the_language_worker_without_a_host_loop():
     raw = _prediction()
     del raw["engine"]["workers"]["aggregated"]["frontend"]

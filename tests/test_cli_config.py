@@ -1876,7 +1876,7 @@ def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture(tmp_path) -
     with pytest.raises(ValueError, match="config must be a JSON object"):
         tails(model=str(corrupt))
 
-    spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={}, afd_performance_model=None)
+    spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={})
     assert spec.prefill_engine_args["sglang"]["swa_prefix_tails"] == 100
     assert "sglang" not in spec.decode_engine_args
 
