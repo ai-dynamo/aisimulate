@@ -1072,6 +1072,14 @@ For Dynamo and llm-d deployment targets, each `topN` directory includes two benc
   kubectl apply -f results/.../disagg/top1/k8s_bench.yaml
   ```
 
+For Slurm jobs or direct shell benchmarks, see
+[Offline benchmark tokenizers](../sweeper/deployment-generation.md#offline-benchmark-tokenizers).
+The Slurm container mounts and environment settings described there do not
+configure `k8s_bench.yaml`; a Kubernetes benchmark needs its cache volume mounts
+and offline environment settings in the benchmark Job itself.
+A locally mounted serving model does not guarantee that the selected AIPerf
+version can load its tokenizer by filesystem path.
+
 **Concurrency sweep.** The Dynamo and llm-d benchmark artifacts iterate over a base concurrency list `[1, 2, 8, 16, 32, 64, 128]`. When an estimated concurrency is available from the AIConfigurator run, three additional points are added: the estimate itself and its +/-5% neighbors. This targets the operating point AIConfigurator found optimal. Slurm uses `SlurmConfig.benchmark_concurrency` and `SlurmConfig.benchmark_rounds`.
 
 **Templated values.** The scripts are pre-filled with the model name, tokenizer, ISL/OSL, endpoint URL, and streaming mode from the run that generated them -- no manual editing is needed for the common case.
