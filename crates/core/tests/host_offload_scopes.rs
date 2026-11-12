@@ -168,10 +168,10 @@ fn attention_dp_ranks_share_g2_only_in_cluster_scope() {
 #[test]
 fn token_only_prefill_and_decode_join_one_cluster_pool() {
     for (prefill_scope, decode_scope, reuse) in [
-        ("dp_rank_local", "dp_rank_local", [0, 0]),
-        ("cluster_shared", "cluster_shared", [0, 8]),
+        ("dp_rank_local", "dp_rank_local", [0, 0, 0, 0]),
+        ("cluster_shared", "cluster_shared", [0, 8, 8, 8]),
         // Roles choose scopes independently; the shared prefill pool still reuses.
-        ("cluster_shared", "dp_rank_local", [0, 8]),
+        ("cluster_shared", "dp_rank_local", [0, 8, 8, 8]),
     ] {
         // MTP keeps the restored prefix on these workers too.
         for mtp in [false, true] {
@@ -188,9 +188,9 @@ fn token_only_prefill_and_decode_join_one_cluster_pool() {
                 "prefill": role(prefill_scope),
                 "decode": role(decode_scope),
             });
-            let requests = requests(2, "prefill_dp_rank");
+            let requests = requests(4, "prefill_dp_rank");
             let report = run_with(&timed_factory(), disaggregated(2), engine, requests).unwrap();
-            assert_eq!(report.request_counts.completed_requests, 2);
+            assert_eq!(report.request_counts.completed_requests, 4);
             let case = format!("{prefill_scope}/{decode_scope} mtp={mtp}");
             assert_eq!(host_reuse(&report), reuse.map(Some), "{case}");
         }
