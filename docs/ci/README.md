@@ -252,16 +252,11 @@ marked it N/A.
 MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
 SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
 The [manifest](../../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Fast CI and
-the numerical-check job explicitly fetch that SHA from `origin` if missing;
-full branch history alone can omit a baseline from a squashed PR. Fetch or
-commit-validation failures remain errors. Fetch-only mode does not load the
-AISimulate runtime; the subsequent checks validate the complete manifest.
-To prepare a checkout locally, run:
-
-```sh
-python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
-```
+records each query's inputs and expected value. The expected values come from
+the code of the commit that last changed the manifest; find it with
+`git log -1 -- .github/prediction-numerical-sentinels.json`. That commit is on
+the main branch of every clone and mirror, so the manifest records no separate
+commit: a commit from a squashed PR branch would not be.
 
 Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes

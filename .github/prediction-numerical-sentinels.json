@@ -1,6 +1,5 @@
 {
   "schema_version": 1,
-  "baseline_source_sha": "fc6e26a82dea7fe49317d48ae97523323ee940b7",
   "interpretation": "Native prediction stability sentinels; not measured-hardware accuracy. Two percent relative and 0.0001 ms absolute tolerance permit small numerical changes; baseline changes require explained review.",
   "cases": [
     {
