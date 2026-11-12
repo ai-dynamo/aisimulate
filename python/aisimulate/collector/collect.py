@@ -1291,6 +1291,31 @@ def _require_torch():
     return torch
 
 
+def _use_one_torch_thread(torch_mod) -> None:
+    """Run this process's CPU-side torch work on one intra-op thread, as serving does.
+
+    torch sizes its intra-op pool by the host core count, whatever CPU share the job
+    was given: a 1-GPU job on a 144-core node gets 144 threads. After each parallel
+    region those threads spin-wait and take time from the serial code between kernel
+    launches, so a point whose time is mostly host-side comes out slower and scatters
+    from run to run. vLLM sets one thread in every worker for that reason
+    (set_torch_threads_for_runtime, vllm/utils/torch_utils.py:269-300, called from
+    vllm/v1/worker/gpu_worker.py:610 and vllm/v1/executor/multiproc_executor.py:221 at
+    v0.32.0), and SGLang when it loads the model (ModelRunner.load_model,
+    python/sglang/srt/model_executor/model_runner.py:1279 at v0.5.23).
+
+    Deviation, TensorRT-LLM tables on every system: TensorRT-LLM 1.4.0rc2 sets no thread
+    count, so serving keeps torch's default pool while these rows are timed with one
+    thread. Only host-bound points differ (those well under a millisecond of GPU work),
+    and the rows are the faster side: on a 144-core GB200 node the default pool timed
+    MiniMax-M3 context points a median 1.13x the one-thread run (1.41x on NVFP4 rows).
+    The size of the difference in a serving deployment depends on its CPU allocation,
+    which a table cannot know. Retire this note when TensorRT-LLM sets its own thread
+    count for serving.
+    """
+    torch_mod.set_num_threads(1)
+
+
 def _cuda_available() -> bool:
     return torch is not None and torch.cuda.is_available()
 
@@ -1753,6 +1778,7 @@ def worker(
     torch_mod = _require_torch()
     device = torch_mod.device(f"{get_device_str()}:{device_id}")
     get_device_module().set_device(device)
+    _use_one_torch_thread(torch_mod)
     worker_logger.info(f"Worker {device_id} initialized for {module_name}")
 
     # Liveness for the executor's stall watchdog: every measurement beats through
@@ -2173,6 +2199,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             torch_mod = _require_torch()
             device = torch_mod.device(f"{get_device_str()}:0")
             get_device_module().set_device(device)
+            _use_one_torch_thread(torch_mod)
 
             for task_info in task_infos:
                 task_id = task_info["id"]
