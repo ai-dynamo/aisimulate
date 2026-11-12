@@ -371,8 +371,9 @@ version or provenance of the performance data used for timing.
 Prefill and decode workers keep the speculative lifecycle they have without
 G2. G2 stores complete prompt blocks only, so drafts never reach it. A restore
 resumes at the loaded prefix, as on an aggregated worker. Accepted drafts that
-take a G1 block a store still reads make the rank's next pass wait for that
-copy, and so does preempting a request whose store is in flight. The capacity guard above does
+take a G1 block a store still reads make the forward that writes it wait for
+that copy, and so does preempting a request whose store is in flight; a store
+prepared in that same pass delays the rank's next pass. The capacity guard above does
 not cover these workers: when G1 holds fewer than about two requests, a replay
 can end with a stall error or not terminate, with or without G2. Size G1 for
 several concurrent requests.

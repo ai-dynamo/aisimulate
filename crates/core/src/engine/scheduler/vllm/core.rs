@@ -2655,10 +2655,6 @@ impl VllmCore {
             }
         }
 
-        let compute_start_ms = self
-            .native_host_offload
-            .as_ref()
-            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         let prefill = priced_prefill(
             batch_count,
             batch_total_isl,
@@ -2687,6 +2683,12 @@ impl VllmCore {
         // that computes prefill and decode together may be one forward.
         let (decode, mut output_signals) =
             self.emit_ready_tokens(now_ms, &scheduled, &mut decode_acceptance)?;
+        // Read after emission: accepted drafts that take a block a store still
+        // reads, and a preemption they force, delay this pass's forward.
+        let compute_start_ms = self
+            .native_host_offload
+            .as_ref()
+            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {
@@ -3857,8 +3859,9 @@ impl VllmCore {
                         );
                         // A reserved block may still be the source of an in-flight G2
                         // store. vLLM flushes the pending stores of every block a step
-                        // allocates, lookahead slots included, before its forward. Replay
-                        // reserves these blocks after the pass, so the next pass waits.
+                        // allocates, lookahead slots included, before its forward, so
+                        // this pass's forward waits. A store prepared in this pass has
+                        // its deadline at the pass boundary: the next pass waits for it.
                         let NativeAllocation::Ready { dependencies, .. } = allocation else {
                             panic!("speculative decode reservation must cover its blocks");
                         };
