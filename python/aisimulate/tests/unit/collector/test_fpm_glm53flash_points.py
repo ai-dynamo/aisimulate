@@ -74,7 +74,7 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
             logging.INFO,
             "GLM-5.3-Flash points: dropped 0/496 prefill cases (Mamba align split, hash_block_size=2176), 16/97 "
             "decode cases (token budget, token_budget=8192), 0/496 prefill and 0/81 decode cases (cache capacity, "
-            "usable_blocks=13695)",
+            "usable_blocks=13696)",
         )
     ]
     # vLLM saves the prefill checkpoint inside the chunk of every length above one hash block, because after a
@@ -475,7 +475,7 @@ def test_smoke_subset_of_a_list_without_two_request_decode_points_takes_two_cont
 def test_smoke_subset_follows_a_cache_capacity_that_excludes_two_requests():
     # 21 usable blocks: two requests fit only below one hash block, because one request of 4,096 tokens needs 2
     # attention blocks, 5 state blocks and 4 checkpoint blocks and two such requests need 22.
-    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 22 * 13_516_800})
+    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 21 * 13_516_800})
     two_request_contexts = {
         point["total_kv_read_tokens"] // 2 for point in payload["decode"] if point["batch_size"] == 2
     }
@@ -502,7 +502,7 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
     caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
     # 99 usable blocks: one request of 131,072 tokens needs 61 attention blocks, one block in each state group and one
     # checkpoint block in each KDA group.
-    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 100 * 13_516_800})
+    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 99 * 13_516_800})
     decode = payload["decode"]
 
     assert len(decode) == 53
@@ -525,7 +525,7 @@ def test_capacity_without_a_feasible_point_is_refused(caplog):
     # Five usable blocks: every request needs one attention block, one block in each of the five state groups and one
     # checkpoint block in each of the four KDA groups.
     with pytest.raises(ValueError) as error:
-        glm_point_manifest(**{**_TP4, "kv_cache_bytes": 6 * 13_516_800})
+        glm_point_manifest(**{**_TP4, "kv_cache_bytes": 5 * 13_516_800})
     assert str(error.value) == "GLM-5.3-Flash collection has no feasible point for the accepted cache capacity"
     # The logged count explains the refusal.
     assert _logged_lines(caplog) == [
@@ -622,7 +622,7 @@ PAGE = _TP4_LIMITS["page_size_bytes"]
 
 def test_capacity_estimate_counts_one_block_for_each_checkpoint_group():
     limits = _limits(
-        hash_block_size=64, token_budget=64, kv_cache_bytes=PAGE * 11, page_size_bytes=PAGE, state_groups=4
+        hash_block_size=64, token_budget=64, kv_cache_bytes=PAGE * 10, page_size_bytes=PAGE, state_groups=4
     )
     without, _ = glm_points(**limits, checkpoint_alignment=None, checkpoint_groups=0)
     with_checkpoint, _ = glm_points(**limits, checkpoint_alignment=16, checkpoint_groups=4)
@@ -631,6 +631,42 @@ def test_capacity_estimate_counts_one_block_for_each_checkpoint_group():
     assert max(point["batch_size"] for point in without["prefill"]) > max(
         point["batch_size"] for point in with_checkpoint["prefill"]
     )
+
+
+@pytest.mark.parametrize(("pages", "kept", "dropped_count"), [(13, True, 0), (12, False, 1)])
+def test_capacity_rule_counts_every_free_block_of_the_cache(caplog, pages, kept, dropped_count):
+    caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
+    # The cache bytes are the free blocks at engine start, which already exclude vLLM's null block, so every page of
+    # them is usable. One request of 256 tokens needs ceil(257 / 64) = 5 attention blocks, one block in each of the 4
+    # state groups and one checkpoint block in each of the 4 KDA groups: N = 5 + 4 + 4 = 13 blocks. The decode point
+    # at context 256 and the prefill point of 64 new tokens after 192 cached tokens are the only candidates that need
+    # all 13.
+    payload, dropped = glm_points(
+        **_limits(
+            hash_block_size=64,
+            token_budget=64,
+            prefill_batch_limit=1,
+            decode_batch_limit=1,
+            measured_context=256,
+            kv_cache_bytes=PAGE * pages,
+            page_size_bytes=PAGE,
+            state_groups=4,
+        ),
+        checkpoint_alignment=16,
+        checkpoint_groups=4,
+    )
+    decode_point = {"batch_size": 1, "total_kv_read_tokens": 256}
+    prefill_point = {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 192}
+    assert (decode_point in payload["decode"], prefill_point in payload["prefill"]) == (kept, kept)
+    assert dropped["prefill"]["cache_capacity"] == dropped["decode"]["cache_capacity"] == dropped_count
+    assert _logged_lines(caplog) == [
+        (
+            logging.INFO,
+            "GLM-5.3-Flash points: dropped 0/20 prefill cases (Mamba align split, hash_block_size=64), 0/7 decode "
+            f"cases (token budget, token_budget=64), {dropped_count}/20 prefill and {dropped_count}/7 decode cases "
+            f"(cache capacity, usable_blocks={pages})",
+        )
+    ]
 
 
 def _deployment(*state_groups: tuple[int | None, int | None]) -> SimpleNamespace:

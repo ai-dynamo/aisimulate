@@ -116,7 +116,7 @@ def glm_points(
     prefill_budget = min(token_budget, MAX_NEW)
     measured = min(measured_context, MAX_CONTEXT)
     unit = hash_block_size
-    usable = kv_cache_bytes // page_size_bytes - 1
+    usable = kv_cache_bytes // page_size_bytes
 
     def fits(batch_size: int, tokens: int) -> bool:
         # An estimate of the blocks that the native cache managers give a request: ceil((tokens + 1) / unit) blocks of
