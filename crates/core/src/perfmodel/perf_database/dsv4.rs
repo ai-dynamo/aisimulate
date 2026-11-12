@@ -828,6 +828,9 @@ fn prepare_module_nodes(
 // matching variant's DELTA is SUBTRACTED from the CSA (compress_ratio==4)
 // module latency only; the module ENERGY rescales by the corrected/base
 // latency ratio (see `topk_corrected`).
+// A release whose calibration carries only top_last rows has a module timed
+// on non-degenerate scores: no DELTA forms for it, and an earlier release's
+// flat rows are not borrowed (see `load_topk_calib_parquet`).
 // Gate: AIC_DSV4_TOPK_CORRECTION (default on; set "0" to disable).
 // ---------------------------------------------------------------------------
 
@@ -949,6 +952,12 @@ fn apply_topk_delta(latency: f64, grid: Option<&TopkDeltaGrid>, shape: TopkShape
     }
 }
 
+/// Whether a calibration `score_mode` is a flat (degenerate-score) row of
+/// either selector variant.
+fn is_flat_mode(mode: &str) -> bool {
+    matches!(mode, "v1_flat" | "v2_flat")
+}
+
 /// Load `dsv4_csa_topk_calib_perf.parquet` from an ordered source list and
 /// pair the flat/top_last rows into the DELTA table, ALSO retaining the raw
 /// top_last rows for the CP composition (`csa_topk_top_last`) — one load
@@ -968,10 +977,25 @@ fn apply_topk_delta(latency: f64, grid: Option<&TopkDeltaGrid>, shape: TopkShape
 /// Returns `Ok(None)` when every source file is absent (Python: rows is
 /// None) or no usable row exists (no DELTA pair AND no top_last row —
 /// behaviourally identical to Python's two separate None/{} outcomes).
+///
+/// Flat rows are kept or dropped per native head count, for the table as a
+/// whole. The highest-priority source that carries calibration rows for a
+/// native head count decides: if it has flat rows (`v1_flat` or `v2_flat`),
+/// every source's rows merge first-wins as before; if it has none, flat rows
+/// from lower-priority sources are dropped, so no DELTA forms. A release
+/// whose calibration carries only top_last rows has a CSA module timed on
+/// non-degenerate scores, and a DELTA built from an earlier release's flat
+/// rows would subtract a degenerate-score cost the module never contained.
+/// top_last rows still fill from every source. A source with flat rows for
+/// only one selector variant or only some shapes still counts as having
+/// flat rows.
 fn load_topk_calib_parquet(sources: &[PerfSource]) -> Result<Option<TopkCalib>, AicError> {
     let mut by_mode: BTreeMap<u32, BTreeMap<(u32, u32, u32), BTreeMap<String, f64>>> =
         BTreeMap::new();
     let mut top_last: BTreeMap<u32, SparseGrid> = BTreeMap::new();
+    // native head count -> whether flat rows are kept; set by the first
+    // source that carries rows for that head count.
+    let mut keep_flat: BTreeMap<u32, bool> = BTreeMap::new();
     let mut any_source = false;
     for source in sources {
         let path = source.path();
@@ -987,6 +1011,10 @@ fn load_topk_calib_parquet(sources: &[PerfSource]) -> Result<Option<TopkCalib>, 
         let latency_col = reader.col("latency")?;
         let num_heads_col = reader.col_optional("num_heads");
         let ks_col = reader.col_optional("kernel_source");
+        // This source's usable rows in read order, and per native head count
+        // whether any of them is a flat row.
+        let mut rows: Vec<(u32, (u32, u32, u32), String, f64)> = Vec::new();
+        let mut source_has_flat: BTreeMap<u32, bool> = BTreeMap::new();
         for row in reader.rows()? {
             let row = row?;
             if !kernel_source_ok(source.kernel_sources(), ks_col, &row)? {
@@ -1007,6 +1035,16 @@ fn load_topk_calib_parquet(sources: &[PerfSource]) -> Result<Option<TopkCalib>, 
             let Some(native) = row.u32_optional(num_heads_col)? else {
                 continue;
             };
+            *source_has_flat.entry(native).or_default() |= is_flat_mode(&mode);
+            rows.push((native, (step, isl, bs), mode, latency));
+        }
+        for (native, has_flat) in source_has_flat {
+            keep_flat.entry(native).or_insert(has_flat);
+        }
+        for (native, (step, isl, bs), mode, latency) in rows {
+            if is_flat_mode(&mode) && !keep_flat[&native] {
+                continue;
+            }
             // The CP composition consumes the context (v1) selector's raw
             // top_last latencies.
             if mode == "v1_top_last" {
@@ -2676,6 +2714,133 @@ mod tests {
         // The context (v1) top_last rows the CP composition reads.
         assert_eq!(table.csa_topk_top_last(512, 0, 64, 8).unwrap(), Some(0.18));
         assert_eq!(table.csa_topk_top_last(4096, 0, 64, 8).unwrap(), Some(1.5));
+    }
+
+    /// Across sources, the highest-priority source that carries calibration
+    /// rows for a native head count decides whether flat rows are kept.
+    /// Each case loads `[primary, sibling]` through a `Dsv4Table` whose CSA
+    /// context module row is 1.0 at (b=8, isl=512, prefix=0), so the context
+    /// query returns 1.0 minus the DELTA at that shape.
+    #[test]
+    fn topk_calib_flat_rows_follow_highest_priority_source() {
+        if !topk_correction_enabled() {
+            return; // suite launched with AIC_DSV4_TOPK_CORRECTION=0
+        }
+        let spec = b200_sxm_spec();
+        type CalibRow = (&'static str, i64, i64, i64, i64, f64);
+        // An earlier release with both score modes, for native 64 and 128.
+        let sibling_rows: [CalibRow; 7] = [
+            ("v1_flat", 0, 512, 8, 64, 0.30),
+            ("v1_top_last", 0, 512, 8, 64, 0.20), // DELTA = 0.10
+            ("v1_top_last", 0, 4096, 8, 64, 1.5),
+            ("v2_flat", 384, 1, 16, 64, 0.05),
+            ("v2_top_last", 384, 1, 16, 64, 0.02), // DELTA = 0.03
+            ("v1_flat", 0, 512, 8, 128, 0.50),
+            ("v1_top_last", 0, 512, 8, 128, 0.10), // DELTA = 0.40
+        ];
+        // Build `[primary, sibling]`; `None` leaves the primary file absent.
+        let load = |primary_rows: Option<&[CalibRow]>| {
+            let dir = tempfile::tempdir().unwrap();
+            let primary = dir.path().join("primary");
+            let sibling = dir.path().join("sibling");
+            std::fs::create_dir_all(&primary).unwrap();
+            std::fs::create_dir_all(&sibling).unwrap();
+            write_module_parquet(
+                &primary.join("dsv4_csa_context_module_perf.parquet"),
+                &[(64, 8, 512, 0, 1.0)],
+            );
+            let name = "dsv4_csa_topk_calib_perf.parquet";
+            if let Some(rows) = primary_rows {
+                write_calib_parquet_with_heads(&primary.join(name), rows);
+            }
+            write_calib_parquet_with_heads(&sibling.join(name), &sibling_rows);
+            let mut map = PerfDbSources::default();
+            map.insert(
+                name.to_string(),
+                vec![
+                    PerfSource(primary.join(name), None),
+                    PerfSource(sibling.join(name), None),
+                ],
+            );
+            let table = Dsv4Table::with_sources(primary, &SourceResolver::fixed(map)).unwrap();
+            (dir, table)
+        };
+        let context_csa = |table: &Dsv4Table| {
+            table
+                .query_context(
+                    &spec,
+                    AttnKind::Csa,
+                    8,
+                    512,
+                    64,
+                    64,
+                    KvCacheQuantMode::Fp8,
+                    FmhaQuantMode::Bfloat16,
+                    GemmQuantMode::Fp8Block,
+                    "DeepseekV4ForCausalLM",
+                    0,
+                    None,
+                )
+                .unwrap()
+                .latency
+        };
+        let shape = TopkShape {
+            prefix: 0,
+            isl: 512,
+            bs: 8,
+        };
+
+        // Primary with only top_last rows: the sibling's flat rows are
+        // dropped for native 64 (both selector variants), so no DELTA forms
+        // and the module row is uncorrected. top_last still serves the CP
+        // lookup: the primary wins the shared shape, the sibling fills 4096.
+        let (_dir, table) = load(Some(&[("v1_top_last", 0, 512, 8, 64, 0.18)]));
+        let calib = table.load_topk_calib().unwrap().expect("calib must load");
+        assert!(!calib.delta_v1.contains_key(&64));
+        assert!(!calib.delta_v2.contains_key(&64));
+        assert_eq!(context_csa(&table), 1.0);
+        assert_eq!(table.csa_topk_top_last(512, 0, 64, 8).unwrap(), Some(0.18));
+        assert_eq!(table.csa_topk_top_last(4096, 0, 64, 8).unwrap(), Some(1.5));
+        // The primary has no rows for native 128, so the sibling decides
+        // there and its DELTA forms as before.
+        let got = calib.delta_v1[&128].get(shape).unwrap();
+        assert!((got - 0.40).abs() < 1e-12, "native 128 DELTA {got}");
+
+        // Primary with flat rows: unchanged. Its own pair gives 0.30 - 0.18
+        // = 0.12 at the shared shape, and the sibling's generation pair
+        // still fills.
+        let (_dir, table) = load(Some(&[
+            ("v1_flat", 0, 512, 8, 64, 0.30),
+            ("v1_top_last", 0, 512, 8, 64, 0.18),
+        ]));
+        let calib = table.load_topk_calib().unwrap().expect("calib must load");
+        let got = calib.delta_v1[&64].get(shape).unwrap();
+        assert!((got - 0.12).abs() < 1e-12, "primary DELTA {got}");
+        let generation = TopkShape {
+            prefix: 384,
+            isl: 1,
+            bs: 16,
+        };
+        let got = calib.delta_v2[&64].get(generation).unwrap();
+        assert!((got - 0.03).abs() < 1e-12, "sibling generation DELTA {got}");
+        assert!((context_csa(&table) - 0.88).abs() < 1e-12);
+
+        // Primary with a flat row but no top_last partner at the shape:
+        // still a flat table, so the sibling's top_last pairs with it as
+        // before (0.30 - 0.20 = 0.10).
+        let (_dir, table) = load(Some(&[("v1_flat", 0, 512, 8, 64, 0.30)]));
+        assert!((context_csa(&table) - 0.90).abs() < 1e-12);
+
+        // Primary without calibration rows for native 64 (absent file, or
+        // rows for another head count only): the sibling decides and its
+        // DELTA 0.10 applies as before.
+        let (_dir, table) = load(None);
+        assert!((context_csa(&table) - 0.90).abs() < 1e-12);
+        let (_dir, table) = load(Some(&[("v1_top_last", 0, 512, 8, 128, 0.10)]));
+        assert!((context_csa(&table) - 0.90).abs() < 1e-12);
+        // That primary does decide for native 128: no DELTA there.
+        let calib = table.load_topk_calib().unwrap().expect("calib must load");
+        assert!(!calib.delta_v1.contains_key(&128));
     }
 
     /// Rows without a `num_heads` key cell never load — for the top_last
