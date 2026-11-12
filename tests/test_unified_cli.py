@@ -334,7 +334,7 @@ def test_run_prediction_returns_structured_result() -> None:
 
 def _telemetry_payload():
     return {
-        "schema": "aisim.replay.telemetry.v1",
+        "schema": "aisimulate.replay.telemetry.v1",
         "clock": "absolute_virtual_ms",
         "clock_origin_ms": 0.0,
         "sample_interval_ms": 1000.0,
@@ -422,7 +422,7 @@ def test_predict_writes_separate_all_phase_telemetry(
     assert (output / "report.html").exists() is (capture_flag == "--export-html")
     if capture_flag == "--export-html":
         document = (output / "report.html").read_text()
-        assert "aisim.replay.dashboard.v1" in document
+        assert "aisimulate.replay.dashboard.v1" in document
         assert "__REPORT_DATA_JSON__" not in document
     if capture_per_request:
         assert json.loads((output / "requests.jsonl").read_text()) == {"request_id": "synthetic-0"}
@@ -473,7 +473,7 @@ def test_export_html_native_cli_preserves_metrics_and_overwrite(tmp_path, capfd)
     new_records = [json.loads(line) for line in (output / "telemetry-requests.jsonl").read_text().splitlines()]
     assert [[row[key] for key in fields] for row in new_records] == [[row[key] for key in fields] for row in records]
     assert {row["phase"] for row in new_records} >= {"warmup", "profile"}
-    assert "aisim.replay.dashboard.v1" in (output / "report.html").read_text()
+    assert "aisimulate.replay.dashboard.v1" in (output / "report.html").read_text()
     assert (output / "keep.txt").read_text() == "keep"
     assert not (output / "requests.jsonl").exists()
     assert supervised_main([*argv, "--overwrite"]) == 0
@@ -621,11 +621,11 @@ def test_predict_requires_telemetry_from_selected_runner(tmp_path, monkeypatch, 
 @pytest.mark.parametrize(
     "raw,override,role_override,mode,capacity_source,expected_source",
     [
-        ({"quant_algo": "fp8"}, None, None, "fp8", "native", "aisim_policy"),
-        ({"quant_algo": "fp8", "kv_cache_quant_algo": None}, None, None, "fp8", "native", "aisim_policy"),
+        ({"quant_algo": "fp8"}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"quant_algo": "fp8", "kv_cache_quant_algo": None}, None, None, "fp8", "native", "aisimulate_policy"),
         ({"kv_cache_quant_algo": "fp8"}, None, None, "fp8", "native", "checkpoint"),
         ({"kv_cache_quant_algo": "none"}, None, None, "bfloat16", "native", "checkpoint"),
-        ({"kv_cache_quant_algo": "bfloat16"}, None, None, "fp8", "native", "aisim_policy"),
+        ({"kv_cache_quant_algo": "bfloat16"}, None, None, "fp8", "native", "aisimulate_policy"),
         ({"quant_algo": "fp8"}, "bfloat16", None, "bfloat16", "native", "user_override"),
         ({}, "bfloat16", "fp8", "fp8", "native", "user_override"),
         ({}, None, None, "fp8", "profile", "fpm_profile"),
