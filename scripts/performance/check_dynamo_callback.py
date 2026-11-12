@@ -72,9 +72,9 @@ def check(source: Path, dynamo: Path) -> None:
     # Validate every Python source file, so a different checkout's installed SDK
     # cannot silently supply the Python half of the selected Rust core.
     python_paths = site.getsitepackages()
-    for package in ("aisimulate", "aisimulate_core"):
+    for package in ("aisim", "aisim_core"):
         installed = Path(importlib.import_module(package).__file__).resolve().parent
-        expected = source / "python/aisimulate/src" / package
+        expected = source / "python/aisim/src" / package
         for path in expected.rglob("*.py"):
             if (installed / path.relative_to(expected)).read_bytes() != path.read_bytes():
                 raise ValueError(f"installed SDK differs from selected source: {path}")

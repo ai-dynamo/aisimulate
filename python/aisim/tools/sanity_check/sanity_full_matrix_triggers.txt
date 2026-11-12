@@ -1,0 +1,1 @@
+^(python/aisim/tools/sanity_check/|python/aisim/tests/e2e/tools/test_sanity_check\.py|python/aisim/src/aisim_core/sdk/(common\.py|engine\.py|operations/|perf_database\.py|system_spec\.py)|crates/core/src/perfmodel/|python/aisim/src/aisim_core/systems/perf_data_reuse_manifest\.yaml$)

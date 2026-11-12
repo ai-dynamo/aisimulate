@@ -18,8 +18,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 ARTIFACT_NAME = "fpe-support-matrix-web"
-DATA_PREFIX = "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/"
+DATA_PREFIX = "python/aisim/src/aisim_core/systems/fpe_support_matrix/"
 LEGACY_DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
+PRE_RENAME_DATA_PREFIX = "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/"
 WORKFLOWS = {".github/workflows/fpe-support-matrix.yml", ".github/workflows/nightly-ci.yml"}
 RELEASE_WORKFLOW = ".github/workflows/release-nightly-ci.yml"
 QUALIFICATION = "complete_native_fpe_reports_and_required_probes"
@@ -102,7 +103,11 @@ def qualified_files(archive: bytes, source_sha: str) -> dict[str, bytes] | None:
             raise ValueError("FPE qualification status counts must be nonnegative integers")
         if not statuses.get("PASS", 0) or statuses.get("BUILD_FAILED", 0) or statuses.get("QUERY_FAILED", 0):
             raise ValueError("FPE qualification has no passes or unexpected native failures")
-        prefixes = [prefix for prefix in (DATA_PREFIX, LEGACY_DATA_PREFIX) if prefix + "index.json" in names]
+        prefixes = [
+            prefix
+            for prefix in (DATA_PREFIX, PRE_RENAME_DATA_PREFIX, LEGACY_DATA_PREFIX)
+            if prefix + "index.json" in names
+        ]
         if len(prefixes) != 1:
             raise ValueError("missing or ambiguous FPE dataset layout")
         data_prefix = prefixes[0]

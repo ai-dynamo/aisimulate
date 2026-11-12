@@ -7,14 +7,14 @@ Uses models whose configs resolve without HF auth (DeepSeek-V3, Qwen3-32B)."""
 
 import pytest
 
-import aisimulate.sweeper.model_hw as mh_mod
-from aisimulate.sweeper.model_hw import (
+import aisim.sweeper.model_hw as mh_mod
+from aisim.sweeper.model_hw import (
     ModelHardware,
     NoViableParallelConfig,
     parallel_configs_for,
     resolve_model_hardware,
 )
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
@@ -293,7 +293,7 @@ def test_kv_path_tiny_budget_raises():
 @pytest.mark.model(MAVERICK)
 def test_tp_that_does_not_split_heads_is_skipped_not_fatal(caplog):
     # 40 heads rule out tp=16 but not tp=8; a 16-GPU budget enumerates both.
-    caplog.set_level("WARNING", logger="aisimulate.sweeper.kv_estimate")
+    caplog.set_level("WARNING", logger="aisim.sweeper.kv_estimate")
     cfgs = parallel_configs_for(
         MAVERICK,
         "h100_sxm",
@@ -341,3 +341,45 @@ def test_explicit_dense_pin_requires_positive_width_with_fixed_kv(monkeypatch, t
             parallel_configs_for("model", "hardware", **kwargs)
     else:
         assert parallel_configs_for("model", "hardware", **kwargs) == [pin]
+
+
+def test_pinned_roles_prepare_memory_only_for_authored_shapes(monkeypatch):
+    from aisim.sweeper.parallel_enum import ReplicaParallelConfig
+
+    facts = ModelHardware(
+        model_name="model",
+        hardware_sku="hardware",
+        backend="sglang",
+        is_moe=False,
+        mla=False,
+        enable_wideep=False,
+        weight_bytes=1,
+        vram_per_gpu=80,
+        gpus_per_node=8,
+        max_context=2048,
+    )
+    monkeypatch.setattr(mh_mod, "resolve_model_hardware", lambda *a, **k: facts)
+    seen = []
+
+    def feasible(shapes, **kwargs):
+        seen.extend(shapes)
+        return dict.fromkeys(shapes, 4096)
+
+    monkeypatch.setattr(mh_mod, "feasible_shape_tokens", feasible)
+    pinned = [
+        ReplicaParallelConfig(shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        ReplicaParallelConfig(shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    ]
+    assert (
+        parallel_configs_for(
+            "model",
+            "hardware",
+            backend="sglang",
+            gpu_budget=64,
+            deployment_mode="agg",
+            candidate_configs=pinned,
+            max_seq_len=1024,
+        )
+        == pinned
+    )
+    assert seen == [p.shape for p in pinned]

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from AISim FPM Gym; see README.md for pinned source and modifications.
 
-"""Pinned, hash-verified access to the AISimulate FPM Hugging Face dataset."""
+"""Pinned, hash-verified access to the AISim FPM Hugging Face dataset."""
 
 from __future__ import annotations
 

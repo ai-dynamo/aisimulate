@@ -7,12 +7,12 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
-use aisimulate_core::engine::{
+use aisim_core::engine::generalized::{EngineIdentity, SchedulerCommand};
+use aisim_core::engine::{
     Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
     SharedG2Pool, TimingModel,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
     ReplaySpec, Replayer,
 };

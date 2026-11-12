@@ -20,7 +20,7 @@ on:
       - "scripts/pages/**"
       - "scripts/e2e_accuracy/**"
       - "tests/e2e_accuracy_source/**"
-      - "python/aisimulate/src/aisimulate/sdk/config_adapter/**"
+      - "python/aisim/src/aisim/sdk/config_adapter/**"
       - ".github/workflows/e2e-accuracy.yml"
       - ".github/workflows/e2e-accuracy-branch.yml"
       - ".github/e2e-accuracy-dataset.json"
@@ -31,7 +31,7 @@ on:
       - "tests/test_simulation_features.py"
       - "tests/test_agentx_curves.py"
       - "tests/test_benchmark_features.py"
-      - "python/aisimulate/src/aisimulate/replay/dashboard*"
+      - "python/aisim/src/aisim/replay/dashboard*"
       - "tests/test_e2e_accuracy_ui.mjs"
       - "tests/test_e2e_accuracy_nightly.py"
       - "tests/test_e2e_hf_measurements.py"
@@ -50,8 +50,8 @@ on:
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
       - "pages/feature-support-matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/fpe_support_matrix/**"
   push:
     branches: [main]
     paths:
@@ -63,7 +63,7 @@ on:
       - "scripts/e2e_accuracy/**"
       - "scripts/fpm_accuracy/**"
       - "tests/e2e_accuracy_source/**"
-      - "python/aisimulate/src/aisimulate/sdk/config_adapter/**"
+      - "python/aisim/src/aisim/sdk/config_adapter/**"
       - ".github/workflows/e2e-accuracy.yml"
       - ".github/workflows/e2e-accuracy-branch.yml"
       - ".github/e2e-accuracy-dataset.json"
@@ -81,8 +81,8 @@ on:
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
       - "pages/feature-support-matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/fpe_support_matrix/**"
 
 permissions:
   # Build and validate repository content without Pages access.

@@ -14,7 +14,7 @@
   --accent: #818cf8;
   --accent-hover: #a5b4fc;
   --accent-soft: rgb(99 102 241 / 10%);
-  --aisimulate: #a5b4fc;
+  --aisim: #a5b4fc;
   --aic: #5eead4;
   --danger: #fca5a5;
   color-scheme: dark;
@@ -31,7 +31,7 @@
   --accent: #6366f1;
   --accent-hover: #4f46e5;
   --accent-soft: rgb(99 102 241 / 6%);
-  --aisimulate: #4f46e5;
+  --aisim: #4f46e5;
   --aic: #0f766e;
   --danger: #dc2626;
   color-scheme: light;
@@ -234,7 +234,7 @@ input {
 .accuracy-name {
   display: block;
   margin-bottom: 7px;
-  color: var(--aisimulate);
+  color: var(--aisim);
   font-size: 12px;
   font-weight: 600;
 }
@@ -244,7 +244,7 @@ input {
 }
 
 .accuracy-number {
-  color: var(--aisimulate);
+  color: var(--aisim);
   font-size: 19px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -640,11 +640,11 @@ button:focus-visible,
 .error-bar strong { text-align: right; font-variant-numeric: tabular-nums; }
 .bar-track { height: 8px; background: var(--elevated); border-radius: 2px; }
 .bar { display: block; height: 8px; border-radius: 2px; }
-.bar.aisimulate { background: var(--aisimulate); }
+.bar.aisim { background: var(--aisim); }
 .bar.aic { background: var(--aic); }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11px; }
 .chart-legend .measured { color: var(--text); }
-.chart-legend .aisimulate { color: var(--aisimulate); }
+.chart-legend .aisim { color: var(--aisim); }
 .chart-legend .aic { color: var(--aic); }
 .curve-chart { margin: 16px 0; }
 .curve-chart figcaption { font-size: 13px; font-weight: 600; }
@@ -653,10 +653,10 @@ button:focus-visible,
 .axis { fill: none; stroke: var(--border); }
 .curve { stroke-width: 2; }
 .curve.measured { stroke: var(--text); }
-.curve.aisimulate { stroke: var(--aisimulate); }
+.curve.aisim { stroke: var(--aisim); }
 .curve.aic { stroke: var(--aic); stroke-dasharray: 5 3; }
 .point.measured { fill: var(--text); }
-.point.aisimulate { fill: var(--aisimulate); }
+.point.aisim { fill: var(--aisim); }
 .point.aic { fill: var(--aic); }
 .point-details summary { cursor: pointer; font-size: 13px; margin: 14px 0; }
 .point-table { min-width: 950px; font-size: 11px; }
@@ -732,7 +732,7 @@ dialog::backdrop { background: #0009; }
 .metric-chart { width: 100%; }
 .metric-chart .point { fill: inherit; }
 .metric-chart .point.measured { fill: #f59e0b; }
-.metric-chart .point.aisimulate { fill: #818cf8; }
+.metric-chart .point.aisim { fill: #818cf8; }
 .metric-chart .point.aic { fill: #14b8a6; }
 .metric-chart .point[fill="#ec4899"] { fill: #ec4899; }
 

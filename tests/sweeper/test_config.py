@@ -6,10 +6,10 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.config import CoreRecommendationConfig
-from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.sweeper import OptimizationTarget, SmartSearchConfig
-from aisimulate.sweeper.config import (
+from aisim.config import CoreRecommendationConfig
+from aisim.recommend import recommendation_to_sweeper
+from aisim.sweeper import OptimizationTarget, SmartSearchConfig
+from aisim.sweeper.config import (
     OptimizationGoal,
     SearchSpace,
     SLATarget,
@@ -459,6 +459,12 @@ def test_backend_choice_subset_is_accepted():
 def test_invalid_or_empty_backend_choices_are_rejected(field, value):
     with pytest.raises(ValidationError):
         SearchSpace(**_search_space(**{field: value}))
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_obsolete_afd_deployment_modes_are_rejected(mode):
+    with pytest.raises(ValidationError, match="deployment_mode has invalid choice"):
+        SearchSpace(**_search_space(deployment_mode=[mode]))
 
 
 def test_pinned_parallel_config_requires_one_deployment_mode():

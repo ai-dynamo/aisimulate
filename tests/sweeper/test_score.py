@@ -7,13 +7,13 @@ import math
 
 import pytest
 
-from aisimulate.sweeper.config import (
+from aisim.sweeper.config import (
     Candidate,
     OptimizationGoal,
     OptimizationTarget,
     SLATarget,
 )
-from aisimulate.sweeper.score import (
+from aisim.sweeper.score import (
     aggregate_sla_violations,
     analyze_candidates,
     is_feasible,

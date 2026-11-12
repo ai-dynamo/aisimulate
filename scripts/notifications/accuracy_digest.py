@@ -14,6 +14,8 @@ from array import array
 from collections import defaultdict
 from statistics import mean
 
+from scripts.e2e_accuracy.summary_contract import normalize_summary
+
 METHODS = ("warmup", "nowarmup", "regression")
 
 
@@ -45,6 +47,7 @@ def identity(value):
 
 
 def e2e_snapshot(summary, rules, url):
+    summary = normalize_summary(summary)
     campaign = summary["snapshot"]["campaign"]
     groups = {}
     for model in summary["models"]:
@@ -67,7 +70,7 @@ def e2e_snapshot(summary, rules, url):
                         if point_key in points:
                             raise ValueError("duplicate E2E point identity")
                         points[point_key] = (
-                            [abs(point["aisimulate"][metric + "_error_pct"]) for metric in ("tpot", "ttft")]
+                            [abs(point["aisim"][metric + "_error_pct"]) for metric in ("tpot", "ttft")]
                             if point["status"] == "success"
                             else None
                         )
@@ -225,8 +228,8 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
         summary += f" · {len(notes)} comparison note(s) in thread"
     lines = [
         f":rainbow: *Accuracy Weekly · {day}*",
-        "> " + links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
-        " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>",
+        "> " + links + " · <https://ai-dynamo.org/aisim/e2e-accuracy/|E2E overview>"
+        " · <https://ai-dynamo.org/aisim/fpm-accuracy/|FPM overview>",
     ]
     lines.extend("> " + escape("• " + (alert if len(alert) <= 240 else alert[:237] + "...")) for alert in alerts[:3])
     if len(alerts) > 3:
