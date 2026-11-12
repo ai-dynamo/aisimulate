@@ -2703,6 +2703,43 @@ python() {
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("missing", [None, "bundled-deps.csv", "bundled-provenance.json", "extracted-files.json"])
+def test_nightly_inventory_upload_has_flat_complete_metadata_without_container_paths(tmp_path, missing):
+    steps = _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
+    stage = next(step for step in steps if step.get("name") == "Stage wheel configuration inventory for upload")
+    upload = next(step for step in steps if step.get("name") == "Preserve wheel configuration inventory")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    container_temp = tmp_path / "container-temp"
+    extracted = container_temp / "bundled-configs-nightly"
+    extracted.mkdir(parents=True)
+    reports = {
+        name: f"verified {name}\n" for name in ("bundled-deps.csv", "bundled-provenance.json", "extracted-files.json")
+    }
+    for name, content in reports.items():
+        if name != missing:
+            (extracted / name).write_text(content)
+    # Extracted payload/configs must never leak into this metadata-only artifact.
+    (extracted / "files").mkdir()
+    (extracted / "files/model.json").write_text("private fixture")
+    result = subprocess.run(
+        ["bash", "-e", "-c", stage["run"]],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "RUNNER_TEMP": str(container_temp)},
+    )
+    if missing:
+        assert result.returncode != 0
+        return
+    assert result.returncode == 0, result.stderr
+    artifact_path = upload["with"]["path"]
+    assert len(artifact_path.splitlines()) == 1
+    assert not Path(artifact_path).is_absolute()
+    staged = workspace / artifact_path
+    assert {path.relative_to(staged).as_posix(): path.read_text() for path in staged.rglob("*")} == reports
+
+
 def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     policy = _workflow("fast-ci.yml")["jobs"]["policy"]
     assert "scripts/ci/check_bundled_configs.py" in _run_commands(policy)
@@ -2731,7 +2768,7 @@ def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     assert check < stage
     assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
-    for collection in (application, action["runs"]["steps"], steps):
+    for collection in (application, action["runs"]["steps"]):
         upload_report = next(
             step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
         )
