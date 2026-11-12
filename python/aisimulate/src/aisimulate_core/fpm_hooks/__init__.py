@@ -69,8 +69,9 @@ def hook_path() -> str:
     """Directory to prepend to ``PYTHONPATH`` so ``sitecustomize`` installs the hooks.
 
     The hook modules are named ``_sglang`` / ``_dynamo_vllm`` on purpose: this directory
-    precedes site-packages on ``sys.path``, so a module called ``sglang.py`` here would
-    shadow the real ``sglang`` package.
+    precedes the stdlib and site-packages on ``sys.path``, so a module called ``sglang.py``
+    here would shadow the real ``sglang`` package, and one named after a stdlib module
+    (such as ``_struct.py``) would shadow that module wherever it is not built in.
     """
     return os.path.dirname(os.path.abspath(__file__))
 

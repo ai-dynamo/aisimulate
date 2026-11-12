@@ -102,13 +102,13 @@ base, the two lists are added at runtime inside the engine process by
    imported eagerly.
 2. **Extended `ScheduledRequestMetrics`.** FPM is a `msgspec` struct serialized to
    msgpack. The hook creates a frozen subclass of the producer's
-   `ScheduledRequestMetrics` with two extra `list[int]` fields (`_struct.extend_struct`),
+   `ScheduledRequestMetrics` with two extra `list[int]` fields (`_request_fields.extend_struct`),
    keeps the class name and module, and copies the original instance into it
-   (`_struct.with_pairs`). The msgpack payload keeps FPM `version` 1; aggregate-only
+   (`_request_fields.with_pairs`). The msgpack payload keeps FPM `version` 1; aggregate-only
    consumers ignore the two extra keys, the Dynamo runtime decodes the event
    unchanged and the Rust trace sink writes them out. If the producer's struct already
    has both fields (a patched image), the hook is a no-op.
-3. **SGLang** (`fpm_hooks/_sglang.py`; the leading underscore keeps the hook directory, which precedes site-packages on `PYTHONPATH`, from shadowing the real `sglang` package). The class that defines
+3. **SGLang** (`fpm_hooks/_sglang.py`; the leading underscore keeps the hook directory, which precedes the stdlib and site-packages on `PYTHONPATH`, from shadowing the real `sglang` package; no module there may share a stdlib name either, such as `_struct`). The class that defines
    `_build_scheduled_request_metrics` is found by method name (it is
    `SchedulerMetricsReporter` in the V4.1 runtime, a mixin in other versions). Its
    method is wrapped: the wrapper calls the original, then derives one `(extend, past)`

@@ -14,8 +14,8 @@ msgspec = pytest.importorskip("msgspec")
 
 from aisimulate_core import fpm_hooks
 from aisimulate_core.fpm_hooks import _dynamo_vllm as dynamo_vllm
+from aisimulate_core.fpm_hooks import _request_fields as request_fields
 from aisimulate_core.fpm_hooks import _sglang as sglang
-from aisimulate_core.fpm_hooks import _struct
 
 
 def _stock_fpm_module(name: str) -> types.ModuleType:
@@ -97,10 +97,10 @@ class _Req:
 
 def test_extend_struct_roundtrips_through_msgpack():
     fpm = _stock_fpm_module("x.fpm")
-    ext = _struct.extend_struct(fpm.ScheduledRequestMetrics)
-    assert _struct.has_request_fields(ext) and not _struct.has_request_fields(fpm.ScheduledRequestMetrics)
+    ext = request_fields.extend_struct(fpm.ScheduledRequestMetrics)
+    assert request_fields.has_request_fields(ext) and not request_fields.has_request_fields(fpm.ScheduledRequestMetrics)
     base = fpm.ScheduledRequestMetrics(num_decode_requests=2, sum_decode_kv_tokens=300)
-    out = _struct.with_pairs(ext, base, [(1, 200), (1, 100)])
+    out = request_fields.with_pairs(ext, base, [(1, 200), (1, 100)])
     assert out.num_decode_requests == 2 and out.extend_lengths == [1, 1] and out.past_kv_lengths == [200, 100]
     payload = fpm.encode(fpm.ForwardPassMetrics(wall_time=0.01, scheduled_requests=out))
     raw = msgspec.msgpack.decode(payload)
@@ -143,12 +143,12 @@ def test_sglang_hook_adds_lists_from_schedule_batch(fake_sglang):
     f = mixin._build_scheduled_request_metrics(fb)
     assert f.extend_lengths == [300] and f.past_kv_lengths == [40]
     # module attribute now points at the extended struct, as the producer's call-time import expects
-    assert _struct.has_request_fields(fpm.ScheduledRequestMetrics)
+    assert request_fields.has_request_fields(fpm.ScheduledRequestMetrics)
 
 
 def test_sglang_hook_is_noop_when_native(fake_sglang):
     fpm, reporter = fake_sglang
-    fpm.ScheduledRequestMetrics = _struct.extend_struct(fpm.ScheduledRequestMetrics)
+    fpm.ScheduledRequestMetrics = request_fields.extend_struct(fpm.ScheduledRequestMetrics)
     assert sglang.patch_sglang_metrics_reporter(reporter) is False
 
 
@@ -185,7 +185,7 @@ def test_dynamo_vllm_hook_adds_sorted_lists(monkeypatch):
     assert m.past_kv_lengths == [9000, 5000, 100, 0]
     assert m.extend_lengths == [100, 1, 1, 500]
     assert m.num_prefill_requests == 2
-    assert _struct.has_request_fields(sched_mod.ScheduledRequestMetrics)
+    assert request_fields.has_request_fields(sched_mod.ScheduledRequestMetrics)
 
 
 def test_post_import_patcher_runs_patch_after_module_exec(tmp_path, monkeypatch):
@@ -206,6 +206,15 @@ def test_hook_path_points_at_sitecustomize():
     import os
 
     assert os.path.exists(os.path.join(fpm_hooks.hook_path(), "sitecustomize.py"))
+
+
+def test_hook_path_shadows_no_stdlib_module():
+    # hook_path() goes on PYTHONPATH, ahead of the stdlib: a _struct.py there broke `import struct`
+    # on every Python that builds _struct as a shared extension
+    import os
+
+    modules = {name[:-3] for name in os.listdir(fpm_hooks.hook_path()) if name.endswith(".py")}
+    assert not modules & sys.stdlib_module_names
 
 
 def test_sglang_hook_finds_owner_class_by_method_name(fake_sglang):
