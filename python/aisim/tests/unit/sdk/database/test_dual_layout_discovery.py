@@ -52,6 +52,36 @@ def test_legacy_layout_still_discovered(systems_root):
     assert supported["h200_sxm"]["sglang"] == ["0.5.14"]
 
 
+@pytest.mark.parametrize("family_op", [False, True])
+def test_canonical_fpm_layout_has_no_migration_warning(systems_root, caplog, family_op):
+    caplog.set_level(logging.WARNING)
+    _write(systems_root, "data/h200_sxm/vllm/0.29.0/fpm_forward_perf.parquet")
+    _write(systems_root, "data/h200_sxm/vllm/0.29.0/fpm_forward_perf.metadata.json", b"{}")
+    if family_op:
+        _write(systems_root, "data/h200_sxm/gemm/vllm/0.29.0/gemm_perf.parquet")
+
+    supported = get_supported_databases(str(systems_root))
+
+    assert supported["h200_sxm"]["vllm"] == ["0.29.0"]
+    assert not any("Legacy perf-data layout" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("legacy_op", ["gemm_perf.parquet", "gemm_perf.txt"])
+@pytest.mark.parametrize("legacy_version", ["0.29.0", "0.28.0"])
+def test_fpm_layout_does_not_hide_legacy_op_warning(systems_root, caplog, legacy_op, legacy_version):
+    caplog.set_level(logging.WARNING)
+    _write(systems_root, "data/h200_sxm/vllm/0.29.0/fpm_forward_perf.parquet")
+    _write(systems_root, "data/h200_sxm/vllm/0.29.0/fpm_forward_perf.metadata.json", b"{}")
+    get_supported_databases(str(systems_root))
+    assert not any("Legacy perf-data layout" in record.getMessage() for record in caplog.records)
+
+    _write(systems_root, f"data/h200_sxm/vllm/{legacy_version}/{legacy_op}")
+    for _ in range(2):
+        supported = get_supported_databases(str(systems_root))
+        assert supported["h200_sxm"]["vllm"] == sorted({"0.29.0", legacy_version})
+    assert len([record for record in caplog.records if "Legacy perf-data layout" in record.getMessage()]) == 1
+
+
 def test_mixed_layouts_union(systems_root):
     _write(systems_root, "data/h200_sxm/gemm/sglang/0.5.14/gemm_perf.parquet")
     _write(systems_root, "data/h200_sxm/sglang/0.5.12/gemm_perf.parquet")  # legacy straggler
