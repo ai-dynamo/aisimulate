@@ -71,38 +71,39 @@ impl Ord for Task {
     }
 }
 enum ReadyQueue {
-    Inline([Option<Task>; 4]),
+    Inline(usize, [Task; 4]),
     Heap(std::collections::BinaryHeap<std::cmp::Reverse<Task>>),
 }
 impl ReadyQueue {
     fn new(small: bool) -> Self {
         if small {
-            Self::Inline([None; 4])
+            Self::Inline(0, [Task::default(); 4])
         } else {
             Self::Heap(Default::default())
         }
     }
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Inline(len, _) => *len == 0,
+            Self::Heap(heap) => heap.is_empty(),
+        }
+    }
     fn push(&mut self, task: Task) {
         match self {
-            Self::Inline(slots) => {
-                *slots
-                    .iter_mut()
-                    .find(|s| s.is_none())
-                    .expect("one task per microbatch") = Some(task)
+            Self::Inline(len, slots) => {
+                slots[*len] = task;
+                *len += 1;
             }
             Self::Heap(heap) => heap.push(std::cmp::Reverse(task)),
         }
     }
     fn pop(&mut self) -> Option<Task> {
         match self {
-            Self::Inline(slots) => {
-                let i = slots
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, t)| t.map(|t| (i, t)))
-                    .min_by_key(|(_, t)| *t)
-                    .map(|(i, _)| i)?;
-                slots[i].take()
+            Self::Inline(len, slots) => {
+                let i = (0..*len).min_by(|&a, &b| slots[a].cmp(&slots[b]))?;
+                *len -= 1;
+                slots.swap(i, *len);
+                Some(slots[*len])
             }
             Self::Heap(heap) => heap.pop().map(|t| t.0),
         }
@@ -166,16 +167,24 @@ impl AfdPipelineLayout {
         let mut running: [Option<(f64, Task)>; 4] = [None; 4];
         let mut now = 0.0_f64;
         let mut finished = 0;
-        let enqueue = |mut task: Task, queues: &mut [ReadyQueue; 4]| -> Result<bool, AicError> {
+        // Each microbatch's stage durations for the layer it is in.
+        let mut rows = vec![[0.0_f64; 5]; microbatches as usize];
+        // Skip to the task's next stage with work and return its resource;
+        // `None` once the microbatch has finished.
+        let mut next = |task: &mut Task| -> Result<Option<usize>, AicError> {
             loop {
-                let d = durations(task.micro, layers[task.layer]).ok_or_else(|| {
-                    AicError::InvalidEngineConfig("invalid AFD layer template".into())
-                })?;
-                if d.iter().any(|v| !v.is_finite() || *v < 0.0) {
-                    return Err(AicError::InvalidEngineConfig(
-                        "invalid AFD stage duration".into(),
-                    ));
+                if task.stage == 0 {
+                    let d = durations(task.micro, layers[task.layer]).ok_or_else(|| {
+                        AicError::InvalidEngineConfig("invalid AFD layer template".into())
+                    })?;
+                    if d.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                        return Err(AicError::InvalidEngineConfig(
+                            "invalid AFD stage duration".into(),
+                        ));
+                    }
+                    rows[task.micro] = d;
                 }
+                let d = &rows[task.micro];
                 let (resource, mut duration) = match (self, task.stage) {
                     (_, 5) => (0, suffix(task.micro)),
                     (Self::FourStage, 0) => (0, d[0]),
@@ -197,14 +206,47 @@ impl AfdPipelineLayout {
                 }
                 if duration > 0.0 {
                     task.duration = duration;
-                    queues[resource].push(task);
-                    return Ok(false);
+                    return Ok(Some(resource));
                 }
                 if !task.advance(self, layers.len()) {
-                    return Ok(true);
+                    return Ok(None);
                 }
             }
         };
+        let latency = |now: f64| {
+            if now <= 0.0 {
+                return Err(AicError::InvalidEngineConfig(
+                    "invalid AFD pass latency".into(),
+                ));
+            }
+            Ok(now)
+        };
+        if microbatches == 1 {
+            // A lone microbatch never waits: its stages run back to back.
+            let mut task = Task::default();
+            while let Some(resource) = next(&mut task)? {
+                let end = now + task.duration;
+                if !end.is_finite() {
+                    return Err(AicError::InvalidEngineConfig("AFD pass overflow".into()));
+                }
+                observe(resource, task.micro, task.layer, task.stage, now, end);
+                now = end;
+                if !task.advance(self, layers.len()) {
+                    break;
+                }
+            }
+            return latency(now);
+        }
+        let mut enqueue =
+            |mut task: Task, queues: &mut [ReadyQueue; 4]| -> Result<bool, AicError> {
+                Ok(match next(&mut task)? {
+                    Some(resource) => {
+                        queues[resource].push(task);
+                        false
+                    }
+                    None => true,
+                })
+            };
         for micro in 0..microbatches as usize {
             finished += usize::from(enqueue(
                 Task {
@@ -231,7 +273,7 @@ impl AfdPipelineLayout {
                 break;
             }
             for (resource, (queue, slot)) in queues.iter_mut().zip(&mut running).enumerate() {
-                if slot.is_none() {
+                if slot.is_none() && !queue.is_empty() {
                     if let Some(task) = queue.pop() {
                         let end = now + task.duration;
                         if !end.is_finite() {
@@ -251,12 +293,7 @@ impl AfdPipelineLayout {
                     AicError::InvalidEngineConfig("AFD pipeline has unfinished work".into())
                 })?;
         }
-        if now <= 0.0 {
-            return Err(AicError::InvalidEngineConfig(
-                "invalid AFD pass latency".into(),
-            ));
-        }
-        Ok(now)
+        latency(now)
     }
 
     /// Apply the transfer factor once, before grouping stages.
@@ -427,6 +464,53 @@ mod tests {
                     .unwrap(),
                 33.
             );
+        }
+    }
+
+    #[test]
+    fn single_microbatch_runs_nonzero_stages_back_to_back() {
+        // One routed layer without a restore, then a dense layer. Transfers
+        // are doubled; the prefix joins the first stage and the suffix is last.
+        let templates = [[1., 2., 3., 4., 0.], [7., 0., 0., 0., 0.]];
+        for (layout, expected) in [
+            (
+                AfdPipelineLayout::FourStage,
+                vec![
+                    (0, 0, 0, 0., 1.5),
+                    (1, 0, 1, 1.5, 5.5),
+                    (2, 0, 2, 5.5, 8.5),
+                    (3, 0, 3, 8.5, 16.5),
+                    (0, 1, 0, 16.5, 23.5),
+                    (0, 1, 5, 23.5, 23.75),
+                ],
+            ),
+            (
+                AfdPipelineLayout::TwoStage,
+                vec![
+                    (0, 0, 0, 0., 5.5),
+                    (2, 0, 2, 5.5, 16.5),
+                    (0, 1, 0, 16.5, 23.5),
+                    (0, 1, 5, 23.5, 23.75),
+                ],
+            ),
+        ] {
+            let mut seen = Vec::new();
+            let step = layout
+                .schedule(
+                    &[0, 1],
+                    1,
+                    |_, template| templates.get(template).copied(),
+                    |_| 0.5,
+                    |_| 0.25,
+                    2.,
+                    |resource, micro, layer, stage, start, end| {
+                        assert_eq!(micro, 0);
+                        seen.push((resource, layer, stage, start, end));
+                    },
+                )
+                .unwrap();
+            assert_eq!(step, 23.75);
+            assert_eq!(seen, expected);
         }
     }
 
