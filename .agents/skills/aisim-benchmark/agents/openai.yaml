@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISim Benchmark"
+  short_description: "Plan, collect, evaluate and publish benchmarks"
+  default_prompt: "Use $aisim-benchmark to run the benchmark flow for this model and GPU: plan from the catalog, collect, record GPU time, evaluate and publish within my authorization."
+
+policy:
+  allow_implicit_invocation: true

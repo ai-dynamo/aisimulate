@@ -184,11 +184,11 @@ prepared for the currently installed hardware bytes as well as the dataset pin.
 | Field | Meaning |
 | --- | --- |
 | `format_version` | `1` for the pin-manifest format; independent of the timing sidecar schema version. |
-| `repo_id` | Hugging Face dataset repository, such as `nvidia/aisimulate-fpm-dataset`. |
+| `repo_id` | Hugging Face dataset repository, such as `ai-dynamo/aisim-data`. A pin written before the move may name the retired `nvidia/aisimulate-fpm-dataset`; its commit stays resolvable. See [Retired repository name](#retired-repository-name). |
 | `revision` | Full lowercase 40-character dataset commit SHA; branches and tags are rejected. |
 | `profiles.<key>.admission` | `serving`, `development`, or `quarantined`. Only `serving` materializes by default. |
 | `profiles.<key>.files` | Pinned dataset files, including the timing pair and an archived system YAML when available. Retain published resource/provenance artifacts where available. |
-| `files[].path` | Relative POSIX source path within the pinned dataset. |
+| `files[].path` | Relative POSIX source path within the pinned dataset. FPM files live under `data/fpm/<model>/<hardware>/<framework>/<version>/<parallelism>/`; pins of the retired layout use `data/<model>/...`. Paths inside moved text files (`manifest.json`, sidecars) keep that legacy spelling as a logical key: the repository path is `data/fpm/` plus the remainder. |
 | `files[].sha256` | Full lowercase SHA-256 of the exact source bytes, also verified after materialization. |
 | `files[].target` | Relative POSIX destination within this profile's systems root. |
 | `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisim_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
@@ -242,6 +242,30 @@ materializer accounts for changed bytes when selecting a cache root. Do not
 advance a pin automatically or change admission merely because a download or
 smoke query succeeds. Changes to these manifests go through ordinary repository
 review; no registry service is required.
+
+### Retired repository name
+
+`nvidia/aisimulate-fpm-dataset` is retired in favor of `ai-dynamo/aisim-data`; the
+files moved byte-identically from `data/<rest>` to `data/fpm/<rest>`. Both names
+resolve, under one rule implemented in `aisim_core.data.repos`:
+
+| Reference | Resolves to |
+| --- | --- |
+| `nvidia/aisimulate-fpm-dataset` + 40-character commit SHA (a historical pin) | The same repository and path, unchanged. A SHA names immutable content, so it is never rewritten to another repository. |
+| `nvidia/aisimulate-fpm-dataset` + a branch, tag or empty ref (for example `AISIM_DATASET=nvidia/aisimulate-fpm-dataset@main`) | `ai-dynamo/aisim-data` with `data/<rest>` mapped to `data/fpm/<rest>`. |
+| `ai-dynamo/aisim-data` | Itself. |
+
+A pin that names the retired repository keeps working while that repository serves
+its commit. If it stops serving a file, materialization fails with the successor
+and the migration (never a silent fallback or revision change); re-record the pin
+against an `ai-dynamo/aisim-data` commit with `scripts/ci/set_fpm_dataset_pin.py`.
+Rollback is the previous pin file: revert the pin change. Unit tests load a
+retired-layout pin and a current pin from the same bytes and assert identical
+staged files, and check that every checked-in pin parses (only
+`systems/dsv41_fpm_hf.json` keeps the retired name, for its historical sidecars).
+Deleting or renaming the retired repository on Hugging Face is a separate
+administrator action and breaks historical pins unless HF redirects it; do it only
+after the pins that name it are migrated.
 
 Materialization verifies storage integrity and applies the manifest's admission
 gate. It does not establish resource capacity, workload coverage, or prediction

@@ -1,0 +1,406 @@
+{
+ "legacy_cohort": {
+  "aisim_e2e_raw_backed": {
+   "database_observations": 85309,
+   "database_only_observations": 78174,
+   "database_only_selected_fate_in_view": {
+    "not_in_view": 433,
+    "stale": 58
+   },
+   "difference_examples": [
+    418054,
+    418055,
+    418056,
+    418057,
+    418058
+   ],
+   "hf_view_observations": 7743,
+   "selected": {
+    "database": 3320,
+    "view": 2855
+   },
+   "selected_database_only": 491,
+   "selected_in_both": 2829,
+   "selected_view_only": 26,
+   "shared_decision_differences": {
+    "db=selected view=stale": 58,
+    "db=superseded_image view=selected": 17
+   },
+   "shared_observations": 7135,
+   "shared_with_non_transport_field_difference": 223,
+   "view_only_observations": 608,
+   "view_only_selected_fate_in_database": {
+    "not_in_database": 9,
+    "superseded_image": 17
+   },
+   "view_selection": {
+    "excluded": {
+     "source_filter": 3306,
+     "stale": 1009,
+     "superseded_image": 572,
+     "superseded_row": 1
+    },
+    "measurement_date_through": "2026-10-19",
+    "selected": 2855
+   }
+  },
+  "database_selection": {
+   "excluded": {
+    "source_filter": 32084,
+    "stale": 1293,
+    "superseded_image": 978,
+    "superseded_row": 47634
+   },
+   "measurement_date_through": "2026-09-27",
+   "selected": 3320
+  },
+  "hf_current_path": {
+   "database_observations": 85309,
+   "database_only_observations": 78174,
+   "database_only_selected_fate_in_view": {
+    "not_in_view": 433,
+    "stale": 58
+   },
+   "difference_examples": [
+    418054,
+    418055,
+    418056,
+    418057,
+    418058
+   ],
+   "hf_view_observations": 7743,
+   "selected": {
+    "database": 3320,
+    "view": 2855
+   },
+   "selected_database_only": 491,
+   "selected_in_both": 2829,
+   "selected_view_only": 26,
+   "shared_decision_differences": {
+    "db=selected view=stale": 58,
+    "db=superseded_image view=selected": 17
+   },
+   "shared_observations": 7135,
+   "shared_with_non_transport_field_difference": 223,
+   "view_only_observations": 608,
+   "view_only_selected_fate_in_database": {
+    "not_in_database": 9,
+    "superseded_image": 17
+   },
+   "view_selection": {
+    "excluded": {
+     "source_filter": 3306,
+     "stale": 1009,
+     "superseded_image": 572,
+     "superseded_row": 1
+    },
+    "measurement_date_through": "2026-10-19",
+    "selected": 2855
+   }
+  }
+ },
+ "resolution": {
+  "raw_backed": {
+   "coverage": {
+    "new": {
+     "mtp:resolved:None": 197,
+     "mtp:unresolved:model_identity": 8,
+     "mtp:unresolved:mtp_acceptance_missing": 105,
+     "mtp:unresolved:mtp_configuration_unresolved": 352,
+     "mtp:unresolved:mtp_source_unresolved": 151,
+     "mtp:unresolved:predictor_mapping": 21,
+     "mtp:unresolved:quantization": 47,
+     "none:resolved:None": 1773,
+     "none:unresolved:predictor_mapping": 152,
+     "none:unresolved:quantization": 36,
+     "none:unresolved:source_unresolved": 5,
+     "none:unresolved:topology": 8
+    },
+    "old": {
+     "mtp:resolved:None": 197,
+     "mtp:unresolved:model_identity": 8,
+     "mtp:unresolved:mtp_acceptance_missing": 105,
+     "mtp:unresolved:mtp_configuration_unresolved": 352,
+     "mtp:unresolved:mtp_source_unresolved": 151,
+     "mtp:unresolved:predictor_mapping": 21,
+     "mtp:unresolved:quantization": 47,
+     "none:resolved:None": 1773,
+     "none:unresolved:predictor_mapping": 152,
+     "none:unresolved:quantization": 36,
+     "none:unresolved:source_unresolved": 5,
+     "none:unresolved:topology": 8
+    }
+   },
+   "difference_examples": [],
+   "only_in_new": 0,
+   "only_in_old": 0,
+   "points": {
+    "new": 2855,
+    "old": 2855
+   },
+   "resolution_digest_differences": 0,
+   "resolution_status_differences": 0
+  },
+  "typed": {
+   "coverage": {
+    "new": {
+     "mtp:resolved:None": 197,
+     "mtp:unresolved:model_identity": 8,
+     "mtp:unresolved:mtp_acceptance_missing": 105,
+     "mtp:unresolved:mtp_configuration_unresolved": 352,
+     "mtp:unresolved:mtp_source_unresolved": 151,
+     "mtp:unresolved:predictor_mapping": 21,
+     "mtp:unresolved:quantization": 47,
+     "none:resolved:None": 1773,
+     "none:unresolved:predictor_mapping": 152,
+     "none:unresolved:quantization": 36,
+     "none:unresolved:source_unresolved": 5,
+     "none:unresolved:topology": 8
+    },
+    "old": {
+     "mtp:resolved:None": 197,
+     "mtp:unresolved:model_identity": 8,
+     "mtp:unresolved:mtp_acceptance_missing": 105,
+     "mtp:unresolved:mtp_configuration_unresolved": 352,
+     "mtp:unresolved:mtp_source_unresolved": 151,
+     "mtp:unresolved:predictor_mapping": 21,
+     "mtp:unresolved:quantization": 47,
+     "none:resolved:None": 1773,
+     "none:unresolved:predictor_mapping": 152,
+     "none:unresolved:quantization": 36,
+     "none:unresolved:source_unresolved": 5,
+     "none:unresolved:topology": 8
+    }
+   },
+   "difference_examples": [],
+   "only_in_new": 0,
+   "only_in_old": 0,
+   "points": {
+    "new": 2855,
+    "old": 2855
+   },
+   "resolution_digest_differences": 0,
+   "resolution_status_differences": 0
+  }
+ },
+ "score_inputs": {
+  "checked": {
+   "mean_e2el": 2855,
+   "mean_tpot": 2855,
+   "mean_ttft": 2855,
+   "output_tput_per_gpu": 2855,
+   "tput_per_gpu": 2855
+  },
+  "differences": 0,
+  "examples": [],
+  "selected_points": 2855
+ },
+ "selection": {
+  "raw_backed": {
+   "cohort_input_digest": {
+    "new": "7cd2cb5453e561b67ec3ce8d9d6869f723df23caee65b5d4a2d94067fc26292d",
+    "old": "7cd2cb5453e561b67ec3ce8d9d6869f723df23caee65b5d4a2d94067fc26292d"
+   },
+   "cohort_input_digest_equal": true,
+   "decision_counts": {
+    "new": {
+     "selected": 2855,
+     "source_filter": 3306,
+     "stale": 1009,
+     "superseded_image": 572,
+     "superseded_row": 1
+    },
+    "old": {
+     "selected": 2855,
+     "source_filter": 3306,
+     "stale": 1009,
+     "superseded_image": 572,
+     "superseded_row": 1
+    }
+   },
+   "decision_differences": {},
+   "decision_examples": [],
+   "excluded_by_stage_equal": true,
+   "point_ids_only_in_new": 0,
+   "point_ids_only_in_old": 0,
+   "reviewed_mtp_bindings": {
+    "new": 872,
+    "old": 872
+   },
+   "selected": {
+    "new": 2855,
+    "old": 2855
+   },
+   "selected_row_examples": {},
+   "selected_row_field_differences": {},
+   "selection": {
+    "new": {
+     "excluded": {
+      "source_filter": 3306,
+      "stale": 1009,
+      "superseded_image": 572,
+      "superseded_row": 1
+     },
+     "measurement_date_through": "2026-10-19",
+     "selected": 2855
+    },
+    "old": {
+     "excluded": {
+      "source_filter": 3306,
+      "stale": 1009,
+      "superseded_image": 572,
+      "superseded_row": 1
+     },
+     "measurement_date_through": "2026-10-19",
+     "selected": 2855
+    }
+   },
+   "view": "raw_backed"
+  },
+  "typed": {
+   "cohort_input_digest": {
+    "new": "7cd2cb5453e561b67ec3ce8d9d6869f723df23caee65b5d4a2d94067fc26292d",
+    "old": "7cd2cb5453e561b67ec3ce8d9d6869f723df23caee65b5d4a2d94067fc26292d"
+   },
+   "cohort_input_digest_equal": true,
+   "decision_counts": {
+    "new": {
+     "selected": 2855,
+     "source_filter": 3306,
+     "stale": 1009,
+     "superseded_image": 572,
+     "superseded_row": 1
+    },
+    "old": {
+     "selected": 2855,
+     "source_filter": 3306,
+     "stale": 1009,
+     "superseded_image": 572,
+     "superseded_row": 1
+    }
+   },
+   "decision_differences": {},
+   "decision_examples": [],
+   "excluded_by_stage_equal": true,
+   "point_ids_only_in_new": 0,
+   "point_ids_only_in_old": 0,
+   "reviewed_mtp_bindings": {
+    "new": 872,
+    "old": 872
+   },
+   "selected": {
+    "new": 2855,
+    "old": 2855
+   },
+   "selected_row_examples": {},
+   "selected_row_field_differences": {},
+   "selection": {
+    "new": {
+     "excluded": {
+      "source_filter": 3306,
+      "stale": 1009,
+      "superseded_image": 572,
+      "superseded_row": 1
+     },
+     "measurement_date_through": "2026-10-19",
+     "selected": 2855
+    },
+    "old": {
+     "excluded": {
+      "source_filter": 3306,
+      "stale": 1009,
+      "superseded_image": 572,
+      "superseded_row": 1
+     },
+     "measurement_date_through": "2026-10-19",
+     "selected": 2855
+    }
+   },
+   "view": "typed"
+  }
+ },
+ "source_config_decisions": {
+  "raw_backed": {
+   "locked_image_equal": true,
+   "mixed_image_configs": {
+    "new": 122,
+    "old": 122
+   },
+   "mixed_image_configs_equal": true
+  },
+  "typed": {
+   "locked_image_equal": true,
+   "mixed_image_configs": {
+    "new": 122,
+    "old": 122
+   },
+   "mixed_image_configs_equal": true
+  }
+ },
+ "tables": {
+  "raw_backed": {
+   "benchmark_results": {
+    "examples": {},
+    "field_differences": {},
+    "n_only_in_new": 0,
+    "n_only_in_old": 0,
+    "new_count": 7743,
+    "old_count": 7743,
+    "only_in_new": [],
+    "only_in_old": []
+   },
+   "configs": {
+    "examples": {},
+    "field_differences": {},
+    "n_only_in_new": 0,
+    "n_only_in_old": 0,
+    "new_count": 1565,
+    "old_count": 1565,
+    "only_in_new": [],
+    "only_in_old": []
+   },
+   "workflow_runs": {
+    "examples": {},
+    "field_differences": {},
+    "n_only_in_new": 0,
+    "n_only_in_old": 0,
+    "new_count": 442,
+    "old_count": 442,
+    "only_in_new": [],
+    "only_in_old": []
+   }
+  },
+  "typed": {
+   "benchmark_results": {
+    "examples": {},
+    "field_differences": {},
+    "n_only_in_new": 0,
+    "n_only_in_old": 0,
+    "new_count": 7743,
+    "old_count": 7743,
+    "only_in_new": [],
+    "only_in_old": []
+   },
+   "configs": {
+    "examples": {},
+    "field_differences": {},
+    "n_only_in_new": 0,
+    "n_only_in_old": 0,
+    "new_count": 1565,
+    "old_count": 1565,
+    "only_in_new": [],
+    "only_in_old": []
+   },
+   "workflow_runs": {
+    "examples": {},
+    "field_differences": {},
+    "n_only_in_new": 0,
+    "n_only_in_old": 0,
+    "new_count": 442,
+    "old_count": 442,
+    "only_in_new": [],
+    "only_in_old": []
+   }
+  }
+ }
+}

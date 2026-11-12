@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "Benchmark Collect"
+  short_description: "Collect op, FPM or E2E data and record GPU time"
+  default_prompt: "Use $aisim-benchmark-collect to run the planned collection and record its GPU time from the job record."
+
+policy:
+  allow_implicit_invocation: true

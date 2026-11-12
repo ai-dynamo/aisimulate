@@ -14,6 +14,50 @@ User-facing coverage is described in [performance-model support](../perf-model/s
 and [Replay features](../replay/features.md). This page owns the jobs, provenance,
 publication, and notifications behind those views.
 
+## Public PR validation
+
+[`pr-validation.yml`](../../.github/workflows/pr-validation.yml) lets a maintainer validate a
+PR that relies on a public Hugging Face candidate. The contributor publishes the candidate as
+an HF PR revision and adds a request file (`aisim-pr-validation/v1`, default path
+`.aisim/pr-validation.json`) to the PR. It names the dataset repository, the full candidate
+commit SHA, the eval record path, configuration IDs, required case IDs and a download budget.
+
+Dispatch the workflow from `main` with the PR number and the head SHA you reviewed. It:
+
+1. checks that the dispatcher is a maintainer and that the PR head equals the dispatched SHA;
+2. reads only the request file from the PR head, through the API, as data. No PR code is
+   checked out or run, there are no secrets, and no Hugging Face token is present;
+3. fetches the selected evidence at the pinned dataset SHA through `data/fetch.py`;
+4. recomputes the evaluation with `verify_record`, using a predictor from the trusted checkout;
+5. writes a report and re-reads the PR head. A moved head fails the run.
+
+Required cases pass only when the record verifies and each case is in the truth table, not
+excluded and predicted. Accuracy (MAPE, coverage) is advisory and never changes the verdict.
+The report (`aisim-pr-validation-report/v1`) binds the PR head SHA (`code_sha`), the
+evaluator revision (trusted checkout SHA plus verifier version), the dataset SHA and the
+request digest. Changing any of them, including editing the request, invalidates it:
+
+```bash
+python -m aisim_core.data.validate recheck --pr-json PR.json --repo OWNER/NAME \
+  --request-file request.json --trusted-sha SHA --report report.json   # exit 1 when stale
+```
+
+A Hugging Face outage, rate limit or budget overrun gives an `error` verdict with the reason;
+other data is never substituted. The workflow's predictor factory defaults to
+`aisim_core.data.validate:no_predictor`, which fails closed until a trusted factory is
+registered, and the module only loads factories under `aisim_core.` or `aisim.`.
+
+### Candidate hygiene
+
+`aisim_core.data.hygiene` holds the pure checks to run before a candidate reaches any
+workflow: `CandidatePolicy` lists the HF users who may create candidates (empty means nobody),
+file-count and size limits, allowed roots (`data/`, `catalog/`) and suffixes (`.parquet`,
+`.json`). It rejects path traversal, case-colliding paths, control files such as
+`.gitattributes`, symlinks, LFS pointers, executables and archives (even when renamed), Parquet
+files without `PAR1` magic, and JSON that is not strict, finite and small. Any error finding
+means the candidate is not fetched. Callers pass listings and byte samples, so the checks need
+no network.
+
 ## Prediction regression gate
 
 [The workflow](../../.github/workflows/prediction-regression-gate.yml) compares
@@ -69,6 +113,42 @@ Run `python scripts/e2e_accuracy/private_artifacts.py open DOWNLOADED_DIR OUTPUT
 in the campaign environment. Token rotation requires a new complete workflow run;
 old ciphertext cannot be opened with the replacement token.
 
+### Trusted credentialed job
+
+The credentialed part of the campaign is a default-branch job, not a PR workflow.
+`E2E Accuracy Matrix` triggers only on `schedule` and `workflow_dispatch`, never on
+`pull_request`, `pull_request_target` or `workflow_run`, and `resolve` accepts only
+`refs/heads/main` or an exact maintainer-copied `pull-request/<n>` preview.
+
+- **Environments.** Jobs that hold `HF_READ_AISIM_INFX_CACHE` declare
+  `e2e-accuracy-private` (nightly and manual main runs) or `e2e-accuracy-preview`
+  (previews). The token stays read-only. A repository administrator protects the
+  private environment (deployment branch `main`, required reviewers as policy
+  decides) and may give the preview environment its own, lower-privilege token under
+  the same secret name; an environment secret overrides the repository secret.
+- **Code that sees the token.** Every step with the token runs `main`'s scripts,
+  checked out to `trusted/`, with a virtualenv (`trusted-venv`) built only from the
+  hash-pinned requirements. The evaluated checkout, the exact wheel and its build
+  never share a step, interpreter or environment variable with the token; the wheel
+  job holds no secret at all. The dataset pin comes from `main`'s
+  `.github/e2e-accuracy-dataset.json`, so a preview of a pin change is evaluated
+  after the pin lands on `main`.
+- **What PR-controlled code does see.** Preview evaluation runs the PR's wheel on
+  the decrypted measurement tables (data, not a credential). Treat that as the
+  residual exposure of a maintainer-approved preview; private data is never uploaded
+  unencrypted, and preview results are never published.
+- **Data layout.** Measurements are read through `aisim_core.data`. The pin file
+  names the layout: `legacy-inferencex` (the default, today's cache) or `aisim-e2e/v1`
+  once the migrated dataset is published and the pin is changed.
+- **Publication.** Only the sanitized `e2e-accuracy-web-*` artifact reaches the
+  default-branch Pages build, which holds no secret and deploys through the
+  `github-pages` environment. The disclosure policy for aggregates derived from
+  private data (granularity, what is withheld) is not agreed yet; until it is, the
+  published granularity is the existing overview and must not be widened.
+
+[`tests/test_e2e_accuracy_trust.py`](../../tests/test_e2e_accuracy_trust.py) enforces
+these rules on the workflow files in the Pages checks.
+
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact
 run attempt, producer, revision, coverage, and checksums before combining it with
@@ -95,7 +175,9 @@ See [setup, comparisons, and testing](#weekly-accuracy-report).
 ## FPM accuracy
 
 `FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
-an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
+an exact SHA on main or a release >= 0.12.0. It reads `main` of `ai-dynamo/aisim-data` (FPM under `data/fpm/`),
+pinned to one commit per campaign, so new data reaches the public FPM page with the next nightly run, or
+earlier through a manual dispatch. Configurations are selected from the catalog before any artifact is downloaded. It
 uses verified exact wheels, and evaluates FPM with KV warmup on/off and regression
 on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
@@ -504,3 +586,48 @@ A workflow dry run does not rerun predictors. Use the deterministic tests in
 `tests/fpm_accuracy/test_digest.py` to exercise regressions, coverage losses,
 changed datasets, missing runs, daylight-saving cutoffs, deduplication, and
 interrupted thread delivery without sending fake alarms to Slack.
+
+## Private mirror and promotion to the public dataset
+
+`ai-dynamo/aisim-data-internal` has the same layout and schemas as the public
+dataset, for sensitive hardware and models. `ai-dynamo/aisim-infx-cache` stays a
+separate private cache in the same E2E layout and is never a promotion source.
+The mirror repository is not created by this repository; its definitions live here.
+
+**One validator.** `python -m aisim_core.data.mirror validate --root DIR
+--repo ID --profile mirror|public` (library: `validate_tree(root, repo=...,
+profile=...)`) checks indexes, manifests and hashes, E2E tables, evaluation records
+and their identity paths, snapshots, generated schema snapshots, catalog drift and
+file rules (paths, suffixes, symlinks, magic bytes). `--repo` defaults to
+`ai-dynamo/aisim-data-internal` and must equal `dataset_id` in `catalog/dataset.json`.
+The `public` profile adds the publication rules below. The mirror CI definition is
+[`.github/mirror/aisim-data-internal-validate.yml`](../../.github/mirror/aisim-data-internal-validate.yml),
+a template to copy into the mirror repository. It checks out this repository at a
+pinned SHA (`AISIM_VALIDATOR_REF`), the same SHA the public dataset CI pins, uses no
+secrets, and prints the validator fingerprint.
+
+**Visibility and redaction.** `mirror/visibility.json` (`aisim-visibility/v1`, private
+only) labels a file or directory prefix `public`, `internal` or `restricted`; an
+unlabeled path is `internal`. Before a directory is labeled `public`, remove or replace
+with `[REDACTED]` the producer run URL (`producer_id`), image names and digests, patch
+references and credentials; omit logs, raw tool output and per-request tables.
+`check_publishable` fails on any of these. When the labeled bytes are a redaction, the
+entry's `original_sha256` records the original hash; it reaches only the private
+promotion ledger. InferenceX-derived data is published as aggregates only (decision
+AISIM-2312 default): configurations and evaluation records built on it are not
+promotable, and a public page may show rows that pass `check_disclosure` (allowed
+fields only, at least five scored points per cell). `RedactionPolicy` holds each default.
+
+**Promotion.** Write a `PromotionRequest` (`aisim-promotion/v1`): target repo, the
+reviewed internal commit, the directories under `data/` or `eval/`, the requester and
+approvals. `python -m aisim_core.data.promote plan --source-root DIR --request FILE
+--policy FILE` prints the content digest and every blocker. Named reviewers, listed in
+a trusted policy file (`{"reviewers": [...], "min_approvals": 1}`, read from the default
+branch, not from the tree), approve that digest; the requester cannot approve, and any
+changed byte invalidates approvals. `apply` copies the files path-identically, never
+overwrites different content, regenerates the category indexes and catalog in the target,
+requires the `public` profile to pass there, and otherwise restores the target. It then
+writes `mirror/promotions/<digest>.json` in the private source. A selection must be
+closed: manifest artifacts, evaluation truth inputs and snapshot members are all in it,
+so a snapshot never spans private and public membership. Open the public change as an
+ordinary pull request with the regenerated catalog.

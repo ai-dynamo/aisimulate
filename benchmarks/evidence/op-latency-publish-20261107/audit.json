@@ -1,0 +1,15 @@
+{
+  "by_hash_basis": {
+    "arrow-rows": 944,
+    "embedded-source": 2,
+    "file-bytes": 649
+  },
+  "checked": 1595,
+  "declared_reuse_status": {
+    "resolved": 59
+  },
+  "ok": true,
+  "problems": [],
+  "unmapped_destinations": [],
+  "unmapped_sources": []
+}

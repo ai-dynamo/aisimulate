@@ -44,7 +44,7 @@ First [prepare the environment](implementation.md#prepare-the-environment) and
 review the retained collection identity, resource evidence and coverage against
 your intended deployment. It runs on CPU and downloads
 the published
-[Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
+[Kimi K3 profile](https://huggingface.co/datasets/ai-dynamo/aisim-data/tree/main/data/fpm/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
 checks one measured point from each phase, and completes a small Replay run.
 It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
 

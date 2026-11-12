@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "Benchmark Evaluate"
+  short_description: "Score predictions and store a verified eval record"
+  default_prompt: "Use $aisim-benchmark-evaluate to score predictions against recorded truth and store and verify an eval record."
+
+policy:
+  allow_implicit_invocation: true

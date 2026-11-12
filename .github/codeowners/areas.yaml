@@ -34,6 +34,7 @@ areas:
       - crates/core/perfmodel/
       - crates/tests/public-api/
       - python/aisim/
+      - python/aisim/src/aisim_core/data/
       - python/aisim/src/aisim/capacity.py
       - tests/test_aic.py
       - tests/test_spline_estimator_config.py
@@ -126,6 +127,9 @@ areas:
       - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
       - tests/test_bundled_configs.py
+      - tests/test_e2e_accuracy_trust.py
+      - tests/test_e2e_infx_migration_parity.py
+      - tests/test_fpm_dataset_pin.py
 
 # More-specific shared entries are emitted after base area rules, preserving
 # GitHub's last-match-wins behavior. As in AIConfigurator, the maintainer team
@@ -158,6 +162,26 @@ shared:
     owners: [replay, forward-pass-engine, maintainers]
   - glob: .claude/skills/aisim-agentx-gap-debug
     owners: [replay, forward-pass-engine, maintainers]
+  - glob: .agents/skills/aisim-benchmark/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .claude/skills/aisim-benchmark
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .agents/skills/aisim-benchmark-plan/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .claude/skills/aisim-benchmark-plan
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .agents/skills/aisim-benchmark-collect/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .claude/skills/aisim-benchmark-collect
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .agents/skills/aisim-benchmark-evaluate/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .claude/skills/aisim-benchmark-evaluate
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .agents/skills/aisim-benchmark-publish/
+    owners: [forward-pass-engine, infra, maintainers]
+  - glob: .claude/skills/aisim-benchmark-publish
+    owners: [forward-pass-engine, infra, maintainers]
   - glob: python/aisim/tools/simulation_perf_gate/
     owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: pages/
@@ -187,6 +211,12 @@ shared:
   - glob: tests/test_ci_workflow_contracts.py
     owners: [infra, maintainers]
   - glob: tests/test_pages_site.py
+    owners: [infra, maintainers]
+  - glob: tests/test_e2e_accuracy_trust.py
+    owners: [infra, maintainers]
+  - glob: tests/test_e2e_infx_migration_parity.py
+    owners: [infra, maintainers]
+  - glob: tests/test_fpm_dataset_pin.py
     owners: [infra, maintainers]
   - glob: tests/test_e2e_accuracy_overview.py
     owners: [forward-pass-engine, infra, maintainers]
