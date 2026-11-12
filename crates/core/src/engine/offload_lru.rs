@@ -15,12 +15,20 @@ use crate::engine::host_offload::HostBlockKey;
 /// and oldest blocks. Callers make a cohort newest in key order, the tiers'
 /// deterministic tie-break, unless a G2 tier keeps release order (a free
 /// queue) or ranks blocks when their store starts.
+///
+/// A caller that makes the same blocks the newest time after time has them
+/// join a run as it moves them. The run is whole while each of them is
+/// linked where the caller's last move left it, so the caller can move them
+/// again as one without finding them. A block that is touched alone, removed
+/// or moved into another run leaves its own no longer whole.
 pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
     vacant: Vec<NonZeroU32>,
     /// See [`Self::touches`].
     touches: u64,
+    /// Whether each run is whole, by run. [`NO_RUN`] never is.
+    whole_runs: Vec<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -28,9 +36,12 @@ struct LruNode {
     key: HostBlockKey,
     older: u32,
     newer: u32,
+    /// The block's run, [`NO_RUN`] until it joins one.
+    run: u32,
 }
 
 const SENTINEL: u32 = 0;
+const NO_RUN: u32 = 0;
 
 impl Default for Lru {
     fn default() -> Self {
@@ -39,9 +50,11 @@ impl Default for Lru {
                 key: HostBlockKey::new(0),
                 older: SENTINEL,
                 newer: SENTINEL,
+                run: NO_RUN,
             }],
             vacant: Vec::new(),
             touches: 0,
+            whole_runs: vec![false],
         }
     }
 }
@@ -52,6 +65,7 @@ impl Lru {
         let node = match *slot {
             Some(node) => {
                 self.unlink(node);
+                self.leave_run(node);
                 node
             }
             None => *slot.insert(self.allocate(key)),
@@ -62,6 +76,7 @@ impl Lru {
 
     /// Make the adjacent blocks from `oldest` through `newest` the newest,
     /// keeping their order, as a [`Self::touch`] of each in that order does.
+    /// They stay in their run, so they must be one run's.
     pub(crate) fn touch_run(&mut self, oldest: NonZeroU32, newest: NonZeroU32) {
         let after = self.nodes[newest.get() as usize].newer;
         if after == SENTINEL {
@@ -78,9 +93,50 @@ impl Lru {
         self.touches += 1;
     }
 
+    /// Make `oldest` and the blocks just newer the newest, as
+    /// [`Self::touch_run`] does, for as long as their keys are the last of
+    /// `keys` backwards. The blocks join `run`. Returns the newest of them
+    /// and how many of `keys` they are.
+    pub(crate) fn touch_matching_run(
+        &mut self,
+        run: u32,
+        oldest: NonZeroU32,
+        keys: &[HostBlockKey],
+    ) -> (NonZeroU32, usize) {
+        let mut newest = oldest;
+        let mut rest = keys;
+        loop {
+            self.join_run(newest, run);
+            let newer = self.nodes[newest.get() as usize].newer;
+            match (NonZeroU32::new(newer), rest.split_last()) {
+                (Some(node), Some((key, before))) if self.nodes[newer as usize].key == *key => {
+                    newest = node;
+                    rest = before;
+                }
+                _ => break,
+            }
+        }
+        self.touch_run(oldest, newest);
+        (newest, keys.len() - rest.len())
+    }
+
+    /// A new run, whole and without blocks.
+    pub(crate) fn new_run(&mut self) -> u32 {
+        let run = u32::try_from(self.whole_runs.len()).expect("offload LRU run overflow");
+        self.whole_runs.push(true);
+        run
+    }
+
+    /// Whether `run` is whole. One that is not starts over: it is whole
+    /// again, for the caller to move each of its blocks into it.
+    pub(crate) fn resume_run(&mut self, run: u32) -> bool {
+        std::mem::replace(&mut self.whole_runs[run as usize], true)
+    }
+
     pub(crate) fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
         if let Some(node) = slot.take() {
             self.unlink(node);
+            self.leave_run(node);
             self.vacant.push(node);
         }
     }
@@ -141,8 +197,21 @@ impl Lru {
             key,
             older: SENTINEL,
             newer: SENTINEL,
+            run: NO_RUN,
         });
         node
+    }
+
+    fn join_run(&mut self, node: NonZeroU32, run: u32) {
+        let left = std::mem::replace(&mut self.nodes[node.get() as usize].run, run);
+        if left != run {
+            self.whole_runs[left as usize] = false;
+        }
+    }
+
+    fn leave_run(&mut self, node: NonZeroU32) {
+        let run = std::mem::take(&mut self.nodes[node.get() as usize].run);
+        self.whole_runs[run as usize] = false;
     }
 
     fn unlink(&mut self, node: NonZeroU32) {

@@ -49,7 +49,7 @@ use crate::engine::config::ConnectorRules;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
     HostOffloadObservationData, HostStoreBlockMapping, HostTier, HostTierHandle, LoadOutcome,
-    Lookup, StoreOutcome, TransferId,
+    Lookup, StoreOutcome, TouchedRun, TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
@@ -156,6 +156,8 @@ pub(super) struct VllmHostRequestState {
     accessed_blocks: BTreeSet<usize>,
     /// With `touches_prompt`: the latest prompt touch.
     prompt_touch: Option<PromptTouch>,
+    /// With `touches_prompt`: the blocks the prompt touches left newest.
+    prompt_run: Option<TouchedRun>,
 }
 
 impl VllmHostRequestState {
@@ -207,6 +209,7 @@ impl VllmHostRequestState {
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
             prompt_touch: None,
+            prompt_run: None,
         }
     }
 
@@ -221,7 +224,7 @@ impl VllmHostRequestState {
             Some(last) if last.admitted == admitted => last.absent_from,
             _ => self.prompt_blocks,
         };
-        let absent_from = tier.touch_reversed(&self.block_keys[..end]);
+        let absent_from = tier.touch_reversed(&self.block_keys[..end], &mut self.prompt_run);
         self.prompt_touch = Some(PromptTouch {
             lru_touches: tier.lru_touches(),
             admitted,

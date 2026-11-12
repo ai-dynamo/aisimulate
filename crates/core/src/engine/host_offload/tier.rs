@@ -168,6 +168,23 @@ pub(crate) enum CompletedTransfer {
     },
 }
 
+/// What [`HostTier::touch_reversed`] keeps for a caller's next call.
+pub(crate) struct TouchedRun {
+    /// The [`Lru`] run of the blocks the caller's calls moved.
+    id: u32,
+    /// The blocks the last call left newest, if the first key had one.
+    leading: Option<Leading>,
+}
+
+/// The blocks of a caller's first `len` keys, all linked and adjacent from
+/// `oldest`, the last of those keys', through `newest`, the first key's.
+#[derive(Clone, Copy)]
+struct Leading {
+    len: usize,
+    oldest: NonZeroU32,
+    newest: NonZeroU32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntryState {
     PendingStore { transfer_id: TransferId },
@@ -1123,33 +1140,65 @@ impl HostTier {
     /// first ends up the newest. Blocks that already lie in that order, as an
     /// earlier call left them, move as one run instead of one at a time.
     ///
+    /// `touched` is the caller's from its last call with these keys, `None`
+    /// before the first. While the blocks that call left newest are a whole
+    /// [`Lru`] run, they move again without being found.
+    ///
     /// Returns the length of `keys` up to its last present block: the tier
     /// holds none of the keys after it.
-    pub(crate) fn touch_reversed(&mut self, keys: &[HostBlockKey]) -> usize {
-        let mut present = 0;
+    pub(crate) fn touch_reversed(
+        &mut self,
+        keys: &[HostBlockKey],
+        touched: &mut Option<TouchedRun>,
+    ) -> usize {
+        let touched = touched.get_or_insert_with(|| TouchedRun {
+            id: self.lru.new_run(),
+            leading: None,
+        });
+        // While the run is whole, the blocks the last call left newest lie
+        // as it left them: only the keys after theirs need lookups.
+        let whole = self.lru.resume_run(touched.id);
+        let kept = touched
+            .leading
+            .filter(|leading| whole && leading.len <= keys.len());
+        let below = kept.map_or(0, |kept| kept.len);
+        let mut leading: Option<Leading> = None;
+        let mut present = below;
         let mut index = keys.len();
-        while index > 0 {
+        while index > below {
             index -= 1;
             let Some(entry) = self.entries.get(&keys[index]) else {
+                leading = None;
                 continue;
             };
             present = present.max(index + 1);
             // The linked blocks are the ones a touch moves.
             let Some(oldest) = entry.lru_slot else {
+                leading = None;
                 continue;
             };
+            let first = leading.unwrap_or(Leading {
+                len: index + 1,
+                oldest,
+                newest: oldest,
+            });
             // The blocks just newer are the next keys' while they match, so
             // the run needs no lookups.
-            let mut newest = oldest;
-            for (node, newer) in self.lru.oldest_after(Some(oldest)) {
-                if index == 0 || newer != keys[index - 1] {
-                    break;
-                }
-                newest = node;
-                index -= 1;
-            }
-            self.lru.touch_run(oldest, newest);
+            let (newest, matched) =
+                self.lru
+                    .touch_matching_run(touched.id, oldest, &keys[below..index]);
+            index -= matched;
+            leading = Some(Leading { newest, ..first });
         }
+        // The kept blocks are the first keys', so they move last, as one.
+        if let Some(kept) = kept {
+            self.lru.touch_run(kept.oldest, kept.newest);
+            leading = Some(Leading {
+                newest: kept.newest,
+                ..leading.unwrap_or(kept)
+            });
+        }
+        touched.leading = leading;
         present
     }
 
@@ -2162,13 +2211,42 @@ pub(crate) mod tests {
         // Of the prompt, 5 is pending and 6 is absent; 9 is another prompt's.
         tier.prepare_store(C, request_id(), &[key(5)], None, now);
         let prompt = [1, 2, 3, 5, 6].map(key);
-        assert_eq!(tier.touch_reversed(&prompt), 4);
+        assert_eq!(tier.touch_reversed(&prompt, &mut None), 4);
         assert_eq!(tier.lru_order(), [9, 3, 2, 1].map(key));
 
         // 3, 2 and 1 now lie in touch order and move as one run.
         tier.touch(key(9));
-        assert_eq!(tier.touch_reversed(&prompt), 4);
+        assert_eq!(tier.touch_reversed(&prompt, &mut None), 4);
         assert_eq!(tier.lru_order(), [9, 3, 2, 1].map(key));
+    }
+
+    #[test]
+    fn touch_reversed_keeps_its_run_until_one_of_the_blocks_moves() {
+        let mut tier = tier(5);
+        let mut now = 0.0;
+        for block in [1, 2, 3, 9] {
+            now = make_resident(&mut tier, &[key(block)], now);
+        }
+        let prompt = [1, 2, 3, 4].map(key);
+        let mut touched = None;
+        assert_eq!(tier.touch_reversed(&prompt, &mut touched), 3);
+        assert_eq!(tier.lru_order(), [9, 3, 2, 1].map(key));
+
+        // 4 lands and goes before the kept 3, 2 and 1.
+        now = make_resident(&mut tier, &[key(4)], now);
+        assert_eq!(tier.touch_reversed(&prompt, &mut touched), 4);
+        assert_eq!(tier.lru_order(), [9, 4, 3, 2, 1].map(key));
+
+        // A block touched alone leaves the run, which is found by key again.
+        tier.touch(key(2));
+        assert_eq!(tier.touch_reversed(&prompt, &mut touched), 4);
+        assert_eq!(tier.lru_order(), [9, 4, 3, 2, 1].map(key));
+
+        // So does an evicted block, whose node goes to 7.
+        tier.touch(key(9));
+        make_resident(&mut tier, &[key(7)], now);
+        assert_eq!(tier.touch_reversed(&prompt, &mut touched), 3);
+        assert_eq!(tier.lru_order(), [9, 7, 3, 2, 1].map(key));
     }
 
     #[test]
