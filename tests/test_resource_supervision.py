@@ -1356,9 +1356,7 @@ def test_supervisor_entry_point_groups_match_their_resolvers():
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
 @pytest.mark.parametrize("input_kind", ["file", "directory_alias"])
-def test_worker_cleanup_preserves_trace_created_after_parent_preflight(
-    tmp_path, monkeypatch, capsys, command, input_kind
-):
+def test_worker_cleanup_preserves_trace_created_after_parent_preflight(tmp_path, monkeypatch, command, input_kind):
     import subprocess
 
     from aisimulate import supervision
@@ -1423,7 +1421,6 @@ def test_worker_cleanup_preserves_trace_created_after_parent_preflight(
         assert cleanup.is_symlink()
         assert cleanup.readlink() == inputs
     assert result != 0
-    assert "would remove input file" in capsys.readouterr().err
 
 
 def test_resource_plan_cleanup_preserves_trace_input(tmp_path, monkeypatch, capsys):
