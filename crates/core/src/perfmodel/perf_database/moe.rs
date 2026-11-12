@@ -4,7 +4,7 @@
 //! Basic MoE perf table.
 //!
 //! Mirrors the raw SILICON-path layout of
-//! `aisimulate.sdk.operations.moe.MoE._query_moe_table`:
+//! `aisim.sdk.operations.moe.MoE._query_moe_table`:
 //!
 //! `moe_data[quant][distribution][topk][num_experts][hidden][inter][moe_tp][moe_expert_compute]`
 //! returns a `{num_tokens -> latency_ms}` dict.
@@ -806,7 +806,7 @@ mod tests {
     fn b200_vllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/vllm/0.19.0")
+            .join("python/aisim/src/aisim_core/systems/data/b200_sxm/vllm/0.19.0")
     }
 
     #[test]

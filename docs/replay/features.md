@@ -43,9 +43,9 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 ## Validation and evidence
 
 The authoritative gates are
-[`RunnerCapabilities.require_compatible`](../../python/aisimulate/src/aisimulate/sweeper/replay.py),
-[`EngineReplayRunner`](../../python/aisimulate/src/aisimulate/runner.py),
-[public engine validation](../../python/aisimulate/src/aisimulate/config/engine.py),
+[`RunnerCapabilities.require_compatible`](../../python/aisim/src/aisim/sweeper/replay.py),
+[`EngineReplayRunner`](../../python/aisim/src/aisim/runner.py),
+[public engine validation](../../python/aisim/src/aisim/config/engine.py),
 and the native [engine](../../crates/core/src/engine/) and
 [Replay](../../crates/core/src/replay/) validators. Native validation remains
 necessary when callers bypass public YAML.

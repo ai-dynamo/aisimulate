@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_ROOT = ROOT / "python" / "aisimulate"
+PACKAGE_ROOT = ROOT / "python" / "aisim"
 LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
 
 
@@ -21,7 +21,7 @@ def main() -> int:
         if not canonical.is_file() or not packaged.is_file():
             mismatched.append(f"{name}: canonical or packaging copy is missing")
         elif canonical.read_bytes() != packaged.read_bytes():
-            mismatched.append(f"{name}: python/aisimulate copy differs from root")
+            mismatched.append(f"{name}: python/aisim copy differs from root")
 
     if mismatched:
         for message in mismatched:

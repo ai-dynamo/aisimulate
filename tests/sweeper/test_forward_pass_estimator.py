@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 def custom_systems(tmp_path):
     from importlib.resources import files
 
-    packaged = Path(str(files("aisimulate_core") / "systems"))
+    packaged = Path(str(files("aisim_core") / "systems"))
     for entry in packaged.iterdir():
         (tmp_path / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
     (tmp_path / "review_h200.yaml").write_text((packaged / "h200_sxm.yaml").read_text())
@@ -26,11 +26,11 @@ def custom_systems(tmp_path):
 
 @pytest.mark.parametrize("discovery", ["sdk", "ordered_sdk", "environment"])
 def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch, discovery):
-    import aisimulate_core
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.config import SmartSearchConfig
-    from aisimulate.sweeper.search import Sweeper
-    from aisimulate_core.sdk import perf_database
+    import aisim_core
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.search import Sweeper
+    from aisim_core.sdk import perf_database
 
     monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", perf_database.get_systems_paths())
     monkeypatch.delenv("AICONFIGURATOR_SYSTEMS_PATH", raising=False)
@@ -66,7 +66,7 @@ def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch
     cfg = SmartSearchConfig.model_validate_json(cfg.model_dump_json())
     result = Sweeper(runner_factory=EngineReplayRunnerFactory(), show_progress=False).run(cfg, top_n=None)
     assert result.model_dump(mode="json")["counts"]["feasible"] == 1
-    raw = aisimulate_core.RustForwardPassPerfModel.best_available(
+    raw = aisim_core.RustForwardPassPerfModel.best_available(
         json.dumps(
             {
                 "model": "Qwen/Qwen3-32B",
@@ -79,7 +79,7 @@ def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch
         )
     )
     assert json.loads(raw.diagnostics())["provenance"]["config"]["systems_paths"] == [str(custom_systems)]
-    from aisimulate.sweeper.forward_pass_estimator import resolve_systems_paths
+    from aisim.sweeper.forward_pass_estimator import resolve_systems_paths
 
     assert resolve_systems_paths(None) == tuple(roots)
     assert resolve_systems_paths(["default"]) != (str(custom_systems),)
@@ -88,10 +88,10 @@ def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch
 def test_prediction_pins_populated_version_slots(custom_systems):
     from dataclasses import replace
 
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config.cli import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate_core.sdk.perf_database import resolve_query_version
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config.cli import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim_core.sdk.perf_database import resolve_query_version
 
     current_version = resolve_query_version("review_h200", "vllm", "current", systems_paths=[str(custom_systems)])
     next_version = resolve_query_version("review_h200", "vllm", "next", systems_paths=[str(custom_systems)])
@@ -137,11 +137,11 @@ def test_prediction_pins_populated_version_slots(custom_systems):
 def test_kv_relative_load_uses_resolved_roots(custom_systems, mode, ratio):
     from dataclasses import asdict
 
-    from aisimulate.sweeper.config import SearchSpace, Workload
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
-    from aisimulate.sweeper.kv_load import resolve_kv_load
-    from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
-    from aisimulate.sweeper.sample import unroll_sample
+    from aisim.sweeper.config import SearchSpace, Workload
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.kv_load import resolve_kv_load
+    from aisim.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+    from aisim.sweeper.sample import unroll_sample
 
     role = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     parallel = role if mode == "agg" else DisaggParallelConfig(prefill=role, decode=role)
@@ -232,8 +232,8 @@ def test_canonical_nonfinite_regression_weights_preserve_native_and_regression_c
 def test_resolver_preserves_nonfinite_regression_weight_contract(field, sentinel):
     from dataclasses import replace
 
-    from aisimulate.sweeper.config import SearchSpace
-    from aisimulate.sweeper.forward_pass_estimator import (
+    from aisim.sweeper.config import SearchSpace
+    from aisim.sweeper.forward_pass_estimator import (
         ForwardPassEstimatorResolutionError,
         ForwardPassEstimatorResolver,
     )
@@ -258,7 +258,7 @@ def test_resolver_preserves_nonfinite_regression_weight_contract(field, sentinel
 def test_legacy_options_preserve_shape_ridge_and_general_mapping():
     from collections.abc import Mapping
 
-    from aisimulate_core.sdk import ForwardPassPerfOptions
+    from aisim_core.sdk import ForwardPassPerfOptions
 
     class OptionsMapping(Mapping):
         def __init__(self, values):
@@ -296,15 +296,15 @@ def test_legacy_options_preserve_shape_ridge_and_general_mapping():
 def test_invalid_discovered_roots_are_configuration_errors(monkeypatch, tmp_path, invalid_root):
     from importlib.resources import files
 
-    import aisimulate_core
-    from aisimulate_core.sdk import perf_database
+    import aisim_core
+    from aisim_core.sdk import perf_database
 
-    monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", [str(files("aisimulate_core") / "systems")])
+    monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", [str(files("aisim_core") / "systems")])
     root = str(tmp_path / invalid_root) if invalid_root else ""
     monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", root)
     for policy in ["deny", "allow"]:
         with pytest.raises(ValueError, match="resolve systems paths"):
-            aisimulate_core.RustForwardPassPerfModel.best_available(
+            aisim_core.RustForwardPassPerfModel.best_available(
                 json.dumps(
                     {
                         "model": "Qwen/Qwen3-32B",
@@ -319,8 +319,8 @@ def test_invalid_discovered_roots_are_configuration_errors(monkeypatch, tmp_path
 
 
 def test_compile_engine_classifies_controls_without_wrapping_model_failures(monkeypatch):
-    from aisimulate_core.sdk import engine, models
-    from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
+    from aisim_core.sdk import engine, models
+    from aisim_core.sdk.errors import InvalidEngineConfigurationError
 
     with pytest.raises(InvalidEngineConfigurationError, match="Unknown forward_model"):
         engine.compile_engine("missing-model", "h200_sxm", "vllm", forward_model="typo")
@@ -337,7 +337,7 @@ def test_compile_engine_classifies_controls_without_wrapping_model_failures(monk
 
 
 def unavailable_compiler(monkeypatch):
-    from aisimulate_core.sdk import engine
+    from aisim_core.sdk import engine
 
     calls = []
 
@@ -427,7 +427,7 @@ def test_invalid_config_never_falls_back_and_nested_errors_have_paths(monkeypatc
 
 
 def test_legacy_selection_does_not_become_auto():
-    import aisimulate_core
+    import aisim_core
 
     legacy = {
         "schema_version": 1,
@@ -442,13 +442,13 @@ def test_legacy_selection_does_not_become_auto():
     assert config.estimation_mode == "fpm_interpolation"
     assert config.fallback_policy == "deny"
     assert config.worker_type == "decode"
-    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict())))
+    normalized = json.loads(aisim_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict())))
     assert normalized["tp"] == 2
     assert normalized["estimation_mode"] == "fpm_interpolation"
 
 
 def test_invalid_quantization_does_not_degrade_to_another_estimator(monkeypatch):
-    from aisimulate_core.sdk import engine
+    from aisim_core.sdk import engine
 
     original = engine.compile_engine
     calls = []
@@ -464,18 +464,16 @@ def test_invalid_quantization_does_not_degrade_to_another_estimator(monkeypatch)
 
 
 def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(monkeypatch):
-    import aisimulate_core
-    from aisimulate.sweeper.config import SearchSpace
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    import aisim_core
+    from aisim.sweeper.config import SearchSpace
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     seen = []
 
     class Model:
         def __init__(self, config):
             seen.append(config)
-            self.config = json.loads(
-                aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict()))
-            )
+            self.config = json.loads(aisim_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict())))
             self.config["backend_version"] = "0.24.0" if config.backend == "vllm" else "0.5.10"
             self.config["estimation_mode"] = "op_level"
 
@@ -522,18 +520,16 @@ def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(m
 def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(monkeypatch):
     # A dcp=8 candidate must not resolve to (or share a cache entry with) the
     # dcp=1 estimator: the native engine is built from this request.
-    import aisimulate_core
-    from aisimulate.sweeper.config import SearchSpace
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    import aisim_core
+    from aisim.sweeper.config import SearchSpace
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     seen = []
 
     class Model:
         def __init__(self, config):
             seen.append(config)
-            self.config = json.loads(
-                aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict()))
-            )
+            self.config = json.loads(aisim_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict())))
             self.config["backend_version"] = "0.24.0"
             self.config["estimation_mode"] = "op_level"
 
@@ -576,7 +572,7 @@ def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(m
 
 
 def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     common = {"model_name": "m", "hardware_sku": "h200_sxm", "deployment_mode": ["agg"]}
     with pytest.raises(ValueError, match="estimation_mode"):
@@ -598,11 +594,11 @@ def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
 
 
 def test_raw_config_rejects_trailing_json():
-    import aisimulate_core
+    import aisim_core
 
     payload = json.dumps(request(estimation_mode="fpm_regression").to_dict()) + " {}"
     with pytest.raises(ValueError, match="trailing characters"):
-        aisimulate_core.RustForwardPassPerfModel.normalize_config(payload)
+        aisim_core.RustForwardPassPerfModel.normalize_config(payload)
 
 
 @pytest.mark.parametrize("deployment_mode", ["disagg"])
@@ -619,7 +615,7 @@ def test_raw_config_rejects_trailing_json():
     ],
 )
 def test_afd_normalizes_role_estimator_controls(deployment_mode, controls):
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     def make_space():
         return SearchSpace(
@@ -644,7 +640,7 @@ def test_afd_normalizes_role_estimator_controls(deployment_mode, controls):
 @pytest.mark.parametrize("deployment_mode", ["disagg"])
 @pytest.mark.parametrize("forward_model", ["op_level", "fpm"])
 def test_afd_saved_search_preserves_ordinary_role_selection(deployment_mode, forward_model):
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     space = SearchSpace(
         model_name="m",
@@ -667,8 +663,8 @@ def test_afd_saved_search_preserves_ordinary_role_selection(deployment_mode, for
     [{}, {"agg_forward_model": "fpm"}, {"estimation_mode": "fpm_regression"}],
 )
 def test_saved_search_preserves_estimator_selection(selection):
-    from aisimulate.sweeper.config import SearchSpace
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.config import SearchSpace
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     space = SearchSpace(model_name="Qwen/Qwen3-32B", hardware_sku="h200_sxm", **selection)
     sample = {
@@ -693,9 +689,9 @@ def test_saved_search_preserves_estimator_selection(selection):
 
 
 def test_mixed_timing_still_enforces_cold_regression_on_default_role():
-    from aisimulate.config.cli import CoreRecommendationConfig
-    from aisimulate.recommend import recommendation_to_sweeper
-    from aisimulate.sweeper.forward_pass_estimator import (
+    from aisim.config.cli import CoreRecommendationConfig
+    from aisim.recommend import recommendation_to_sweeper
+    from aisim.sweeper.forward_pass_estimator import (
         ForwardPassEstimatorResolutionError,
         ForwardPassEstimatorResolver,
     )
@@ -810,14 +806,14 @@ def test_explicit_regression_does_not_require_discovered_systems_roots(monkeypat
     ],
 )
 def test_search_rejects_invalid_role_policy_before_resolution(field, value):
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     with pytest.raises(ValueError):
         SearchSpace(model_name="model", hardware_sku="system", role_estimator_controls={"agg": {field: value}})
 
 
 def test_search_normalizes_role_database_and_transfer_policy():
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     config = SearchSpace(
         model_name="model",
@@ -829,8 +825,8 @@ def test_search_normalizes_role_database_and_transfer_policy():
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 def test_explicit_default_moe_backend_compiles_and_preserves_canonical_identity(backend):
-    from aisimulate_core.sdk.config_builders import build_model_config
-    from aisimulate_core.sdk.engine import compile_engine
+    from aisim_core.sdk.config_builders import build_model_config
+    from aisim_core.sdk.engine import compile_engine
 
     assert build_model_config(1, 1, 1, 1, 1, moe_backend="default").moe_backend is None
     # A dense model is valid because the default does not request a MoE override.

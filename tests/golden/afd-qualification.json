@@ -344,9 +344,9 @@
     "replay_spec_api_version": 1,
     "replay_spec_sha256": "f5509994a665a1191a995af3f150c5be3f3728e7e9fa46aa4be2ad36e01d273f"
   },
-  "kind": "aisimulate.afd.qualification",
+  "kind": "aisim.afd.qualification",
   "qualification": {
-    "native_deployment_reason": "AISimulate does not provide a physical AFD serving adapter or launch renderer",
+    "native_deployment_reason": "AISim does not provide a physical AFD serving adapter or launch renderer",
     "native_deployment_supported": false,
     "status": "qualified_for_replay_contract"
   },

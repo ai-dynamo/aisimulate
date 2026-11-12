@@ -6,17 +6,17 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.common import ENGINE_MODEL_CONTROL_FIELDS
-from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.runner import _accept_rates_for_expected
-from aisimulate.sweeper.config import Workload
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import ForwardPassEstimatorSpec, ReplaySpec
-from aisimulate.sweeper.sample import unroll_sample
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.common import ENGINE_MODEL_CONTROL_FIELDS
+from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisim.runner import _accept_rates_for_expected
+from aisim.sweeper.config import Workload
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import ForwardPassEstimatorSpec, ReplaySpec
+from aisim.sweeper.sample import unroll_sample
 
 CONTROLS = {
     "enable_eplb": True,
@@ -153,7 +153,7 @@ def test_explicit_accepted_count_reaches_expected_progress():
 
 
 def test_kv_relative_capacity_cache_separates_model_controls(monkeypatch):
-    import aisimulate.sweeper.kv_load as kv
+    import aisim.sweeper.kv_load as kv
 
     calls = []
 
@@ -193,7 +193,7 @@ def test_kv_relative_capacity_cache_separates_model_controls(monkeypatch):
     ],
 )
 def test_core_rejects_invalid_identity_before_data_fallback(overrides):
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     with pytest.raises((ValueError, RuntimeError), match="(wideep_num_slots|moe_backend|EPLB)"):
         RustForwardPassPerfModel.best_available(
@@ -219,7 +219,7 @@ def test_migration_example_parses_and_preserves_shared_prefix():
 def test_kv_transfer_bytes_honor_explicit_quantization(tmp_path):
     import json
 
-    from aisimulate.capacity import estimate_kv_bytes_per_token
+    from aisim.capacity import estimate_kv_bytes_per_token
 
     (tmp_path / "config.json").write_text(
         json.dumps(
@@ -244,7 +244,7 @@ def test_kv_transfer_bytes_honor_explicit_quantization(tmp_path):
 
 
 def test_memory_preflight_preserves_same_model_controls(monkeypatch):
-    import aisimulate.sweeper.kv_estimate as memory
+    import aisim.sweeper.kv_estimate as memory
 
     seen = {}
 
@@ -269,7 +269,7 @@ def test_memory_preflight_preserves_same_model_controls(monkeypatch):
 
 
 def test_canonical_constructor_rejects_moe_controls_on_dense_model():
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     with pytest.raises((ValueError, RuntimeError), match="require an MoE model"):
         RustForwardPassPerfModel.best_available(
@@ -286,8 +286,8 @@ def test_canonical_constructor_rejects_moe_controls_on_dense_model():
 
 @pytest.mark.parametrize("slots", [0, -1, True, 1.5])
 def test_capacity_rejects_invalid_slots_before_delegate(slots, monkeypatch):
-    from aisimulate.capacity import estimate_num_gpu_blocks
-    from aisimulate_core.sdk import memory
+    from aisim.capacity import estimate_num_gpu_blocks
+    from aisim_core.sdk import memory
 
     monkeypatch.setattr(memory, "estimate_num_gpu_blocks", lambda **kwargs: pytest.fail("must reject before sizing"))
     with pytest.raises(ValueError, match="wideep_num_slots"):
@@ -305,7 +305,7 @@ def test_capacity_rejects_invalid_slots_before_delegate(slots, monkeypatch):
 @pytest.mark.parametrize("controls", [{"enable_eplb": True}, {"wideep_num_slots": 128}, {"moe_backend": "deepep_moe"}])
 @pytest.mark.parametrize("is_moe", [False, True])
 def test_memory_cannot_drop_moe_controls_in_naive_fallback(monkeypatch, controls, is_moe):
-    from aisimulate_core.sdk import memory, models
+    from aisim_core.sdk import memory, models
 
     monkeypatch.setattr(models, "check_is_moe", lambda _: is_moe)
 
@@ -332,8 +332,8 @@ def test_memory_cannot_drop_moe_controls_in_naive_fallback(monkeypatch, controls
 def test_kv_quantization_auto_aliases_preserve_model_dtype(monkeypatch, alias):
     from types import SimpleNamespace
 
-    from aisimulate.capacity import estimate_kv_bytes_per_token
-    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+    from aisim.capacity import estimate_kv_bytes_per_token
+    from aisim_core.sdk.memory import NaiveKVCacheEstimator
 
     estimator = SimpleNamespace(dtype_bytes=2)
     estimator.kv_bytes_per_token = lambda: 100 * estimator.dtype_bytes
@@ -344,8 +344,8 @@ def test_kv_quantization_auto_aliases_preserve_model_dtype(monkeypatch, alias):
 def test_optional_runner_must_advertise_new_request_capabilities():
     from dataclasses import replace
 
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.replay import RunnerCapabilities
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim.sweeper.replay import RunnerCapabilities
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_config()))
     legacy = RunnerCapabilities(supported_backend_topologies=(("*", "*"),))
@@ -366,7 +366,7 @@ def test_recommendation_rejects_unconfigured_backend_version():
 
 @pytest.mark.parametrize("moe_backend", [None, "default"])
 def test_default_prediction_payload_remains_compatible_with_older_runners(moe_backend):
-    from aisimulate.sweeper.replay import RunnerCapabilities
+    from aisim.sweeper.replay import RunnerCapabilities
 
     raw = _config()
     for name in (*CONTROLS, "nextn", "nextn_accepted"):
@@ -380,7 +380,7 @@ def test_default_prediction_payload_remains_compatible_with_older_runners(moe_ba
 
 
 def test_memory_cannot_drop_attention_backend_in_naive_fallback(monkeypatch):
-    from aisimulate_core.sdk import memory
+    from aisim_core.sdk import memory
 
     def unsupported(*args, **kwargs):
         raise ValueError("native fixture unavailable")
@@ -411,7 +411,7 @@ def test_memory_cannot_drop_attention_backend_in_naive_fallback(monkeypatch):
 )
 @pytest.mark.parametrize("prefix", ["", "aic_"])
 def test_inactive_nested_control_cannot_mask_active_flat_control(name, inactive, active, prefix):
-    from aisimulate.sweeper.replay import BackendDeploymentSpec, RunnerCapabilities
+    from aisim.sweeper.replay import BackendDeploymentSpec, RunnerCapabilities
 
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
@@ -428,7 +428,7 @@ def test_inactive_nested_control_cannot_mask_active_flat_control(name, inactive,
 
 
 def test_explicit_default_moe_backend_is_inactive_with_custom_timing():
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     raw = _config()
     for name in (*CONTROLS, "nextn", "nextn_accepted"):
@@ -464,8 +464,8 @@ def test_explicit_default_moe_backend_is_inactive_with_custom_timing():
 def test_optional_runner_rejects_new_mtp_representation(nested, field, accepted):
     from dataclasses import replace
 
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.replay import BackendDeploymentSpec, RunnerCapabilities
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim.sweeper.replay import BackendDeploymentSpec, RunnerCapabilities
 
     rank = {"aic_nextn": 2, field: accepted}
     spec = ReplaySpec(

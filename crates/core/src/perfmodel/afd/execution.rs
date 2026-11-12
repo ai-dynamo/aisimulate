@@ -213,7 +213,7 @@ mod tests {
         .unwrap();
         let db = Arc::new(
             PerfDatabase::load(
-                &root.join("../../python/aisimulate/src/aisimulate_core/systems"),
+                &root.join("../../python/aisim/src/aisim_core/systems"),
                 "h200_sxm",
                 "sglang",
                 "0.5.14",
