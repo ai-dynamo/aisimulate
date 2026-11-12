@@ -22,6 +22,7 @@ from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
 from .capabilities import GENERIC_RUNTIME_TEMPLATE_ID
+from .measurement_evidence import extract_measurement_evidence
 from .native_artifact import NativeCollection, _rank_artifacts, select_native_measurements, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
 
@@ -213,6 +214,9 @@ def aggregate_cell(
 
     Revalidating an existing publication uses its explicit dense-KV policy;
     an older commit record retains the historical fake-fallback classification.
+    A GLM-5.3-Flash producer artifact must also pass the rules of its
+    measurement protocol and records, because its retained timing can move
+    together with its totals, which native validation alone accepts.
     """
 
     if not expected_attempt_id:
@@ -224,6 +228,10 @@ def aggregate_cell(
         expected_plan_sha256=plan.sha256,
         expected_attempt_id=expected_attempt_id,
     )
+    if collection.execution_mode == "native_graph_policy":
+        # Raises on a malformed or contradictory record. A gap that the reader reports, such as prompt hashes that
+        # the producer does not write, does not refuse publication.
+        extract_measurement_evidence(cell_dir / "raw", collection)
     runtime_version = getattr(plan, "runtime_backend_version", None)
     if runtime_version is not None and collection.backend_version != runtime_version:
         raise ValueError("observed backend version differs from the frozen runtime version")

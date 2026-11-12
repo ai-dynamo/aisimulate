@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 # ruff: noqa: F811
-import copy
 import hashlib
 import json
 import shutil
@@ -19,6 +18,7 @@ from aisimulate import main as cli
 from aisimulate.support import fpm
 from aisimulate.support.collection_readiness import assess_readiness, resume_without_workers
 
+from .collector.test_fpm_glm53flash_native_collection import _glm_producer_shape
 from .collector.test_fpm_measurement_evidence import _add_measurement_protocol
 from .test_support_serving_validation import materialized_workload  # noqa: F401
 from .test_support_validation import validation_case  # noqa: F401
@@ -740,109 +740,6 @@ def test_readiness_blocks_a_glm_smoke_without_the_producer_protocol(tmp_path, mo
     for item in report["selected_cells"]:
         assert item["status"] != "ready"
         assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
-
-
-def _glm_producer_shape(tmp_path, breakage=None):
-    """Rewrite a GLM-5.3-Flash rank artifact into the shape that the producer writes on Dynamo 1.7.
-
-    The fake of the native scheduler runs the producer once for each phase. Its measurement protocol and the
-    ``benchmark_sample`` of its first measured repetition are the templates. Each point then gets the record of the
-    native save as the producer rewrites it: ten raw samples of the point's own FPM, each numbered by its position and
-    with its own timing interval, and the producer's upper median of samples 1 to 9 as the retained wall time. With no
-    global warm-up, Dynamo records an empty warm-up list. ``breakage`` moves the timing interval of one raw sample
-    (``interval``) or moves the retained wall time to the slowest repetition (``median``), in the first point of each
-    artifact.
-    """
-    from collector.fpm_forward.measurement_evidence import _content_key
-
-    from .collector.test_fpm_glm53flash_prefix_seed import (
-        Engine,
-        Point,
-        _run_prefill_point,
-        load_producer,
-        make_scheduler,
-    )
-    from .collector.test_fpm_glm53flash_prefix_seed import run as run_producer
-
-    templates, estimates = {}, {}
-    with pytest.MonkeyPatch.context() as patch:
-        module = load_producer(patch)
-        for phase, point in (
-            ("prefill", Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])),
-            ("decode", Point("decode", 1, 3, 0, 3 * 201)),
-        ):
-            (tmp_path / f"producer-{phase}").mkdir(parents=True)
-            scheduler = make_scheduler(module, tmp_path / f"producer-{phase}", [point])
-            if phase == "prefill":
-                _run_prefill_point(scheduler, measured_walls=[0.4] * 10)
-            else:
-                run_producer(scheduler, Engine(scheduler), "decode")
-            ((produced,),) = [result.fpms for result in scheduler._bench_results]
-            measurement = produced["benchmark_measurement"]
-            assert (measurement["expected_internal_samples"], measurement["estimate"]["method"]) == (
-                10,
-                "adjacent_upper_median",
-            )
-            templates[phase] = measurement["raw_fpms"][0]["benchmark_sample"]
-            estimates[phase] = measurement["estimate"]
-        protocol = scheduler._bench_measurement_protocol()
-
-    def shape(phase, payload):
-        payload["measurement_protocol"] = copy.deepcopy(protocol)
-        payload["warmup_evidence"] = {"status": "recorded", "records": []}
-        forward = 0
-        for position, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
-            fpm = group["rank_results"][0]["fpms"][0]
-            assert row["fpms"][0] is fpm
-            walls = [fpm["wall_time"] * (1 + 0.01 * (index - 4)) for index in range(10)]
-            tokens = row["point"]["total_prefill_tokens"] or row["point"]["batch_size"]
-            samples = []
-            for index, wall in enumerate(walls):
-                sample = copy.deepcopy(templates[phase])
-                start = 100.0 * position + index
-                # The producer numbers each raw sample by its position, as Dynamo's merge requires.
-                sample["sample_index"] = index
-                sample["forward_index"] = forward
-                sample["timing"].update(start_monotonic=start, end_monotonic=start + wall)
-                sample["cudagraph"].update(num_unpadded_tokens=tokens, num_padded_tokens=tokens, num_paddings=0)
-                # A decode repetition records two FPMs, and the second is its steady sample.
-                forward += 2 if phase == "decode" else 1
-                raw = {**copy.deepcopy(fpm), "wall_time": wall, "benchmark_sample": sample}
-                if phase == "decode":
-                    raw["kvwarm_steady_sample"] = True
-                samples.append(raw)
-            if phase == "decode":
-                fpm["kvwarm_steady_sample"] = True
-            # The producer's reduction: the upper median of the samples that its estimate names.
-            chosen = sorted(walls[index] for index in estimates[phase]["raw_sample_indices"])
-            fpm["wall_time"] = group["wall_time"] = chosen[len(chosen) // 2]
-            fpm["benchmark_measurement"] = {
-                "schema_version": 1,
-                "point_key": _content_key(row["point"]),
-                "dp_rank": 0,
-                # The producer injects no prompt hashes.
-                "prompts": {"status": "unavailable", "sha256": None, "requests": []},
-                "preparation": {
-                    "grid_digest": payload["grid_digest"],
-                    "completed_points_before": position,
-                    "kv_seed_regime": row["kv_seed_regime"],
-                    "warmup_records_before": 0,
-                },
-                "expected_internal_samples": 10,
-                "raw_fpms": samples,
-                "estimate": copy.deepcopy(estimates[phase]),
-            }
-        first = payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]
-        if breakage == "interval":
-            first["benchmark_measurement"]["raw_fpms"][3]["benchmark_sample"]["timing"]["start_monotonic"] -= 0.1
-        elif breakage == "median":
-            # The slowest repetition instead of the median.
-            first["wall_time"] = max(sample["wall_time"] for sample in first["benchmark_measurement"]["raw_fpms"])
-            payload["iteration_groups"][0]["wall_time"] = first["wall_time"]
-        groups = payload["iteration_groups"]
-        payload["timing"]["measured_iteration_seconds"] = sum(group["wall_time"] for group in groups)
-
-    return shape
 
 
 def test_readiness_qualifies_a_glm_smoke_of_dynamo_17_producer_artifacts(tmp_path, monkeypatch):

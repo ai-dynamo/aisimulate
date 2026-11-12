@@ -244,6 +244,103 @@ def write_glm_rank(directory: Path, payload: dict) -> Path:
     return artifact
 
 
+def _glm_producer_shape(tmp_path, breakage=None):
+    """Rewrite a GLM-5.3-Flash rank artifact into the shape that the producer writes on Dynamo 1.7.
+
+    The fake of the native scheduler runs the producer once for each phase. Its measurement protocol and the
+    ``benchmark_sample`` of its first measured repetition are the templates. Each point then gets the record of the
+    native save as the producer rewrites it: ten raw samples of the point's own FPM, each numbered by its position and
+    with its own timing interval, and the producer's upper median of samples 1 to 9 as the retained wall time. With no
+    global warm-up, Dynamo records an empty warm-up list. ``breakage`` moves the timing interval of one raw sample
+    (``interval``) or moves the retained wall time to the slowest repetition (``median``), in the first point of each
+    artifact.
+    """
+    from collector.fpm_forward.measurement_evidence import _content_key
+
+    from .test_fpm_glm53flash_prefix_seed import Engine, Point, _run_prefill_point, make_scheduler
+    from .test_fpm_glm53flash_prefix_seed import run as run_producer
+
+    templates, estimates = {}, {}
+    with pytest.MonkeyPatch.context() as patch:
+        module = load_producer(patch)
+        for phase, point in (
+            ("prefill", Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])),
+            ("decode", Point("decode", 1, 3, 0, 3 * 201)),
+        ):
+            (tmp_path / f"producer-{phase}").mkdir(parents=True)
+            scheduler = make_scheduler(module, tmp_path / f"producer-{phase}", [point])
+            if phase == "prefill":
+                _run_prefill_point(scheduler, measured_walls=[0.4] * 10)
+            else:
+                run_producer(scheduler, Engine(scheduler), "decode")
+            ((produced,),) = [result.fpms for result in scheduler._bench_results]
+            measurement = produced["benchmark_measurement"]
+            assert (measurement["expected_internal_samples"], measurement["estimate"]["method"]) == (
+                10,
+                "adjacent_upper_median",
+            )
+            templates[phase] = measurement["raw_fpms"][0]["benchmark_sample"]
+            estimates[phase] = measurement["estimate"]
+        protocol = scheduler._bench_measurement_protocol()
+
+    def shape(phase, payload):
+        payload["measurement_protocol"] = copy.deepcopy(protocol)
+        payload["warmup_evidence"] = {"status": "recorded", "records": []}
+        forward = 0
+        for position, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
+            fpm = group["rank_results"][0]["fpms"][0]
+            assert row["fpms"][0] is fpm
+            walls = [fpm["wall_time"] * (1 + 0.01 * (index - 4)) for index in range(10)]
+            tokens = row["point"]["total_prefill_tokens"] or row["point"]["batch_size"]
+            samples = []
+            for index, wall in enumerate(walls):
+                sample = copy.deepcopy(templates[phase])
+                start = 100.0 * position + index
+                # The producer numbers each raw sample by its position, as Dynamo's merge requires.
+                sample["sample_index"] = index
+                sample["forward_index"] = forward
+                sample["timing"].update(start_monotonic=start, end_monotonic=start + wall)
+                sample["cudagraph"].update(num_unpadded_tokens=tokens, num_padded_tokens=tokens, num_paddings=0)
+                # A decode repetition records two FPMs, and the second is its steady sample.
+                forward += 2 if phase == "decode" else 1
+                raw = {**copy.deepcopy(fpm), "wall_time": wall, "benchmark_sample": sample}
+                if phase == "decode":
+                    raw["kvwarm_steady_sample"] = True
+                samples.append(raw)
+            if phase == "decode":
+                fpm["kvwarm_steady_sample"] = True
+            # The producer's reduction: the upper median of the samples that its estimate names.
+            chosen = sorted(walls[index] for index in estimates[phase]["raw_sample_indices"])
+            fpm["wall_time"] = group["wall_time"] = chosen[len(chosen) // 2]
+            fpm["benchmark_measurement"] = {
+                "schema_version": 1,
+                "point_key": _content_key(row["point"]),
+                "dp_rank": 0,
+                # The producer injects no prompt hashes.
+                "prompts": {"status": "unavailable", "sha256": None, "requests": []},
+                "preparation": {
+                    "grid_digest": payload["grid_digest"],
+                    "completed_points_before": position,
+                    "kv_seed_regime": row["kv_seed_regime"],
+                    "warmup_records_before": 0,
+                },
+                "expected_internal_samples": 10,
+                "raw_fpms": samples,
+                "estimate": copy.deepcopy(estimates[phase]),
+            }
+        first = payload["iteration_groups"][0]["rank_results"][0]["fpms"][0]
+        if breakage == "interval":
+            first["benchmark_measurement"]["raw_fpms"][3]["benchmark_sample"]["timing"]["start_monotonic"] -= 0.1
+        elif breakage == "median":
+            # The slowest repetition instead of the median.
+            first["wall_time"] = max(sample["wall_time"] for sample in first["benchmark_measurement"]["raw_fpms"])
+            payload["iteration_groups"][0]["wall_time"] = first["wall_time"]
+        groups = payload["iteration_groups"]
+        payload["timing"]["measured_iteration_seconds"] = sum(group["wall_time"] for group in groups)
+
+    return shape
+
+
 def _pod(tmp_path: Path, cell: FPMCell, *, backend_version: str = "0.33.0") -> Path:
     """The pod folder of a launch whose Collector provenance names the vLLM runtime ``backend_version``."""
     pod = tmp_path / "raw" / "node0000"
@@ -289,8 +386,11 @@ def _publish(monkeypatch, tmp_path: Path, cell: FPMCell, collection: NativeColle
 
     The validator refuses artifacts that the producer never writes, such as a GLM decode artifact with a warm-up
     skip. A test starts from a collection that the validator accepted and changes it, to reach the publication rules.
+    The measurement record reader checks the artifact against the validated collection, so it would refuse every
+    changed collection before these rules. It is replaced too, and its own rules are tested on unchanged artifacts.
     """
     monkeypatch.setattr(database, "validate_native_collection", lambda *_args, **_kwargs: collection)
+    monkeypatch.setattr(database, "extract_measurement_evidence", lambda *_args, **_kwargs: {})
     return database.aggregate_cell(plan or _glm_plan(), cell, tmp_path, expected_attempt_id=ATTEMPT_ID)
 
 
@@ -779,9 +879,12 @@ WARMUP_SKIP = {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_b
 
 def test_glm_producer_rows_publish_real_regimes(tmp_path):
     rows = {}
+    shape = _glm_producer_shape(tmp_path)
     for phase, points in (("prefill", [PREFILL_COLD, PREFILL_CACHED]), ("decode", DECODE_POINTS)):
         cell = glm_cell(phase)
-        write_glm_rank(_pod(tmp_path / phase, cell), glm_native_payload(phase, points=points))
+        payload = glm_native_payload(phase, points=points)
+        shape(phase, payload)
+        write_glm_rank(_pod(tmp_path / phase, cell), payload)
         rows[phase] = database.aggregate_cell(_glm_plan(), cell, tmp_path / phase, expected_attempt_id=ATTEMPT_ID)
     assert [(row["total_kv_read_tokens"], row["kv_seed_regime"]) for row in rows["prefill"]] == [
         (0, "n/a"),
@@ -795,6 +898,49 @@ def test_glm_producer_rows_publish_real_regimes(tmp_path):
         assert row["model_template_id"] == GENERIC_RUNTIME_TEMPLATE_ID
         assert row["execution_profile"] == "full"
         assert tuple(row[name] for name in EXECUTION_COLUMNS) == glm_identity()
+
+
+def test_glm_publication_keeps_the_retained_values_of_a_producer_record(tmp_path):
+    shape = _glm_producer_shape(tmp_path)
+    for phase, points in (("prefill", [PREFILL_COLD, PREFILL_CACHED]), ("decode", DECODE_POINTS)):
+        cell = glm_cell(phase)
+        payload = glm_native_payload(phase, points=points)
+        original = [row["fpms"][0]["wall_time"] for row in payload["results"]]
+        shape(phase, payload)
+        retained = [row["fpms"][0]["wall_time"] for row in payload["results"]]
+        # The builder spreads ten repetitions around the original wall time, 1% apart from 0.96 to 1.05 times it, and
+        # retains the upper median of repetitions 1 to 9: repetition 5, at 1.01 times the original.
+        assert retained == [wall * (1 + 0.01 * (5 - 4)) for wall in original]
+        write_glm_rank(_pod(tmp_path / phase, cell), payload)
+        rows = database.aggregate_cell(_glm_plan(), cell, tmp_path / phase, expected_attempt_id=ATTEMPT_ID)
+        # One rank, so the latency of a row is the retained wall time of its point.
+        assert [row["latency_ms"] for row in rows] == [wall * 1000.0 for wall in retained]
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_glm_publication_refuses_a_producer_record_whose_retained_median_moved(tmp_path, phase):
+    cell = glm_cell(phase)
+    points = [PREFILL_COLD, PREFILL_CACHED] if phase == "prefill" else DECODE_POINTS
+    payload = glm_native_payload(phase, points=points)
+    _glm_producer_shape(tmp_path, "median")(phase, payload)
+    write_glm_rank(_pod(tmp_path, cell), payload)
+    # The retained wall time, the group wall time and the timing totals moved together to the slowest repetition, so
+    # the native validator accepts the artifact. Only the reduction rule of its measurement record refuses it.
+    _validate(tmp_path, cell)
+    with pytest.raises(ValueError) as error:
+        database.aggregate_cell(_glm_plan(), cell, tmp_path, expected_attempt_id=ATTEMPT_ID)
+    assert "benchmark_measurement reduction disagrees with retained timing" in str(error.value)
+
+
+def test_glm_publication_refuses_an_artifact_without_the_producer_protocol(tmp_path):
+    # The producer writes its measurement protocol into every rank artifact, so an artifact without it is not the
+    # producer's, although the native validator accepts it.
+    cell = glm_cell("prefill")
+    write_glm_rank(_pod(tmp_path, cell), glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED]))
+    _validate(tmp_path, cell)
+    with pytest.raises(ValueError) as error:
+        database.aggregate_cell(_glm_plan(), cell, tmp_path, expected_attempt_id=ATTEMPT_ID)
+    assert "measurement_protocol of a GLM-5.3-Flash producer artifact must be present" in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -882,6 +1028,7 @@ def test_published_glm_pair_loads_through_the_rust_fpm_loader(tmp_path):
     plan = _glm_plan()
     plan.backend_version = "glm-published-pair"
     rows = []
+    shape = _glm_producer_shape(tmp_path)
     for phase, points in (("prefill", [PREFILL_COLD, PREFILL_CACHED]), ("decode", DECODE_POINTS)):
         # The loader selects cells by the quantization that the SDK resolves for the checkpoint.
         cell = replace(
@@ -891,7 +1038,9 @@ def test_published_glm_pair_loads_through_the_rust_fpm_loader(tmp_path):
             moe_quant_mode="fp8_block",
             fmha_quant_mode="bfloat16",
         )
-        write_glm_rank(_pod(tmp_path / phase, cell), glm_native_payload(phase, points=points))
+        payload = glm_native_payload(phase, points=points)
+        shape(phase, payload)
+        write_glm_rank(_pod(tmp_path / phase, cell), payload)
         rows += database.aggregate_cell(plan, cell, tmp_path / phase, expected_attempt_id=ATTEMPT_ID)
     systems = tmp_path / "systems"
     database.write_formal_database(plan, rows, systems_root=systems / "data")

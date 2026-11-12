@@ -159,8 +159,14 @@ this producer. The cell selects these rules, not the artifact:
 
 The first two rules apply wherever the collector reads the artifact,
 publication included. Readiness and repeatability assessment apply the other
-three. Publication (`aggregate_cell`) does not apply them. The warm-up and raw
-sample checks need measurement evidence version 2, the default.
+three. Publication (`aggregate_cell`) applies the protocol rule and the raw
+sample rule to a GLM-5.3-Flash cell with the same reader, and refuses an
+artifact that breaks one with the reader's text. A gap that the reader only
+reports, such as the prompt hashes that the producer does not write, does not
+refuse publication. Publication does not read the measurement records of the
+cells of other models, so it does not apply the last rule. The warm-up and raw
+sample checks need measurement evidence version 2, the default, which
+publication uses.
 
 The two digests are those of the checkout that reads the artifact. A campaign
 is therefore readable only by a collector whose `glm53flash_prefix_scheduler.py`
