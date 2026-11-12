@@ -38,6 +38,7 @@ from aisimulate.fpm_contract import (
     FPM_CELL_LABEL,
     FPM_ENGINE_BENCHMARK_OUTPUT_ENV,
     FPM_ENV_FILENAME,
+    FPM_FINALIZATION_TIMEOUT_ENV,
     FPM_MANIFEST_FILENAME,
     FPM_RESULTS_DIR,
     FPM_RUN_ID_ENV,
@@ -49,8 +50,11 @@ from aisimulate.fpm_contract import (
 from .config import FPM_KV_WARMUP_DEFAULTS, with_kv_warmup_defaults
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
-from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
-from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
+from .runtime.fpm_memory_observer import (
+    EXECUTION_SUPPORTED_VERSIONS,
+    MEMORY_SUPPORTED_VERSIONS,
+    audited_release,
+)
 from .types import KVWARM_STRATEGIES
 
 logger = logging.getLogger(__name__)
@@ -117,7 +121,7 @@ _FPM_VLLM_PREFILL_ARGS = ("--no-async-scheduling",)
 #     resident). Disabling is the serving-faithful choice here.
 _FPM_VLLM_DECODE_FAKE_KV_ARGS = ("--no-enable-prefix-caching",)
 # Must stay in sync with the engine's _kvwarm_warm_eligible strategy set.
-# pure_tp added 2026-08-20: the "moe_tp balanced by construction" immunity
+# pure_tp added the "moe_tp balanced by construction" immunity
 # assumption only covers cross-GPU balance; expert-activation dispersion is
 # still content-driven (same-pod fake/warm pairing measured -15.3% mid-band,
 # full-grid re-collection 10.43%->4.80%). Requires the engine image with the
@@ -137,7 +141,7 @@ def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
     return (
         deployment is not None
         and deployment.resources.memory_source == "pending"
-        and getattr(plan, "runtime_backend_version", None) == MEMORY_OBSERVER_VERSION
+        and audited_release(getattr(plan, "runtime_backend_version", None), MEMORY_SUPPORTED_VERSIONS) is not None
     )
 
 
@@ -145,7 +149,7 @@ def _observe_runtime_execution(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
     if getattr(plan, "runtime_instrumentation", None) is not None:
         return False
     return (
-        getattr(plan, "runtime_backend_version", None) in EXECUTION_SUPPORTED_VERSIONS
+        audited_release(getattr(plan, "runtime_backend_version", None), EXECUTION_SUPPORTED_VERSIONS) is not None
         and not cell.execution_identity[0]
     )
 
@@ -1598,11 +1602,12 @@ def _configured_sampling_metadata(
 
 def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> None:
     # Generator owns run.sh and fpm_env.sh. Mirror only startup inputs through
-    # this Collector-owned file because Slurm does not start a Kubernetes Pod
-    # with extra_env, and run.sh's exports happen after the preflight process.
+    # this Collector-owned file: run.sh cannot export settings back to its
+    # parent runtime, and Slurm does not inherit a Kubernetes Pod environment.
     names = {
         *FPM_KV_WARMUP_DEFAULTS,
         READINESS_TIMEOUT_ENV,
+        FPM_FINALIZATION_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
         "DYN_FPM_INPUT_TEXT",

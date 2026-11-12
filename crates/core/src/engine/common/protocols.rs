@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Scheduler-local data structures.
 //!
@@ -13,10 +16,10 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::engine::KvEvent;
 use crate::engine::common::hashing::Token;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::config::{NativeHostOffloadConfig, StateCacheConfig};
+use crate::engine::{FrontendConfig, ImageSpec, KvEvent};
 
 /// Sink for neutral KV-cache events emitted by a rank.
 pub(crate) trait KvCacheEventSink: Send + Sync {
@@ -78,6 +81,14 @@ pub(crate) struct DirectRequest {
     pub output_token_ids: Option<Vec<Token>>,
     pub uuid: Option<Uuid>,
     pub arrival_timestamp_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
+    /// Image placeholders inside `tokens`; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
+    pub kv_hint: Option<crate::engine::KvHintSource>,
 }
 
 impl DirectRequest {
@@ -155,12 +166,19 @@ pub(crate) enum KvTransferTimingMode {
 /// Materialized SGLang controls used by the moved scheduler implementation.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SglangArgs {
+    pub hicache: Option<crate::engine::SglangHiCacheConfig>,
     pub schedule_policy: Option<String>,
     pub page_size: Option<usize>,
     pub max_prefill_tokens: Option<usize>,
     pub chunked_prefill_size: Option<usize>,
     pub clip_max_new_tokens: Option<usize>,
     pub schedule_conservativeness: Option<f64>,
+    pub vlm_cache_bytes: Option<u64>,
+    pub host_loop: bool,
+    pub disaggregation_decode_enable_radix_cache: bool,
+    pub num_reserved_decode_tokens: Option<usize>,
+    pub disaggregation_decode_extra_slots: Option<usize>,
+    pub frontend: Option<FrontendConfig>,
 }
 
 /// Rank-local view of `EngineConfig`.
@@ -187,6 +205,10 @@ pub(crate) struct MockEngineArgs {
     pub prefill_schedule_interval: usize,
     #[builder(default = "0")]
     pub prefill_decode_interval: usize,
+    /// Batches the engine keeps committed while busy; see
+    /// `EngineConfig::max_concurrent_batches`.
+    #[builder(default = "1")]
+    pub max_concurrent_batches: usize,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]

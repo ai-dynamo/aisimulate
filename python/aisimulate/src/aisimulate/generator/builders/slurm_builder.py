@@ -209,6 +209,9 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
                 event["enable_kv_cache_events"] = True
             command.extend(["--kv-events-config", json.dumps(event)])
     if backend == "sglang" and role != "agg":
+        # Dynamo advertises the detected node IP; SGLang's loopback default
+        # cannot accept bootstrap connections on that address.
+        command.extend(["--host", "0.0.0.0"])
         # Bootstrap servers must not contend when several prefill workers share a host.
         command.extend(["--disaggregation-bootstrap-port", "@BOOTSTRAP_PORT@"])
     extra = (params.get("params", {}).get(role) or {}).get("extra_cli_args", [])
@@ -230,6 +233,8 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
         "--config",
     }
     owned.update(_TOPOLOGY_OPTIONS[backend])
+    if backend == "sglang" and role != "agg":
+        owned.add("--host")
     for token in extra:
         option = token.split("=", 1)[0].replace("_", "-")
         if not option.startswith("-") or option in {"-", "--"}:

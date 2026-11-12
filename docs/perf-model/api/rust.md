@@ -54,7 +54,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 - KV-cache estimation: `estimate_kv_cache`, `KvCacheEstimateRequest`,
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
-- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`,
+- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`, `FpmMambaCacheMode`,
   `FpmResourceConfig`, `FpmRuntimeMemoryConfig`, `FpmCacheBudgetRequest`, `FpmCacheBudget`, and
   `FpmCacheBudgetAdjusted`, through the canonical model/config budget method;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,
@@ -80,6 +80,13 @@ plan, not a stable cross-version binary format. Use the exported schema constant
 rather than hard-coding a number; the loader rejects mismatched bincode schemas
 before interpreting operation payloads. JSON defaults do not imply binary
 compatibility. Recompile saved engines when updating the paired runtime.
+
+Schema 29 adds an optional `vision` section to `EngineSpec`: the vision tower
+compiled under `ForwardPassPerfModelConfig::encoder_parallel`, priced by
+`ForwardPassPerfModel::vision_operations` and `predict_vision_ms` over
+`EncoderImageShape` groups (`sequences`, per-sequence `patch_tokens`,
+`transformer_tokens`, `output_tokens`, `images`). The section is absent when
+`encoder_parallel` is unset.
 
 The public exports are defined in
 [`perfmodel/mod.rs`](../../../crates/core/src/perfmodel/mod.rs).

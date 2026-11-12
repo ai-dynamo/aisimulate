@@ -8,8 +8,12 @@ SPDX-License-Identifier: Apache-2.0
 The warmup run fills
 the same native engine cache that will serve the measured suffix. Its input is
 a prepared snapshot, its original prompt identity context, and the selected
-engine configuration. Its output is retained KV state, an unchanged logical
-snapshot frontier, and separate preparation evidence.
+engine configuration. Its output is retained KV state and separate preparation
+evidence. The default `repeated_prefixes` policy preserves the snapshot frontier;
+the opt-in `live_trajectory_v1` policy advances it, and the opt-in
+`primers_only` policy sends only the primers. The next sections describe the
+backward-compatible default; see [live trajectory policy](#live-trajectory-policy)
+and [primers-only policy](#primers-only-policy) for the alternatives.
 
 ## Request inputs and outputs
 
@@ -60,9 +64,12 @@ The opt-in control is `traffic.load.agentic_warmup: true`, alongside positive
 `agentic_lanes` and `agentic_snapshot: {seed: ...}`. Omitting the control keeps
 the existing cold snapshot behavior. The built-in Engine runner supports offline
 vLLM and SGLang replay with either aggregated workers or separate prefill/decode
-pools and HBM-only KV cache. vLLM also supports local or shared
+pools and HBM-only KV cache, including
+[speculative decoding](../engine/speculation.md) with explicit acceptance
+assumptions; ngram requires vLLM. vLLM also supports local or shared
 [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
-with attention DP1 on every role. Speculative decoding remains disabled. For example:
+or local G2 on several static aggregated workers, with attention DP1 on every role and
+speculative decoding disabled. For example:
 
 ```yaml
 traffic:
@@ -85,7 +92,8 @@ it remains resident on every worker.
 
 Weka, Agentic Mooncake, and agentic Dynamo trace inputs use this same offline
 path. Reading a Dynamo trace does not require the Dynamo integration. Agentic
-TensorRT-LLM, G3 offload, speculative decoding, and online P/D are rejected;
+TensorRT-LLM, G3 offload, speculative decoding with G2 offload, and online P/D
+are rejected;
 the built-in runner does not silently change the requested configuration.
 Dynamo-owned routing and online integration require separate downstream
 qualification.
@@ -167,6 +175,71 @@ request-instance identities; primer and profile prefix views share their play's
 mapping. Identity capacity exhaustion fails instead of reusing an old range.
 These APIs reuse the existing dependency executor and runtime feedback contract.
 
+## Live trajectory policy
+
+Set `traffic.load.agentic_warmup_policy: live_trajectory_v1` together with
+`agentic_warmup: true` and `agentic_profile`. Finite warmup without a continuous
+profile is not supported by this policy, because shared-cursor lane recycling
+belongs to profile orchestration. The CLI currently requires offline
+`--stack engine`; it rejects unsupported execution before output-directory
+cleanup. SDK integrations need the explicit `supports_agentic_live_warmup`
+capability and the new native JSON field; passing only the warmup boolean is
+not equivalent. Existing configuration serialization and seed sampling remain
+unchanged when the policy is omitted.
+
+The policy follows the accelerated request-count warmup contract in
+[AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py):
+
+AISimulate additionally scales source-clock primer leads using its trace-arrival
+`speedup`; the reference has no such scaling knob. `speedup: 1` preserves the
+reference's primer timing.
+
+1. Prime each continuing conversation's last historical full input. Convert
+   source-clock primer leads to runtime milliseconds by dividing by `speedup`,
+   then apply the configured global idle cap and align them globally.
+   Independent streams on the same lane may prime concurrently. No live
+   request starts until every primer succeeds and settles.
+2. Advance the existing dependency graph, including dispatch-triggered spawns,
+   completion-triggered joins, rootless children and lane recycling. Compress
+   authored idle delays to zero and request one output token. Admit exactly ten
+   additional requests per lane, excluding primers; preserve deferred requests
+   and cache identities when a lane reaches its quota.
+3. Wait for all submitted server work to settle. Prepare the surviving frontier
+   using each tree's source clock; the earliest eligible offset becomes formal
+   time zero. An empty lane draws a fresh turn-zero tree from the shared corpus
+   cursor. Restore original output lengths and dependency delays. A failed
+   measurement reset commits neither this new frontier nor the cursor update.
+
+Live warmup compresses runtime waits, not the source timeline. At handoff,
+surviving timestamped streams retain their offsets from the original sampled
+cut; the profile subtracts one global minimum, not a separate minimum per
+lane. Consequently, source time skipped by accelerated warmup can reappear as
+initial idle in other lanes (subject to the configured per-tree/global idle
+caps). For example, a lane that advances far into a long play can wait while
+a freshly recycled lane starts at zero; this is not a scheduler stall. This
+matches the pinned reference's `_handoff_replay_offset_ms` and
+`_profiling_phase_t0_offset_ms` with its default spread phase starts. The
+reference's optional `--burst-phase-starts` mode instead re-anchors each lane;
+that alternative is not the policy modeled here.
+
+The formal request and trajectory cohorts exclude all preparation-only plays.
+Partially warmed active trees retain their cache/request identity but start
+their formal trajectory observation at the barrier. Formal lifecycle ordinals
+restart there; complete warmup request provenance stays in `agentic_phases`.
+Failure drains issued work, keeps the phase ledger, and produces no formal
+cohort. The finite warmup quota permits zero-time one-token iterations; the
+unbounded continuous-profile livelock guard remains enabled afterward.
+
+This is native functional qualification, not a claim of byte-exact HTTP prompt
+or hardware-performance parity. The reference's sampler must be aligned with
+[imported initial selections](../workloads.md#agentic-snapshot); identical
+seeds alone are insufficient. AISimulate still uses its normalized dependency
+graph and logical prefix identities, not the reference tokenizer/chat-template
+payloads. Request scheduling ties use stable native graph order, not wall-clock
+callback timing or random UUID ordering. CPU fixtures cover branching,
+recycling, barriers, failure and formal-cohort exclusion; hardware/HTTP accuracy
+requires an explicitly matched experiment.
+
 The native report's `agentic_snapshots` collection records source/graph identity,
 seed, lane/play/cache identity, sampled cut, recorded request intervals, retained
 frontier and remaining dependency timers, and primer descriptions. Default Python
@@ -174,6 +247,32 @@ results retain it in metadata; full native reports and CLI JSON preserve the sam
 evidence. Per-request agentic identities allow events to be attributed to their
 original play even when a future phase reuses its lane.
 
+
+## Primers-only policy
+
+`traffic.load.agentic_warmup_policy: primers_only` sends each continuing
+conversation's primer and nothing else. It models NVIDIA AIPerf's snapshot
+warmup when no cache-pressure warmup is configured, as in its
+`inferencex-agentx-mvp` scenario
+([`agentic_replay.py`](https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py),
+`_execute_warmup` and `_capped_warmup_lead_ms`, Apache-2.0). It requires
+`agentic_warmup: true`; a continuous profile is optional. SDK integrations need
+the explicit `supports_agentic_primers_only` capability.
+
+1. Primers are timed as in step 1 of the live policy: leads are divided by
+   `speedup`, capped at `agentic_profile.global_idle_cap_seconds` (10 s without
+   a profile) and aligned globally. Independent streams of a lane prime
+   concurrently.
+2. No other preparation request follows (`warmup_expected` is 0). Once every
+   primer has succeeded and settled, the saved frontier resumes as after
+   `repeated_prefixes`. With nothing to prime, the profile opens at once.
+
+AIPerf 0.13.0 caps warmup leads only with a trace idle-gap cap, which the
+`inferencex-agentx-mvp` scenario forbids; later AIPerf caps them at its system
+idle-gap cap ([#1413](https://github.com/ai-dynamo/aiperf/pull/1413)). AIPerf
+aborts only when a root conversation's primer fails, while AISimulate stops at
+any failed primer, as with its other policies. Compare against a real AIPerf run
+only with the matching AIPerf version.
 
 ## Reference and validation boundary
 
@@ -191,10 +290,11 @@ The [retained source audit](../../../benchmarks/evidence/accuracy/replay-evidenc
 records the original comparison and review boundary.
 
 AISimulate uses its native dependency graph, a versioned BLAKE3-based snapshot
-sample, and disjoint per-play token identities. Warmup repeats saved primer
-inputs and preserves the frontier; the reference executor's warmup advances
-its live trajectory. Matching preparation request counts does not establish
-full AgentX parity. Qualification must cover exact inputs, one output token,
-ten requests per lane, barrier ordering, failure handling, timer preservation,
+sample (or imported cuts), and disjoint per-play token identities. The default
+warmup repeats saved primer inputs; `live_trajectory_v1` advances the graph as
+described above, and `primers_only` stops after the primers. Matching
+preparation request counts does not establish full AgentX parity.
+Qualification must cover exact inputs, one output token, the policy's request
+count per lane, barrier ordering, failure handling, timer preservation,
 cache reuse with caching enabled/disabled, and deterministic cold/warm runs.
 The public reports remain `functional_only`, not hardware accuracy evidence.

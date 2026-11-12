@@ -15,6 +15,12 @@ each example; replace deployment placeholders with inspected runtime facts.
 | --- | --- | --- |
 | [A: Kimi K3 TP8+DCP8](#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile) | An existing version-6 timing pair with retained resource provenance | CPU import, SDK query and Replay; no GPU collection |
 | [B: MiniMax-M2.7 TP4](#example-b-collect-a-minimax-m27-tp4-profile) | A pinned local model config and a prepared target runtime | Four-H200 aggregated collection, quality checks, memory finalization and Replay |
+| [C: Native P/D capture](#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers) | Your instrumented vLLM or SGLang deployment and workload | Capture and check each role independently, with real KV transfer |
+| [D: Native aggregated capture](#example-d-collect-native-fpm-from-an-aggregated-worker) | Your aggregated deployment or completed native files | Shared capture requirements and a pinned SGLang worker recipe |
+
+For end-to-end offline profiling with your own workload, use the
+[E2E-to-GBDT walkthrough](e2e-gbdt.md). Examples C and D provide native capture
+settings for that route; Examples A and B use self-benchmark timing tables.
 
 The examples illustrate different supported routes. Their model, topology,
 runtime and memory values are not defaults for another deployment. Use separate
@@ -38,82 +44,75 @@ First [prepare the environment](implementation.md#prepare-the-environment) and
 review the retained collection identity, resource evidence and coverage against
 your intended deployment. It runs on CPU and downloads
 the published
-[Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/6fad3f9a0df5a24603108dcea0d201259254b904/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
+[Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
 checks one measured point from each phase, and completes a small Replay run.
 It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
 
 ### A1. Import the measured pair
 
-Choose a new output directory. The public download uses Python's standard
-library; no Hugging Face login or additional download package is required.
+Choose a new output directory and an AISimulate build with the
+[`kimi_k3_fpm` pin manifest and materializer](README.md#reuse-a-published-profile).
+The materializer verifies the pinned files and reuses a verified cache on later
+calls. This historical profile is marked `development`: the explicit
+`allow_unqualified=True` below permits this reproduction without granting serving
+admission. No Hugging Face login or additional download package is required for
+the public files.
 
 ```bash
 export FPM_RUN="$PWD/kimi-k3-fpm"
 mkdir "$FPM_RUN"
 python - <<'PY'
-import hashlib
 import json
 import os
 import shutil
-from importlib.resources import files
 from pathlib import Path
-from urllib.request import urlopen
+
+from aisimulate_core.sdk.fpm_dataset import list_fpm_profiles, materialize_fpm_profile
 
 run = Path(os.environ["FPM_RUN"]).resolve()
-revision = "6fad3f9a0df5a24603108dcea0d201259254b904"
-base = f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/{revision}/"
-config_path = "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8"
+key = "gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0"
+pin = next(item for item in list_fpm_profiles("kimi_k3_fpm") if item["profile"] == key)
+systems = materialize_fpm_profile(pin["manifest"], key, allow_unqualified=True)
+(run / "systems").symlink_to(systems, target_is_directory=True)
 
-def download(path):
-    with urlopen(base + path, timeout=60) as response:
-        return response.read()
-
-manifest_bytes = download(f"{config_path}/manifest.json")
-manifest = json.loads(manifest_bytes)
-primary = next(item for item in manifest["fpm"] if item["role"] == "primary")
-parquet = download(primary["path"])
-sidecar = download(primary["metadata_path"])
-metadata = json.loads(sidecar)
-assert hashlib.sha256(parquet).hexdigest() == primary["sha256"] == metadata["parquet_sha256"]
+metadata = json.loads((systems / "data/gb300/vllm/0.29.0/fpm_forward_perf.metadata.json").read_text())
+manifest = json.loads((systems / "provenance/manifest.json").read_text())
 assert metadata["schema_name"] == "aic_fpm_forward_perf" and metadata["schema_version"] == 6
-assert primary["row_count"] == metadata["row_count"] == 669
+assert metadata["row_count"] == 669
 assert manifest["dcp"] == metadata["configuration_selector"]["dcp"] == 8
 
-systems = run / "systems"
-target = systems / "data/gb300/vllm/0.29.0"
-target.mkdir(parents=True)
-(target / "fpm_forward_perf.parquet").write_bytes(parquet)
-(target / "fpm_forward_perf.metadata.json").write_bytes(sidecar)
-packaged = files("aisimulate_core") / "systems"
-for name in ("gb300.yaml", "query_versions.yaml", "attention_lane_defaults.yaml"):
-    shutil.copyfile(str(packaged / name), systems / name)
-(run / "manifest.json").write_bytes(manifest_bytes)
-(run / "engine-config.json").write_bytes(download(f"{config_path}/fpm/provenance/engine-config.json"))
-(run / "dataset-revision.txt").write_text(revision + "\n")
-print(f"Installed {primary['row_count']} primary rows under {systems}")
+shutil.copyfile(pin["manifest"], run / "pin-manifest.json")
+for name in ("manifest.json", "engine-config.json"):
+    shutil.copyfile(systems / "provenance" / name, run / name)
+(run / "dataset-revision.txt").write_text(pin["revision"] + "\n")
+print(f"Installed {metadata['row_count']} primary rows under {run / 'systems'}")
 PY
 ```
 
 **Expected:** 669 primary rows: 338 balanced prefill points and 331 decode
 points. Only the filenames change to the loader's canonical names; the Parquet
-and sidecar contents remain unchanged. Retain the manifest, dataset revision,
+and sidecar contents remain unchanged. `$FPM_RUN/systems` links to the immutable
+materialized root; keep that cache directory available for subsequent commands.
+Retain `pin-manifest.json`, the published `manifest.json`, dataset revision,
 and engine configuration beside the imported data. The separate comparator
 with synthetic attention KV and the nonuniform prefill records are not part of
 this primary profile.
+
+The publication lacks a collection-time system YAML. This development pin
+uses `packaged_system: gb300` to copy the installed canonical `gb300.yaml` into
+the root. Its actual hash participates in cache identity and verification.
+The manifest marks it as `packaged_reference_not_collection`: this current
+hardware reference does not establish the collected runtime's system or
+communication-library configuration. If the installed hardware YAML changes,
+materialize a new root before using it offline.
 
 The decode measurements use warmed MLA KV and **random KDA state**. They are
 calibration data, not held-out accuracy evidence. See the retained
 `engine-config.json` for measurement conditions and known unknowns.
 
-This profile uses a custom vLLM `0.29.0` build. Allow its literal version to be
-queried outside the copied version-slot policy for this session:
-
-```bash
-export AIC_ALLOW_UNLISTED_VERSIONS=1
-```
-
-This permits version selection; model/topology/precision matching stays strict.
-For another profile whose backend version is already queryable, omit the override.
+This profile uses a custom vLLM `0.29.0` build. The materialized root has no
+release-slot policy, so use that exact `backend_version` below. No version-policy
+override is needed; model, topology and precision matching remain strict.
 
 ### A2. Query the canonical model
 
@@ -271,6 +270,12 @@ replace every placeholder with inspected deployment facts. This example does
 not collect DCP or compose independent P/D workers.
 
 ### B1. Prepare the campaign
+
+For a new MiniMax-M2.7 campaign, keep the selected KV precision in the request
+and profile. FP8 weights do not require FP8 KV: an explicit BF16 KV selection
+plans BF16 attention and cache identity. Runtime initialization and readiness
+checks must verify the actual precision before collection. Use a fresh output
+directory when changing precision; do not relabel existing measurements.
 
 Keep the local `config.json` and any quantization sidecar from the immutable
 checkpoint. Derive supported precision/cache geometry and prepare a reviewed
@@ -742,3 +747,175 @@ Resume may launch missing or unfinished cells. For failed cells, changed inputs,
 artifact recovery or cleanup after interruption, follow
 [recovery and cleanup](implementation.md#recovery-and-cleanup) and
 [troubleshooting](implementation.md#fpm-data-and-prediction-troubleshooting).
+
+## Example C: collect native FPM with separate prefill and decode workers
+
+Use your own cluster, deployment tools and workload client. Start from a working
+vLLM or SGLang deployment with **real KV transfer**, then enable native capture
+on every relevant serving worker. A frontend or HTTP trace alone does not
+contain the engine measurements needed for training.
+
+For deployment details, use the optional [P/D setup reference](native-pd-setup.md)
+and [troubleshooting and completion checks](native-pd-troubleshooting.md). Retain
+the [completion record](native-pd-troubleshooting.md#keep-a-reviewable-completion-record)
+for your configuration, request outcomes and exports.
+
+Set these values in each worker's environment, substituting its role and a
+persistent path:
+
+```bash
+export DYN_FPM_TRACE=1 DYN_FPM_MODE=full
+export DYN_FPM_OUTPUT_PATH=/persistent/run/prefill/fpm  # decode/fpm on decode
+export DYN_FPM_MAX_SEGMENTS=64
+```
+
+`DYN_FPM_OUTPUT_PATH` is a filename prefix. Size retention for the whole run and
+preserve every segment before the cap can prune it. Keep native worker/source
+identities, attention-DP ranks, seconds-valued `wall_time`, and all five
+`scheduled_requests` counters. Do not rewrite decode-admission or mixed rows
+into a different serving role.
+
+| Backend | Producer and deployment checks |
+| --- | --- |
+| vLLM | Verify its native instrumented scheduler is active on both roles. Record the actual connector and transfer settings. Decode admission can carry prefill work; account for trainer exclusions. |
+| SGLang | Enable forward-pass metrics and verify scheduled-prefill accounting. The pinned producer below needs its native counter correction. Use serial scheduling for this qualified timing path; give the roles separate GPUs and reachable KV-transfer endpoints. |
+
+Before collecting your workload, complete a short request with multiple output
+tokens. Require native busy rows from both roles and evidence of completed KV
+transfer. Then check repeated prefixes, chunked prefill when enabled, and decode
+after idle. Registration or successful HTTP completion alone does not establish
+correct counters or transfer. Record the engine's timer and decode-context
+conventions; they differ between backends.
+
+Use a bounded pilot to find a stable load, preserving genuine latency variation.
+Record request rate/concurrency changes and smoke, warmup, measurement and drain
+boundaries. At completion, stop new sends, drain outstanding work, observe idle,
+and close or rotate capture files using the deployment owner's procedure.
+
+Continue with [capture validation and selection](e2e-gbdt.md#2-check-and-prepare-the-data),
+then train separate `prefill` and `decode` models using `--features fpm5
+--join-ranks none`. Capture success does not establish prediction accuracy,
+Replay support or resource capacity; retain those checks separately.
+
+## Example D: collect native FPM from an aggregated worker
+
+An aggregated worker handles prefill and decode in one serving configuration.
+Use the same [capture and smoke checks](#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers)
+with role `aggregated` and a persistent `aggregated/fpm` output prefix. Both
+vLLM and SGLang require verified native instrumentation. Keep pure-prefill,
+pure-decode and mixed observations under the original aggregated identity.
+
+Run your own workload and retain its session semantics, arrival schedule,
+termination behavior and completion evidence. Inspect coverage by work kind and
+feature range; many decode rows do not compensate for missing prefill or mixed
+work. The [standalone walkthrough](e2e-gbdt.md) supplies the validation, selection,
+GBDT training and Replay steps. It accepts completed captures without cluster
+access and does not depend on a particular launcher or registry.
+
+The SGLang recipe below was used for a completed aggregated AgentX collection.
+It supplies a concrete native worker configuration; use your own workload client
+and deployment tools, applying the [acceptance checks below](#d2-smoke-collect-and-hand-off).
+Another model, workload or cluster needs its own producer, resource and timing
+checks. Historical hook-based timings must retain their original identity and
+cannot be relabeled as native capture.
+
+### D1. Pin the aggregated SGLang runtime
+
+| Input | Recipe identity or setting |
+| --- | --- |
+| Model and tokenizer | `deepseek-ai/DeepSeek-V4-Flash-0731`, revision `7872f01b1d1fe23eabc4c98b48bffcef5a386062` |
+| Runtime image | `nvcr.io/nvidia/ai-dynamo/sglang-runtime@sha256:b9ddf09444b4c454605b68ab2dbd7e99b6bdbe5fa7a459935edaa78c61592549` |
+| SGLang / Dynamo source | `e087e662ba1ac4ef7747537e2a9141085efd4561` / `7931147d403c554575438c2451da4248e53e10b8` |
+| Worker | Aggregated, four NVLink-connected B200 GPUs, TP4/EP4/DP1/PP1 |
+| Context / KV | 262144 tokens, DSV4 attention, page size 256, `fp8_e4m3`, prefix caching enabled |
+| Memory / prefill | `mem_fraction_static=0.9`, chunk size 8192, `max_prefill_tokens=8192` |
+| Scheduling | Overlap, mixed chunks, speculation, attention DP and prefill CP disabled |
+| Capture | Native five scheduled counters and CUDA duration in seconds; `fpm5`, no rank join |
+
+Acquire the image and model snapshot with your deployment's tools. Verify the
+weights, tokenizer and official encoder, and use fresh writable caches. This
+pinned producer requires the attributed
+[native counter correction](../../../scripts/fpm_self_service/native_patches/README.md).
+From the repository root, materialize it on CPU:
+
+```bash
+FPM_NATIVE_PATCH=/absolute/owned/path/native-sglang-producer
+python3 -B scripts/fpm_self_service/native_patches/materialize_sglang_patch.py \
+  --output "$FPM_NATIVE_PATCH"
+```
+
+The corrected `metrics_reporter.py` must have SHA256
+`80ca324b60beb470b4ea6057fde7ee9553dd32e851e9741831459614e40bee63`.
+Mount it read-only at
+`/sgl-workspace/sglang/python/sglang/srt/managers/scheduler_components/metrics_reporter.py`
+in the disposable runtime. Verify the original source hash before replacement,
+and the actual imported module's path/hash afterward. Retain the patch, license
+and materialization receipt. The correction uses scheduled batch lengths;
+it preserves the native timer and decode counters and does not install a data
+hook. A different runtime needs a verified compatible producer, not a blind
+application of this patch.
+
+Start etcd, NATS and a Dynamo frontend using your process supervisor and a unique
+namespace. The following command starts only the worker; replace paths, GPU UUIDs
+and endpoints with your deployment's values:
+
+```bash
+FPM_MODEL=/absolute/runtime/path/to/verified/model
+FPM_RUN=/absolute/runtime/path/to/fresh/run
+export CUDA_VISIBLE_DEVICES="your-four-allocated-GPU-UUIDs"
+export DYN_NAMESPACE=your-unique-collection-namespace
+export ETCD_ENDPOINTS=http://127.0.0.1:24000
+export NATS_SERVER=nats://127.0.0.1:24002
+export DYN_SYSTEM_PORT=24010 DYN_FORWARDPASS_METRIC_PORT=24020
+export DYN_FPM_TRACE=1 DYN_FPM_MODE=full
+export DYN_FPM_OUTPUT_PATH="$FPM_RUN/traces/aggregated/fpm"
+export DYN_FPM_JSONL_GZ_ROLL_BYTES=134217728 DYN_FPM_MAX_SEGMENTS=64
+unset DYN_FPM_BENCHMARK_OUTPUT_PATH DYN_FPM_SAMPLE_INTERVAL_MS DYN_FPM_WORKER_ID
+mkdir -p "$FPM_RUN/traces/aggregated"
+python3 -m dynamo.sglang \
+  --namespace "$DYN_NAMESPACE" --discovery-backend etcd \
+  --request-plane tcp --event-plane zmq \
+  --model-path "$FPM_MODEL" --served-model-name deepseek-ai/DeepSeek-V4-Flash-0731 \
+  --tp-size 4 --ep-size 4 --dp-size 1 \
+  --page-size 256 --kv-cache-dtype fp8_e4m3 --mem-fraction-static 0.9 \
+  --context-length 262144 --max-running-requests 256 \
+  --chunked-prefill-size 8192 --max-prefill-tokens 8192 \
+  --host 127.0.0.1 --port 24030 --nccl-port 24050 --watchdog-timeout 3600 \
+  --disable-overlap-schedule --enable-forward-pass-metrics --enable-metrics \
+  --trust-remote-code \
+  --engine-route get_server_info --engine-route get_model_info \
+  --engine-route flush_cache:tm
+```
+
+Disable FPM capture on the frontend and reserve these ports within your
+deployment. Check the resolved configuration for every disabled mode in the
+table; omitted flags alone are insufficient. In this runtime,
+`max_prefill_tokens=8192` is not a universal hard batch-token bound. TP4 emits one
+native stream from attention TP rank 0 on the final PP stage.
+
+### D2. Smoke, collect and hand off
+
+Before measured traffic, check short, chunked and cached-prefix requests against
+actual server token usage and native rows. Drain, reset the prefix cache and
+observe idle before the measurement window. Serial scheduling is part of this
+timer qualification: the reporter accumulates completed CUDA intervals without
+a batch key. SGLang decode KV includes the current token. Preserve those
+conventions when training and querying.
+
+Use your own workload client and its normal authentication/TLS settings.
+Preserve warmup, measurement and drain boundaries, successful/error/cancelled
+request counts, client exit status and native worker identity. If using an
+agentic workload, preserve session trees and recorded conversation behavior;
+a static prompt list describes a different workload.
+
+After draining, observe idle, gracefully stop workers owned by the collection,
+allow publisher cleanup, and require closed gzip files before hashing. Keep
+smoke and idle rows in the raw archive and exclude them explicitly when
+selecting training observations. Validate under role `aggregated` and train
+with `--worker-type aggregated --features fpm5 --join-ranks none`.
+
+This recipe disables mixed scheduling. A Replay configuration that needs mixed
+predictions requires separate native mixed-work measurements and a fitted mixed
+store. Successful collection does not establish publisher losslessness, model
+accuracy or SGLang Replay compatibility; follow the walkthrough's
+[consumer checks](e2e-gbdt.md#4-use-the-model-in-replay).

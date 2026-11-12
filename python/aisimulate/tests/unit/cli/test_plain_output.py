@@ -87,14 +87,14 @@ def test_draw_pareto_to_string(use_ansi):
     assert (_ESC in out) == use_ansi
 
 
-def test_power_availability_ignores_unknown_afd_rows():
+def test_power_availability_ignores_rows_without_power():
     best_configs = {
         "agg": pd.DataFrame({"power_w": [400.0]}),
-        "afd": pd.DataFrame({"power_w": [float("nan")]}),
+        "disagg": pd.DataFrame({"power_w": [float("nan")]}),
     }
 
     assert _check_power_data_available(best_configs) is True
-    assert _check_power_data_available({"afd": best_configs["afd"]}) is False
+    assert _check_power_data_available({"disagg": best_configs["disagg"]}) is False
 
 
 @pytest.mark.parametrize("use_ansi", [True, False])

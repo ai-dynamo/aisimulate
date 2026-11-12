@@ -42,6 +42,7 @@ from scripts.e2e_accuracy.source.defaults.workload_defaults import (
 from scripts.e2e_accuracy.source.filter import FRAMEWORK_TO_AIC_BACKEND
 from scripts.e2e_accuracy.source.mapping import HARDWARE_TO_SYSTEM
 from scripts.e2e_accuracy.source.model_config_snapshot import normalize_trt_snapshot
+from scripts.e2e_accuracy.source.mtp import validate_mtp
 from scripts.e2e_accuracy.source.recipes.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
     InferenceXRecipeError,
@@ -662,9 +663,18 @@ def inspect_deployment(
     *,
     parsed: tuple | None = None,
     allow_estimated_defaults: bool = False,
+    mtp_by_role: dict | None = None,
 ) -> tuple[dict | None, dict, list[dict]]:
     """Collect independent blockers without substituting values to advance validation."""
     issues = []
+    if mtp_by_role:
+        decode_role = "decode" if row.disagg else "aggregated"
+        if decode_role not in mtp_by_role:
+            raise ValueError("MTP acceptance is required for the decoding role")
+        if row.spec_method != "mtp":
+            raise ValueError("MTP controls require an MTP measurement")
+        for value in mtp_by_role.values():
+            validate_mtp(value)
 
     def issue(stage, message, role=None, **details):
         issues.append(dict(stage=stage, role=role, message=message, **details))
@@ -681,7 +691,7 @@ def inspect_deployment(
     if not isinstance(model, str) or "/" not in model or model.startswith("/"):
         issue("model_identity", "source model path is an unresolved alias")
         return None, evidence, issues
-    if row.spec_method != "none":
+    if row.spec_method != "none" and not (row.spec_method == "mtp" and mtp_by_role):
         issue("speculation", "speculative decoding is not modeled")
     resolved_roles = {}
     checkpoint_snapshot = None
@@ -693,7 +703,7 @@ def inspect_deployment(
             if key.startswith(("speculative_", "speculation_"))
             and value not in (None, False, 0, "", "none", "None", "disabled")
         ]
-        if active_speculation:
+        if active_speculation and not (mtp_by_role and role in mtp_by_role):
             issue("speculation", "unsupported speculative controls: " + ", ".join(sorted(active_speculation)), role)
         if backend == "trtllm":
             kv = args.get("kv_cache_config", {})
@@ -814,6 +824,42 @@ def inspect_deployment(
         if allow_estimated_defaults:
             args, assumptions = fill_missing(args, SERVER_DEFAULTS[backend], role=role)
             evidence.setdefault("estimated_defaults", []).extend(assumptions)
+        if mtp_by_role:
+            # Ordinary decoding defaults do not prove effective speculative scheduling.
+            # Runtime observations take precedence over STP-specific mutation rules.
+            observed = set(evidence.get("mtp_runtime_controls", {}).get(role, []))
+            scheduling = {
+                "max_num_seqs",
+                "max_num_batched_tokens",
+                "block_size",
+                "enable_chunked_prefill",
+                "enable_prefix_caching",
+                "mem_fraction_static",
+                "gpu_memory_utilization",
+                "free_gpu_memory_fraction",
+            }
+            for key in scheduling & observed:
+                args[key] = roles[role][key]
+            missing_runtime = sorted(key for key in scheduling - observed if args.get(key) is not None)
+            if missing_runtime:
+                if not allow_estimated_defaults:
+                    issue(
+                        "mtp_scheduler_defaults",
+                        "MTP effective defaults lack runtime evidence",
+                        role,
+                        knobs=missing_runtime,
+                    )
+                else:
+                    evidence.setdefault("estimated_defaults", []).extend(
+                        dict(
+                            role=role,
+                            knob=key,
+                            value=args[key],
+                            historical_value_verified=False,
+                            reason="ordinary decoding default; effective MTP value is unverified",
+                        )
+                        for key in missing_runtime
+                    )
         workers = getattr(row, role + "_num_workers") if row.disagg else 1
         gpus = getattr(row, "num_" + role + "_gpu") if row.disagg else row.num_decode_gpu
         if not row.disagg and not row.is_multinode and row.decode_ep > 1 and gpus == row.decode_tp * row.decode_ep:
@@ -945,6 +991,27 @@ def inspect_deployment(
     if unpinned_checkpoint and not allow_estimated_defaults:
         issue("checkpoint_revision", "historical checkpoint revision is unpinned; estimated mode is required")
     evidence["resolution_issues"] = issues
+    if mtp_by_role:
+        model_config = (checkpoint_snapshot or {}).get("config", {})
+        model_config = model_config.get("text_config") or model_config
+        if not model_config.get("num_nextn_predict_layers", model_config.get("mtp_num_hidden_layers", 0)):
+            issue("mtp_model", "checkpoint does not establish native MTP layers")
+        if any(value["kind"] == "observed_log_samples" for value in mtp_by_role.values()):
+            if not allow_estimated_defaults:
+                issue("mtp_acceptance_estimate", "rounded interval means require estimated mode")
+            else:
+                evidence.setdefault("estimated_defaults", []).append(
+                    dict(
+                        knob="mtp_acceptance",
+                        historical_value_verified=False,
+                        reason="unweighted mean of rounded interval lengths; warmup may be included",
+                    )
+                )
+        evidence["mtp"] = mtp_by_role
+        for role, mtp in mtp_by_role.items():
+            if role not in resolved_roles:
+                raise ValueError("MTP role is absent from deployment")
+            resolved_roles[role]["mtp"] = mtp
     if issues:
         return None, evidence, issues
     return (

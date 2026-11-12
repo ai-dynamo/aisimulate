@@ -43,7 +43,9 @@ reserve. The default memory budget is max(0, min(0.9 A, A - 1 GB)); the separate
 and that fraction of effective physical RAM.
 
 Linux cgroup v1/v2 memory limits, current usage, ancestor limits, affinity and CPU
-quotas constrain the host snapshot. Swap does not increase the budget. Automatic
+quotas constrain the host snapshot. Cgroup usage excludes inactive file cache
+(`inactive_file` in `memory.stat`, `total_inactive_file` on v1), which the kernel
+reclaims on demand. Swap does not increase the budget. Automatic
 CPU selection leaves one CPU free when more than one whole CPU is available.
 CPU capacity caps the number of parallel simulations; it does not estimate CPU
 speed or simulation duration. An explicit positive `memory_limit_gb` or integer
@@ -91,12 +93,14 @@ A sudden jump past the supervisor limit stops the entire execution tree.
 termination outcome. Fields that could not be observed because resource discovery
 failed are null. Errors loading configuration, applying overrides, or validating
 the core schema preserve existing artifacts, including with `--overwrite`.
-`execution-events.jsonl` checkpoints
-completed candidates and batch decisions so evidence survives a supervisor interruption. A completed
-sweep writes `recommendation.json` and selected prediction files as usual, and
-exits with status 3 if any candidates were resource-limited. If the entire tree
-is stopped, the event log contains the completed subset; it is not a finalized
-recommendation. The Python API returns partial sweep results for individual
+`execution-events.jsonl` checkpoints recorded candidates and batch decisions so
+evidence survives a supervisor interruption. A completed sweep writes
+`recommendation.json` and selected prediction files as usual, and exits with
+status 3 if any candidates were resource-limited. If the entire tree is stopped,
+the event log contains the candidates recorded so far; it is not a finalized
+recommendation. Replays are recorded in suggestion order, so the log can miss up
+to `optimizer.parallelism − 1` finished replays still waiting for an earlier one
+in their batch. The Python API returns partial sweep results for individual
 candidate refusals, or raises `ResourceLimitError` with bounded partial events
 when the supervisor stops the whole tree. Host evidence is available through
 `result.execution_resources` and excluded from the portable result fingerprint.
@@ -140,10 +144,11 @@ bound can prove a candidate does not fit; it cannot prove that execution fits.
 Supported JSON and JSONL traces are inspected as a stream. Inspection does not
 load complete documents or token arrays, and there is no fixed file or record
 size cutoff. Native-engine Weka uses the peak model described below, including
-snapshot and warmup storage. Every other finite trace replay uses the
+snapshot and warmup storage. Every other finite trace replay, including
+snapshots and warmup, uses the
 [array lower bound with an observed peak](#finite-trace-replays-lower-bound-and-observed-peak).
-Snapshots, warmup and continuous profiles retain the conservative storage
-estimate and its file-size check. A streaming parser still holds individual
+Continuous profiles use the same array lower bound, but no observed peak: they
+run one at a time under supervision. A streaming parser still holds individual
 scalar strings; large values can exceed headroom before an array bound is
 available. The array bound does not cover that risk.
 Unknown allocation models can run one candidate at a time under runtime
@@ -183,14 +188,15 @@ every workload and external adapter.
 
 This model, `trace-observed-peak-v1`, covers Mooncake, Mooncake-delta,
 applied-compute agentic, standard and agentic Dynamo, and Agentic Mooncake
-traces on both stacks, plus Weka on the Dynamo stack, without snapshots, warmup,
-or continuous profiles. These replay paths load one compact trace: hashes are
-retained as IDs and prompts are expanded only for active requests.
-`agentic_lanes` controls active plays within that trace; it does not create a
-copy of the trace per lane. AISimulate does not model the remaining native
-allocations statically, because they change with the replay implementation.
-Instead it records an unavoidable lower bound before execution and measures the
-peak from completed replays.
+traces on both stacks, plus Weka on the Dynamo stack, with or without snapshots
+and warmup. Continuous profiles use only its lower bound. These replay paths
+load one compact trace: hashes are retained as IDs and prompts are expanded only
+for active requests. `agentic_lanes` controls active plays within that trace; it
+does not create a copy of the trace per lane. A snapshot reuses the loaded graph
+and adds one play's request records per lane. AISimulate does not model the
+remaining native allocations statically, because they change with the replay
+implementation. Instead it records an unavoidable lower bound before execution
+and measures the peak from completed replays.
 
 The lower bound is the maximum of three allocation requirements: 8 bytes per
 source hash ID plus 4 bytes per authored output token where the loader holds
@@ -198,7 +204,9 @@ every source hash array at once (Dynamo, Agentic Mooncake and Dynamo-stack
 Weka); 4 bytes per compact hash ID plus 4 bytes per planned output token in the
 prepared replay; and 4 bytes per token in the largest expanded input prompt.
 These stages are not added together. File bytes, lane count, configured block
-size and total logical input tokens do not multiply this bound.
+size and total logical input tokens do not multiply this bound. Snapshots,
+including warmup and profiles, omit the prompt term: they expand prompts only
+for selected plays after their cuts.
 
 The counters follow each format's loader:
 
@@ -261,10 +269,9 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Four bytes per token ID | The native [request protocol](../../crates/core/src/engine/protocol.rs) and [sequence storage](../../crates/core/src/engine/common/sequence.rs) use `Vec<u32>`. The Dynamo compatibility model explicitly assumes eager u32 prompts. | The width is concrete; applying it to an external adapter requires the stated eager-allocation assumption. |
 | Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
 | Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
-| Trace expansion | Snapshot, warmup and continuous-profile traces only: streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard runs before parsing. |
-| Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; ordinary finite Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
+| Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
 | Process allowances | 256 MiB within the native Weka peak model; 512 MiB for other built-in worker reservations; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
-| Finite trace arrays | Maximum of retained source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. Covers every finite trace format on both stacks except native-engine Weka, without file-size, block-size or lane multipliers. | Array widths are concrete. Other allocations, including importer temporary storage, are excluded: this is a lower bound, not a peak RSS estimate. Snapshot, warmup and profile modes are excluded. |
+| Finite trace arrays | Maximum of retained source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. Covers every finite trace format on both stacks except native-engine Weka, without file-size, block-size or lane multipliers. | Array widths are concrete. Other allocations, including importer temporary storage, are excluded: this is a lower bound, not a peak RSS estimate. Continuous profiles use it without an observed peak. |
 | Observed trace peaks | The largest `getrusage` high-water RSS of completed replays of the same trace, times 1.5. | Measured on the executing host and code, so it needs no recalibration when native allocations change. The first replay of a trace runs alone under supervision; the margin is policy headroom that sizes parallel waves only. |
 | Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 
@@ -285,6 +292,13 @@ arrays even for requests that will later exceed the simulated context window.
 Play summaries such as `totals`, `tool_tokens`, and `system_tokens` do not
 represent additional replayed requests. Its qualified peak can admit parallel
 simulations when their combined estimates fit the live memory budget.
+
+Native Weka admission reuses completed corpus estimates through a process-local
+cache of at most 16 entries. Keys include file identities and fields that affect
+allocation. The estimator compares source identities before and after inspection,
+and excludes changed, invalid, empty, and budget-limited scans. Each admission
+still applies current memory headroom and profile limits. This cache does not
+retain native graphs.
 
 The planning peak is the 256 MiB process allowance plus the larger of these phases:
 

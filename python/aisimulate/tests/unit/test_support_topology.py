@@ -328,7 +328,10 @@ def test_unknown_layout_preserves_unchecked_status(tmp_path):
     config = _config(tmp_path, architectures=["CustomDecoderForCausalLM"], model_type="custom", num_experts=0)
     report = suggest_topologies(config, _request(), _runtime())
     assert report.default is None
-    assert {"kv_bytes_per_token", "cache_layout"} <= report.candidates[0].missing.keys()
+    # An architecture intake does not recognize leaves its cache geometry to the runtime probe.
+    candidate = report.candidates[0]
+    assert "unrecognized architecture CustomDecoderForCausalLM" in candidate.pending_runtime["cache_geometry"]
+    assert {"kv_bytes_per_token", "cache_layout"}.isdisjoint(candidate.missing)
     assert any("Unknown architecture constraints" in reason for reason in report.assumptions)
 
 
@@ -604,7 +607,8 @@ assert report.default.draft.resolved['runtime_overhead_bytes'] == 3758096384
 assert report.default.draft.resolved['comm_overhead_bytes'] == 0
 assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules for prefix in forbidden)
 core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
-assert core <= {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}, core
+assert core <= {'aisimulate_core', 'aisimulate_core.decoder_config', 'aisimulate_core.fpm_profile',
+                'aisimulate_core.quantization'}, core
 print(json.dumps(report.to_dict()))
 """
     source = Path(__file__).parents[2] / "src"

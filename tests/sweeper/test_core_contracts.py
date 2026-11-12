@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import pickle
 from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +36,7 @@ from aisimulate.sweeper.replay import (
     ReplaySpec,
     RunnerCapabilities,
     canonical_json,
+    resolve_afd_replay_identity,
     validate_json_value,
 )
 
@@ -234,6 +237,29 @@ def test_runner_capabilities_preserve_existing_positional_constructor():
     )
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"vision": True},
+        {"frontend": {"stages": [{"workers": 1, "service_ms": 3.0}]}},
+        {"sglang": {"host_loop": True}},
+        {"rank": {"sglang": {"vlm_cache_bytes": 100 << 20}}},
+    ],
+)
+def test_runner_capabilities_gate_host_aware_sglang_arguments(args):
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="sglang", backend_version="0.5.19", agg_engine_args=args, num_workers=1
+        ),
+        workload={"isl": 128, "osl": 32, "concurrency": 2},
+        goal={},
+    )
+    topologies = (("sglang", "agg"),)
+    with pytest.raises(ValueError, match="SGLang host loop"):
+        RunnerCapabilities(supported_backend_topologies=topologies).require_compatible(spec)
+    RunnerCapabilities(supported_backend_topologies=topologies, supports_sglang_host_loop=True).require_compatible(spec)
+
+
 def test_runner_capabilities_require_explicit_online_support():
     spec = _replay_spec()
     spec = ReplaySpec(
@@ -298,6 +324,19 @@ def test_sweep_config_provider_protocol_is_structural():
 def test_public_contract_versions_start_at_one():
     assert API_VERSION == 1
     assert REPLAY_SPEC_API_VERSION == 1
+
+
+def test_ordinary_v1_wire_identity_matches_the_pre_afd_baseline():
+    fixture = json.loads((Path(__file__).parents[1] / "golden/replay-v1-contracts.json").read_text())
+    for case in fixture["cases"]:
+        spec = ReplaySpec(backend_deployment=BackendDeploymentSpec(**case["deployment"]), **case["spec"])
+        assert resolve_afd_replay_identity(spec) is spec
+        rendered = canonical_json(spec)
+        assert rendered == case["canonical_json"]
+        assert hashlib.sha256(rendered.encode()).hexdigest() == case["sha256"]
+        RunnerCapabilities(
+            replay_spec_api_version=1, supported_backend_topologies=(("sglang", case["mode"]),)
+        ).require_compatible(spec)
 
 
 def test_lazy_exports_are_listed_in_public_api():

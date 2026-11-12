@@ -214,8 +214,8 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
-    selected: data.totals.rows + 3, published: data.totals.rows,
-    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1 },
+    selected: data.totals.rows + 4, published: data.totals.rows,
+    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1, source_unresolved: 1 },
     selection_policy: "latest-complete-config-run-v1",
   };
   const app = setup(async () => response(data));
@@ -229,7 +229,9 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_topology_mismatch/);
+  assert.match(app.element("provenance-content").innerHTML, /source_unresolved/);
   for (const change of [
+    { exclusion_reasons: { mtp_acceptance_missing: 1 } },
     { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
     { advisory: false }, { published: data.totals.rows + 1 },
     { selection_policy: undefined }, { selection_policy: "unknown-policy" },
@@ -831,7 +833,8 @@ test("standalone PR preview displays its exact branch and cannot enter a public 
   assert.match(mixed.element("error-banner").textContent, /cannot be mixed/);
 });
 
-test("configuration assumptions stay labeled and count mismatches fail", () => {
+for (const policy of ["gym-resolved-config-v2", "gym-resolved-config-v3"]) {
+test(`configuration assumptions stay labeled and count mismatches fail (${policy})`, () => {
   const data = withTopology();
   const revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.evaluated_revision = revision;
@@ -847,8 +850,8 @@ test("configuration assumptions stay labeled and count mismatches fail", () => {
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
-    selected: data.totals.rows, published: data.totals.rows,
-    backend_versions: ["0.25.1"], exclusion_reasons: {}, selection_policy: "gym-resolved-config-v2",
+    selected: data.totals.rows + 1, published: data.totals.rows,
+    backend_versions: ["0.25.1"], exclusion_reasons: {source_unresolved: 1}, selection_policy: policy,
     configuration: { profile: "coverage-experiment/1", counts },
   };
   const app = harness();
@@ -859,6 +862,8 @@ test("configuration assumptions stay labeled and count mismatches fail", () => {
   assert.throws(() => app.run("validateSummary(data)"), /configuration coverage/);
 });
 
+
+}
 
 test("tabs preserve selected topology and shareable exclusion settings", async () => {
   const app = setup(async () => response(withTopology()));
@@ -1034,4 +1039,271 @@ test("models with only outlier predictions stay selectable and charted", async (
   assert.ok(app.run("selectedGpu()"));
   assert.match(app.element("details-view").innerHTML, /point aisimulate/);
   assert.match(app.element("details-view").innerHTML, /role="group"/);
+});
+
+
+test("decoding filter recomputes MAPE, keeps failures, and restores its URL", () => {
+  const data = withTopology();
+  const gpu = data.models[0].workloads[0].gpus[0];
+  const mtp = structuredClone(gpu.topologies[0]);
+  mtp.id = "fedcba9876543210";
+  mtp.spec_method = "mtp";
+  for (const point of mtp.points) if (point.status === "success") point.aisimulate.tpot_error_pct = 25;
+  gpu.topologies.push(mtp);
+  const app = harness();
+  app.set("fixture", data);
+  app.run("state.excludeMultinode = true; state.rawData = filterSnapshot(fixture); state.excludeMultinode = false");
+  app.run('restoreView(new URL("https://example.com/?spec=mtp").searchParams)');
+  app.run("state.data = filterSnapshot(state.rawData)");
+  assert.equal(app.run("state.data.totals.rows"), 3);
+  assert.equal(app.run("state.data.totals.aisimulate.points"), 2);
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 25);
+  assert.equal(app.run("state.data.models[0].workloads[0].gpus[0].topologies.length"), 1);
+  assert.match(app.run("topologyLabel(state.data.models[0].workloads[0].gpus[0].topologies[0])"), /MTP/);
+  app.run("updateLocation()");
+  assert.equal(new URL(app.location.href).searchParams.get("spec"), "mtp");
+  app.element("decoding-select").events.change({target: {value: "none"}});
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 0);
+  app.element("decoding-select").events.change({target: {value: "all"}});
+  assert.equal(app.run("state.data.totals.rows"), 6);
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
+});
+
+for (const policy of ["hf-current-view-config-v1", "hf-current-view-config-v2"]) {
+test(`HF campaigns show pinned provenance and source-resolved settings (${policy})`, async () => {
+  const data = withEvaluation();
+  const revision = data.snapshot.evaluated_revision;
+  data.snapshot.release_tag = "hf/" + "c".repeat(40);
+  data.snapshot.measurement_source_url = "https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/" + "c".repeat(40);
+  data.snapshot.campaign = {
+    ...revision, status: "complete", advisory: true, run_id: "123",
+    wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
+    selected: data.totals.rows, published: data.totals.rows,
+    backend_versions: [], exclusion_reasons: {}, selection_policy: policy,
+  };
+  const app = setup(async () => response(data));
+  app.set("revisionFixture", revision);
+  app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture, published_from_commit: null})');
+  await app.run('loadBranch("main")');
+  assert.match(app.element("provenance-content").innerHTML, /huggingface.co/);
+  assert.match(app.element("provenance-content").innerHTML, /source-resolved serving settings/);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
+  for (const change of [
+    {release_tag: "hf/main"},
+    {release_tag: "hf/main", measurement_source_url: ""},
+    {measurement_source_url: data.snapshot.measurement_source_url.replace("aisim-infx-cache", "another-repo")},
+    {measurement_source_url: data.snapshot.measurement_source_url.slice(0, -1) + "d"},
+  ]) {
+    const invalid = structuredClone(data);
+    Object.assign(invalid.snapshot, change);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"));
+  }
+});
+
+}
+
+test("AgentX pools requests directly and averages run errors equally", () => {
+  const context = vm.createContext({window: {addEventListener() {}}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const run = (point, sum, count, silicon, prediction) => ({
+    point_errors: {ttft_ms:point,tpot_ms:point,output_tokens_s:point},
+    silicon: {ttft_ms:silicon,tpot_ms:silicon,output_tokens_s:silicon},
+    prediction: {ttft_ms:prediction,tpot_ms:prediction,output_tokens_s:prediction},
+    request_errors: {ttft_ms:{sum_ape:sum,count},tpot_ms:{sum_ape:sum,count}},
+    coverage:{measured:count,matched:count},
+  });
+  context.input = [run(100,100,1,100,200),run(0,0,3,900,900),run(null,0,0,5000,null)];
+  const result = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(result.point_errors.ttft_ms,50);
+  assert.equal(result.point_counts.ttft_ms,2);
+  for (const metric of ["ttft_ms", "tpot_ms", "output_tokens_s"]) {
+    assert.equal(result.silicon[metric],500);
+    assert.equal(result.prediction[metric],550);
+  }
+  assert.equal(result.request_errors.ttft_ms.mape,25);
+  assert.equal(result.request_errors.ttft_ms.count,4);
+  assert.equal(result.request_errors.ttft_ms.silicon,null);
+  const pair = (silicon, prediction, error) => ({
+    silicon_ttft_ms:silicon, predicted_ttft_ms:prediction, ttft_ms_ape:error,
+    silicon_tpot_ms:silicon, predicted_tpot_ms:prediction, tpot_ms_ape:error,
+  });
+  context.input[0].pairs=[pair(100,200,100)];
+  context.input[1].pairs=[pair(900,900,0),pair(900,900,0),pair(900,900,0)];
+  context.input[2].pairs=[pair(0,42,null)];
+  const pooled = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(pooled.request_errors.ttft_ms.silicon,700);
+  assert.equal(pooled.request_errors.ttft_ms.prediction,725);
+  assert.equal(pooled.request_errors.ttft_ms.mape,25);
+  context.input[1].pairs[0].tpot_ms_ape=null;
+  context.input[1].request_errors.tpot_ms.count=2;
+  const perMetric = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(perMetric.request_errors.tpot_ms.count,3);
+  assert.equal(perMetric.request_errors.tpot_ms.silicon,1900/3);
+  assert.equal(perMetric.request_errors.tpot_ms.prediction,2000/3);
+  assert.equal(perMetric.request_errors.ttft_ms.silicon,700);
+  context.input[1].request_errors.tpot_ms.count=3;
+  assert.throws(()=>vm.runInContext("window.AgentX.aggregate(input)",context),/do not reconcile/);
+  context.input = [run(null,0,0,0,null)];
+  context.input[0].pairs=[pair(0,42,null)];
+  const unavailable = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(unavailable.silicon.ttft_ms,null);
+  assert.equal(unavailable.prediction.ttft_ms,null);
+  assert.equal(unavailable.point_errors.ttft_ms,null);
+  assert.equal(unavailable.request_errors.ttft_ms.silicon,null);
+  assert.equal(unavailable.request_errors.ttft_ms.prediction,null);
+});
+
+function featureCell(html,id,source) {
+  return html.split(`data-feature="${id}">`)[1].split("</tr>")[0].split(`<td data-source="${source}">`)[1].split("</td>")[0];
+}
+
+test("AgentX checklist separates silicon evidence from AISim settings", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
+  const missing = checklist(point);
+  assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
+  assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/Legacy missing evidence/);
+  assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
+  assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unrecorded means|Support has not been assessed/);
+  assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
+    "Prefix caching", "Sub-block prefix reuse", "Host offload (G2)", "Storage offload (G3)",
+    "Hybrid KV/state cache", "Speculative decoding", "Dynamo - KVCR", "Dynamo - KV-aware routing",
+  ]);
+  const feature = (id,state,observed={state:"unknown",count:null}) => ({id,state,observed,parameters:[]});
+  point.feature_metadata = {
+    schema:"aisimulate.benchmark.features.v1", benchmark_id:"example",
+    features:[
+      feature("cache.g1_prefix","enabled"), feature("speculation","disabled"), feature("cache.g2","not_applicable"),
+      feature("agentx.weka","enabled",{state:"not_observed",count:0}),
+      feature("events.cache_reuse","unknown",{state:"exercised",count:7}),
+      {...feature("topology.tensor_parallel","enabled"),parameters:[{name:"size",value:"<unsafe>"}]},
+      feature("routing.planner","enabled"), feature("unrecognized","enabled"),
+    ],
+  };
+  const saved = checklist(point);
+  for(const [id,status] of [["cache.g1_prefix","on"],["speculation","off"],["cache.g2","na"],["kv-aware-routing","unknown"],["sub-block-prefix","unknown"]]) {
+    assert.ok(featureCell(saved,id,"silicon").includes(`class="agentx-feature-status ${status}"`));
+  }
+  assert.doesNotMatch(saved,/More features|Weka|Observed ·|Not observed|topology|Planner|<unsafe>|unrecognized/);
+  assert.equal((saved.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,5);
+  point.feature_metadata.features.find(f=>f.id==="routing.planner").state="disabled";
+  assert.equal(checklist(point),saved);
+  point.feature_metadata.benchmark_id="another-run";
+  assert.equal(checklist(point),missing);
+  point.feature_metadata.benchmark_id="example";
+  point.feature_metadata.schema="future-schema";
+  assert.equal(checklist(point),missing);
+});
+
+test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const features=["cache.g2","cache.g3","cache.hybrid_state","speculation"].map(id=>({id,state:"enabled",parameters:[]}));
+  const point={id:"example",config_summary:[{name:"Speculative tokens",value:3}],
+    feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features}};
+  const html=checklist(point);
+  assert.equal((html.match(/Scope: Unrecorded/g)||[]).length,2);
+  assert.match(html,/State-cache type: Unrecorded/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: Unrecorded.*Draft length: Unrecorded/);
+  assert.match(featureCell(html,"speculation","aisim"),/Legacy missing evidence/);
+  for(const source of ["silicon"]) {
+    assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
+    assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
+  }
+  assert.doesNotMatch(html,/Combination support|data-combination/);
+  // Historical parameters do not define draft length, scope, or state-cache type.
+  for(const feature of features) feature.parameters=[{name:"size",value:7},{name:"mode",value:"all_turns_prefix"}];
+  assert.equal(checklist(point),html);
+  features.find(f=>f.id==="speculation").state="disabled";
+  assert.doesNotMatch(featureCell(checklist(point),"speculation","silicon"),/Draft length:/);
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Legacy missing evidence/);
+});
+
+test("AISim features use structured effective settings and preserve role differences", () => {
+  const context=vm.createContext({window:{}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js",import.meta.url),"utf8"),context);
+  const checklist=context.window.AgentX.featureChecklist;
+  const feature=(id,state,parameters={})=>({id,state,parameters,observed:{state:"unknown",count:null}});
+  const point={id:"example",config_summary:[{name:"Prefix caching",value:false},{name:"Speculative tokens",value:99}],simulation_features:{
+    schema:"aisimulate.agentx.simulation-features.v1",benchmark_id:"example",evaluated_revision:"a".repeat(40),dataset_revision:"b".repeat(40),roles:[{role:"prefill",features:[feature("cache.g1_prefix","disabled")]},{role:"decode",features:[
+      feature("cache.g1_prefix","enabled"),feature("cache.g2","enabled",{scope:"cluster_shared"}),
+      feature("routing.kv_aware","not_applicable"),feature("speculation","enabled",{method:"dspark",draft_length:7,verify_width:8}),
+    ]}],speculation_comparison:[]}};
+  let html=checklist(point);
+  assert.match(featureCell(html,"cache.g1_prefix","aisim"),/prefill.*status off.*decode.*status on/);
+  assert.match(featureCell(html,"cache.g2","aisim"),/Scope: cluster_shared/);
+  assert.match(featureCell(html,"speculation","aisim"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
+  assert.match(featureCell(html,"kv-aware-routing","aisim"),/status na/);
+  assert.doesNotMatch(html,/Draft length: 99/);
+  assert.doesNotMatch(html,/Observed use: unknown/);
+  point.simulation_features.roles[1].features[0].observed={state:"exercised",count:3};
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: exercised/);
+  point.simulation_features.roles[1].features[0].observed={state:"not_observed",count:0};
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: not observed/);
+  point.simulation_features.speculation_comparison=[{role:"decode",status:"unsupported",actual_draft_length:7,aisim_max:5}];
+  html=checklist(point);
+  assert.match(featureCell(html,"speculation","aisim"),/Unsupported \(actual: 7, AISim max: 5\)/);
+  point.simulation_features.roles[1].features[3].state="failed_to_record";
+  point.simulation_features.speculation_comparison=[];
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Recording failed/);
+  point.snapshot={commit_sha:"c".repeat(40),dataset_revision:"b".repeat(40)};
+  assert.throws(()=>checklist(point),/identity mismatch/);
+});
+
+test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const validate = context.window.AgentX.validateFeatureEvidence;
+  const summary={snapshot:{dataset_revision:"a".repeat(40)},runs:[{id:"run-one"},{id:"run-two"}]};
+  const original=structuredClone(summary);
+  const evidence={schema:"aisimulate.agentx.features.v1",measurement_dataset_revision:"a".repeat(40),feature_dataset_revision:"b".repeat(40),records:summary.runs.map(r=>({
+    benchmark_id:r.id,feature_artifact_sha256:"c".repeat(64),feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:r.id,features:[]},
+  }))};
+  assert.equal(validate(evidence,summary),evidence);
+  assert.deepEqual(summary,original);
+  for(const invalid of [
+    {...evidence,measurement_dataset_revision:"d".repeat(40)},
+    {...evidence,records:[evidence.records[0]]},
+    {...evidence,records:[evidence.records[0],evidence.records[0]]},
+    {...evidence,records:[{...evidence.records[0],benchmark_id:"wrong"},evidence.records[1]]},
+    {...evidence,records:[{...evidence.records[0],feature_artifact_sha256:"bad"},evidence.records[1]]},
+  ]) assert.throws(()=>validate(invalid,summary),/Feature evidence|feature evidence/);
+});
+
+test("curated silicon features expose recorded scopes, cache types and actual draft length", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const record=(id,parameters)=>({id,state:"enabled",parameters:Object.entries(parameters).map(([name,value])=>({name,value}))});
+  const point={id:"example",config_summary:[],feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features:[
+    record("cache.sub_block_prefix_reuse",{match_granularity_tokens:16}),
+    record("cache.g2",{scope:"shared"}),record("cache.hybrid_state",{cache_types:["recurrent_state"]}),
+    record("routing.kv_aware",{}),record("speculation",{method:"dspark",draft_length:7}),
+  ]}};
+  const html=context.window.AgentX.featureChecklist(point);
+  assert.match(featureCell(html,"sub-block-prefix","silicon"),/Match granularity: 16 tokens/);
+  assert.match(featureCell(html,"cache.g2","silicon"),/Scope: shared/);
+  assert.match(featureCell(html,"cache.hybrid_state","silicon"),/State-cache type: recurrent_state/);
+  assert.match(featureCell(html,"kv-aware-routing","silicon"),/agentx-feature-status on/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: DSPARK.*Draft length: 7/);
+  assert.match(featureCell(html,"speculation","aisim"),/agentx-feature-status unknown/);
+});
+
+
+test("AgentX performance-model labels use recorded estimator and prediction database", () => {
+  const context=vm.createContext({window:{}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js",import.meta.url),"utf8"),context);
+  const label=runs=>{context.runs=runs;return vm.runInContext("window.AgentX.performanceModel(runs)",context);};
+  const run={backend:"vllm",measured_backend_version:"0.30.0",prediction_backend_version:"0.31.0",config_summary:[{name:"Estimation",value:"op_level"}]};
+  assert.equal(label([run,run]),"Op-based perf model (vllm 0.31.0)");
+  assert.equal(vm.runInContext("window.AgentX.performanceModel(runs,true)",context),"Op-based (vllm 0.31.0)");
+  assert.equal(label([{...run,config_summary:[]}]),"Unrecorded perf model (vllm 0.31.0)");
+  assert.equal(label([{...run,prediction_backend_version:null}]),"Op-based perf model (vllm version unrecorded)");
+  const regression={...run,config_summary:[{name:"Estimation",value:"fpm_regression"}]};
+  assert.equal(label([regression]),"FPM regression perf model (vllm 0.31.0)");
+  const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};
+  assert.equal(label([run,fpm]),"Op-based perf model (vllm 0.31.0); FPM interpolation perf model (vllm 0.31.0)");
 });

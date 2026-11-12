@@ -267,25 +267,6 @@ def test_glm5_next_decode_mirrors_serving_decode():
     assert ast.unparse(keywords["lower_bound"]) == "GLM5_NEXT_KDA_LOWER_BOUND"
 
 
-@pytest.mark.parametrize(
-    ("version", "accepted"),
-    [
-        ("0.1.dev19262+gb6bbf29dd", True),
-        ("0.31.0", True),
-        ("0.31.1", False),
-    ],
-)
-def test_kda_compat_admits_kimi_preview_and_glm_runtime(version, accepted):
-    from collector.version_resolver import _check_compat
-
-    declaration = next(
-        node.value.value
-        for node in ast.parse(SOURCE_PATH.read_text(encoding="utf-8")).body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
-    )
-    assert _check_compat(declaration, version) is accepted
-
-
 _GATE_NAMES = {
     "GLM5_NEXT_KDA_MODEL_PATHS",
     "_is_glm5_next_kda",
@@ -313,23 +294,13 @@ def _gate_namespace():
     return namespace
 
 
-def test_kda_audited_release_sets_do_not_overlap():
-    from collector.version_resolver import _check_compat
-
-    compat = _gate_namespace()["_KDA_ARCHITECTURE_COMPAT"]
-    audited = {arch: spec.split("==", 1)[1] for arch, spec in compat.items()}
-    assert set(audited) == {"KimiK3ForConditionalGeneration", "Glm5NextForConditionalGeneration"}
-    for arch, version in audited.items():
-        for other, spec in compat.items():
-            assert _check_compat(spec, version) is (other == arch), (arch, other)
-
-
 @pytest.mark.parametrize(
     ("model_name", "version", "audited"),
     [
-        ("moonshotai/Kimi-K3", "0.1.dev19262+gb6bbf29dd", True),
+        ("moonshotai/Kimi-K3", "0.31.0", True),
+        ("moonshotai/Kimi-K3", "0.1.dev19262+gb6bbf29dd", False),
         ("moonshotai/Kimi-K3", "0.27.0", False),
-        ("moonshotai/Kimi-K3", "0.31.0", False),
+        ("moonshotai/Kimi-K3", "0.30.0", False),
         ("zai-org/GLM-5.3-Flash", "0.31.0", True),
         ("nvidia/GLM-5.3-Flash-NVFP4", "0.31.0", True),
         ("zai-org/GLM-5.3-Flash", "0.30.0", False),

@@ -151,10 +151,9 @@ def _role_sizing(
         config.get(f"{role}_max_num_batched_tokens"),
         path=f"candidate.config.{role}_max_num_batched_tokens",
     )
-    tokens_per_block = _positive_int(
-        config.get(f"{role}_block_size"),
-        path=f"candidate.config.{role}_block_size",
-    )
+    tokens_per_block = config.get(f"{role}_block_size")
+    if tokens_per_block is not None:
+        tokens_per_block = _positive_int(tokens_per_block, path=f"candidate.config.{role}_block_size")
     memory_path = f"candidate.config.{role}_gpu_memory_utilization"
     blocks_path = f"candidate.config.{role}_num_gpu_blocks"
     memory_value = config.get(f"{role}_gpu_memory_utilization")
@@ -177,14 +176,23 @@ def _role_sizing(
         # Prefill CP ranks are extra GPUs; decode CP reuses the TP ranks.
         "gpus_per_worker": tp * pp * dp * cp,
         "max_num_tokens": max_num_tokens,
-        "tokens_per_block": tokens_per_block,
         "disable_prefix_cache": not bool(config.get(f"{role}_enable_prefix_caching")),
         **cp_params,
     }
+    # An unset block size delegates selection to the backend at startup.
+    if tokens_per_block is not None:
+        extra["tokens_per_block"] = tokens_per_block
     if blocks_value is not None:
         num_gpu_blocks = _positive_int(blocks_value, path=blocks_path)
         extra["num_gpu_blocks"] = num_gpu_blocks
         if backend in {"sglang", "trtllm"}:
+            # These backends accept a token capacity, so converting a block
+            # count requires known geometry rather than a simulation default.
+            if tokens_per_block is None:
+                raise SweeperCandidateError(
+                    f"candidate.config.{role}_block_size is required to convert {blocks_path} "
+                    f"to a token capacity for {backend}; the runtime block size is unknown"
+                )
             extra["kv_cache_max_tokens"] = num_gpu_blocks * tokens_per_block
     else:
         if memory_value is None:
@@ -275,6 +283,46 @@ def _resolve_model_facts(model_path: str, config: Mapping[str, Any]) -> ModelFac
     )
 
 
+def _is_trace_workload(workload: Mapping[str, Any]) -> bool:
+    return bool(workload.get("trace_path") or workload.get("trace_paths")) or workload.get("source_type") == "trace"
+
+
+def _request_lengths(workload: Mapping[str, Any], raw: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    """Return the workload's fixed ISL/OSL, or ``(None, None)`` for a trace.
+
+    A trace has no single request length. Any length supplied for one would be
+    a placeholder that rules could size generated fields from, so it is
+    rejected and the request's SLA stays absent.
+    """
+    if _is_trace_workload(workload):
+        supplied = [
+            name
+            for name, value in (
+                ("workload.isl", workload.get("isl")),
+                ("workload.osl", workload.get("osl")),
+                ("SlaConfig.isl", raw.get("SlaConfig.isl")),
+                ("SlaConfig.osl", raw.get("SlaConfig.osl")),
+            )
+            if value is not None
+        ]
+        if supplied:
+            raise SweeperCandidateError(f"a trace workload has no fixed request length; remove {', '.join(supplied)}")
+        return None, None
+
+    # A present None is a missing length, so it must not hide an override.
+    isl = workload.get("isl")
+    osl = workload.get("osl")
+    if isl is None:
+        isl = raw.get("SlaConfig.isl")
+    if osl is None:
+        osl = raw.get("SlaConfig.osl")
+    if isl is None or osl is None:
+        raise SweeperCandidateError(
+            "a synthetic workload must provide isl and osl (or set SlaConfig.isl/osl overrides)"
+        )
+    return _positive_int(isl, path="workload.isl"), _positive_int(osl, path="workload.osl")
+
+
 def from_sweeper_candidate(
     candidate: Any,
     *,
@@ -289,8 +337,9 @@ def from_sweeper_candidate(
 
     ``candidate`` may be the public Pydantic ``Candidate`` or its JSON mapping.
     ``workload`` should be the matching Sweeper workload (or a mapping containing
-    ``isl``/``osl``). Cluster-specific values remain generator overrides or an
-    environment profile; evaluated engine and adapter choices always win.
+    ``isl``/``osl``). A trace workload is lowered without request lengths.
+    Cluster-specific values remain generator overrides or an environment
+    profile; evaluated engine and adapter choices always win.
     """
 
     candidate_payload = _as_mapping(candidate, label="candidate")
@@ -300,12 +349,12 @@ def from_sweeper_candidate(
     if config.get("speculation") is not None:
         raise SweeperCandidateError("ngram deployment generation is unsupported; use the saved prediction YAML")
 
-    if config.get("deployment_mode") not in ("afd", "afd+pd") and (
+    if not config.get("afd_roles") and (
         config.get("encoder") is not None or config.get("deployment_artifact_generation_supported") is False
     ):
         raise SweeperCandidateError("EPD deployment generation is unsupported; cannot drop the encoder pool")
     mode = _required_text(config, "deployment_mode")
-    if mode in {"afd", "afd+pd"}:
+    if config.get("afd_roles"):
         raise SweeperCandidateError(
             "native deployment generation is not supported for analytical AFD candidates; "
             "pass the concrete recommendation to 'aisimulate predict' to produce "
@@ -373,22 +422,19 @@ def from_sweeper_candidate(
             )
 
     raw = _flatten_overrides(generator_overrides)
-    isl = workload_payload.get("isl", raw.get("SlaConfig.isl"))
-    osl = workload_payload.get("osl", raw.get("SlaConfig.osl"))
-    if isl is None or osl is None:
-        raise SweeperCandidateError(
-            "the matching workload must provide isl and osl (or set SlaConfig.isl/osl overrides)"
-        )
-    isl = _positive_int(isl, path="workload.isl")
-    osl = _positive_int(osl, path="workload.osl")
+    isl, osl = _request_lengths(workload_payload, raw)
+    if isl is None and deployment_target == "slurm":
+        # The Slurm bundle's default operation replays one fixed ISL/OSL.
+        raise SweeperCandidateError("a Slurm bundle needs a fixed request length; use a Dynamo target for a trace")
 
     # Evaluated facts take precedence over deployment-environment overrides.
     raw["backend"] = backend
     raw["rule"] = "benchmark"
     raw["preserve_engine_limits"] = True
     raw["NodeConfig.system_name"] = hardware_sku
-    raw["SlaConfig.isl"] = isl
-    raw["SlaConfig.osl"] = osl
+    if isl is not None:
+        raw["SlaConfig.isl"] = isl
+        raw["SlaConfig.osl"] = osl
     concurrency = config.get("concurrency")
     if concurrency is not None:
         raw["BenchConfig.estimated_concurrency"] = _positive_int(concurrency, path="candidate.config.concurrency")
@@ -409,6 +455,18 @@ def from_sweeper_candidate(
         value = getattr(resolved_model_facts, key)
         if value is not None:
             raw[f"ModelConfig.{key}"] = value
+    if backend == "trtllm":
+        # The benchmark rule renders the MiniMax-M3 sparse-attention keys from ModelConfig as the
+        # default path does (module_bridge): TRT-LLM >= 1.3.0rc29 needs `algorithm` to build the M3
+        # KV-cache manager on every SM; `implementation` is the SM100-family prescription.
+        from aisimulate.generator.utils import msa_sparse_algorithm, msa_sparse_implementation
+
+        for key, value in (
+            ("msa_sparse_algorithm", msa_sparse_algorithm(backend, model_path)),
+            ("msa_sparse_implementation", msa_sparse_implementation(backend, model_path, hardware_sku)),
+        ):
+            if value and f"ModelConfig.{key}" not in raw:
+                raw[f"ModelConfig.{key}"] = value
 
     request = GeneratorRequest(
         model=ModelSpec(model_path=model_path),

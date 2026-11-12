@@ -140,3 +140,101 @@ def test_unqualified_sglang_runtime_fails_before_any_output(tmp_path, monkeypatc
     with pytest.raises(ValueError, match="unqualified GLM backend runtime"):
         drv.main(argv)
     assert not out.exists()
+
+
+def _args(**overrides):
+    import types
+
+    fields = dict(
+        model="/models/glm",
+        tp=8,
+        quant="fp8",
+        kv_cache_dtype="bfloat16",
+        mem_fraction=0.75,
+        ipc="ipc:///tmp/x",
+        port=30001,
+    )
+    return types.SimpleNamespace(**(fields | overrides))
+
+
+def _server_args(**overrides):
+    fields = dict(
+        enable_forward_pass_metrics=True,
+        disable_radix_cache=False,
+        disable_overlap_schedule=False,
+        mem_fraction_static=0.75,
+        tp_size=8,
+        kv_cache_dtype="bfloat16",
+        attention_backend="fa3",
+        moe_runner_backend="triton",
+        page_size=64,
+        quantization=None,
+        log_level="info",
+    )
+    return fields | overrides
+
+
+@pytest.mark.parametrize("kv", ["fp8_e4m3", "bfloat16"])
+def test_server_command_passes_the_requested_kv_dtype_and_port(kv):
+    command = drv.server_command(_args(kv_cache_dtype=kv))
+    assert command[command.index("--kv-cache-dtype") + 1] == kv
+    assert command[command.index("--tp-size") + 1] == "8"
+    assert command[command.index("--port") + 1] == "30001"
+    assert command[command.index("--forward-pass-metrics-ipc-name") + 1] == "ipc:///tmp/x"
+
+
+@pytest.mark.parametrize(
+    ("requested", "served", "aic"),
+    [("bfloat16", "bfloat16", "bfloat16"), ("bfloat16", "bf16", "bfloat16"), ("fp8_e4m3", "fp8_e4m3", "fp8")],
+)
+def test_startup_identity_takes_kv_dtype_from_the_server_and_records_backends(requested, served, aic):
+    checks, identity = drv.startup_identity(_args(kv_cache_dtype=requested), _server_args(kv_cache_dtype=served))
+    assert all(checks.values())
+    assert identity["kv_cache_dtype"] == aic
+    # Resolved backends are recorded, whatever the platform resolved; unrelated args are not.
+    assert identity["resolved_server_args"]["attention_backend"] == "fa3"
+    assert identity["resolved_server_args"]["moe_runner_backend"] == "triton"
+    assert identity["resolved_server_args"]["page_size"] == 64
+    assert "log_level" not in identity["resolved_server_args"]
+
+
+@pytest.mark.parametrize("served", ["fp8_e4m3", "auto", None])
+def test_startup_identity_rejects_a_server_kv_dtype_that_differs(served):
+    checks, identity = drv.startup_identity(_args(kv_cache_dtype="bfloat16"), _server_args(kv_cache_dtype=served))
+    assert checks["kv_cache_dtype"] is False
+    assert identity["kv_cache_dtype"] in {"fp8", None}
+
+
+def test_cli_accepts_every_pure_tp_size(tmp_path, monkeypatch):
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.5.20")
+    points = tmp_path / "points.json"
+    points.write_text('{"points": []}')
+
+    def argv(tp, out):
+        return ["--model", "m", "--model-revision", "r", "--tp", str(tp), "--quant", "fp8", "--mem-fraction", "0.7"] + [
+            "--phase", "decode", "--points", str(points), "--out", str(tmp_path / out)
+        ]  # fmt: skip
+
+    for tp in (1, 2, 4, 8):
+        with pytest.raises(SystemExit, match="no points selected"):
+            drv.main(argv(tp, f"out-{tp}"))
+    with pytest.raises(SystemExit) as rejected:
+        drv.main(argv(16, "out-16"))
+    assert rejected.value.code == 2  # argparse choice error
+
+
+@pytest.mark.parametrize("page_size", [1, 32, 128, None])
+def test_startup_identity_requires_the_hit_unit_page_size(page_size):
+    checks, identity = drv.startup_identity(_args(), _server_args(page_size=page_size))
+    assert [key for key, ok in checks.items() if not ok] == ["page_size"]
+    assert identity["resolved_server_args"].get("page_size") == page_size
+    error = drv.StartupIdentityMismatch(checks)
+    assert error.failed_checks == ["page_size"]
+    assert "page_size" in str(error)
+
+
+def test_startup_identity_accepts_the_hit_unit_page_size():
+    checks, _ = drv.startup_identity(_args(), _server_args(page_size=drv.HIT_UNIT))
+    assert checks["page_size"] and all(checks.values())

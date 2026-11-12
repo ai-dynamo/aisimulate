@@ -32,8 +32,18 @@ A cold regression is not usable for offline prediction.
 - [FPM self-service](fpm-self-service/README.md): collect or import whole-forward measurements;
   preserve the existing [implementation guide](fpm-self-service/implementation.md)
   and [worked examples](fpm-self-service/examples.md) as the workflow reference.
+- [Train a GBDT from End-to-end offline profiling](fpm-self-service/e2e-gbdt.md):
+  collect serving telemetry, train and validate a seed, then adapt it with online observations.
+- [Start and adapt a GBDT with online observations](fpm-self-service/online-gbdt.md):
+  C-only initialization, self-benchmark fallback, expert selection and persistence.
 - [Learned forward-pass model](fpm_ml/learned-forward-pass-model.md): train a tree ensemble
   offline from deployment FPM telemetry and load it in Rust ([design](fpm_ml/design.md)).
+- [Learned-model configuration](fpm_ml/configuration.md): forest sources,
+  online fitting controls and causal selector settings.
+- [Online learned-model mathematics](fpm_ml/online-gbdt-and-causal-selection.md):
+  online GBDT updates, hybrid calibration and causal expert selection.
+- [Mixed-workload fallback design](fpm_ml/mixed-workload-fallback.md): original-A
+  eligibility, interpolation, hybrid calibration and causal expert routing.
 - [Collector](collector/README.md): operation data, runtime pins, and publication.
 - [Extend the model](extending.md): model structure, native operations, and SOL integration.
 - [DeepSeek-V4.1](models/deepseek-v41.md): model-specific execution and physical memory contracts.

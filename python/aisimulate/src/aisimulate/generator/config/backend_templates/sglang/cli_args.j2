@@ -27,9 +27,12 @@ SPDX-License-Identifier: Apache-2.0
 {%- if sglang['disaggregation-bootstrap-port'] is defined -%}{%- set _ = args.append('--disaggregation-bootstrap-port "' ~ sglang['disaggregation-bootstrap-port'] ~ '"') -%}{%- endif -%}
 {%- if sglang['elastic-ep-backend'] is defined -%}{%- set _ = args.append('--elastic-ep-backend "' ~ sglang['elastic-ep-backend'] ~ '"') -%}{%- endif -%}
 {%- if sglang['disable-cuda-graph'] -%}{%- set _ = args.append('--disable-cuda-graph') -%}{%- endif -%}
-{%- if sglang['cuda-graph-bs'] is defined -%}{%- set _ = args.append('--cuda-graph-bs ' ~ (sglang['cuda-graph-bs'] | join(' '))) -%}{%- endif -%}
+{#- SGLang >=0.5.20 removed the legacy decode graph aliases. These inputs
+    count requests, not prefill tokens: keep the unified mapping keys and
+    translate only the emitted flags. Prefill capture stays at runtime defaults. -#}
+{%- if sglang['cuda-graph-bs'] is defined -%}{%- set _ = args.append('--cuda-graph-bs-decode ' ~ (sglang['cuda-graph-bs'] | join(' '))) -%}{%- endif -%}
 {%- if sglang['disable-cuda-graph-padding'] -%}{%- set _ = args.append('--disable-cuda-graph-padding') -%}{%- endif -%}
-{%- if sglang['cuda-graph-max-bs'] is defined -%}{%- set _ = args.append('--cuda-graph-max-bs "' ~ sglang['cuda-graph-max-bs'] ~ '"') -%}{%- endif -%}
+{%- if sglang['cuda-graph-max-bs'] is defined -%}{%- set _ = args.append('--cuda-graph-max-bs-decode "' ~ sglang['cuda-graph-max-bs'] ~ '"') -%}{%- endif -%}
 {%- if sglang['speculative-algorithm'] is defined -%}{%- set _ = args.append('--speculative-algorithm "' ~ sglang['speculative-algorithm'] ~ '"') -%}{%- endif -%}
 {%- if sglang['speculative-num-steps'] is defined -%}{%- set _ = args.append('--speculative-num-steps "' ~ sglang['speculative-num-steps'] ~ '"') -%}{%- endif -%}
 {%- if sglang['speculative-eagle-topk'] is defined -%}{%- set _ = args.append('--speculative-eagle-topk "' ~ sglang['speculative-eagle-topk'] ~ '"') -%}{%- endif -%}

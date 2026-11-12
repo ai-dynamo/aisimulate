@@ -21,12 +21,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::error::AicError;
 use crate::operators::{
-    ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
-    Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
-    EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp,
-    GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-    MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
-    Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+    AfdCombineOp, AfdFCollectiveOp, AfdTransferOp, ContextAttentionOp, ContextMlaOp,
+    CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp,
+    Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp, EmbeddingOp, EncoderAttentionOp,
+    FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op,
+    MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp,
+    MsaModuleOp, NcclOp, P2POp, PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp,
+    WideEpGenerationMlaOp,
 };
 use crate::perf_database::PerfDatabase;
 
@@ -190,6 +191,22 @@ pub enum Op {
     Glm53Router(Glm53RouterOp),
     Glm53Ffn(Glm53FfnOp),
     Glm53Primitive(Glm53PrimitiveOp),
+    MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp),
+    /// AFD cross-pool unidirectional P2P transfer (A->F or F->A) — port of
+    /// Python `operations/afd_transfer.py::AFDTransfer` (A/F volume math +
+    /// P2P twin; `comm_overhead_factor` scales latency only).
+    /// APPENDED after `MeasuredComposite` — same positional-index rule as above;
+    /// the four AFD variants bump `ENGINE_SPEC_SCHEMA_VERSION` 29 -> 30.
+    AfdTransfer(AfdTransferOp),
+    /// AFD F-node intra-node AllGather along the token dimension (Python
+    /// `AFDFAllGather`). Shares `AfdFCollectiveOp` with ReduceScatter; the
+    /// `operation` field carries the NCCL flavor.
+    AfdFAllGather(AfdFCollectiveOp),
+    /// AFD F-node intra-node ReduceScatter after F compute (Python
+    /// `AFDFReduceScatter`).
+    AfdFReduceScatter(AfdFCollectiveOp),
+    /// AFD A-side cross-EP local HBM reduce-add (Python `AFDCombine`).
+    AfdCombine(AfdCombineOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -288,6 +305,7 @@ impl Op {
             Op::Glm53Mhc(o) => o.weight_bytes(),
             Op::Glm53Router(o) => o.weight_bytes(),
             Op::Glm53Ffn(o) => o.weight_bytes(),
+            Op::MeasuredComposite(o) => o.weight_bytes,
             Op::Glm53Primitive(o) => o.weight_bytes(),
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
@@ -335,6 +353,12 @@ impl Op {
             | Op::Kda(_)
             | Op::WideEpContextMla(_)
             | Op::WideEpGenerationMla(_)
+            // Python AFD comm ops carry `_weights = 0.0` (orchestration ops
+            // with no resident weights).
+            | Op::AfdTransfer(_)
+            | Op::AfdFAllGather(_)
+            | Op::AfdFReduceScatter(_)
+            | Op::AfdCombine(_)
             | Op::MoeAllToAll(_) => 0.0,
         }
     }
@@ -353,6 +377,7 @@ impl Op {
             Op::Glm53Mhc(o) => &o.name,
             Op::Glm53Router(o) => &o.name,
             Op::Glm53Ffn(o) => &o.name,
+            Op::MeasuredComposite(o) => &o.name,
             Op::Glm53Primitive(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
@@ -390,6 +415,10 @@ impl Op {
             Op::Kda(o) => &o.name,
             Op::MoeAllToAll(o) => &o.name,
             Op::MoeExpertCompute(o) => &o.name,
+            Op::AfdTransfer(o) => &o.name,
+            Op::AfdFAllGather(o) => &o.name,
+            Op::AfdFReduceScatter(o) => &o.name,
+            Op::AfdCombine(o) => &o.name,
         }
     }
 
@@ -407,6 +436,7 @@ impl Op {
             Op::Glm53Mhc(o) => o.name = name,
             Op::Glm53Router(o) => o.name = name,
             Op::Glm53Ffn(o) => o.name = name,
+            Op::MeasuredComposite(o) => o.name = name,
             Op::Glm53Primitive(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
@@ -444,6 +474,10 @@ impl Op {
             Op::Kda(o) => o.name = name,
             Op::MoeAllToAll(o) => o.name = name,
             Op::MoeExpertCompute(o) => o.name = name,
+            Op::AfdTransfer(o) => o.name = name,
+            Op::AfdFAllGather(o) => o.name = name,
+            Op::AfdFReduceScatter(o) => o.name = name,
+            Op::AfdCombine(o) => o.name = name,
         }
     }
 
@@ -451,6 +485,7 @@ impl Op {
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         match self {
             Op::TokenScale(o) => o.op.set_scale_factor(scale_factor),
+            Op::MeasuredComposite(o) => o.scale_factor = scale_factor,
             Op::Gemm(o) => o.scale_factor = scale_factor,
             Op::Embedding(o) => o.scale_factor = scale_factor,
             Op::Elementwise(o) => o.scale_factor = scale_factor,
@@ -498,6 +533,10 @@ impl Op {
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
             Op::MoeExpertCompute(o) => o.scale_factor = scale_factor,
+            Op::AfdTransfer(o) => o.scale_factor = scale_factor,
+            Op::AfdFAllGather(o) => o.scale_factor = scale_factor,
+            Op::AfdFReduceScatter(o) => o.scale_factor = scale_factor,
+            Op::AfdCombine(o) => o.scale_factor = scale_factor,
         }
     }
 
@@ -576,6 +615,7 @@ impl Op {
             Op::Glm53Mhc(op) => op.query(db, ctx),
             Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
             Op::Glm53Ffn(op) => op.query(db, ctx),
+            Op::MeasuredComposite(op) => op.query(db, ctx),
             Op::Glm53Primitive(op) => op.query(db, ctx),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
@@ -685,7 +725,7 @@ impl Op {
                     // Primary result passes through verbatim — its energy
                     // rides along (Python returns `self._primary.query(...)`).
                     Ok(r) => Ok(r),
-                    Err(AicError::PerfDatabase(_)) | Err(AicError::Io { .. }) => {
+                    Err(error) if error.is_missing_perf_data() => {
                         // Fallback chain: Python sums PerformanceResults
                         // from a zero/empirical seed (`total =
                         // PerformanceResult(0.0, energy=0.0,
@@ -725,6 +765,13 @@ impl Op {
             // each `query`, exactly where Python does it.
             Op::MoeAllToAll(op) => op.query(db, ctx.num_tokens),
             Op::MoeExpertCompute(op) => op.query(db, ctx.num_tokens),
+            // AFD comm ops: `num_tokens` is Python's kwargs `x` — the token
+            // count held by a single A-rank (the session/model layer passes
+            // `afd_a_batch_tokens`, not a per-rank GEMM token count).
+            Op::AfdTransfer(op) => op.query(db, ctx.num_tokens),
+            Op::AfdFAllGather(op) => op.query(db, ctx.num_tokens),
+            Op::AfdFReduceScatter(op) => op.query(db, ctx.num_tokens),
+            Op::AfdCombine(op) => op.query(db, ctx.num_tokens),
         }
     }
 }
@@ -732,7 +779,7 @@ impl Op {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::enums::GemmQuantMode;
+    use crate::common::enums::{DatabaseMode, GemmQuantMode};
     use crate::operators::gemm::GemmOp;
     use crate::perf_database::PerfDatabase;
     use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
@@ -918,5 +965,59 @@ mod tests {
         let r = op.query(&db, &ctx()).expect("query");
         assert!((r.latency_ms - 1.0).abs() < 1e-12);
         assert_eq!(r.source, Source::Silicon);
+    }
+
+    #[test]
+    fn fallback_uses_chain_for_gemm_interpolation_coverage_miss() {
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let (_tmp, mut db) = one_row_gemm_db();
+            db.database_mode = mode;
+            // The only collected (n, k) site is (1024, 1024). This
+            // otherwise valid bf16 query is beyond its two-octave radius.
+            let primary = Op::Gemm(GemmOp::new(
+                "outside_collected_sites",
+                16384,
+                16384,
+                GemmQuantMode::Bfloat16,
+            ));
+            assert!(matches!(
+                primary.query(&db.silicon_view(), &ctx()),
+                Err(AicError::InterpolationCoverage(_))
+            ));
+            let op = Op::Fallback(FallbackOp::new(
+                "coverage_fallback",
+                primary,
+                vec![silicon_leaf(), silicon_leaf()],
+            ));
+            let result = op.query(&db, &ctx()).expect("usable fallback chain");
+            // Two exact measured rows, each 1 ms at 100 W, sum to
+            // 2 ms and 200 W*ms; no empirical primary estimate is used.
+            assert_eq!(result.latency_ms, 2.0, "{mode:?}");
+            assert_eq!(result.energy_wms, 200.0, "{mode:?}");
+            assert_eq!(result.source, Source::Silicon, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn fallback_preserves_invalid_primary_configuration() {
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let (_tmp, mut db) = one_row_gemm_db();
+            db.database_mode = mode;
+            let primary = Op::TokenScale(TokenScaleOp {
+                op: Box::new(silicon_leaf()),
+                numerator: 0,
+                denominator: 1,
+            });
+            let op = Op::Fallback(FallbackOp::new(
+                "invalid_primary",
+                primary,
+                vec![silicon_leaf()],
+            ));
+            assert!(matches!(
+                op.query(&db, &ctx()),
+                Err(AicError::InvalidEngineConfig(message))
+                    if message == "draft token widths must be positive"
+            ));
+        }
     }
 }

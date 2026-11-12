@@ -17,8 +17,28 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Inference backend.
+/// How a VL model's vision tower is laid out over the tensor-parallel group.
 ///
+/// Mirrors `ModelConfig.enable_encoder_dp` in the Python model layer: `Tp`
+/// shards the tower's heads and MLP over the group so every rank encodes every
+/// image (SGLang's default), `Dp` gives every rank a whole tower and a ceil
+/// share of the images (`--mm-enable-dp-encoder`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncoderParallel {
+    Tp,
+    Dp,
+}
+
+impl EncoderParallel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tp => "tp",
+            Self::Dp => "dp",
+        }
+    }
+}
+
 /// Mirrors `common.BackendName`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -621,8 +641,6 @@ pub enum PerfDataFilename {
     Dsv4CsaGenerationModule,
     Dsv4HcaGenerationModule,
     Dsv4PagedMqaLogitsModule,
-    Dsv4HcaAttnModule,
-    Dsv4CsaAttnModule,
     Dsv4CsaTopkCalib,
     Dsv4MegamoeModule,
     MoeA2a,
@@ -662,8 +680,6 @@ impl PerfDataFilename {
             Self::Dsv4CsaGenerationModule => "dsv4_csa_generation_module_perf.parquet",
             Self::Dsv4HcaGenerationModule => "dsv4_hca_generation_module_perf.parquet",
             Self::Dsv4PagedMqaLogitsModule => "dsv4_paged_mqa_logits_module_perf.parquet",
-            Self::Dsv4HcaAttnModule => "dsv4_hca_attn_module_perf.parquet",
-            Self::Dsv4CsaAttnModule => "dsv4_csa_attn_module_perf.parquet",
             Self::Dsv4CsaTopkCalib => "dsv4_csa_topk_calib_perf.parquet",
             Self::Dsv4MegamoeModule => "dsv4_megamoe_module_perf.parquet",
             Self::MoeA2a => "moe_a2a_perf.parquet",

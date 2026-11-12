@@ -19,16 +19,38 @@ precedent in `sglang/README.dsv41.md`.
 | vLLM | `0.31.0` | stock `vllm/vllm-openai:v0.31.0` (tag commit `db9527a4`) |
 | SGLang | `0.5.20` | stock `lmsysorg/sglang:v0.5.20` (tag commit `94602c9c`) |
 
-Image digests are pinned in `framework_manifest.yaml`. Checkpoints are
+Each backend is pinned to the arm64 and amd64 child images of one multi-arch
+index (`glm53flash_attention_contract.RUNTIME_IMAGES`); a row's
+`runtime_digest` names its architecture. Checkpoints are
 `zai-org/GLM-5.3-Flash` (FP8 block-128) and `nvidia/GLM-5.3-Flash-NVFP4`.
-Deployments are TP2/TP4 on both backends plus vLLM NVFP4 TP1 (the FP8 weights
-do not fit one GB300).
+Deployments are pure TP1/2/4/8 on one node of the target system. The launcher
+rejects only a TP wider than the node or a checkpoint whose per-rank weights
+exceed one GPU of the system YAML; every other fit is observed at runtime.
+
+The sparse-MLA latent KV dtype is part of the key (`kv_cache_dtype`, always
+passed with `--kv-cache-dtype`: default `fp8`, required on SM90). A table
+holds rows of one KV dtype and serves only deployments of that dtype. On SM10x
+the collected identity is FP8 KV (`fp8_e4m3`). vLLM's `auto` would resolve BF16
+for this checkpoint there, so a BF16-KV SM10x deployment is a separate identity:
+collect it with `--kv-cache-dtype bfloat16`. On SM90 both runtimes can serve
+only BF16 KV, so Hopper rows are a BF16-KV identity:
+
+- SGLang 0.5.20: its IndexPool DSA backends (fa3/tilelang/trtllm) cannot read
+  FP8 KV on SM90, and its own default there is BF16.
+- vLLM 0.31.0: `FLASHINFER_MLA_SPARSE_SM90` passes an FP8 cache to FlashInfer
+  0.7.0.post1 `plan()` as `kv_data_type=torch.uint8` storage, which the fa3 MLA
+  planner rejects (`MLA kv_data_type torch.uint8 is not supported`). Stock
+  vLLM therefore serves GLM-5.3-Flash on H100/H200 only with BF16 KV; no patch
+  or FlashInfer downgrade is applied.
+
+The vLLM worker checks the engine's resolved `cache_dtype` against the key. A
+table holds one KV dtype.
 
 ## Measured boundary
 
 `Glm5NextMLAAttention.forward` (vLLM) / `DeepseekV2AttentionMLA.forward`
 (SGLang) of layer 3: latent projections and norms, q_b projection, absorbed
-kv_b BMMs, the complete IndexPool indexer, FP8 latent KV write, the sparse MLA
+kv_b BMMs, the complete IndexPool indexer, latent KV write, the sparse MLA
 kernel and the local `o_proj` GEMM. The attention-output all-reduce, mHC, the
 input norm and the per-forward metadata build are separate model ops. Layer 3
 represents all 11 sparse-MLA layers;
@@ -90,15 +112,23 @@ from the exact requested runtime only:
 | `source_sha256`, `config_sha256`, `runtime_digest`, `used_cuda_graph`, `sample_count` | provenance |
 
 The writer (`glm53flash_attention_contract.write_parquet`) rejects duplicate
-physical keys, mixed runtime/source identities and mixed CUDA-graph modes
-within a phase.
+physical keys, mixed runtime/source/KV-dtype identities and mixed CUDA-graph
+modes within a phase. `collection_meta.yaml` records the image digest and
+architecture, the KV dtype and, per attempt, the system, GPUs per node and the
+exported serving environment.
 
 ## Running
 
+`--system` selects the system YAML: its `num_gpus_per_node` sets
+`--gres=gpu:N` (override with `--gpus-per-node`). The vLLM environment keeps
+`NCCL_NVLS_ENABLE` and `VLLM_USE_NCCL_SYMM_MEM` on every system and exports
+`NCCL_MNNVL_ENABLE` only when `num_gpus_per_rack` spans several nodes.
+
 ```bash
 python -m collector.glm53flash_attention_launch --backend vllm --checkpoint nvfp4 --tp 1 \
+  --system b300_sxm --arch amd64 [--kv-cache-dtype bfloat16] \
   --config src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json \
-  [--context-class long] [--only-sets ...] \
+  [--context-class long] [--only-sets ...] --account <account> --partition <partition> \
   --attempt <local dir> --remote-attempt <shared dir> --remote-source <shared collector copy> \
   --remote-model <checkpoint dir> --image <sqsh> --source-commit <sha>
 sbatch <shared dir>/run.sbatch

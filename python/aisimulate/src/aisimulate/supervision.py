@@ -29,7 +29,7 @@ from .config.common import (
     RECOMMENDATION_CORE_SECTIONS,
     ResourceConfig,
 )
-from .resources import ResourceLimitError, discover_host, resolve_budget
+from .resources import ResourceLimitError, descendants_of, discover_host, resolve_budget
 
 _CONTEXT = "_AISIMULATE_SUPERVISED_BUDGET"
 _THREAD_VARIABLES = (
@@ -174,7 +174,7 @@ class OwnedTree:
 
     def sample(self) -> int:
         try:
-            processes = [self.root, *self.root.children(recursive=True)]
+            processes = [self.root, *descendants_of(self.root)]
         except psutil.NoSuchProcess:
             processes = []
         for process in processes:
@@ -428,15 +428,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
-            if config.engine.workers.encoder is not None:
-                if args.command == "predict" and (
-                    args.stack != "engine" or args.online or args.capture_per_request or adapter_raw
+            if args.command == "predict" and (args.capture_telemetry or args.export_html):
+                if args.stack != "engine" or args.online:
+                    raise ValueError("telemetry capture requires offline --stack engine")
+                if (
+                    config.engine.backend not in {"vllm", "sglang"}
+                    or config.engine.mode not in {"aggregated", "disaggregated"}
+                    or config.engine.workers.encoder is not None
                 ):
                     raise ValueError(
-                        "analytical EPD requires offline --stack engine without adapters or per-request capture"
+                        "telemetry capture requires offline native vLLM/SGLang aggregated or disaggregated replay "
+                        "without an encoder pool"
                     )
+            if (
+                config.traffic is not None
+                and config.traffic.load.agentic_warmup_policy != "repeated_prefixes"
+                and (args.stack != "engine" or (args.command == "predict" and args.online))
+            ):
+                raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
+            encoder = config.engine.workers.encoder
+            if encoder is not None:
+                if args.command == "predict" and (args.stack != "engine" or args.online or adapter_raw):
+                    raise ValueError("encoder pools require offline --stack engine without adapters")
+                if args.command == "predict" and encoder.mode == "analytical" and args.capture_per_request:
+                    raise ValueError("analytical EPD cannot capture per-request records")
                 if args.command == "recommend" and (args.stack != "engine" or adapter_raw):
-                    raise ValueError("analytical EPD requires --stack engine without adapters")
+                    raise ValueError("encoder pools require --stack engine without adapters")
         except (ValueError, TypeError, AttributeError) as exc:
             parser.error(f"{args.config}: {exc}")
     event_output = None
@@ -513,7 +530,10 @@ def supervised_recommendation(config, kwargs):
                 if main_path and not Path(main_path).is_file():
                     preparation.pop("init_main_from_path")
                 pickle.dump(preparation, target)
-                pickle.dump((config.model_dump(mode="json"), kwargs), target)
+                from .recommend import recommendation_payload
+
+                raw_config, unset = recommendation_payload(config)
+                pickle.dump((raw_config, kwargs, unset), target)
             except (TypeError, AttributeError, pickle.PicklingError) as exc:
                 raise ValueError("supervised recommendation requires pickleable factories and providers") from exc
         report = run_process(

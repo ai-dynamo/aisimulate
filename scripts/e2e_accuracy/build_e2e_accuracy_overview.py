@@ -23,8 +23,19 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 INFERENCEX_RELEASE_URL_PREFIX = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/"
+
+
+def measurement_source_url(release_tag: str) -> str:
+    if release_tag.startswith("hf/"):
+        revision = release_tag.removeprefix("hf/")
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise ValueError("HF measurement source requires a full commit")
+        return f"https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/{revision}"
+    return INFERENCEX_RELEASE_URL_PREFIX + release_tag
+
+
 FORBIDDEN_PUBLIC_FRAGMENTS = (
-    "gitlab-master.nvidia.com",
+    "gitlab",
     "linear.app/nvidia",
     "slack.com/archives",
     "silicon_workflow_run_id",
@@ -287,8 +298,9 @@ def _prediction_error(row: dict[str, Any]) -> str | None:
     message = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", message)
     message = re.sub(r"https?://[^\s<>\"']+", "[URL]", message)
     message = re.sub(r"(?<![\w/])(?:/[\w.~-]+)+", "[path]", message)
+    message = re.sub(r"\b[a-z0-9.-]*gitlab[a-z0-9.-]*\b", "[redacted]", message, flags=re.IGNORECASE)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
-        message = message.replace(fragment, "[redacted]")
+        message = re.sub(re.escape(fragment), "[redacted]", message, flags=re.IGNORECASE)
     message = " ".join(message.split())
     return message[:2047] + "…" if len(message) > 2048 else message
 
@@ -597,7 +609,7 @@ def build_summary(
     if research_preview and branch is not None:
         raise SnapshotError("research previews cannot qualify an evaluated branch")
     all_rows = _validate_inputs(predictions, metadata, coverage, research_preview=research_preview)
-    expected_source_url = f"{INFERENCEX_RELEASE_URL_PREFIX}{predictions['release_tag']}"
+    expected_source_url = measurement_source_url(predictions["release_tag"])
     if source_url != expected_source_url:
         raise SnapshotError("source URL does not match the validated predictions.release_tag")
     scoped_rows = [row for row in all_rows if not (exclude_multinode and _is_multinode(row))]
@@ -732,7 +744,7 @@ def build_summary(
         }
     serialized = json.dumps(result, sort_keys=True)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
-        if fragment in serialized:
+        if fragment in serialized.lower():
             raise SnapshotError(f"public output contains forbidden fragment: {fragment}")
     return result
 

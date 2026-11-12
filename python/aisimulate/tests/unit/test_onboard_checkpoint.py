@@ -227,6 +227,8 @@ def test_slurm_options_survive_pause_and_require_fresh_collection_after_edit(
     from aisimulate.support.fpm import fpm_cli_args
     from aisimulate.support.schema import FPMDeployment
 
+    request_payload["identity"]["model"] = str(tmp_path)
+    request_payload["fpm_profile"]["model"] = str(tmp_path)
     path = tmp_path / "onboarding-checkpoint.json"
     request = tmp_path / "request.yaml"
     request.write_text(yaml.safe_dump(request_payload))
@@ -245,7 +247,7 @@ def test_slurm_options_survive_pause_and_require_fresh_collection_after_edit(
     args = collector_cli._parser().parse_args(
         fpm_cli_args(saved_request, output_dir=original, plan_only=True, deployment=FPMDeployment(**deployment))[3:]
     )
-    model_config = tmp_path / "model-config.json"
+    model_config = tmp_path / "config.json"
     model_config.write_text(
         json.dumps(
             {

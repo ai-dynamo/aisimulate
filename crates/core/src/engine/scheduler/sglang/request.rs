@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::VecDeque;
 use std::ops::{Deref, RangeFull};
@@ -8,6 +11,7 @@ use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
 
 use uuid::Uuid;
 
+use crate::engine::ImageSpec;
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::DirectRequest;
@@ -18,6 +22,7 @@ use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 pub(super) struct SglangRequest {
     pub(super) uuid: Uuid,
     pub(super) is_decode_handoff: bool,
+    pub(super) retracted: bool,
     pub(super) sequence_tokens: Vec<u32>,
     pub(super) prompt_len: usize,
     pub(super) max_output_tokens: usize,
@@ -25,6 +30,11 @@ pub(super) struct SglangRequest {
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
     pub(super) allocated_tokens: usize,
+    /// Prompt-order image placeholders; empty for text-only requests.
+    pub(super) images: Vec<ImageSpec>,
+    /// Finished in a batch whose result the host loop has not observed yet. The
+    /// request keeps its `running` slot until the next iteration starts.
+    pub(super) pending_terminal: bool,
 }
 
 impl SglangRequest {
@@ -39,13 +49,17 @@ impl SglangRequest {
             .checked_add(output_capacity)
             .expect("SGLang request completion length overflow")
             / block_size;
-        let mut kv_lease = RadixRequestLease::default();
+        let mut kv_lease = RadixRequestLease::new(req.cache_salt);
+        let uuid = req.uuid.unwrap_or_else(Uuid::new_v4);
+        kv_lease.request_id = uuid;
+        kv_lease.session_id = req.session_id;
         kv_lease.reserve_page_hashes(completion_pages);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);
 
         Self {
-            uuid: req.uuid.unwrap_or_else(Uuid::new_v4),
+            uuid,
             is_decode_handoff: false,
+            retracted: false,
             sequence_tokens,
             prompt_len,
             max_output_tokens,
@@ -53,6 +67,8 @@ impl SglangRequest {
             kv_lease,
             materialized_tokens: 0,
             allocated_tokens: 0,
+            images: req.images,
+            pending_terminal: false,
         }
     }
 
@@ -89,10 +105,6 @@ impl SglangRequest {
 
     pub(super) fn cached_tokens(&self) -> usize {
         self.kv_lease.cached_tokens()
-    }
-
-    pub(super) fn page_aligned_materialized_tokens(&self, block_size: usize) -> usize {
-        self.materialized_tokens / block_size * block_size
     }
 
     pub(super) fn sequence_tokens(&self) -> &[u32] {
@@ -132,15 +144,15 @@ impl SglangRequest {
         self.sequence_tokens.push(token);
         self.kv_lease
             .ensure_page_hashes(&self.sequence_tokens, block_size);
-        self.materialized_tokens += 1;
     }
 
-    /// Append the token that completes the request. Its KV is never computed (SGLang finishes
-    /// the request in `check_finished` right after the forward that sampled it), so it owns no
-    /// slot and `materialized_tokens` is unchanged.
-    pub(super) fn append_final_output_token(&mut self, token: u32) {
-        debug_assert_eq!(self.remaining_output_tokens(), 1);
-        self.sequence_tokens.push(token);
+    /// Drop the last `count` output tokens: a forward sampled them, but the
+    /// scheduler will not process that result for this request (`is_retracted`).
+    pub(super) fn discard_output_tokens(&mut self, count: usize, block_size: usize) {
+        debug_assert!(count <= self.output_len());
+        let kept = self.sequence_tokens.len() - count;
+        self.sequence_tokens.truncate(kept);
+        self.kv_lease.truncate_page_hashes(kept / block_size);
     }
 
     pub(super) fn debug_assert_invariants(&self, _block_size: usize) {
@@ -224,15 +236,19 @@ impl SglangRequest {
         debug_assert!(!self.kv_lease.is_active());
         self.materialized_tokens = 0;
         self.allocated_tokens = 0;
+        self.retracted = true;
     }
 }
 
-/// Queue ownership makes each mutable request leave the statistics before its
-/// length can change, then accounts for its new length on re-insertion.
+/// The queue lends requests only by shared reference, so a request leaves the
+/// statistics and continuation count before its length or materialized tokens
+/// can change, then is counted again on re-insertion.
 #[derive(Default)]
 pub(super) struct WaitingQueue {
     requests: VecDeque<SglangRequest>,
     pub(super) stats: QueueStats,
+    /// Queued chunk continuations (`materialized_tokens > 0`).
+    continuations: usize,
 }
 
 impl SglangRequest {
@@ -246,30 +262,40 @@ impl SglangRequest {
 }
 
 impl WaitingQueue {
-    pub(super) fn push_back(&mut self, request: SglangRequest) {
+    fn enter(&mut self, request: &SglangRequest) {
         self.stats.add(request.queued_length());
+        self.continuations += usize::from(request.materialized_tokens > 0);
+    }
+
+    fn leave(&mut self, request: &SglangRequest) {
+        self.stats.remove(request.queued_length());
+        self.continuations -= usize::from(request.materialized_tokens > 0);
+    }
+
+    pub(super) fn push_back(&mut self, request: SglangRequest) {
+        self.enter(&request);
         self.requests.push_back(request);
     }
 
     pub(super) fn push_front(&mut self, request: SglangRequest) {
-        self.stats.add(request.queued_length());
+        self.enter(&request);
         self.requests.push_front(request);
     }
 
     pub(super) fn pop_front(&mut self) -> Option<SglangRequest> {
         let request = self.requests.pop_front()?;
-        self.stats.remove(request.queued_length());
+        self.leave(&request);
         Some(request)
     }
 
     pub(super) fn insert(&mut self, index: usize, request: SglangRequest) {
-        self.stats.add(request.queued_length());
+        self.enter(&request);
         self.requests.insert(index, request);
     }
 
     pub(super) fn remove(&mut self, index: usize) -> Option<SglangRequest> {
         let request = self.requests.remove(index)?;
-        self.stats.remove(request.queued_length());
+        self.leave(&request);
         Some(request)
     }
 
@@ -278,12 +304,19 @@ impl WaitingQueue {
         range: RangeFull,
     ) -> std::collections::vec_deque::Drain<'_, SglangRequest> {
         self.stats = QueueStats::default();
+        self.continuations = 0;
         self.requests.drain(range)
     }
 
-    #[cfg(test)]
-    pub(super) fn swap(&mut self, a: usize, b: usize) {
-        self.requests.swap(a, b);
+    pub(super) fn has_continuation(&self) -> bool {
+        debug_assert_eq!(
+            self.continuations,
+            self.requests
+                .iter()
+                .filter(|request| request.materialized_tokens > 0)
+                .count(),
+        );
+        self.continuations > 0
     }
 }
 

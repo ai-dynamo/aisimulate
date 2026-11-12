@@ -35,7 +35,7 @@ concurrency:
 jobs:
   policy:
     name: Repository Policy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
@@ -75,6 +75,19 @@ jobs:
         run: |
           python scripts/ci/check_copyright.py
           python scripts/ci/check_packaged_legal_files.py
+      - name: Check bundled configuration provenance
+        run: |
+          python -m pytest -c /dev/null tests/test_bundled_configs.py -q \
+            -p no:cacheprovider --override-ini="addopts=" --override-ini="filterwarnings=error" \
+            --override-ini="markers=unit: Unit tests"
+          python scripts/ci/check_bundled_configs.py \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-source"
+      - name: Preserve bundled configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-source
+          path: ${{ runner.temp }}/bundled-configs-source/*
+          if-no-files-found: error
       - name: Check documentation destinations
         run: |
           python -m unittest discover -s scripts/ci -p test_documentation_links.py
@@ -111,7 +124,7 @@ jobs:
 
   python-static:
     name: Python Static Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -177,7 +190,7 @@ jobs:
           if [[ -n "${BASE_SHA}" && ! "${BASE_SHA}" =~ ^0+$ ]]; then
             if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
               # Checkout removes its credentials; authenticate this fetch only,
-              # as in collector-check.yml, without persisting the token.
+              # without persisting the token.
               basic_token="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
               git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_token}" fetch \
                 --no-tags origin "${BASE_SHA}"
@@ -189,7 +202,7 @@ jobs:
 
   rust-format:
     name: Rust Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
@@ -211,7 +224,7 @@ jobs:
     name: Fast CI Success
     if: ${{ always() }}
     needs: [policy, python-static, rust-format]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     env:
       POLICY_RESULT: ${{ needs.policy.result }}

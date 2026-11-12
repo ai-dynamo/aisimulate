@@ -16,7 +16,7 @@ predate a documented feature. Record your installed version before comparing
 results or reporting a problem:
 
 ```bash
-python -c 'from importlib.metadata import version; print(version("aisimulate"))'
+python -c 'import aisimulate; print(aisimulate.__version__)'
 python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
 ```
 
@@ -75,6 +75,39 @@ python -m pip download --no-deps --only-binary=:all: \
 This checks only AISimulate's wheel, not all transitive dependencies. A missing
 wheel on an unlisted host does not establish source-build support there.
 
+## Migrate to the renamed distribution
+
+Current source builds `aisim` / `aisim-core`; historical published releases use
+`aisimulate` / `aisimulate-core`. Changing a manifest does not publish the new
+names. Use a verified `aisim` wheel or wait for its availability on your chosen
+index before migrating.
+
+The Python distributions install overlapping package files and console scripts.
+Do not install them together. Prefer a fresh environment; for an existing
+engine-only environment, remove the old distribution first, then install the
+selected new wheel (or `aisim==<published-version>`):
+
+```bash
+python -m pip uninstall -y aisimulate
+python -m pip install /absolute/path/to/aisim-VERSION-PLATFORM.whl
+python -m pip check
+aisim --help
+aisimulate --help
+```
+
+Use that same ordering for upgrades. If both distributions have already been
+installed, uninstall `aisimulate` and use `pip install --force-reinstall` for
+the selected `aisim` wheel, because uninstalling the old distribution can remove
+files listed in both RECORDs. Both CLI names remain available after migration;
+Python imports stay `aisimulate` and `aisimulate_core`.
+
+Dynamo and other consumers must change their **distribution dependency** to
+`aisim` before sharing the new environment. Do not migrate the historical Dynamo
+pair documented below in place; its dependency still selects `aisimulate`.
+Use a compatible downstream release and run `pip check` after installing the
+complete environment. Skipping dependency installation is not a substitute for
+updating that requirement.
+
 ## Use current source
 
 For features documented on `main`, use a source checkout and record its commit:
@@ -104,7 +137,7 @@ to the intended environment.
 ## Use an internal nightly
 
 The [nightly workflow](../../.github/workflows/nightly-ci.yml) produces a wheel
-version such as `0.13.0.devYYYYMMDD`, then stages artifacts to access-controlled
+version such as `0.14.0.devYYYYMMDD`, then stages artifacts to access-controlled
 Artifactory through the protected release environment. The run subsequently
 checks the downloaded wheel and qualifies its FPE support matrix. Use a
 successful completed nightly: a successful build, staging step, or dev suffix
@@ -118,7 +151,7 @@ Verify the recorded source revision and wheel SHA-256, then install that exact
 downloaded file:
 
 ```bash
-python -m pip install /absolute/path/to/downloaded/aisimulate-VERSION-PLATFORM.whl
+python -m pip install /absolute/path/to/downloaded/aisim-VERSION-PLATFORM.whl
 ```
 
 Replace that illustrative filename with the actual wheel filename. Retain the
@@ -129,16 +162,15 @@ The [artifact contract](../ci/release.md) describes wheel/crate versioning.
 
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
-same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.6.0.dev20260930` and
-`aisimulate==0.13.0.dev202609270000000058`, from the NVIDIA prerelease index.
+same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.7.0.dev20261028` and
+`aisimulate==0.13.0.dev202610240000000082`, from the NVIDIA prerelease index.
 Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
 prediction of the best candidate pass with Python 3.12 on Linux.
 
 The AISimulate wheel corresponds to source
-[`9f140b71b75e43147e88ac76a8c72371077c2bee`](https://github.com/ai-dynamo/aisimulate/commit/9f140b71b75e43147e88ac76a8c72371077c2bee)
-and [nightly run 36305697606](https://github.com/ai-dynamo/aisimulate/actions/runs/36305697606).
-Dynamo's September 30 build source is
-[`777977d5ee0e70128c3dbe83c27fd22a74120874`](https://github.com/ai-dynamo/dynamo/commit/777977d5ee0e70128c3dbe83c27fd22a74120874).
+[`f3a3e3156530574f5e7a10446f19e571b82db871`](https://github.com/ai-dynamo/aisimulate/commit/f3a3e3156530574f5e7a10446f19e571b82db871)
+and [nightly run 40076769417](https://github.com/ai-dynamo/aisimulate/actions/runs/40076769417).
+The Dynamo wheel is the October 28 nightly build.
 This is a README simulation qualification, not a claim that Dynamo's entire
 nightly pipeline passed. Full CI README checks retest the installed artifacts
 when relevant files change.

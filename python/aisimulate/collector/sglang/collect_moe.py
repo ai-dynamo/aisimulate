@@ -9,8 +9,7 @@ owns SGLang kernel compatibility, server-args mocking, routing-logit synthesis,
 rank-local workload construction, quantized weight setup, and perf logging.
 """
 
-# Verified 2026-08-18 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1762 Task 4c/4d.
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones).
 # Compatible unchanged: is_hip; fused_moe() (triton path, byte-identical
 # signature); override_config; MoeRunnerBackend/RoutingMethodType enums
 # (RenormalizeNaive retained -- labeled "Qwen3" in-source); FusedMoE.__init__,
@@ -42,22 +41,13 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # _pin_moe_runner_backend below for the full trace and the version-branched
 # fix: 0.5.14 keeps the exact original global read/write/restore, 0.5.17
 # goes through the new RuntimeContext/Flags singleton via its own sanctioned
-# override() primitive). 0.5.15/0.5.16 stay excluded: never verified, and
-# version_resolver's __compat__ grammar (AND-of-comparators only, no OR) has
-# no way to express a true two-point set either -- this bounded range with
-# the two untested base releases carved out via != is the closest
-# expressible approximation, NOT an exact {0.5.14, 0.5.17} gate (CORRECTED
-# 2026-08-18, code review): `_check_compat`'s `!=` only excludes the literal
-# point version, so 0.5.15.post1/0.5.15rc1/0.5.16.post2-style variants of
-# the excluded releases still satisfy this specifier (see
-# tests/unit/collector/test_version_resolver.py's TestExactVersionSet for
-# the honest, probed semantics). This is an accepted, narrow gap: the
-# framework_manifest digest-pinned gate is the true version enforcement
-# upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
-# run, so the leak is unreachable there.
-# 0.5.20 audit (2026-09-30; source tag v0.5.20 == 94602c9c2b7c vs v0.5.17,
-# source-only). 0.5.18/0.5.19
-# were never verified and are carved out with != (same caveat as above).
+# override() primitive).
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file; earlier code is `git log -- <this file>` away.
+# 0.5.20 audit (source tag v0.5.20 == 94602c9c2b7c vs v0.5.17, source-only).
+# 0.5.18/0.5.19 were never verified and are carved out with != (same caveat
+# as above).
 # Unchanged vs 0.5.17: ServerArgs/set_global_server_args_for_scheduler
 # (server_args.py:195,635; publish() now runs resolve_once(), which returns
 # early for model_path="dummy", arg_groups/pipeline.py:121); get_server_args
@@ -88,13 +78,14 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # (moe_runner/flashinfer_cutlass.py:17,208-209), which the single-rank
 # parallel patch below does not replace, so flashinfer_cutlass lanes (the
 # SM120 nvfp4 map) are expected to fail until that module is added.
-__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
+__compat__ = "sglang==0.5.21"
 
 import gc
 import importlib
-import itertools
 import os
+import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 
 # The SGLang 0.5.20 image ships setuptools without pkg_resources; the
@@ -110,13 +101,13 @@ from unittest.mock import MagicMock
 import sglang.srt.server_args as _server_args_module
 import torch
 
-# Verified 2026-08-18 (first real-GPU 0.5.17 run crashed here: AttributeError:
+# The first real-GPU 0.5.17 run crashed here (AttributeError:
 # module 'sglang.srt.server_args' has no attribute '_global_server_args').
-# 0.5.14: a bare module global (server_args.py:7180 @0.5.14). 0.5.17: gone
+# 0.5.14: a bare module global (server_args.py:7180). 0.5.17: gone
 # from server_args.py entirely, moved into the RuntimeContext singleton
 # (sglang/srt/runtime_context.py). The legacy accessor/setter shims
 # (get_global_server_args/set_global_server_args_for_scheduler,
-# server_args.py:9294-9316 @0.5.17) still exist by the same names but now
+# server_args.py:9294-9316) still exist by the same names but now
 # read/write get_context().server_args -- a property that RAISES ValueError
 # when unset rather than returning None, so the "already set?" guard below
 # reaches into RuntimeContext's own _server_args slot directly instead
@@ -127,12 +118,12 @@ import torch
 # fields. At 0.5.14 every consumer reads these straight off the server_args
 # object. At 0.5.17, enable_deterministic_inference moved to
 # get_exec().deterministic.enable_deterministic_inference
-# (fused_moe_triton_config.py:72,190 @0.5.17; deep_gemm.py:1069);
+# (fused_moe_triton_config.py:72,190; deep_gemm.py:1069);
 # enable_fused_moe_sum_all_reduce moved to
 # get_exec().moe.enable_fused_moe_sum_all_reduce
-# (triton_utils/fused_moe.py:534 @0.5.17); flashinfer_mxfp4_moe_precision
+# (triton_utils/fused_moe.py:534); flashinfer_mxfp4_moe_precision
 # moved to get_exec().moe.flashinfer_mxfp4_moe_precision (mxfp4.py:344-345,
-# mxfp4_flashinfer_trtllm_moe.py:53-54 @0.5.17). That "config bag" tree is
+# mxfp4_flashinfer_trtllm_moe.py:53-54). That "config bag" tree is
 # projected by RuntimeContext.set_server_args() from the NS(...)-marked
 # dataclass fields of whatever object gets published
 # (runtime_context.py:788-821); a MagicMock has no such fields
@@ -142,7 +133,7 @@ import torch
 # the bag comes back empty and every get_exec() read above raises
 # ValueError("config namespace ... not published"). No attribute stuffed
 # onto a MagicMock can satisfy this at 0.5.17. (kt_weight_path is the one
-# exception: both its reads, kt_ep_wrapper.py:73,90 @0.5.17, are inside
+# exception: both its reads, kt_ep_wrapper.py:73,90, are inside
 # create_kt_config_from_server_args, which this module's own
 # _patch_framework_moe_parallel already replaces with a no-op lambda -- its
 # value is never actually consulted in this collector's benchmark path at
@@ -150,7 +141,7 @@ import torch
 #
 # Fix: at 0.5.17, publish a REAL sglang.srt.server_args.ServerArgs instance
 # instead of a MagicMock, using the exact bootstrap sglang's own test suite
-# uses for this (test/manual/test_moe_quant_once.py:222 @0.5.17:
+# uses for this (test/manual/test_moe_quant_once.py:222:
 # `set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))` --
 # model_path has no default and is otherwise unused here, so a dummy string
 # satisfies construction without a real checkpoint). The four fields below
@@ -158,14 +149,14 @@ import torch
 # declared defaults (enable_deterministic_inference=False,
 # enable_fused_moe_sum_all_reduce=False, flashinfer_mxfp4_moe_precision=
 # "default", kt_weight_path=None -- server_args.py:3247-3251, 1930-1932,
-# 2305-2309, 2927-2930 @0.5.17) -- defensive against a future default
+# 2305-2309, 2927-2930) -- defensive against a future default
 # change, matching this block's original intent of pinning these values
 # rather than inheriting whatever the framework currently defaults to.
 # NOTE: `sglang.srt.runtime_context.get_context` is NOT a safe version probe
 # here -- it exists at BOTH 0.5.14 and 0.5.17 (unlike get_flags/get_exec
 # below), but the RuntimeContext class it returns has a different shape per
 # version: 0.5.14's is `__slots__ = ("parallel",)` only (runtime_context.py:
-# 208-214 @0.5.14, no _server_args slot at all), so `get_context()._server_
+# 208-214, no _server_args slot at all), so `get_context._server_
 # args` would itself raise AttributeError on 0.5.14 -- a second bug this
 # fix must not introduce while fixing the first one. get_server_args (the
 # free function, not the property) IS a safe probe: absent at 0.5.14 (that
@@ -185,7 +176,7 @@ else:
     except ValueError:
         # RuntimeContext.server_args (the property get_server_args wraps)
         # raises exactly this -- "Global server args is not set yet!" --
-        # when unset (runtime_context.py:787-794 @0.5.17); its own docstring
+        # when unset (runtime_context.py:787-794); its own docstring
         # calls this the verbatim legacy message "tests and user scripts may
         # match on it", i.e. the sanctioned way to probe "is it set".
         _server_args_already_set = False
@@ -218,7 +209,7 @@ import sglang.srt.layers.moe.fused_moe_triton.layer as _moe_layer_mod
 
 # sglang 0.5.17 relocated this module to the new top-level sglang.kernels.ops
 # package; the only symbol used here, _B_DESC_CACHE, is byte-identical at
-# both pinned versions (verified 2026-08-18: same OrderedDict[tuple,
+# both pinned versions (verified same OrderedDict[tuple,
 # TensorDescriptor] cache, same eviction logic, same line numbers). Try the
 # new (>=0.5.17) location first since sglang's own fused_moe.py now imports
 # from there.
@@ -248,6 +239,8 @@ except ImportError:
         get_default_config,
         get_moe_configs,
     )
+from collector.sglang.moe_config_observation import append_record as append_triton_config_record
+from collector.sglang.moe_config_observation import observe_triton_config_selection
 from collector.version_resolver import _check_compat
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
@@ -266,19 +259,14 @@ from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
 from sglang.srt.utils import is_hip
 
 try:
-    from case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+    from case_generator import get_moe_quantization_module_config
 
     from helper import (
         WORKER_RESTART,
         balanced_logits,
         benchmark_with_power,
         build_rank0_local_workload,
+        flashinfer_autotuned,
         get_sm_version,
         log_perf,
         power_law_logits_v3,
@@ -288,24 +276,20 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+    from case_generator import get_moe_quantization_module_config
 
     from helper import (
         WORKER_RESTART,
         balanced_logits,
         benchmark_with_power,
         build_rank0_local_workload,
+        flashinfer_autotuned,
         get_sm_version,
         log_perf,
         power_law_logits_v3,
     )
 
+from collector.op_plans import plan_cases
 
 _is_hip = is_hip()
 
@@ -342,110 +326,7 @@ def _ensure_writable_flashinfer_cubin_dir() -> None:
 
 
 def get_moe_test_cases():
-    sm_version = get_sm_version()
-    moe_list = get_moe_quantization_modes("sglang", sm_version=sm_version)
-
-    common_cases = get_common_moe_test_cases()
-    test_cases = []
-    seen_physical_cases = {}
-    quant_policy_drops = {}
-    models_with_cases = set()
-
-    for common_moe_testcase in common_cases:
-        model_name = common_moe_testcase.model_name
-        num_tokens_list = common_moe_testcase.num_tokens_list
-
-        for moe_type, num_tokens in itertools.product(moe_list, num_tokens_list):
-            if not moe_model_allows_quantization("sglang", model_name, moe_type):
-                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
-                continue
-            models_with_cases.add(model_name)
-            is_fp4_experts = common_moe_testcase.architecture == "DeepseekV4ForCausalLM" and moe_type in {
-                "w4a16_mxfp4",
-                "w4a8_mxfp4_mxfp8",
-            }
-            moe_backend = get_sglang_moe_backend(common_moe_testcase, moe_type, sm_version)
-            base_case = [
-                moe_type,
-                num_tokens,
-                common_moe_testcase.hidden_size,
-                common_moe_testcase.inter_size,
-                common_moe_testcase.topk,
-                common_moe_testcase.num_experts,
-                common_moe_testcase.tp,
-                common_moe_testcase.ep,
-                common_moe_testcase.model_name,
-                common_moe_testcase.token_expert_distribution,
-                common_moe_testcase.power_law_alpha,
-                common_moe_testcase.sglang_moe_swiglu_limit,
-                moe_backend,
-                common_moe_testcase.sglang_moe_activation,
-                common_moe_testcase.sglang_moe_is_gated,
-                common_moe_testcase.sglang_moe_has_bias,
-                common_moe_testcase.sglang_moe_gemm1_alpha,
-                common_moe_testcase.sglang_moe_gemm1_clamp_limit,
-                common_moe_testcase.sglang_moe_scoring_func,
-                common_moe_testcase.sglang_moe_routing_method_type,
-                common_moe_testcase.sglang_moe_routed_scaling_factor,
-                common_moe_testcase.sglang_moe_renormalize,
-                common_moe_testcase.sglang_moe_has_correction_bias,
-                common_moe_testcase.sglang_moe_num_expert_group,
-                common_moe_testcase.sglang_moe_topk_group,
-                common_moe_testcase.sglang_moe_apply_router_weight_on_input,
-                is_fp4_experts,
-            ]
-            physical_key = (
-                moe_type,
-                num_tokens,
-                common_moe_testcase.hidden_size,
-                common_moe_testcase.inter_size,
-                common_moe_testcase.topk,
-                common_moe_testcase.num_experts,
-                common_moe_testcase.tp,
-                common_moe_testcase.ep,
-                common_moe_testcase.token_expert_distribution,
-                common_moe_testcase.power_law_alpha,
-            )
-            execution_signature = (
-                moe_backend,
-                common_moe_testcase.sglang_moe_activation,
-                common_moe_testcase.sglang_moe_is_gated,
-                common_moe_testcase.sglang_moe_has_bias,
-                common_moe_testcase.sglang_moe_gemm1_alpha,
-                common_moe_testcase.sglang_moe_gemm1_clamp_limit,
-                common_moe_testcase.sglang_moe_swiglu_limit,
-                common_moe_testcase.sglang_moe_scoring_func,
-                common_moe_testcase.sglang_moe_routing_method_type,
-                common_moe_testcase.sglang_moe_routed_scaling_factor,
-                common_moe_testcase.sglang_moe_renormalize,
-                common_moe_testcase.sglang_moe_has_correction_bias,
-                common_moe_testcase.sglang_moe_num_expert_group,
-                common_moe_testcase.sglang_moe_topk_group,
-                common_moe_testcase.sglang_moe_apply_router_weight_on_input,
-                is_fp4_experts,
-            )
-            previous_signature = seen_physical_cases.get(physical_key)
-            if previous_signature is not None and previous_signature != execution_signature:
-                raise ValueError(
-                    "SGLang MoE cases share one perf DB key but require different "
-                    f"execution semantics: key={physical_key}, first={previous_signature}, "
-                    f"current={execution_signature}, model={model_name}"
-                )
-            if previous_signature is None:
-                seen_physical_cases[physical_key] = execution_signature
-                test_cases.append(base_case)
-
-    # Zero-case expansions must be explainable from logged drops
-    # (case_authoring.md): name every planned model whose declared sglang
-    # quant policy excluded all of its moe cases.
-    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
-    if fully_dropped:
-        print(
-            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared sglang "
-            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
-        )
-
-    return test_cases
+    return plan_cases("moe", "sglang", get_sm_version())
 
 
 class BenchmarkConfig(TypedDict):
@@ -620,7 +501,7 @@ def benchmark_config(
 def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
     """Patch the SGLang helpers cached by framework MoE backends.
 
-    Re-verified 2026-08-18 at v0.5.17: every patched name is still a plain
+    Re-verified at v0.5.17: every patched name is still a plain
     per-module ``from X import Y`` binding, and ``layer.py``/``standard.py``
     now read parallel sizes as ``get_parallel().moe_ep_size/.moe_ep_rank/
     .moe_tp_size/.moe_tp_rank`` attributes -- exactly this function's
@@ -633,6 +514,7 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
     parallel = SimpleNamespace(
         tp_size=moe_tp_size,
         tp_rank=0,
+        tp_group=None,  # 0.5.21 topk.py:720 use_symmetric_memory(get_parallel().tp_group, disabled=True) only reads it
         moe_tp_size=moe_tp_size,
         moe_tp_rank=0,
         moe_ep_size=moe_ep_size,
@@ -650,6 +532,11 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
         "sglang.srt.layers.moe.moe_runner.flashinfer_trtllm",
         "sglang.srt.layers.moe.moe_runner.flashinfer_mxfp4",
         "sglang.srt.layers.quantization.mxfp4_flashinfer_trtllm_moe",
+        # 0.5.21 flashinfer_cutlass runner reads get_parallel().tp_group /
+        # is_allocation_symmetric() at module level (moe_runner/flashinfer_cutlass.py:21,
+        # :27, :283, :510) — every Nemotron-3 BF16 flashinfer_cutlass case raised
+        # "parallel name 'tp_group' has not been written" in the H20 campaign.
+        "sglang.srt.layers.moe.moe_runner.flashinfer_cutlass",
     ):
         try:
             modules.append(importlib.import_module(module_name))
@@ -659,15 +546,9 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
         for module in modules:
             replace(module, "get_tp_group", lambda: None)
             replace(module, "is_allocation_symmetric", lambda: False)
-            if module in {
-                _moe_layer_mod,
-                _std_dispatch_mod,
-                _topk_mod,
-                _mxint4_mod,
-                _mxfp4_mod,
-                _fp8_mod,
-                _modelopt_mod,
-            }:
+            # Any module that imported get_parallel at module level reads our
+            # single-process stand-in (the dynamically imported runners included).
+            if hasattr(module, "get_parallel"):
                 replace(module, "get_parallel", lambda: parallel)
         replace(_moe_layer_mod, "get_moe_expert_parallel_world_size", lambda: moe_ep_size)
         replace(_moe_layer_mod, "get_moe_expert_parallel_rank", lambda: 0)
@@ -688,12 +569,11 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
 @contextmanager
 def _pin_moe_runner_backend(backend: MoeRunnerBackend):
     """Pin SGLang's fused-MoE runner-backend selection for the ``with``
-    block, across SGLang's two pinning mechanisms (traced 2026-08-18,
-    AIC-1762 Task 4d).
+    block, across SGLang's two pinning mechanisms.
 
     SGLang 0.5.14: a bare module global, ``sglang.srt.layers.moe.utils.
-    MOE_RUNNER_BACKEND`` (utils.py:249 @0.5.14), read by
-    ``get_moe_runner_backend()`` (utils.py:310-313 @0.5.14). Behavior on
+    MOE_RUNNER_BACKEND`` (utils.py:249), read by
+    ``get_moe_runner_backend`` (utils.py:310-313). Behavior on
     this version is byte-identical to before this helper existed -- the
     same read/write/restore, just factored out of
     ``_benchmark_framework_quantized_moe``.
@@ -702,8 +582,8 @@ def _pin_moe_runner_backend(backend: MoeRunnerBackend):
     refactored into a process-level ``RuntimeContext``/``Flags`` singleton
     (``sglang/srt/runtime_context.py``, module-level ``_PARALLEL =
     ParallelContext()`` / ``_CONTEXT = RuntimeContext(parallel=_PARALLEL)``,
-    :1062-1063 @0.5.17, constructed at import time -- not a contextvar, not
-    per-request). ``get_moe_runner_backend()`` (utils.py:333-337 @0.5.17,
+    :1062-1063, constructed at import time -- not a contextvar, not
+    per-request). ``get_moe_runner_backend`` (utils.py:333-337,
     same accessor name as 0.5.14) now reads ``get_flags().moe.runner_backend``
     instead. Confirmed this is genuinely load-bearing on the
     runner-construction chain, not vestigial: it gates
@@ -757,32 +637,32 @@ def _pin_moe_runner_backend(backend: MoeRunnerBackend):
 @contextmanager
 def _pin_flashinfer_mxfp4_moe_precision(value: str | None):
     """Pin ``flashinfer_mxfp4_moe_precision`` for the ``with`` block, across
-    SGLang's two server_args mechanisms (found 2026-08-18, first real-GPU
-    0.5.17 run: this line crashed identically to the ``_global_server_args``
-    setup-time access, same root cause -- see the module-level comment above
-    ``_server_args_module`` for the full 0.5.14/0.5.17 trace).
+     SGLang's two server_args mechanisms (the first real-GPU
+     0.5.17 run crashed on this line identically to the ``_global_server_args``
+     setup-time access, same root cause -- see the module-level comment above
+     ``_server_args_module`` for the full 0.5.14/0.5.17 trace).
 
-    ``value=None`` means "leave it alone" (the ``moe_backend != "flashinfer_
-    mxfp4"`` case in the caller) -- a true no-op, not a pin to ``None``.
+     ``value=None`` means "leave it alone" (the ``moe_backend != "flashinfer_
+     mxfp4"`` case in the caller) -- a true no-op, not a pin to ``None``.
 
-    SGLang 0.5.14: mutate the mocked/real ``ServerArgs`` object's attribute
-    directly, exactly as before this fix -- every 0.5.14 consumer reads this
-    field straight off that object.
+     SGLang 0.5.14: mutate the mocked/real ``ServerArgs`` object's attribute
+     directly, exactly as before this fix -- every 0.5.14 consumer reads this
+     field straight off that object.
 
-    SGLang 0.5.17: mutating the ``ServerArgs`` object's attribute after
-    publish does NOT propagate. ``get_exec().moe.flashinfer_mxfp4_moe_
-    precision`` is what ``Mxfp4MoEMethod``/``Mxfp4FlashinferTrtllmMoEMethod``
-    actually read (mxfp4.py:344-345, mxfp4_flashinfer_trtllm_moe.py:53-54
-    @0.5.17) -- a ``_ConfigBag`` leaf, and ``_ConfigBag`` (runtime_context.py:
-    577-596) explicitly documents itself as snapshotted-at-publish and
-    read-only by bare assignment thereafter (``__setattr__`` raises,
-    runtime_context.py:616-620): "the bag is the single source of truth for
-    its fields thereafter." Its own docstring names the sanctioned writers:
-    ``get_context().override(source, ...)`` (permanent) or the scoped
-    ``.override(**kw)`` context manager (runtime_context.py:637-653) -- the
-    same transactional/exception-safe/restore-on-exit shape as
-    ``MoeFlags.override()`` in ``_pin_moe_runner_backend`` above, used here
-    the same way.
+     SGLang 0.5.17: mutating the ``ServerArgs`` object's attribute after
+     publish does NOT propagate. ``get_exec().moe.flashinfer_mxfp4_moe_
+     precision`` is what ``Mxfp4MoEMethod``/``Mxfp4FlashinferTrtllmMoEMethod``
+     actually read (mxfp4.py:344-345, mxfp4_flashinfer_trtllm_moe.py:53-54)
+    -- a ``_ConfigBag`` leaf, and ``_ConfigBag`` (runtime_context.py:
+     577-596) explicitly documents itself as snapshotted-at-publish and
+     read-only by bare assignment thereafter (``__setattr__`` raises,
+     runtime_context.py:616-620): "the bag is the single source of truth for
+     its fields thereafter." Its own docstring names the sanctioned writers:
+     ``get_context().override(source, ...)`` (permanent) or the scoped
+     ``.override(**kw)`` context manager (runtime_context.py:637-653) -- the
+     same transactional/exception-safe/restore-on-exit shape as
+     ``MoeFlags.override()`` in ``_pin_moe_runner_backend`` above, used here
+     the same way.
     """
     if value is None:
         yield
@@ -810,7 +690,8 @@ def _benchmark_framework_quantized_moe(
     *,
     moe_type: str,
     moe_backend: str,
-    num_tokens: int,
+    num_tokens_list: list[int],
+    on_result: Callable[[int, float, dict, str], None],
     hidden_size: int,
     inter_size: int,
     topk: int,
@@ -837,8 +718,14 @@ def _benchmark_framework_quantized_moe(
     is_fp4_experts: bool,
     int4_group_size: int,
     device: str,
-) -> tuple[float, dict, str]:
-    """Benchmark model-aware paths through SGLang FusedMoE (0.5.14/0.5.17)."""
+) -> str:
+    """Benchmark model-aware paths through SGLang FusedMoE (0.5.14/0.5.17).
+
+    The layer is constructed and its weights processed once; each token point in
+    ``num_tokens_list`` is then timed on it and handed to ``on_result(num_tokens,
+    latency_ms, power_stats, kernel_source)`` as soon as it is measured, so a crash
+    later in the sweep keeps the rows already persisted. Returns the kernel source.
+    """
     if moe_backend.startswith("flashinfer"):
         _ensure_writable_flashinfer_cubin_dir()
 
@@ -972,7 +859,7 @@ def _benchmark_framework_quantized_moe(
                     )
                 kernel_source = source_by_backend[moe_backend]
             elif moe_type == "nvfp4":
-                # NOTE (code review, 2026-08-18): on SM100/103 this model's
+                # NOTE (code review): on SM100/103 this model's
                 # requested moe_backend is "flashinfer_trtllm", which is also
                 # what MoeRunnerBackend.AUTO resolves to here (Qwen3_5MoeFor
                 # CausalLM_cases.yaml:128-132). A silently-failed
@@ -1008,11 +895,21 @@ def _benchmark_framework_quantized_moe(
                             f"requested={moe_backend}, actual={actual_backend}"
                         )
                     if actual_backend == "flashinfer_mxfp4":
-                        if quant_method._fi_kernel != "cutlass_sm90":
+                        # Mxfp4MoEMethod dispatches flashinfer_mxfp4 to one of three leaves by GPU
+                        # (mxfp4.py: SM90 cutlass_fused_moe w4-group-scaling, SM100 trtllm_fp4_block_scale_moe,
+                        # SM120 cutlass MXFP8xMXFP4); name the kernel source after the leaf that actually ran
+                        # (B200 the Hopper-only check rejected the 'trtllm_sm100' leaf gpt-oss
+                        # serves with on Blackwell — identity records: Mxfp4MoE -> trtllm_gen_moe).
+                        _fi_leaf_sources = {
+                            "cutlass_sm90": "sglang_flashinfer_cutlass_moe",
+                            "trtllm_sm100": "sglang_mxfp4_flashinfer_trtllm_moe",
+                            "flashinfer_cutlass_sm120": "sglang_flashinfer_cutlass_moe_sm120",
+                        }
+                        if quant_method._fi_kernel not in _fi_leaf_sources:
                             raise RuntimeError(
                                 f"SGLang {moe_type} has unexpected FlashInfer MXFP4 leaf {quant_method._fi_kernel!r}"
                             )
-                        kernel_source = "sglang_flashinfer_cutlass_moe"
+                        kernel_source = _fi_leaf_sources[quant_method._fi_kernel]
                     else:
                         kernel_source = source_by_backend[actual_backend]
                 elif (
@@ -1045,7 +942,7 @@ def _benchmark_framework_quantized_moe(
                         )
                     kernel_source = source_by_backend[moe_backend]
                 else:
-                    # NOTE (code review, 2026-08-18): bfloat16/fp8_block for
+                    # NOTE (code review): bfloat16/fp8_block for
                     # this model request moe_backend="triton", which is also
                     # what MoeRunnerBackend.AUTO resolves to here (no
                     # sglang_moe_backends override declared,
@@ -1068,55 +965,81 @@ def _benchmark_framework_quantized_moe(
             correction_bias = (
                 torch.zeros(num_experts, dtype=torch.float32, device=device) if has_correction_bias else None
             )
-            topk_layer = TopK(
-                top_k=topk,
-                layer_id=0,
-                use_grouped_topk=num_expert_group is not None and topk_group is not None,
-                num_expert_group=num_expert_group,
-                topk_group=topk_group,
-                renormalize=renormalize,
-                scoring_func=scoring_func,
-                correction_bias=correction_bias,
-                output_format=(
-                    TopKOutputFormat.STANDARD
-                    if routing_method_type is None and moe_backend not in {"flashinfer_mxfp4", "triton_kernel"}
-                    else None
-                ),
-                routed_scaling_factor=routed_scaling_factor,
-                apply_routed_scaling_factor_on_output=(
-                    routed_scaling_factor is not None and moe_layer.should_fuse_routed_scaling_factor_in_topk
-                ),
-                is_fp4_experts=is_fp4_experts,
-            )
-            hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
-            if distributed == "balanced":
-                logits = [
-                    balanced_logits(num_tokens, num_experts, topk).to(device=device, dtype=torch.float32)
-                    for _ in range(5)
-                ]
-            elif distributed == "power_law":
-                logits = [
-                    power_law_logits_v3(num_tokens, num_experts, topk, moe_ep_size, power_law_alpha).to(
-                        device=device, dtype=torch.float32
-                    )
-                    for _ in range(5)
-                ]
+            if routing_method_type == "Llama4":
+                # Serving builds the Llama-4 router with a custom routing function
+                # (fast_topk on the raw logits, then sigmoid; renormalize=False) —
+                # models/llama4.py:78-92 (function) and :114-118 (TopK construction).
+                # A generic sigmoid TopK would route through moe_fused_gate, which
+                # asserts "bias is required for non-softmax routing" (kernels/ops/moe/
+                # moe_fused_gate.py:384) — a kernel serving never runs for Llama-4.
+                from sglang.srt.models.llama4 import Llama4MoE
+
+                topk_layer = TopK(
+                    top_k=topk,
+                    layer_id=0,
+                    renormalize=False,
+                    custom_routing_function=Llama4MoE.custom_routing_function,
+                )
             else:
-                logits = [torch.randn(num_tokens, num_experts, dtype=torch.float32, device=device) for _ in range(5)]
+                topk_layer = TopK(
+                    top_k=topk,
+                    layer_id=0,
+                    use_grouped_topk=num_expert_group is not None and topk_group is not None,
+                    num_expert_group=num_expert_group,
+                    topk_group=topk_group,
+                    renormalize=renormalize,
+                    scoring_func=scoring_func,
+                    correction_bias=correction_bias,
+                    output_format=(
+                        TopKOutputFormat.STANDARD
+                        if routing_method_type is None and moe_backend not in {"flashinfer_mxfp4", "triton_kernel"}
+                        else None
+                    ),
+                    routed_scaling_factor=routed_scaling_factor,
+                    apply_routed_scaling_factor_on_output=(
+                        routed_scaling_factor is not None and moe_layer.should_fuse_routed_scaling_factor_in_topk
+                    ),
+                    is_fp4_experts=is_fp4_experts,
+                )
+            for num_tokens in num_tokens_list:
+                print(f"num_tokens {num_tokens} ({kernel_source})")
+                hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
+                if distributed == "balanced":
+                    logits = [
+                        balanced_logits(num_tokens, num_experts, topk).to(device=device, dtype=torch.float32)
+                        for _ in range(5)
+                    ]
+                elif distributed == "power_law":
+                    logits = [
+                        power_law_logits_v3(num_tokens, num_experts, topk, moe_ep_size, power_law_alpha).to(
+                            device=device, dtype=torch.float32
+                        )
+                        for _ in range(5)
+                    ]
+                else:
+                    logits = [
+                        torch.randn(num_tokens, num_experts, dtype=torch.float32, device=device) for _ in range(5)
+                    ]
 
-            def kernel_func():
-                for router_logits in logits:
-                    moe_layer(hidden_states, topk_layer(hidden_states, router_logits))
+                def kernel_func():
+                    for router_logits in logits:
+                        moe_layer(hidden_states, topk_layer(hidden_states, router_logits))
 
-            with benchmark_with_power(
-                device=device,
-                kernel_func=kernel_func,
-                num_warmups=5,
-                num_runs=10,
-                repeat_n=1,
-            ) as results:
-                pass
-            return results["latency_ms"] / len(logits), results["power_stats"], kernel_source
+                # FlashInfer-backed runners (flashinfer_trtllm / _mxfp4 / _cutlass / _cutedsl)
+                # are timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
+                with (
+                    flashinfer_autotuned(num_tokens, kernel_func, label=kernel_source),
+                    benchmark_with_power(
+                        device=device,
+                        kernel_func=kernel_func,
+                        num_warmups=5,
+                        num_runs=10,
+                        repeat_n=1,
+                    ) as results,
+                ):
+                    pass
+                on_result(num_tokens, results["latency_ms"] / len(logits), results["power_stats"], kernel_source)
+            return kernel_source
     finally:
         if moe_layer is not None:
             for parameter in moe_layer.parameters():
@@ -1296,17 +1219,69 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
         _check_compat(specifier, installed_version)
         for specifier in ("sglang>=0.5.14,<0.5.15", "sglang>=0.5.17,<0.5.18")
     )
+    # 0.5.21 (tag commit e00930c5489053f26d86b179cee0d087f846acbb) re-verified
+    # for the Hopper/Ada lanes only:
+    # * int4_wo: compressed_tensors.py:838-877 — CompressedTensorsMxInt4MoE
+    #   only under an explicit flashinfer_trtllm runner, the Triton WNA16 MoE
+    #   on SM100/103 auto or explicit triton, Marlin for every other CUDA
+    #   path -> SM89/90 stay on Marlin (declared 89/90: marlin). SM100 auto
+    #   moved from flashinfer_trtllm to Triton, so the SM100/103 declaration
+    #   is NOT verified on this series.
+    # * w4a16_mxfp4 (GPT-OSS): no gpt-oss runner override exists in
+    #   arg_groups/overrides.py any more (model_hook.py:524-528 still points
+    #   at a `_gpt_oss_overrides` that is gone); Mxfp4MoEMethod resolves
+    #   auto in create_moe_runner (mxfp4.py:1423-1430) to TRITON because
+    #   use_triton_kernels is only set by an explicit triton_kernel backend
+    #   (:382) -> SM89/90 declared `triton` matches serving. The SM100/103
+    #   flashinfer_mxfp4 declaration that 0.5.17 derived from the removed
+    #   override is NOT verified on this series.
+    # * w4a8_mxfp4_mxfp8 (DSV4 FP4 experts, SM100-only): not re-verified.
+    if not verified and _check_compat("sglang>=0.5.21,<0.5.22", installed_version):
+        verified = moe_type in ("int4_wo", "w4a16_mxfp4") and get_sm_version() in (89, 90)
+        # SM100/103 w4a16_mxfp4 re-verified on 0.5.21 from the B200 identity probes
+        # (benchmarks/evidence/collector/op-probe-2026-10/: results/sm100/sglang-0.5.21.yaml
+        # + results/retests/sm100/sglang-0.5.21.moe_auto.yaml):
+        # openai/gpt-oss-120b and gpt-oss-20b serve with Mxfp4MoEMethod -> MoeRunnerBackend.FLASHINFER_MXFP4
+        # (kernel family trtllm_gen_moe) under the default render AND under an explicit AUTO, i.e. the
+        # flashinfer_mxfp4 declaration the cases carry for SM100/103 still matches serving even though the
+        # gpt-oss server-args override is gone (the selection now lives in Mxfp4MoEMethod itself).
+        if not verified and moe_type == "w4a16_mxfp4" and get_sm_version() in (100, 103):
+            verified = True
+        # w4a8_mxfp4_mxfp8 (DeepSeek-V4 native fp4 experts, SM100-only lane) re-verified the same way: the five
+        # deepseek-ai/DeepSeek-V4* checkpoints serve on B200 with MoeRunnerBackend.FLASHINFER_MXFP4 (trtllm_gen_moe)
+        # under AUTO (results/retests/sm100/sglang-0.5.21.moe_auto.yaml); the harness's marlin prescription is the
+        # SM90 workaround ("fp4-experts on SM90: runner=auto crashes"), not the Blackwell path.
+        if not verified and moe_type == "w4a8_mxfp4_mxfp8" and get_sm_version() in (100, 103):
+            verified = True
+        # int4_wo on SM100/103: the source reading above ("SM100 auto moved to Triton") is contradicted
+        # by the B200 identity records, which the guard update (fd07bf6b, done on SM90)
+        # never consumed: moonshotai/Kimi-K2.5 (compressed-tensors W4A16) serves on B200 / 0.5.21 as
+        # CompressedTensorsFusedMoE -> trtllm_gen_moe under the default render
+        # (results/sm100/sglang-0.5.21.yaml) AND as moe_runner FLASHINFER_TRTLLM under an explicit AUTO
+        # (results/retests/sm100/sglang-0.5.21.moe_auto.yaml), i.e. the flashinfer_trtllm declaration the
+        # SM100/103 cases carry still matches serving. Hardware evidence outranks the source claim
+        # (harness rule: no claim from reading code). Re-opened after the b200_sxm shard run
+        # (GitLab job 469988017) rejected all 3,078 int4_wo cases on this guard alone.
+        if not verified and moe_type == "int4_wo" and get_sm_version() in (100, 103):
+            verified = True
     if not verified:
         raise RuntimeError(
             f"SGLang {moe_type} collection is verified only for the 0.5.14 and 0.5.17 series "
-            f"(installed: {installed_version}); re-verify framework dispatch before extending this guard."
+            f"(and 0.5.21 on SM89/SM90/SM100/SM103 for int4_wo / w4a16_mxfp4, SM100/SM103 for "
+            f"w4a8_mxfp4_mxfp8); installed: {installed_version}, SM{get_sm_version()}; "
+            "re-verify framework dispatch before extending this guard."
         )
     return installed_version
 
 
+def _triton_config_namespaces() -> list:
+    """SGLang's config module (framework runner) and this module (direct path)."""
+    return [sys.modules[get_config_dtype_str.__module__], globals()]
+
+
 def run_moe_torch(
     moe_type,
-    num_tokens,
+    num_tokens_list,
     hidden_size,
     inter_size,
     topk,
@@ -1338,6 +1313,11 @@ def run_moe_torch(
 ):
     torch.cuda.set_device(device)
     torch.set_default_device(device)
+    # One case carries the whole token sweep; a single int is accepted for fills and
+    # direct callers that re-measure one point.
+    num_tokens_list = [int(num_tokens_list)] if isinstance(num_tokens_list, int) else [int(n) for n in num_tokens_list]
+    if not num_tokens_list:
+        raise ValueError("SGLang MoE case has an empty num_tokens_list")
 
     assert moe_type in [
         "fp8_block",
@@ -1379,15 +1359,31 @@ def run_moe_torch(
         and moe_backend == "flashinfer_cutlass"
         and (hidden_size % 8 != 0 or local_inter_size % 8 != 0)
     ):
+        # FlashInfer 0.6.18 (pinned by SGLang 0.5.21, python/pyproject.toml:42)
+        # flashinfer_cutlass_fused_moe_binding.cu:386-394: min_alignment =
+        # 128 / (8 * min(act_bytes, weight_bytes)) = 8 for BF16, ICHECKed on both
+        # hidden_size and inter_size; SGLang does not pad this path (unquant.py:648-711).
         raise ValueError(
-            "SGLang FlashInfer CUTLASS BF16 MoE requires hidden_size and local_inter_size "
-            f"to be divisible by 8, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
+            "FIXME(kernel-limit): SGLang FlashInfer CUTLASS BF16 MoE requires hidden_size and local_inter_size "
+            "to be divisible by 8 (flashinfer 0.6.18 flashinfer_cutlass_fused_moe_binding.cu:386-394), "
+            f"got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     activation_vector_size = 16 if sm_version >= 100 else 8
-    if moe_backend == "triton" and is_gated and activation == "gelu" and local_inter_size % activation_vector_size != 0:
+    if (
+        moe_backend == "triton"
+        and is_gated
+        and activation in ("gelu", "silu")
+        and local_inter_size % activation_vector_size != 0
+    ):
+        # sgl-kernel JIT silu_and_mul / gelu_and_mul: activation.cuh:186
+        # RuntimeCheck(hidden_size % kVecSize == 0, "hidden size must be divisible
+        # by vector size"), kVecSize = kMaxVecBytes / sizeof(T) (16 bf16 on SM100+,
+        # 8 below). silu hit it on b200/gb300 (1,053 each) and rtxpro
+        # (1,377) at local_inter_size 168/84/40 (Nemotron-3-Super inter 2688 at TP16+).
         raise ValueError(
-            "SGLang Triton gated BF16 GELU requires local_inter_size "
-            f"to be divisible by {activation_vector_size}, got local_inter_size={local_inter_size}"
+            "FIXME(kernel-limit): SGLang Triton gated BF16 GELU/SiLU (sgl-kernel act_and_mul, "
+            f"activation.cuh:186) requires local_inter_size to be divisible by {activation_vector_size}, "
+            f"got local_inter_size={local_inter_size} (activation={activation})"
         )
     if (
         moe_type == "w4a16_mxfp4"
@@ -1396,9 +1392,14 @@ def run_moe_torch(
         and sm_version == 90
         and (hidden_size % 128 != 0 or local_inter_size % 128 != 0)
     ):
+        # SGLang 0.5.21 selects Mxfp4FlashinferCutlassMoEMethod on SM90 (fp8.py:448-455),
+        # which raises unless both widths are multiples of 128
+        # (mxfp4_flashinfer_cutlass_moe.py:67); the 256 round-up in layer.py:437-443
+        # applies only to the serialized-mxfp4 quant config, not to these FP4 experts.
         raise ValueError(
-            "SGLang SM90 DeepSeek-V4 W4A16 FP4 experts require hidden_size and local_inter_size "
-            f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
+            "FIXME(kernel-limit): SGLang SM90 DeepSeek-V4 W4A16 FP4 experts require hidden_size and local_inter_size "
+            "to be divisible by 128 (mxfp4_flashinfer_cutlass_moe.py:67 @0.5.21), "
+            f"got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     if (
         moe_type == "w4a8_mxfp4_mxfp8"
@@ -1412,7 +1413,7 @@ def run_moe_torch(
         # get_shuffle_matrix_sf_a_row_indices, which asserts M % 128 == 0
         # (flashinfer/utils.py), and the TRTLLM-gen batched GEMM has no config
         # for misaligned local widths (getValidConfigIndices). B200 probe
-        # 2026-07-05: local_inter 128/384/768/1536/3072 pass, 64/96/192 fail.
+        # local_inter 128/384/768/1536/3072 pass, 64/96/192 fail.
         # SM103 shares the exact flashinfer_mxfp4 code path but remains
         # hardware-unvalidated. v0.5.17's DeepSeek-V4-specific
         # Mxfp4FlashinferTrtllmMoEMethod retains the same unpadded weight
@@ -1420,6 +1421,7 @@ def run_moe_torch(
         # runtime series. (The separate serialized-MXFP4 Mxfp4MoEMethod does
         # pad, but is not the is_fp4_experts path guarded here.)
         raise ValueError(
+            "FIXME(kernel-limit): "
             "SGLang SM100/103 DeepSeek-V4 W4A8 FP4 experts require hidden_size and local_inter_size "
             f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
@@ -1427,14 +1429,14 @@ def run_moe_torch(
     # int4_wo runner truth remains SM-split in SGLang 0.5.14 and 0.5.17:
     # SM90 auto
     # resolves to Marlin (CompressedTensorsWNA16MoE), while SM100/103 force
-    # flashinfer_trtllm (server_args.py:3725-3737 @0.5.14;
-    # arg_groups/overrides.py:1697-1747 @0.5.17), whose
+    # flashinfer_trtllm (server_args.py:3725-3737;
+    # arg_groups/overrides.py:1697-1747), whose
     # scheme CompressedTensorsMxInt4MoE feeds BF16 activations straight into
     # trtllm_mxint4_block_scale_moe — the same W4A16 identity on a different
     # kernel (the FP8-activation variant arrived later, flashinfer PR#2912,
     # and is not used by 0.5.14).
     # FIXME(kernel-limit): the trtllm-gen MXINT4 grouped GEMM asserts
-    # "K must be divisible by blockK". B200 validation 2026-07-11 (pipeline
+    # "K must be divisible by blockK". B200 validation (pipeline
     # 57606364): Kimi-K2.5 local_inter 256 (moe_tp<=8) passes, 128/64
     # (moe_tp 16/32) fail — 707/3,078 cases, all with that one message.
     # The v0.5.17 scheme retains its group-size-32 and
@@ -1450,6 +1452,14 @@ def run_moe_torch(
         int4_config = get_moe_quantization_module_config("sglang", moe_type, model_name=model_name)
         int4_group_size = int(int4_config.get("group_size", 128))
         if hidden_size % int4_group_size != 0 or local_inter_size % int4_group_size != 0:
+            # FIXME(re-verify): no 0.5.21 source line rejects K % group_size. The kernels'
+            # own limits are stricter and fire on their own: SM100/103 MxInt4 packs
+            # block_k=128 bytes (compressed_tensors_w4a4_mxint4_moe.py:248-254 -> flashinfer
+            # 0.6.18 fused_moe/core.py:581, hidden/local_inter % 256), SM90 Marlin tiles
+            # (moe_wna16_marlin.cuh:140-152,265,747: hidden % 128, local_inter % 64). Marlin
+            # floor-divides the groups (compressed_tensors_wNa16_moe.py:158-159), so an
+            # unaligned K may run with a different group size than the row says — not shown
+            # either way, so this stays an unclassified failure until a run decides it.
             raise ValueError(
                 "SGLang INT4-WO group quantization requires hidden_size and local_inter_size "
                 f"to be divisible by group_size={int4_group_size}, got "
@@ -1458,9 +1468,14 @@ def run_moe_torch(
         block_shape = [0, int4_group_size]
     elif moe_type == "fp8_block":
         if moe_backend == "triton" and (hidden_size % 128 != 0 or local_inter_size % 128 != 0):
+            # Both GEMM inputs are per-token-group quantized at block_k=128
+            # (fused_moe_triton_kernels.py:866 -> fp8_kernel.py:577
+            # `assert x.shape[-1] % group_size == 0`): K = hidden_size for the
+            # first GEMM, local_inter_size for the second.
             raise ValueError(
-                "SGLang Triton fp8_block requires hidden_size and local_inter_size "
-                f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
+                "FIXME(kernel-limit): SGLang Triton fp8_block requires hidden_size and local_inter_size "
+                "to be divisible by 128 (fp8_kernel.py:577 via fused_moe_triton_kernels.py:866 @0.5.21), "
+                f"got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
             )
         block_shape = [128, 128]
     else:
@@ -1478,119 +1493,150 @@ def run_moe_torch(
         or apply_router_weight_on_input
         or (moe_backend != "triton" and not use_int4_w4a16)
     )
-    if use_framework_layer:
-        latency, power_stats, kernel_source = _benchmark_framework_quantized_moe(
-            moe_type=moe_type,
-            moe_backend=moe_backend,
-            num_tokens=num_tokens,
-            hidden_size=hidden_size,
-            inter_size=inter_size,
-            topk=topk,
-            num_experts=num_experts,
-            moe_tp_size=moe_tp_size,
-            moe_ep_size=moe_ep_size,
-            model_name=model_name,
-            distributed=distributed,
-            power_law_alpha=power_law_alpha,
-            activation=activation,
-            is_gated=is_gated,
-            has_bias=has_bias,
-            gemm1_alpha=gemm1_alpha,
-            gemm1_clamp_limit=gemm1_clamp_limit,
-            swiglu_limit=swiglu_limit,
-            scoring_func=scoring_func,
-            routing_method_type=routing_method_type,
-            routed_scaling_factor=routed_scaling_factor,
-            renormalize=renormalize,
-            has_correction_bias=has_correction_bias,
-            num_expert_group=num_expert_group,
-            topk_group=topk_group,
-            apply_router_weight_on_input=apply_router_weight_on_input,
-            is_fp4_experts=is_fp4_experts,
-            int4_group_size=int4_group_size,
-            device=device,
-        )
-    else:
-        rank0_workloads: list[Rank0Workload] | None = None
-        if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
-            rank0_workloads = build_rank0_workloads(
-                num_workloads=5,
-                num_tokens=num_tokens,
+    distribution = "power_law_" + str(power_law_alpha) if distributed == "power_law" else distributed
+
+    # Record (never choose) whether each timed Triton call used a tuned JSON or
+    # SGLang's default config; both the framework runner and the direct path
+    # resolve it through the same two config functions. One task times a whole
+    # num_tokens series, so the counters cover one point at a time: _persist
+    # hands them to the sidecar with that point's row and resets them.
+    with observe_triton_config_selection(_triton_config_namespaces()) as triton_config_observed:
+
+        def _persist(num_tokens: int, latency: float, power_stats: dict, kernel_source: str) -> None:
+            persisted = log_perf(
+                item_list=[
+                    {
+                        "moe_dtype": moe_type,
+                        "num_tokens": num_tokens,
+                        "hidden_size": hidden_size,
+                        "inter_size": inter_size,
+                        "topk": topk,
+                        "num_experts": num_experts,
+                        "moe_tp_size": moe_tp_size,
+                        "moe_ep_size": moe_ep_size,
+                        "distribution": distribution,
+                        "latency": latency,
+                    }
+                ],
+                framework="SGLang",
+                version=installed_sglang_version,
+                device_name=torch.cuda.get_device_name(device),
+                op_name="moe",
+                kernel_source=kernel_source,
+                perf_filename=perf_filename,
+                power_stats=power_stats,
+            )
+            if not persisted:
+                raise RuntimeError("Failed to persist SGLang MoE performance row")
+            point_observed = dict(triton_config_observed)
+            for key in triton_config_observed:
+                triton_config_observed[key] = 0
+            if moe_backend == "triton":
+                append_triton_config_record(
+                    perf_filename,
+                    {
+                        "moe_dtype": moe_type,
+                        "num_tokens": num_tokens,
+                        "hidden_size": hidden_size,
+                        "inter_size": inter_size,
+                        "topk": topk,
+                        "num_experts": num_experts,
+                        "moe_tp_size": moe_tp_size,
+                        "moe_ep_size": moe_ep_size,
+                        "device_name": torch.cuda.get_device_name(device),
+                    },
+                    kernel_source,
+                    point_observed,
+                )
+
+        if use_framework_layer:
+            _benchmark_framework_quantized_moe(
+                moe_type=moe_type,
+                moe_backend=moe_backend,
+                num_tokens_list=num_tokens_list,
+                on_result=_persist,
                 hidden_size=hidden_size,
+                inter_size=inter_size,
                 topk=topk,
                 num_experts=num_experts,
+                moe_tp_size=moe_tp_size,
                 moe_ep_size=moe_ep_size,
-                distributed=distributed,
-                power_law_alpha=power_law_alpha if distributed == "power_law" else None,
-                dtype=torch.bfloat16,
-                device=torch.device(device),
-            )
-        try:
-            latency, power_stats = benchmark(
-                num_tokens,
-                num_local_experts,
-                (2 if is_gated else 1) * local_inter_size,
-                hidden_size,
-                topk,
-                torch.bfloat16,
-                moe_type == "fp8_block",
-                False,
-                False,
-                block_shape=block_shape,
+                model_name=model_name,
                 distributed=distributed,
                 power_law_alpha=power_law_alpha,
-                workloads=rank0_workloads,
-                swiglu_limit=swiglu_limit,
                 activation=activation,
                 is_gated=is_gated,
+                has_bias=has_bias,
                 gemm1_alpha=gemm1_alpha,
                 gemm1_clamp_limit=gemm1_clamp_limit,
+                swiglu_limit=swiglu_limit,
+                scoring_func=scoring_func,
+                routing_method_type=routing_method_type,
+                routed_scaling_factor=routed_scaling_factor,
+                renormalize=renormalize,
+                has_correction_bias=has_correction_bias,
+                num_expert_group=num_expert_group,
+                topk_group=topk_group,
+                apply_router_weight_on_input=apply_router_weight_on_input,
+                is_fp4_experts=is_fp4_experts,
+                int4_group_size=int4_group_size,
+                device=device,
             )
-        except Exception:
+        else:
+            kernel_source = {
+                "triton": "sglang_fused_moe_triton",
+                "triton_kernel": "sglang_triton_kernel_moe",
+                "marlin": "sglang_marlin_moe",
+                "flashinfer_trtllm": "sglang_flashinfer_trtllm_moe",
+                "flashinfer_cutlass": "sglang_flashinfer_cutlass_moe",
+            }[moe_backend]
+            try:
+                for num_tokens in num_tokens_list:
+                    rank0_workloads: list[Rank0Workload] | None = None
+                    if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
+                        rank0_workloads = build_rank0_workloads(
+                            num_workloads=5,
+                            num_tokens=num_tokens,
+                            hidden_size=hidden_size,
+                            topk=topk,
+                            num_experts=num_experts,
+                            moe_ep_size=moe_ep_size,
+                            distributed=distributed,
+                            power_law_alpha=power_law_alpha if distributed == "power_law" else None,
+                            dtype=torch.bfloat16,
+                            device=torch.device(device),
+                        )
+                    latency, power_stats = benchmark(
+                        num_tokens,
+                        num_local_experts,
+                        (2 if is_gated else 1) * local_inter_size,
+                        hidden_size,
+                        topk,
+                        torch.bfloat16,
+                        moe_type == "fp8_block",
+                        False,
+                        False,
+                        block_shape=block_shape,
+                        distributed=distributed,
+                        power_law_alpha=power_law_alpha,
+                        workloads=rank0_workloads,
+                        swiglu_limit=swiglu_limit,
+                        activation=activation,
+                        is_gated=is_gated,
+                        gemm1_alpha=gemm1_alpha,
+                        gemm1_clamp_limit=gemm1_clamp_limit,
+                    )
+                    _persist(num_tokens, latency, power_stats, kernel_source)
+            except Exception:
+                _fmoe_kernels_mod._B_DESC_CACHE.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
+                raise
             _fmoe_kernels_mod._B_DESC_CACHE.clear()
             gc.collect()
             torch.cuda.empty_cache()
-            raise
-
-    if not use_framework_layer:
-        _fmoe_kernels_mod._B_DESC_CACHE.clear()
-        gc.collect()
-        torch.cuda.empty_cache()
 
     restart_worker = torch.cuda.memory_allocated(device) > torch.cuda.get_device_properties(device).total_memory // 4
-    if not use_framework_layer:
-        kernel_source = {
-            "triton": "sglang_fused_moe_triton",
-            "triton_kernel": "sglang_triton_kernel_moe",
-            "marlin": "sglang_marlin_moe",
-            "flashinfer_trtllm": "sglang_flashinfer_trtllm_moe",
-            "flashinfer_cutlass": "sglang_flashinfer_cutlass_moe",
-        }[moe_backend]
-    persisted = log_perf(
-        item_list=[
-            {
-                "moe_dtype": moe_type,
-                "num_tokens": num_tokens,
-                "hidden_size": hidden_size,
-                "inter_size": inter_size,
-                "topk": topk,
-                "num_experts": num_experts,
-                "moe_tp_size": moe_tp_size,
-                "moe_ep_size": moe_ep_size,
-                "distribution": "power_law_" + str(power_law_alpha) if distributed == "power_law" else distributed,
-                "latency": latency,
-            }
-        ],
-        framework="SGLang",
-        version=installed_sglang_version,
-        device_name=torch.cuda.get_device_name(device),
-        op_name="moe",
-        kernel_source=kernel_source,
-        perf_filename=perf_filename,
-        power_stats=power_stats,
-    )
-    if not persisted:
-        raise RuntimeError("Failed to persist SGLang MoE performance row")
     if restart_worker:
         return WORKER_RESTART
 

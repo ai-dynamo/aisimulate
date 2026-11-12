@@ -3,11 +3,10 @@
 """GLM-5 DSA sparse-attention kernel-level collector for SGLang.
 
 GLM-5 analogue of ``deepseekv4_sparse_modules.py``. Collects the three GLM-5
-NSA/DSA sparse sub-kernels at the kernel level, SAME-SOURCE: every sub-kernel
-derives its ``(prefix, isl, bs)`` shapes STRICTLY 1:1 from the GLM-5 DSA
-attention-module CSV (``dsa_context_module`` / ``dsa_generation_module``) — the
-same mechanism DSV4 uses against its csa/hca module CSVs. Shapes only; the
-kernel is benched standalone with synthetic fp8/bf16 inputs (no real weights).
+NSA/DSA sparse sub-kernels at the kernel level. Each task times the points its
+op-plan row lists (op_plans._sglang_glm5_sparse_rows): the DSA module plan's
+points of the checkpoint. The kernel is benched standalone with synthetic
+fp8/bf16 inputs (no real weights).
 
 Sub-kernels (GLM-5 DSA prefill path, in order):
     1. ``deep_gemm.fp8_mqa_logits``  (mqa)      indexer scoring, NON-paged ragged
@@ -27,17 +26,19 @@ CSV schema matches the aic module CSVs (``isl``=M, ``step``=past_kv).
 
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file; earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import os
-import sys
 
 import torch
 
 # Generic (kernel-agnostic) infra reused from the DSV4 sparse collector.
+from collector.op_plans import plan_cases
 from collector.sglang.deepseekv4_sparse_modules import (
     _bench_cuda_graph,
-    _derive_context_shapes,
     _guarded_bench,
 )
 from collector.sglang.deepseekv4_sparse_modules import (
@@ -60,31 +61,6 @@ __all__ = [
 ]
 
 GLM5_ARCHITECTURE = "GlmMoeDsaForCausalLM"
-
-
-def _selected_glm5_models():
-    """GLM model to collect sparse kernels for. The kernels (mqa/topk/dsa_attn)
-    are checkpoint-quantization-independent and use only model geometry. On
-    SM90, select the registered BF16 GLM-5 identity to match the supported
-    full-module plan without advertising an NVFP4 artifact. On SM100/103,
-    prefer the longest-range registered GLM DSA NVFP4 artifact (GLM-5.2-NVFP4
-    covers 1M tokens, then GLM-5-NVFP4). Return no cases when a targeted model
-    filter selects an unsupported or non-GLM checkpoint."""
-    try:
-        from collector.sglang.collect_mla_module import get_mla_module_model_specs
-    except ModuleNotFoundError:
-        from collect_mla_module import get_mla_module_model_specs
-    # Respect COLLECTOR_MODEL_PATH for targeted runs. Without a model filter,
-    # prefer the longest-context GLM representative so one full/raw sparse sweep
-    # covers the shorter GLM-5 range as well.
-    paths = {s.model_path for s in get_mla_module_model_specs(attention_type="dsa")}
-    if get_sm_version() not in {100, 103, 120}:
-        return ["zai-org/GLM-5"] if "zai-org/GLM-5" in paths else []
-    if "nvidia/GLM-5.2-NVFP4" in paths:
-        return ["nvidia/GLM-5.2-NVFP4"]
-    if "nvidia/GLM-5-NVFP4" in paths:
-        return ["nvidia/GLM-5-NVFP4"]
-    return []
 
 
 def _glm5_sparse_config(model_path: str):
@@ -117,11 +93,9 @@ KERNEL_TO_KERNEL_SOURCE = {
 }
 
 
-def _make_perf_filename(kernel: str, output_path: str, op_name_map: dict | None = None) -> str:
-    if op_name_map is None:
-        op_name_map = KERNEL_TO_OP_NAME
+def _make_perf_filename(kernel: str, output_path: str) -> str:
     if os.path.isdir(output_path) or not output_path.endswith(".txt"):
-        return os.path.join(output_path, f"{op_name_map[kernel]}_perf.txt")
+        return os.path.join(output_path, f"{KERNEL_TO_OP_NAME[kernel]}_perf.txt")
     return output_path
 
 
@@ -139,19 +113,12 @@ def _write_row(
     model_path,
     score_mode=None,
     kernel_source=None,
-    architecture: str = GLM5_ARCHITECTURE,
-    op_name_map: dict | None = None,
 ):
-    # ``architecture`` / ``op_name_map`` default to GLM-5 so existing GLM-5
-    # callers are unchanged; DeepSeek-V3.2 reuses this with its own values
-    # (DeepseekV32ForCausalLM + dsv32_* names) -- see dsv32_dsa_sparse_modules.
-    if op_name_map is None:
-        op_name_map = KERNEL_TO_OP_NAME
     os.makedirs(os.path.dirname(os.path.abspath(perf_filename)) or ".", exist_ok=True)
     mla_dtype = "bfloat16" if kernel == "dsa_attn" else "fp8_e4m3"
     item = {
         "model": model_path,
-        "architecture": architecture,
+        "architecture": GLM5_ARCHITECTURE,
         "mla_dtype": mla_dtype,
         "kv_cache_dtype": "fp8_e4m3",
         "gemm_type": "fp8_block",
@@ -170,11 +137,11 @@ def _write_row(
         framework="SGLang",
         version="kernel-level",
         device_name=device_name,
-        op_name=op_name_map[kernel],
+        op_name=KERNEL_TO_OP_NAME[kernel],
         kernel_source=kernel_source or KERNEL_TO_KERNEL_SOURCE[kernel],
         perf_filename=perf_filename,
     ):
-        raise RuntimeError(f"failed to persist {architecture} sparse row to {perf_filename}")
+        raise RuntimeError(f"failed to persist {GLM5_ARCHITECTURE} sparse row to {perf_filename}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -527,176 +494,27 @@ def _bench_glm5_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device):
     return KERNEL_TO_KERNEL_SOURCE[kernel], [(None, r["latency_ms"])]
 
 
-def _dsa_context_derived_shapes(model_path):
-    """Context (prefix, isl, bs) shapes derived DIRECTLY from the DSA context
-    INPUT sweep (batch x seq x prefix + the same validity filter dsa_context
-    uses), NOT read back from dsa_context_module_perf.txt.
-
-    Why not 1:1 read the module CSV: the CP model looks up mqa_full / topk_last
-    at the FULL chunk isl, but dsa_context drops large isl (bs*seq beyond the
-    FlashMLA sched-meta smem cap). fp8_mqa_logits / fast_topk have no such cap,
-    so reusing only the rows dsa_context survived makes the cheap kernels
-    inherit a drop they can avoid. Deriving from the input grid collects every
-    valid (isl, prefix) the indexer would actually see.
-
-    isl==1 (single-token decode) is rejected by the context validity filter, so
-    this returns prefill/context shapes only; decode shapes still come from the
-    generation CSV.
-    """
-    try:
-        from collector.case_generator import get_mla_module_sweep_spec
-        from collector.sglang.collect_mla_module import (
-            _DSA_CEILING_MAX_POSITIONS,
-            _dsa_context_prefix_shape_is_valid,
-            _filter_cases_from_env,
-            _model_max_position_embeddings,
-            dsa_indexer_total_kv_tokens_supported,
-        )
-    except ModuleNotFoundError:
-        from case_generator import get_mla_module_sweep_spec
-        from collect_mla_module import (
-            _DSA_CEILING_MAX_POSITIONS,
-            _dsa_context_prefix_shape_is_valid,
-            _filter_cases_from_env,
-            _model_max_position_embeddings,
-            dsa_indexer_total_kv_tokens_supported,
-        )
-    sweep = get_mla_module_sweep_spec("sglang")
-    max_pos = _model_max_position_embeddings(model_path)
-
-    def _valid(bs, isl, prefix):
-        # Reuse the dsa_context MODULE's skip verbatim: max_token
-        # (context_max_tokens) + large-seq cap + per-request max_pos/indexer-shape
-        # + KV-pool total-token limit (dsa_indexer_total_kv_tokens_supported).
-        # Only the FlashMLA smem cap is omitted -- the cheap fp8_mqa_logits /
-        # fast_topk / sparse_fwd kernels don't hit it.
-        if bs * isl > sweep.context_max_tokens:
-            return False
-        if isl >= sweep.context_large_sequence_min and bs > sweep.context_large_sequence_max_batch_size:
-            return False
-        return _dsa_context_prefix_shape_is_valid(
-            bs, isl, prefix, max_position_embeddings=max_pos
-        ) and dsa_indexer_total_kv_tokens_supported(bs, isl, prefix, is_prefill=True)
-
-    # AIC_DSA_CONTEXT_* env pin: _filter_cases_from_env wants (bs, seq, ip, prefix).
-    def _env(cases):
-        tagged = [(bs, isl, True, prefix) for (bs, isl, prefix) in cases]
-        kept = _filter_cases_from_env(tagged, is_prefill=True, attn_type="dsa")
-        return [(bs, isl, prefix) for (bs, isl, _ip, prefix) in kept]
-
-    shapes = _derive_context_shapes(
-        sweep.context_batch_sizes,
-        sweep.context_sequence_lengths,
-        sweep.context_prefix_lengths,
-        _valid,
-        env_filter=_env,
-    )
-    # Ceiling: put a real (prefix, isl) point at prefix + isl == each hardcoded
-    # DSA max_position (_DSA_CEILING_MAX_POSITIONS); _valid below drops any above
-    # this model's own max. So GLM-5.2 also lands a point at GLM-5's 202752.
-    # Mirrors the DSA context module's ceiling so CP near-max queries interpolate
-    # within data instead of extrapolating across the coarse prefix grid.
-    have = set(shapes)
-    ceiling_candidates = []
-    for cover in _DSA_CEILING_MAX_POSITIONS:
-        for isl in sweep.context_sequence_lengths:
-            ceil_prefix = cover - isl
-            for bs in sweep.context_batch_sizes:
-                key = (ceil_prefix, isl, bs)
-                if ceil_prefix > 0 and key not in have and _valid(bs, isl, ceil_prefix):
-                    ceiling_candidates.append((bs, isl, ceil_prefix))
-    # Subject the injected ceiling points to the same AIC_DSA_CONTEXT_* env pin
-    # as the base shapes, so a targeted collector run can't pick up extra shapes.
-    for bs, isl, ceil_prefix in _env(ceiling_candidates):
-        key = (ceil_prefix, isl, bs)
-        if key not in have:
-            shapes.append(key)
-            have.add(key)
-    return shapes
-
-
-def _dsa_generation_derived_shapes(model_path):
-    """Decode ``(kv_len, isl=1, bs)`` shapes derived from the dsa_generation
-    INPUT sweep (generation_batch_sizes x generation_sequence_lengths +
-    generation validity), NOT read back from dsa_generation_module_perf.txt.
-    Decode sweeps batch x kv_cache_len with isl==1 (perf ``step`` = kv_len);
-    reuses _derive_context_shapes with seq_list=[1] and the kv-length sweep as
-    the prefix dimension.
-    """
-    try:
-        from collector.case_generator import get_mla_module_sweep_spec
-        from collector.sglang.collect_mla_module import _DSA_CEILING_MAX_POSITIONS, _model_max_position_embeddings
-    except ModuleNotFoundError:
-        from case_generator import get_mla_module_sweep_spec
-        from collect_mla_module import _DSA_CEILING_MAX_POSITIONS, _model_max_position_embeddings
-    sweep = get_mla_module_sweep_spec("sglang")
-    max_pos = _model_max_position_embeddings(model_path)
-
-    def _valid(bs, isl, kv):
-        if bs <= 0 or kv <= 0:
-            return False
-        if bs * kv > sweep.generation_max_tokens:
-            return False
-        if kv >= sweep.generation_large_sequence_min and bs > sweep.generation_large_sequence_max_batch_size:
-            return False
-        return not (max_pos and kv >= max_pos)  # decode kv length must be < max_position
-
-    shapes = _derive_context_shapes(sweep.generation_batch_sizes, [1], sweep.generation_sequence_lengths, _valid)
-    # Ceiling: extend the decode kv-length grid to each hardcoded DSA
-    # max_position-1 (_DSA_CEILING_MAX_POSITIONS) at bs=1, so GLM-5.2 decode near
-    # max doesn't extrapolate. High-context decode is single-stream, so add at
-    # bs=1 and bypass the bs*kv token budget for these ceiling points (kept
-    # kv < max_position). Mirrors the DSA generation module's step ceiling.
-    have = set(shapes)
-    for cover in _DSA_CEILING_MAX_POSITIONS:
-        kv = cover - 1
-        key = (kv, 1, 1)
-        if kv > 0 and (max_pos is None or kv < max_pos) and key not in have:
-            shapes.append(key)
-            have.add(key)
-    return shapes
-
-
 def run_glm5_dsa_sparse_kernel_worker(
     model_path,
     kernel,
-    bs_only,
+    batch_size,
+    points,
     *,
     perf_filename,
     device="cuda:0",
-    architecture: str = GLM5_ARCHITECTURE,
-    op_name_map: dict | None = None,
-    label: str = "glm5",
 ):
-    # ``architecture`` / ``op_name_map`` / ``label`` default to GLM-5; DeepSeek-V3.2
-    # reuses this same worker with its own values (kernels/shapes come from the
-    # model config, so only the output tag + filenames + log label differ).
-    if op_name_map is None:
-        op_name_map = KERNEL_TO_OP_NAME
-    if kernel not in op_name_map:
-        raise ValueError(f"unknown kernel={kernel}; expected one of {list(op_name_map)}")
+    """One (model, batch) row of the op plan: bench each listed ``[prefix, isl]`` point."""
+    if kernel not in KERNEL_TO_OP_NAME:
+        raise ValueError(f"unknown kernel={kernel}; expected one of {list(KERNEL_TO_OP_NAME)}")
+    bs_only = int(batch_size)
+    shapes = [(int(prefix), int(isl), bs_only) for prefix, isl in points]
+    if not shapes:
+        raise RuntimeError(f"glm5-sparse {kernel} bs={bs_only}: the row lists no points")
     sc = _glm5_sparse_config(model_path)
     output_dir = os.path.dirname(perf_filename) or os.getcwd()
-    perf_path = _make_perf_filename(kernel, output_dir, op_name_map)
-    # Both context and decode shapes are derived from the DSA module INPUT
-    # sweeps (no perf.txt read): context from dsa_context, decode (isl==1)
-    # from dsa_generation. The sparse kernels thus cover every shape the
-    # modules intend, not just the rows the full module survived at runtime.
-    ctx_shapes = _dsa_context_derived_shapes(model_path)
-    dec_shapes = _dsa_generation_derived_shapes(model_path)
-    _seen = set(ctx_shapes)
-    shapes = ctx_shapes + [sh for sh in dec_shapes if sh not in _seen]
-    # this task owns one bs (collect.py distributes bs across GPU workers)
-    shapes = [(prefix, isl, bs) for (prefix, isl, bs) in shapes if bs == bs_only]
-    if not shapes:
-        # A queued (kernel, bs) task with no derivable shapes is a case-plan
-        # inconsistency, not a clean completion: fail closed so it is recorded.
-        raise RuntimeError(f"{label}-sparse {kernel} bs={bs_only}: queued task resolved no shapes")
-    if "--smoke" in sys.argv and len(shapes) > 8:
-        sample_indices = sorted({round(i * (len(shapes) - 1) / 7) for i in range(8)})
-        shapes = [shapes[index] for index in sample_indices]
+    perf_path = _make_perf_filename(kernel, output_dir)
     device_name = torch.cuda.get_device_name(device)
-    print(f"[{label}-sparse {kernel} bs={bs_only}] {len(shapes)} shapes -> {perf_path}")
+    print(f"[glm5-sparse {kernel} bs={bs_only}] {len(shapes)} shapes -> {perf_path}")
     n_ok = 0
     failures = []
     for prefix, isl, bs in shapes:
@@ -729,8 +547,6 @@ def run_glm5_dsa_sparse_kernel_worker(
                 model_path=model_path,
                 score_mode=score_mode,
                 kernel_source=kernel_source,
-                architecture=architecture,
-                op_name_map=op_name_map,
             )
         n_ok += 1
     error_count = len(failures)
@@ -738,37 +554,16 @@ def run_glm5_dsa_sparse_kernel_worker(
     print(f"  {kernel}: {summary}")
     if not n_ok or failures:
         details = "\n- ".join(failures) if failures else "no inner shapes produced a row"
-        raise RuntimeError(f"{label}-sparse {kernel} bs={bs_only}: {summary}; failures:\n- {details}")
-
-
-def _glm5_sparse_kernel_cases(kernel):
-    # Platform representation lives outside this getter: pre-Hopper is dropped
-    # by the op_min_sm=90 capability floors (the DeepGEMM fp8_mqa_logits /
-    # FlashMLA sparse family requires SM90+ kernel libraries, same rationale as
-    # the dsa_*_module floors) and SM120 is parked by the registry
-    # unverified_sms markers until its different indexer API is validated.
-    # One task per (model, bs) so collect.py spreads bs across the GPU workers
-    # (no single-worker cuda-graph private-pool buildup -> no 1-worker-sweep
-    # deadlock). All sparse kernels run a single fixed head config: the FMLA
-    # pads to its required head count OUTSIDE the kernel (model TP zero-pad),
-    # so the kernel is TP-independent -> one config per bs, no tp sweep. Each
-    # task sweeps (isl, prefix) for its bs.
-    cases = []
-    for m in _selected_glm5_models():
-        ctx = _dsa_context_derived_shapes(m)
-        dec = _dsa_generation_derived_shapes(m)
-        bss = sorted({b for (_p, _i, b) in ctx} | {b for (_p, _i, b) in dec})
-        cases.extend([m, kernel, b] for b in bss)
-    return cases
+        raise RuntimeError(f"glm5-sparse {kernel} bs={bs_only}: {summary}; failures:\n- {details}")
 
 
 def get_glm5_mqa_test_cases():
-    return _glm5_sparse_kernel_cases("mqa")
+    return plan_cases("glm5_mqa_logits_module", "sglang", get_sm_version())
 
 
 def get_glm5_topk_test_cases():
-    return _glm5_sparse_kernel_cases("topk")
+    return plan_cases("glm5_topk_module", "sglang", get_sm_version())
 
 
 def get_glm5_dsa_attn_test_cases():
-    return _glm5_sparse_kernel_cases("dsa_attn")
+    return plan_cases("glm5_dsa_attn_module", "sglang", get_sm_version())

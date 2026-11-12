@@ -206,6 +206,246 @@ def test_prediction_materializes_rank_local_capacity_without_a_model(profile, ti
     assert reserved["num_gpu_blocks"] < lowered["num_gpu_blocks"]
 
 
+@pytest.mark.parametrize(
+    "policy",
+    ["vllm_native_ar_model_step_cuda_v1", "vllm_native_fpm_model_step_cuda_v1"],
+)
+def test_ar_native_cuda_policy_keeps_ar_and_speculative_measurements_separate(profile, timing_systems, policy):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
+
+    path = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        row.update(
+            **dict(zip(EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, strict=True)),
+            measurement_policy=policy,
+            timing_scope="model_step_cuda",
+            measurement_reduction="single_sample",
+            source_sample_count=1,
+        )
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(
+        schema_version=7,
+        measurement_policy=policy,
+        timing_scope="model_step_cuda",
+        parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    config = dict(
+        model=profile["model"],
+        fpm_profile=profile,
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        worker_type="aggregated",
+        tp=2,
+        moe_tp_size=2,
+        moe_ep_size=1,
+        systems_paths=[timing_systems],
+        estimation_mode="fpm_interpolation",
+        fallback_policy="deny",
+        estimator_config={"fpm_interpolation": {"method": "direct"}},
+    )
+    if policy == "vllm_native_fpm_model_step_cuda_v1":
+        with pytest.raises((ValueError, RuntimeError), match="speculative-round identity"):
+            RustForwardPassPerfModel.best_available(config)
+    else:
+        model = RustForwardPassPerfModel.best_available(config)
+        # The AR fixture declares 1 ms at every measured decode coordinate.
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "scheduled_requests": {
+                    "num_decode_requests": 1,
+                    "sum_decode_kv_tokens": 1,
+                }
+            }
+        ) == pytest.approx(1.0)
+
+
+def _speculative_execution(method, *, canonical_target=None):
+    """Descriptor with a separate test draft, or the documented canonical MTP draft equal to the target."""
+    draft = (
+        (canonical_target["model"], canonical_target["model_revision"])
+        if canonical_target
+        else ("test/draft", "2" * 40)
+    )
+    return {
+        "kind": "speculative_round",
+        "method": method,
+        "num_draft_tokens": 3,
+        "draft_model": draft[0],
+        "draft_revision": draft[1],
+        "timing_scope": "model_step_cuda",
+    }
+
+
+def _install_speculative_rows(profile, timing_systems, timings, *, canonical_target=None):
+    """Write dp=1 rows for each method at identical coordinates with distinct (prefill, decode) ms."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+    path = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    base = [row for row in pq.read_table(path).to_pylist() if row["dp"] == 1]
+    rows = []
+    for method, (prefill_ms, decode_ms) in timings.items():
+        deployment = load_fpm_profile(
+            {
+                **profile,
+                "deployments": [
+                    {
+                        **profile["deployments"][0],
+                        "execution_profile": _speculative_execution(method, canonical_target=canonical_target),
+                    }
+                ],
+            }
+        ).deployments[0]
+        identity = dict(zip(EXECUTION_COLUMNS, deployment.execution_identity(profile["model_revision"]), strict=True))
+        for row in base:
+            rows.append(
+                row
+                | identity
+                | dict(
+                    measurement_policy="vllm_native_fpm_model_step_cuda_v1",
+                    timing_scope="model_step_cuda",
+                    measurement_reduction="single_sample",
+                    source_sample_count=1,
+                    # Deliberately synthetic per-round times, not an analytical estimate.
+                    latency_ms=prefill_ms if row["workload_kind"] == "prefill" else decode_ms,
+                )
+            )
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(
+        schema_version=7,
+        measurement_policy="vllm_native_fpm_model_step_cuda_v1",
+        timing_scope="model_step_cuda",
+        row_count=len(rows),
+        parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+
+
+def _speculative_public(profile, timing_systems):
+    return CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(profile),
+                "systems_paths": [timing_systems],
+                "context_length": 4096,
+                "nextn": 3,
+                "nextn_accepted": 1.78,
+            },
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 7},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 2},
+            },
+        }
+    )
+
+
+def _requested_method_profile(profile, method, *, canonical=False):
+    profile["model_revision"] = "1" * 40
+    profile["deployments"] = profile["deployments"][:1]
+    _observed_profile(profile, context=4096)
+    profile["deployments"][0]["execution_profile"] = _speculative_execution(
+        method, canonical_target=profile if canonical else None
+    )
+
+
+@pytest.mark.parametrize("method,other", [("eagle3", "mtp"), ("mtp", "eagle3")])
+def test_speculative_method_never_borrows_the_other_methods_rows(profile, timing_systems, method, other):
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    _requested_method_profile(profile, method)
+    _install_speculative_rows(profile, timing_systems, {other: (70.0, 110.0)})
+    spec = prediction_to_replay_spec(_speculative_public(profile, timing_systems))
+    with pytest.raises(Exception, match="No FPM cell matches"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+@pytest.mark.parametrize(
+    "method,other,canonical",
+    [("eagle3", "mtp", False), ("mtp", "eagle3", False), ("mtp", "eagle3", True)],
+    ids=["eagle3", "mtp", "mtp-canonical-target-draft"],
+)
+def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(
+    profile, timing_systems, method, other, canonical
+):
+    from aisimulate import _runtime
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper import ReplayOutputRequirements
+
+    _requested_method_profile(profile, method, canonical=canonical)
+    execution = profile["deployments"][0]["execution_profile"]
+    if canonical:
+        assert (execution["draft_model"], execution["draft_revision"]) == (profile["model"], profile["model_revision"])
+    # The other method's rows share every coordinate but carry 10x timings.
+    _install_speculative_rows(
+        profile,
+        timing_systems,
+        {method: (7.0, 11.0), other: (70.0, 110.0)},
+        canonical_target=profile if canonical else None,
+    )
+    public = _speculative_public(profile, timing_systems)
+    restored = CorePredictionConfig.model_validate_json(public.model_dump_json())
+    spec = prediction_to_replay_spec(restored)
+    diagnostics = {}
+    materialized = materialize_aic_num_gpu_blocks(
+        spec.backend_deployment.agg_engine_args, memory_diagnostics=diagnostics
+    )
+    # Observed 1 GiB / 512 bytes per token / 64 tokens per block; no draft or graph charge is added.
+    assert materialized["num_gpu_blocks"] == 32768
+    assert diagnostics["total_kv_size_bytes"] == 1024**3
+    assert diagnostics["memory_breakdown"] is None
+    canonical_only = deepcopy(spec.backend_deployment.agg_engine_args)
+    canonical_only.pop("aic_nextn")
+    assert materialize_aic_num_gpu_blocks(canonical_only)["num_gpu_blocks"] == 32768
+    for legacy_name in ("aic_nextn", "nextn"):
+        conflicting_depth = deepcopy(canonical_only)
+        conflicting_depth[legacy_name] = 2
+        with pytest.raises(ValueError, match="conflicts with canonical"):
+            materialize_aic_num_gpu_blocks(conflicting_depth)
+    seen = []
+
+    class NativeCapture:
+        def run_replay_json(self, serialized):
+            seen.append(json.loads(serialized))
+            return _runtime.run_replay_json(serialized)
+
+    report = (
+        EngineReplayRunnerFactory(runtime=NativeCapture())
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True))
+    )
+    rank = seen[0]["spec"]["engine"]["rank"]
+    assert rank["aic_nextn"] == 3
+    # 1.78 accepted drafts plus the mandatory base token means 2.78 output tokens per round.
+    assert [float(rate) for rate in rank["aic_nextn_accept_rates"].split(",")] == [1.0, 0.78, 0.0]
+    assert rank["num_gpu_blocks"] == 32768
+    assert rank["timing_model"]["config"]["fpm_profile"]["deployments"][0]["execution_profile"] == execution
+    assert report.metrics["completed_requests"] == 2
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(7.0)
+    records = report.metadata["native_report"]["per_request"]
+    assert len(records) == 2
+    for record in records:
+        assert record["output_length"] == 7
+        assert record["ttft_ms"] == pytest.approx(7.0)
+        # One prefill token leaves six outputs: 2-3 tokens per round require
+        # two or three measured 11 ms rounds, with no extra draft charge.
+        rounds = (record["e2e_latency_ms"] - 7.0) / 11.0
+        assert rounds == pytest.approx(2.0) or rounds == pytest.approx(3.0)
+        assert record["itl_ms"] == pytest.approx(11.0 * rounds / 6.0)
+
+
 @pytest.mark.parametrize("memory_state", ["pending", "runtime"])
 def test_profile_memory_cannot_be_bypassed_by_explicit_blocks(profile, timing_systems, memory_state):
     config = CorePredictionConfig.model_validate({"engine": {**_engine(profile), "systems_paths": [timing_systems]}})
@@ -786,21 +1026,31 @@ def test_profile_search_space_rejects_custom_timing(profile, role, timing):
 @pytest.mark.parametrize(
     "updates",
     [
-        {"deployment_mode": ["afd"]},
-        {"deployment_mode": ["afd+pd"]},
+        {
+            "deployment_mode": ["agg"],
+            "backend": ["sglang"],
+            "afd_roles": {"aggregated": {"type": "afd", "afd": {"a_batch_size": 16}}},
+        },
+        {
+            "deployment_mode": ["disagg"],
+            "backend": ["sglang"],
+            "afd_roles": {"decode": {"type": "afd", "afd": {"a_batch_size": 16}}},
+        },
         {"encoder": {"hardware_sku": "h200_sxm"}},
         {"backend": ["sglang"]},
     ],
 )
 def test_profile_search_space_rejects_unsupported_providers(profile, updates):
+    options = {
+        "model_name": profile["model"],
+        "hardware_sku": "h200_sxm",
+        "backend_version": "0.25.1",
+        **updates,
+    }
+    if "afd_roles" in updates:
+        SearchSpace(**options)
     with pytest.raises(ValidationError, match="FPM profiles support vLLM aggregated/disaggregated"):
-        SearchSpace(
-            model_name=profile["model"],
-            hardware_sku="h200_sxm",
-            backend_version="0.25.1",
-            fpm_profile=profile,
-            **updates,
-        )
+        SearchSpace(fpm_profile=profile, **options)
 
 
 @pytest.mark.parametrize(

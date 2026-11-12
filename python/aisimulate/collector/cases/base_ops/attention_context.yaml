@@ -10,9 +10,11 @@ all_frameworks_op_cases:
   attention_context:
     cases:
     - id: base_attention_context_shape_sweep
-      description: 'Context attention shapes. `kv_head_options: self` means num_key_value_heads equals the query head count.
-
-        '
+      description: >
+        Context attention shapes every backend collects: generic full attention
+        at head_dim 128. Every other head_dim and window comes from a model's
+        attention profile (cases/models). `kv_head_options: self` means
+        num_key_value_heads equals the query head count.
       batch_sizes:
       - 1
       - 2
@@ -54,7 +56,6 @@ all_frameworks_op_cases:
       - 40
       - 48
       - 64
-      - 96
       kv_head_options:
       - self
       - 1
@@ -63,7 +64,8 @@ all_frameworks_op_cases:
       - 8
       head_dims:
       - 128
-      - 256
+      window_sizes:
+      - 0
       max_tokens_self_attention: 65536
       max_tokens_grouped_query_attention: 131072
       max_batch_size_self_attention: 128
@@ -79,119 +81,6 @@ all_frameworks_op_cases:
         fp8_kv_cache: true
         fp8_context_fmha: true
 framework_specific_op_cases:
-  sglang:
-    attention_context:
-      cases:
-      - id: base_attention_context_shape_sweep
-        query_head_counts:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 8
-        - 12
-        - 16
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        - 96
-        head_dims:
-        - 64
-        - 128
-        - 192
-        - 256
-        window_sizes:
-        - 0
-        - 128
-        - 1024
-        head_profiles:
-        - id: default
-          head_dims: [128, 256]
-          window_size: 0
-          query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64, 96]
-          kv_head_options: [self, 1, 2, 4, 8]
-  trtllm:
-    attention_context:
-      cases:
-      - id: base_attention_context_shape_sweep
-        query_head_counts:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 8
-        - 10
-        - 12
-        - 16
-        - 20
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        - 96
-        head_dims:
-        - 64
-        - 128
-        - 192
-        - 256
-        window_sizes:
-        - 0
-        - 128
-        - 1024
-        head_profiles:
-        - id: default_head64
-          head_dim: 64
-          window_sizes: [0, 128]
-          query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64, 96]
-          kv_head_options: [self, 1, 2, 4, 8]
-        - id: default
-          head_dims: [128, 256]
-          window_size: 0
-          query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64, 96]
-          kv_head_options: [self, 1, 2, 4, 8]
-  vllm:
-    attention_context:
-      cases:
-      - id: base_attention_context_shape_sweep
-        query_head_counts:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 8
-        - 12
-        - 16
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        head_dims:
-        - 64
-        - 128
-        - 192
-        - 256
-        window_sizes:
-        - 0
-        - 128
-        - 1024
-        - 8192
-        head_profiles:
-        - id: default_head64
-          head_dim: 64
-          window_sizes: [0, 128]
-          query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
-          kv_head_options: [self, 1, 2, 4, 8]
-        - id: default_head128
-          head_dim: 128
-          window_sizes: [0, 128]
-          query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
-          kv_head_options: [self, 1, 2, 4, 8]
   vllm_xpu:
     attention_context:
       cases:
@@ -245,9 +134,11 @@ framework_specific_op_cases:
         - 0
         - 128
         head_profiles:
+        # hd64 SWA on XPU is gpt-oss only (with sink, via its model profile);
+        # no-sink SWA has no XPU kernel, so sweep window=0 only here.
         - id: default_head64
           head_dim: 64
-          window_sizes: [0, 128]
+          window_sizes: [0]
           query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
           kv_head_options: [1, 2, 4, 8]
         - id: default_head128

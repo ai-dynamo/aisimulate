@@ -5,6 +5,7 @@ mod arrival;
 mod driver;
 mod dynamo;
 mod generated;
+mod lineage;
 mod phase;
 mod profile;
 mod snapshot;
@@ -12,6 +13,8 @@ mod steppable;
 mod trace;
 mod types;
 mod weka;
+#[cfg(any(feature = "python", test))]
+mod weka_lengths;
 
 use rand::Rng;
 use rand::rngs::StdRng;
@@ -26,12 +29,13 @@ pub use generated::GeneratedRequests;
 pub use phase::{
     AGENTIC_PHASE_SCHEMA_V1, AGENTIC_WARMUP_REQUESTS_PER_LANE, AgenticPhaseEvidence,
     AgenticPhaseLane, AgenticPhaseRequest, AgenticPreparationTransition, AgenticReplayPhase,
+    AgenticWarmupPolicy,
 };
 pub use profile::{AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport};
 pub use snapshot::{
     AGENTIC_SNAPSHOT_SCHEMA_V1, AgenticPlaySnapshot, AgenticPrimer, AgenticReplayContext,
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
-    PreparedAgenticSnapshots,
+    AgenticSnapshotSelection, PreparedAgenticSnapshots,
 };
 pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
@@ -44,16 +48,19 @@ pub use types::{
     AgenticPlayStatus, AgenticSourceProvenance, AgenticTrace, AgenticTrajectorySnapshot,
     ArrivalSpec, DelaySpec, LengthSpec, MooncakeRow, OUTPUT_REPLAY_CONSUMER_RUNTIME_KEY,
     OUTPUT_REPLAY_ID_ANNOTATION_KEY, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload,
-    SessionPartitionSpec, SessionTrace, SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace,
-    ValidatedAgenticGraph, effective_replay_key, output_replay_id_annotation,
+    SessionPartitionSpec, SessionTrace, SyntheticImages, SyntheticTraceSpec, Trace,
+    TraceFileFormat, TurnTrace, ValidatedAgenticGraph, effective_replay_key,
+    output_replay_id_annotation,
 };
 #[cfg(feature = "python")]
 pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
-    WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
+    WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
     WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
     load_weka_agentic_rows, stream_weka_agentic_rows,
 };
+#[cfg(feature = "python")]
+pub(crate) use weka_lengths::scan_weka_requests;
 
 pub(super) const SYNTHETIC_OUTPUT_SEED: u64 = 0xD37A_0A7E_5EED;
 

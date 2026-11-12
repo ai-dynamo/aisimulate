@@ -50,7 +50,7 @@ jobs:
           python -m pip install maturin==1.15.0
           python -m maturin build --release --locked --auditwheel skip --out "${RUNNER_TEMP}/release-raw-wheel"
           auditwheel repair --plat manylinux_2_28_x86_64 \
-            --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/aisimulate-*.whl
+            --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/*.whl
       - name: Record release and tooling provenance
         run: python scripts/fpe/run_release_fpe.py record-wheel
       - name: Install the release's locked dependencies and exact wheel
@@ -68,6 +68,7 @@ jobs:
           path: |
             fpe-release-wheel
             fpe-release-shards.json
+            fpe-release-probes.json
           if-no-files-found: error
           retention-days: 7
 
@@ -126,7 +127,7 @@ jobs:
   qualify:
     name: Qualify release FPE artifact
     needs: [prepare, generate]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

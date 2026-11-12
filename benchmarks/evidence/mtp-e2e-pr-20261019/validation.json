@@ -1,0 +1,37 @@
+{
+  "source_base": "0d18c14f70bc5f883246ad139ca9528301683f77",
+  "performance_data_tree": "ed0cab26694e8969af82ea35b15536e59461d743",
+  "native_sha256": "65e67a046acf5143df8f18621e40fdb064fcb7fcca65cd2850b9c78bfb1b8155",
+  "measurement_release": "db-dump/2026-09-28",
+  "benchmark_id": 415317,
+  "inferencex_run_id": "26306422380",
+  "model": "deepseek-ai/DeepSeek-R1-0528",
+  "system": "b200_sxm",
+  "backend": "sglang",
+  "database_version": "0.5.14",
+  "configuration_quality": "estimated",
+  "mtp": {
+    "depth": 2,
+    "accepted_draft_tokens": 1.3158267716535428,
+    "kind": "observed_log_samples",
+    "samples": 127,
+    "min_length": 1.9,
+    "max_length": 2.8,
+    "limitation": "Unweighted mean of rounded logged interval acceptance lengths; warmup may be included."
+  },
+  "runtime_logs": {
+    "aggregated": [
+      {
+        "url": "https://inferencex.semianalysis.com/api/v1/server-log?id=415317&file=server.log",
+        "file": "server.log",
+        "sha256": "3be0a7550db8df98d29103ba6c38aed9a68ab0d8d7d2e803729380c46b77fda4"
+      }
+    ]
+  },
+  "resolved_input_sha256": "00cf5fbf804d19b994c4cc268b2013f9d597204124a6ebc8f8916646e579cbe4",
+  "completed_requests": 80.0,
+  "predicted_ttft_ms": 248.2504257499997,
+  "predicted_tpot_ms": 7.419428804157208,
+  "measured_ttft_ms": 614.8640460334718,
+  "measured_tpot_ms": 8.527638591672464
+}

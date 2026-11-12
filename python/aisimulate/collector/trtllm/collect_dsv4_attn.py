@@ -16,13 +16,13 @@ TRT-LLM ships full DeepSeek-V4 support from 1.3.0rc21: the model class
 (``_torch/attention_backend/sparse/deepseek_v4/``: DeepseekV4TrtllmAttention,
 DeepseekV4Indexer, DeepseekV4CacheManager, Compressor).
 ``ModelConfig.from_pretrained`` auto-builds ``DeepSeekV4SparseAttentionConfig``
-for architecture ``DeepseekV4ForCausalLM`` (model_config.py:948-990
-@1.3.0rc23), so this collector constructs ``DeepseekV4Attention`` through the
+for architecture ``DeepseekV4ForCausalLM`` (model_config.py:948-990),
+so this collector constructs ``DeepseekV4Attention`` through the
 framework's own config/dispatch path — CSA vs HCA is expressed exclusively by
 the checkpoint config's per-layer ``compress_ratios`` value (4 = CSA c4 +
 indexer top-k; 128 = HCA c128), mirroring the sglang/vllm module collectors.
 
-Row semantics follow the unified #1429 convention (same as sglang/vllm):
+Row semantics follow the unified convention (same as sglang/vllm):
 ``num_heads`` is the RANK-LOCAL head count with a mandatory ``tp_size``
 column (the loader derives native = num_heads * tp_size and validates the
 local semantics, aic-core .../operations/dsv4.py); context rows carry
@@ -41,7 +41,7 @@ No trtllm calib table is produced yet — same accepted state as vllm 0.24.0.
 
 from __future__ import annotations
 
-__compat__ = "trtllm>=1.3.0rc21"
+__compat__ = "trtllm==1.3.0rc29"
 
 import gc
 import json
@@ -57,49 +57,19 @@ import torch
 try:
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
+
+from collector.op_plans import plan_cases
 
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 
-# Same geometry constants the sglang/vllm collectors read from
-# collector/cases/models/DeepseekV4ForCausalLM_cases.yaml via case_generator.
-try:
-    from case_generator import (
-        _DSV4_MODULE_BATCH_SIZES,
-        _DSV4_MODULE_BUDGETS,
-        _DSV4_MODULE_SEQ_LENGTHS,
-        _DSV4_MODULE_TP_SIZES,
-        _selected_dsv4_models,
-    )
-except ModuleNotFoundError:
-    from collector.case_generator import (
-        _DSV4_MODULE_BATCH_SIZES,
-        _DSV4_MODULE_BUDGETS,
-        _DSV4_MODULE_SEQ_LENGTHS,
-        _DSV4_MODULE_TP_SIZES,
-        _selected_dsv4_models,
-    )
-
 ATTN_KIND_TO_COMPRESS_RATIO = {"csa": 4, "hca": 128}
-
-# Universal sweep budgets are DECLARED at the base-op layer
-# (cases/base_ops/dsv4_attention.yaml, in this module's hash closure) and
-# enforced at generation time with counted drops. These are generator
-# constraints — "the op's universal math (identities, budgets)" belongs to
-# the base-op/generator layer (case_authoring.md §"Legitimate shape
-# narrowing", row 2) — NOT memory-feasibility filters; the collector only
-# reads the declared values.
-MAX_SEQ_LEN = _DSV4_MODULE_BUDGETS["max_seq_len"]
-MAX_CONTEXT_QUERY_TOKENS = _DSV4_MODULE_BUDGETS["max_context_query_tokens"]
-MAX_GENERATION_KV_TOKENS = _DSV4_MODULE_BUDGETS["max_generation_kv_tokens"]
-DECODE_BATCH_LADDER = _DSV4_MODULE_BUDGETS["decode_batch_ladder"]
-CONTEXT_PREFIX_ANCHORS = (0, 128, 2048, 4096)
 
 _MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -110,103 +80,24 @@ _MODEL_CONFIG_DIR = os.path.join(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Case population
+# Case population: the op plans' rows (collector/op_plans.py)
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _filter_shapes(mode: str, drops: dict[str, int] | None = None):
-    """(bs, sl, prefix) grid with the vllm collector's budget filters
-    (collector/vllm/collect_dsv4_attn.py:833-880).
-
-    Budget drops are counted per reason (layer_permissions.md memory-filter
-    rule 3: "drops are counted, never silent") — the caps are env-overridable,
-    so a misconfigured cap must be visible, not a silently-empty population.
-    """
-    drops = drops if drops is not None else {}
-
-    def _drop(reason: str) -> None:
-        drops[reason] = drops.get(reason, 0) + 1
-
-    smoke = "--smoke" in sys.argv
-    batch_sizes = [1] if smoke else _DSV4_MODULE_BATCH_SIZES
-    seq_lens = [64] if smoke else _DSV4_MODULE_SEQ_LENGTHS
-    shapes = []
-    for bs in batch_sizes:
-        for sl in seq_lens:
-            if sl > MAX_SEQ_LEN:
-                _drop("seq_len_cap")
-                continue
-            if mode == "context":
-                prefixes = (0, 128) if smoke else tuple(dict.fromkeys(CONTEXT_PREFIX_ANCHORS + (MAX_SEQ_LEN - sl,)))
-                for prefix in prefixes:
-                    if prefix < 0 or prefix + sl > MAX_SEQ_LEN:
-                        _drop("prefix_bounds")
-                        continue
-                    if bs * sl > MAX_CONTEXT_QUERY_TOKENS:
-                        _drop("context_query_tokens_cap")
-                        continue
-                    if bs * (prefix + sl) > MAX_GENERATION_KV_TOKENS:
-                        _drop("context_kv_tokens_cap")
-                        continue
-                    shapes.append((bs, sl, prefix))
-            else:
-                if bs * sl > MAX_GENERATION_KV_TOKENS:
-                    _drop("generation_kv_tokens_cap")
-                    continue
-                # Declared decode batch ladder (module_budgets).
-                if any(sl >= floor and bs > max_bs for floor, max_bs in DECODE_BATCH_LADDER):
-                    _drop("decode_batch_ladder")
-                    continue
-                shapes.append((bs, sl, 0))
-    return shapes
+def get_dsv4_csa_context_test_cases():
+    return plan_cases("dsv4_csa_context_module", "trtllm", get_sm_version())
 
 
-def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
-    cases: list[dict] = []
-    tp_sizes = [1] if "--smoke" in sys.argv else _DSV4_MODULE_TP_SIZES
-    model_paths = _selected_dsv4_models()
-    if not model_paths:
-        return []
-    drops: dict[str, int] = {}
-    # Loop-invariant: same shape grid for every (model, tp) pair, so compute
-    # (and count drops) once. Case order is unchanged.
-    shapes = _filter_shapes(mode, drops)
-    if drops:
-        total_dropped = sum(drops.values())
-        print(
-            f"[trtllm-dsv4] {mode}/{attn_kind}: dropped {total_dropped} shape(s) at generation (budget filter): {drops}"
-        )
-    for model_path in model_paths:
-        for tp_size in tp_sizes:
-            for bs, sl, prefix in shapes:
-                params = [sl, bs, tp_size, "fp8", "bfloat16", "fp8_block", model_path, attn_kind]
-                case_id = f"dsv4_{attn_kind}_{mode}_b{bs}_s{sl}_tp{tp_size}_{model_path.replace('/', '_')}"
-                if mode == "context":
-                    params.append(prefix)
-                    case_id += f"_p{prefix}"
-                cases.append({"id": case_id, "params": params})
-    if not cases:
-        # Zero cases with no logged reason is a population bug
-        # (layer_permissions.md); with the reasons logged it is an explicit
-        # configuration error (e.g. an env cap set below the whole grid).
-        raise RuntimeError(f"dsv4 {mode}/{attn_kind}: budget filter dropped every shape (drops={drops})")
-    return cases
+def get_dsv4_hca_context_test_cases():
+    return plan_cases("dsv4_hca_context_module", "trtllm", get_sm_version())
 
 
-def get_dsv4_csa_context_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("context", "csa")
+def get_dsv4_csa_generation_test_cases():
+    return plan_cases("dsv4_csa_generation_module", "trtllm", get_sm_version())
 
 
-def get_dsv4_hca_context_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("context", "hca")
-
-
-def get_dsv4_csa_generation_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("generation", "csa")
-
-
-def get_dsv4_hca_generation_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("generation", "hca")
+def get_dsv4_hca_generation_test_cases():
+    return plan_cases("dsv4_hca_generation_module", "trtllm", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -220,12 +111,16 @@ def get_dsv4_hca_generation_test_cases() -> list[dict]:
 # creation + fp8 post-processing) that dominated the 42s/case cost — the
 # per-case KV cache manager, metadata, CUDA-graph capture and benchmark are
 # untouched, and reusing one module across batches is exactly what serving
-# does. Owner-approved perf change 2026-08-09.
+# does.
 _MODULE_CACHE: dict = {}
+# Lower bound on the per-case KV token quota (see create_dsv4_kv_cache_and_metadata).
+_KV_POOL_MIN_TOKENS = 2 * 1024 * 1024
 
 
-def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int, device: str):
-    key = (model_path, attn_kind, int(tp_size), device)
+def _cached_dsv4_attention_module(
+    model_path: str, attn_kind: str, tp_size: int, device: str, kv_cache_dtype: str = "fp8"
+):
+    key = (model_path, attn_kind, int(tp_size), device, kv_cache_dtype)
     hit = _MODULE_CACHE.get(key)
     if hit is not None:
         return hit
@@ -235,7 +130,9 @@ def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int,
         _MODULE_CACHE.clear()
         gc.collect()
         torch.cuda.empty_cache()
-    entry = create_dsv4_attention_module(model_path=model_path, attn_kind=attn_kind, tp_size=tp_size, device=device)
+    entry = create_dsv4_attention_module(
+        model_path=model_path, attn_kind=attn_kind, tp_size=tp_size, device=device, kv_cache_dtype=kv_cache_dtype
+    )
     _MODULE_CACHE[key] = entry
     return entry
 
@@ -244,7 +141,7 @@ def generation_request_geometry(seq_len: int) -> dict[str, int]:
     """Decode-request state triple, single-sourced so the serving invariant
     cannot drift between construction sites.
 
-    Serving population (model_engine.py ORDINARY decode branch @1.3.0rc23):
+    Serving population (model_engine.py ORDINARY decode branch):
     ``past_seen_token_num = request.max_beam_num_tokens - 1`` (:4308),
     ``position_id = past_seen_token_num`` (:4315),
     ``request.cached_tokens = past_seen_token_num`` (:4332) and
@@ -255,7 +152,7 @@ def generation_request_geometry(seq_len: int) -> dict[str, int]:
     The collector's decode dummy request registers ``seq_len + 1`` beam tokens
     (``request_tokens = max_seq = seq_len + 1``), so past-seen == cached ==
     position == ``seq_len``, and the persisted row ``step`` (past-KV length,
-    #1429 row semantics) is the same value.
+    the unified row semantics) is the same value.
     """
     return {"num_cached_tokens": seq_len, "position": seq_len, "persisted_step": seq_len}
 
@@ -267,9 +164,9 @@ def _patched_config_dir(model_path: str, compress_ratio: int, tp_size: int) -> t
     Uses the AIC-packaged config (no HF download / trust_remote_code lock —
     same rationale as collect_mla_module._resolve_local_model_path).
     ``compress_ratios=[compress_ratio]`` expresses CSA (4) vs HCA (128)
-    exactly like the vllm collector (collect_dsv4_attn.py:133 @0.24.0);
+    exactly like the vllm collector (collect_dsv4_attn.py:133);
     ModelConfig.from_pretrained reads it into
-    DeepSeekV4SparseAttentionConfig (model_config.py:956-990 @1.3.0rc23).
+    DeepSeekV4SparseAttentionConfig (model_config.py:956-990).
     """
     cfg_fname = model_path.replace("/", "--") + "_config.json"
     config_file = os.path.join(_MODEL_CONFIG_DIR, cfg_fname)
@@ -300,10 +197,10 @@ def _patched_config_dir(model_path: str, compress_ratio: int, tp_size: int) -> t
     config["architectures"] = [ARCHITECTURE]
     # The DSV4 release artifacts tag model_type "deepseek_ref" (remote-code
     # config class). TRT-LLM's native config class registers as
-    # "deepseek_v4" (configs/__init__.py:38 @1.3.0rc23,
+    # "deepseek_v4" (configs/__init__.py:38,
     # CONFIG_MAPPING.register) and its defaults supply the DSV4 dims the
     # artifact json omits (kv_lora_rank=448, v_head_dim=512,
-    # qk_nope_head_dim=448 — configs/deepseekv4.py:35-39 @1.3.0rc23), so
+    # qk_nope_head_dim=448 — configs/deepseekv4.py:35-39), so
     # rewrite the type instead of pulling remote code.
     config["model_type"] = "deepseek_v4"
     config["num_hidden_layers"] = 1
@@ -322,6 +219,7 @@ def create_dsv4_attention_module(
     attn_kind: str,
     tp_size: int,
     device: str = "cuda:0",
+    kv_cache_dtype: str = "fp8",
 ):
     """Build DeepseekV4Attention through TRT-LLM's own config path.
 
@@ -331,7 +229,7 @@ def create_dsv4_attention_module(
     unit the SDK module tables bill.
     """
     # Registers model_type "deepseek_v4" -> DeepseekV4Config into transformers
-    # CONFIG_MAPPING at import (configs/__init__.py @1.3.0rc23); required
+    # CONFIG_MAPPING at import (configs/__init__.py); required
     # before ModelConfig.from_pretrained resolves the patched config.
     import tensorrt_llm._torch.configs  # noqa: F401
     from tensorrt_llm._torch.model_config import ModelConfig
@@ -379,14 +277,18 @@ def create_dsv4_attention_module(
             "The framework dispatch contract changed; re-audit against the runtime version."
         )
 
-    _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=True)
+    # The KV quant algo follows the lane: fp8 (the serving pool, op_plans._trtllm_dsv4_rows) sets
+    # kv_cache_quant_algo=FP8 and the module runs the E4m3 FMHA cubins; a bf16 lane leaves it unset
+    # so the module runs the QkvBfloat16 cubins — with FP8 pinned here a bf16 pool still produced E4m3
+    # kernels (B200 capture).
+    _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=(kv_cache_dtype == "fp8"))
 
     # Provenance: print the RESOLVED kernel-selection knobs (same auto-build
     # code path default serving takes when the user sets no
-    # sparse_attention_config; model_config.py:948-990 @1.3.0rc23). Audits
+    # sparse_attention_config; model_config.py:948-990). Audits
     # compare these against serving defaults — e.g. the 12.7x CSA
     # long-prefix gap vs vllm traces to cute-dsl topk/paged-mqa being
-    # default-OFF here (2026-08-06 audit).
+    # default-OFF here.
     _sc = model_config.sparse_attention_config
     print(
         "[dsv4-collector] resolved sparse config: "
@@ -405,12 +307,43 @@ def create_dsv4_attention_module(
         )
     )
 
+    if get_sm_version() == 90:
+        # Serving publishes the requested pool dtype to the attention modules through the
+        # model's extra attrs (pyexecutor/model_loader.py:1934 extra_attrs['kv_cache_dtype']
+        # = kv_cache_config.dtype; read by attention/mla.py:341). On Hopper that is
+        # 'fp8_ds_mla' (see the KvCacheConfig below) and it also switches the DSV4 module
+        # OFF the fused Q-FP8/KV-norm prologue (sparse/deepseek_v4/module.py:470-480
+        # _is_fused_q_fp8_quant_enabled: "fp8_ds_mla does not use the fused Q FP8 path").
+        # Without it the module takes the fused path, hands the footer-scale cache a
+        # strided raw latent and mla_rope_inplace rejects it ("data must be contiguous",
+        # H20 ctx capture) — a path serving never runs on Hopper.
+        model_config.extra_attrs["kv_cache_dtype"] = "fp8_ds_mla"
+
     aux_stream = torch.cuda.Stream(device=device)
-    attn_module = DeepseekV4Attention(
-        model_config=model_config,
-        layer_idx=0,
-        aux_stream=aux_stream,
-    )
+    import inspect
+
+    _ctor_params = inspect.signature(DeepseekV4Attention.__init__).parameters
+    if "aux_stream_dict" in _ctor_params:
+        # 1.3.0rc29: DeepseekV4Attention takes the model's per-purpose stream dict
+        # (modeling_deepseekv4.py:1371-1376, built by DeepseekV4ForCausalLM :1521-1570),
+        # as collect_mla_module already does for the MLA module.
+        from tensorrt_llm._torch.utils import AuxStreamType
+
+        attn_module = DeepseekV4Attention(
+            model_config=model_config,
+            layer_idx=0,
+            aux_stream_dict={
+                AuxStreamType.Attention: aux_stream,
+                AuxStreamType.MoeShared: aux_stream,
+                AuxStreamType.MoeChunkingOverlap: torch.cuda.Stream(device=device),
+            },
+        )
+    else:
+        attn_module = DeepseekV4Attention(
+            model_config=model_config,
+            layer_idx=0,
+            aux_stream=aux_stream,
+        )
 
     # Serving applies QuantConfig.exclude_modules before weight creation
     # (apply_quant_config_exclude_modules, modeling_utils.py @runtime version);
@@ -452,11 +385,12 @@ def create_dsv4_kv_cache_and_metadata(
     is_context: bool,
     prefix_len: int = 0,
     device: str = "cuda:0",
+    kv_cache_dtype_str: str = "fp8",
 ):
     """DSV4 cache manager + attention metadata, following the serving
     construction path with a DIRECT pinned citation on every hand-set field
     (layer_permissions.md metadata-parity rule; audited against TensorRT-LLM
-    1.3.0rc23 sources, 2026-08-19):
+    1.3.0rc23 sources):
 
     - manager construction  -> pyexecutor/_util.py:1843-1867 (is_mla branch)
     - Metadata construction -> pyexecutor/model_engine.py:2475-2489
@@ -474,11 +408,20 @@ def create_dsv4_kv_cache_and_metadata(
       (is_gen: req.prompt_len = token_num - 1; py_prompt_len = prompt_len),
       consumed at model_engine.py:4336
     """
-    from tensorrt_llm._torch.attention_backend.interface import (
-        AttentionRuntimeFeatures,
-        KVCacheParams,
-    )
-    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+    try:
+        from tensorrt_llm._torch.attention.backends.interface import (
+            AttentionRuntimeFeatures,
+            KVCacheParams,
+        )
+    except ModuleNotFoundError:  # < rc29 layout
+        from tensorrt_llm._torch.attention_backend.interface import (
+            AttentionRuntimeFeatures,
+            KVCacheParams,
+        )
+    try:
+        from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+    except ModuleNotFoundError:  # < rc29 layout
+        from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
     from tensorrt_llm.bindings import DataType
     from tensorrt_llm.bindings.internal.batch_manager import CacheType
 
@@ -502,7 +445,7 @@ def create_dsv4_kv_cache_and_metadata(
 
     # DeepSeek-V4 serving default page size ("TensorRT LLM defaults
     # DeepSeek-V4 to tokens_per_block=128",
-    # examples/models/core/deepseek_v4/README.md:66-67 @v1.3.0rc23;
+    # examples/models/core/deepseek_v4/README.md:66-67;
     # DeepseekV4CacheManager asserts 128/256).
     tokens_per_block = 128
 
@@ -519,8 +462,8 @@ def create_dsv4_kv_cache_and_metadata(
         kv_cache_len = generation_request_geometry(seq_len)["num_cached_tokens"]
     # Serving's max_seq_len is the ENGINE envelope, not the request length:
     # the DSV4 metadata derives num_sparse_topk = window(128) +
-    # next_pow2(ceil(max_seq_len/128)) (sparse_deepseek_v4.py:435-444
-    # @1.3.0rc23) and the trtllmGen fmha kernel asserts it is a multiple of 4
+    # next_pow2(ceil(max_seq_len/128)) (sparse_deepseek_v4.py:435-444)
+    # and the trtllmGen fmha kernel asserts it is a multiple of 4
     # — request-sized envelopes (< 257) yield pow2 1/2 -> 129/130 and crashed
     # every tiny-KV HCA decode case on B200 (smoke round 3). Floor ONLY the
     # envelope; per-request state (add_dummy_requests token_nums, metadata
@@ -531,28 +474,77 @@ def create_dsv4_kv_cache_and_metadata(
     max_seq = max(max_seq, 512)
 
     # KVCacheManagerV2 requires an explicit quota (max_tokens or
-    # max_gpu_total_bytes; kv_cache_manager_v2.py "Quota not set" @1.3.0rc23)
+    # max_gpu_total_bytes; kv_cache_manager_v2.py "Quota not set")
     # — in serving, free_gpu_memory_fraction is converted to a byte quota by
     # the executor's KV estimation before the manager is built, so pass the
     # equivalent byte quota directly (half of currently-free device memory,
     # matching the DSV4 example's free_gpu_memory_fraction=0.5,
-    # examples/models/core/deepseek_v4/README.md:148-151 @v1.3.0rc23). A
-    # main-KV-shaped max_tokens cap under-counts on V2 (the byte quota spans
-    # main KV + SWA + compressor/indexer caches) and made large-KV shapes
-    # fail dummy-request allocation ("Request ID not found in IndexMapper",
-    # B200 smoke round 1 2026-08-06).
+    # examples/models/core/deepseek_v4/README.md:148-151). A
+    # collector-computed main-KV-shaped byte cap under-counted on V2 (the
+    # byte quota spans main KV + SWA + compressor/indexer caches) and made
+    # large-KV shapes fail dummy-request allocation ("Request ID not found in
+    # IndexMapper", B200 smoke) — hence the token cap below
+    # is handed to the manager's own arithmetic, never computed here.
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
-    kv_cache_config = KvCacheConfig(
+    # Pool size is a per-case cost, not a measurement input: the manager
+    # physically backs the whole quota at construction (runtime/
+    # kv_cache_manager_v2/_storage_manager.py:248-249 slot counts from the
+    # GPU-tier quota, expand_pool_group :826) and this collector
+    # builds and tears one down per case. Cap the quota at what this batch
+    # can touch via kv_cache_config.max_tokens — the manager converts it with
+    # its own DSV4 arithmetic (DeepseekV4CacheManager._get_quota_from_max_tokens,
+    # sparse/deepseek_v4/cache_manager.py:926-981: non-sliding KV +
+    # SWA per token/request + indexer/compress pools + per-type padding) and
+    # takes min(max_gpu_total_bytes, quota_from_max_tokens) (pyexecutor/kv_cache/
+    # kv_cache_manager_v2.py:1384-1398). The envelope is doubled and rounded
+    # to whole pages so dummy-request allocation never sits at the edge; a
+    # pool that is still too small fails allocation loudly (classified),
+    # never silently. The free-memory half stays as the upper bound, matching
+    # the DSV4 example's free_gpu_memory_fraction=0.5.
+    planned_tokens = batch_size * (max(max_seq, request_tokens) + tokens_per_block)
+    planned_tokens = -(-2 * planned_tokens // tokens_per_block) * tokens_per_block
+    # Floor: the pool must stay large enough that inductor emits the SAME
+    # kernels serving runs. footer_scale_kv.dequant_gather (fp8_ds_mla path,
+    # @maybe_compile(dynamic=True)) indexes the whole footer-scale pool; when
+    # that pool extent is < 2**31 bytes inductor generates int32-indexed
+    # triton kernels (xnumel i32), above it int64 — serving pools are tens of
+    # GiB, so serving always runs the int64 variant. H20 calibration
+    # quota from 1,048,576
+    # tokens = 11.4 GiB -> i32 (53.9 ms), 1,572,864 tokens = 17.1 GiB -> i64
+    # (45.8 ms); 2M tokens (22.7 GiB on Flash, i64 verified in the same sweep)
+    # sits 1.33x past the threshold, and every other DSV4 geometry carries more
+    # footer bytes per planned token than Flash, so the margin only grows. The
+    # footer row format is fixed (584 B/token), so the threshold is in tokens,
+    # not model geometry. 4M was tried first: on DeepSeek-V4-Pro it reproduced
+    # the campaign's free*0.5 pool size and left 20 GiB for the 262k-295k token
+    # context cells, whose forward allocates a 32 GiB intermediate -> OOM.
+    planned_tokens = max(planned_tokens, _KV_POOL_MIN_TOKENS)
+    kv_cache_kwargs = dict(
         tokens_per_block=tokens_per_block,
         max_gpu_total_bytes=int(free_bytes * 0.5),
+        max_tokens=int(planned_tokens),
         enable_block_reuse=False,
     )
+    if get_sm_version() == 90:
+        # 1.3.0rc29 on Hopper: DeepseekV4CacheManager refuses any pool but the packed
+        # FP8 sparse-MLA cache (attention/backends/sparse/deepseek_v4/cache_manager.py:
+        # 343-349 "DeepSeek-V4 on Hopper requires kv_cache_config.dtype='fp8_ds_mla'"),
+        # the option llm_args.py:4256-4262 documents for SM90/SM120/SM121; serving
+        # deployments on H20 carry kv_cache_config.dtype=fp8_ds_mla (harness targets
+        # customization, matrix pass+custom). Earlier rc KvCacheConfig has no such
+        # literal and used the plain FP8 pool — keep that path for them.
+        try:
+            kv_cache_config = KvCacheConfig(dtype="fp8_ds_mla", **kv_cache_kwargs)
+        except (ValueError, TypeError):
+            kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
+    else:
+        kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
     kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
     # fp8 KV rows -> DataType.FP8, matching serving's kv_cache_dtype
     # resolution from kv_cache_quant_algo (set by _apply_gemm_type_quant).
-    kv_cache_dtype = DataType.FP8
+    kv_cache_dtype = DataType.BF16 if kv_cache_dtype_str == "bfloat16" else DataType.FP8
 
-    # Serving construction site: pyexecutor/_util.py:1843-1867 @1.3.0rc23
+    # Serving construction site: pyexecutor/_util.py:1843-1867
     # (is_mla branch): CacheType.SELFKONLY :1846, num_kv_heads=1 :1848,
     # head_dim=kv_lora_rank+qk_rope_head_dim :1849, dtype=kv_cache_dtype,
     # vocab_size=config.vocab_size :1856, sparse_attention_config :1862,
@@ -583,7 +575,7 @@ def create_dsv4_kv_cache_and_metadata(
         request_ids = list(range(batch_size))
         token_nums = [request_tokens] * batch_size
         # add_dummy_requests is serving's own warmup-request mechanism
-        # (model_engine.py:2141-2160, :2277, :2300 @1.3.0rc23 register dummy
+        # (model_engine.py:2141-2160, :2277, :2300 register dummy
         # requests the same way before capture/warmup); is_gen mirrors the
         # request phase (generation metadata below declares num_contexts=0
         # with cached KV).
@@ -599,7 +591,7 @@ def create_dsv4_kv_cache_and_metadata(
         )
 
         # Constructor kwargs mirror _set_up_attn_metadata
-        # (model_engine.py:2475-2489 @1.3.0rc23); per-batch fields mirror the
+        # (model_engine.py:2475-2489); per-batch fields mirror the
         # _prepare_tp_inputs population sites cited per field below.
         attn_metadata = attention_cls.Metadata(
             # max_num_requests/max_num_tokens are CAPACITY BOUNDS
@@ -697,7 +689,13 @@ def run_dsv4_attn(
     device: str = "cuda:0",
     warming_up: int = 10,
     test_ite: int = 6,
+    dry_run: bool = True,
 ):
+    """Run one DeepSeek-V4 attention-module point.
+
+    ``dry_run`` False skips the checking forward before timing: a series has
+    already run it for an earlier point of this seq_len (module_series).
+    """
     import tensorrt_llm
     import tensorrt_llm._torch.utils as _trtllm_utils
     from tensorrt_llm._torch.utils import get_model_extra_attrs, model_extra_attrs
@@ -709,8 +707,8 @@ def run_dsv4_attn(
 
     if attn_kind not in ATTN_KIND_TO_COMPRESS_RATIO:
         raise ValueError(f"unsupported DSV4 attn_kind: {attn_kind}")
-    if kv_cache_dtype != "fp8":
-        raise ValueError(f"DSV4 module rows are fp8-KV only (got {kv_cache_dtype!r})")
+    if kv_cache_dtype not in ("fp8", "bfloat16"):
+        raise ValueError(f"DSV4 module rows are fp8-KV or bfloat16-KV only (got {kv_cache_dtype!r})")
     if compute_dtype != "bfloat16":
         raise ValueError(f"DSV4 module rows are bfloat16-compute only (got {compute_dtype!r})")
     if gemm_type != "fp8_block":
@@ -720,7 +718,9 @@ def run_dsv4_attn(
     torch_device = torch.device(device)
     torch.cuda.set_device(torch_device)
 
-    attn_module, model_config, head_info = _cached_dsv4_attention_module(model_path, attn_kind, tp_size, device)
+    attn_module, model_config, head_info = _cached_dsv4_attention_module(
+        model_path, attn_kind, tp_size, device, kv_cache_dtype
+    )
 
     # Ownership: the KV pool and the process-global extra-attrs slot are
     # released/restored on EVERY exit path (success, dry-run failure,
@@ -738,12 +738,13 @@ def run_dsv4_attn(
             is_context=is_context,
             prefix_len=prefix_len,
             device=device,
+            kv_cache_dtype_str=kv_cache_dtype,
         )
 
         hidden_size = model_config.pretrained_config.hidden_size
         # int32 position_ids: serving populates them int32 and the DSV4 indexer
         # rope op asserts it (sparse/deepseek_v4/deepseek_v4.py mla_rope_inplace
-        # "position_ids must be int32" @1.3.0rc23).
+        # "position_ids must be int32").
         if is_context:
             num_tokens = seq_len * batch_size
             position_ids = (
@@ -757,7 +758,7 @@ def run_dsv4_attn(
             num_tokens = batch_size
             # position == past-seen/cached count, NOT seq_len - 1: see
             # generation_request_geometry (ordinary decode,
-            # model_engine.py:4308,4315,4332-4335 @1.3.0rc23). Off-by-one
+            # model_engine.py:4308,4315,4332-4335). Off-by-one
             # here rotates rope one step early; it does not change kernel
             # shapes or measured cost.
             position_ids = torch.full(
@@ -774,15 +775,16 @@ def run_dsv4_attn(
         # B200/1.3.0rc23 — serving chunks prefill at max_num_tokens (<<262144),
         # so these sweep extremes exceed the serving envelope; unverified which
         # kernel hits the limit. Cases fail into the classified log.
-        with model_extra_attrs(model_config.extra_attrs):
-            get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
-            try:
-                with torch.inference_mode():
-                    attn_module.forward(position_ids, hidden_states, attn_metadata)
-            except Exception:
-                print("  Dry run failed:")
-                traceback.print_exc()
-                raise  # the finally below releases the KV pool
+        if dry_run:
+            with model_extra_attrs(model_config.extra_attrs):
+                get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
+                try:
+                    with torch.inference_mode():
+                        attn_module.forward(position_ids, hidden_states, attn_metadata)
+                except Exception:
+                    print("  Dry run failed:")
+                    traceback.print_exc()
+                    raise  # the finally below releases the KV pool
 
         _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
         _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
@@ -815,7 +817,7 @@ def run_dsv4_attn(
                     "mla_dtype": compute_dtype,
                     "kv_cache_dtype": kv_cache_dtype,
                     "gemm_type": gemm_type,
-                    # Rank-LOCAL heads + mandatory tp_size (unified #1429; the
+                    # Rank-LOCAL heads + mandatory tp_size (unified convention; the
                     # SDK loader derives native = num_heads * tp_size and
                     # validates local semantics).
                     "num_heads": head_info["local_heads"],
@@ -870,10 +872,8 @@ def run_dsv4_attn_worker(
     """collect.py worker: one task = one shape = one row.
 
     Mode is derived from the target perf filename (same convention as the
-    vllm collector, collect_dsv4_attn.py:968 @0.24.0).
+    vllm collector, collect_dsv4_attn.py:968).
     """
-    mode = "context" if "context" in os.path.basename(perf_filename) else "generation"
-    smoke = "--smoke" in sys.argv
     run_dsv4_attn(
         seq_len=seq_len,
         batch_size=batch_size,
@@ -884,11 +884,96 @@ def run_dsv4_attn_worker(
         model_path=model_path,
         attn_kind=attn_kind,
         prefix_len=prefix_len,
-        mode=mode,
+        mode=_worker_mode(perf_filename),
         perf_filename=perf_filename,
         device=device,
-        warming_up=3 if smoke else 10,
-        test_ite=3 if smoke else 6,
+    )
+
+
+def _worker_mode(perf_filename: str) -> str:
+    return "context" if "context" in os.path.basename(perf_filename) else "generation"
+
+
+def run_dsv4_attn_series(
+    points,
+    batch_size: int,
+    tp_size: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    attn_kind: str,
+    *,
+    mode: str,
+    perf_filename: str,
+    device: str = "cuda:0",
+    warming_up: int = 10,
+    test_ite: int = 6,
+) -> list[float]:
+    """Measure the (seq_len, prefix_len) points of one DeepSeek-V4 module key in one task.
+
+    Every point runs through run_dsv4_attn, so its rows are those of a one-point
+    case: the module comes from the module cache, and the KV cache manager and
+    metadata are built per point. The manager's max_seq_len sizes the
+    compressed-index buffers of the HCA path, so a manager sized for the largest
+    point would change what the smaller points measure (module_series).
+    """
+    try:
+        from collector.trtllm.module_series import run_points
+    except ModuleNotFoundError:  # run as a script from collector/trtllm
+        from module_series import run_points
+
+    def run_point(seq_len: int, prefix_len: int, dry_run: bool) -> float:
+        return run_dsv4_attn(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            tp_size=tp_size,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            model_path=model_path,
+            attn_kind=attn_kind,
+            prefix_len=prefix_len,
+            mode=mode,
+            perf_filename=perf_filename,
+            device=device,
+            warming_up=warming_up,
+            test_ite=test_ite,
+            dry_run=dry_run,
+        )
+
+    label = f"dsv4_{attn_kind}_{mode} series b={batch_size} tp={tp_size} kv={kv_cache_dtype}"
+    return run_points(points, run_point, label=label)
+
+
+def run_dsv4_attn_series_worker(
+    points,
+    batch_size: int,
+    tp_size: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    attn_kind: str,
+    *,
+    perf_filename: str,
+    device: str = "cuda:0",
+) -> None:
+    """Worker entry for one series task (op_plans._trtllm_dsv4_rows): run_dsv4_attn_worker's
+    positional fields, with the list of (seq_len, prefix_len) points in place of seq_len and
+    prefix_len."""
+    run_dsv4_attn_series(
+        points,
+        batch_size,
+        tp_size,
+        kv_cache_dtype,
+        compute_dtype,
+        gemm_type,
+        model_path,
+        attn_kind,
+        mode=_worker_mode(perf_filename),
+        perf_filename=perf_filename,
+        device=device,
     )
 
 

@@ -12,8 +12,10 @@ pub mod generalized;
 mod handoff;
 mod host_offload;
 mod kv_manager;
+pub(crate) mod kvcr;
 mod launch;
-mod offload_transfer;
+mod offload_lru;
+pub(crate) mod offload_transfer;
 mod protocol;
 mod runtime;
 mod scheduler;
@@ -29,34 +31,54 @@ pub use launch::EngineLaunchConfig;
 
 pub use belady::KvEvictionPolicy;
 pub(crate) use common::hashing::{
-    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    block_hashes_with_salt, cache_salt_seed, compute_block_hash_for_tokens,
+    compute_next_sequence_hash,
 };
+#[cfg(all(test, feature = "python"))]
+pub(crate) use common::protocols::{DirectRequest, MockEngineArgs};
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
+pub(crate) use config::afd_total_gpus;
+pub use config::{AfdAPoolConfig, AfdEngineConfig, AfdFPoolConfig};
 pub use config::{
-    Backend, EngineConfig, G2Scope, G3OffloadConfig, G3Scope, NativeHostOffloadConfig,
-    PreemptionMode, SglangConfig, SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy,
-    TrtllmConfig, WorkerType,
+    Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
+    G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
+    SglangHiCacheConfig, SglangHiCacheWritePolicy, SglangSchedulePolicy, SlidingWindowStateConfig,
+    StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
-pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
+pub use handoff::{
+    HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms,
+    transfer_delay_ms,
+};
+pub use kvcr::{KvcrPullCounts, KvcrStats};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    ForwardPassMetrics, KvBlock, KvEvent, KvEventData, KvEventTier, LifecycleEvent, Metrics,
-    Output, PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind, PressureState,
-    Request, StoredBlocks,
+    EncoderShape, ForwardPassMetrics, HostCacheMetrics, ImageSpec, KvBlock, KvEvent, KvEventData,
+    KvEventTier, KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects,
+    PassStartEffects, PrefixCacheLookupCounts, PressureEvent, PressureKind, PressureState, Request,
+    StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(all(test, feature = "python"))]
+pub(crate) use scheduler::VllmCore;
 #[cfg(feature = "python")]
-pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase};
+pub(crate) use scheduler::afd::timing::AfdTimingModel;
+#[cfg(test)]
+pub(crate) use scheduler::afd::timing::tests::provider_for as afd_timing_provider_for;
+#[cfg(all(test, feature = "python"))]
+pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{
+    DecodeWork, IterationMs, MixedPassMs, PrefillTotals, PrefillWork, RankWork,
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
-    TimingOperationEvidence, TimingPhaseEvidence,
+    TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
+#[cfg(feature = "python")]
+pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;
-pub(in crate::engine) use timing::modeled_duration_ms;
+pub(in crate::engine) use timing::{modeled_duration_ms, predict_group_iteration_ms};
 #[doc(hidden)]
 pub use trace::g1_parent_chain_events;

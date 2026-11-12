@@ -39,8 +39,12 @@ contract tests on both sides instead:
   :data:`FPM_ENV_EXPORTED_VARS` and :data:`FPM_RUN_ID_ENV`;
 * collector tests assert ``fpm_exec.sh`` consumes only
   :data:`FPM_ENV_EXPORTED_VARS` (plus the :data:`FPM_BARRIER_TIMEOUT_ENV`
-  tunable it defaults in-script) and that its result-naming shell function
-  matches :func:`fpm_benchmark_result_name` on a shared vector set.
+  tunable it defaults in-script and Collector-owned startup settings) and
+  that its result-naming shell function matches
+  :func:`fpm_benchmark_result_name` on a shared vector set. Generated-path
+  tests verify :data:`FPM_FINALIZATION_TIMEOUT_ENV` reaches the parent
+  runtime through the Collector's staged ``collector-runtime-env.sh`` in
+  both Kubernetes and Slurm, before the child ``run.sh`` executes.
 """
 
 from __future__ import annotations
@@ -109,6 +113,12 @@ FPM_ENGINE_BENCHMARK_OUTPUT_ENV = "DYN_FPM_BENCHMARK_OUTPUT_PATH"
 # an export in ``run.sh`` would shadow the contract values for the engine
 # while the collection runtime keeps the originals.
 FPM_BARRIER_TIMEOUT_ENV = "FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS"
+
+# Collector-owned finalization deadline, supplied through K8sConfig.extra_env.
+# Unlike the Generator-owned barrier export, the Collector forwards this in
+# collector-runtime-env.sh so the parent runtime sees it before engine launch.
+# fpm_exec.sh defaults to 120 seconds and rejects values outside 1..3600.
+FPM_FINALIZATION_TIMEOUT_ENV = "FPM_FINALIZATION_TIMEOUT_SECONDS"
 
 # In-pod results directory: the Generator mounts it and defaults the engine's
 # benchmark output under it; the collector's runtime and transfer own its

@@ -64,6 +64,7 @@ fn public_replay_rejects_non_finite_timing_before_normalization() {
                         };
                         let spec = ReplaySpec {
                             version: 1,
+                            encoder: None,
                             topology: if disagg {
                                 ReplayTopology::Disaggregated {
                                     prefill: WorkerPoolSpec::default(),
@@ -80,6 +81,7 @@ fn public_replay_rejects_non_finite_timing_before_normalization() {
                             record_per_request: true,
                             sla: Default::default(),
                             requests: vec![ReplayRequest {
+                                cache_salt: None,
                                 id: "non-finite-timing".into(),
                                 arrival_time_ms: 0.0,
                                 input_tokens: 4,
@@ -88,6 +90,7 @@ fn public_replay_rejects_non_finite_timing_before_normalization() {
                                 output_token_ids: None,
                                 dp_rank: None,
                                 prefill_dp_rank: None,
+                                kv_hints: None,
                                 session_id: None,
                                 turn_index: None,
                                 metadata: serde_json::Value::Null,

@@ -13,6 +13,7 @@ const BACKENDS: [Backend; 3] = [Backend::Vllm, Backend::Sglang, Backend::Trtllm]
 
 fn request(index: usize, tokens: Vec<u32>, output_tokens: usize) -> ReplayRequest {
     ReplayRequest {
+        cache_salt: None,
         id: format!("request-{index}"),
         arrival_time_ms: index as f64 * 100.0,
         input_tokens: tokens.len(),
@@ -21,6 +22,7 @@ fn request(index: usize, tokens: Vec<u32>, output_tokens: usize) -> ReplayReques
         output_token_ids: None,
         dp_rank: None,
         prefill_dp_rank: None,
+        kv_hints: None,
         session_id: None,
         turn_index: None,
         metadata: Value::Null,
@@ -30,6 +32,7 @@ fn request(index: usize, tokens: Vec<u32>, output_tokens: usize) -> ReplayReques
 fn spec(backend: Backend, workers: usize, requests: Vec<ReplayRequest>) -> ReplaySpec {
     ReplaySpec {
         version: CURRENT_REPLAY_SPEC_VERSION,
+        encoder: None,
         topology: ReplayTopology::aggregated(workers),
         engine: serde_json::to_value(ReplayEngineConfig {
             rank: EngineConfig {

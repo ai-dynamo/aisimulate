@@ -28,9 +28,11 @@ pub(crate) mod py_ops;
 // system_spec) with no AIC-domain knowledge. Top-level files (`config`,
 // `session`) and directories (`operators`, `perf_database`) carry the domain
 // logic the compiled `engine` executes.
+pub(crate) mod afd;
 pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
+pub mod execution_profile;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;
@@ -38,14 +40,21 @@ pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
 
-pub use common::{AicError, enums::DatabaseMode};
+pub use afd::{
+    AfdPoolRole, AfdRoutingLocation,
+    pipeline::AfdPipelineLayout,
+    plan::{AfdExecutionPlan, AfdLayerTemplate, AfdPhasePlan},
+};
+pub use common::{AicError, enums::DatabaseMode, enums::EncoderParallel};
+pub use engine::spec::{EncoderImageShape, VisionSpec};
+pub use perf_database::fpm_forward::{FpmSeedTargetNormalization, FpmSeedTargetRow};
 // Forward-pass perf model (PR #1152): a forward-pass latency model with online
 // correction, regression fallback, diagnostics, and readiness, built on the
 // compiled [`engine::Engine`]. Re-exported so Rust embedders (the Dynamo
 // planner / Mocker) can use it natively; also exposed to Python via the
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
-    CorrectionConfig, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
+    CorrectionConfig, CorrectionMode, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
@@ -55,20 +64,32 @@ pub use fpm::{
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
-    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
-    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
-    UnrecordedFpmQuantMode,
+    FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
+    LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
+    RegressionFeatureAxis, RegressionFeatureSet, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
+    SplineSearchConfig, UnrecordedFpmQuantMode,
+};
+pub use fpm::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
+pub use fpm::{
+    ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
+    ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
+    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
+    StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
 };
 pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
+    FpmCacheLayout, FpmMambaCacheMode, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing
 // `crate::ForwardPassMetrics` / `crate::FPM_VERSION` references (in `py.rs`,
 // `engine/runtime.rs`) keep resolving after the types moved into `fpm`.
 pub(crate) use fpm::validate_forward_pass_metrics;
+pub use fpm::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
 pub use fpm::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 // KV-cache memory API. Top-level surface, not a method on
 // `AicEngine`: estimation runs once at startup, separate from the latency path.
@@ -114,5 +135,5 @@ pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3:
 
 pub use fpm::{
     DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
-    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
 };

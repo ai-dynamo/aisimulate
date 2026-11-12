@@ -105,15 +105,14 @@ def test_estimate_epd_rejects_role_specific_max_seq_len(cli_parser, option):
         _run_estimate_mode(args)
 
 
-def test_default_afd_serving_mode_rejects_enable_epd():
-    with pytest.raises(ValueError, match="'afd' does not support EPD"):
+def test_default_rejects_the_removed_afd_serving_mode():
+    with pytest.raises(ValueError, match="Invalid serving_mode: 'afd'"):
         build_default_tasks(
             model_path="Qwen/Qwen3-VL-8B-Instruct",
             total_gpus=8,
             system="h200_sxm",
             backend="sglang",
             serving_mode="afd",
-            enable_epd=True,
         )
 
 

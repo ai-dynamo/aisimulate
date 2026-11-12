@@ -5,12 +5,17 @@
 // modified from NVIDIA Dynamo's lib/mocker/src/loadgen/tests.rs at
 // b113ceae74da3f6754429ade750b0f5b0c8de5d6 (Apache-2.0):
 // https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/lib/mocker/src/loadgen/tests.rs
+//
+// The AgentX client lowering is a modified native re-implementation of NVIDIA
+// AIPerf's Apache-2.0 weka_trace.py, weka_synth_buf.py and
+// branch_orchestrator.py at SemiAnalysisAI/aiperf commit
+// 754356e9a39acc6cc6afb242d123bb57c3fb6f75; see THIRD_PARTY_NOTICES.md.
 
 //! Local Weka/AgentX trace ingestion for typed agentic replay.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -38,8 +43,8 @@ const WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2: &[u8] = b"aisimulate-weka-corpus-se
 
 #[derive(Default)]
 struct WekaGraphCache {
-    path_digests: HashMap<(PathBuf, WekaNestedTimestampBasis), String>,
-    graphs: HashMap<(String, WekaNestedTimestampBasis), CachedWekaGraph>,
+    path_digests: HashMap<(PathBuf, WekaImportOptions), String>,
+    graphs: HashMap<(String, WekaImportOptions), CachedWekaGraph>,
 }
 
 #[derive(Clone)]
@@ -110,9 +115,36 @@ impl WekaResolvedTimestampBasis {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+/// Load generator whose replay of a Weka corpus the lowering follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WekaClient {
+    /// The recorded timing: a child starts at its recorded offset from its
+    /// owner request and a joining turn waits its recorded gap after each
+    /// child. Streams of one play share their whole common hash prefix.
+    #[default]
+    Recorded,
+    /// The AgentX client, SemiAnalysisAI's AIPerf fork at
+    /// `754356e9a39acc6cc6afb242d123bb57c3fb6f75`: subagents and flattened
+    /// chains are spawned and joined by main-conversation turns
+    /// (`weka_trace.py`, `branch_orchestrator.py`), and each stream is its
+    /// own chat conversation (`weka_synth_buf.py`).
+    Agentx,
+}
+
+impl WekaClient {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Recorded => "recorded",
+            Self::Agentx => "agentx",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct WekaImportOptions {
     pub nested_timestamp_basis: WekaNestedTimestampBasis,
+    pub client: WekaClient,
 }
 
 /// A preflighted local Weka corpus.
@@ -200,7 +232,7 @@ impl WekaImporter {
             )?;
         }
         let nested_timestamp_basis = evidence.resolve(options.nested_timestamp_basis);
-        let digest = semantic_digest(&raw_digest, nested_timestamp_basis);
+        let digest = semantic_digest(&raw_digest, nested_timestamp_basis, options.client);
 
         let mut plays = 0;
         let mut requests = 0;
@@ -208,6 +240,7 @@ impl WekaImporter {
         let file_count = snapshots.len();
         let mut canonical_rows =
             tempfile::NamedTempFile::new().context("creating Weka row spool")?;
+        let mut row_writer = BufWriter::new(canonical_rows.as_file_mut());
         for snapshot in &snapshots {
             for_each_source_trace(
                 File::open(&snapshot.file).context("reopening Weka source snapshot")?,
@@ -224,15 +257,15 @@ impl WekaImporter {
                         source_name,
                         plays,
                         nested_timestamp_basis.effective_basis(),
+                        options.client,
                     )?;
                     validate_preflight_graph(trace.block_size, &lowered.rows)?;
                     raw_zero_outputs += lowered.raw_zero_outputs;
                     requests += lowered.rows.len();
                     for row in lowered.rows {
-                        serde_json::to_writer(canonical_rows.as_file_mut(), &row)
+                        serde_json::to_writer(&mut row_writer, &row)
                             .context("writing preflighted Weka row spool")?;
-                        canonical_rows
-                            .as_file_mut()
+                        row_writer
                             .write_all(b"\n")
                             .context("writing preflighted Weka row delimiter")?;
                     }
@@ -241,10 +274,10 @@ impl WekaImporter {
                 },
             )?;
         }
-        canonical_rows
-            .as_file_mut()
+        row_writer
             .flush()
             .context("flushing preflighted Weka row spool")?;
+        drop(row_writer);
         canonical_rows
             .as_file_mut()
             .seek(SeekFrom::Start(0))
@@ -304,12 +337,18 @@ impl WekaImporter {
             .rows
             .reopen()
             .context("reopening preflighted Weka row spool")?;
-        let stream = serde_json::Deserializer::from_reader(BufReader::new(rows))
-            .into_iter::<AgenticMooncakeRow>();
+        // The private spool contains one compact JSON object per line.
+        let mut reader = BufReader::new(rows);
+        let mut buffer = Vec::new();
         let mut emitted = 0;
-        for row in stream {
-            emit(row.context("reading preflighted Weka row spool")?)?;
+        while reader
+            .read_until(b'\n', &mut buffer)
+            .context("reading preflighted Weka row spool")?
+            != 0
+        {
+            emit(serde_json::from_slice(&buffer).context("reading preflighted Weka row spool")?)?;
             emitted += 1;
+            buffer.clear();
         }
         if emitted != self.requests {
             bail!(
@@ -385,7 +424,7 @@ pub(crate) fn load_weka_agentic_graph_cached(
 ) -> Result<(AgenticTrace, WekaResolvedTimestampBasis, bool)> {
     let canonical_path = canonical_source_path(path)?;
     let cache = WEKA_GRAPH_CACHE.get_or_init(|| Mutex::new(WekaGraphCache::default()));
-    let path_key = (canonical_path.clone(), options.nested_timestamp_basis);
+    let path_key = (canonical_path.clone(), options);
 
     let known_digest = if use_cache {
         cache
@@ -407,9 +446,7 @@ pub(crate) fn load_weka_agentic_graph_cached(
             .lock()
             .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
         if current_digest == known_digest
-            && let Some(cached) = cache
-                .graphs
-                .get(&(current_digest, options.nested_timestamp_basis))
+            && let Some(cached) = cache.graphs.get(&(current_digest, options))
         {
             assert_expected_block_size(&cached.graph, expected_block_size)?;
             tracing::info!(
@@ -444,7 +481,7 @@ pub(crate) fn load_weka_agentic_graph_cached(
     cache.path_digests.insert(path_key, raw_digest.clone());
     cache
         .graphs
-        .entry((raw_digest, options.nested_timestamp_basis))
+        .entry((raw_digest, options))
         .or_insert_with(|| CachedWekaGraph {
             graph: graph.clone(),
             resolved_timestamp_basis,
@@ -494,8 +531,8 @@ fn validate_preflight_graph(block_size: usize, rows: &[AgenticMooncakeRow]) -> R
         row.source_play_ordinal = Some(0);
         builder.push(row)?;
     }
-    builder.finish()?;
-    Ok(())
+    // Only the checks matter here; the corpus graph is compiled once later.
+    builder.validate()
 }
 
 #[derive(Debug, Deserialize)]
@@ -632,6 +669,15 @@ struct LoweredTrace {
     raw_zero_outputs: usize,
 }
 
+/// Child streams that the AgentX client spawns as one branch: the subagents,
+/// or the flattened chains, that share a spawning and a joining main turn.
+struct ClientGroup {
+    /// The earliest recorded start in the group: a subagent marker or a
+    /// flattened chain's first request.
+    start: f64,
+    streams: Vec<usize>,
+}
+
 struct SourceSnapshot {
     display_path: PathBuf,
     relative_path: String,
@@ -713,8 +759,25 @@ fn lower_trace(
     relative_path: &str,
     source_play_ordinal: usize,
     nested_timestamp_basis: WekaNestedTimestampBasis,
+    client: WekaClient,
 ) -> Result<LoweredTrace> {
     validate_trace_header(trace, relative_path)?;
+    let agentx = client == WekaClient::Agentx;
+    // The AgentX client renders declared tool and system tokens as a system
+    // message, which the per-stream rendering below does not model.
+    if agentx
+        && (trace.tool_tokens > 0
+            || trace.system_tokens > 0
+            || trace.requests.iter().any(|entry| {
+                matches!(entry, WekaEntry::Subagent(subagent)
+                    if subagent.tool_tokens > 0 || subagent.system_tokens > 0)
+            }))
+    {
+        bail!(
+            "Weka trace {} declares tool or system tokens, which client agentx does not support",
+            relative_path
+        );
+    }
     let namespace = namespace(relative_path);
     let play_id = format!("{namespace}:play:{}", trace.id);
     let mut top_level = Vec::new();
@@ -747,41 +810,49 @@ fn lower_trace(
         .expect("root stream is present");
     let parent_stream_count = streams.len();
     let mut join_markers = Vec::<(String, Vec<String>)>::new();
+    let mut subagent_groups = BTreeMap::new();
+    let mut dropped_requests = 0;
 
     for (outer_index, subagent) in explicit {
         let mode = validate_subagent(subagent, relative_path)?;
-        let mut owner_candidates = streams[..parent_stream_count]
-            .iter()
-            .enumerate()
-            .flat_map(|(stream_index, stream)| {
-                stream
-                    .requests
-                    .iter()
-                    .filter(move |request| request.source_order < outer_index)
-                    .map(move |request| (stream_index, request))
-            })
-            .collect::<Vec<_>>();
-        owner_candidates.sort_by_key(|(_, request)| request.source_order);
-        let Some((owner_stream_index, owner_request)) = owner_candidates.pop() else {
-            bail!(
-                "Weka trace {} has subagent {} at outer index {} without a preceding parent request",
-                relative_path,
-                subagent.agent_id,
-                outer_index
-            );
+        // The AgentX client spawns subagents from main turns, not from their
+        // recorded owner request.
+        let (owner_stream_index, spawn_source_id) = if agentx {
+            (root_stream_index, None)
+        } else {
+            let mut owner_candidates = streams[..parent_stream_count]
+                .iter()
+                .enumerate()
+                .flat_map(|(stream_index, stream)| {
+                    stream
+                        .requests
+                        .iter()
+                        .filter(move |request| request.source_order < outer_index)
+                        .map(move |request| (stream_index, request))
+                })
+                .collect::<Vec<_>>();
+            owner_candidates.sort_by_key(|(_, request)| request.source_order);
+            let Some((owner_stream_index, owner_request)) = owner_candidates.pop() else {
+                bail!(
+                    "Weka trace {} has subagent {} at outer index {} without a preceding parent request",
+                    relative_path,
+                    subagent.agent_id,
+                    outer_index
+                );
+            };
+            if owner_candidates
+                .last()
+                .is_some_and(|(_, candidate)| candidate.source_order == owner_request.source_order)
+            {
+                bail!(
+                    "Weka trace {} has ambiguous parent-stream ownership for subagent {} at outer index {}",
+                    relative_path,
+                    subagent.agent_id,
+                    outer_index
+                );
+            }
+            (owner_stream_index, Some(owner_request.source_id.clone()))
         };
-        if owner_candidates
-            .last()
-            .is_some_and(|(_, candidate)| candidate.source_order == owner_request.source_order)
-        {
-            bail!(
-                "Weka trace {} has ambiguous parent-stream ownership for subagent {} at outer index {}",
-                relative_path,
-                subagent.agent_id,
-                outer_index
-            );
-        }
-        let spawn_source_id = owner_request.source_id.clone();
 
         let mut inner = Vec::with_capacity(subagent.requests.len());
         for (inner_index, entry) in subagent.requests.iter().enumerate() {
@@ -807,6 +878,33 @@ fn lower_trace(
                 request,
             });
         }
+        let group = if agentx {
+            // `weka_trace.py`: the latest main turn listed before a subagent
+            // spawns it, and a subagent that no main turn precedes is dropped.
+            let main = &streams[root_stream_index].requests;
+            let Some(spawn_turn) = main
+                .iter()
+                .rposition(|turn| turn.source_order < outer_index)
+            else {
+                tracing::debug!(
+                    trace = %trace.id,
+                    agent_id = %subagent.agent_id,
+                    "dropping Weka subagent without a preceding main turn, as the AgentX client does"
+                );
+                dropped_requests += inner.len();
+                continue;
+            };
+            let end = subagent_end(subagent, nested_timestamp_basis)?;
+            let join_turn = client_join_turn(main, outer_index, end);
+            // A subagent without requests still sets its group's start.
+            Some(client_group(
+                &mut subagent_groups,
+                (spawn_turn, join_turn),
+                subagent.t,
+            ))
+        } else {
+            None
+        };
         if inner.is_empty() {
             continue;
         }
@@ -825,11 +923,19 @@ fn lower_trace(
             .iter_mut()
             .find(|stream| stream.session_id.ends_with(&format!(":{child_prefix}")))
             .expect("subagent root stream is present");
-        child_root.fork_source_id = Some(spawn_source_id);
+        child_root.fork_source_id = spawn_source_id;
         child_root.scope_id = child_root.session_id.clone();
         let scope_id = child_root.scope_id.clone();
         for stream in &mut child_streams {
             stream.scope_id = scope_id.clone();
+        }
+
+        if let Some(group) = group {
+            group
+                .streams
+                .extend(streams.len()..(streams.len() + child_streams.len()));
+            streams.extend(child_streams);
+            continue;
         }
 
         let join_source_id = if mode == SubagentMode::Blocking {
@@ -857,6 +963,30 @@ fn lower_trace(
             if !terminal_sources.is_empty() {
                 join_markers.push((join_source_id, terminal_sources));
             }
+        }
+    }
+
+    // The client spawns each flattened chain from the latest main turn listed
+    // before its first request, or else from the first main turn, in groups
+    // apart from the subagents (`weka_trace.py` `flat_groups`).
+    let mut flat_groups = BTreeMap::new();
+    if agentx {
+        let main = &streams[root_stream_index].requests;
+        for stream_index in (0..parent_stream_count).filter(|&index| index != root_stream_index) {
+            let requests = &streams[stream_index].requests;
+            let first = &requests[0];
+            let spawn_turn = main
+                .iter()
+                .rposition(|turn| turn.source_order < first.source_order)
+                .unwrap_or(0);
+            let end = requests
+                .iter()
+                .map(|request| request_end(&request.request))
+                .fold(f64::NEG_INFINITY, f64::max);
+            let join_turn = client_join_turn(main, first.source_order, end);
+            client_group(&mut flat_groups, (spawn_turn, join_turn), first.request.t)
+                .streams
+                .push(stream_index);
         }
     }
 
@@ -906,7 +1036,8 @@ fn lower_trace(
         let Some(first) = stream.requests.first() else {
             continue;
         };
-        let Some(spawn_source_id) = stream.fork_source_id.as_ref() else {
+        // The AgentX client spawns every stream from a main turn (below).
+        let Some(spawn_source_id) = stream.fork_source_id.as_ref().filter(|_| !agentx) else {
             continue;
         };
         let parent = streams
@@ -937,6 +1068,62 @@ fn lower_trace(
     }
 
     install_cross_stream_frontiers(&streams, &row_by_source, &mut dependencies);
+
+    let main = &streams[root_stream_index].requests;
+    for (&(spawn_turn, join_turn), group) in subagent_groups.iter().chain(&flat_groups) {
+        let parent = &main[spawn_turn];
+        // `branch_orchestrator.py`: a group that starts before its spawning
+        // turn's recorded end is dispatched with that turn, each child at its
+        // offset from the turn's start (`on_credit_issued`). Otherwise the
+        // group starts when the turn returns, each child at its offset from
+        // the group's start (`intercept`).
+        let overlaps = parent
+            .request
+            .api_time
+            .is_some_and(|api_time| api_time > 0.0 && group.start < parent.request.t + api_time);
+        // The client holds a joining turn only after the spawning turn
+        // returns, so a joining turn that replays first is not held.
+        let join = join_turn
+            .filter(|&join| join > spawn_turn)
+            .map(|join| &main[join]);
+        for &stream_index in &group.streams {
+            let requests = &streams[stream_index].requests;
+            let first = &requests[0];
+            let (trigger, delay_ms) = if overlaps {
+                (
+                    AgenticDependencyTrigger::Dispatch,
+                    seconds_to_milliseconds(first.request.t - parent.request.t),
+                )
+            } else {
+                (
+                    AgenticDependencyTrigger::Completion,
+                    seconds_to_milliseconds(first.request.t - group.start),
+                )
+            };
+            push_dependency(
+                dependencies.entry(first.source_id.clone()).or_default(),
+                AgenticDependency {
+                    request_id: row_by_source[&parent.source_id].clone(),
+                    trigger,
+                    delay_ms,
+                    relation: AgenticDependencyRelation::Spawn,
+                },
+            );
+            // The joining turn waits for every child with no added gap; its
+            // sequence edge keeps its own recorded delay.
+            if let Some(join) = join {
+                push_dependency(
+                    dependencies.entry(join.source_id.clone()).or_default(),
+                    AgenticDependency {
+                        request_id: row_by_source[&requests[requests.len() - 1].source_id].clone(),
+                        trigger: AgenticDependencyTrigger::Completion,
+                        delay_ms: 0.0,
+                        relation: AgenticDependencyRelation::Join,
+                    },
+                );
+            }
+        }
+    }
 
     for (target_source, terminal_sources) in join_markers {
         for terminal_source in terminal_sources {
@@ -985,8 +1172,14 @@ fn lower_trace(
 
     let mut rows = Vec::new();
     let mut used_hashes = HashMap::new();
+    let mut source_hashes = HashMap::new();
     for stream in streams {
-        for request in stream.requests {
+        // The AgentX client renders each stream as its own chat conversation,
+        // so streams share prompt blocks only inside their first user message.
+        let first_message_blocks =
+            agentx.then(|| first_user_message_blocks(&stream.requests, trace.block_size));
+        let mut stream_hashes = HashMap::new();
+        for (position, request) in stream.requests.into_iter().enumerate() {
             let request_id = row_by_source[&request.source_id].clone();
             let hash_ids = normalized_hashes(
                 relative_path,
@@ -994,6 +1187,12 @@ fn lower_trace(
                 &request.request,
                 trace.block_size,
                 &mut used_hashes,
+                &mut source_hashes,
+                first_message_blocks.as_ref().map(|blocks| StreamBlocks {
+                    session_id: &stream.session_id,
+                    shared: blocks[position],
+                    hashes: &mut stream_hashes,
+                }),
             )?;
             rows.push(AgenticMooncakeRow {
                 request_id,
@@ -1019,7 +1218,7 @@ fn lower_trace(
         }
     }
     rows.sort_by(|left, right| left.request_id.cmp(&right.request_id));
-    if rows.len()
+    if rows.len() + dropped_requests
         != trace
             .requests
             .iter()
@@ -1038,6 +1237,34 @@ fn lower_trace(
         rows,
         raw_zero_outputs,
     })
+}
+
+/// Adds a child that starts at `start` to the AgentX group keyed by its
+/// spawning and joining main turns.
+fn client_group(
+    groups: &mut BTreeMap<(usize, Option<usize>), ClientGroup>,
+    key: (usize, Option<usize>),
+    start: f64,
+) -> &mut ClientGroup {
+    let group = groups.entry(key).or_insert_with(|| ClientGroup {
+        start,
+        streams: Vec::new(),
+    });
+    group.start = group.start.min(start);
+    group
+}
+
+/// The main turn that joins an AgentX child listed at `source_order`: the
+/// first main turn listed after it that starts at or after the child's
+/// recorded end (`weka_trace.py`). `None` leaves the child in the background.
+fn client_join_turn(main: &[IndexedRequest], source_order: usize, end: f64) -> Option<usize> {
+    main.iter()
+        .enumerate()
+        .filter(|(_, turn)| {
+            turn.source_order > source_order && turn.request.t + JOIN_EPSILON_SECONDS >= end
+        })
+        .min_by_key(|(_, turn)| turn.source_order)
+        .map(|(position, _)| position)
 }
 
 fn streams_from_detection(
@@ -1414,22 +1641,81 @@ fn split_preamble(mut requests: Vec<IndexedRequest>) -> (Vec<IndexedRequest>, Ve
     (vec![first], requests)
 }
 
+/// For each request of one stream, the number of its source blocks that lie
+/// in the stream's first user message as the AgentX client renders it
+/// (`weka_synth_buf.py` `ConversationReconstructor`). The first request is one
+/// user message holding every covered block (`init_turn_0`). A later request
+/// cuts the message list at the hash LCP (`advance_turn`,
+/// `truncate_synth_buf_at_block`): a cut inside the first message shortens
+/// it, and a cut at block 0 makes the new prompt the first message.
+fn first_user_message_blocks(requests: &[IndexedRequest], block_size: usize) -> Vec<usize> {
+    let mut result = Vec::with_capacity(requests.len());
+    let mut previous: &[u64] = &[];
+    let (mut first_message, mut buffer) = (0, 0);
+    for request in requests {
+        let hashes = request.request.hash_ids.as_slice();
+        let covered = (request.request.input_length / block_size).min(hashes.len());
+        let common = lcp(previous, hashes);
+        if common == 0 {
+            first_message = covered;
+            buffer = covered;
+        } else {
+            // A cut past the end of the message list keeps all of it.
+            let kept = common.min(buffer);
+            first_message = first_message.min(kept);
+            buffer = kept + covered.saturating_sub(common);
+        }
+        result.push(first_message);
+        previous = hashes;
+    }
+    result
+}
+
+/// Source blocks past a stream's first user message, which the AgentX client
+/// renders privately for the stream.
+struct StreamBlocks<'a> {
+    session_id: &'a str,
+    /// Leading source blocks of the request inside the first user message.
+    shared: usize,
+    hashes: &'a mut HashMap<u64, u64>,
+}
+
 fn normalized_hashes(
     relative_path: &str,
     request_id: &str,
     request: &WekaRequest,
     block_size: usize,
     used: &mut HashMap<u64, String>,
+    source_hashes: &mut HashMap<u64, u64>,
+    mut stream: Option<StreamBlocks<'_>>,
 ) -> Result<Vec<u64>> {
     let full_blocks = request.input_length / block_size;
     let has_partial = !request.input_length.is_multiple_of(block_size);
     let mut result = Vec::with_capacity(full_blocks + usize::from(has_partial));
     for block_index in 0..full_blocks {
-        let identity = request.hash_ids.get(block_index).map_or_else(
-            || format!("private:missing:{request_id}:{block_index}"),
-            |hash| format!("source:{relative_path}:{hash}"),
-        );
-        result.push(unique_hash("weka-full-block", &identity, used)?);
+        let value = if let Some(hash) = request.hash_ids.get(block_index) {
+            let (hashes, scope, owner) = match stream
+                .as_mut()
+                .filter(|stream| block_index >= stream.shared)
+            {
+                Some(stream) => (&mut *stream.hashes, "stream", stream.session_id),
+                None => (&mut *source_hashes, "source", relative_path),
+            };
+            // Repetitions reuse the first collision-checked hash in this play,
+            // or in this stream for its private blocks.
+            if let Some(value) = hashes.get(hash) {
+                *value
+            } else {
+                let identity = format!("{scope}:{owner}:{hash}");
+                let value = unique_hash("weka-full-block", &identity, used)?;
+                hashes.insert(*hash, value);
+                value
+            }
+        } else {
+            let identity = format!("private:missing:{request_id}:{block_index}");
+            unique_hash("weka-full-block", &identity, used)?
+        };
+        result.push(value);
     }
     if has_partial {
         result.push(unique_hash(
@@ -1723,13 +2009,22 @@ fn new_corpus_hasher() -> blake3::Hasher {
     hasher
 }
 
-fn semantic_digest(raw_digest: &str, basis: WekaResolvedTimestampBasis) -> String {
+fn semantic_digest(
+    raw_digest: &str,
+    basis: WekaResolvedTimestampBasis,
+    client: WekaClient,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2);
     hasher.update(&(raw_digest.len() as u64).to_le_bytes());
     hasher.update(raw_digest.as_bytes());
     hasher.update(&(basis.as_str().len() as u64).to_le_bytes());
     hasher.update(basis.as_str().as_bytes());
+    // The recorded lowering keeps the digest it had before clients existed.
+    if client != WekaClient::Recorded {
+        hasher.update(&(client.as_str().len() as u64).to_le_bytes());
+        hasher.update(client.as_str().as_bytes());
+    }
     hasher.finalize().to_hex().to_string()
 }
 
@@ -1995,6 +2290,69 @@ mod tests {
             "hash_id_scope": "local",
             "requests": requests,
         })
+    }
+
+    #[test]
+    fn normalized_source_hashes_reuse_collision_resolutions() {
+        let request: WekaRequest = serde_json::from_value(request(0.0, 9, 1, &[7])).unwrap();
+        let mut used = HashMap::new();
+        let mut source_hashes = HashMap::new();
+        let collision = unique_hash("weka-full-block", "source:trace:7", &mut used).unwrap();
+        used.insert(collision, "another identity".to_string());
+
+        let first = normalized_hashes(
+            "trace",
+            "first",
+            &request,
+            4,
+            &mut used,
+            &mut source_hashes,
+            None,
+        )
+        .unwrap();
+        let second = normalized_hashes(
+            "trace",
+            "second",
+            &request,
+            4,
+            &mut used,
+            &mut source_hashes,
+            None,
+        )
+        .unwrap();
+
+        assert_ne!(first[0], collision);
+        assert_eq!(first[0], second[0]);
+        assert_ne!(first[1], second[1], "missing blocks remain request-private");
+        assert_ne!(first[2], second[2], "partial blocks remain request-private");
+        assert_eq!(source_hashes.len(), 1);
+    }
+
+    #[test]
+    fn row_spool_streams_large_rows_and_rejects_a_malformed_tail() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        let hashes = (0..4096).collect::<Vec<_>>();
+        write_trace(&path, serde_json::json!([request(0.0, 16384, 1, &hashes)]));
+        let mut importer = WekaImporter::open(&path).unwrap();
+        let (_, rows) = importer.collect_rows().unwrap();
+        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 4096);
+
+        importer.rows.as_file_mut().seek(SeekFrom::End(0)).unwrap();
+        importer.rows.write_all(b"{").unwrap();
+        let mut emitted = 0;
+        let error = importer
+            .for_each_row(|_| {
+                emitted += 1;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(emitted, 1);
+        assert!(
+            error
+                .to_string()
+                .contains("reading preflighted Weka row spool")
+        );
     }
 
     #[test]
@@ -2400,6 +2758,32 @@ mod tests {
     }
 
     #[test]
+    fn row_spool_preserves_large_rows_and_the_final_partial_buffer() {
+        let directory = tempdir().unwrap();
+        let hashes: Vec<u64> = (0..4096).collect();
+        write_trace(
+            &directory.path().join("a.json"),
+            serde_json::json!([request(0.0, 16384, 1, &hashes)]),
+        );
+        write_trace(
+            &directory.path().join("z.json"),
+            serde_json::json!([request(0.0, 4, 2, &[9])]),
+        );
+
+        let importer = WekaImporter::open(directory.path()).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(summary.requests, 2);
+        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 4096);
+        assert_eq!(rows[1].hash_ids.as_ref().unwrap().len(), 1);
+        assert_eq!(rows[1].output_length, Some(2));
+        let (_, repeated) = importer.collect_rows().unwrap();
+        assert_eq!(
+            serde_json::to_value(rows).unwrap(),
+            serde_json::to_value(repeated).unwrap()
+        );
+    }
+
+    #[test]
     fn emission_is_bound_to_preflight_snapshot_during_callback_mutation() {
         let directory = tempdir().unwrap();
         let first = directory.path().join("a.json");
@@ -2645,6 +3029,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+                ..Default::default()
             },
         )
         .err()
@@ -2788,6 +3173,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2795,6 +3181,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2832,6 +3219,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2888,6 +3276,7 @@ mod tests {
             &equivalent,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3082,6 +3471,16 @@ mod tests {
         assert!(second_hit);
         assert_eq!(first.identity(), second.identity());
 
+        // The client is part of the cache key and of the source digest.
+        let agentx = WekaImportOptions {
+            client: WekaClient::Agentx,
+            ..Default::default()
+        };
+        let (client, _, client_hit) =
+            load_weka_agentic_graph_cached(&path, Some(4), agentx, true).unwrap();
+        assert!(!client_hit);
+        assert_ne!(client.source().digest, first.source().digest);
+
         write_trace(&path, serde_json::json!([request(0.0, 8, 0, &[1, 2])]));
         let (changed, _, changed_hit) = load(4).unwrap();
         assert!(!changed_hit);
@@ -3215,5 +3614,266 @@ mod tests {
                 .to_string()
                 .contains("must use a .json or .jsonl extension")
         );
+    }
+
+    fn agentx_rows(path: &Path) -> Vec<AgenticMooncakeRow> {
+        let options = WekaImportOptions {
+            client: WekaClient::Agentx,
+            ..Default::default()
+        };
+        WekaImporter::open_with_options(path, options)
+            .unwrap()
+            .collect_rows()
+            .unwrap()
+            .1
+    }
+
+    fn row<'a>(rows: &'a [AgenticMooncakeRow], source: &str) -> &'a AgenticMooncakeRow {
+        rows.iter()
+            .find(|row| row.request_id.ends_with(&format!(":request:{source}")))
+            .unwrap()
+    }
+
+    /// The edges into a source request: (source, trigger, delay_ms, relation).
+    fn edges(
+        rows: &[AgenticMooncakeRow],
+        source: &str,
+    ) -> Vec<(
+        String,
+        AgenticDependencyTrigger,
+        f64,
+        AgenticDependencyRelation,
+    )> {
+        let mut edges = row(rows, source)
+            .dependencies
+            .iter()
+            .map(|edge| {
+                let (_, source) = edge.request_id.split_once(":request:").unwrap();
+                (
+                    source.to_string(),
+                    edge.trigger,
+                    edge.delay_ms,
+                    edge.relation,
+                )
+            })
+            .collect::<Vec<_>>();
+        edges.sort_by(|left, right| left.0.cmp(&right.0));
+        edges
+    }
+
+    #[test]
+    fn agentx_client_groups_subagents_by_spawning_and_joining_main_turn() {
+        use AgenticDependencyRelation::{Join, ReplayBarrier, Sequence, Spawn};
+        use AgenticDependencyTrigger::Completion;
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // Main turns m0 (outer 0, ends at 1.0), m1 (outer 4) and m2 (outer 5).
+        // Subagent a ends at 2.5 and runs a chain a0 -> a2 beside a disjoint
+        // chain a1; b and c end before m1 starts.
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":1.0},
+                {"t":1.5,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":1000,"status":"completed","requests":[
+                    {"t":1.5,"type":"s","model":"model","in":8,"out":1,"hash_ids":[10,11],"api_time":0.2},
+                    {"t":1.8,"type":"s","model":"model","in":4,"out":1,"hash_ids":[50],"api_time":0.1},
+                    {"t":1.9,"type":"s","model":"model","in":12,"out":1,"hash_ids":[10,11,12],"api_time":0.1}
+                ]},
+                {"t":1.6,"type":"subagent","agent_id":"b","subagent_type":"Explore","duration_ms":400,"status":"completed","requests":[
+                    {"t":1.7,"type":"s","model":"model","in":8,"out":1,"hash_ids":[20,21],"api_time":0.2}
+                ]},
+                {"t":1.65,"type":"subagent","agent_id":"c","subagent_type":"Explore","duration_ms":300,"status":"completed","requests":[
+                    {"t":1.65,"type":"s","model":"model","in":4,"out":1,"hash_ids":[30],"api_time":0.1}
+                ]},
+                {"t":2.2,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,3],"api_time":0.5},
+                {"t":3.0,"type":"s","model":"model","in":16,"out":1,"hash_ids":[1,2,3,4]}
+            ]),
+        );
+        let rows = agentx_rows(&path);
+
+        // m0 spawns a's group, joined by m2, which starts at a's marker: each
+        // chain of a starts at its offset from it once m0 completes.
+        assert_eq!(
+            edges(&rows, "outer:1:inner:0"),
+            [("outer:0".into(), Completion, 0.0, Spawn)]
+        );
+        assert_eq!(
+            edges(&rows, "outer:1:inner:1"),
+            [
+                ("outer:0".into(), Completion, 300.0, Spawn),
+                ("outer:1:inner:0".into(), Completion, 0.0, ReplayBarrier),
+            ]
+        );
+        // b and c share the group joined by m1, which starts at b's marker.
+        assert_eq!(
+            edges(&rows, "outer:2:inner:0"),
+            [("outer:0".into(), Completion, 100.0, Spawn)]
+        );
+        assert_eq!(
+            edges(&rows, "outer:3:inner:0"),
+            [("outer:0".into(), Completion, 50.0, Spawn)]
+        );
+        // A joining turn waits for its children with no added gap, and for its
+        // own recorded delay after the previous main turn.
+        assert_eq!(
+            edges(&rows, "outer:4"),
+            [
+                ("outer:0".into(), Completion, 1200.0, Sequence),
+                ("outer:2:inner:0".into(), Completion, 0.0, Join),
+                ("outer:3:inner:0".into(), Completion, 0.0, Join),
+            ]
+        );
+        assert_eq!(
+            edges(&rows, "outer:5"),
+            [
+                ("outer:1:inner:1".into(), Completion, 0.0, Join),
+                ("outer:1:inner:2".into(), Completion, 0.0, Join),
+                ("outer:4".into(), Completion, 300.0, Sequence),
+            ]
+        );
+    }
+
+    #[test]
+    fn agentx_client_spawns_flattened_chains_and_overlapping_groups_at_dispatch() {
+        use AgenticDependencyRelation::{Join, ReplayBarrier, Sequence, Spawn};
+        use AgenticDependencyTrigger::{Completion, Dispatch};
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // m0 (outer 0) runs until 2.0. The flattened chain (outer 1 and 2) and
+        // subagent s both start before then and end before m1 (outer 4).
+        // Subagent t and a second flattened chain (outer 6), forked from m1,
+        // start after m1 ends and end before m2 (outer 7).
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":2.0},
+                {"t":0.5,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,3],"api_time":0.2},
+                {"t":0.8,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,3,4],"api_time":0.2},
+                {"t":1.2,"type":"subagent","agent_id":"s","subagent_type":"Explore","duration_ms":100,"status":"completed","requests":[
+                    {"t":1.3,"type":"s","model":"model","in":4,"out":1,"hash_ids":[9],"api_time":0.05}
+                ]},
+                {"t":2.0,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,5],"api_time":0.1},
+                {"t":2.5,"type":"subagent","agent_id":"t","subagent_type":"Explore","duration_ms":100,"status":"completed","requests":[
+                    {"t":2.6,"type":"s","model":"model","in":4,"out":1,"hash_ids":[8],"api_time":0.05}
+                ]},
+                {"t":2.8,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,9],"api_time":0.1},
+                {"t":3.0,"type":"s","model":"model","in":16,"out":1,"hash_ids":[1,2,5,6]}
+            ]),
+        );
+        let rows = agentx_rows(&path);
+
+        // A group that starts before its spawning turn's recorded end is
+        // dispatched with that turn, each child at its offset from the turn.
+        assert_eq!(
+            edges(&rows, "outer:1"),
+            [("outer:0".into(), Dispatch, 500.0, Spawn)]
+        );
+        assert_eq!(
+            edges(&rows, "outer:3:inner:0"),
+            [("outer:0".into(), Dispatch, 1300.0, Spawn)]
+        );
+        assert_eq!(
+            edges(&rows, "outer:4"),
+            [
+                ("outer:0".into(), Completion, 0.0, Sequence),
+                ("outer:2".into(), Completion, 0.0, ReplayBarrier),
+                ("outer:2".into(), Completion, 0.0, Join),
+                ("outer:3:inner:0".into(), Completion, 0.0, Join),
+            ]
+        );
+        assert_eq!(
+            edges(&rows, "outer:5:inner:0"),
+            [("outer:4".into(), Completion, 100.0, Spawn)]
+        );
+        // Outer 6 has the same spawning and joining turns as subagent t, but
+        // flattened chains form their own groups: it starts as m1 returns. The
+        // recorded timing would start it 700 ms after m1 returns, and a group
+        // shared with t 300 ms after.
+        assert_eq!(
+            edges(&rows, "outer:6"),
+            [
+                ("outer:4".into(), Completion, 0.0, ReplayBarrier),
+                ("outer:4".into(), Completion, 0.0, Spawn),
+            ]
+        );
+    }
+
+    #[test]
+    fn agentx_client_drops_a_subagent_that_no_main_turn_precedes() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"subagent","agent_id":"orphan","subagent_type":"Explore","status":"completed","requests":[
+                    request(0.0, 4, 1, &[9]),
+                    request(0.5, 8, 1, &[9, 10])
+                ]},
+                request(1.0, 4, 1, &[1])
+            ]),
+        );
+        let rows = agentx_rows(&path);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].request_id.ends_with(":request:outer:1"));
+        // The recorded timing has no owner request for it.
+        assert!(load_weka_agentic_rows(&path).is_err());
+    }
+
+    #[test]
+    fn agentx_client_shares_prompts_across_streams_only_inside_first_user_messages() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // The root stream opens with a disjoint preamble, so m0 (outer 1)
+        // starts a new four-block first user message, which m1 cuts at block
+        // 2. The chain at outer 4 forks from m2 four blocks deep.
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[90]),
+                request(1.0, 16, 1, &[1, 2, 3, 4]),
+                request(2.0, 16, 1, &[1, 2, 9, 10]),
+                request(3.0, 20, 1, &[1, 2, 9, 10, 11]),
+                request(4.0, 24, 1, &[1, 2, 9, 10, 12, 13]),
+                request(5.0, 24, 1, &[1, 2, 9, 10, 11, 14])
+            ]),
+        );
+        let recorded = load_weka_agentic_rows(&path).unwrap().1;
+        let rows = agentx_rows(&path);
+        assert!(row(&rows, "outer:4").session_id.ends_with(":worker:0"));
+        let shared = |rows: &[AgenticMooncakeRow], left: &str, right: &str| {
+            lcp(
+                row(rows, left).hash_ids.as_ref().unwrap(),
+                row(rows, right).hash_ids.as_ref().unwrap(),
+            )
+        };
+
+        // The chain shares the root's prompt only inside its first message.
+        assert_eq!(shared(&recorded, "outer:4", "outer:3"), 4);
+        assert_eq!(shared(&rows, "outer:4", "outer:3"), 2);
+        // Adjacent turns of a stream still share their whole hash prefix.
+        assert_eq!(shared(&rows, "outer:5", "outer:3"), 5);
+        // m0's prompt and the chain's first prompt are each one user message,
+        // so they keep the play's block identities.
+        assert_eq!(
+            row(&rows, "outer:1").hash_ids,
+            row(&recorded, "outer:1").hash_ids
+        );
+        assert_eq!(
+            row(&rows, "outer:4").hash_ids,
+            row(&recorded, "outer:4").hash_ids
+        );
+
+        // The client would render declared system tokens as a system message.
+        let mut trace = trace_value("declared", serde_json::json!([request(0.0, 4, 1, &[1])]));
+        trace["system_tokens"] = 4.into();
+        std::fs::write(&path, serde_json::to_vec(&trace).unwrap()).unwrap();
+        let options = WekaImportOptions {
+            client: WekaClient::Agentx,
+            ..Default::default()
+        };
+        let error = WekaImporter::open_with_options(&path, options)
+            .err()
+            .expect("agentx rejects declared system tokens");
+        assert!(error.to_string().contains("tool or system tokens"));
     }
 }

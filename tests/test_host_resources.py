@@ -380,6 +380,252 @@ def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypa
     assert searched[0].isl == received[0][1].isl
 
 
+@pytest.mark.parametrize("failure", [False, True], ids=["success", "failure"])
+def test_recommendation_dispatches_terminal_output_callbacks(monkeypatch, failure):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    events = []
+    search_error = RuntimeError("search failed")
+
+    class LifecycleAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+            return RecommendationOutputCallbacks(
+                on_candidate=lambda candidate: events.append(("candidate", candidate)),
+                on_complete=lambda: events.append(("complete",)),
+                on_failure=lambda error: events.append(("failure", error)),
+            )
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    candidate = SimpleNamespace(candidate_id="candidate-000001")
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n, on_round
+            assert on_candidate is not None
+            on_candidate(candidate)
+            if failure:
+                events.append(("search_failure", search_error))
+                raise search_error
+            events.append(("search_return",))
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    if failure:
+        with pytest.raises(RuntimeError, match="search failed") as raised:
+            recommendation._run_recommendation(
+                config,
+                stack="engine",
+                runner_factory=object(),
+                output_configs={"dgd": {}},
+                output_adapters={"dgd": LifecycleAdapter()},
+            )
+
+        assert raised.value is search_error
+        assert events == [
+            ("candidate", candidate),
+            ("search_failure", search_error),
+            ("failure", search_error),
+        ]
+    else:
+        result = recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {}},
+            output_adapters={"dgd": LifecycleAdapter()},
+        )
+        events.append(("final_write", result))
+
+        assert events == [
+            ("candidate", candidate),
+            ("search_return",),
+            ("complete",),
+            ("final_write", "result"),
+        ]
+
+
+@pytest.mark.parametrize("event", ["on_candidate", "on_round", "on_complete"])
+def test_recommendation_reports_progress_callback_failures_to_failure_hook(monkeypatch, event):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import (
+        OUTPUT_ADAPTER_API_VERSION,
+        OutputAdapterExecutionError,
+        RecommendationOutputCallbacks,
+    )
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    callback_error = ValueError(f"{event} failed")
+    failures = []
+
+    def fail(*args):
+        del args
+        raise callback_error
+
+    class LifecycleAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+            callbacks = {event: fail, "on_failure": failures.append}
+            return RecommendationOutputCallbacks(**callbacks)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n
+            if event == "on_candidate":
+                assert on_candidate is not None
+                on_candidate(SimpleNamespace(candidate_id="candidate-000001"))
+            if event == "on_round":
+                assert on_round is not None
+                on_round(1, [])
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+
+    with pytest.raises(OutputAdapterExecutionError, match=rf"dgd.*{event}.*ValueError") as raised:
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {}},
+            output_adapters={"dgd": LifecycleAdapter()},
+        )
+
+    assert raised.value.__cause__ is callback_error
+    assert failures == [raised.value]
+
+
+def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch):
+    import threading
+
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    from aisimulate.resource_worker import _exception_message
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    search_error = RuntimeError("ORIGINAL_SEARCH_FAILURE")
+    stop = threading.Event()
+    started = threading.Event()
+    events = []
+    publishers = []
+
+    class FailingCleanupAdapter:
+        name = "first"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+
+            def on_failure(error):
+                events.append(("first_failure", error))
+                raise ValueError("CLEANUP_FAILURE")
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class PublisherAdapter:
+        name = "publisher"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+
+            def publish():
+                events.append(("publisher_started",))
+                started.set()
+                stop.wait(5)
+                events.append(("publisher_stopped",))
+
+            publisher = threading.Thread(target=publish, daemon=False)
+            publishers.append(publisher)
+            publisher.start()
+            assert started.wait(1)
+
+            def on_failure(error):
+                events.append(("publisher_failure", error))
+                stop.set()
+                publisher.join(timeout=1)
+                assert not publisher.is_alive()
+                events.append(("publisher_joined",))
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n, on_candidate, on_round
+            raise search_error
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+
+    try:
+        with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
+            recommendation._run_recommendation(
+                config,
+                stack="engine",
+                runner_factory=object(),
+                output_configs={"first": {}, "publisher": {}},
+                output_adapters={
+                    "first": FailingCleanupAdapter(),
+                    "publisher": PublisherAdapter(),
+                },
+            )
+    finally:
+        stop.set()
+        for publisher in publishers:
+            publisher.join(timeout=1)
+
+    assert raised.value is search_error
+    assert events == [
+        ("publisher_started",),
+        ("first_failure", search_error),
+        ("publisher_failure", search_error),
+        ("publisher_stopped",),
+        ("publisher_joined",),
+    ]
+    assert all(not publisher.is_alive() for publisher in publishers)
+    message = _exception_message(raised.value)
+    assert message.startswith("RuntimeError: ORIGINAL_SEARCH_FAILURE")
+    assert "first" in message
+    assert "on_failure" in message
+    assert "CLEANUP_FAILURE" in message
+
+
 def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
     import aisimulate.recommend as recommendation
     import aisimulate.sweeper.search as search
@@ -437,6 +683,36 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
     assert actual.total_memory_bytes == 4 * GB
     assert actual.available_memory_bytes == 3 * GB
     assert actual.cpu_count == 0.5
+
+
+@pytest.mark.parametrize(
+    "membership,mount,limit,usage,stat",
+    [
+        ("0::/job", "cgroup2 cgroup rw", "memory.max", "memory.current", f"anon {GB}\ninactive_file {5 * GB}\n"),
+        (
+            "1:memory:/job",
+            "cgroup cgroup rw,memory",
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+            # v1 usage is hierarchical, like its total_ counters.
+            f"inactive_file 0\ntotal_rss {GB}\ntotal_inactive_file {5 * GB}\n",
+        ),
+    ],
+    ids=["v2", "v1"],
+)
+def test_cgroup_usage_excludes_inactive_page_cache(tmp_path, host, membership, mount, limit, usage, stat):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text(f"{membership}\n")
+    (proc / "self/mountinfo").write_text(f"42 30 0:27 / /sys/fs/cgroup rw - {mount}\n")
+    root = tmp_path / "sys/fs/cgroup"
+    (root / "job").mkdir(parents=True)
+    (root / limit).write_text(str(8 * GB))
+    (root / usage).write_text(str(7 * GB))
+    (root / "memory.stat").write_text(stat)
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 6 * GB
+    (root / "memory.stat").unlink()
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == GB
 
 
 def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host):
@@ -616,18 +892,18 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
-def test_profile_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format):
-    trace = tmp_path / "oversized.jsonl"
-    with trace.open("wb") as stream:
-        stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
-    monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
-    # Profile replays keep the storage model; finite replays observe their peak instead.
-    workload = {"trace_path": str(trace), "trace_format": trace_format, "agentic_profile": {}}
-    plan = build_plan(workload, stack="engine", host=host)
+def test_snapshot_lower_bound_omits_prompts_it_may_not_dispatch(tmp_path, monkeypatch, host):
+    trace = tmp_path / "large-prompt.jsonl"
+    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
+    finite = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    _supervised(monkeypatch)
+    plan = build_plan(finite, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
-    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
-    assert "before metadata parsing" in plan["estimate"]["reason"]
+    assert "lower bound" in plan["reason"]
+    # A snapshot expands prompts only for selected plays after their cuts, so
+    # this prompt may never be allocated; its retained arrays fit.
+    for load in ({"agentic_snapshot": {"seed": 1}}, {"agentic_snapshot": {"seed": 1}, "agentic_profile": {}}):
+        assert build_plan({**finite, **load}, stack="engine", host=host)["status"] == "admitted"
 
 
 @pytest.mark.parametrize(
@@ -832,11 +1108,16 @@ def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, ex
 
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
-def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_format):
+def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, monkeypatch, host, warmup, trace_format):
     from aisimulate.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "agentic.jsonl"
-    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    if trace_format == "weka":
+        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
+    elif trace_format == "dynamo":
+        trace.write_text(json.dumps(_dynamo_row()))
+    else:
+        trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
     raw = _config()
     raw["traffic"] = {
         "source": {"type": "trace", "format": trace_format, "paths": [str(trace)], "block_size": 4},
@@ -855,17 +1136,23 @@ def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_fo
     # Native Weka snapshot/warmup accounting has its own peak-model tests.
     stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
     for stack in stacks:
+        # Lanes replay plays of one loaded corpus, so they add no corpus copies.
         estimate = estimate_workload(bounds, stack=stack)
-        assert estimate.allocation_model == "trace-json-metadata-v1"
-        assert estimate.estimated_peak_bytes is not None
+        assert estimate.allocation_model == "trace-observed-peak-v1"
+        assert estimate.estimated_peak_bytes is None
         assert estimate_workload(concrete, stack=stack) == estimate
-    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
-    if trace_format == "weka":
-        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
-    elif trace_format == "dynamo":
-        trace.write_text(json.dumps(_dynamo_row()))
-    for stack in stacks:
-        assert estimate_workload(ordinary, stack=stack).estimated_peak_bytes is None
+        # A profile starts from the same snapshot, but its peak grows with its duration.
+        profile = estimate_workload({**bounds, "agentic_profile": {}}, stack=stack)
+        assert profile.allocation_model == "agentic-profile-unqualified-v1"
+        assert profile.estimated_peak_bytes is None
+        assert profile.lower_bound_bytes == estimate.lower_bound_bytes > 0
+    # A completed snapshot replay's peak sizes later waves of the same trace.
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig())
+    spec = SimpleNamespace(workload=concrete, concurrency=None)
+    factory.record_peak(spec, GB)
+    assert factory.admit_wave([spec, spec])["reserved_bytes"] == [3 * GB // 2] * 2
 
 
 @pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])
@@ -879,6 +1166,7 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
             {
                 "type": "subagent",
                 "total_tokens": 10**12,
+                "in": "ignored",
                 "requests": [
                     {"type": "s", "in": 9, "out": 3, "hash_ids": [9]},
                 ],
@@ -901,6 +1189,26 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
     # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
     assert estimate.lower_bound_bytes == 48 * copies
     assert estimate.estimated_peak_bytes is None
+
+
+@pytest.mark.parametrize(
+    "plays,reason",
+    [
+        ([{"block_size": 4}, {"block_size": 8}], "Weka corpus mixes block sizes"),
+        ([{}, {"block_size": 4}], "Weka trace requires a positive block_size"),
+        ([{"block_size": 4, "requests": [{"type": "n", "in": 4, "out": -1}]}, {}], "nonnegative integers"),
+    ],
+)
+def test_weka_corpus_validation_has_no_qualified_estimate(tmp_path, plays, reason):
+    # Files are inspected in path order; the first one supplies the block size.
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path, play in zip(paths, plays, strict=True):
+        play.setdefault("requests", [{"type": "s", "in": 4, "out": 1}])
+        path.write_text(json.dumps(play))
+    workload = {"trace_paths": [str(path) for path in paths], "trace_format": "weka"}
+    estimate = estimate_workload(workload, stack="dynamo")
+    assert estimate.allocation_model == "trace-unqualified-v1"
+    assert reason in estimate.reason
 
 
 @pytest.mark.parametrize("compressed", [False, True])
@@ -1113,7 +1421,11 @@ def test_added_agentic_formats_reject_oversized_arrays(
     else:
         row = _dynamo_row(input_length=input_length, output_tokens=output_length)
     # A parser failure after this object would hide the bound if inspection continued.
-    source.write_text(json.dumps(row) + "\nnot JSON")
+    text = json.dumps(row) + "\nnot JSON"
+    if trace_format == "weka":
+        # Inside the same play, so the native scan must stop at the oversized request.
+        text = json.dumps(row).removesuffix("]}") + ", not JSON"
+    source.write_text(text)
     plan = build_plan({"trace_path": str(source), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12

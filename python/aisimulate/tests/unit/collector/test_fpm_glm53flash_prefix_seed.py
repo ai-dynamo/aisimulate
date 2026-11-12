@@ -303,6 +303,44 @@ def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, seed):
     assert not record["rejected_repetitions"]
 
 
+def _parallel(tp, **overrides):
+    fields = dict(
+        tensor_parallel_size=tp,
+        pipeline_parallel_size=1,
+        data_parallel_size=1,
+        use_ubatching=False,
+        prefill_context_parallel_size=1,
+        decode_context_parallel_size=1,
+        enable_expert_parallel=False,
+    )
+    return types.SimpleNamespace(**(fields | overrides))
+
+
+@pytest.mark.parametrize("tp", [1, 2, 4, 8])
+def test_pure_tp_admission_is_capacity_neutral(monkeypatch, tp):
+    # Both checkpoints share one TP set; fitting a system is decided at runtime.
+    module = load_producer(monkeypatch)
+    assert module.pure_tensor_parallel(_parallel(tp), None)
+
+
+@pytest.mark.parametrize(
+    ("tp", "overrides", "speculative"),
+    [
+        (3, {}, None),
+        (16, {}, None),
+        (4, {"data_parallel_size": 2}, None),
+        (4, {"pipeline_parallel_size": 2}, None),
+        (4, {"enable_expert_parallel": True}, None),
+        (4, {"use_ubatching": True}, None),
+        (4, {"decode_context_parallel_size": 2}, None),
+        (4, {}, object()),
+    ],
+)
+def test_non_pure_tp_layouts_are_rejected(monkeypatch, tp, overrides, speculative):
+    module = load_producer(monkeypatch)
+    assert not module.pure_tensor_parallel(_parallel(tp, **overrides), speculative)
+
+
 def test_unaligned_prefill_chunk_start_fails_the_run(monkeypatch, tmp_path):
     module = load_producer(monkeypatch)
     points = [Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])]

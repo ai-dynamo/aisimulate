@@ -15,6 +15,12 @@
 //! surface. Advanced engine and adapter contracts remain available through
 //! their explicit module paths.
 
+// jemalloc as the Rust global allocator. Its symbols are prefixed (`_rjem_`), so
+// CPython and C code keep the system allocator.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub mod engine;
 // The mirror contains compatibility and diagnostics helpers that are reached
 // only from the optional Python surface or parity harnesses.
@@ -35,25 +41,43 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 // the explicit `ReplayEngineConfig` alias above.
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
-    AicError, BackendKind, CorrectionConfig, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION,
-    ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, EstimationMode, EstimatorConfig, FPM_VERSION,
-    ForwardPassFallbackPolicy, ForwardPassMetrics, ForwardPassPerfDiagnostics,
-    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
-    ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
-    ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
-    ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics, ForwardPassWorkerType,
-    FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
-    KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, LEARNED_SCHEMA_VERSION,
-    MemoryBreakdown, ParallelMapping, QuantizationConfig, QueuedRequestMetrics,
-    RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
+    AfdExecutionPlan, AfdLayerTemplate, AfdPhasePlan, AfdPipelineLayout, AfdPoolRole,
+    AfdRoutingLocation,
+};
+pub use perfmodel::{
+    AicError, BackendKind, CorrectionConfig, CorrectionMode, DataType, DatabaseMode,
+    ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, EncoderImageShape, EncoderParallel,
+    EstimateSource, EstimationMode, EstimatorConfig, FPM_VERSION, ForwardPassFallbackPolicy,
+    ForwardPassMetrics, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
+    ForwardPassPerfModelConfig, ForwardPassPerfOptions, ForwardPassPerfProvenance,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics,
+    ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted,
+    KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction,
+    LEARNED_SCHEMA_VERSION, MemoryBreakdown, ParallelMapping, QuantizationConfig,
+    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
+    SpeculativeConfig,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
-    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
-    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
-    UnrecordedFpmQuantMode,
+    FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
+    LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
+    RegressionFeatureAxis, RegressionFeatureSet, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
+    SplineSearchConfig, UnrecordedFpmQuantMode,
 };
+pub use perfmodel::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
+pub use perfmodel::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
+pub use perfmodel::{
+    ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
+    ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
+    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
+    StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+};
+pub use perfmodel::{FpmSeedTargetNormalization, FpmSeedTargetRow};
 
 #[cfg(feature = "python")]
 pub use perfmodel::{
@@ -81,5 +105,5 @@ pub(crate) use perfmodel::{py, py_ops};
 
 pub use perfmodel::{
     DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
-    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
 };

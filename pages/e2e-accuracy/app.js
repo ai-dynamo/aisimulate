@@ -10,6 +10,7 @@ const state = {
   excludeOutliers: false,
   excludeAbnormal: false,
   excludeMultinode: false,
+  specMethod: "all",
   hiddenSeries: new Set(),
   throughput: "output",
   view: "interactivity",
@@ -29,7 +30,6 @@ const identityLine = document.getElementById("identity-line");
 const scopeClaim = document.getElementById("scope-claim");
 const provenanceContent = document.getElementById("provenance-content");
 const errorBanner = document.getElementById("error-banner");
-const themeToggle = document.getElementById("theme-toggle");
 const branchSelect = document.getElementById("branch-select");
 const branchStatus = document.getElementById("branch-status");
 const downloadJson = document.getElementById("download-json");
@@ -179,7 +179,7 @@ function renderSnapshot() {
       ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
-      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${snapshot.campaign.selection_policy === "gym-resolved-config-v2" ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${["gym-resolved-config-v2", "gym-resolved-config-v3", "hf-current-view-config-v1", "hf-current-view-config-v2"].includes(snapshot.campaign.selection_policy) ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
@@ -315,22 +315,6 @@ function toggleWorkload(row) {
   focusData("workloadKey", key);
 }
 
-function updateThemeControl() {
-  const dark = document.documentElement.dataset.theme !== "light";
-  themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
-}
-
-themeToggle.addEventListener("click", () => {
-  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-  document.documentElement.dataset.theme = next;
-  try {
-    localStorage.setItem("sm-theme", next);
-  } catch (_) {
-    // Keep the toggle usable when the browser blocks persistent storage.
-  }
-  updateThemeControl();
-});
-
 document.querySelectorAll(".sort-button").forEach((button) => {
   button.addEventListener("click", () => {
     const key = button.dataset.sort;
@@ -369,8 +353,6 @@ matrixBody.addEventListener("keydown", (event) => {
   toggleWorkload(row);
 });
 
-updateThemeControl();
-
 initialize().catch(showError);
 
 function focusData(property, value) {
@@ -392,7 +374,7 @@ function topologyLabel(topology) {
   const parts = Object.entries(labels).filter(([key]) => topology.parallelism[key] != null &&
     (key === "tp_size" || topology.parallelism[key] !== 1))
     .map(([key, label]) => `${label} ${topology.parallelism[key]}`);
-  if (topology.spec_method && topology.spec_method !== "none") parts.push(topology.spec_method);
+  if (topology.spec_method && topology.spec_method !== "none") parts.push(topology.spec_method.toUpperCase());
   return parts.join(" · ") || "Default parallelism";
 }
 
@@ -499,7 +481,7 @@ function snapshotEvidence(branch, snapshot) {
 }
 
 function branchOption(entry) {
-  const suffix = { historical: " — historical only", inherited: " — inherited evidence", unavailable: " — no snapshot" };
+  const suffix = state.tab === "agentx" ? {} : { historical: " — historical only", inherited: " — inherited evidence", unavailable: " — no snapshot" };
   return `<option value="${escapeHtml(entry.branch)}">${escapeHtml(entry.branch + (suffix[entry.status] || ""))}</option>`;
 }
 
@@ -558,8 +540,11 @@ function validateSummary(data) {
       aicSuccesses === topology.aic.points;
   };
   if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
-    typeof data.snapshot.release_tag !== "string" || data.snapshot.measurement_source_url !==
-      `https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/${data.snapshot.release_tag}` ||
+    typeof data.snapshot.release_tag !== "string" ||
+    (data.snapshot.release_tag.startsWith("hf/") && !/^hf\/[0-9a-f]{40}$/.test(data.snapshot.release_tag)) ||
+    data.snapshot.measurement_source_url !== (data.snapshot.release_tag.startsWith("hf/")
+      ? `https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/${data.snapshot.release_tag.slice(3)}`
+      : `https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/${data.snapshot.release_tag}`) ||
     !object(data.snapshot.aisimulate_packages) ||
     !["measurement_date_through", "aisimulate_completed_at"].every((key) =>
       data.snapshot[key] == null || typeof data.snapshot[key] === "string") ||
@@ -626,7 +611,7 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    !["latest-complete-config-run-v1", "gym-resolved-config-v2"].includes(campaign.selection_policy) ||
+    !["latest-complete-config-run-v1", "gym-resolved-config-v2", "gym-resolved-config-v3", "hf-current-view-config-v1", "hf-current-view-config-v2"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
   }
@@ -678,6 +663,7 @@ function updateLocation() {
     });
   }
   for (const [key, value] of Object.entries({tab: state.tab, outliers: state.excludeOutliers ? "1" : null,
+    spec: state.specMethod === "all" ? null : state.specMethod,
     abnormal: state.excludeAbnormal ? "1" : null, multinode: state.excludeMultinode ? "1" : null,
     throughput: state.throughput, view: state.view, hidden: [...state.hiddenSeries].join(",")})) {
     if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
@@ -729,12 +715,14 @@ async function fetchSummary(path) {
 async function loadBranch(branchName, restoreSelection = false, previewData = null) {
   const loadId = ++state.loadId;
   const params = new URL(location.href).searchParams;
+  if (restoreSelection) restoreView(params);
   const entry = state.catalog.branches.find((item) => item.branch === branchName);
   clearSnapshot("Loading accuracy snapshot…");
   state.branch = entry ?? null;
   try {
     if (!entry) throw new Error(`Unknown branch: ${branchName}`);
     branchSelect.value = entry.branch;
+    renderView();
     branchStatus.textContent = `Loading ${entry.branch}…`;
     if (!restoreSelection) updateLocation();
     if (entry.summary_path === null) {
@@ -880,7 +868,7 @@ function aggregateTopologies(topologies, quality = null) {
 }
 
 function filterSnapshot(data) {
-  if (!state.excludeMultinode && !state.excludeOutliers && !state.excludeAbnormal) return data;
+  if (state.specMethod === "all" && !state.excludeMultinode && !state.excludeOutliers && !state.excludeAbnormal) return data;
   if (!data || !data.models.every(m => m.workloads.every(w => w.gpus.every(g => Array.isArray(g.topologies))))) return data;
   const models = [];
   const all = [];
@@ -889,7 +877,8 @@ function filterSnapshot(data) {
     for (const workload of model.workloads) {
       const gpus = [], workloadTopologies = [];
       for (const gpu of workload.gpus) {
-        const topologies = gpu.topologies.filter(t => !state.excludeMultinode || !t.is_multinode);
+        const topologies = gpu.topologies.filter(t => (!state.excludeMultinode || !t.is_multinode) &&
+          (state.specMethod === "all" || t.spec_method === state.specMethod));
         if (!topologies.length) continue;
         gpus.push({...gpu, ...aggregateTopologies(topologies), topologies});
         workloadTopologies.push(...topologies);
@@ -910,7 +899,8 @@ function filterSnapshot(data) {
 }
 
 function restoreView(params) {
-  state.tab = params.get("tab") === "details" ? "details" : "overview";
+  state.specMethod = ["none", "mtp"].includes(params.get("spec")) ? params.get("spec") : "all";
+  state.tab = ["details", "agentx"].includes(params.get("tab")) ? params.get("tab") : "overview";
   state.excludeOutliers = params.get("outliers") === "1";
   state.excludeAbnormal = params.get("abnormal") === "1";
   state.excludeMultinode = params.get("multinode") === "1";
@@ -935,13 +925,22 @@ function filterField(key, title, values, selected) {
 }
 
 function renderView() {
-  const details = state.tab === "details";
-  document.getElementById("tab-overview").setAttribute("aria-pressed", String(!details));
+  const details = state.tab === "details", agentx = state.tab === "agentx";
+  if (state.catalog) {
+    const selected = branchSelect.value;
+    branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");
+    branchSelect.value = selected;
+  }
+  document.getElementById("tab-agentx").setAttribute("aria-pressed", String(agentx));
+  document.getElementById("agentx-view").hidden = !agentx;
+  for (const node of document.querySelectorAll(".topology-control, .exclusions, #filter-note, #evidence-brief, .public-notes")) node.hidden = agentx;
+  if (agentx) window.AgentX.load(branchSelect.value || new URL(location.href).searchParams.get("branch") || "main");
+  document.getElementById("tab-overview").setAttribute("aria-pressed", String(!details && !agentx));
   document.getElementById("tab-details").setAttribute("aria-pressed", String(details));
-  matrixLayout.hidden = details;
-  summaryGrid.hidden = details;
-  document.getElementById("framework-summary").hidden = details;
-  document.getElementById("hardware-summary").hidden = details;
+  matrixLayout.hidden = details || agentx;
+  summaryGrid.hidden = details || agentx;
+  document.getElementById("framework-summary").hidden = details || agentx;
+  document.getElementById("hardware-summary").hidden = details || agentx;
   document.getElementById("details-view").hidden = !details;
   document.getElementById("detail-filters").hidden = !details;
   for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {
@@ -949,7 +948,9 @@ function renderView() {
   }
   if (details) { selectDefault(); renderDetails(); }
   else updateOutlierCounts(state.data?.models.flatMap(m => m.workloads.flatMap(w => w.gpus.flatMap(g => g.topologies || []))) || []);
+  document.getElementById("decoding-select").value = state.specMethod;
   const historical = state.data && !state.data.models.every(m => m.workloads.every(w => w.gpus.every(g => g.topologies)));
+  document.getElementById("decoding-select").disabled = Boolean(historical);
   document.getElementById("filter-note").textContent = historical
     ? "This historical snapshot has aggregates only. Regenerate its evaluation to enable point filters and charts."
     : "Filters apply to each predictor and latency metric independently. Outliers remain visible in pink. Missing predictions remain gaps.";
@@ -1087,7 +1088,7 @@ function bindCharts(container, topology) {
 }
 
 function refreshCharts() { renderDrilldown(); if (state.tab === "details") renderDetails(); updateLocation(); }
-for (const tab of ["overview", "details"]) document.getElementById(`tab-${tab}`).addEventListener("click", () => {
+for (const tab of ["overview", "details", "agentx"]) document.getElementById(`tab-${tab}`).addEventListener("click", () => {
   state.tab = tab; renderView(); if (state.data) {renderMatrix(); renderDrilldown();} updateLocation();
 });
 for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {
@@ -1098,6 +1099,14 @@ for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeA
     renderSummary(); renderMatrix(); renderDrilldown(); renderView(); updateLocation();
   });
 }
+document.getElementById("decoding-select").addEventListener("change", event => {
+  state.specMethod = event.target.value;
+  if (!state.rawData) return;
+  state.data = filterSnapshot(state.rawData);
+  state.selection = null;
+  state.topologyId = null;
+  renderSummary(); renderMatrix(); renderDrilldown(); renderView(); updateLocation();
+});
 document.getElementById("close-point").addEventListener("click", () => document.getElementById("point-dialog").close());
 
 function updateOutlierCounts(topologies) {

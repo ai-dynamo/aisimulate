@@ -27,7 +27,7 @@ concurrency:
 jobs:
   select:
     name: Select Forward Performance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       number: ${{ steps.scope.outputs.number }}
@@ -198,8 +198,8 @@ jobs:
           )
           python -m venv "${BASE_VENV}"
           python -m venv "${HEAD_VENV}"
-          "${BASE_VENV}/bin/python" -m pip install "${BASE_DIST}"/aisimulate-*.whl
-          "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/aisimulate-*.whl
+          "${BASE_VENV}/bin/python" -m pip install "${BASE_DIST}"/*.whl
+          "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/*.whl
 
       - name: Run paired benchmark
         if: steps.revisions.outputs.run_comparison == 'true'

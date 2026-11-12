@@ -74,6 +74,48 @@ def evidence_systems(timing_systems):
     return timing_systems
 
 
+@pytest.fixture
+def kv_first_systems(evidence_systems):
+    path = Path(evidence_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    original = pq.read_table(path).to_pylist()
+    templates = [row for row in original if row["workload_kind"] == "prefill" and row["total_prefill_tokens"] == 1]
+    rows = [row for row in original if row["workload_kind"] == "decode"]
+    # Replay caps inferred capacity at decode-table coverage, including for a
+    # prefill-only request. Supply enough batch-1 coverage for both chunks.
+    rows.extend(
+        {**row, "total_kv_read_tokens": 8192}
+        for row in original
+        if row["workload_kind"] == "decode" and row["batch_size"] == 1 and row["total_kv_read_tokens"] == 64
+    )
+    for template in templates:
+        for tokens, kv, latency in ((1024, 0, 10.0), (1024, 3584, 30.0), (2048, 0, 20.0), (2048, 7168, 60.0)):
+            rows.append({**template, "total_prefill_tokens": tokens, "total_kv_read_tokens": kv, "latency_ms": latency})
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(row_count=len(rows), parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    return evidence_systems
+
+
+@pytest.fixture
+def batching_systems(evidence_systems):
+    path = Path(evidence_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    rows = pq.read_table(path).to_pylist()
+    # Replay caps capacity at the largest collected decode KV: a batch-1 row at
+    # 8192 tokens admits two requests at once. Batch 2 also gains a KV=0 row on
+    # its 1 ms-per-token line, covering both requests' first decode steps.
+    extra = {(1, 64): (8192, 8195.0), (2, 4): (0, 6.0)}
+    for row in list(rows):
+        point = extra.get((row["batch_size"], row["total_kv_read_tokens"]))
+        if row["workload_kind"] == "decode" and point is not None:
+            rows.append({**row, "total_kv_read_tokens": point[0], "latency_ms": point[1]})
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(row_count=len(rows), parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    return evidence_systems
+
+
 def canonical(profile, systems):
     return {
         "model": profile["model"],
@@ -257,6 +299,11 @@ def prediction(profile, systems):
     }
 
 
+# One request every 1.5 ms (see `evidence_systems`): the second arrives during
+# the first request's 2 ms prefill and joins one of its decode passes.
+MIXED_REQUESTS_PER_SECOND = 1000 / 1.5
+
+
 def records(evidence):
     return [
         record
@@ -265,6 +312,63 @@ def records(evidence):
         for operation in phase["operations"]
         for record in operation["fpm_estimates"]
     ]
+
+
+def test_kv_first_marker_survives_saved_config_and_chunked_replay(profile, kv_first_systems, tmp_path):
+    import jsonschema
+
+    raw = prediction(profile, kv_first_systems)
+    raw["engine"]["enable_chunked_prefill"] = True
+    raw["traffic"]["source"].update(input_tokens=3584, output_tokens=1)
+    raw["traffic"]["stop"]["requests"] = 1
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["scheduler"]["max_batched_tokens"] = 1792
+    worker["timing"]["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
+    saved = tmp_path / "prediction.json"
+    saved.write_text(CorePredictionConfig.model_validate(raw).model_dump_json())
+    reports = []
+    for _ in range(2):
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(saved.read_text()))
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            reports.append(
+                runner.run(spec, output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))
+            )
+        finally:
+            runner.close()
+    assert reports[0].metadata["fpm_query_evidence"] == reports[1].metadata["fpm_query_evidence"]
+    queries = [
+        query
+        for record in records(reports[0].metadata["fpm_query_evidence"])
+        for rank in record["estimate"]["ranks"]
+        for query in rank["queries"]
+    ]
+    assert reports[0].metrics["completed_requests"] == 1
+    # Two 1792-token chunks: the first interpolates at KV=0 to 17.5 ms.
+    # At KV=1792, the token=1024/2048 curves yield 20/30 ms. Token=1792
+    # lies 3/4 between them, giving 27.5 ms and leaf weights 1/8,1/8,9/16,3/16.
+    assert {(query["resolution"], query["latency_ms"]) for query in queries} == {
+        ("within_curve_interpolation", 17.5),
+        ("kv_first_interpolation", 27.5),
+    }
+    fallback = next(query for query in queries if query["resolution"] == "kv_first_interpolation")
+    assert [point["weight"] for point in fallback["support"]] == [0.125, 0.125, 0.5625, 0.1875]
+    native = reports[0].metadata["native_report"]
+    assert native["fpm_query_coverage"]["queries"] == {"measured": 0, "interpolated": 2, "unsupported": 0}
+    details = build_prediction_details(native, ("source", "time"))
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
+    jsonschema.validate(details, schema)
+    for section in (details["sections"]["source"], details["sections"]["time"]["diagnostics"]):
+        assert fallback in [
+            query
+            for phase in section["phases"]
+            for operation in phase["operations"]
+            for record in operation.get("fpm_estimates", [])
+            for rank in record["estimate"]["ranks"]
+            for query in rank["queries"]
+        ]
 
 
 @pytest.mark.parametrize("collect_coverage", [False, True])
@@ -352,9 +456,52 @@ def test_public_recommendation_retains_requested_evidence(profile, evidence_syst
     saved = SweepResult.model_validate_json(result.model_dump_json())
     metadata = saved.candidates[0].provenance.runner_metadata
     evidence = metadata["fpm_query_evidence"]
-    assert records(evidence)
-    assert all(record["count"] == 3 for record in records(evidence))
+    estimates = records(evidence)
+    # The selected candidate runs attention DP=2, priced as one iteration over
+    # both ranks per pass. Each rank with work records its own estimate, so the
+    # same request shape on either rank is one record: three shapes of three
+    # passes each.
+    assert len(estimates) == 3
+    assert all(record["count"] == 3 for record in estimates)
+    assert all(len(record["estimate"]["ranks"]) == 1 for record in estimates)
     assert saved.candidates[0].metrics["power_w"] is None
+
+
+def test_replay_prices_a_mixed_rank_as_one_canonical_iteration(profile, batching_systems):
+    raw = prediction(profile, batching_systems)
+    # The second request arrives while the first decodes, so one vLLM pass
+    # computes its prefill beside the first request's decode.
+    raw["traffic"]["load"] = {"type": "constant_rate", "requests_per_second": MIXED_REQUESTS_PER_SECOND}
+    raw["traffic"]["stop"]["requests"] = 2
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        report = runner.run(spec, output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))
+    finally:
+        runner.close()
+    assert report.metrics["completed_requests"] == 2
+    phases = {
+        operation["name"]: operation["fpm_estimates"]
+        for provider in report.metadata["fpm_query_evidence"]["providers"]
+        for phase in provider["phases"]
+        for operation in phase["operations"]
+    }
+    # Replay prices the pass with one canonical query whose rank holds the
+    # prefill and the latency its decode adds, reported with decode. Per-rank
+    # phase pricing records the prefill and the mixed decode share as two
+    # estimates instead, neither holding both.
+    mixed = [
+        record
+        for record in phases["fpm_decode"]
+        if record["estimate"]["ranks"][0]["prefill_ms"] is not None
+        and record["estimate"]["ranks"][0]["marginal_decode_ms"] is not None
+    ]
+    assert len(mixed) == 1
+    (rank,) = mixed[0]["estimate"]["ranks"]
+    # Hand oracle: the 1-token prefill measures 2 ms; the first request's
+    # decode at 2 past KV interpolates to 5 ms over its 3 ms pass baseline.
+    assert (rank["prefill_ms"], rank["decode_ms"], rank["marginal_decode_ms"]) == (2.0, 5.0, 2.0)
+    assert mixed[0]["estimate"]["latency_ms"] == 4.0
 
 
 def test_prediction_cli_saves_direct_query_evidence(profile, evidence_systems, tmp_path, capsys):
@@ -391,6 +538,13 @@ def native_prediction_report(profile, evidence_systems):
     "path,value",
     [
         (("estimate",), {}),
+        (("estimate", "unavailable_reason"), None),
+        (("estimate", "unavailable_reason"), False),
+        (("estimate", "unavailable_reason"), 1),
+        (("estimate", "unavailable_reason"), {}),
+        (("estimate", "unavailable_reason"), []),
+        (("estimate", "unavailable_reason"), ""),
+        (("estimate", "unavailable_reason"), " \t"),
         (("estimate", "latency_ms"), float("inf")),
         (("estimate", "native_latency_ms"), float("nan")),
         (("estimate", "correction_factor"), -1),

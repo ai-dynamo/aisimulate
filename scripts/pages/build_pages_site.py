@@ -14,12 +14,16 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+from scripts.fpm_accuracy.scenario_contract import validate_scenarios
+from scripts.pages import feature_support_matrix as feature_matrix
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGES_ROOT = Path("pages")
@@ -174,7 +178,7 @@ def _record_legacy_snapshot(repo_root: Path, destination: Path) -> None:
 def _git(repo_root: Path, *args: str) -> str:
     try:
         return subprocess.check_output(
-            ["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE, timeout=10
+            ["git", "-C", str(repo_root), *args], text=True, encoding="utf-8", stderr=subprocess.PIPE, timeout=10
         ).strip()
     except subprocess.TimeoutExpired as exc:
         raise PagesBuildError("timed out reading accuracy branch evidence") from exc
@@ -372,8 +376,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require("research_preview" not in snapshot, "research previews are local-only and cannot be published")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
         require(
-            snapshot.get("measurement_source_url")
-            == "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + snapshot["release_tag"],
+            snapshot.get("measurement_source_url") == measurement_source_url(snapshot["release_tag"]),
             "measurement source URL",
         )
         require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
@@ -632,6 +635,14 @@ def _build_fpm_catalog(repo_root: Path, output_dir: Path, include_refs: bool, ar
             target.write_text(json.dumps(summary, allow_nan=False, sort_keys=True) + "\n")
             head = _git(repo_root, "rev-parse", "origin/" + branch) if include_refs else None
             entry.update(status="available", summary_path=relative, head_sha=head)
+            scenario_source = artifacts / (artifact_key(branch) + "-scenarios.json")
+            if scenario_source.exists() or scenario_source.is_symlink():
+                if scenario_source.is_symlink():
+                    raise PagesBuildError("FPM scenarios cannot be a symlink")
+                scenarios = validate_scenarios(strict_json(scenario_source.read_text()), summary)
+                (target.parent / "scenarios.json").write_text(
+                    json.dumps(scenarios, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
+                )
         entries.append(entry)
     if artifacts is not None and (artifacts / "dashboard").exists():
         dashboard = artifacts / "dashboard"
@@ -640,6 +651,71 @@ def _build_fpm_catalog(repo_root: Path, output_dir: Path, include_refs: bool, ar
         shutil.copytree(dashboard, output_dir / "fpm-accuracy/data", dirs_exist_ok=True)
     catalog = {"schema_version": 1, "default_branch": "main", "branches": entries}
     (output_dir / "fpm-accuracy/branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
+
+
+def _feature_doc_reader(repo_root: Path, ref: str | None) -> Callable[[str], str | None]:
+    """Read pages under docs/ from the working tree, or from ``ref`` when given."""
+
+    def read(path: str) -> str | None:
+        if ref is None:
+            document = repo_root / "docs" / path
+            return document.read_text(encoding="utf-8") if document.is_file() else None
+        if not _git(repo_root, "ls-tree", ref, "--", "docs/" + path):
+            return None
+        return _git(repo_root, "show", f"{ref}:docs/{path}")
+
+    return read
+
+
+def _build_feature_matrix(repo_root: Path, output_dir: Path, include_refs: bool) -> None:
+    """Render main's data and each fetched release's committed data into one static page.
+
+    Releases cut before the page existed have no data file and stay out of the selector, as do
+    releases whose data or doc links are invalid. Invalid main data fails the build.
+    """
+    sources = [repo_root / feature_matrix.TEMPLATE_PATH, repo_root / feature_matrix.DATA_PATH]
+    for source in sources:
+        if source.is_symlink():
+            raise PagesBuildError(f"public artifact source cannot be a symlink: {source}")
+    try:
+        template, main_text = (source.read_text(encoding="utf-8") for source in sources)
+        main = feature_matrix.load(main_text, source=feature_matrix.DATA_PATH)
+        feature_matrix.check_docs(main, _feature_doc_reader(repo_root, None), source=feature_matrix.DATA_PATH)
+    except OSError as exc:
+        raise PagesBuildError(f"feature support matrix source is unreadable: {exc}") from exc
+    except feature_matrix.FeatureMatrixError as exc:
+        raise PagesBuildError(f"invalid feature support matrix: {exc}") from exc
+    try:
+        head = _git(repo_root, "rev-parse", "HEAD")
+    except PagesBuildError:
+        head = None  # A source archive has no commit to show.
+    snapshots = [feature_matrix.Snapshot("main", head, main)]
+    if include_refs:
+        refs = _git(repo_root, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/release/").splitlines()
+        branches = {ref.removeprefix("refs/remotes/origin/"): ref for ref in refs}
+        for branch in sorted(branches, key=feature_matrix.release_sort_key, reverse=True):
+            ref = branches[branch]
+            entry = _git(repo_root, "ls-tree", ref, "--", feature_matrix.DATA_PATH)
+            if not entry:
+                continue
+            if not entry.startswith("100644 blob "):
+                raise PagesBuildError(f"{ref}: feature support matrix data must be a regular file")
+            try:
+                data = feature_matrix.load(_git(repo_root, "show", f"{ref}:{feature_matrix.DATA_PATH}"), source=ref)
+                feature_matrix.check_docs(data, _feature_doc_reader(repo_root, ref), source=ref)
+            except feature_matrix.FeatureMatrixError as exc:
+                # Release data is hand-edited and its branch CI does not run this builder; drop the
+                # view rather than block every other page. Unreadable refs still fail above.
+                print(f"::warning::feature support matrix omits {branch}: {exc}")
+                continue
+            snapshots.append(feature_matrix.Snapshot(branch, _git(repo_root, "rev-parse", ref), data))
+    destination = output_dir / "feature-support-matrix" / "index.html"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        page = feature_matrix.render(template, snapshots)
+    except feature_matrix.FeatureMatrixError as exc:
+        raise PagesBuildError(f"invalid feature support matrix: {exc}") from exc
+    destination.write_text(page, encoding="utf-8")
 
 
 def build_site(
@@ -692,8 +768,19 @@ def build_site(
             elif public_name == "support-matrix":
                 _record_legacy_snapshot(repo_root, output_dir / "data" / public_name)
 
+    _build_feature_matrix(repo_root, output_dir, accuracy_refs)
     _build_accuracy_catalog(repo_root, output_dir, accuracy_refs, accuracy_artifacts)
     _build_fpm_catalog(repo_root, output_dir, accuracy_refs, fpm_artifacts)
+    # The publisher also imports this module to validate historical InfX snapshots.
+    from scripts.pages.agentx_pages import package as package_agentx
+
+    branches = json.loads((output_dir / "e2e-accuracy/branches.json").read_text())["branches"]
+    package_agentx(
+        repo_root,
+        output_dir / "e2e-accuracy/agentx",
+        [entry["branch"] for entry in branches],
+        accuracy_artifacts / "agentx" if accuracy_artifacts else None,
+    )
 
     return {path.relative_to(output_dir) for path in output_dir.rglob("*") if path.is_file()}
 
@@ -704,7 +791,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fpe-data-dir", type=Path, help="Qualified FPE data prepared for this deployment")
     parser.add_argument(
-        "--accuracy-refs", action="store_true", help="Include fetched origin/release/* accuracy snapshots"
+        "--accuracy-refs", action="store_true", help="Include fetched origin/release/* accuracy and feature snapshots"
     )
     parser.add_argument("--accuracy-artifacts", type=Path, help="Validated nightly accuracy summaries")
     parser.add_argument("--fpm-artifacts", type=Path, help="Validated FPM overview artifacts")

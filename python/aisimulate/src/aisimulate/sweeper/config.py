@@ -25,18 +25,20 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
+    AFD_UNSUPPORTED_MODEL_CONTROLS,
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
     SystemsRoot,
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig
+from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
 
 
 class OptimizationTarget(str, Enum):
@@ -55,7 +57,7 @@ class OptimizationTarget(str, Enum):
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
-    # Standalone AISimulate only; Dynamo integration does not support this target.
+    # Static engine pools, optionally behind the Dynamo Router; the Dynamo Planner is unsupported.
     MIN_GPUS = "min_gpus"  # minimize provisioned GPUs subject to workload/SLA constraints
     PARETO = "pareto"  # multi-objective: Pareto front over pareto_objectives
 
@@ -103,6 +105,10 @@ class SLATarget(BaseModel):
 # target and the per-objective list under a pareto goal.
 _SLA_TARGETS = frozenset({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
 
+# Adapters that keep min_gpus well defined. Router placement adds no GPUs and leaves the
+# engine pool static; Planner autoscaling would make the provisioned GPU count time-varying.
+_MIN_GPUS_ADAPTERS = frozenset({"dynamo.router"})
+
 # Default Pareto objectives: throughput per GPU (y) vs mean per-user throughput (x) —
 # the InferenceX tok/s/gpu vs tok/s/user frontier.
 _DEFAULT_PARETO_OBJECTIVES = (
@@ -116,12 +122,14 @@ class OptimizationGoal(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target: OptimizationTarget = OptimizationTarget.THROUGHPUT
+    target: OptimizationTarget | AIPerfMetric = OptimizationTarget.THROUGHPUT
+    # Aggregate AIPerf metric constraints, enforced only with strict_sla.
+    metric_constraints: list[MetricConstraint] = Field(default_factory=list)
     # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
     sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
-    pareto_objectives: list[OptimizationTarget] | None = None
+    pareto_objectives: list[OptimizationTarget | AIPerfMetric] | None = None
     # Preserve replay goodput's per-request SLA semantics by default. When
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
@@ -129,11 +137,21 @@ class OptimizationGoal(BaseModel):
     min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @property
+    def uses_aiperf_metrics(self) -> bool:
+        targets = self.resolved_pareto_objectives if self.is_pareto else [self.target]
+        return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
+
+    @property
+    def enforced_metric_constraints(self) -> list[MetricConstraint]:
+        # min_gpus forces the mean SLA gate, but metric constraints stay opt-in via strict_sla.
+        return self.metric_constraints if self.strict_sla else []
+
+    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
-    def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
+    def resolved_pareto_objectives(self) -> list[OptimizationTarget | AIPerfMetric]:
         """The effective Pareto objective list: the configured one, or the default pair only
         when unset (``None``). An explicitly-supplied empty/short list is kept as-is so the
         validator's ``len < 2`` guard rejects it (rather than silently using the default).
@@ -168,13 +186,18 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and not has_sla:
-            raise ValueError("strict_sla requires at least one SLA bound")
+        if self.strict_sla and not has_sla and not self.metric_constraints:
+            raise ValueError("strict_sla requires at least one SLA bound or metric constraint")
         if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
             raise ValueError("min_gpus requires at least one SLA bound")
         if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
             raise ValueError("min_goodput_rps is only supported with min_gpus")
         return self
+
+
+class ImagePool(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    pool: int = Field(strict=True, gt=0)
 
 
 class ImageWorkload(BaseModel):
@@ -184,6 +207,10 @@ class ImageWorkload(BaseModel):
     height: int = Field(strict=True, gt=0)
     width: int = Field(strict=True, gt=0)
     count: int = Field(default=1, strict=True, gt=0)
+    encoding: Literal["png", "jpeg"] = "png"
+    identity: Literal["unique"] | ImagePool = "unique"
+    min_pixels: int | None = Field(default=None, strict=True, gt=0)
+    max_pixels: int | None = Field(default=None, strict=True, gt=0)
 
 
 class EncoderSearch(BaseModel):
@@ -197,6 +224,25 @@ class EncoderSearch(BaseModel):
     workers: list[int] = [1, 2, 4, 8]
     latency_correction: float = Field(default=1.0, strict=True, gt=0, allow_inf_nan=False)
     rate_degradation: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
+    # native: SGLang encoder servers replayed event by event; `batch_size` is then the loop's one batch cap.
+    mode: Literal["analytical", "native"] = "analytical"
+    host_profile: dict[str, Any] | None = None
+    frontend: dict[str, Any] | None = None
+    transfer_bandwidth_gb_per_second: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _validate_native(self) -> EncoderSearch:
+        if self.mode == "native":
+            if (self.host_profile is None) == (self.frontend is None) or self.transfer_bandwidth_gb_per_second is None:
+                raise ValueError(
+                    "native encoder replay requires transfer_bandwidth_gb_per_second "
+                    "and one of host_profile or frontend"
+                )
+            if len(self.batch_size) != 1:
+                raise ValueError("native encoder replay takes one batch cap, not a batch_size search")
+            if self.latency_correction != 1.0:
+                raise ValueError("latency_correction applies to analytical encoder pools only")
+        return self
 
     @field_validator("tp", "batch_size", "workers", mode="before")
     @classmethod
@@ -277,10 +323,12 @@ class Workload(BaseModel):
     trace_block_size: int | None = None
     trace_format: str = "mooncake"  # replay-ready trace schema
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
+    weka_client: Literal["recorded", "agentx"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"] = "repeated_prefixes"
     agentic_profile: AgenticProfileOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
@@ -338,6 +386,13 @@ class Workload(BaseModel):
     @property
     def is_trace_based(self) -> bool:
         return self.trace_path is not None
+
+    @model_serializer(mode="wrap")
+    def _omit_default_warmup_policy(self, handler):
+        result = handler(self)
+        if self.agentic_warmup_policy == "repeated_prefixes":
+            result.pop("agentic_warmup_policy", None)
+        return result
 
     @property
     def is_synthetic(self) -> bool:
@@ -400,10 +455,26 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.weka_client is not None and (
+            self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
+        ):
+            raise ValueError("weka_client requires Weka trace input")
         if self.agentic_warmup and self.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
+        if self.agentic_warmup_policy == "live_trajectory_v1" and (
+            not self.agentic_warmup or self.agentic_profile is None
+        ):
+            raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if self.agentic_warmup_policy == "primers_only" and not self.agentic_warmup:
+            raise ValueError("primers_only requires agentic_warmup")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
+        if (
+            self.agentic_snapshot is not None
+            and self.agentic_snapshot.initial_selections is not None
+            and len(self.agentic_snapshot.initial_selections) != self.agentic_lanes
+        ):
+            raise ValueError("initial_selections must contain exactly one selection per lane")
         if self.agentic_lanes is not None:
             if (
                 self.trace_path is None
@@ -503,7 +574,7 @@ class Workload(BaseModel):
 # candidate generator can reuse it. Pinned scalars and the generated
 # ``parallel_configs`` are intentionally not choice-constrained.
 SEARCH_CHOICES: dict[str, tuple] = {
-    "deployment_mode": ("disagg", "agg", "afd", "afd+pd"),
+    "deployment_mode": ("disagg", "agg"),
     "backend": ("vllm", "sglang", "trtllm"),
 }
 
@@ -540,7 +611,7 @@ class SearchSpace(BaseModel):
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    estimation_mode: ReplayEstimationMode = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
     role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -566,20 +637,9 @@ class SearchSpace(BaseModel):
     speculation: NgramSpeculationConfig | None = None
     encoder: EncoderSearch | None = None
 
-    # Attention--FFN disaggregation. The A/F topology is a finite, complete
-    # domain; ``afd+pd`` pairs each topology with one opposite-phase companion.
-    afd_pinned_topologies: list[dict[str, Any]] = Field(default_factory=list)
-    afd_companion_parallel_configs: list[dict[str, Any]] = Field(default_factory=list)
-    afd_tp_a_candidates: list[int] | None = None
-    afd_batch_size_candidates: list[int] | None = None
-    afd_f_moe_ep_size_candidates: list[int | str] | None = None
-    afd_microbatch_candidates: list[int] = Field(default_factory=lambda: [2, 3, 4])
-    afd_pipeline_model_candidates: list[str] = Field(default_factory=lambda: ["optimistic", "conservative"])
-    afd_phase: str = "decode"
-    afd_comm_overhead_factor: float = Field(default=1.0, gt=0)
-    afd_boundary_on_attn: bool = True
-    afd_max_af_ratio: float = Field(default=4.0, gt=0)
-    afd_max_candidates: int = Field(default=10_000, ge=1)
+    # Independent A/F topology domains indexed by public language role.
+    afd_roles: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    max_topology_candidates: int = Field(default=10_000, strict=True, gt=0)
 
     # prefill engine (disagg branch): scheduler batching capacity
     prefill_max_num_batched_tokens: list[int] = [8192, 16384, 32768]
@@ -603,7 +663,8 @@ class SearchSpace(BaseModel):
     # pinned
     decode_block_size: int | list[int] | None = 64
     decode_gpu_memory_utilization: float | list[float] | None = 0.9
-    decode_enable_prefix_caching: bool = False  # forced off for decode workers
+    decode_enable_prefix_caching: bool = False
+    decode_radix_cache: bool = False  # SGLang --disaggregation-decode-enable-radix-cache
     decode_kv_bytes_per_token: int | str = "auto"
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
@@ -627,6 +688,18 @@ class SearchSpace(BaseModel):
     agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     agg_fpm_parquet_path: str | None = None
     agg_startup_time: float | None = None
+    # Host-aware SGLang VL replay: pinned settings lowered from the public configuration.
+    agg_host_loop: bool | None = None
+    agg_frontend: dict[str, Any] | None = None
+    # Measured rows by feature transport (`inline` for TP1 Rust frontends, `shm` otherwise),
+    # each `{"frontend": ..., "digest": ...}`; a candidate takes the row its TP needs.
+    agg_frontend_by_transport: dict[str, Any] | None = None
+    agg_vision: dict[str, Any] | None = None
+    # The prefill worker hosts the same loop in disaggregated deployments.
+    prefill_host_loop: bool | None = None
+    prefill_frontend: dict[str, Any] | None = None
+    prefill_frontend_by_transport: dict[str, Any] | None = None
+    prefill_vision: dict[str, Any] | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
     kv_transfer_timing_mode: str = "destination_missing"
@@ -634,16 +707,20 @@ class SearchSpace(BaseModel):
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
+    # Validated snapshots of roles whose estimator controls name one.
+    _state_snapshots: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_estimator_selection(cls, value):
+        from ..afd_config import normalize_afd_search_input
+        from .state_snapshot import derive_snapshot_roles, reject_engine_wide_snapshot
+
         if not isinstance(value, dict):
             return value
-        modes = value.get("deployment_mode")
-        if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
-            "encoder"
-        ) is not None:
+        value = normalize_afd_search_input(value)
+        reject_engine_wide_snapshot(value)
+        if value.get("encoder") is not None:
             return value
         value = dict(value)
         raw_controls = value.get("role_estimator_controls", {})
@@ -653,6 +730,10 @@ class SearchSpace(BaseModel):
             return value
         controls = {role: dict(settings) for role, settings in raw_controls.items()}
         for role in ("agg", "prefill", "decode"):
+            if ("aggregated" if role == "agg" else role) in value.get("afd_roles", {}):
+                if value.get(f"{role}_forward_model") == "fpm":
+                    raise ValueError("role_estimator_controls require regular language workers")
+                continue
             legacy = value.get(f"{role}_forward_model")
             if legacy == "op_level" and value.get(f"{role}_timing_model") is not None:
                 continue
@@ -661,7 +742,9 @@ class SearchSpace(BaseModel):
                     "estimation_mode", "fpm_interpolation" if legacy == "fpm" else "op_level"
                 )
         value["role_estimator_controls"] = controls
-        return value
+        # Roles timed by a state snapshot take their engine identity from it
+        # before any field is validated or defaulted.
+        return derive_snapshot_roles(value)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -738,11 +821,16 @@ class SearchSpace(BaseModel):
         return self
 
     def _uses_legacy_estimator_provider(self) -> bool:
-        return bool(set(self.deployment_mode) & {"afd", "afd+pd"}) or self.encoder is not None
+        return self.encoder is not None
 
     @model_serializer(mode="wrap")
     def _serialize_estimator_selection(self, handler):
         result = handler(self)
+        for role in self.afd_roles:
+            prefix = ("agg" if role == "aggregated" else role) + "_"
+            for key in list(result):
+                if key.startswith(prefix):
+                    result.pop(key)
         # Ordinary workers serialize only the canonical controls. Existing AFD
         # and encoder providers still consume the legacy selector, including
         # when a saved search is reloaded.
@@ -771,85 +859,47 @@ class SearchSpace(BaseModel):
         raise ValueError(f"unknown engine role {role!r}")
 
     def systems_paths_for(self, role: str) -> list[str] | None:
+        snapshot = self._state_snapshots.get(role)
+        if snapshot is not None and snapshot.packed_root is not None:
+            return [snapshot.packed_root]
         return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
 
-    @field_validator(
-        "afd_tp_a_candidates",
-        "afd_batch_size_candidates",
-        "afd_microbatch_candidates",
-        mode="before",
-    )
-    @classmethod
-    def _validate_afd_positive_candidates(cls, value: Any) -> Any:
-        if value is None:
-            return value
-        if not isinstance(value, list) or not value:
-            raise ValueError("AFD candidate lists must be nonempty lists")
-        if any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in value):
-            raise ValueError(f"AFD candidate lists need positive integers, got {value!r}")
-        if len(set(value)) != len(value):
-            raise ValueError("AFD candidate lists must not contain duplicates")
-        return value
+    def state_snapshot_role(self, role: str) -> Any:
+        """The validated state snapshot timing ``role``, if its estimator controls name one."""
 
-    @field_validator("afd_f_moe_ep_size_candidates", mode="before")
+        return self._state_snapshots.get(role)
+
+    @field_validator("afd_roles", mode="before")
     @classmethod
-    def _validate_afd_ep_candidates(cls, value: Any) -> Any:
-        if value is None:
-            return value
-        if not isinstance(value, list) or not value:
-            raise ValueError("afd_f_moe_ep_size_candidates must be a nonempty list")
-        allowed_symbols = {"n_f_nodes", "ffn_tp", "tp_f"}
-        invalid = [
-            item
-            for item in value
-            if not (
-                (isinstance(item, int) and not isinstance(item, bool) and item > 0)
-                or (isinstance(item, str) and item in allowed_symbols)
-            )
-        ]
-        if invalid:
-            raise ValueError(
-                "afd_f_moe_ep_size_candidates accepts positive integers, "
-                f"'n_f_nodes', 'ffn_tp', or 'tp_f'; got {invalid!r}"
-            )
-        if len({(type(item).__name__, item) for item in value}) != len(value):
-            raise ValueError("afd_f_moe_ep_size_candidates must not contain duplicates")
-        return value
+    def _validate_afd_role_domains(cls, value):
+        from ..config.engine import AFDWorkerRecommendationConfig
+
+        if not isinstance(value, dict):
+            raise ValueError("afd_roles must be a mapping by language role")
+        return {
+            role: AFDWorkerRecommendationConfig.model_validate(raw).model_dump(mode="python", exclude_none=True)
+            for role, raw in value.items()
+        }
 
     @model_validator(mode="after")
-    def _validate_afd_contract(self) -> SearchSpace:
-        afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
-        if self.afd_phase not in {"prefill", "decode", "both"}:
-            raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
-        if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
-            raise ValueError("afd_pipeline_model_candidates accepts optimistic, conservative, or serial")
-        if len(set(self.afd_pipeline_model_candidates)) != len(self.afd_pipeline_model_candidates):
-            raise ValueError("afd_pipeline_model_candidates must not contain duplicates")
-        if "afd+pd" in afd_modes and self.afd_phase == "both":
-            raise ValueError("deployment_mode='afd+pd' requires afd_phase prefill or decode")
-        if afd_modes and not self.afd_pinned_topologies and self.afd_batch_size_candidates is None:
-            raise ValueError(
-                "searched AFD requires explicit, memory-qualified afd_batch_size_candidates; "
-                "legacy topology-specific batch derivation must not become an implicit fixed batch"
+    def _validate_afd_contract(self):
+        if self.afd_roles:
+            if self.decode_radix_cache:
+                raise ValueError("decode_radix_cache is unsupported for AFD")
+            if self.backend != ["sglang"] or self.encoder is not None:
+                raise ValueError("AFD roles require only sglang and reject encoder pools")
+            active = ({"aggregated"} if "agg" in self.deployment_mode else set()) | (
+                {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
             )
-        if self.afd_pinned_topologies:
-            if len(afd_modes) != 1:
-                raise ValueError("afd_pinned_topologies requires exactly one AFD deployment_mode")
-            required = {"n_a_nodes", "n_f_nodes", "tp_a", "a_batch_size"}
-            for index, topology in enumerate(self.afd_pinned_topologies):
-                if not isinstance(topology, dict):
-                    raise ValueError(f"afd_pinned_topologies[{index}] must be a mapping")
-                missing = sorted(required - topology.keys())
-                if missing:
-                    raise ValueError(f"afd_pinned_topologies[{index}] is missing {missing}")
-        if self.afd_companion_parallel_configs and "afd+pd" not in afd_modes:
-            raise ValueError("afd_companion_parallel_configs requires deployment_mode='afd+pd'")
-        for index, companion in enumerate(self.afd_companion_parallel_configs):
-            if not isinstance(companion, dict) or "tp" not in companion:
-                raise ValueError(f"afd_companion_parallel_configs[{index}] must be a flat shape with tp")
-            replicas = companion.get("replicas", 1)
-            if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
-                raise ValueError(f"afd_companion_parallel_configs[{index}].replicas must be positive")
+            if set(self.afd_roles) - active:
+                raise ValueError("AFD role is outside the configured deployment topology")
+            afd_modes = ({"agg"} if "aggregated" in self.afd_roles else set()) | (
+                {"disagg"} if set(self.afd_roles) & {"prefill", "decode"} else set()
+            )
+            if self.parallel_configs or afd_modes & self.parallel_configs_by_mode.keys():
+                raise ValueError(
+                    "AFD modes do not support parallel_configs/parallel_configs_by_mode; use role topology"
+                )
         return self
 
     @field_validator("database_mode", mode="before")
@@ -883,7 +933,9 @@ class SearchSpace(BaseModel):
                 raise ValueError(f"unknown estimator role {role!r}; expected agg, prefill, or decode")
             if set(controls) - allowed:
                 raise ValueError(f"unknown estimator override for role {role!r}: {sorted(set(controls) - allowed)}")
-            if controls and self._uses_legacy_estimator_provider():
+            if controls and (
+                self._uses_legacy_estimator_provider() or ("aggregated" if role == "agg" else role) in self.afd_roles
+            ):
                 raise ValueError(
                     "role_estimator_controls require regular language workers; "
                     "AFD and encoder providers are unsupported"
@@ -924,14 +976,39 @@ class SearchSpace(BaseModel):
             {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
         )
         if self.systems_paths not in (None, ["default"]) and self._uses_legacy_estimator_provider():
-            unsupported = "AFD" if set(self.deployment_mode) & {"afd", "afd+pd"} else "analytical encoder pools"
+            unsupported = "AFD" if bool(self.afd_roles) else "analytical encoder pools"
             raise ValueError(f"systems_paths does not support {unsupported}")
         if nondefault and (
-            set(self.deployment_mode) & {"afd", "afd+pd"}
-            or self.encoder is not None
-            or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
+            self.encoder is not None or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
         ):
             raise ValueError("estimator policies require regular language workers with default timing in every role")
+        return self
+
+    @model_validator(mode="after")
+    def _bind_state_snapshots(self) -> SearchSpace:
+        """Keep each snapshot role's validated snapshot for estimator construction."""
+        from .forward_pass_estimator import resolve_systems_paths
+        from .state_snapshot import load_snapshot_role, state_snapshot_reference
+
+        if self._uses_legacy_estimator_provider():
+            return self
+        roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
+            {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
+        )
+        self._state_snapshots = {
+            role: load_snapshot_role(role, reference)
+            for role, controls in self.role_estimator_controls.items()
+            if role in roles and (reference := state_snapshot_reference(controls)) is not None
+        }
+        for role, snapshot in self._state_snapshots.items():
+            # Regression and learned models read no performance data.
+            if snapshot.fitted:
+                continue
+            if snapshot.packed_root is None and len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
+                raise ValueError(
+                    f"{snapshot.describe()} references performance data outside the snapshot; give the "
+                    f"{role} role exactly one systems root holding that data"
+                )
         return self
 
     @model_validator(mode="after")
@@ -962,10 +1039,18 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_engine_controls(self):
-        if self.enable_chunked_prefill is not None and any(
-            mode not in {"agg", "disagg"} for mode in self.deployment_mode
-        ):
-            raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        if self.decode_radix_cache and "sglang" not in self.backend:
+            raise ValueError("decode_radix_cache requires a search with backend=sglang")
+        if self.decode_radix_cache and "disagg" in self.deployment_mode:
+            if not self.decode_enable_prefix_caching:
+                raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
+            if self.aic_nextn or self.speculation is not None:
+                raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
+        if self.enable_chunked_prefill is not None and self.afd_roles:
+            raise ValueError(
+                "enable_chunked_prefill is unsupported for AFD; "
+                "use workers.<role>.afd.chunked_prefill_size to size the chunked-prefill window"
+            )
         if self.aic_nextn and self.nextn_accepted is None:
             raise ValueError("aic_nextn requires explicit nextn_accepted")
         if self.nextn_accepted is not None and (not self.aic_nextn or self.nextn_accepted > self.aic_nextn):
@@ -975,10 +1060,17 @@ class SearchSpace(BaseModel):
         )
         if active and (
             self.encoder is not None
-            or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode)
             or any(getattr(self, f"{role}_timing_model") is not None for role in ("agg", "prefill", "decode"))
         ):
             raise ValueError("engine model controls require default timing in every regular language role")
+        if self.afd_roles:
+            unsupported = [
+                name
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if name in AFD_UNSUPPORTED_MODEL_CONTROLS and is_active_engine_model_control(name, getattr(self, name))
+            ]
+            if unsupported:
+                raise ValueError(f"engine model controls {unsupported} are unsupported for AFD")
         return self
 
     def requested_backend_version(self, backend: str) -> str | None:
@@ -1229,69 +1321,106 @@ class SmartSearchConfig(BaseModel):
     sweep: SweepConfig = Field(default_factory=SweepConfig)
 
     @model_validator(mode="after")
+    def _validate_afd_load(self) -> SmartSearchConfig:
+        if self.search_space.afd_roles and (
+            self.workload.kv_load_ratio is not None or self.workload.load_search_field == "kv_load_ratio"
+        ):
+            raise ValueError("AFD does not support kv_load_ratio; use absolute concurrency or request_rate")
+        return self
+
+    @model_validator(mode="after")
     def _validate_min_gpus(self) -> SmartSearchConfig:
         if self.goal.target is not OptimizationTarget.MIN_GPUS:
             return self
         workload = self.workload
-        if self.adapters:
-            raise ValueError("min_gpus requires static engine pools without adapters")
+        if "dynamo.planner" in self.adapters:
+            raise ValueError(
+                "min_gpus does not support dynamo.planner: Planner autoscaling makes the provisioned GPU count "
+                "time-varying; remove the planner section or choose another target"
+            )
+        unsupported = sorted(set(self.adapters) - _MIN_GPUS_ADAPTERS)
+        if unsupported:
+            raise ValueError(
+                f"min_gpus supports only the dynamo.router adapter over static engine pools, got {unsupported}"
+            )
         if (
-            workload.trace_path is not None
-            or workload.trace_paths is not None
-            or workload.source_type not in (None, "synthetic")
-            or workload.turns_per_session != 1
-            or workload.kv_load_ratio is not None
+            workload.kv_load_ratio is not None
             or workload.load_search_field is not None
             or workload.load_choices is not None
             or workload.load_range is not None
         ):
-            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
-        allowed_load_types = (
-            {None, "constant_rate", "poisson"} if workload.request_rate is not None else {None, "concurrency"}
-        )
-        if workload.load_type not in allowed_load_types:
-            raise ValueError("min_gpus requires a synthetic load_type matching the fixed load field")
-        if workload.request_rate is not None:
+            raise ValueError("min_gpus requires a fixed absolute traffic load")
+        if workload.is_trace_based:
+            capped = workload.replay_concurrency is not None
+            closed_loop = capped or workload.agentic_lanes is not None
+            load_types = {None, "concurrency"} if capped else {None, "trace_timestamps"}
+            # Trace timestamps set the offered rate, and validation does not read the trace.
+            offered_rps = None
+        else:
+            closed_loop = workload.concurrency is not None
+            load_types = {None, "concurrency"} if closed_loop else {None, "constant_rate", "poisson"}
+            # A session rate counts sessions; each session offers turns_per_session requests.
+            offered_rps = None if closed_loop else workload.request_rate * workload.turns_per_session
+        if workload.load_type not in load_types:
+            raise ValueError("min_gpus requires a load_type matching the fixed load field")
+        if not closed_loop:
             if self.goal.min_goodput_rps is None:
-                raise ValueError("min_gpus with request-rate traffic requires min_goodput_rps")
-            if self.goal.min_goodput_rps > workload.request_rate:
+                raise ValueError("min_gpus with open-loop traffic requires min_goodput_rps")
+            if offered_rps is not None and self.goal.min_goodput_rps > offered_rps:
                 raise ValueError("min_goodput_rps cannot exceed the offered request rate")
-        elif workload.concurrency is None:
-            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
-        if self.search_space.encoder is not None and self.goal.min_goodput_rps is not None:
+        encoder = self.search_space.encoder
+        if encoder is not None and encoder.mode == "analytical" and self.goal.min_goodput_rps is not None:
             raise ValueError("analytical EPD cannot enforce min_goodput_rps")
         return self
 
     @model_validator(mode="after")
     def _validate_epd(self) -> SmartSearchConfig:
         encoder, workload = self.search_space.encoder, self.workload
-        if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
-            raise ValueError("cached_prefix_tokens is unsupported for AFD")
+        search = self.search_space
+        if encoder is None and workload.images is not None:
+            if search.agg_vision is None and search.prefill_vision is None:
+                raise ValueError("image workloads require search_space.encoder or a language worker hosting vision")
+            if bool(search.afd_roles):
+                raise ValueError("image workloads are unsupported for AFD")
+            if any(backend != "sglang" for backend in search.backend):
+                raise ValueError("native VL replay requires backend=sglang")
+            return self
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
             return self
+        if workload.images.identity != "unique":
+            raise ValueError("encoder pools do not model image identity pools; workload.images.identity must be unique")
+        if encoder.mode == "native" and any(backend != "sglang" for backend in search.backend):
+            raise ValueError("native encoder replay requires backend=sglang")
+        if search.agg_vision or search.prefill_vision:
+            raise ValueError("search_space.encoder and a language worker hosting the vision tower are exclusive")
+        if encoder.mode == "analytical" and (search.agg_host_loop or search.prefill_host_loop):
+            raise ValueError("analytical search_space.encoder and a host loop on the language worker are exclusive")
         if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
-            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+            raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if self.adapters:
-            raise ValueError("analytical EPD does not support adapters")
+            raise ValueError("encoder pools do not support adapters")
         if self.search_space.min_gpu_budget is not None:
             raise ValueError("EPD currently supports gpu_budget only, not min_gpu_budget")
         if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
             raise ValueError("encoder.backend_version requires a single backend")
-        targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
-        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
-            raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
-        workload.require_fixed_epd()
+        if encoder.mode == "analytical":
+            targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
+            if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
+                raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
+            workload.require_fixed_epd()
+        elif workload.isl is None or workload.osl is None:
+            raise ValueError("native encoder replay requires synthetic traffic with isl and osl, not a trace")
         for role in ("agg", "prefill", "decode"):
-            if getattr(self.search_space, f"{role}_forward_model") != "op_level":
-                raise ValueError("EPD requires op_level forward models")
+            if encoder.mode == "analytical" and getattr(self.search_space, f"{role}_forward_model") != "op_level":
+                raise ValueError("analytical EPD requires op_level forward models")
             if getattr(self.search_space, f"{role}_timing_model") is not None:
-                raise ValueError("EPD does not support custom language timing")
+                raise ValueError("encoder pools require default language timing")
             if getattr(self.search_space, f"{role}_startup_time") not in (None, 0.0):
-                raise ValueError("analytical EPD requires static worker pools")
+                raise ValueError("encoder pools require static worker pools")
         if self.search_space.startup_time not in (None, 0.0):
-            raise ValueError("analytical EPD requires static worker pools")
+            raise ValueError("encoder pools require static worker pools")
         return self
 
     @model_validator(mode="before")

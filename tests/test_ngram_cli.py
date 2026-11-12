@@ -19,6 +19,9 @@ from aisimulate.main import main
 from aisimulate.recommend import recommendation_to_sweeper
 from aisimulate.sweeper.config import SearchSpace
 
+# Reuse the SDK's attributed checkpoint fixtures for actual draft cost graphs.
+from python.aisimulate.tests.unit.sdk.speculation.test_dense_draft_schemes import REPLAY_SCHEMES, REPLAY_TARGET
+
 _ROOT = Path(__file__).resolve().parents[1]
 _SPEC = {"kind": "ngram", "num_speculative_tokens": 2, "acceptance_rates": [1.0, 1.0], "seed": 42}
 _COST = {"kind": "ngram", "params": {"num_speculative_tokens": 2}}
@@ -52,11 +55,18 @@ def _prediction(*, mode="aggregated", rates=(1.0, 1.0), timing="fixed"):
     }
 
 
-def _run(raw):
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+def _run(raw, *, capture_per_request=False):
+    config = CorePredictionConfig.model_validate(raw)
+    assert CorePredictionConfig.model_validate_json(config.model_dump_json()) == config
+    spec = prediction_to_replay_spec(config)
     runner = EngineReplayRunnerFactory().create(0)
     try:
-        return runner.run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=True))
+        return runner.run(
+            spec,
+            output_requirements=ReplayOutputRequirements(
+                include_raw_report=True, capture_per_request=capture_per_request
+            ),
+        )
     finally:
         runner.close()
 
@@ -92,9 +102,11 @@ def test_acceptance_is_required():
 
 
 @pytest.mark.parametrize("backend", ["sglang", "trtllm"])
-def test_unqualified_backends_are_rejected(backend):
+@pytest.mark.parametrize("speculation", [_SPEC, {**_COST, "expected_accepted_tokens": 1.5}])
+def test_unqualified_backends_are_rejected(backend, speculation):
     raw = _prediction()
     raw["engine"]["backend"] = backend
+    raw["engine"]["speculation"] = deepcopy(speculation)
     with pytest.raises(ValidationError, match="requires vllm"):
         CorePredictionConfig.model_validate(raw)
 
@@ -122,11 +134,111 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
     ordinary = _run(baseline)
     assert accepted.metrics["completed_requests"] == rejected.metrics["completed_requests"] == 1
     assert accepted.metrics["mean_e2e_latency_ms"] < rejected.metrics["mean_e2e_latency_ms"]
-    # Ordinary aggregated prefill supplies the first token; speculative
-    # verification and disaggregated timing retain their existing forward count.
-    first_token_decode_ms = 1.0 if mode == "aggregated" else 0.0
-    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"] + first_token_decode_ms
+    # The prefill output is a base token in both AR and SD. Fixed round timing
+    # makes always-rejected drafts match the AR output cadence.
+    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"]
     assert accepted.metrics["mean_ttft_ms"] == rejected.metrics["mean_ttft_ms"]
+
+
+class _RecordingRuntime:
+    """Capture the native execution spec instead of replaying it."""
+
+    def __init__(self):
+        self.execution_spec = None
+
+    def run_replay_json(self, execution_spec_json):
+        self.execution_spec = json.loads(execution_spec_json)
+        return json.dumps(
+            {
+                "duration_ms": 4.0,
+                "output_throughput_tok_s": 2000.0,
+                "gpu_hours": 0.001,
+                "mean_ttft_ms": 2.0,
+                "mean_tpot_ms": 1.0,
+                "mean_e2e_latency_ms": 4.0,
+                "mean_output_token_throughput_per_user": 1000.0,
+                "goodput_output_throughput_tok_s": 1500.0,
+                "completed_requests": 1,
+            }
+        )
+
+
+def _values(node, key):
+    if isinstance(node, dict):
+        for name, value in node.items():
+            if name == key:
+                yield value
+            yield from _values(value, key)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _values(value, key)
+
+
+def _with_timing(raw, timing):
+    for worker in raw["engine"]["workers"].values():
+        if timing == "polynomial":
+            worker["timing"] = {"type": "polynomial"}
+        elif timing == "default":
+            worker.pop("timing", None)
+    return raw
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("timing", ["fixed", "polynomial", "default"])
+def test_ngram_turns_vllm_async_scheduling_off_for_every_timing_model(mode, timing):
+    raw = _with_timing(_prediction(mode=mode), timing)
+    runtime = _RecordingRuntime()
+    config = CorePredictionConfig.model_validate(raw)
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    roles = 1 if mode == "aggregated" else 2
+    assert list(_values(runtime.execution_spec, "async_scheduling")) == [False] * roles
+
+    for worker in raw["engine"]["workers"].values():
+        worker["scheduler"]["async_scheduling"] = True
+    config = CorePredictionConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="does not support async scheduling with ngram"):
+        EngineReplayRunnerFactory(runtime=_RecordingRuntime()).create(0).run(prediction_to_replay_spec(config))
+
+
+def _busy_arrival(tmp_path, *, speculation=True, async_scheduling=None):
+    """Admission time of a request that arrives while the engine is busy.
+
+    Passes cost 10 ms. Request 0 arrives at 0 ms; its prefill runs over 0-10 ms
+    and its first decode step over 10-20 ms. Request 1 arrives at 15 ms, in the
+    middle of that step.
+    """
+    trace = tmp_path / "busy.jsonl"
+    trace.write_text(
+        "".join(
+            json.dumps({"timestamp": at, "input_length": 8, "output_length": 7, "hash_ids": [index]}) + "\n"
+            for index, at in enumerate((0, 15))
+        ),
+        encoding="utf-8",
+    )
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["timing"] = {"type": "fixed", "prefill_ms": 10, "decode_ms": 10}
+    if async_scheduling is not None:
+        worker["scheduler"]["async_scheduling"] = async_scheduling
+    if not speculation:
+        raw["engine"].pop("speculation")
+    raw["traffic"] = {
+        "source": {"type": "trace", "paths": [str(trace)], "format": "mooncake"},
+        "load": {"type": "trace_timestamps"},
+    }
+    rows = _run(raw, capture_per_request=True).metadata["native_report"]["per_request"]
+    late = max(rows, key=lambda row: row["arrival_time_ms"])
+    assert late["arrival_time_ms"] == 15.0
+    return late["first_admit_ms"]
+
+
+def test_ngram_admits_a_busy_engine_arrival_at_the_next_pass(tmp_path):
+    # With ngram drafts vLLM schedules synchronously: the arrival joins the
+    # pass after the running one, as with async scheduling turned off.
+    assert _busy_arrival(tmp_path) == _busy_arrival(tmp_path, async_scheduling=False) == 20.0
+    # Without drafts vLLM's default async scheduling has already queued that
+    # pass, so the arrival waits one more.
+    assert _busy_arrival(tmp_path, speculation=False) == 30.0
 
 
 def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
@@ -182,7 +294,7 @@ def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
 
 
 @pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
-def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
+def test_canonical_prompt_lookup_rejects_unsupported_estimators_without_fallback(mode):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
@@ -194,7 +306,7 @@ def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
                 worker_type="aggregated",
                 speculation=deepcopy(_COST),
                 estimation_mode=mode,
-                fallback_policy="allow",
+                fallback_policy="deny",
             )
         )
 
@@ -243,7 +355,7 @@ def test_set_override_reaches_native_replay(tmp_path):
 
     report = json.loads((output / "prediction.json").read_text())
     summary = report.get("summary", report)
-    assert summary["mean_e2e_latency_ms"] == pytest.approx(4.0)
+    assert summary["mean_e2e_latency_ms"] == pytest.approx(3.0)
 
 
 def test_lower_level_sweeper_rejects_legacy_mtp_combination():
@@ -317,8 +429,8 @@ def test_native_progress_clamps_final_burst(output_tokens):
     raw = _prediction()
     raw["traffic"]["source"]["output_tokens"] = output_tokens
     report = _run(raw)
-    # The native scheduler performs prefill, then up to three tokens per decode round.
-    rounds = (output_tokens + 2) // 3
+    # Prefill emits one base token, then each round accepts up to three tokens.
+    rounds = (output_tokens - 1 + 2) // 3
     assert report.metrics["mean_e2e_latency_ms"] == pytest.approx(1 + rounds)
 
 
@@ -330,25 +442,151 @@ def test_ngram_rejection_still_pays_target_verification_cost():
     assert speculative.metrics["mean_e2e_latency_ms"] > ordinary.metrics["mean_e2e_latency_ms"]
 
 
-def test_agentic_execution_rejects_ngram_before_loading_trace():
+def test_agentic_hbm_execution_accepts_ngram_capability():
     raw = _prediction()
     raw["traffic"] = {
         "source": {"type": "trace", "paths": ["not-loaded.jsonl"], "format": "weka"},
         "load": {"type": "trace_timestamps"},
     }
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
-        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
-def test_online_prediction_rejects_ngram():
-    config = CorePredictionConfig.model_validate(_prediction())
+@pytest.mark.parametrize("speculation", [_SPEC, {**_COST, "expected_accepted_tokens": 1.5}])
+def test_online_prediction_rejects_ngram(speculation):
+    raw = _prediction()
+    raw["engine"]["speculation"] = deepcopy(speculation)
+    config = CorePredictionConfig.model_validate(raw)
     with pytest.raises(ValueError, match="offline engine stack"):
         prediction_to_replay_spec(config, execution_mode="online")
+
+
+@pytest.mark.parametrize("speculation", [_SPEC, {**_COST, "expected_accepted_tokens": 1.5}])
+def test_adapter_prediction_rejects_ngram(speculation):
+    raw = _prediction()
+    raw["engine"]["speculation"] = deepcopy(speculation)
+    config = CorePredictionConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="offline engine stack without adapters"):
+        prediction_to_replay_spec(config, adapter_specs={"test": object()})
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+def test_generic_speculation_fixed_capacity_error_identifies_scheme_and_role(role):
+    raw = _prediction(mode="aggregated" if role == "aggregated" else "disaggregated", timing="default")
+    raw["engine"]["speculation"] = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    raw["engine"]["workers"][role]["kv_cache"]["capacity"] = {"type": "default"}
+    with pytest.raises(
+        ValidationError, match=rf"mtp speculation requires explicit fixed KV capacity on workers\.{role}"
+    ):
+        CorePredictionConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
+@pytest.mark.parametrize("fallback", ["allow", "deny"])
+@pytest.mark.parametrize(
+    "speculation",
+    [
+        {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5},
+        _SPEC,
+        {**_COST, "expected_accepted_tokens": 1.5},
+    ],
+    ids=["mtp", "ngram", "generic_ngram"],
+)
+def test_replay_preserves_canonical_estimator_selection(mode, fallback, speculation):
+    raw = _prediction(timing="default")
+    raw["engine"].update(
+        estimation_mode=mode,
+        fallback_policy=fallback,
+        speculation=deepcopy(speculation),
+    )
+    # Availability and fallback belong to the canonical estimator, after input validation.
+    CorePredictionConfig.model_validate(raw)
+    if fallback == "deny":
+        with pytest.raises(ValueError, match="speculat.*op_level|op_level.*speculat"):
+            _run(raw)
+    else:
+        report = _run(raw)
+        assert report.metrics["completed_requests"] == 1
+        assert report.metadata["prediction_provenance"]["aggregated"]["estimator"] == "op_level"
+        raw["engine"].update(estimation_mode="op_level", fallback_policy="deny")
+        baseline = _run(raw)
+        assert report.metrics["mean_e2e_latency_ms"] == baseline.metrics["mean_e2e_latency_ms"]
 
 
 def test_ngram_rejects_mtp_combination_before_compilation():
     raw = _prediction(timing="default")
     raw["engine"].update(nextn=2, nextn_accepted=1)
     with pytest.raises(ValidationError, match="speculation cannot be combined with nextn"):
+        CorePredictionConfig.model_validate(raw)
+
+
+def _agentic_prediction(tmp_path, cost, *, model=REPLAY_TARGET, backend="vllm", topology="aggregated", tp=1):
+    source = json.loads((_ROOT / "tests/e2e/configs/unified_cli/fixtures/traces/weka-relative.json").read_text())
+    lengths = []
+
+    def update(requests):
+        for request in requests:
+            if request["type"] == "s":
+                request["out"] = 128 if lengths else 1
+                lengths.append(request["out"])
+            elif "requests" in request:
+                update(request["requests"])
+
+    update(source["requests"])
+    path = tmp_path / "agentic.json"
+    path.write_text(json.dumps(source))
+    raw = _prediction(mode=topology, timing="default")
+    raw["engine"].update(
+        model=model,
+        backend=backend,
+        hardware="b200_sxm",
+        context_length=262144,
+        backend_version="0.24.0" if backend == "vllm" else "0.5.14",
+        speculation={**deepcopy(cost), "expected_accepted_tokens": 1.5, "seed": 42},
+    )
+    for worker in raw["engine"]["workers"].values():
+        worker.update(
+            parallelism={"tensor": tp, "moe_tensor": tp, "moe_expert": 1},
+            scheduler={"max_batched_tokens": 8192, "max_sequences": 8},
+            kv_cache={"block_size": 64, "capacity": {"type": "fixed", "blocks": 4096}},
+        )
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "weka", "paths": [str(path)], "block_size": 4},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+    }
+    return raw
+
+
+def _agentic_rows(raw):
+    report = _run(raw, capture_per_request=True)
+    assert report.metrics["completed_requests"] == 4
+    assert report.metrics["total_output_tokens"] == 385
+    assert report.metadata["agentic_model_projection"]["target_model"] == raw["engine"]["model"]
+    rows = report.metadata["native_report"]["per_request"]
+    assert sorted(row["output_length"] for row in rows) == [1, 128, 128, 128]
+    return rows
+
+
+@pytest.mark.parametrize(
+    "target,backend",
+    [("nvidia/GLM-5.2-NVFP4", "vllm"), ("nvidia/GLM-5.2-NVFP4", "sglang"), ("deepseek-ai/DeepSeek-V4-Pro", "sglang")],
+)
+def test_mtp_retains_target_cost_and_legacy_weka_progress(tmp_path, target, backend):
+    for topology in ("aggregated", "disaggregated"):
+        raw = _agentic_prediction(tmp_path, REPLAY_SCHEMES[0], model=target, backend=backend, topology=topology, tp=8)
+        rows = _agentic_rows(raw)
+        raw["engine"].pop("speculation")
+        raw["engine"].update(nextn=3, nextn_accepted=1.5)
+        assert _agentic_rows(raw) == rows
+
+
+@pytest.mark.parametrize("backend,topology", [("vllm", "aggregated"), ("sglang", "disaggregated")])
+def test_eagle_chain_replays_dag_short_tail_and_seeded_lifecycle(tmp_path, backend, topology):
+    raw = _agentic_prediction(tmp_path, REPLAY_SCHEMES[2], backend=backend, topology=topology)
+    first = _agentic_rows(raw)
+    assert _agentic_rows(raw) == first
+    raw["engine"]["speculation"]["seed"] = 43
+    assert _agentic_rows(raw) != first
+    raw["engine"].update(nextn=3, nextn_accepted=1.5)
+    with pytest.raises(ValidationError, match="cannot be combined"):
         CorePredictionConfig.model_validate(raw)

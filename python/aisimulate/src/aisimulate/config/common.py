@@ -13,15 +13,23 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-def _absolute_systems_path(value: str) -> str:
-    if not value.strip() or "," in value:
-        raise ValueError("systems_path must name one nonempty local directory, not a comma-separated list")
+def _absolute_path(value: str) -> str:
+    if not value.strip():
+        raise ValueError("path must be nonempty")
     return str(Path(value).expanduser().resolve())
+
+
+def _absolute_systems_path(value: str) -> str:
+    if "," in value:
+        raise ValueError("systems_path must name one nonempty local directory, not a comma-separated list")
+    return _absolute_path(value)
 
 
 SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
@@ -150,6 +158,7 @@ class ExecutionConfig(StrictModel):
 
 
 class CandidateConstraints(StrictModel):
+    metrics: list[MetricConstraint] = Field(default_factory=list)
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
     min_goodput_rps: PositiveFiniteFloat | None = None
@@ -162,18 +171,22 @@ class CandidateConstraints(StrictModel):
 
 
 class OptimizationConfig(StrictModel):
-    target: Literal[
-        "throughput",
-        "throughput_per_gpu",
-        "throughput_per_user",
-        "goodput",
-        "goodput_per_gpu",
-        "min_gpus",
-        "ttft",
-        "e2e_latency",
-        "pareto",
-    ] = "throughput"
+    target: (
+        Literal[
+            "throughput",
+            "throughput_per_gpu",
+            "throughput_per_user",
+            "goodput",
+            "goodput_per_gpu",
+            "min_gpus",
+            "ttft",
+            "e2e_latency",
+            "pareto",
+        ]
+        | AIPerfMetric
+    ) = "throughput"
     hardware: str | None = None
+    max_topology_candidates: PositiveStrictInt = 10_000
     strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
 
@@ -259,6 +272,12 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "comm_quant_mode",
 )
 
+# Kernel selectors consumed by the native AFD per-pool models.
+AFD_KERNEL_CONTROL_FIELDS = ("attention_backend", "moe_kernel_source")
+
+# Pool-shaping controls not consumed by native AFD models.
+AFD_UNSUPPORTED_MODEL_CONTROLS = frozenset({"enable_eplb", "wideep_num_slots", "moe_backend"})
+
 
 def is_active_engine_model_control(name: str, value: Any) -> bool:
     """Distinguish inactive defaults without treating invalid numeric zero as False."""
@@ -272,9 +291,16 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 
 
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
-    """Keep additive defaults out of timing payloads parsed by older runners."""
+    """Keep additive defaults out of timing payloads parsed by older runners.
+
+    A configuration that restores a state snapshot keeps them: restoration
+    compares the saved identity exactly, and only a current runner restores one.
+    """
     result = dict(config)
-    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb"):
+    estimator_config = result.get("estimator_config")
+    if isinstance(estimator_config, dict) and estimator_config.get("state_snapshot") is not None:
+        return result
+    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
     return result

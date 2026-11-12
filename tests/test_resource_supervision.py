@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
@@ -226,6 +227,69 @@ def _cli_arguments(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
     return ["predict", "--config", str(config), "--output-dir", str(tmp_path / "output")]
+
+
+@pytest.mark.parametrize(
+    "extra,backend,message",
+    [
+        (["--telemetry-sample-interval-ms", "0"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "-1"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "nan"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "inf"], "vllm", "finite and positive"),
+        (["--online"], "vllm", "telemetry capture requires offline --stack engine"),
+        (["--stack", "legacy"], "vllm", "telemetry capture requires offline --stack engine"),
+        ([], "trtllm", "telemetry capture requires offline native vLLM/SGLang"),
+    ],
+)
+@pytest.mark.parametrize("capture_flag", ["--capture-telemetry", "--export-html"])
+def test_supervisor_rejects_invalid_telemetry_before_overwrite(
+    tmp_path, monkeypatch, capsys, extra, backend, message, capture_flag
+):
+    from aisimulate import cli_args, supervision
+
+    prior = {
+        name: f"prior {name}\n"
+        for name in (
+            "prediction.json",
+            "report.html",
+            "telemetry-requests.jsonl",
+            "telemetry-samples.jsonl",
+            "keep.txt",
+        )
+    }
+    for name, contents in prior.items():
+        (tmp_path / name).write_text(contents)
+    raw = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": backend,
+            "workers": {"aggregated": {}},
+        }
+    }
+    monkeypatch.setattr(cli_args, "_load_mapping", lambda _: raw)
+    monkeypatch.setattr(supervision, "_installed_names", lambda _: ["legacy"])
+
+    def forbidden_run(*args, **kwargs):
+        pytest.fail("invalid telemetry options reached execution")
+
+    monkeypatch.setattr(supervision, "run_process", forbidden_run)
+    with pytest.raises(SystemExit) as exc:
+        supervision.main(
+            [
+                "predict",
+                "-c",
+                "unused.yaml",
+                capture_flag,
+                "--output-dir",
+                str(tmp_path),
+                "--overwrite",
+                *extra,
+            ]
+        )
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert {path.name: path.read_text() for path in tmp_path.iterdir()} == prior
 
 
 @pytest.mark.parametrize("probe", ["discover_host", "resolve_budget"])
@@ -492,6 +556,74 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     assert result.execution_resources["peak_observed_rss_bytes"] > 0
 
 
+@contextmanager
+def _child_with_grandchild():
+    """Yield a child and its detached grandchild's PID; the child exits when its stdin closes."""
+    import subprocess
+
+    source = """import subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+print(child.pid, flush=True)
+sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", source], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True
+    )
+    grandchild = None
+    try:
+        grandchild = int(process.stdout.readline())
+        yield process, grandchild
+    finally:
+        if grandchild is not None and psutil.pid_exists(grandchild):
+            psutil.Process(grandchild).kill()
+        process.kill()
+        process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
+@pytest.mark.parametrize("proc_children", [True, False])
+def test_owned_tree_close_stops_an_observed_descendant_after_its_parent_exits(monkeypatch, proc_children):
+    from aisimulate import resources
+    from aisimulate.supervision import OwnedTree
+
+    if proc_children and not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    monkeypatch.setattr(resources, "_PROC_CHILDREN", proc_children)
+    # The grandchild leaves the session and outlives its parent, so neither the
+    # process group nor a later discovery reaches it; only its observed identity does.
+    with _child_with_grandchild() as (process, grandchild):
+        tree = OwnedTree(process)
+        tree.sample()
+        process.stdin.close()
+        process.wait(timeout=5)
+        tree.sample()
+        assert grandchild in {pid for pid, _ in tree.known}
+        tree.close()
+        assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+
+
+def test_descendants_fall_back_instead_of_dropping_an_unreadable_subtree(monkeypatch):
+    import errno
+
+    from aisimulate import resources
+
+    if not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    iterdir = Path.iterdir
+    with _child_with_grandchild() as (process, grandchild):
+        unreadable = Path(f"/proc/{process.pid}/task")
+
+        def fail(path):
+            if path == unreadable:
+                raise OSError(errno.EMFILE, "Too many open files")
+            return iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail)
+        # A live child whose threads cannot be listed must not hide its subtree.
+        assert grandchild in {child.pid for child in resources.descendants_of(psutil.Process())}
+
+
 def test_pool_termination_reaps_before_shutdown_returns():
     import multiprocessing
     import time
@@ -658,6 +790,112 @@ if __name__ == "__main__":
     result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"feasible": 1, "status": "completed"}
+
+
+def test_supervised_recommendation_joins_publisher_before_final_writer(tmp_path):
+    import subprocess
+
+    events = tmp_path / "lifecycle-events.txt"
+    output = tmp_path / "output"
+    script = tmp_path / "lifecycle.py"
+    script.write_text("""
+import sys
+import threading
+from pathlib import Path
+
+import yaml
+
+from aisimulate.config import CoreRecommendationConfig
+from aisimulate.output_adapter import (
+    OUTPUT_ADAPTER_API_VERSION,
+    RecommendationOutputCallbacks,
+    write_output_adapters,
+)
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.supervision import supervised_recommendation
+
+
+class LifecycleProbeAdapter:
+    name = "lifecycle-probe"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    @staticmethod
+    def append(path, event):
+        with Path(path).open("a", encoding="utf-8") as target:
+            target.write(event + "\\n")
+
+    def subscribe(self, config):
+        events = config["events"]
+        stop = threading.Event()
+        publisher = threading.Thread(target=stop.wait, args=(10,), daemon=False)
+        publisher.start()
+        self.append(events, "publisher_started")
+
+        def finish(event):
+            self.append(events, event)
+            stop.set()
+            publisher.join(timeout=2)
+            if publisher.is_alive():
+                raise RuntimeError("publisher did not stop")
+            self.append(events, "publisher_joined")
+
+        return RecommendationOutputCallbacks(
+            on_complete=lambda: finish("complete"),
+            on_failure=lambda error: finish("failure"),
+        )
+
+    def write(self, config, *, result, output_dir):
+        del result
+        events = Path(config["events"])
+        if events.read_text(encoding="utf-8").splitlines()[-1] != "publisher_joined":
+            raise RuntimeError("final writer ran before publisher shutdown")
+        self.append(events, "final_write")
+        artifact = Path("lifecycle-probe.txt")
+        (output_dir / artifact).write_text("complete\\n", encoding="utf-8")
+        return [artifact]
+
+
+if __name__ == "__main__":
+    events = Path(sys.argv[1])
+    output = Path(sys.argv[2])
+    output.mkdir()
+    path = Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml")
+    raw = yaml.safe_load(path.read_text())
+    raw["optimizer"].update(max_trials=1, parallelism=1)
+    config = CoreRecommendationConfig.model_validate(raw)
+    output_configs = {"lifecycle-probe": {"events": str(events)}}
+    result = supervised_recommendation(
+        config,
+        {
+            "stack": "engine",
+            "runner_factory": EngineReplayRunnerFactory(),
+            "output_configs": output_configs,
+            "output_adapters": {"lifecycle-probe": LifecycleProbeAdapter()},
+            "show_progress": False,
+        },
+    )
+    write_output_adapters(
+        {"lifecycle-probe": LifecycleProbeAdapter()},
+        output_configs,
+        result=result,
+        output_dir=output,
+    )
+""")
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(events), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        "publisher_started",
+        "complete",
+        "publisher_joined",
+        "final_write",
+    ]
 
 
 def test_supervisor_argument_and_output_setup_do_not_import_runtime():
@@ -844,6 +1082,10 @@ def test_public_cli_rejects_reusing_recommendation_directory_without_deleting_co
     "command,access,cleanup_name",
     [
         ("predict", "direct", "prediction.json"),
+        ("predict", "direct", "report.html"),
+        ("predict", "direct", "telemetry-requests.jsonl"),
+        ("predict", "direct", "telemetry-samples.jsonl"),
+        ("predict", "direct", "telemetry-lifecycle.jsonl"),
         ("recommend", "direct", "recommendations/0001.yaml"),
         ("predict", "chain", "prediction.json"),
         ("recommend", "chain", "recommendations/0001.yaml"),

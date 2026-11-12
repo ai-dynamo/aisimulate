@@ -62,18 +62,28 @@ pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// contract and the backend-bound native-FPM median contracts below; median
 /// latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
+pub const FPM_NATIVE_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_fpm_model_step_cuda_v1";
+pub const FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_ar_model_step_cuda_v1";
 const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
+const FPM_FULL_GRID_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_full_grid_median_v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MeasurementPolicy {
     SingleSample,
     PerRow,
+    PerRowFullGrid,
     /// Default serving configuration (prefix caching on): Dynamo
     /// InstrumentedScheduler FPM wall time, real prefix-cache seeding.
     VllmNativeFpmMedian,
     /// Default serving configuration (radix cache on): native SGLang
     /// `--enable-forward-pass-metrics` rank-0 wall time, real radix seeding.
     SglangNativeFpmMedian,
+    /// A genuine native CUDA observation, optionally selected as an actual
+    /// upper-median source sample with that sample's own workload coordinates.
+    NativeCudaActualSample,
+    /// Full text autoregressive execution: the complete native vLLM model
+    /// step CUDA time, including sampling, with the same sample selection.
+    NativeArCudaActualSample,
 }
 
 impl MeasurementPolicy {
@@ -81,14 +91,33 @@ impl MeasurementPolicy {
         match self {
             Self::SingleSample => FPM_FORWARD_MEASUREMENT_POLICY,
             Self::PerRow => FPM_ROW_MEASUREMENT_POLICY,
+            Self::PerRowFullGrid => FPM_FULL_GRID_MEASUREMENT_POLICY,
             Self::VllmNativeFpmMedian => "vllm_native_fpm_prefix_seed_median_v1",
             Self::SglangNativeFpmMedian => "sglang_native_fpm_radix_seed_median_v1",
+            Self::NativeCudaActualSample => FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+            Self::NativeArCudaActualSample => FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+        }
+    }
+
+    fn row_median_policy(self) -> Option<&'static str> {
+        match self {
+            Self::PerRow => Some("kvwarm_median_of_3"),
+            Self::PerRowFullGrid => Some("independent_full_grid_median_of_3"),
+            Self::SingleSample
+            | Self::VllmNativeFpmMedian
+            | Self::SglangNativeFpmMedian
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
         }
     }
 
     fn state_protocol(self) -> Option<&'static str> {
         match self {
-            Self::SingleSample | Self::PerRow => None,
+            Self::SingleSample
+            | Self::PerRow
+            | Self::PerRowFullGrid
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
             Self::VllmNativeFpmMedian => Some("glm53flash_prefix_cache_real_seed_v1"),
             Self::SglangNativeFpmMedian => Some("glm53flash_sglang_radix_real_seed_v1"),
         }
@@ -96,7 +125,11 @@ impl MeasurementPolicy {
 
     fn timing_boundary(self) -> Option<&'static str> {
         match self {
-            Self::SingleSample | Self::PerRow => None,
+            Self::SingleSample
+            | Self::PerRow
+            | Self::PerRowFullGrid
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
             Self::VllmNativeFpmMedian => Some("dynamo_vllm_instrumented_scheduler_fpm_wall_time"),
             Self::SglangNativeFpmMedian => Some("sglang_native_fpm_rank0_device_timer_wall_time"),
         }
@@ -197,10 +230,15 @@ pub struct FpmForwardCell {
     /// Direct timing curves `(batch, KV) -> (prefill tokens -> latency)`.
     /// Fake-fallback rows are excluded even when the legacy table heals them.
     pub direct_prefill: BTreeMap<(u32, u32), BTreeMap<u32, f64>>,
+    /// Token-major view of `direct_prefill`: `(batch, prefill tokens) ->
+    /// (KV -> latency)`. Built once, on the first KV-first fallback query.
+    direct_prefill_by_tokens: OnceLock<BTreeMap<(u32, u32), BTreeMap<u32, f64>>>,
     /// Direct decode curves contain genuine measurements only; their bounds
     /// do not inherit the fabricated rows' extrapolated KV ceilings.
     pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
     pub direct_decode_rungs: Vec<u32>,
+    /// Loaded under the autoregressive native CUDA policy: no speculative timing.
+    pub native_ar_only: bool,
     /// Diagnostic state only; no change to table identity, values, or schema.
     warned_fmha_model_modes: Mutex<BTreeSet<String>>,
 }
@@ -219,6 +257,44 @@ impl FpmForwardCell {
             self.match_identity[2], self.cell_ids, self.model_path
         ))
     }
+
+    pub(crate) fn direct_prefill_by_tokens(&self) -> &BTreeMap<(u32, u32), BTreeMap<u32, f64>> {
+        self.direct_prefill_by_tokens.get_or_init(|| {
+            let mut rows: BTreeMap<(u32, u32), BTreeMap<u32, f64>> = BTreeMap::new();
+            for (&(batch, kv), curve) in &self.direct_prefill {
+                for (&tokens, &latency) in curve {
+                    rows.entry((batch, tokens)).or_default().insert(kv, latency);
+                }
+            }
+            rows
+        })
+    }
+}
+
+/// One marked source row and the effective target used by the canonical loader.
+/// The row index always addresses the unchanged source Parquet, not a sorted cell.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FpmSeedTargetRow {
+    pub row_index: usize,
+    pub workload_kind: String,
+    pub batch_size: u32,
+    pub total_prefill_tokens: u32,
+    pub total_kv_read_tokens: u32,
+    pub raw_latency_ms: f64,
+    pub effective_latency_ms: f64,
+    pub replaced: bool,
+}
+
+/// Preparation-only audit of fake-KV target normalization for one complete
+/// loaded profile. Genuine rows are unchanged and are not duplicated here.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FpmSeedTargetNormalization {
+    pub policy: &'static str,
+    pub row_count: usize,
+    pub replacement_enabled: bool,
+    pub replaced_count: u64,
+    pub kept_count: u64,
+    pub rows: Vec<FpmSeedTargetRow>,
 }
 
 /// One loaded parquet/sidecar pair: the grouped cells plus the
@@ -235,6 +311,7 @@ struct LoadedPair {
     /// finite/positive) — the proposal's keep-and-warn case, or every fake
     /// row when the raw escape hatch is on.
     kept_fake_fallback: u64,
+    seed_target_normalization: FpmSeedTargetNormalization,
 }
 
 pub struct FpmForwardTable {
@@ -378,6 +455,12 @@ impl FpmForwardTable {
     /// load reports should print it.
     pub fn kept_fake_fallback_rows(&self) -> Result<u64, AicError> {
         Ok(self.loaded()?.kept_fake_fallback)
+    }
+
+    /// Effective fake-KV targets from the same validated load and correction
+    /// pass used for interpolation. No interpolation or SOL query is performed.
+    pub fn seed_target_normalization(&self) -> Result<&FpmSeedTargetNormalization, AicError> {
+        Ok(&self.loaded()?.seed_target_normalization)
     }
 
     /// Exact base identity, recorded DCP and model-path matching, followed by
@@ -533,11 +616,31 @@ fn validate_sidecar(
     ) {
         (Some(FPM_FORWARD_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::SingleSample,
         (Some(FPM_ROW_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRow,
+        (Some(FPM_FULL_GRID_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRowFullGrid,
         (Some("vllm_native_fpm_prefix_seed_median_v1"), Some(7), "vllm") => {
             MeasurementPolicy::VllmNativeFpmMedian
         }
         (Some("sglang_native_fpm_radix_seed_median_v1"), Some(7), "sglang") => {
             MeasurementPolicy::SglangNativeFpmMedian
+        }
+        (
+            Some(
+                policy @ (FPM_NATIVE_CUDA_MEASUREMENT_POLICY
+                | FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY),
+            ),
+            Some(7),
+            "vllm",
+        ) => {
+            if metadata.get("timing_scope").and_then(|v| v.as_str()) != Some("model_step_cuda") {
+                return Err(structural(
+                    "native CUDA FPM sidecar requires timing_scope=model_step_cuda".into(),
+                ));
+            }
+            if policy == FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY {
+                MeasurementPolicy::NativeArCudaActualSample
+            } else {
+                MeasurementPolicy::NativeCudaActualSample
+            }
         }
         _ => {
             return Err(structural(format!(
@@ -723,7 +826,7 @@ fn load_pair(
     let dcp_col = reader.col_optional("dcp");
     let row_policy_col = reader.col_optional("measurement_policy");
     let repeats_col = reader.col_optional("measurement_repeats");
-    if measurement_policy == MeasurementPolicy::PerRow
+    if measurement_policy.row_median_policy().is_some()
         && (row_policy_col.is_none() || repeats_col.is_none())
     {
         return Err(structural("FPM per-row measurement policy requires measurement_policy and measurement_repeats columns".into()));
@@ -737,6 +840,18 @@ fn load_pair(
             reader.col("measurement_repeats")?,
             reader.col("state_protocol")?,
             reader.col("timing_boundary")?,
+        ])
+    } else {
+        None
+    };
+    let native_cuda_columns = if matches!(
+        measurement_policy,
+        MeasurementPolicy::NativeCudaActualSample | MeasurementPolicy::NativeArCudaActualSample
+    ) {
+        Some([
+            reader.col("timing_scope")?,
+            reader.col("measurement_reduction")?,
+            reader.col("source_sample_count")?,
         ])
     } else {
         None
@@ -767,13 +882,27 @@ fn load_pair(
     let mut rows: Vec<FpmRow> = Vec::new();
     for (index, row) in reader.rows()?.enumerate() {
         let row = row?;
-        if median_columns.is_some()
+        if (median_columns.is_some() || native_cuda_columns.is_some())
             && row.str_optional(row_policy_col)? != Some(measurement_policy.name())
         {
             return Err(structural(format!(
                 "FPM row {index} measurement_policy must match sidecar {:?}",
                 measurement_policy.name()
             )));
+        }
+        if let Some([scope, reduction, count]) = native_cuda_columns {
+            let count = row.u32(count)?;
+            let reduction = row.str(reduction)?;
+            if row.str(scope)? != "model_step_cuda"
+                || !matches!(
+                    (reduction, count),
+                    ("single_sample", 1) | ("actual_upper_median", 2..)
+                )
+            {
+                return Err(structural(format!(
+                    "FPM row {index}: native CUDA timing/reduction/count contract mismatch"
+                )));
+            }
         }
         if let Some([global, warmup, measured, protocol, boundary]) = median_columns {
             for (name, col, expected) in [
@@ -929,7 +1058,47 @@ fn load_pair(
                 }
             })
             .collect::<Result<_, _>>()?;
+        let speculative = crate::FpmExecutionBinding::parse_selector(&match_identity[16])
+            .map_err(|error| structural(format!("FPM row {index}: {error}")))?;
+        let legacy_execution = match_identity[15..FPM_CELL_MATCH_COLUMNS.len()]
+            .iter()
+            .map(String::as_str)
+            .eq(LEGACY_EXECUTION_IDENTITY);
+        if measurement_policy == MeasurementPolicy::NativeArCudaActualSample && !legacy_execution {
+            return Err(structural(format!(
+                "FPM row {index}: AR native CUDA policy requires full text autoregressive execution"
+            )));
+        }
+        if speculative.is_some()
+            != (measurement_policy == MeasurementPolicy::NativeCudaActualSample)
+        {
+            return Err(structural(format!(
+                "FPM row {index}: speculative-round identity requires the native CUDA measurement policy, and vice versa"
+            )));
+        }
+        if speculative.is_some()
+            && (backend != "vllm"
+                || get_int("tp")? == 0
+                || get_int("pp")? != 1
+                || get_int("dp")? != 1
+                || get_int("cp")? != 1
+                || get_int("moe_ep")? != 1
+                || (get_int("moe_tp")? != 1 && get_int("moe_tp")? != get_int("tp")?)
+                || match_identity[13] != "False"
+                || match_identity[14] != "False"
+                || match_identity[17] != "none"
+                || match_identity[18] != "text")
+        {
+            return Err(structural(format!(
+                "FPM row {index}: speculative-round data requires vLLM pure TP, DP1/PP1/CP1 and text execution"
+            )));
+        }
         let dcp = dcp_col.map(|col| row.u32(col)).transpose()?;
+        if speculative.is_some() && dcp.is_some_and(|value| value != 1) {
+            return Err(structural(format!(
+                "FPM row {index}: speculative-round data requires DCP1"
+            )));
+        }
         if let Some(dcp) = dcp {
             let tp = get_int("tp")?;
             if dcp == 0 || tp == 0 || tp % dcp != 0 {
@@ -944,14 +1113,12 @@ fn load_pair(
                 "FPM row {index} dcp disagrees with the sidecar selector"
             )));
         }
-        if measurement_policy == MeasurementPolicy::PerRow {
+        if let Some(median_policy) = measurement_policy.row_median_policy() {
             let policy = row.str_optional(row_policy_col)?;
             let repeats = row.u32_optional(repeats_col)?;
-            if !matches!(
-                (policy, repeats),
-                (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(1))
-                    | (Some("kvwarm_median_of_3"), Some(3))
-            ) {
+            if (policy, repeats) != (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(1))
+                && (policy, repeats) != (Some(median_policy), Some(3))
+            {
                 return Err(structural(format!(
                     "FPM row {index} measurement policy/repeats are inconsistent"
                 )));
@@ -1007,10 +1174,7 @@ fn load_pair(
         // their latency value is healed by the replacement pass below, after
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
-        if !match_identity[15..FPM_CELL_MATCH_COLUMNS.len()]
-            .iter()
-            .map(String::as_str)
-            .eq(LEGACY_EXECUTION_IDENTITY)
+        if (measurement_policy == MeasurementPolicy::NativeArCudaActualSample || !legacy_execution)
             && (workload_kind == "decode" || total_kv_read_tokens > 0)
             && kv_seed_regime != FPM_KV_SEED_REAL_KV
         {
@@ -1094,9 +1258,24 @@ fn load_pair(
     // all measured shapes.
     let mut replaced_fake_fallback: u64 = 0;
     let mut kept_fake_fallback: u64 = 0;
+    let mut normalized_rows: Vec<FpmSeedTargetRow> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.fake_fallback)
+        .map(|(row_index, row)| FpmSeedTargetRow {
+            row_index,
+            workload_kind: row.workload_kind.clone(),
+            batch_size: row.batch_size,
+            total_prefill_tokens: row.total_prefill_tokens,
+            total_kv_read_tokens: row.total_kv_read_tokens,
+            raw_latency_ms: row.latency_ms,
+            effective_latency_ms: row.latency_ms,
+            replaced: false,
+        })
+        .collect();
     if !replace_fake_fallback {
-        kept_fake_fallback = rows.iter().filter(|r| r.fake_fallback).count() as u64;
-    } else if rows.iter().any(|r| r.fake_fallback) {
+        kept_fake_fallback = normalized_rows.len() as u64;
+    } else if !normalized_rows.is_empty() {
         // (cell key, batch rung) -> real_kv anchors as (kv, latency).
         let mut anchors: BTreeMap<(Vec<String>, u32), Vec<(u32, f64)>> = BTreeMap::new();
         for row in &rows {
@@ -1112,10 +1291,11 @@ fn load_pair(
             // already rejected same-(cell, phase, batch, kv) row pairs.
             list.sort_unstable_by_key(|&(kv, _)| kv);
         }
-        for row in &mut rows {
-            if !row.fake_fallback {
-                continue;
-            }
+        for (row, normalized) in rows
+            .iter_mut()
+            .filter(|row| row.fake_fallback)
+            .zip(&mut normalized_rows)
+        {
             let mut healed = None;
             if row.workload_kind == "decode" {
                 if let Some(list) = anchors.get(&(row.cell_key(), row.batch_size)) {
@@ -1138,6 +1318,8 @@ fn load_pair(
             match healed {
                 Some(value) => {
                     row.latency_ms = value;
+                    normalized.effective_latency_ms = value;
+                    normalized.replaced = true;
                     replaced_fake_fallback += 1;
                 }
                 None => kept_fake_fallback += 1,
@@ -1167,8 +1349,10 @@ fn load_pair(
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
                 direct_prefill: BTreeMap::new(),
+                direct_prefill_by_tokens: OnceLock::new(),
                 direct_decode: BTreeMap::new(),
                 direct_decode_rungs: Vec::new(),
+                native_ar_only: measurement_policy == MeasurementPolicy::NativeArCudaActualSample,
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
@@ -1258,6 +1442,14 @@ fn load_pair(
         cells,
         replaced_fake_fallback,
         kept_fake_fallback,
+        seed_target_normalization: FpmSeedTargetNormalization {
+            policy: "same_cell_batch_real_kv_extrapolation_v1",
+            row_count: rows.len(),
+            replacement_enabled: replace_fake_fallback,
+            replaced_count: replaced_fake_fallback,
+            kept_count: kept_fake_fallback,
+            rows: normalized_rows,
+        },
     }))
 }
 
@@ -1439,6 +1631,7 @@ pub(crate) mod tests {
         pub backend_version: &'static str,
         pub partition_policy: &'static str,
         pub tp: u32,
+        pub moe_tp: Option<u32>,
         /// Overrides the coordinate-derived cell_id (collision tests).
         pub cell_id: Option<&'static str>,
         pub system: &'static str,
@@ -1451,6 +1644,14 @@ pub(crate) mod tests {
         pub measurement: Option<(&'static str, u32)>,
         pub execution: Option<[&'static str; 4]>,
         pub median: Option<MeasurementSpec>,
+        pub native_cuda: Option<NativeCudaSampleSpec>,
+    }
+
+    pub(crate) struct NativeCudaSampleSpec {
+        pub policy: &'static str,
+        pub scope: &'static str,
+        pub reduction: &'static str,
+        pub source_sample_count: u32,
     }
 
     pub(crate) struct MeasurementSpec {
@@ -1478,6 +1679,7 @@ pub(crate) mod tests {
                 backend_version: "0.25.1",
                 partition_policy: FPM_FORWARD_PARTITION_POLICY,
                 tp: 4,
+                moe_tp: None,
                 cell_id: None,
                 system: "b200_sxm",
                 backend: "vllm",
@@ -1486,6 +1688,7 @@ pub(crate) mod tests {
                 measurement: None,
                 execution: None,
                 median: None,
+                native_cuda: None,
             }
         }
     }
@@ -1554,6 +1757,7 @@ pub(crate) mod tests {
         let has_measurement = rows.iter().any(|r| r.measurement.is_some());
         let has_execution = rows.iter().any(|r| r.execution.is_some());
         let has_median = rows.iter().any(|r| r.median.is_some());
+        let has_native_cuda = rows.iter().any(|r| r.native_cuda.is_some());
         let schema = "message schema {
             REQUIRED BINARY cell_id (UTF8);
             REQUIRED BINARY model_path (UTF8);
@@ -1628,6 +1832,11 @@ pub(crate) mod tests {
         } else {
             schema
         };
+        let schema = if has_native_cuda {
+            schema.replace('}', "REQUIRED BINARY measurement_policy (UTF8);\nREQUIRED BINARY timing_scope (UTF8);\nREQUIRED BINARY measurement_reduction (UTF8);\nREQUIRED INT64 source_sample_count;\n}")
+        } else {
+            schema
+        };
         let schema = Arc::new(parse_message_type(&schema).expect("schema must parse"));
         let file = std::fs::File::create(&parquet_path).expect("create parquet");
         let mut writer =
@@ -1635,7 +1844,13 @@ pub(crate) mod tests {
                 .expect("writer");
         let mut rg = writer.next_row_group().expect("row group");
 
-        let identity = |r: &RowSpec| default_identity(r.tp);
+        let identity = |r: &RowSpec| {
+            let mut values = default_identity(r.tp);
+            if let Some(moe_tp) = r.moe_tp {
+                values[8] = moe_tp.to_string();
+            }
+            values
+        };
         let str_col = |f: &dyn Fn(&RowSpec) -> String| -> Vec<ByteArray> {
             rows.iter()
                 .map(|r| ByteArray::from(f(r).as_str()))
@@ -1833,6 +2048,28 @@ pub(crate) mod tests {
                 col.close().unwrap();
             }
         }
+        if has_native_cuda {
+            for field in 0..3 {
+                let values = str_col(&|r| {
+                    let sample = r.native_cuda.as_ref().unwrap();
+                    [sample.policy, sample.scope, sample.reduction][field].to_owned()
+                });
+                let mut col = rg.next_column().unwrap().unwrap();
+                col.typed::<ByteArrayType>()
+                    .write_batch(&values, None, None)
+                    .unwrap();
+                col.close().unwrap();
+            }
+            let values: Vec<i64> = rows
+                .iter()
+                .map(|r| i64::from(r.native_cuda.as_ref().unwrap().source_sample_count))
+                .collect();
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+        }
         rg.close().expect("close row group");
         writer.close().expect("close writer");
 
@@ -1865,6 +2102,13 @@ pub(crate) mod tests {
         sidecar.insert("system".into(), "b200_sxm".into());
         sidecar.insert("backend".into(), "vllm".into());
         sidecar.insert("backend_version".into(), "0.25.1".into());
+        if has_native_cuda {
+            sidecar.insert(
+                "measurement_policy".into(),
+                rows[0].native_cuda.as_ref().unwrap().policy.into(),
+            );
+            sidecar.insert("timing_scope".into(), "model_step_cuda".into());
+        }
         mutate_sidecar(&mut sidecar);
         std::fs::write(
             parquet_path.with_extension("metadata.json"),
@@ -1878,6 +2122,197 @@ pub(crate) mod tests {
     /// process-global [`FPM_FAKE_FALLBACK_RAW_ENV`].
     fn loaded_table(dir: &Path) -> FpmForwardTable {
         FpmForwardTable::new_with_replacement(dir.to_path_buf(), "b200_sxm", "vllm", "0.25.1", true)
+    }
+
+    fn speculative_rows() -> Vec<RowSpec> {
+        let binding: crate::FpmExecutionBinding = serde_json::from_value(serde_json::json!({
+            "model_revision": "1".repeat(40), "execution_profile": {
+                "kind": "speculative_round", "method": "eagle3", "num_draft_tokens": 3,
+                "draft_model": "test/draft", "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            }
+        }))
+        .unwrap();
+        let selector: &'static str = Box::leak(binding.selector().unwrap().into_boxed_str());
+        default_rows()
+            .into_iter()
+            .map(|mut row| {
+                row.execution = Some(["", selector, "none", "text"]);
+                row.kv_seed_regime = Some("real_kv");
+                row.native_cuda = Some(NativeCudaSampleSpec {
+                    policy: FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+                    scope: "model_step_cuda",
+                    reduction: "actual_upper_median",
+                    source_sample_count: 20,
+                });
+                row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn autoregressive_native_cuda_policy_preserves_samples_and_rejects_relabeling() {
+        for mutation in [
+            "none",
+            "single_sample",
+            "speculation",
+            "fake_kv",
+            "phase",
+            "modality",
+            "row_clock",
+            "sidecar_clock",
+            "zero_count",
+            "bad_reduction",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = speculative_rows();
+            for row in &mut rows {
+                let speculative_execution = row.execution.unwrap();
+                row.execution = Some(LEGACY_EXECUTION_IDENTITY);
+                let sample = row.native_cuda.as_mut().unwrap();
+                sample.policy = FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY;
+                match mutation {
+                    "single_sample" => {
+                        sample.reduction = "single_sample";
+                        sample.source_sample_count = 1;
+                    }
+                    "speculation" => row.execution = Some(speculative_execution),
+                    "fake_kv" => row.kv_seed_regime = Some("fake_fallback"),
+                    "phase" => row.execution.as_mut().unwrap()[1] = "decoder_bounded",
+                    "modality" => row.execution.as_mut().unwrap()[3] = "image",
+                    "row_clock" => sample.scope = "scheduler_wall_time",
+                    "zero_count" => sample.source_sample_count = 0,
+                    "bad_reduction" => sample.reduction = "mean",
+                    _ => {}
+                }
+            }
+            write_pair_with(tmp.path(), &rows, |metadata| {
+                if mutation == "sidecar_clock" {
+                    metadata.insert("timing_scope".into(), "scheduler_wall_time".into());
+                }
+            });
+            let table = loaded_table(tmp.path());
+            if matches!(mutation, "none" | "single_sample") {
+                let cell = table
+                    .select_cell(&default_identity(4), "org/model-a", None)
+                    .unwrap();
+                // The fixture records 7 ms at B8/KV4096, including for an actual median sample.
+                assert_eq!(cell.direct_decode[&8][&4096], 7.0);
+            } else {
+                assert!(table.cells().is_err(), "accepted {mutation}");
+            }
+        }
+    }
+
+    #[test]
+    fn speculative_round_cells_select_exactly_and_do_not_scale_actual_samples() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = speculative_rows();
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let mut identity = default_identity(4);
+        identity[16] = rows[0].execution.unwrap()[1].to_owned();
+        let cell = table.select_cell(&identity, "org/model-a", None).unwrap();
+        // Fixture records 7 ms at B8/KV4096. Twenty contributing source
+        // observations select one actual sample; never divide its time by 20.
+        assert_eq!(cell.direct_decode[&8][&4096], 7.0);
+        assert!(
+            table
+                .select_cell(&default_identity(4), "org/model-a", None)
+                .is_err()
+        );
+        let binding = crate::FpmExecutionBinding::parse_selector(&identity[16])
+            .unwrap()
+            .unwrap();
+        for changed in [
+            identity[16].replace("\"num_draft_tokens\":3", "\"num_draft_tokens\":4"),
+            identity[16].replace("test/draft", "test/other"),
+            identity[16].replace(&binding.model_revision, &"3".repeat(40)),
+            identity[16].replace(&binding.execution_profile.draft_revision, &"4".repeat(40)),
+        ] {
+            identity[16] = changed;
+            assert!(table.select_cell(&identity, "org/model-a", None).is_err());
+        }
+    }
+
+    #[test]
+    fn speculative_native_policy_accepts_unreduced_real_samples() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rows = speculative_rows();
+        for row in &mut rows {
+            row.native_cuda = Some(NativeCudaSampleSpec {
+                policy: FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+                scope: "model_step_cuda",
+                reduction: "single_sample",
+                source_sample_count: 1,
+            });
+        }
+        write_pair(tmp.path(), &rows);
+        assert_eq!(loaded_table(tmp.path()).cells().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn speculative_dense_tp_identity_allows_unused_moe_tp_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rows = speculative_rows();
+        for row in &mut rows {
+            row.moe_tp = Some(1);
+        }
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let mut identity = default_identity(4);
+        identity[8] = "1".into();
+        identity[16] = rows[0].execution.unwrap()[1].to_owned();
+        assert!(table.select_cell(&identity, "org/model-a", None).is_ok());
+        identity[8] = "4".into();
+        assert!(table.select_cell(&identity, "org/model-a", None).is_err());
+    }
+
+    #[test]
+    fn speculative_native_policy_rejects_clock_relabeling_and_bad_reductions() {
+        for mutation in [
+            "legacy_policy",
+            "ar_identity",
+            "row_clock",
+            "sidecar_clock",
+            "fake_kv",
+            "zero_count",
+            "single_count",
+            "unknown_reduction",
+            "malformed_selector",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = speculative_rows();
+            for row in &mut rows {
+                match mutation {
+                    "ar_identity" => row.execution = Some(LEGACY_EXECUTION_IDENTITY),
+                    "row_clock" => row.native_cuda.as_mut().unwrap().scope = "scheduler_wall_time",
+                    "fake_kv" => row.kv_seed_regime = Some("fake_fallback"),
+                    "zero_count" => row.native_cuda.as_mut().unwrap().source_sample_count = 0,
+                    "single_count" => row.native_cuda.as_mut().unwrap().reduction = "single_sample",
+                    "unknown_reduction" => row.native_cuda.as_mut().unwrap().reduction = "mean",
+                    "malformed_selector" => {
+                        row.execution = Some(["", "speculative_round_v1:{}", "none", "text"])
+                    }
+                    _ => {}
+                }
+            }
+            write_pair_with(tmp.path(), &rows, |metadata| {
+                if mutation == "legacy_policy" {
+                    metadata.insert(
+                        "measurement_policy".into(),
+                        FPM_FORWARD_MEASUREMENT_POLICY.into(),
+                    );
+                }
+                if mutation == "sidecar_clock" {
+                    metadata.insert("timing_scope".into(), "scheduler_wall_time".into());
+                }
+            });
+            assert!(
+                loaded_table(tmp.path()).cells().is_err(),
+                "accepted {mutation}"
+            );
+        }
     }
 
     #[test]
@@ -2065,6 +2500,7 @@ pub(crate) mod tests {
             (2, "state_protocol"),
             (3, "timing_boundary"),
             (4, "fake_fallback"),
+            (5, "measurement_policy"),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let mut rows = median_rows("vllm");
@@ -2075,7 +2511,11 @@ pub(crate) mod tests {
                 1 => m.measured = 1,
                 2 => m.protocol = "wrong",
                 3 => m.boundary = "sglang_native_fpm_rank0_device_timer_wall_time",
-                _ => row.kv_seed_regime = Some(FPM_KV_SEED_FAKE_FALLBACK),
+                4 => row.kv_seed_regime = Some(FPM_KV_SEED_FAKE_FALLBACK),
+                _ => {
+                    m.policy = "independent_full_grid_median_of_3";
+                    m.measured = 3;
+                }
             }
             write_median_pair(tmp.path(), &rows);
             for replace in [false, true] {
@@ -2100,6 +2540,14 @@ pub(crate) mod tests {
                 serde_json::json!("sglang_native_fpm_radix_seed_median_v1"),
             ),
             ("measurement_policy", serde_json::json!("per_row")),
+            (
+                "measurement_policy",
+                serde_json::json!(FPM_ROW_MEASUREMENT_POLICY),
+            ),
+            (
+                "measurement_policy",
+                serde_json::json!(FPM_FULL_GRID_MEASUREMENT_POLICY),
+            ),
             ("warmup_repeats", serde_json::json!(5.0)),
             ("measurement_repeats", serde_json::Value::Null),
         ] {
@@ -2316,6 +2764,116 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("requires measurement_policy")
+        );
+    }
+
+    #[test]
+    fn full_grid_median_policy_preserves_aggregate_latencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: 128,
+                total_kv_read_tokens: 0,
+                latency_ms: 7.25,
+                measurement: Some(("independent_full_grid_median_of_3", 3)),
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "decode",
+                batch_size: 1,
+                total_prefill_tokens: 0,
+                total_kv_read_tokens: 128,
+                latency_ms: 3.125,
+                measurement: Some((FPM_FORWARD_MEASUREMENT_POLICY, 1)),
+                ..RowSpec::default()
+            },
+        ];
+        write_pair_with(tmp.path(), &rows, |meta| {
+            meta.insert(
+                "measurement_policy".into(),
+                "per_row_single_sample_or_full_grid_median_v1".into(),
+            );
+        });
+        let table = loaded_table(tmp.path());
+        let cells = table
+            .cells()
+            .expect("aggregate pair must load without campaign files");
+        assert_eq!(cells.len(), 1);
+        // Independent oracle: stored fixture latencies are already aggregated.
+        assert_eq!(cells[0].direct_prefill[&(1, 0)][&128], 7.25);
+        assert_eq!(cells[0].direct_decode[&1][&128], 3.125);
+    }
+
+    #[test]
+    fn full_grid_median_policy_rejects_inconsistent_records() {
+        for (sidecar_policy, row_policy, repeats) in [
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                0,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                1,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                6,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                FPM_FORWARD_MEASUREMENT_POLICY,
+                3,
+            ),
+            (FPM_FULL_GRID_MEASUREMENT_POLICY, "kvwarm_median_of_3", 3),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "vllm_native_fpm_prefix_seed_median_v1",
+                3,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "sglang_native_fpm_radix_seed_median_v1",
+                3,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_6",
+                6,
+            ),
+            (FPM_FULL_GRID_MEASUREMENT_POLICY, "unknown", 3),
+            (
+                FPM_ROW_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                3,
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows = [RowSpec {
+                measurement: Some((row_policy, repeats)),
+                ..RowSpec::default()
+            }];
+            write_pair_with(tmp.path(), &rows, |meta| {
+                meta.insert("measurement_policy".into(), sidecar_policy.into());
+            });
+            let error = loaded_table(tmp.path()).cells().unwrap_err();
+            assert!(error.to_string().contains("policy/repeats"), "{error}");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair_with(tmp.path(), &default_rows(), |meta| {
+            meta.insert(
+                "measurement_policy".into(),
+                FPM_FULL_GRID_MEASUREMENT_POLICY.into(),
+            );
+        });
+        let error = loaded_table(tmp.path()).cells().unwrap_err();
+        assert!(
+            error.to_string().contains("requires measurement_policy"),
+            "{error}"
         );
     }
 
@@ -2570,6 +3128,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&32768], 39.0);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 0);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 0);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, healed);
+        assert!(row.replaced);
     }
 
     /// The R17 wrong-row regression case (tp2, b=128, kv=131200, same-node
@@ -2647,6 +3216,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&258018], 33.235794);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 0);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 0);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(!normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, row.raw_latency_ms);
+        assert!(!row.replaced);
     }
 
     /// A station with fewer than two `real_kv` anchors keeps its original
@@ -2682,6 +3262,22 @@ pub(crate) mod tests {
         assert_eq!(curves[&64][&16384], healed);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 5);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 2);
+        let kept = &normalization.rows[0];
+        assert_eq!(kept.row_index, 1);
+        assert_eq!(kept.raw_latency_ms, 5.0);
+        assert_eq!(kept.effective_latency_ms, kept.raw_latency_ms);
+        assert!(!kept.replaced);
+        let replaced = &normalization.rows[1];
+        assert_eq!(replaced.row_index, 4);
+        assert_eq!(replaced.raw_latency_ms, 9.0);
+        assert_eq!(replaced.effective_latency_ms, healed);
+        assert!(replaced.replaced);
     }
 
     /// A fake rung that is NOT its station's kv top anchors on the two

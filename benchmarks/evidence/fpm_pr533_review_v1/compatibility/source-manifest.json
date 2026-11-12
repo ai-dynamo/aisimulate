@@ -1,0 +1,52 @@
+{
+  "schema": "pr533-configuration-compatibility-source-v1",
+  "repository": "https://github.com/ai-dynamo/aisimulate",
+  "candidate": {
+    "revision": "1de653c9ef28788a877a660cb81cb3379edb8c6a",
+    "binary_sha256": "7a17d7fcf7f8342455d702d8bdf8bee048b615eef4a70e1d1add41f7fd929574",
+    "profile": "release; extension-module",
+    "source_files_sha256": {
+      "Cargo.toml": "b5d74d946b92a49d1e4bf0b60ac6b0d4f7ddde57e099dbaba03346d96d01c71a",
+      "Cargo.lock": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+      "crates/core/Cargo.toml": "d1e10113d62f95288fd6c4d0a4f6d3f93b1646abf36a6d433b577fb0df5d9569",
+      "crates/core/src/perfmodel/fpm/config.rs": "4e3691e1e40f9781a762268273fa13727c120b9afc71a41239d9e65dbda6f598",
+      "crates/core/src/perfmodel/fpm/estimator.rs": "2794e853203c3552d4ec4c4ab7f42bab61c9db977661852350ff3cacd6221257",
+      "crates/core/src/perfmodel/py.rs": "4592484cde76107da8154fef3ce1926ccd26176cccecdbc571e86b51deba2bdb"
+    }
+  },
+  "prior_main": {
+    "repository": "https://github.com/ai-dynamo/aisimulate",
+    "revision": "3327f7c6214234c6cd2c6f9734a75129694c7a38",
+    "archive_sha256": "ab9dbb22e1f3cbcd51f25055a9ab48b8ddd4ffa25c012027c99640dc1f09791c",
+    "source_files": {
+      "Cargo.toml": "b5d74d946b92a49d1e4bf0b60ac6b0d4f7ddde57e099dbaba03346d96d01c71a",
+      "Cargo.lock": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+      "crates/core/Cargo.toml": "d09628f261b2712cc435f9fe8e612c51bceb221ecaf238e3e7d45a4e0e00ca53",
+      "crates/core/src/perfmodel/fpm/config.rs": "70ce2f309b9c6826156e74786e6ee4bb86a6679f947f1d9ba8dbb79c266521ca",
+      "crates/core/src/perfmodel/fpm/estimator.rs": "6d088a9c863ca0fdb7c92cdaae320f602953136bbf059d16588b95957ce5c717"
+    },
+    "binary_sha256": "e5d5c24ed2c37920d72911b5a6aa014607af3727ba0238e68be24cffcf3f83d4",
+    "profile": "dev; no-default-features",
+    "production_files_verified_byte_identical_to_git_archive": 258,
+    "original_harness_sha256": "a71ff78d1a3de45bbf07ca60c5d747a52ce28af8379643d7169cb5e9f9b25c5f",
+    "reproduction_harness_sha256": "82b7369fc565f2b86c2635e3bb988faee94796e935d97df18a93b71f43e076ff",
+    "harness_difference": "Only the SPDX copyright/license comment header was added to the original executed harness."
+  },
+  "original_proof_sha256": "c4506b17ba71d65fe727bc8adc3301c9bc83fdd50f9837df43a261972b702e97",
+  "original_script_sha256": "b176f752fd3c4a346a669e588013fa61647fe4722c988a8392456a9b7befb34b",
+  "audit": {
+    "default_accepted": 8,
+    "nondefault_preserved_and_rejected": 7,
+    "candidate_exact_roundtrips": 15,
+    "regression_models_constructed_per_reader": 2,
+    "binary_hashes_verified": true,
+    "case_names_unique_and_aligned": true
+  },
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "scope": "Actual unchanged prior-main ForwardPassPerfModelConfig Deserialize implementation, linked from its full crate. Candidate uses native normalize_config; both readers also construct the two regression cases. No earlier schema was reimplemented.",
+  "limitations": [
+    "Only these valid ordinary/default and seven nondefault-control cases are covered.",
+    "Op-level and interpolation cases exercise configuration readers, not estimator construction or serving accuracy.",
+    "Rebuilt binary hashes can differ with compiler, target, paths, or build profile; source hashes and semantic checks are reproducible."
+  ]
+}

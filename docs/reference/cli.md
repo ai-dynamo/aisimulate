@@ -52,6 +52,23 @@ illustrate the output format. Captured detail examples are simulation results, n
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
 
+### Eager execution and CUDA graphs
+
+These flags control the vLLM worker used for FPM collection. `--enforce-eager`
+is a worker flag, not an `aisimulate predict` or `onboard init` option.
+
+| Setting | CUDA graphs | `torch.compile` |
+|---|---|---|
+| Worker `--enforce-eager` | Disabled; eager execution. | Disabled. |
+| Collector `--fpm-enforce-eager` | Disabled; emits worker `--enforce-eager`. | Disabled. |
+| Onboarding `--cudagraph-mode NONE` / worker `cudagraph_mode=NONE` | Disabled. | Unchanged; may remain enabled. |
+
+See [vLLM's compilation guide](https://docs.vllm.ai/en/stable/design/debug_vllm_compile/)
+for the worker flag semantics. DSV4.1 onboarding automatically selects the
+required eager setting from model metadata; users need no extra flag. The
+[FPM self-service guide](../perf-model/fpm-self-service/implementation.md#serving-roles-and-cuda-graph-settings)
+explains the current qualification limit and conflicting graph settings.
+
 <a id="override-semantics"></a>
 
 ### Override Semantics
@@ -152,8 +169,9 @@ The native engine export supports this evidence path with op-level timing on
 supported topologies. The external Dynamo Python adapter's diagnostics export
 requires separate qualification: native Rust compatibility aliases do not establish
 adapter parity. If a selected runner exports no typed evidence, energy details
-state that reason. FPM, fixed, polynomial, AFD, and analytical EPD energy remain
-unavailable; their summary fields are explicit nulls where unsupported.
+state that reason. Native AFD exports operation-energy evidence; numeric power
+depends on operation-energy coverage. FPM, fixed, polynomial, and analytical EPD
+energy remain unavailable; their summary fields are explicit nulls where unsupported.
 
 <a id="prediction-directory"></a>
 
@@ -171,12 +189,15 @@ unavailable; their summary fields are explicit nulls where unsupported.
 ```
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
-- `requests.jsonl` contains one record per request when explicitly enabled.
+- `requests.jsonl` contains one record per request when explicitly enabled. SGLang workers with
+  `host_loop` add `scheduler_received_ms`, `selected_ms` and `prefill_complete_ms` to each
+  record; a worker with `frontend` or `host_profile` also adds `frontend_ready_ms`, and a native
+  encoder pool adds `encoder_ready_ms`.
 - `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
   or workload estimates. `resource-runtime.json` records the effective budget and supervision
   outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
   [local execution resources](local-resources.md) for their interpretation.
-- `afd-replay-spec.json` is the exact, deterministic analytical replay contract for an AFD run,
+- `afd-replay-spec.json` is the exact, deterministic native replay contract for an AFD run,
   including topology, measurement provenance, workload, goal, and any P/D companion.
 - `afd-qualification.json` validates and summarizes the A/F pools, routing order, backend version,
   measurement coverage, and GPU accounting. It explicitly records that native launch generation is
@@ -216,7 +237,14 @@ when predicting a configuration saved under the previous run's `recommendations/
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
+Prediction JSON without `--detail` on standard output is a summary object. SGLang workers with
+`host_loop` add the mean time to first token split by stage: `mean_frontend_ms`,
+`mean_scheduler_inbox_wait_ms`, `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`,
+`mean_result_observation_delay_ms`, `mean_handoff_to_first_token_ms` and `mean_detokenization_ms` (the
+engine emitting the first token to the client receiving it with `engine.detokenization`, otherwise
+zero). The seven spans sum to per-request TTFT for requests that reached every milestone; with a native encoder pool they start
+at the pool's delivery and `encoder_latency_ms` covers the wait. Encoder pools also report
+`encoder_gpus` and `total_gpus`. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
@@ -261,6 +289,9 @@ sections and skipped-section reasons to the normal prediction summary.
   `kvcache_quant_mode`: compare it with the deployment before interpreting token capacity.
   An omitted engine override can infer FP8; see [KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
   The field is omitted when the estimator cannot establish the quantization mode.
+  When exported, `memory_breakdown.reserved_bytes` reports fixed rank-local non-KV
+  reservations, such as the VL embedding cache, separately from `cuda_graph_reserved_bytes`.
+  Older reports may omit `reserved_bytes`.
   `estimated_num_gpu_blocks` is captured at this stage,
   before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
   nor observed memory usage. Explicit KV blocks, nested rank input,
@@ -295,7 +326,7 @@ section with only some estimated roles is `partial` and records
 why other roles are unavailable. Energy retains an explicit unavailable status and reason when
 the runner exports no typed evidence. Missing measurements are never invented as zero;
 energy-aware runs with no covered operations report numeric zero coverage. Whole-model FPM,
-fixed/polynomial timing, analytical EPD/AFD overlays, and adapters without the native export
+fixed/polynomial timing, analytical EPD overlays, and adapters without the native export
 report operation timing/source evidence unavailable. Serving time statistics remain available
 where exported. See [diagnostic availability](../aic-backward-compatibility/migration.md#prediction-details-and-power).
 
@@ -364,6 +395,7 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 | No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
 | Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../perf-model/methods/whole-forward.md). |
+| `host cost table ... does not exist yet` (or a missing-row message) | A native SGLang VL prediction reads the frontend stage from a host cost table row measured on the serving host; the message prints the `collect` command that adds the row. | Run the printed `python -m aisimulate.vl.collect ...` with `--sglang-python` pointing at the serving venv, then rerun `predict`; see [SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
 For automation, check the exit code as well as standard output. `--format json` changes successful

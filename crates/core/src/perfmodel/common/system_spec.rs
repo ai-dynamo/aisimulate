@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Modified native port of heterogeneous AFD/fabric behavior; source revision and
+// original paths: root THIRD_PARTY_NOTICES.md (AISimulate heterogeneous AFD).
+// Source: https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 
 //! Typed system hardware spec parsed from `python/aisimulate/src/aisimulate_core/systems/*.yaml`.
 //!
@@ -98,6 +101,61 @@ pub(crate) fn quant_tc_flops(spec: &SystemSpec, mapping: QuantMapping) -> Result
     })
 }
 
+/// Resolve storage-format requests to a supported execution lane. This is
+/// hardware normalization, never a data-dependent precision fallback.
+pub(crate) fn execution_quantization(
+    spec: &SystemSpec,
+    gemm: Option<crate::common::enums::GemmQuantMode>,
+    moe: Option<crate::common::enums::MoeQuantMode>,
+) -> Result<
+    (
+        Option<crate::common::enums::GemmQuantMode>,
+        Option<crate::common::enums::MoeQuantMode>,
+    ),
+    AicError,
+> {
+    use crate::common::enums::{GemmQuantMode as G, MoeQuantMode as M};
+    if spec.gpu.sm_version.is_none() && (gemm == Some(G::Nvfp4) || moe == Some(M::Nvfp4)) {
+        return Err(AicError::InvalidEngineConfig(
+            "nvfp4 execution mapping requires a known GPU SM architecture".into(),
+        ));
+    }
+    let blackwell = spec.gpu.sm_version.is_some_and(|sm| sm >= 100);
+    let gemm = gemm.map(|q| {
+        if q == G::Nvfp4 && !blackwell {
+            G::Nvfp4Wo
+        } else {
+            q
+        }
+    });
+    let moe = moe.map(|q| {
+        if q == M::Nvfp4 && !blackwell {
+            M::Nvfp4Wo
+        } else {
+            q
+        }
+    });
+    for mapping in gemm.map(G::mapping).into_iter().chain(moe.map(M::mapping)) {
+        if mapping.compute_dtype == Some(ComputeDtype::Fp8)
+            && spec.gpu.sm_version.is_some_and(|sm| sm < 89)
+        {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "GPU SM{:?} does not support FP8 execution for {}",
+                spec.gpu.sm_version, mapping.name
+            )));
+        }
+        if mapping.compute_dtype.is_some() {
+            quant_tc_flops(spec, mapping).map_err(|error| {
+                AicError::InvalidEngineConfig(format!(
+                    "unsupported execution precision {}: {error}",
+                    mapping.name
+                ))
+            })?;
+        }
+    }
+    Ok((gemm, moe))
+}
+
 /// Node-level topology spec.
 #[derive(Clone, Debug, Deserialize)]
 pub struct NodeSpec {
@@ -118,6 +176,9 @@ pub struct NodeSpec {
     /// Inter-rack bandwidth, bytes/s. Optional.
     #[serde(default)]
     pub inter_rack_bw: Option<f64>,
+    /// Cross-rack propagation latency in seconds; absent preserves p2p_latency.
+    #[serde(default)]
+    pub inter_rack_latency: Option<f64>,
 }
 
 /// Miscellaneous, mostly empirical, configuration.
@@ -177,11 +238,46 @@ impl SystemSpec {
         }
         node.inter_rack_bw.unwrap_or(node.inter_node_bw)
     }
+
+    /// Propagation latency for the chosen scale-up/scale-out domain.
+    pub fn get_p2p_latency(&self, num_gpus: u32) -> f64 {
+        let node = &self.node;
+        if num_gpus <= node.num_gpus_per_rack.unwrap_or(u32::MAX) {
+            return node.p2p_latency;
+        }
+        node.inter_rack_latency
+            .unwrap_or(node.p2p_latency)
+            .max(node.p2p_latency)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn execution_precision_has_only_explicit_hardware_mappings() {
+        use crate::common::enums::{GemmQuantMode as G, MoeQuantMode as M};
+        let mut hopper = SystemSpec::load(&systems_root().join("h200_sxm.yaml")).unwrap();
+        assert_eq!(
+            execution_quantization(&hopper, Some(G::Nvfp4), Some(M::Nvfp4)).unwrap(),
+            (Some(G::Nvfp4Wo), Some(M::Nvfp4Wo))
+        );
+        let blackwell = SystemSpec::load(&systems_root().join("b200_sxm.yaml")).unwrap();
+        assert_eq!(
+            execution_quantization(&blackwell, Some(G::Nvfp4), Some(M::Nvfp4)).unwrap(),
+            (Some(G::Nvfp4), Some(M::Nvfp4))
+        );
+        assert_eq!(
+            execution_quantization(&blackwell, Some(G::Nvfp4Wo), None)
+                .unwrap()
+                .0,
+            Some(G::Nvfp4Wo)
+        );
+        hopper.gpu.bfloat16_tc_flops = None;
+        assert!(execution_quantization(&hopper, Some(G::Nvfp4), None).is_err());
+        hopper.gpu.sm_version = Some(80);
+        assert!(execution_quantization(&hopper, Some(G::Fp8), None).is_err());
+    }
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -252,6 +348,7 @@ mod tests {
                 p2p_latency: 0.0,
                 num_gpus_per_rack: Some(72),
                 inter_rack_bw: Some(10.0),
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         };
@@ -290,7 +387,8 @@ mod tests {
                 pcie_bw: None,
                 p2p_latency: 0.0,
                 num_gpus_per_rack: Some(72),
-                inter_rack_bw: None, // unset
+                inter_rack_bw: None,
+                inter_rack_latency: None, // unset
             },
             misc: MiscSpec::default(),
         };

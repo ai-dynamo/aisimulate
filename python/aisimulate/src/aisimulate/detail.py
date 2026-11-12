@@ -54,7 +54,7 @@ def prediction_summary(native: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in summary.items()
-        if key not in {"memory_diagnostics", "power_diagnostics", "performance_diagnostics", "details"}
+        if key not in {"memory_diagnostics", "power_diagnostics", "performance_diagnostics", "details", "telemetry"}
     }
 
 
@@ -150,7 +150,13 @@ def _validate_performance_diagnostics(record: dict[str, Any]) -> None:
         fpm_coordinates(value["query"], f"{path}.query")
         require(
             value["resolution"]
-            in ("exact_lookup", "within_curve_interpolation", "cross_kv_interpolation", "cross_batch_interpolation"),
+            in (
+                "exact_lookup",
+                "within_curve_interpolation",
+                "cross_kv_interpolation",
+                "cross_batch_interpolation",
+                "kv_first_interpolation",
+            ),
             f"{path}.resolution",
             "a supported direct resolution",
         )
@@ -166,7 +172,14 @@ def _validate_performance_diagnostics(record: dict[str, Any]) -> None:
             require(support["weight"] <= 1, f"{sp}.weight", "at most 1")
 
     def fpm_estimate(value: Any, path: str) -> None:
-        fields(value, path, {"latency_ms", "native_latency_ms", "correction_factor", "max_rank", "ranks"})
+        fields(
+            value,
+            path,
+            {"latency_ms", "native_latency_ms", "correction_factor", "max_rank", "ranks"},
+            {"unavailable_reason"},
+        )
+        if "unavailable_reason" in value:
+            string(value["unavailable_reason"], f"{path}.unavailable_reason")
         for key in ("latency_ms", "native_latency_ms", "correction_factor"):
             if value[key] is not None:
                 number(value[key], f"{path}.{key}")

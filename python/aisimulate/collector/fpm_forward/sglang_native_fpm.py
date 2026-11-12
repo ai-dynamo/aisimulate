@@ -47,6 +47,8 @@ MAX_REJECTED_ROUNDS = 10
 DECODE_LEAD = 3  # prompt = context - 3; measured = 4th decode step (full overlap pipeline)
 MEASURED_DECODE_STEP = DECODE_LEAD + 1
 HIT_UNIT = 64  # native radix page for this hybrid DSA/KDA model (mamba extra_buffer)
+# Request plans put every cached prefix on the HIT_UNIT grid, so the server's
+# resolved page size must equal it (checked at startup, never assumed).
 STATE_PROTOCOL = "glm53flash_sglang_radix_real_seed_v1"
 TIMING_BOUNDARY = "sglang_native_fpm_rank0_device_timer_wall_time"
 MESSAGE_WAIT_SECONDS = 10.0
@@ -55,6 +57,12 @@ MERGED_INTERVAL_RATIO = 1.5
 MAX_BATCH = 32
 MAX_CONTEXT = 131072
 INPUT_SOURCE = "seeded_tokens"
+TP_SIZES = (1, 2, 4, 8)
+# SGLang ``--kv-cache-dtype`` value -> AIC ``KVCacheQuantMode`` name. The
+# campaign runs FP8 KV where the attention path supports it and BF16 KV
+# otherwise (a distinct measured identity, never mixed with FP8 KV rows).
+KV_CACHE_DTYPES = {"fp8_e4m3": "fp8", "bfloat16": "bfloat16"}
+KV_CACHE_DTYPE_ALIASES = {**KV_CACHE_DTYPES, "bf16": "bfloat16"}
 
 
 def log(message: str) -> None:
@@ -120,7 +128,7 @@ def server_command(args) -> list[str]:
         "--pipeline-parallel-size", "1",
         "--data-parallel-size", "1",
         "--expert-parallel-size", "1",
-        "--kv-cache-dtype", "fp8_e4m3",
+        "--kv-cache-dtype", args.kv_cache_dtype,
         "--moe-runner-backend", "auto",
         "--context-length", "131079",
         "--chunked-prefill-size", "8192",
@@ -137,6 +145,48 @@ def server_command(args) -> list[str]:
     if args.quant == "nvfp4":
         command += ["--quantization", "modelopt_fp4"]
     return command
+
+
+class StartupIdentityMismatch(RuntimeError):
+    """The started server's resolved configuration differs from the frozen identity."""
+
+    def __init__(self, checks: dict):
+        self.failed_checks = sorted(key for key, ok in checks.items() if not ok)
+        super().__init__(f"stock server configuration differs from the frozen identity: {self.failed_checks}")
+
+
+def startup_identity(args, server_args: dict) -> tuple[dict, dict]:
+    """Check the frozen serving identity and record what the server resolved.
+
+    The KV dtype comes from the server's resolved ``kv_cache_dtype`` (it must
+    equal the requested one). Backend selections are recorded, never asserted.
+    """
+    resolved_kv = KV_CACHE_DTYPE_ALIASES.get(str(server_args.get("kv_cache_dtype")))
+    checks = {
+        "enable_forward_pass_metrics": server_args.get("enable_forward_pass_metrics") is True,
+        "radix_cache_enabled": server_args.get("disable_radix_cache") is False,
+        "overlap_scheduler_enabled": server_args.get("disable_overlap_schedule") is False,
+        "mem_fraction_static": server_args.get("mem_fraction_static") == args.mem_fraction,
+        "tp_size": server_args.get("tp_size") == args.tp,
+        "kv_cache_dtype": resolved_kv == KV_CACHE_DTYPES[args.kv_cache_dtype],
+        "page_size": server_args.get("page_size") == HIT_UNIT,
+    }
+    resolved = {
+        key: server_args[key]
+        for key in sorted(server_args)
+        if key.endswith("_backend")
+        or key
+        in {
+            "kv_cache_dtype",
+            "quantization",
+            "page_size",
+            "max_prefill_tokens",
+            "chunked_prefill_size",
+            "mamba_radix_cache_strategy",
+            "mamba_track_interval",
+        }
+    }
+    return checks, {"kv_cache_dtype": resolved_kv, "resolved_server_args": resolved}
 
 
 class FpmStream:
@@ -527,15 +577,16 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True)
     parser.add_argument("--model-revision", required=True)
-    parser.add_argument("--tp", type=int, choices=(2, 4), required=True)
+    parser.add_argument("--tp", type=int, choices=TP_SIZES, required=True)
     parser.add_argument("--quant", choices=("fp8", "nvfp4"), required=True)
+    parser.add_argument("--kv-cache-dtype", choices=tuple(KV_CACHE_DTYPES), default="fp8_e4m3")
     parser.add_argument("--mem-fraction", type=float, required=True)
     parser.add_argument("--phase", choices=("prefill", "decode"), required=True)
     parser.add_argument("--points", type=Path, required=True)
     parser.add_argument("--select", default="", help="comma-separated benchmark ids (smoke)")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--port", type=int, default=30000)
-    parser.add_argument("--ipc", default="")
+    parser.add_argument("--port", type=int, default=30000, help="distinct per server when packing a node")
+    parser.add_argument("--ipc", default="", help="FPM IPC name; default derives from run id and port")
     parser.add_argument("--run-id", default=os.environ.get("SLURM_JOB_ID", "local"))
     args = parser.parse_args(argv)
     # Only the qualified stock SGLang release may produce an artifact; a local
@@ -545,7 +596,7 @@ def main(argv=None) -> int:
     from collector.glm53flash_runtime_identity import validate_backend_version
 
     validate_backend_version("sglang", importlib.metadata.version("sglang"))
-    args.ipc = args.ipc or f"ipc:///tmp/glm53-sglang-fpm-{args.run_id}"
+    args.ipc = args.ipc or f"ipc:///tmp/glm53-sglang-fpm-{args.run_id}-{args.port}"
     if args.out.exists():
         raise SystemExit(f"refusing to overwrite {args.out}")
     args.out.mkdir(parents=True)
@@ -590,16 +641,10 @@ def main(argv=None) -> int:
         info = http(base + "/server_info", timeout=60)
         (args.out / "server-info.json").write_text(json.dumps(info, indent=1, default=str))
         server_args = info.get("server_args", info) if isinstance(info, dict) else {}
-        checks = {
-            "enable_forward_pass_metrics": server_args.get("enable_forward_pass_metrics") is True,
-            "radix_cache_enabled": server_args.get("disable_radix_cache") is False,
-            "overlap_scheduler_enabled": server_args.get("disable_overlap_schedule") is False,
-            "mem_fraction_static": server_args.get("mem_fraction_static") == args.mem_fraction,
-            "tp_size": server_args.get("tp_size") == args.tp,
-        }
+        checks, serving_identity = startup_identity(args, server_args)
         (args.out / "startup-config-check.json").write_text(json.dumps(checks, indent=1))
         if not all(checks.values()):
-            raise RuntimeError(f"stock server configuration differs from the frozen identity: {checks}")
+            raise StartupIdentityMismatch(checks)
         stream = FpmStream(f"{args.ipc}.0")
         time.sleep(1.0)
         http(base + "/health_generate", timeout=120)
@@ -620,7 +665,12 @@ def main(argv=None) -> int:
                     "driver_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     "format": "dynamo_fpm_rank_artifact_v2",
                 },
-                "serving_config": {"command": command, "startup_check": checks, "hit_unit": HIT_UNIT},
+                "serving_config": {
+                    "command": command,
+                    "startup_check": checks,
+                    "hit_unit": HIT_UNIT,
+                    **serving_identity,
+                },
                 "input_provenance": {
                     **input_provenance,
                     "points_manifest_sha256": hashlib.sha256(args.points.read_bytes()).hexdigest(),
@@ -655,7 +705,15 @@ def main(argv=None) -> int:
         return 0
     except BaseException as error:
         (args.out / "failed.json").write_text(
-            json.dumps({"error": repr(error), "completed_points": len(records)}, indent=1)
+            json.dumps(
+                {
+                    "error": repr(error),
+                    "error_type": type(error).__name__,
+                    "failed_checks": getattr(error, "failed_checks", None),
+                    "completed_points": len(records),
+                },
+                indent=1,
+            )
         )
         raise
     finally:

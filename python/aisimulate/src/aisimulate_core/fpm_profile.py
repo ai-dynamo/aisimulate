@@ -28,24 +28,63 @@ class _ProfileModel(BaseModel):
 
 
 class FpmCacheGroup(_ProfileModel):
-    """Rank-local physical cache pages for one attention or convolution group.
+    """Rank-local physical cache pages for one attention, convolution or state group.
 
-    Page bytes include all group layers and runtime padding. The retention
-    window does not replace the logical context used for FPM timing queries.
+    In an attention or convolution group, page bytes include all group layers
+    and runtime padding. The retention window does not replace the logical
+    context used for FPM timing queries.
+
+    A state group has no window and holds ``blocks_per_request`` blocks of
+    ``page_size_bytes`` for every running request. Its ``page_size_bytes`` is
+    one pool block: every byte that one block ID reserves in the shared pool.
+    That can be more than the bytes of the group's own layers. Its
+    ``block_size_tokens`` is the block size of vLLM's state spec, as the
+    runtime probe records it: the Mamba block (the scheduler block in
+    ``align`` mode, ``max_model_len`` in mode ``none``) or the ring block.
+    Sizing and replay do not read it yet.
+
+    ``blocks_per_request`` counts the pool blocks that a running request holds
+    between block boundaries. For a Mamba spec, that is ``1 + k``, where ``k``
+    is the spec's ``num_speculative_blocks``. Grouped execution forbids
+    speculative decoding, so ``k`` is 0 there. A ring spec, such as
+    ``KpoolTailSpec`` or ``CircularBufferSpec`` in vLLM 0.31.0, holds 1 block
+    for the whole life of the request in every mode. When a request crosses a
+    block boundary in ``align`` mode, a Mamba group also holds the previous
+    block for one or two steps. vLLM's startup sizing in that mode counts
+    ``2 + k + c`` blocks for a Mamba group, where ``c`` is the spec's
+    ``num_prefill_checkpoint_blocks``. It counts 1 block for a ring group.
     """
 
     name: _Nonempty
-    kind: Literal["attention", "convolution"]
+    kind: Literal["attention", "convolution", "state"]
     num_layers: Annotated[int, Field(gt=0, le=2**32 - 1)]
     block_size_tokens: Annotated[int, Field(gt=0, le=2**32 - 1)]
     page_size_bytes: Annotated[int, Field(gt=0, le=2**53)]
     sliding_window: Annotated[int, Field(gt=0, le=2**32 - 1)] | None = None
+    # The lower bound is checked in _window, so a zero or negative count gets the text that Rust gives for zero.
+    blocks_per_request: Annotated[int, Field(le=2**32 - 1)] | None = None
 
     @model_validator(mode="after")
     def _window(self) -> FpmCacheGroup:
+        # Same order as Rust, so the same invalid group gives the same first error.
         if self.kind == "convolution" and self.sliding_window is None:
             raise ValueError("convolution cache groups require a sliding_window")
+        if self.kind == "state":
+            if self.blocks_per_request is None or self.blocks_per_request <= 0:
+                raise ValueError("state cache groups require a positive blocks_per_request")
+            if self.sliding_window is not None:
+                raise ValueError("state cache groups cannot have a sliding_window")
+        elif self.blocks_per_request is not None:
+            raise ValueError("blocks_per_request applies only to state cache groups")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_group(self, handler):
+        # Do not add an absent block count to saved profiles or change plan IDs.
+        result = handler(self)
+        if self.blocks_per_request is None:
+            result.pop("blocks_per_request", None)
+        return result
 
 
 class FpmRuntimeMemoryProfile(_ProfileModel):
@@ -53,12 +92,37 @@ class FpmRuntimeMemoryProfile(_ProfileModel):
 
     This capacity already accounts for runtime graph and workspace reservations.
     It is not a non-KV memory limit and must not be rescaled to another setting.
+    The three optional prefix-caching fields record the settings that the probe
+    ran with. They are evidence only: selection, sizing and replay do not read
+    them, and the simulated deployment decides prefix caching.
     """
 
     kv_cache_bytes: Annotated[int, Field(gt=0, le=2**53)]
     gpu_memory_utilization: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
     max_model_len: Annotated[int, Field(gt=0, le=2**64 - 1)]
     provenance: _Nonempty
+    enable_prefix_caching: bool | None = None
+    mamba_cache_mode: Literal["none", "align"] | None = None
+    # The lower bound is checked in _prefix_caching, so a size of zero or less gets the text that Rust gives for zero.
+    hash_block_size_tokens: Annotated[int, Field(le=2**32 - 1)] | None = None
+
+    @model_validator(mode="after")
+    def _prefix_caching(self) -> FpmRuntimeMemoryProfile:
+        # Same order as Rust, so the same invalid record gives the same first error.
+        if self.mamba_cache_mode == "align" and self.enable_prefix_caching is not True:
+            raise ValueError("mamba_cache_mode align requires enable_prefix_caching=true")
+        if self.hash_block_size_tokens is not None and self.hash_block_size_tokens <= 0:
+            raise ValueError("hash_block_size_tokens must be positive")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_memory(self, handler):
+        # Do not add absent evidence to saved profiles or change plan IDs.
+        result = handler(self)
+        for name in ("enable_prefix_caching", "mamba_cache_mode", "hash_block_size_tokens"):
+            if getattr(self, name) is None:
+                result.pop(name, None)
+        return result
 
 
 class FpmResourceProfile(_ProfileModel):
@@ -161,6 +225,24 @@ class FpmResourceProfile(_ProfileModel):
                 )
 
 
+class FpmSpeculativeExecutionProfile(_ProfileModel):
+    """Explicit full-round timing identity; Rust validates its canonical selector."""
+
+    kind: Literal["speculative_round"]
+    method: Literal["eagle3", "mtp"]
+    num_draft_tokens: Annotated[int, Field(ge=1, le=5)]
+    draft_model: _Nonempty
+    draft_revision: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+    timing_scope: Literal["model_step_cuda"]
+
+    @field_validator("draft_model")
+    @classmethod
+    def _draft_model(cls, value: str) -> str:
+        if value != value.strip() or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+            raise ValueError("draft_model must be nonblank, trimmed, and contain no control characters")
+        return value
+
+
 class FpmDeploymentProfile(_ProfileModel):
     """One hardware, runtime, topology, precision and optional serving-role identity."""
 
@@ -186,6 +268,7 @@ class FpmDeploymentProfile(_ProfileModel):
     enable_eplb: Literal[False] = False
     # Absent in historical shared profiles; never infer role-specific evidence.
     worker_type: Literal["prefill", "decode", "aggregated"] | None = None
+    execution_profile: FpmSpeculativeExecutionProfile | None = None
     resources: FpmResourceProfile
 
     @model_serializer(mode="wrap")
@@ -193,6 +276,8 @@ class FpmDeploymentProfile(_ProfileModel):
         result = handler(self)
         if self.worker_type is None:
             result.pop("worker_type", None)
+        if self.execution_profile is None:
+            result.pop("execution_profile", None)
         return result
 
     @field_validator("pp", "cp", mode="before")
@@ -223,6 +308,10 @@ class FpmDeploymentProfile(_ProfileModel):
 
     @model_validator(mode="after")
     def _deployment_identity(self) -> FpmDeploymentProfile:
+        if self.execution_profile is not None and not (
+            self.dp == 1 and self.pp == 1 and self.cp == 1 and self.moe_ep == 1 and self.moe_tp in (1, self.tp)
+        ):
+            raise ValueError("speculative-round FPM identity currently requires vLLM pure TP with DP1/PP1/CP1")
         modes = {
             "gemm_quant_mode": quantization.GEMMQuantMode,
             "moe_quant_mode": quantization.MoEQuantMode,
@@ -253,6 +342,14 @@ class FpmDeploymentProfile(_ProfileModel):
             str(self.enable_wideep),
             str(self.enable_eplb),
         ]
+
+    def execution_identity(self, model_revision: str) -> tuple[str, ...]:
+        """The existing four-column suffix; absent execution preserves AR identity."""
+        from .sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY, speculative_execution_identity
+
+        if self.execution_profile is None:
+            return LEGACY_EXECUTION_IDENTITY
+        return speculative_execution_identity(model_revision, self.execution_profile.model_dump(mode="json"))
 
     def quantization_kwargs(self) -> dict[str, str]:
         return {

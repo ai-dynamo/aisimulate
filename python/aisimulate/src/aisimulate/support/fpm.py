@@ -303,6 +303,10 @@ def run_fpm(
     if not execute:
         if resume or (root.exists() and any(root.iterdir())):
             check_plan(request, root)
+        if request.fpm_profile is not None:
+            # A prediction profile can be valid for historical timings while
+            # its precision is incompatible with a new native campaign.
+            _resolve_execution(command)
         print(shlex.join(command))
         return 0
     check_plan(request, root)

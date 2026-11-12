@@ -46,7 +46,7 @@ def forbid_host_version_detection(monkeypatch):
 def test_custom_backend_label_survives_public_init_plan_and_preview(tmp_path, forbid_host_version_detection, label):
     source, resources = _files(tmp_path)
     draft_path = tmp_path / "draft.yaml"
-    assert cli.main(_args(draft_path, source, resources, framework_version=label)) == 0
+    assert cli.main(_args(draft_path, source, resources, framework_version=label, model=str(tmp_path))) == 0
     request = SupportRequest.from_yaml(draft_path)
     assert request.identity.framework_version == label
     assert request.profile_deployment().backend_version == label

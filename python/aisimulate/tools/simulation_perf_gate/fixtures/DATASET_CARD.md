@@ -23,6 +23,12 @@ configs:
 
 # semianalysisai/cc-traces-weka-062126-256k
 
+> Abridged by NVIDIA from the
+> [upstream dataset card](https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/blob/8fecd2fc56694469f758f0afbbb6335ad3043740/README.md)
+> at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`: the distribution-plot
+> section is omitted. The statistics below describe the full upstream dataset;
+> see [README.md](README.md) for this benchmark's four-play subset.
+
 WekaTrace corpus derived from SemiAnalysis Claude Code proxy traces. Built 2026-06-21 17:49:45 UTC via `utils/agentic/build_weka_hf_dataset.py`.
 
 Derived from [semianalysisai/cc-traces-weka-062126](https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126) by applying the 256k per-request cap and preserving the surviving requests' relative timestamps.
@@ -57,20 +63,6 @@ total_model_requests:          68,266
 total_input_tokens:   6,891,228,864
 total_output_tokens:      58,728,807
 ```
-
-## Distribution plots
-
-### Main-agent stream
-
-![Main-stream distributions — log x](plots/distributions_log.png)
-
-![Main-stream distributions — linear x](plots/distributions_linear.png)
-
-### Sub-agent fan-out
-
-![Sub-agent distributions — log x](plots/subagent_distributions_log.png)
-
-![Sub-agent distributions — linear x](plots/subagent_distributions_linear.png)
 
 ## Source script
 

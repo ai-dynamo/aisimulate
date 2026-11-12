@@ -26,6 +26,8 @@ pub enum FpmQueryResolution {
     WithinCurveInterpolation,
     CrossKvInterpolation,
     CrossBatchInterpolation,
+    /// Prefill fallback that interpolates KV at each supported token count first.
+    KvFirstInterpolation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -52,13 +54,26 @@ pub struct FpmRankEstimate {
     /// For a mixed pass, max(decode_ms - decode_baseline_ms, 0).
     pub marginal_decode_ms: Option<f64>,
     pub queries: Vec<DirectFpmQueryEvidence>,
+    /// Name-folded operations of an operation-graph rank (op-level and stage
+    /// graphs), in first-encounter order with the static phase diagnostics'
+    /// details. Their latencies sum to `latency_ms`, before correction. A
+    /// mixed rank folds every pass of its composition. Empty for whole-model
+    /// FPM, whose evidence is `queries`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
 }
 
 /// Additive detailed result from the canonical returned model. Native timing
-/// reduces ranks by maximum, then applies `correction_factor`. Rank lookup
-/// evidence is supplied for whole-model FPM; other estimators leave it empty.
+/// reduces ranks by maximum, then applies `correction_factor`. Native
+/// estimators record every rank: whole-model FPM with its direct lookups,
+/// operation graphs with their operations. An iteration that schedules no work
+/// on any rank, and every non-native estimator, leaves it empty.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ForwardPassEstimate {
+    /// Typed support miss from temporary mixed composition. Invalid data still
+    /// returns an error. Omitted for ordinary and supported predictions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     pub latency_ms: Option<f64>,
     pub native_latency_ms: Option<f64>,
     pub correction_factor: Option<f64>,
@@ -94,4 +109,47 @@ pub(crate) fn accumulate_fpm_estimates(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FpmQueryResolution;
+
+    #[test]
+    fn query_resolution_wire_values_preserve_existing_indices() {
+        for (resolution, name, index) in [
+            (FpmQueryResolution::ExactLookup, "exact_lookup", 0u32),
+            (
+                FpmQueryResolution::WithinCurveInterpolation,
+                "within_curve_interpolation",
+                1,
+            ),
+            (
+                FpmQueryResolution::CrossKvInterpolation,
+                "cross_kv_interpolation",
+                2,
+            ),
+            (
+                FpmQueryResolution::CrossBatchInterpolation,
+                "cross_batch_interpolation",
+                3,
+            ),
+            (
+                FpmQueryResolution::KvFirstInterpolation,
+                "kv_first_interpolation",
+                4,
+            ),
+        ] {
+            let json = serde_json::to_string(&resolution).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(
+                serde_json::from_str::<FpmQueryResolution>(&json).unwrap(),
+                resolution
+            );
+            assert_eq!(
+                bincode::serialize(&resolution).unwrap(),
+                index.to_le_bytes()
+            );
+        }
+    }
 }

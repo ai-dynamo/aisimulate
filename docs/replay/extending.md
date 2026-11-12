@@ -56,8 +56,7 @@ Summary batch replay folds terminal requests after callbacks and spills exact
 latency samples beyond 4096 values per distribution to anonymous temporary
 files. Quantiles use the detailed report's rounded rank; counts and quantiles
 remain exact. Means and standard deviations may differ at floating-point
-roundoff due to accumulation order. Existing ITL/throughput sketches retain
-their 0.1% relative quantile error. Filesystem failure returns
+roundoff due to accumulation order. Filesystem failure returns
 `ReplayError::ResourceLimited`, not a partial success report.
 
 Detailed output keeps its ordered records without a request cap. Inputs, active
@@ -82,8 +81,8 @@ identity, snapshots, warm/cold cache, barrier failure, cutoff/grace and late
 cleanup after lane reuse. Representative source-built checks include:
 
 ```bash
-cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
-cargo test --locked -p aisimulate-core --lib agentic_pd_qualification
+cargo test --locked -p aisim-core --test agentx_qualification --example qualify_weka
+cargo test --locked -p aisim-core --lib agentic_pd_qualification
 python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay or agentic_snapshot or agentic_warmup'
 ```
 

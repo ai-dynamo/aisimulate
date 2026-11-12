@@ -8,11 +8,17 @@
 mod config;
 mod core;
 mod decode;
+mod frontend;
+mod host_loop;
 mod policy;
 mod prefill;
 mod request;
+mod vision;
 
 pub(crate) use core::SglangCore;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod semantic_evidence;

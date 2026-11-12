@@ -12,7 +12,7 @@ use crate::engine::{
 };
 use crate::replay::core::RequestIdentity;
 use crate::replay::loadgen::ReplayRequestPayload;
-use crate::replay::protocol::DirectRequest;
+use crate::replay::protocol::{AuthoredKvHints, DirectRequest};
 use crate::replay::telemetry::ReplayTrafficMetricsSnapshot;
 
 impl RequestIdentity for DirectRequest {
@@ -23,6 +23,10 @@ impl RequestIdentity for DirectRequest {
     fn preferred_dp_rank(&self) -> Option<u32> {
         self.preferred_dp_rank
     }
+
+    fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+        self.kv_hints
+    }
 }
 
 impl RequestIdentity for ReplayRequestPayload {
@@ -32,6 +36,10 @@ impl RequestIdentity for ReplayRequestPayload {
 
     fn preferred_dp_rank(&self) -> Option<u32> {
         self.metadata().preferred_dp_rank
+    }
+
+    fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+        self.metadata().kv_hints
     }
 }
 
@@ -481,6 +489,11 @@ impl TrafficAccumulators {
             .on_completion(input_tokens, output_tokens, latencies);
         if let Some(telemetry) = self.telemetry.as_mut() {
             telemetry.on_completion(input_tokens, output_tokens, latencies);
+            // Fixed timing can deliver a token at arrival. Preserve that
+            // measured zero in telemetry without changing planner inputs.
+            if latencies.is_some_and(|(ttft_ms, _)| ttft_ms == 0.0) {
+                telemetry.ttft_count += 1;
+            }
         }
     }
 
@@ -526,6 +539,7 @@ impl TrafficAccumulators {
             router_kv_hit_rate_count: stats.hit_rate_count,
             avg_accept_length: stats.avg_accept_length,
             accept_length_forward_count: stats.accept_length_forward_count,
+            ..ReplayTrafficMetricsSnapshot::default()
         }
     }
 
@@ -636,6 +650,23 @@ mod tests {
         acc.on_completion(10, 3, Some((1.0, 10.0)));
         let stats = acc.drain(1_000.0);
         assert_eq!(stats.avg_itl_ms, 5.0);
+    }
+
+    #[test]
+    fn telemetry_retains_zero_ttft_without_inventing_one_token_itl() {
+        let mut traffic = TrafficAccumulators::new();
+        traffic.enable_telemetry();
+        traffic.on_completion(10, 1, Some((0.0, 0.0)));
+        let observed = traffic.drain_telemetry(1_000.0);
+        assert_eq!(observed.ttft_count, 1);
+        assert_eq!(observed.avg_ttft_ms, 0.0);
+        assert_eq!(observed.itl_count, 0);
+        assert_eq!(traffic.drain_planner(1_000.0).ttft_count, 0);
+
+        traffic.on_completion(10, 0, None);
+        let unavailable = traffic.drain_telemetry(2_000.0);
+        assert_eq!(unavailable.ttft_count, 0);
+        assert_eq!(unavailable.itl_count, 0);
     }
 
     #[test]

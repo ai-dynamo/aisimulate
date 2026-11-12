@@ -171,22 +171,15 @@ def test_shared_roots_with_custom_timing_preserve_estimator_control_guards(confi
 
 
 @pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
-@pytest.mark.parametrize("unsupported", ["AFD", "analytical encoder pools"])
+@pytest.mark.parametrize("unsupported", ["analytical encoder pools"])
 def test_systems_root_rejects_modes_that_cannot_consume_it(config_type, unsupported, tmp_path):
     raw = _request()
-    if unsupported == "AFD":
-        raw["engine"]["mode"] = "afd"
-        raw["engine"]["workers"] = {}
-        raw["engine"]["afd"] = {"phase": "both", "combined_with_pd": False, "a_batch_size": 1}
-        if config_type is CorePredictionConfig:
-            raw["engine"]["afd"].update(n_a_nodes=1, n_f_nodes=1, tp_a=1)
-    else:
-        raw["engine"]["workers"]["encoder"] = {}
-        raw["traffic"] = {
-            "source": {"type": "synthetic", "images": {"height": 32, "width": 32}},
-            "load": {"type": "concurrency", "concurrency": 1},
-            "stop": {"requests": 1},
-        }
+    raw["engine"]["workers"]["encoder"] = {}
+    raw["traffic"] = {
+        "source": {"type": "synthetic", "images": {"height": 32, "width": 32}},
+        "load": {"type": "concurrency", "concurrency": 1},
+        "stop": {"requests": 1},
+    }
     if config_type is CoreRecommendationConfig:
         raw["optimization"] = {"target": "throughput"}
 

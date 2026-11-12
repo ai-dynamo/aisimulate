@@ -144,7 +144,14 @@ pub(super) struct BoundedSummary {
     ttft: Samples,
     ttst: Samples,
     tpot: Samples,
+    user_tps: Samples,
     e2e: Samples,
+    /// Per-stage TTFT sums of host-aware engines, as in the per-request path.
+    ttft_stage_sums: [f64; TTFT_STAGE_COUNT],
+    ttft_stage_samples: usize,
+    /// Arrival-to-embeddings-delivered sums of requests that crossed an encoder pool.
+    encoder_sum_ms: f64,
+    encoder_samples: usize,
 }
 
 impl BoundedSummary {
@@ -163,6 +170,10 @@ impl BoundedSummary {
             return Ok(());
         };
         self.completed += 1;
+        if let Some(encoder_ready_ms) = stats.encoder_ready_ms {
+            self.encoder_sum_ms += (encoder_ready_ms - stats.arrival_time_ms).max(0.0);
+            self.encoder_samples += 1;
+        }
         self.input += stats.input_length;
         let output = stats.actual_output_length();
         self.output += output;
@@ -185,11 +196,25 @@ impl BoundedSummary {
         let e2e = (last - stats.arrival_time_ms).max(0.0);
         self.ttft.push(ttft)?;
         self.e2e.push(e2e)?;
+        // The host stages start where the language rank received the request:
+        // after the encoder pool's delivery when there is one.
+        if let Some(spans) = stats.ttft_milestones.stage_spans(
+            stats.encoder_ready_ms.unwrap_or(stats.arrival_time_ms),
+            first,
+        ) {
+            for (sum, value) in self.ttft_stage_sums.iter_mut().zip(spans) {
+                *sum += value;
+            }
+            self.ttft_stage_samples += 1;
+        }
         if let Some(value) = stats.ttst_ms() {
             self.ttst.push(value)?;
         }
         if let Some(value) = stats.mean_tpot_ms() {
             self.tpot.push(value)?;
+            if value > 0.0 {
+                self.user_tps.push(1000.0 / value)?;
+            }
         }
         if sla.is_set() && sla.is_good(ttft, e2e, output) {
             self.good_requests += 1;
@@ -243,7 +268,13 @@ impl BoundedSummary {
         report.latency.ttft = self.ttft.finish()?;
         report.latency.ttst = self.ttst.finish()?;
         report.latency.tpot = self.tpot.finish()?;
+        report.latency.itl = TraceInterTokenLatencyStats::per_request(&report.latency.tpot);
+        report.latency.output_token_throughput_per_user = self.user_tps.finish()?;
         report.latency.e2e = self.e2e.finish()?;
+        report.latency.ttft_milestones =
+            TraceTtftStageStats::from_sums(&self.ttft_stage_sums, self.ttft_stage_samples);
+        report.latency.encoder_latency_ms =
+            (self.encoder_samples > 0).then(|| self.encoder_sum_ms / self.encoder_samples as f64);
         Ok(report)
     }
 }

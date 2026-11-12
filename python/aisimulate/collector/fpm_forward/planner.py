@@ -19,19 +19,26 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from aisimulate.fpm_cache_layout import cache_layout_markers
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, execution_identity
 from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
 
-from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
+from .capabilities import (
+    GENERIC_RUNTIME_TEMPLATE_ID,
+    ModelCapabilityProfile,
+    ResolvedDTypeProfile,
+    resolve_model_capability,
+)
 from .config import (
     FPM_MAX_PREFILL_ISL,
     PARALLEL_AXES,
     VLLM_AUTO_FIT_MAX_MODEL_LEN,
     FPMCollectionOptions,
     semantic_generator_overrides,
+    with_kv_warmup_defaults,
 )
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
-from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
+from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, audited_release
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
 
@@ -53,18 +60,27 @@ def _runtime_memory_policy(
         deployment.resources.memory_source == "pending" for deployment in profile.deployments
     ):
         return None
-    available = backend_version == MEMORY_OBSERVER_VERSION
-    return {
+    release = audited_release(backend_version, MEMORY_SUPPORTED_VERSIONS)
+    available = release is not None
+    policy: dict[str, object] = {
         "source": "vllm_initialization",
-        "supported_vllm_version": MEMORY_OBSERVER_VERSION,
+        # Other versions keep the 0.27.0 value, so the hashes of their saved plans do not change.
+        "supported_vllm_version": backend_version if available else "0.27.0",
         "selected_vllm_version": backend_version,
-        "observation": "enabled" if available else "unavailable_for_runtime",
-        "evidence_schema_version": 1,
-        "async_scheduling": False if available else None,
     }
+    if available and release != backend_version:
+        policy["audited_vllm_version"] = release
+    policy.update(
+        {
+            "observation": "enabled" if available else "unavailable_for_runtime",
+            "evidence_schema_version": 1,
+            "async_scheduling": False if available else None,
+        }
+    )
+    return policy
 
 
-_INSTALLED_DISTRIBUTION = "aisimulate"
+_INSTALLED_DISTRIBUTION = "aisim"
 _INSTALLED_PAYLOAD_ROOTS = frozenset(("aisimulate_core", "aisimulate", "collector"))
 _INSTALLED_PLANNER_PATH = PurePosixPath("collector/fpm_forward/planner.py")
 _REQUIRED_INSTALLED_FPM_PAYLOAD = frozenset(
@@ -107,8 +123,11 @@ def _is_installer_console_script(path: PurePosixPath) -> bool:
     return parent_count > 0 and target in {
         ("bin", "aiconfigurator"),
         ("bin", "aisimulate"),
+        ("bin", "aisim"),
         ("Scripts", "aiconfigurator.exe"),
         ("Scripts", "aiconfigurator-script.py"),
+        ("Scripts", "aisim.exe"),
+        ("Scripts", "aisim-script.py"),
         ("Scripts", "aisimulate.exe"),
         ("Scripts", "aisimulate-script.py"),
     }
@@ -685,6 +704,25 @@ def _cell_id(
     return f"fpm-{_canonical_hash(payload)[:16]}"
 
 
+def _require_real_prefix_seeding(
+    capability: ModelCapabilityProfile, generator_overrides: dict[str, Any] | None
+) -> None:
+    """Cached prefill of a cache layout config.json cannot describe is measured only after real prefix seeding.
+
+    The formal table labels prefill n/a, so nothing else separates a fake prefix. Decode keeps the existing
+    classification, which already labels points without real KV state.
+    """
+
+    reasons = ", ".join(cache_layout_markers(capability.model_config.effective_payload, capability.architecture))
+    for item in with_kv_warmup_defaults(generator_overrides or {})["K8sConfig"]["extra_env"]:
+        name, value = item["name"], item.get("value")
+        if name == "DYN_BENCH_PREFILL_REAL_SEED" and value.lower() in {"off", "0", "false"}:
+            raise ValueError(
+                f"{name}={value} is not allowed for this cache layout ({reasons}). "
+                "Its cached prefill needs real prefix seeding. Remove the override."
+            )
+
+
 def build_collection_plan(
     *,
     backend: str,
@@ -761,6 +799,9 @@ def build_collection_plan(
         ),
         checkpoint_native_dtypes=profile is not None or backend_version is not None,
     )
+    if capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID:
+        _require_real_prefix_seeding(capability, generator_overrides)
+    options = options.resolve_model_execution(capability.architecture)
     execution = execution_identity(
         capability.model_config.payload,
         decoder_replay=options.decoder_replay,
@@ -1042,6 +1083,13 @@ def _validate_profile_identities(
             cp_size=topology.cp,
             worker_type=worker_type or "aggregated",
         )
+        if deployment.execution_profile is not None:
+            raise ValueError(
+                "FPM collection does not support speculative execution_profile for the selected deployment "
+                f"{system}/{backend}/{deployment.backend_version}, topology={deployment.parallel_tuple}, "
+                f"worker_type={worker_type or 'aggregated'}; refusing to collect an autoregressive workload "
+                "for a speculative profile"
+            )
         deployments.append(deployment)
         for kv_dtype in capability.dtype.kv_cache_dtypes:
             for policy in policies:

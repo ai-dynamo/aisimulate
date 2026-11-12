@@ -55,35 +55,6 @@ def test_hopper_mla_task_resolves_execution_before_model_construction(monkeypatc
     assert attention["fmha_quant_mode"] == expected.name
 
 
-@pytest.mark.parametrize("explicit_role", [None, "agg", "prefill"])
-def test_afd_static_prefill_preserves_explicit_fmha(monkeypatch, explicit_role):
-    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
-    overrides = {}
-    if explicit_role is not None:
-        field = "fmha_quant_mode" if explicit_role == "agg" else "prefill_fmha_quant_mode"
-        overrides[field] = common.FMHAQuantMode.fp8
-    task = Task(
-        serving_mode="afd",
-        total_gpus=32,
-        afd_combined_with_pd=True,
-        model_path="deepseek-ai/DeepSeek-V3",
-        system_name="h200_sxm",
-        backend_name="sglang",
-        backend_version="0.5.14",
-        attention_backend="fa3",
-        **overrides,
-    )
-    expected = common.FMHAQuantMode.fp8 if explicit_role else common.FMHAQuantMode.bfloat16
-    mc = task.build_model_config(role="prefill")
-    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
-    assert restored.build_model_config(role="prefill").fmha_quant_mode == expected
-    model = get_model(task.prefill_model_path, mc, "sglang")
-    specs = [json.loads(op._spec_json()) for op in model.context_ops]
-    block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
-    attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
-    assert attention["fmha_quant_mode"] == expected.name
-
-
 @pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
 def test_disagg_yaml_preserves_attention_precision(monkeypatch, explicit):
     monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
@@ -126,13 +97,6 @@ def test_enable_epd_pins_encoder_dp_off():
     # only outside EPD.
     assert Task().enable_encoder_dp is True
     assert Task(enable_epd=True).enable_encoder_dp is False
-
-
-def test_enable_epd_rejects_afd_serving_mode():
-    # sweep_afd carries no EPD parameters; accepting the combination would
-    # silently run a plain AFD sweep with every encoder knob dropped.
-    with pytest.raises(ValueError, match="serving_mode 'agg' or 'disagg'"):
-        Task(serving_mode="afd", enable_epd=True)
 
 
 def test_run_single_epd_arg_validation():
@@ -612,49 +576,6 @@ def test_video_fields_preserve_existing_task_positional_constructor_contract():
     assert task.num_video_tokens == 0
 
 
-def test_afd_rejects_visual_encoder_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        video_height=448,
-        video_width=448,
-        video_frames=8,
-        num_videos_per_request=1,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
-def test_afd_rejects_partial_video_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        video_frames=8,
-        num_videos_per_request=0,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
-def test_afd_rejects_token_only_video_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        num_video_tokens=196,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
 def test_build_model_config_agg_uses_resolved_quant():
     t = Task(
         serving_mode="agg",
@@ -838,25 +759,6 @@ def test_fmha_data_fallback_unknown_arch_downgrades_with_warning(caplog):
     assert not any("falling back to bfloat16 FMHA" in r.message for r in caplog.records)
 
 
-def test_fmha_data_fallback_afd_uses_the_aggregate_role(caplog):
-    import logging
-
-    from aisimulate.sdk import common
-
-    with caplog.at_level(logging.WARNING):
-        task = Task(
-            serving_mode="afd",
-            model_path="Qwen/Qwen3-32B-FP8-Static-PerTensor",
-            system_name="a100_sxm",
-            backend_name="sglang",
-            total_gpus=16,
-            kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
-        )
-    assert task.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    fallback_msgs = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
-    assert len(fallback_msgs) == 1 and fallback_msgs[0].startswith("agg ")
-
-
 def test_fmha_data_fallback_skips_generation_only_decode(caplog):
     """A generic-attention decode role never reads fmha data (generation tables
     key on kv dtype; validate checks fmha only for context roles), so the
@@ -963,9 +865,9 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
     via the shared layer (gb200: vllm module data), which the large-EP path can
     never hit.  Regression for the deepseek_wideep_trtllm.yaml e2e failure.
 
-    Large EP is coverage-driven now (nvfp4 is the MoE quant the gb200 EP tables
-    carry), and the task's ladders mix both regimes, so bfloat16 is picked as
-    the mode that serves the granular AND the module table.
+    TRT-LLM's MLA context runs FP8 FMHA on an FP8 KV cache, and both the granular
+    and the module tables label those rows fp8, so fp8 serves both and is kept
+    without a fallback.
     """
     import logging
 
@@ -980,8 +882,63 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
             gemm_quant_mode=common.GEMMQuantMode.nvfp4,
             moe_quant_mode=common.MoEQuantMode.nvfp4,
         )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert t.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+    assert not any("context_mla_granular" in r.message for r in caplog.records)
+
+
+def test_trtllm_large_ep_context_fmha_falls_back_when_only_the_module_table_has_fp8(monkeypatch, caplog):
+    """The negative case of the test above, through the real table selection: the granular
+    context_mla table carries only a bfloat16 fmha slice under the fp8 KV cache while the module
+    table keeps its fp8 slice. The inferred fp8 falls back to bfloat16, and the warning names the
+    granular key, because the merged list's module-only fp8 rows cannot serve the large-EP path."""
+    import logging
+
+    from aisimulate.sdk import common
+    from aisimulate.sdk.perf_database import get_database
+
+    class GranularWithoutFp8:
+        """The real gb200 TRT-LLM database with its granular context_mla table cut down to bfloat16 fmha."""
+
+        def __init__(self, database):
+            self._database = database
+
+        def __getattr__(self, name):
+            return getattr(self._database, name)
+
+        @property
+        def _context_mla_data(self):
+            real = self._database._context_mla_data
+            bf16 = next(k for k in real if getattr(k, "name", str(k)) == "bfloat16")
+            kv_bf16 = next(k for k in real[bf16] if getattr(k, "name", str(k)) == "bfloat16")
+            return {bf16: {common.KVCacheQuantMode.fp8: real[bf16][kv_bf16]}}
+
+    database = GranularWithoutFp8(get_database("gb200", "trtllm", "1.3.0rc29"))
+    monkeypatch.setattr(Task, "_try_load_role_database", lambda self, role: database)
+    with caplog.at_level(logging.WARNING):
+        t = Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="gb200",
+            backend_name="trtllm",
+            backend_version="1.3.0rc29",
+            gemm_quant_mode=common.GEMMQuantMode.nvfp4,
+            moe_quant_mode=common.MoEQuantMode.nvfp4,
+        )
+    assert t._context_fmha_supported_modes("agg", "context_mla_granular") == ["bfloat16"]
+    assert t._context_fmha_supported_modes("agg", "context_mla") == ["bfloat16", "fp8"]
     assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    assert any("context_mla_granular" in r.message for r in caplog.records)
+    fallback = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
+    assert len(fallback) == 1 and "has no 'context_mla_granular' perf data" in fallback[0]
+    # The estimate path re-runs the TRT-LLM resolver on the built ModelConfig (inference_session):
+    # a bfloat16 the data fallback chose must survive it, or the fp8 lookup it would cause misses.
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    mc = t.build_model_config(role="agg")
+    assert mc._fmha_quant_mode_from_data is True
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("gb200"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_nextn_never_auto_enabled(caplog):
@@ -1499,8 +1456,10 @@ def test_large_ep_replica_size_is_bounded():
     assert max(kw["num_gpu_list"]) <= t.total_gpus
 
 
-def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
-    """Audited rc20 FP8 profiles retain inferred FP8 and both explicit overrides."""
+def test_explicit_fmha_precision_with_trtllm_fp8_profiles():
+    """Audited rc20 FP8 profiles retain inferred and explicit FP8. On an FP8 KV cache
+    TRT-LLM runs MLA attention in FP8, so an explicit bfloat16 resolves to FP8; on a
+    bfloat16 KV cache it stays bfloat16."""
     from aisimulate.sdk import common
 
     base = dict(
@@ -1511,8 +1470,38 @@ def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
         backend_version="1.3.0rc20",
     )
     assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.fp8
-    for precision in (common.FMHAQuantMode.fp8, common.FMHAQuantMode.bfloat16):
-        assert Task(**base, fmha_quant_mode=precision).fmha_quant_mode == precision
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.fp8).fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.bfloat16).fmha_quant_mode == common.FMHAQuantMode.fp8
+    bf16_kv = Task(
+        **base,
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
+    )
+    assert bf16_kv.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+
+def test_fpm_task_keeps_its_explicit_fmha_identity_on_trtllm():
+    """A whole-model FPM identity is caller-owned: the TRT-LLM FP8 promotion that applies to
+    op-level tasks leaves an explicit bfloat16 alone, through build_model_config and the
+    estimate path's resolver, so the Task selects the collected bfloat16 cell."""
+    from aisimulate.sdk import common
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        backend_version="1.3.0rc20",
+        forward_model="fpm",
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+    )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    mc = t.build_model_config(role="agg")
+    assert mc.forward_model == "fpm" and mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("h200_sxm"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_database_mode_is_forwarded_to_view_loader(monkeypatch):
@@ -1856,16 +1845,20 @@ def _build_fake_summary(
 
 def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     """run_single_agg builds ModelConfig with given dims and calls predict_agg_worker once."""
+    from types import SimpleNamespace
+
     from aisimulate.sdk import predict
 
     captured: dict = {}
+    loaded_spec = {"gpu": {"sm_version": 90}}
 
     def fake_get_database(*a, **kw):
-        return "db"
+        return SimpleNamespace(system_spec=loaded_spec)
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
+        captured["system_spec"] = system_spec
         return MagicMock(name=f"backend-{name}")
 
     def fake_get_model(model_path, model_config, backend_name):
@@ -1898,6 +1891,8 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     assert mc.tp_size == 4 and mc.pp_size == 1 and mc.moe_tp_size == 1 and mc.moe_ep_size == 1
     # ctx_tokens defaults to isl
     assert captured["predict_kwargs"]["ctx_tokens"] == t.isl
+    # Backend classification uses the loaded spec (custom-root systems).
+    assert captured["system_spec"] is loaded_spec
 
 
 def test_run_single_agg_rejects_disagg_task():
@@ -1919,7 +1914,7 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
@@ -1952,7 +1947,7 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
@@ -2142,6 +2137,26 @@ def test_validate_disagg_fp8_static_is_data_driven_per_role():
         t.validate()
 
 
+@pytest.mark.parametrize("mode", ["afd", "bogus", None])
+def test_construction_rejects_unsupported_serving_mode_before_model_resolution(monkeypatch, mode):
+    def unexpected_model_resolution(_self):
+        pytest.fail("unsupported serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match=f"Invalid serving_mode: {mode!r}") as caught:
+        Task(serving_mode=mode, model_path="Qwen/Qwen3-32B", system_name="h200_sxm")
+    assert ("aisimulate recommend" in str(caught.value)) is (mode == "afd")
+
+
+def test_from_yaml_rejects_null_serving_mode_before_model_resolution(monkeypatch):
+    def unexpected_model_resolution(_self):
+        pytest.fail("null serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match="Invalid serving_mode: None"):
+        Task.from_yaml({"serving_mode": None, "model_path": "Qwen/Qwen3-32B", "system_name": "h200_sxm"})
+
+
 def test_validate_invalid_serving_mode_raises():
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
     t.serving_mode = "weird"  # type: ignore[assignment]
@@ -2329,8 +2344,8 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
     the overhead tables have no transfer ladder, so HYBRID must NOT admit it via
     profile transfer on combos without quantize data — validate keeps failing
     fast instead of the sweep dying late in query_compute_scale."""
-    # Vehicle: b60/vllm 0.20.0 (frozen-baseline current slot) ships fp8 GEMM
-    # data but no quantize family. vllm/b200 stopped qualifying when 0.24
+    # Vehicle: b60/vllm 0.28.0 (current slot) ships fp8 GEMM data but no
+    # quantize family at any version. vllm/b200 stopped qualifying when 0.24
     # collected computescale, and sglang is no vehicle at all — its fp8_static
     # is native (no overhead-table subtraction), so it lists the mode as
     # supported without quantize data.
@@ -2339,7 +2354,7 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
         model_path="Qwen/Qwen3-32B",
         system_name="b60",
         backend_name="vllm",
-        backend_version="0.20.0",
+        backend_version="0.28.0",
         database_mode="HYBRID",
     )
     t.gemm_quant_mode = common.GEMMQuantMode.fp8_static
@@ -2524,7 +2539,7 @@ def test_nvfp4_preserved_on_blackwell():
 def test_engine_step_backend_is_validated_at_task_construction():
     """Every programmatic entry point funnels through Task construction, so
     the retired "python" token (and any typo) fails closed HERE — including
-    paths like the AFD session that never reach the step routing gate."""
+    paths that never reach the step routing gate."""
     import pytest
 
     from aisimulate.sdk.task_v2 import Task
