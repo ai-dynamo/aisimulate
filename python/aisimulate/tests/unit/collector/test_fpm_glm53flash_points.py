@@ -669,6 +669,28 @@ def test_capacity_rule_counts_every_free_block_of_the_cache(caplog, pages, kept,
     ]
 
 
+@pytest.mark.parametrize(
+    ("alignment", "checkpoint_groups", "counts", "smallest"),
+    [(16, 4, (496, 81), 2240), (None, 0, (456, 81), 2112)],
+    ids=["flashkda", "no-checkpoint"],
+)
+def test_smallest_cache_that_keeps_the_whole_tp4_list(alignment, checkpoint_groups, counts, smallest):
+    # The largest estimate of the list is a prefill of 32 requests, each with up to 256 new tokens after a prefix of
+    # 60 hash blocks: ceil((60 * 2,176 + 256 + 1) / 2,176) = 61 attention blocks, 5 state blocks and one checkpoint
+    # block in each KDA group. So the FlashKDA list needs 32 * (61 + 5 + 4) = 2,240 blocks and the list without a
+    # checkpoint block 32 * (61 + 5) = 2,112.
+    def lists(pages):
+        return glm_points(
+            **_limits(kv_cache_bytes=PAGE * pages), checkpoint_alignment=alignment, checkpoint_groups=checkpoint_groups
+        )
+
+    payload, dropped = lists(smallest)
+    assert (len(payload["prefill"]), len(payload["decode"])) == counts
+    assert dropped["prefill"]["cache_capacity"] == dropped["decode"]["cache_capacity"] == 0
+    _, dropped = lists(smallest - 1)
+    assert dropped["prefill"]["cache_capacity"] > 0
+
+
 def _deployment(*state_groups: tuple[int | None, int | None]) -> SimpleNamespace:
     """A TP4 deployment whose recurrent-state groups hold these (prefill checkpoint blocks, alignment) pairs."""
     memory = SimpleNamespace(hash_block_size_tokens=2176, kv_cache_bytes=_TP4_LIMITS["kv_cache_bytes"])

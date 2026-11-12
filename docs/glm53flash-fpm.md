@@ -326,9 +326,11 @@ Without a prefill checkpoint block, the align rule drops 40 prefill candidates,
 and the list has 456 prefill points.
 The largest decode batch is 32 at contexts up to 256 and at 32,768 and 65,536.
 It is 16 at 512 and 131,072, 8 at 1,024, 4 at 2,048 to 8,192, and 7 at 16,384.
-By the estimate, the FlashKDA list needs an accepted cache of at least 2,241
-pool blocks (the profile's `kv_cache_bytes` divided by its largest
-`page_size_bytes`), and the list without a checkpoint block needs 2,113.
+By the estimate, the FlashKDA list needs an accepted cache of at least 2,240
+free pool blocks (the profile's `kv_cache_bytes` divided by its largest
+`page_size_bytes`), and the list without a checkpoint block needs 2,112. The
+profile's `kv_cache_bytes` counts the blocks that are free when the engine
+starts, so vLLM's null block is not part of these counts.
 
 The smoke measures two points of this list for each phase that the plan
 collects. If the list holds the third prefill point below, the smoke also
