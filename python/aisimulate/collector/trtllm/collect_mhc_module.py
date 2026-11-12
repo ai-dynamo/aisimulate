@@ -23,7 +23,7 @@ standalone, because the SDK's DeepSeekV4 model bills mhc_pre + attn_norm
 (ElementWise) + mhc_post as separate per-layer ops
 (src/aisimulate_core/sdk/models/deepseek_v4.py) — fusing the
 norm here would double-count it downstream. Measured on H20-3e (SM90,
-hc_mult=4, hidden 4096/7168, 2026-08-05): fused_hc = 0.80x of pre+post at
+hc_mult=4, hidden 4096/7168): fused_hc = 0.80x of pre+post at
 M=16 (decode), but 3.8-6.5x SLOWER at M=1024/8192 — on pre-SM100 the
 fused_hc tactic space is FMA-only (the tcgen05 MMA paths require SM100,
 mhc_cuda.py:_fused_hc_mma_supported) while standalone pre_mapping can take
@@ -35,24 +35,20 @@ pre+post is the documented approximation. Aligning row semantics with the
 fused path is a coordinated producer+consumer contract change; do not
 switch variants unilaterally.
 
-OWNER DECISION (tianhaox, 2026-08-19, PR #1486 review item 3): the
-Blackwell fused_hc collection is DEFERRED; the shipped mhc_module_perf
-tables measure the unfused pre+post path on every SM, and the rows'
-kernel_source labels (trtllm_mhc_pre_* / trtllm_mhc_post_mapping) make the
-measured variant explicit. Error characterization: on b200, mHC is 9-14%
-of the DSV4 per-layer cost (attn+moe+mhc at 128/4k/16k tokens, shipped
-rc23 tables) — that figure is mHC's SHARE of layer cost, i.e. the ceiling
-of the approximation if fused_hc were free, NOT a measured Blackwell
-fused/unfused delta (which is unmeasured; owner-accepted). Direction is
-conservative (cost-overestimating). Governed standards exception:
-collector/evidence_exceptions.yaml standards_exceptions (expires
-2026-10-31); retirement = the coordinated fused_hc table + SDK consumer
-switch for SM100/103.
+The shipped mhc_module_perf tables measure the unfused pre+post path on
+every SM, and the rows'
+kernel_source labels (trtllm_mhc_pre_* / trtllm_mhc_post_mapping) name the
+measured variant. On SM100/103 that is a deviation: serving defaults to
+fused_hc there (models/modeling_deepseekv4.py), so the table over-charges the
+mHC boundary. mHC is 9-14% of the DSV4 per-layer cost on b200, an upper bound
+on the error; the actual fused/unfused delta is unmeasured. Retire it by
+collecting fused_hc on SM100/103 and switching the SDK consumer
+(https://github.com/ai-dynamo/aiconfigurator/issues/1580).
 """
 
 from __future__ import annotations
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import argparse
 import os
@@ -65,14 +61,15 @@ try:
     from case_generator import get_common_mhc_test_cases
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from case_generator import get_common_mhc_test_cases
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
+from collector.op_plans import plan_cases
 
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 DEFAULT_HIDDEN_SIZE = 4096
@@ -81,7 +78,7 @@ DEFAULT_HC_MULT = 4
 # (src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-*_config.json:
 # hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6). The remaining mHC ctor
 # defaults (norm_eps/sinkhorn_eps=1e-6, post_mult_value=1.0) are the module's
-# own serving defaults (hyper_connection.py mHC.__init__ @1.3.0rc20).
+# own serving defaults (hyper_connection.py mHC.__init__).
 MHC_NUM_SITES = 2  # one decoder block runs mHC once before attention, once before FFN
 MHC_SINKHORN_ITERS = 20
 
@@ -101,28 +98,8 @@ def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
     return os.path.join(output_path, filename)
 
 
-def _active_mhc_common_cases():
-    seen: set[tuple[str, int, int]] = set()
-    for case in get_common_mhc_test_cases():
-        key = (case.phase, case.hidden_size, case.hc_mult)
-        if key in seen:
-            continue
-        seen.add(key)
-        yield case
-
-
 def get_mhc_module_test_cases() -> list[dict]:
-    cases: list[dict] = []
-    for case in _active_mhc_common_cases():
-        num_tokens_list = [16] if "--smoke" in sys.argv else case.num_tokens_list
-        for num_tokens in num_tokens_list:
-            cases.append(
-                {
-                    "id": f"mhc_{case.phase}_hs{case.hidden_size}_hcm{case.hc_mult}_{num_tokens}",
-                    "params": [case.phase, num_tokens, case.hidden_size, case.hc_mult],
-                }
-            )
-    return cases
+    return plan_cases("mhc_module", "trtllm", get_sm_version())
 
 
 def _default_num_tokens() -> list[int]:
@@ -187,8 +164,8 @@ def _observe_pre_backend(site, residual) -> str:
     """Record which GEMM+sqrsum entry the tuned pre_mapping actually invokes.
 
     ``MhcPreMappingRunner.forward`` dispatches the tactic's backend through
-    exactly one of two module-level entry points (mhc_cuda.py:333-347
-    @1.3.0rc20): ``mhc_gemm_rms_dg_cuda`` (tactics ``dg_splitk`` /
+    exactly one of two module-level entry points (mhc_cuda.py:333-347):
+    ``mhc_gemm_rms_dg_cuda`` (tactics ``dg_splitk`` /
     ``dg_nosplit``, DeepGEMM tf32) or ``mhc_gemm_rms_fma_cuda`` (``fma``,
     CUDA-core FMA). Observing the call is ground truth for ``kernel_source``
     — no assumption about autotuner cache internals.

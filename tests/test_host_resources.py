@@ -685,6 +685,36 @@ def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
     assert actual.cpu_count == 0.5
 
 
+@pytest.mark.parametrize(
+    "membership,mount,limit,usage,stat",
+    [
+        ("0::/job", "cgroup2 cgroup rw", "memory.max", "memory.current", f"anon {GB}\ninactive_file {5 * GB}\n"),
+        (
+            "1:memory:/job",
+            "cgroup cgroup rw,memory",
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+            # v1 usage is hierarchical, like its total_ counters.
+            f"inactive_file 0\ntotal_rss {GB}\ntotal_inactive_file {5 * GB}\n",
+        ),
+    ],
+    ids=["v2", "v1"],
+)
+def test_cgroup_usage_excludes_inactive_page_cache(tmp_path, host, membership, mount, limit, usage, stat):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text(f"{membership}\n")
+    (proc / "self/mountinfo").write_text(f"42 30 0:27 / /sys/fs/cgroup rw - {mount}\n")
+    root = tmp_path / "sys/fs/cgroup"
+    (root / "job").mkdir(parents=True)
+    (root / limit).write_text(str(8 * GB))
+    (root / usage).write_text(str(7 * GB))
+    (root / "memory.stat").write_text(stat)
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 6 * GB
+    (root / "memory.stat").unlink()
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == GB
+
+
 def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host):
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
     monkeypatch.setattr(resources, "discover_host", lambda: host)
@@ -862,18 +892,18 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
-def test_profile_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format):
-    trace = tmp_path / "oversized.jsonl"
-    with trace.open("wb") as stream:
-        stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
-    monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
-    # Profile replays keep the storage model; finite replays observe their peak instead.
-    workload = {"trace_path": str(trace), "trace_format": trace_format, "agentic_profile": {}}
-    plan = build_plan(workload, stack="engine", host=host)
+def test_snapshot_lower_bound_omits_prompts_it_may_not_dispatch(tmp_path, monkeypatch, host):
+    trace = tmp_path / "large-prompt.jsonl"
+    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
+    finite = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    _supervised(monkeypatch)
+    plan = build_plan(finite, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
-    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
-    assert "before metadata parsing" in plan["estimate"]["reason"]
+    assert "lower bound" in plan["reason"]
+    # A snapshot expands prompts only for selected plays after their cuts, so
+    # this prompt may never be allocated; its retained arrays fit.
+    for load in ({"agentic_snapshot": {"seed": 1}}, {"agentic_snapshot": {"seed": 1}, "agentic_profile": {}}):
+        assert build_plan({**finite, **load}, stack="engine", host=host)["status"] == "admitted"
 
 
 @pytest.mark.parametrize(
@@ -1078,11 +1108,16 @@ def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, ex
 
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
-def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_format):
+def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, monkeypatch, host, warmup, trace_format):
     from aisimulate.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "agentic.jsonl"
-    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    if trace_format == "weka":
+        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
+    elif trace_format == "dynamo":
+        trace.write_text(json.dumps(_dynamo_row()))
+    else:
+        trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
     raw = _config()
     raw["traffic"] = {
         "source": {"type": "trace", "format": trace_format, "paths": [str(trace)], "block_size": 4},
@@ -1101,17 +1136,23 @@ def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_fo
     # Native Weka snapshot/warmup accounting has its own peak-model tests.
     stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
     for stack in stacks:
+        # Lanes replay plays of one loaded corpus, so they add no corpus copies.
         estimate = estimate_workload(bounds, stack=stack)
-        assert estimate.allocation_model == "trace-json-metadata-v1"
-        assert estimate.estimated_peak_bytes is not None
+        assert estimate.allocation_model == "trace-observed-peak-v1"
+        assert estimate.estimated_peak_bytes is None
         assert estimate_workload(concrete, stack=stack) == estimate
-    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
-    if trace_format == "weka":
-        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
-    elif trace_format == "dynamo":
-        trace.write_text(json.dumps(_dynamo_row()))
-    for stack in stacks:
-        assert estimate_workload(ordinary, stack=stack).estimated_peak_bytes is None
+        # A profile starts from the same snapshot, but its peak grows with its duration.
+        profile = estimate_workload({**bounds, "agentic_profile": {}}, stack=stack)
+        assert profile.allocation_model == "agentic-profile-unqualified-v1"
+        assert profile.estimated_peak_bytes is None
+        assert profile.lower_bound_bytes == estimate.lower_bound_bytes > 0
+    # A completed snapshot replay's peak sizes later waves of the same trace.
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig())
+    spec = SimpleNamespace(workload=concrete, concurrency=None)
+    factory.record_peak(spec, GB)
+    assert factory.admit_wave([spec, spec])["reserved_bytes"] == [3 * GB // 2] * 2
 
 
 @pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])
@@ -1125,6 +1166,7 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
             {
                 "type": "subagent",
                 "total_tokens": 10**12,
+                "in": "ignored",
                 "requests": [
                     {"type": "s", "in": 9, "out": 3, "hash_ids": [9]},
                 ],
@@ -1147,6 +1189,26 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
     # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
     assert estimate.lower_bound_bytes == 48 * copies
     assert estimate.estimated_peak_bytes is None
+
+
+@pytest.mark.parametrize(
+    "plays,reason",
+    [
+        ([{"block_size": 4}, {"block_size": 8}], "Weka corpus mixes block sizes"),
+        ([{}, {"block_size": 4}], "Weka trace requires a positive block_size"),
+        ([{"block_size": 4, "requests": [{"type": "n", "in": 4, "out": -1}]}, {}], "nonnegative integers"),
+    ],
+)
+def test_weka_corpus_validation_has_no_qualified_estimate(tmp_path, plays, reason):
+    # Files are inspected in path order; the first one supplies the block size.
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path, play in zip(paths, plays, strict=True):
+        play.setdefault("requests", [{"type": "s", "in": 4, "out": 1}])
+        path.write_text(json.dumps(play))
+    workload = {"trace_paths": [str(path) for path in paths], "trace_format": "weka"}
+    estimate = estimate_workload(workload, stack="dynamo")
+    assert estimate.allocation_model == "trace-unqualified-v1"
+    assert reason in estimate.reason
 
 
 @pytest.mark.parametrize("compressed", [False, True])
@@ -1359,7 +1421,11 @@ def test_added_agentic_formats_reject_oversized_arrays(
     else:
         row = _dynamo_row(input_length=input_length, output_tokens=output_length)
     # A parser failure after this object would hide the bound if inspection continued.
-    source.write_text(json.dumps(row) + "\nnot JSON")
+    text = json.dumps(row) + "\nnot JSON"
+    if trace_format == "weka":
+        # Inside the same play, so the native scan must stop at the oversized request.
+        text = json.dumps(row).removesuffix("]}") + ", not JSON"
+    source.write_text(text)
     plan = build_plan({"trace_path": str(source), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12

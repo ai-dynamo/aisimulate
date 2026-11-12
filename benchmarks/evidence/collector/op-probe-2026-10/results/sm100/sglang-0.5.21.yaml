@@ -1,0 +1,34 @@
+# Excerpt (2026-10-30): _meta plus the models collector comments cite; _meta.summary
+# counts the full matrix, which lands with the op-probe harness.
+_meta:
+  platform: b200_sm100
+  framework: sglang
+  version: 0.5.21
+  verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
+  summary:
+    pass: 102
+    pass+custom: 6
+    fail: 16
+  golden_facts_not_applied: 0
+results:
+  moonshotai/Kimi-K2.5:
+    verdict: pass
+    evidence: current
+    attention: TRTLLMMLABackend
+    moe: CompressedTensorsFusedMoE->trtllm_gen_moe
+    kv_allocated: auto
+    topology: tp1
+  openai/gpt-oss-120b:
+    verdict: pass
+    evidence: current
+    attention: TRTLLMHAAttnBackend
+    moe: Mxfp4MoE->trtllm_gen_moe
+    kv_allocated: auto
+    topology: tp1
+  openai/gpt-oss-20b:
+    verdict: pass
+    evidence: current
+    attention: TRTLLMHAAttnBackend
+    moe: Mxfp4MoE->trtllm_gen_moe
+    kv_allocated: auto
+    topology: tp1

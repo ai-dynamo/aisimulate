@@ -13,6 +13,7 @@ const BACKENDS: [Backend; 3] = [Backend::Vllm, Backend::Sglang, Backend::Trtllm]
 
 fn request(index: usize, tokens: Vec<u32>, output_tokens: usize) -> ReplayRequest {
     ReplayRequest {
+        cache_salt: None,
         id: format!("request-{index}"),
         arrival_time_ms: index as f64 * 100.0,
         input_tokens: tokens.len(),

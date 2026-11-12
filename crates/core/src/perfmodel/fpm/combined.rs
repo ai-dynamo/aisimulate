@@ -21,6 +21,18 @@ pub(super) struct CalibratedOnlineModel {
         WorkloadStores<CorrectionBuckets>,
     )>,
     selector: CausalSelector,
+    appended_mixed_sources:
+        std::collections::BTreeMap<ForwardPassRegressionWorkloadKind, serde_json::Value>,
+}
+
+pub(super) struct MixedSelectorPrediction {
+    pub(super) estimate: crate::ForwardPassEstimate,
+    pub(super) selected: SelectedExpert,
+    pub(super) preferred: SelectedExpert,
+    pub(super) stable_available: Option<bool>,
+    pub(super) online_available: Option<bool>,
+    pub(super) query: WorkloadKind,
+    pub(super) kind: ForwardPassRegressionWorkloadKind,
 }
 
 impl CalibratedOnlineModel {
@@ -46,6 +58,7 @@ impl CalibratedOnlineModel {
             identity_verified,
             corrections,
             selector: CausalSelector::new(config)?,
+            appended_mixed_sources: Default::default(),
         })
     }
 
@@ -228,6 +241,185 @@ impl CalibratedOnlineModel {
         self.identity_verified = verified;
     }
 
+    pub(super) fn append_mixed_checkpoint(
+        &mut self,
+        path: &std::path::Path,
+        eligible: &[ForwardPassRegressionWorkloadKind],
+    ) -> Result<usize, AicError> {
+        let (kind, source) =
+            self.online
+                .append_mixed_training_checkpoint(path, &mut self.learned, eligible)?;
+        self.appended_mixed_sources.insert(kind, source);
+        Ok(1)
+    }
+
+    pub(super) fn predict_mixed(
+        &self,
+        metrics: &[ForwardPassMetrics],
+        mixed: &MixedComposition,
+        kind: ForwardPassRegressionWorkloadKind,
+        detailed: bool,
+    ) -> Result<MixedSelectorPrediction, AicError> {
+        let feature =
+            IterationFeatures::from_validated_metrics(metrics).expect("nonempty mixed query");
+        let preferred = self.selector.selected(kind, feature.workload_kind);
+        let online_ready = self.learned.has_store(kind);
+        if preferred == SelectedExpert::Online && online_ready {
+            let online = learned_base_ms(&self.learned, metrics)?;
+            return Ok(MixedSelectorPrediction {
+                estimate: ForwardPassPerfModel::learned_estimate_details(online),
+                selected: SelectedExpert::Online,
+                preferred,
+                stable_available: None,
+                online_available: Some(online.is_some()),
+                query: feature.workload_kind,
+                kind,
+            });
+        }
+        let prior_feature = mixed.owned_feature(metrics)?.expect("eligible mixed query");
+        let prior = mixed.predict(metrics, &prior_feature, detailed)?;
+        if prior.latency_ms.is_some() || !online_ready {
+            return Ok(MixedSelectorPrediction {
+                stable_available: Some(prior.latency_ms.is_some()),
+                online_available: (!online_ready).then_some(false),
+                estimate: prior,
+                selected: SelectedExpert::Stable,
+                preferred,
+                query: feature.workload_kind,
+                kind,
+            });
+        }
+        let online = learned_base_ms(&self.learned, metrics)?;
+        Ok(MixedSelectorPrediction {
+            estimate: ForwardPassPerfModel::learned_estimate_details(online),
+            selected: SelectedExpert::Online,
+            preferred,
+            stable_available: Some(false),
+            online_available: Some(online.is_some()),
+            query: feature.workload_kind,
+            kind,
+        })
+    }
+
+    pub(super) fn mixed_route_metadata(
+        &self,
+        metrics: &[ForwardPassMetrics],
+        mixed: &MixedComposition,
+        prediction: &MixedSelectorPrediction,
+    ) -> Result<serde_json::Value, AicError> {
+        let mut route = mixed.route(metrics, prediction.selected == SelectedExpert::Online)?;
+        let object = route.as_object_mut().expect("route object");
+        object.insert("selected_expert".into(), prediction.selected.name().into());
+        object.insert(
+            "preferred_expert".into(),
+            prediction.preferred.name().into(),
+        );
+        object.insert("stable_source".into(), "interpolation".into());
+        object.insert(
+            "online_ready".into(),
+            self.learned.has_store(prediction.kind).into(),
+        );
+        object.insert(
+            "stable_available".into(),
+            prediction.stable_available.into(),
+        );
+        object.insert(
+            "online_available".into(),
+            prediction.online_available.into(),
+        );
+        object.extend(
+            self.selector
+                .query_diagnostics(prediction.kind, prediction.query)
+                .as_object()
+                .expect("query evidence object")
+                .clone(),
+        );
+        Ok(route)
+    }
+
+    /// Observe the interpolation stable expert and C-trained online expert from
+    /// one pre-update state. Missing/unsupported prior skips paired evidence,
+    /// while hard prior errors remain visible after valid online admission.
+    pub(super) fn observe_mixed(
+        &mut self,
+        metrics: &[ForwardPassMetrics],
+        mixed: &mut MixedComposition,
+        feature: &RegressionIterationFeatures,
+    ) -> Result<(), AicError> {
+        let kind = feature.workload_kind;
+        let pending = mixed.prepare_observation(metrics, feature);
+        let prepared = match prepare_learned_iteration(&self.learned, metrics) {
+            Ok(value) => value,
+            Err(error) => {
+                self.online.record_rejected_observation();
+                return Err(error);
+            }
+        };
+        let Some((_, Some(vector))) = prepared else {
+            if let Some(observation) = pending? {
+                mixed.commit_observation(observation);
+            }
+            return Ok(());
+        };
+        let Some(wall_ms) = max_positive_wall_time_ms(metrics) else {
+            self.online.record_rejected_observation();
+            pending?;
+            return Ok(());
+        };
+        let query = IterationFeatures::from_validated_metrics(metrics)
+            .expect("mixed feedback")
+            .workload_kind;
+        let x = self.learned.selected_features(&vector);
+        let online_ms = self
+            .learned
+            .predict_selected_ms(kind, &x)?
+            .expect("ready online store");
+        let comparison = match &pending {
+            Ok(Some(observation)) => mixed
+                .staged_prediction(observation)
+                .and_then(|stable_ms| {
+                    self.selector
+                        .stage(kind, query, stable_ms, online_ms, wall_ms)
+                })
+                .map(Some),
+            _ => Ok(None),
+        };
+        let before = self.online.accepted_observations_for(kind);
+        let result = self.online.observe(kind, x, wall_ms, &mut self.learned);
+        let admitted = self.online.accepted_observations_for(kind) != before;
+        let comparison_error = match comparison {
+            Ok(Some(update)) if admitted => {
+                self.selector.commit(update);
+                None
+            }
+            Err(error) => Some(error),
+            _ => None,
+        };
+        if admitted {
+            match pending {
+                Ok(Some(observation)) => mixed.commit_observation(observation),
+                Err(prior_error) => {
+                    result?;
+                    return Err(prior_error);
+                }
+                _ => {}
+            }
+        } else {
+            result?;
+            pending?;
+            if let Some(error) = comparison_error {
+                return Err(error);
+            }
+            return Ok(());
+        }
+        result?;
+        // An invalid comparison does not erase valid online/calibration history.
+        if let Some(error) = comparison_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(super) fn correction_count(&self) -> usize {
         self.corrections
             .iter()
@@ -261,6 +453,11 @@ impl CalibratedOnlineModel {
         value["worker_type"] =
             serde_json::to_value(self.stable.worker_type()).expect("worker role serializes");
         value["identity_verified"] = self.identity_verified.into();
+        if !self.appended_mixed_sources.is_empty() {
+            value["appended_mixed_online_sources"] =
+                serde_json::to_value(&self.appended_mixed_sources)
+                    .expect("append sources serialize");
+        }
         value["calibration"] = self.corrections.iter().flat_map(|(kind, stores)| {
             [(WorkloadKind::Prefill, "prefill"), (WorkloadKind::Decode, "decode"), (WorkloadKind::Mixed, "mixed")]
                 .into_iter().map(move |(query, name)| {
@@ -276,4 +473,4 @@ impl CalibratedOnlineModel {
 
 #[cfg(test)]
 #[path = "combined_tests.rs"]
-mod tests;
+pub(super) mod tests;

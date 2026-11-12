@@ -1031,6 +1031,7 @@ mod trtllm {
 
     fn receive(core: &mut VllmCore, uuid: Uuid, tokens: std::ops::Range<u32>, max_output: usize) {
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: tokens.collect(),
             max_output_tokens: max_output,
             output_token_ids: None,

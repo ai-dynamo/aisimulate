@@ -45,6 +45,16 @@ sum to its estimate of the pass. The default `None` prices the prefill with
 whole-model FPM interpolation, corrected as one mixed iteration when the model
 is tuned. Any other timing it serves, including operation-level timing,
 measured SD-round profiles and MTP drafts, returns `None`.
+`TimingModel::predict_iteration_ms(&[RankWork])` comes first: it prices one
+attention-DP group pass from every rank's `RankWork`, in DP-rank order with
+idle ranks included, and returns `IterationMs`, the shared duration every rank
+takes from its compute start under the prefill speedup. Schedulers ask only
+while `decode_speedup_ratio` is 1 and some rank computes model work; otherwise,
+and when the provider returns the default `None`, each rank prices its own
+work with the phase methods above. The `ais` provider answers through the
+canonical multi-rank `ForwardPassMetrics` query, so the phase methods serve
+only the passes it declines; see
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
 `TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
 image work then rejects it rather than treating the encoder as free. The `ais`
@@ -123,6 +133,16 @@ them. Latency metrics keep the arrival time, and each per-request record gains
 rejected. See
 [request tokenization](../engine/README.md#tokenization).
 
+`with_detokenization(workers, base_ms, per_output_ms)` detokenizes each pass's
+outputs before the client receives them. Each worker that emits tokens has
+`workers` servers, shared by its attention-DP ranks, and each request belongs
+to one of them. A server takes the outputs of a pass that belong to it as one
+job of `base_ms + per_output_ms × outputs`, after its earlier jobs. Token
+times, latency metrics and request completion use the client's receive time.
+Both costs zero, the default, keep every output at its pass end. Scaling and
+agentic profiles are rejected. See
+[response detokenization](../engine/README.md#detokenization).
+
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
 determinism. Canonical comparison uses the exported schema version, seed and
 exclusion definitions rather than arbitrary JSON key order. The default
@@ -135,8 +155,17 @@ and neutral observation contracts.
 interval and returns `ReplayResult<Self>`. The observer receives a baseline,
 settled interval samples, and a final tail when needed. A sample coinciding
 with a scaling tick observes settled pre-scaling state. Grouped cache byte
-occupancy is available here even though the Python JSON runner does not expose
-this observer API. Telemetry neither extends the time cap nor prevents deadlock.
+occupancy is available here. Telemetry neither extends the time cap nor prevents deadlock.
+
+`with_telemetry_capture(interval_ms)` retains native telemetry in
+`ReplayReport.telemetry`, including preparation and profiling requests, periodic
+samples, and agentic lifecycle events. It enables internal request capture while
+preserving the caller's original `record_per_request` choice for
+`ReplayReport.per_request`. Capture uses absolute virtual milliseconds and does
+not move profiling/scaling boundaries. The capture and observer APIs are mutually
+exclusive. See the [telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
+Downstream `ReplayReport` struct literals must include `telemetry: None` when
+capture is absent, or preserve the field when rebuilding a captured report.
 
 ## Errors and stability
 

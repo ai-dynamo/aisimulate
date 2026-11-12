@@ -12,8 +12,10 @@ include_base: true
 base_ops:
   - gemm
 framework_specific_base_ops:
-  # vLLM 0.24's Llama 4 attention uses fixed chunk boundaries; a generic
-  # sliding-window profile is not an equivalent persisted workload.
+  # Model runs leave vLLM's attention out: vLLM serves Llama 4's local layers
+  # with fixed chunk boundaries, which a sliding-window row only approximates.
+  # Full collections still time the window-8192 shapes on vLLM (and TRT-LLM),
+  # as sliding windows; only SGLang's rows carry the 8192-token chunk.
   sglang:
     - attention_context
     - attention_generation
@@ -39,7 +41,7 @@ model_case_values:
       window_sizes: [0, 8192]
       sglang_runtime_window_size: -1
       sglang_attention_chunk_size: 8192
-      sglang_backends: {90: fa3, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      sglang_backends: {89: triton, 90: fa3, 100: trtllm_mha, 103: trtllm_mha, 120: triton}  # sm89: arg_groups/model_overrides/llama4.py "other platforms" -> triton
       tensor_parallel_sizes: [1, 2, 4, 8]
   moe:
     - model_path: meta-llama/Llama-4-Scout-17B-16E-Instruct

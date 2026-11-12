@@ -269,6 +269,16 @@ fn spline_component_readiness_does_not_widen_linear_coverage() {
         };
         add(&mut store, [x as f64, 1.0, observed_ms]);
     }
+    let retained: Vec<_> = store
+        .samples
+        .observations()
+        .into_iter()
+        .map(|(_, entry)| entry.observation)
+        .collect();
+    let candidate = super::super::fit_regression_candidate(&retained, 5, 1e-9, true).unwrap();
+    // This is a finite exact boundary optimum, not a failed numerical solve.
+    assert_eq!(candidate.coefficients, [0.0, 0.0]);
+    assert!(!candidate.is_usable(retained.len()));
     assert!(store.linear_fit.is_none());
     assert!(!store.is_ready());
     let diagnostics = store.diagnostics();

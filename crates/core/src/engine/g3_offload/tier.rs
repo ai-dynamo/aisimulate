@@ -8,7 +8,7 @@ use crate::engine::config::{G3OffloadConfig, G3Scope};
 use crate::engine::host_offload::HostBlockKey;
 use crate::engine::offload_lru::Lru;
 pub(crate) use crate::engine::offload_transfer::Direction;
-use crate::engine::offload_transfer::{self, FairTransfers};
+use crate::engine::offload_transfer::{self, FairTransfers, Link};
 use anyhow::{Result, ensure};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -163,7 +163,7 @@ impl G3Tier {
     }
 
     pub(crate) fn has_work(&self, worker: usize) -> bool {
-        !self.completed[&worker].is_empty() || self.transfers.has_client_jobs(worker as u64)
+        !self.completed[&worker].is_empty() || self.transfers.has_link_jobs(worker as u64)
     }
 
     pub(crate) fn unregister_worker(&mut self, worker: usize) -> Result<()> {
@@ -303,15 +303,22 @@ impl G3Tier {
         };
         self.transfers.submit(offload_transfer::Job {
             id,
-            client: worker as u64,
             direction,
             ready: now + self.config.latency_to_first_byte_ms,
             bytes: (keys.len() * self.block_bytes) as f64,
-            client_rate: offload_transfer::bytes_per_ms(worker_gbps),
-            shared_rate: match self.config.scope {
-                G3Scope::WorkerLocal => f64::INFINITY,
-                G3Scope::ClusterShared => offload_transfer::bytes_per_ms(shared_gbps),
-            },
+            links: [
+                Link {
+                    id: worker as u64,
+                    rate: offload_transfer::bytes_per_ms(worker_gbps),
+                },
+                match self.config.scope {
+                    G3Scope::WorkerLocal => Link::UNLIMITED,
+                    G3Scope::ClusterShared => Link {
+                        id: 0,
+                        rate: offload_transfer::bytes_per_ms(shared_gbps),
+                    },
+                },
+            ],
         });
         self.jobs.insert(
             id,

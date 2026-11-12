@@ -13,6 +13,11 @@ from aisimulate.sdk import common, config, engine
 from aisimulate.sdk.models import get_model
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
+# Both public-model tests disable the shared layer, so every table they touch must exist
+# under the queried version itself. The 2026-10 campaign (vLLM 0.30.0 = current) collected
+# no comm tables, so pin the last version whose own tree is complete (0.24.0 = previous).
+_SELF_CONTAINED_VERSION = "0.24.0"
+
 pytestmark = pytest.mark.unit
 
 
@@ -76,7 +81,7 @@ def test_public_model_preserves_equivalent_regex_projection_exclusions(tmp_path)
                 model=str(checkpoint),
                 system="b200_sxm",
                 backend="vllm",
-                backend_version="current",
+                backend_version=_SELF_CONTAINED_VERSION,
                 worker_type="aggregated",
                 tp=8,
                 moe_tp_size=1,
@@ -153,7 +158,7 @@ def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_
             model="nvidia/GLM-5.2-NVFP4",
             system="b200_sxm",
             backend="vllm",
-            backend_version="current",
+            backend_version=_SELF_CONTAINED_VERSION,
             worker_type="aggregated",
             tp=8,
             moe_tp_size=1,

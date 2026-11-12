@@ -49,7 +49,10 @@ def unready_estimator_message(diagnostics: dict[str, Any]) -> str:
         failures = str(diagnostics["last_warning"]).split("; ")
     if not failures:
         # The caller explicitly selected regression without observations.
-        return "regression estimator is not ready; replay requires training observations"
+        return (
+            "fpm_regression estimator is not ready: no workload store has a usable fit; tune it with observed "
+            "forward passes or restore a calibrated state snapshot"
+        )
 
     model = config.get("model")
     system = config.get("system")

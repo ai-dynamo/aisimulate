@@ -172,6 +172,71 @@ def test_runner_fails_closed_when_failure_list_is_missing(monkeypatch):
     assert "must return" in errors[0]["error_message"]
 
 
+def test_replay_selects_full_node_cases_like_the_pool_ops(monkeypatch):
+    cases = [{"shape": 0}, {"shape": 1}, {"shape": 2}]
+    ran = []
+
+    def run_cases(*, perf_filename, limit, cases):
+        ran.extend(cases)
+        return {"succeeded": len(cases), "failed": []}
+
+    module_name = "fake_fullnode_collector_replay"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        SimpleNamespace(__compat__=">=0.5.0", get_cases=lambda: list(cases), run_cases=run_cases),
+    )
+    monkeypatch.setattr(fullnode, "filter_cases", lambda values, **_kwargs: (values, []))
+    replay = collect_mod.ReplaySpec("errors.json", {str(cases[1])})
+
+    errors = fullnode.collect_sglang_fullnode_op(
+        {
+            "name": "fake",
+            "type": "deepep_ll",
+            "module": module_name,
+            "get_func": "get_cases",
+            "run_func": "run_cases",
+            "perf_filename": "perf.txt",
+        },
+        runtime_version="0.5.12",
+        limit=None,
+        shuffle=False,
+        shuffle_seed=42,
+        backend="sglang",
+        resume_options=None,
+        model_path=None,
+        case_plan=None,
+        sm_version=100,
+        case_filters=None,
+        replay=replay,
+        get_test_cases_for_model=lambda get_func, _model_path: get_func(),
+        resume_checkpoint_cls=_Checkpoint,
+        logger=_logger(),
+    )
+
+    assert errors == []
+    assert ran == [cases[1]]
+    assert replay.report()["matched_by_op"] == {"deepep_ll": 1}
+
+
+def test_collect_sglang_passes_only_keywords_the_full_node_runner_accepts():
+    """collect_sglang runs full-node ops after the pool ops: a keyword the runner does not
+    accept is a TypeError that loses the run's summary and provenance."""
+    import ast
+    import inspect
+
+    tree = ast.parse(Path(collect_mod.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "collect_sglang_fullnode_op"
+    ]
+    assert calls
+    accepted = set(inspect.signature(fullnode.collect_sglang_fullnode_op).parameters)
+    for call in calls:
+        assert {keyword.arg for keyword in call.keywords} <= accepted
+
+
 REAL_FULLNODE_MODULE = "collector.wideep.sglang.collect_deepep_ll"
 
 

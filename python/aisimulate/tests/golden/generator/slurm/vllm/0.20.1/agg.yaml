@@ -37,7 +37,7 @@ deployment.json: |-
           "--max-num-seqs",
           "512",
           "--max-num-batched-tokens",
-          "2140"
+          "2176"
         ],
         "env": {
           "VLLM_DP_SIZE": "1",

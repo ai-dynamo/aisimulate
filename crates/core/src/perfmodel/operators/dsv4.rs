@@ -1057,8 +1057,8 @@ mod tests {
         );
     }
 
-    /// Real-DB fail-loud: b200_sxm/sglang/0.5.10 now retains only the
-    /// hca_attn table, so a CSA CP context query must fail LOUD with the
+    /// Real-DB fail-loud: b200_sxm/sglang/0.5.10 ships no DSV4 module tables
+    /// (its hca_attn sidecar was retired), so a CSA CP context query must fail LOUD with the
     /// actionable no-module-rows message (names the missing parquet) (never a fabricated value).
     /// The calib-specific missing-top_last branch is pinned synthetically in
     /// `perf_database::dsv4` (absent calib -> None -> operator fail-loud).
