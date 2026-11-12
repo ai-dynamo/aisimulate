@@ -263,13 +263,9 @@ def _glm5_topk_metadata(bs, isl, past_kv):
     return lengths, topk_indices_offset, max_seqlen_k
 
 
-def _make_glm5_topk_scores(mode, lengths, seq, device, generator, topk_k):
-    """DSV4-style score distributions for the topk DELTA calibration.
-
-    * ``flat``     — all zeros: degenerate worst case (every element ties, so
-                     the kernel does maximal tie-break work).
-    * ``top_last`` — background ~-5 with the last ``topk_k`` positions ~+5:
-                     representative (clear winners, the common real case).
+def _make_glm5_topk_scores(lengths, seq, device, generator, topk_k):
+    """The ``top_last`` score distribution of the top-k rows: background ~-5 with
+    the last ``topk_k`` positions ~+5 (clear winners).
 
     Each row's winners occupy its own causal ``[length-k:length)`` span.
     This helper is used by paged decode.  SGLang's page size and DeepGEMM
@@ -277,26 +273,22 @@ def _make_glm5_topk_scores(mode, lengths, seq, device, generator, topk_k):
     """
     rows = lengths.numel()
     pad = ((seq + 63) // 64) * 64
-    if mode == "flat":
-        return torch.zeros(rows, pad, dtype=torch.float32, device=device)
-    if mode == "top_last":
-        s = -5.0 + 0.05 * torch.randn(rows, pad, dtype=torch.float32, device=device, generator=generator)
-        counts = lengths.to(torch.int64).clamp(min=0, max=min(topk_k, seq))
-        offsets = torch.arange(topk_k, device=device)
-        columns = lengths.to(torch.int64).unsqueeze(1) - counts.unsqueeze(1) + offsets.unsqueeze(0)
-        valid = offsets.unsqueeze(0) < counts.unsqueeze(1)
-        row_ids = torch.arange(rows, device=device).unsqueeze(1).expand_as(columns)
-        selected = int(valid.sum().item())
-        s[row_ids[valid], columns[valid]] = 5.0 + torch.randn(
-            selected, dtype=torch.float32, device=device, generator=generator
-        )
-        return s.contiguous()
-    raise ValueError(f"unknown topk score mode: {mode}")
+    s = -5.0 + 0.05 * torch.randn(rows, pad, dtype=torch.float32, device=device, generator=generator)
+    counts = lengths.to(torch.int64).clamp(min=0, max=min(topk_k, seq))
+    offsets = torch.arange(topk_k, device=device)
+    columns = lengths.to(torch.int64).unsqueeze(1) - counts.unsqueeze(1) + offsets.unsqueeze(0)
+    valid = offsets.unsqueeze(0) < counts.unsqueeze(1)
+    row_ids = torch.arange(rows, device=device).unsqueeze(1).expand_as(columns)
+    selected = int(valid.sum().item())
+    s[row_ids[valid], columns[valid]] = 5.0 + torch.randn(
+        selected, dtype=torch.float32, device=device, generator=generator
+    )
+    return s.contiguous()
 
 
 def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
     """GLM-5 indexer top-k — the kernel SGLang's DSA backend ACTUALLY runs,
-    benched as a FLAT/TOP_LAST DELTA calibration (DSV4-style).
+    benched on the TOP_LAST score distribution.
 
     Kernel selection at SGLang v0.5.23 (``SGLANG_DSA_FUSE_TOPK`` and
     ``SGLANG_OPT_USE_TOPK_V2`` both default True, sgl-kernel top-k backend):
@@ -314,12 +306,18 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
     mapped through the request page table, not the score layout.  Decode keeps
     this release collector's separate compact paged calibration.
 
-    topk timing is DATA-DEPENDENT (measured 3-22% spread by score distribution),
-    so instead of guessing the real logit distribution we bench two anchors —
-    ``flat`` (degenerate worst-case) and ``top_last`` (representative) — and
-    return both as ``[("flat", lat), ("top_last", lat)]``; the SDK applies the
-    DELTA as the data-dependent correction.  Trivial when the full per-request
-    context ``<= topk`` (select-all, no data-dependent cost) → both ``0``.
+    topk timing is DATA-DEPENDENT (measured 3-22% spread by score distribution).
+    The result is ``[("top_last", lat)]``: clear winners at the causal tail.
+    Trivial when the full per-request context ``<= topk`` (select-all) → ``0``.
+
+    The ``flat`` (all-zero scores) rows are no longer collected. They stood for
+    the top-k cost inside a DSA module timed on degenerate scores; the DSA
+    modules are timed on written history (collect_mla_module.
+    _initialize_dsa_history), so no such cost is left to swap out. The
+    context-parallel composition reads the top_last rows. It also subtracts a
+    flat row at the per-rank length and refuses a table without one
+    (query_cp_with, crates/core/src/perfmodel/operators/dsa.rs), so the consumer
+    has to follow before a top_last-only table serves a context-parallel query.
 
     Context rows use production's concatenated ragged-K geometry and bound the
     synthetic FP32 score along Q.  Their reported latency is the sum of
@@ -341,8 +339,8 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
     # GLM-5 is uniform DSA (ratio=1): per-request full context = past_kv + isl.
     length_values, topk_offset_values, max_seqlen_k = _glm5_topk_metadata(bs, isl, past_kv)
     if max_seqlen_k <= topk:
-        # nothing to select -> no data-dependent cost; DELTA is 0.
-        return [("flat", 0.0), ("top_last", 0.0)], kernel_src
+        # nothing to select -> no data-dependent cost.
+        return [("top_last", 0.0)], kernel_src
 
     lengths = torch.tensor(length_values, dtype=torch.int32, device=device)
     generator = torch.Generator(device=device)
@@ -355,7 +353,7 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
         full_k = bs * max_seqlen_k
         row_starts = torch.tensor(topk_offset_values, dtype=torch.int32, device=device)
         rows_per_chunk = _glm5_score_rows_per_chunk(M, full_k, device)
-        mode_latency_ms = {"flat": 0.0, "top_last": 0.0}
+        latency_ms = 0.0
         chunked = rows_per_chunk < M
         if fused:
             page_table = torch.arange(full_k, dtype=torch.int32, device=device).view(bs, max_seqlen_k)
@@ -379,51 +377,45 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
                 page_table_chunk = page_table
                 cu_seqlens_q_chunk = base_cu_seqlens_q
 
-            # Reuse one score allocation for the two calibration anchors.  A
-            # benchmark closure must be released before the buffer is changed
-            # because CUDA Graph capture fixes its input address and lifetime.
-            for mode in ("flat", "top_last"):
-                if mode == "flat":
-                    score.zero_()
-                else:
-                    score.normal_(mean=-5.0, std=0.05, generator=generator)
-                    counts = lengths_chunk.to(torch.int64).clamp(min=0, max=topk)
-                    offsets = torch.arange(topk, dtype=torch.int64, device=device)
-                    columns = (
-                        starts_chunk.to(torch.int64).unsqueeze(1)
-                        + lengths_chunk.to(torch.int64).unsqueeze(1)
-                        - counts.unsqueeze(1)
-                        + offsets.unsqueeze(0)
-                    )
-                    valid = offsets.unsqueeze(0) < counts.unsqueeze(1)
-                    row_ids = torch.arange(end - start, device=device).unsqueeze(1).expand_as(columns)
-                    selected = int(valid.sum().item())
-                    winners = torch.empty(selected, dtype=torch.float32, device=device)
-                    winners.normal_(mean=5.0, std=1.0, generator=generator)
-                    score[row_ids[valid], columns[valid]] = winners
+            score.normal_(mean=-5.0, std=0.05, generator=generator)
+            counts = lengths_chunk.to(torch.int64).clamp(min=0, max=topk)
+            offsets = torch.arange(topk, dtype=torch.int64, device=device)
+            columns = (
+                starts_chunk.to(torch.int64).unsqueeze(1)
+                + lengths_chunk.to(torch.int64).unsqueeze(1)
+                - counts.unsqueeze(1)
+                + offsets.unsqueeze(0)
+            )
+            valid = offsets.unsqueeze(0) < counts.unsqueeze(1)
+            row_ids = torch.arange(end - start, device=device).unsqueeze(1).expand_as(columns)
+            selected = int(valid.sum().item())
+            winners = torch.empty(selected, dtype=torch.float32, device=device)
+            winners.normal_(mean=5.0, std=1.0, generator=generator)
+            score[row_ids[valid], columns[valid]] = winners
 
-                if fused:
-                    kernel_fn = lambda: fast_topk_transform_fused(
-                        score=score,
-                        lengths=lengths_chunk,
-                        page_table_size_1=page_table_chunk,
-                        cu_seqlens_q=cu_seqlens_q_chunk,
-                        topk=topk,
-                        row_starts=starts_chunk,
-                    )
-                else:
-                    kernel_fn = lambda: fast_topk_v2(
-                        score,
-                        lengths_chunk,
-                        topk,
-                        row_starts=starts_chunk,
-                    )
-                # Fail closed if any context chunk cannot use the declared
-                # independent CUDA-graph benchmark boundary.  Mixing eager and
-                # graph timings inside one additive row would be ambiguous.
-                measured = _bench_cuda_graph(kernel_fn, allow_graph_fail=False, device=device)
-                mode_latency_ms[mode] += measured["latency_ms"]
-                del kernel_fn
+            if fused:
+                kernel_fn = lambda: fast_topk_transform_fused(
+                    score=score,
+                    lengths=lengths_chunk,
+                    page_table_size_1=page_table_chunk,
+                    cu_seqlens_q=cu_seqlens_q_chunk,
+                    topk=topk,
+                    row_starts=starts_chunk,
+                )
+            else:
+                kernel_fn = lambda: fast_topk_v2(
+                    score,
+                    lengths_chunk,
+                    topk,
+                    row_starts=starts_chunk,
+                )
+            # Fail closed if any context chunk cannot use the declared
+            # independent CUDA-graph benchmark boundary.  Mixing eager and
+            # graph timings inside one additive row would be ambiguous.
+            # The closure is released before the score buffer is, because CUDA
+            # Graph capture fixes its input address and lifetime.
+            latency_ms += _bench_cuda_graph(kernel_fn, allow_graph_fail=False, device=device)["latency_ms"]
+            del kernel_fn
             del score
             if fused:
                 # Advanced indexing materializes the per-row page table for a
@@ -432,7 +424,7 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
                 # workspace at batch size one.
                 del page_table_chunk, cu_seqlens_q_chunk
 
-        return [(mode, round(mode_latency_ms[mode], 6)) for mode in ("flat", "top_last")], kernel_src
+        return [("top_last", round(latency_ms, 6))], kernel_src
 
     # Decode: Indexer._get_topk_paged calls metadata.topk_transform(logits, index_topk)
     # without row_starts (dsa/dsa_indexer.py:1448-1449 @v0.5.23). With the default
@@ -478,12 +470,9 @@ def _bench_glm5_topk(M, past_kv, isl, bs, *, topk, device):  # noqa: N803
                 topk=topk,
             )
 
-    results = []
-    for mode in ("flat", "top_last"):
-        score = _make_glm5_topk_scores(mode, lengths, max_seqlen_k, device, generator, topk)
-        r = _bench_cuda_graph(make_fn(score), allow_graph_fail=False, device=device)
-        results.append((mode, round(r["latency_ms"], 6)))
-    return results, kernel_src
+    score = _make_glm5_topk_scores(lengths, max_seqlen_k, device, generator, topk)
+    r = _bench_cuda_graph(make_fn(score), allow_graph_fail=False, device=device)
+    return [("top_last", round(r["latency_ms"], 6))], kernel_src
 
 
 def _bench_glm5_dsa_attn(M, past_kv, isl, *, native_heads, d_qk, d_v, topk, device):  # noqa: N803
@@ -531,8 +520,7 @@ def _bench_glm5_dsa_attn(M, past_kv, isl, *, native_heads, d_qk, d_v, topk, devi
 def _bench_glm5_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device):
     M = max(bs * isl, 1)  # noqa: N806
     if kernel == "topk":
-        # flat/top_last DELTA calibration -> two rows; reports the fused/unfused
-        # kernel it actually ran.
+        # One top_last row; reports the fused/unfused kernel it actually ran.
         results, kernel_source = _bench_glm5_topk(M, prefix, isl, bs, topk=sc.index_topk, device=device)
         return kernel_source, results
     if kernel == "mqa":
@@ -588,7 +576,7 @@ def run_glm5_dsa_sparse_kernel_worker(
             failures.append(f"{shape_label}: {type(error).__name__}: {error}")
             continue
         kernel_source, results = out
-        expected_modes = {"flat", "top_last"} if kernel == "topk" else {None}
+        expected_modes = {"top_last"} if kernel == "topk" else {None}
         if len(results) != len(expected_modes) or {score_mode for score_mode, _ in results} != expected_modes:
             message = f"expected score modes {expected_modes}, got {results}"
             print(f"  incomplete result at {shape_label}: {message}")

@@ -131,12 +131,11 @@ def test_glm5_decode_topk_runs_the_serving_v2_paged_kernel(monkeypatch):
     results, kernel_source = namespace["_bench_glm5_topk"](2, 4095, 1, 2, topk=2048, device="cpu")
 
     assert kernel_source == "topk_transform_v2"
-    assert [mode for mode, _ in results] == ["flat", "top_last"]
+    assert [mode for mode, _ in results] == ["top_last"]  # no flat row: the modules time written history
     plans = [call for call in calls if call[0] == "plan"]
     assert plans == [("plan", [4096, 4096])]  # once, outside the timed kernel
     paged = [call[1] for call in calls if call[0] == "paged_v2"]
-    assert len(paged) == 2
-    score, lengths, page_table, out, page_size, plan = paged[0]
+    ((score, lengths, page_table, out, page_size, plan),) = paged
     assert score.shape == (2, 4096) and score.stride(0) % 4 == 0
     assert lengths.tolist() == [4096, 4096]
     assert page_table.shape == (2, 64) and page_size == 64 and plan == "plan"
@@ -152,7 +151,7 @@ def test_glm5_decode_topk_keeps_the_legacy_fused_kernel_when_v2_is_off(monkeypat
 
     assert kernel_source == "fast_topk_transform_fused"
     fused = [call[1] for call in calls if call[0] == "fused"]
-    assert len(fused) == 2 and all("row_starts" not in kwargs for kwargs in fused)
+    assert len(fused) == 1 and all("row_starts" not in kwargs for kwargs in fused)
     assert not [call for call in calls if call[0] in {"plan", "paged_v2"}]
 
 
@@ -165,7 +164,7 @@ def test_glm5_context_topk_stays_on_the_fused_paged_transform_with_row_starts(mo
 
     assert kernel_source == "fast_topk_transform_fused"
     fused = [call[1] for call in calls if call[0] == "fused"]
-    assert len(fused) == 2 and all(kwargs["row_starts"] is not None for kwargs in fused)
+    assert len(fused) == 1 and all(kwargs["row_starts"] is not None for kwargs in fused)
     assert not [call for call in calls if call[0] in {"plan", "paged_v2"}]
 
 

@@ -81,8 +81,8 @@ class PerfFile(str, Enum):
     # readers had been retired (no query path; csa_attn never shipped data)
     # and the registry-only ops failed every shard that named them.
     DSV4_PAGED_MQA_LOGITS_MODULE = "dsv4_paged_mqa_logits_module_perf.txt"
-    # DeepSeek-V4 CSA topk_512 degenerate-vs-representative DELTA calibration.
-    # SGLang 0.5.14 rows qualify flat/top_last by the executed v1/v2 variant.
+    # DeepSeek-V4 CSA topk_512 kernel rows. SGLang rows qualify their score
+    # distribution (top_last; older tables also flat) by the executed v1/v2 variant.
     DSV4_CSA_TOPK_CALIB = "dsv4_csa_topk_calib_perf.txt"
     GLM5_MQA_LOGITS_MODULE = "glm5_mqa_logits_module_perf.txt"
     GLM5_TOPK_MODULE = "glm5_topk_module_perf.txt"

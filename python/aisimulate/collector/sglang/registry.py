@@ -231,8 +231,9 @@ REGISTRY: list[OpEntry] = [
         # so there is nothing to hardware-validate through the default plan.
         unverified_sms=(120,),
     ),
-    # CSA topk_512 DELTA calibration (flat vs top_last) — feeds the
-    # degenerate->representative topK correction in perf_database.
+    # CSA topk_512 top_last rows, which the context-parallel composition reads. The
+    # flat rows of the retired flat-minus-top_last correction are no longer
+    # collected (deepseekv4_sparse_modules, "topk_512 indexer top-k rows").
     OpEntry(
         op="dsv4_csa_topk_calib",
         module="collector.sglang.deepseekv4_sparse_modules",

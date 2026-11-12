@@ -784,46 +784,6 @@ def _load_model_runner(
                 f"actual_swa={actual_swa_tokens}, required_swa={required_swa_tokens}"
             )
     model_runner.init_attention_backends()
-    # --- AIC proper init (env-gated) -------------------------------------
-    # Dummy load uses uniform(-1e-3, 1e-3) (sglang initialize_dummy_weights).
-    # Those tiny weights make the C4 indexer's q.k logits land in the fp16
-    # subnormal range (<6.1e-5). extract_coarse_bin casts scores to fp16
-    # first, so subnormal logits collapse into very few coarse bins -> the
-    # topK threshold bin holds hundreds of ties (num_equal >> 64) -> Small
-    # path takes its O(n^2) block tie-break -> topk_short_transform is huge
-    # and non-representative vs a trained checkpoint.
-    # Re-init projection weights with a normal of larger scale so logits keep
-    # full fp16 precision (spread). norm/scale params are forced to 1.0 to
-    # avoid scaling activations back down (norm) or producing inf on fp8
-    # dequant (scale). Only safe because the collector runs num_layers==1.
-    _proper = os.environ.get("AIC_DSV4_PROPER_INIT", "")
-    if _proper and _proper != "0":
-        _std = float(os.environ.get("AIC_DSV4_PROPER_INIT_STD", "0.05"))
-        torch.manual_seed(1234)
-        _n_normal = _n_norm = _n_scale = 0
-        with torch.no_grad():
-            for _name, _p in model_runner.model.state_dict().items():
-                if not torch.is_floating_point(_p):
-                    continue
-                _lname = _name.lower()
-                if "scale" in _lname:
-                    _p.fill_(1.0)
-                    _n_scale += 1
-                elif "norm" in _lname:
-                    _p.fill_(1.0)
-                    _n_norm += 1
-                elif torch.finfo(_p.dtype).bits < 16:
-                    _tmp = torch.empty_like(_p, dtype=torch.float16).normal_(0.0, _std)
-                    _p.copy_(_tmp.to(_p.dtype))
-                    _n_normal += 1
-                else:
-                    _p.normal_(0.0, _std)
-                    _n_normal += 1
-        print(
-            f"[dsv4-collector] AIC_DSV4_PROPER_INIT std={_std}: "
-            f"normal={_n_normal} norm->1={_n_norm} scale->1={_n_scale}",
-            flush=True,
-        )
 
     allocator = model_runner.token_to_kv_pool_allocator
     pool_parts = []
@@ -920,6 +880,102 @@ def _hold_prefix_rows(model_runner, reqs, prefix_len: int) -> None:
         req.kv.kv_committed_len = prefix_len
         if swa_evicted_seqlen:
             req.kv.set_evicted_seqlen(ComponentType.SWA, swa_evicted_seqlen)
+
+
+# Distinct history keys: a longer history repeats them, so writing it costs one store call
+# per this many keys (16 MiB of activations) and no further sampling. A key then recurs a
+# handful of times in the longest histories, far below kMaxNumTie = 2048, the number of
+# threshold-bin candidates the top-k stages before it re-derives them
+# (kernels/jit/include/sgl_kernel/deepseek_v4/topk_impl.cuh:178 at v0.5.23).
+_HISTORY_ROWS = 1 << 16
+
+
+def _write_index_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
+    """Write the index keys of the cached history the C4 indexer scores and selects from.
+
+    _hold_prefix_rows only binds slots. The indexer pool starts as zeros
+    (DeepSeekV4IndexerPool._create_buffer, mem_cache/deepseek_v4_memory_pool.py:594-632)
+    and one ModelRunner serves every point of a row, so the history held zeros or an
+    earlier point's keys. A zero key carries a zero scale: every such candidate scored
+    exactly 0.0 and the top-k was timed on ties, a case serving does not have.
+
+    Serving writes key j of a request when it computes token 4j+3, at pool slot
+    raw_out_loc // 4 (_init_compressed_attn_metadata_kernel,
+    kernels/ops/attention/dsv4/metadata_kernel.py:101), as 128 FP8 values and one fp32
+    scale (kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh:197-199, "matching the
+    indexer cache layout (fused_store_indexer_cache)"). The indexer reads that buffer
+    through the request's page table (forward_c4_indexer, layers/attention/dsv4/
+    indexer.py:1074-1101). Seeded N(0, 1) keys, the magnitude of a key normalized with a
+    unit gain, go to the same slots through the pool's writer for that layout,
+    DeepSeekV4TokenToKVPool.set_index_k_fused (deepseek_v4_memory_pool.py:2275-2284 ->
+    fused_store_cache type="indexer", kernels/ops/attention/dsv4/attn.py:75 ->
+    fused_store_indexer_cache, kernels/jit/csrc/deepseek_v4/store.cuh:147), outside the
+    measurement. They stand for no particular checkpoint distribution. Same treatment as
+    the DSA modules (collect_mla_module._initialize_dsa_history). Paths are relative to
+    python/sglang/srt unless they start with kernels/; citations are v0.5.23.
+    """
+    indexer = getattr(attention_module, "indexer", None)
+    keys_per_request = history_length // 4
+    if indexer is None or keys_per_request <= 0:
+        return
+    if indexer.use_fp4_indexer:
+        # set_index_k_fused writes the FP8 layout; an FP4 pool has 68-byte keys.
+        raise RuntimeError("DSV4 index history is written in the FP8 indexer layout; the FP4 indexer is enabled")
+    # The slot of each group's fourth token, as serving derives the key's slot from it.
+    token_slots = model_runner.req_to_token_pool.req_to_token[
+        forward_batch.req_pool_indices.long(), 3 : 4 * keys_per_request : 4
+    ]
+    slots = (token_slots.long() // 4).flatten().contiguous()
+    generator = torch.Generator(device=slots.device)
+    generator.manual_seed(0)
+    keys = torch.randn(
+        (min(slots.numel(), _HISTORY_ROWS), indexer.head_dim),
+        generator=generator,
+        device=slots.device,
+        dtype=torch.bfloat16,
+    )
+    pool = model_runner.token_to_kv_pool
+    for start in range(0, slots.numel(), _HISTORY_ROWS):
+        chunk = slots[start : start + _HISTORY_ROWS]
+        pool.set_index_k_fused(layer_id=attention_module.layer_id, loc=chunk, cache_k=keys[: chunk.numel()])
+
+
+def _give_index_scores_magnitude(model_runner, attention_module) -> None:
+    """Bring the C4 index scores of a dummy-weight module into fp16's normal range.
+
+    A score is sum_h relu(q_h . k) * w_h * k_scale (fp8_paged_mqa_logits; the torch
+    reference is fp8_paged_mqa_logits_torch, layers/attention/dsv4/indexer.py:82-145), with
+    q = indexer.wq_b(q_norm(wq_a(x))) (MqaAttentionBase._normalize_q_lora, models/
+    deepseek_v4.py:1736-1773; C4Indexer.compute_q, indexer.py:1220-1244),
+    w = indexer.weights_proj(x) * weight_scale (compute_weights, indexer.py:1246-1250) and
+    k = indexer.compressor.norm(...) (Compressor, layers/attention/dsv4/compressor.py:76-78).
+    initialize_dummy_weights draws every float parameter from U(-1e-3, 1e-3), the two
+    normalization gains included (model_loader/weight_utils.py:1740-1776), so q_norm's
+    output, the keys and w were each about a thousand times smaller than a unit-gain
+    module's and the scores came out near 1e-9. The top-k bins scores as fp16 first
+    (extract_coarse_bin, __float2half_rn; kernels/jit/include/sgl_kernel/deepseek_v4/
+    topk_impl.cuh:87-93). Scores below fp16's smallest subnormal (6e-8) all round to zero
+    and share its bin, and a threshold bin holding more than kMaxNumTie nonzero
+    candidates is re-derived in exact-key radix rounds (refine_ties, topk_impl.cuh:571-574,
+    taken at :766-768), work that scores spread over the fp16 bins do not need.
+
+    Unit gains on q_norm and the indexer compressor's norm, and U(-1, 1) on weights_proj
+    through SGLang's own initializer, give scores a standard deviation of a few tenths.
+    Those three are plain bf16/fp32 parameters read at every forward. wq_b is left alone:
+    under FP8 block quantization its weight is stored against scales SGLang repacks at
+    load (Fp8LinearMethod.process_weights_after_loading_block_quant, layers/quantization/
+    fp8.py:743-850), which new values would not match. Values only: no kernel in the
+    module is chosen by them. A loaded checkpoint keeps its own weights. Citations are
+    v0.5.23, paths relative to python/sglang/srt unless they start with kernels/.
+    """
+    indexer = getattr(attention_module, "indexer", None)
+    if indexer is None or model_runner.server_args.load_format != "dummy":
+        return
+    from sglang.srt.model_loader.weight_utils import initialize_dummy_weights
+
+    attention_module.q_norm.weight.data.fill_(1.0)
+    indexer.compressor.norm.weight.data.fill_(1.0)
+    initialize_dummy_weights(indexer.weights_proj, low=-1.0, high=1.0)
 
 
 def _serving_tree_cache(model_runner):
@@ -1359,6 +1415,7 @@ def run_dsv4_mla_module(
         tp_size=tp_size,
     )
     _check_module_local_heads(attention_module, local_attention_heads, tp_size)
+    _give_index_scores_magnitude(model_runner, attention_module)
 
     print(
         f"[dsv4-collector] layer={layer_id}, attn_kind={attn_kind}, "
@@ -1407,6 +1464,11 @@ def run_dsv4_mla_module(
                     prefix_len=cur_prefix,
                 )
                 point_clock.mark("forward_batch")
+                # Context history is the prefix; generation history is the whole past KV.
+                _write_index_history(
+                    model_runner, attention_module, forward_batch, cur_prefix if is_prefill else seq_len
+                )
+                point_clock.mark("index_history")
                 hidden_states, positions = _make_inputs(
                     model_runner,
                     batch_size=batch_size,

@@ -5,16 +5,15 @@
 
 Collects the DeepSeek-V4 NSA sparse-attention sub-kernels at the kernel level.
 DeepSeek-V4's primary AIC path uses prefix-aware full CSA/HCA attention-module
-rows; paged_mqa_logits here is supporting kernel-level data for the SDK CP
-chunk walk, while the topk_calib DELTA is actively consumed by
-perf_database's topK correction.
+rows; paged_mqa_logits and the topk_calib top_last rows here are supporting
+kernel-level data for the SDK CP composition.
 
 The two sub-kernels form ONE sparse-op family — the CSA sparse path in
 order — all collected, none modeled analytically:
 
     1. ``deep_gemm.fp8_paged_mqa_logits``      CSA indexer scoring
     2. ``topk_transform`` (topk_512/_1024)     CSA selection — phase-specific
-                                               v1/v2 flat-vs-top_last DELTA calib
+                                               v1/v2 top_last rows
 
 The standalone FMLA sidecars (``flash_mla_with_kvcache`` as csa_attn / hca_attn)
 were removed their SDK readers were retired design placeholders with
@@ -180,10 +179,8 @@ def _device_num_sms(device: str | torch.device) -> int:
 # (one ``latency`` per row):
 #   - paged_mqa_logits: CSA indexer scoring (deep_gemm)            -> 1 row/shape
 #   - topk:           CSA selection — context runs v1 and generation runs v2,
-#                     each under two score distributions, emitted as TWO
-#                     rows/shape (score_mode=v1_flat | v1_top_last or
-#                     v2_flat | v2_top_last); perf_database takes the matching
-#                     DELTA = flat.latency - top_last.latency -> 2 rows/shape
+#                     on the top_last score distribution (score_mode=v1_top_last
+#                     or v2_top_last)                              -> 1 row/shape
 KERNEL_TO_OP_NAME = {
     "paged_mqa_logits": "dsv4_paged_mqa_logits_module",
     "topk": "dsv4_csa_topk_calib",
@@ -203,8 +200,8 @@ KERNEL_TO_COMPRESS_RATIO = {
 # change with tp (the module's per-tp rows differ only by the attention module's
 # comms/sharding, not the sparse sub-kernel). So each is benched ONCE per point
 # and written one row per point at the row's tp_size (1), matching how the SDK
-# consumes them (keyed by shape, not tp). (topk additionally emits two
-# phase-qualified score_mode rows per point.)
+# consumes them (keyed by shape, not tp). (A topk row carries its
+# phase-qualified score_mode.)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -407,14 +404,14 @@ def _write_row(
         "compress_ratio": KERNEL_TO_COMPRESS_RATIO[kernel],
         "latency": f"{latency_ms:.6f}",
     }
-    # topk emits two variant-qualified rows per shape (flat vs top_last); the
-    # discriminator column is absent from single-latency kernel rows.
+    # A topk row names its variant and score distribution; the column is absent
+    # from the other kernels' rows.
     if score_mode is not None:
         item["score_mode"] = score_mode
 
     if kernel == "topk":
-        if score_mode not in ("v1_flat", "v1_top_last", "v2_flat", "v2_top_last"):
-            raise ValueError(f"topk row requires a v1/v2 score_mode, got {score_mode!r}")
+        if score_mode not in ("v1_top_last", "v2_top_last"):
+            raise ValueError(f"topk row requires a v1/v2 top_last score_mode, got {score_mode!r}")
         kernel_source = f"topk_transform_{score_mode.split('_', 1)[0]}"
     else:
         kernel_source = KERNEL_TO_KERNEL_SOURCE[kernel]
@@ -459,9 +456,8 @@ def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_vari
     b=M while preserving request-local causal lengths), so this is computed
     once per shape.
 
-    Single-latency kernels return one ``(None, latency)``; topk returns the
-    phase-qualified flat-vs-representative pair whose matching-variant DELTA
-    perf_database consumes (flat.latency - top_last.latency)."""
+    paged_mqa_logits returns one ``(None, latency)``; topk returns its
+    phase-qualified ``top_last`` row."""
     M = bs * isl  # noqa: N806
     if kernel == "topk":
         if topk_variant not in ("v1", "v2"):
@@ -517,9 +513,9 @@ def run_dsv4_sparse_kernel_worker(
     its op plan (op_plans._sglang_dsv4_kernel_rows).
 
     ``points`` are the row's ``[prefix, isl, topk_variant]`` points, each benched
-    once. ``_bench_sparse_kernel_shape`` returns one or more ``(score_mode,
-    latency)`` rows per point — one for paged_mqa_logits, two for topk
-    (variant-qualified flat + top_last) — each written as one row."""
+    once. ``_bench_sparse_kernel_shape`` returns the point's ``(score_mode,
+    latency)`` rows — one for paged_mqa_logits, one for topk (variant-qualified
+    top_last) — each written as one row."""
     if kernel not in KERNEL_TO_OP_NAME:
         raise ValueError(f"unknown kernel={kernel}; expected one of {list(KERNEL_TO_OP_NAME)}")
     bs_only = int(batch_size)
@@ -553,7 +549,7 @@ def run_dsv4_sparse_kernel_worker(
         if error is not None:
             failures.append(f"{label}: {type(error).__name__}: {error}")
             continue
-        expected_modes = {f"{topk_variant}_flat", f"{topk_variant}_top_last"} if kernel == "topk" else {None}
+        expected_modes = {f"{topk_variant}_top_last"} if kernel == "topk" else {None}
         if len(results) != len(expected_modes) or {score_mode for score_mode, _ in results} != expected_modes:
             message = f"expected score modes {expected_modes}, got {results}"
             print(f"  incomplete result at {label}: {message}")
@@ -583,51 +579,53 @@ def run_dsv4_sparse_kernel_worker(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# topk_512 indexer DELTA calibration (kernels, fed by the shared worker above)
+# topk_512 indexer top-k rows (kernels, fed by the shared worker above)
 # ═══════════════════════════════════════════════════════════════════════
-# The CSA indexer's topk kernel needs a CALIBRATION rather than a single latency:
-# the CSA module CSV already contains the topK time measured on DEGENERATE scores
-# (dummy weights -> near-constant logits -> the small O(n^2) tie-break path).
-# ``_bench_topk_shape`` benches the production phase's topk_transform under
-# FLAT (worst-case degenerate) and TOP_LAST (representative: largest scores at
-# the causal tail) distributions and returns phase-qualified score_mode rows.
-# The SDK applies only the matching v1/v2 DELTA = flat.latency -
-# top_last.latency to swap the degenerate cost for a representative one.
+# ``_bench_topk_shape`` benches the phase's topk_transform on the TOP_LAST score
+# distribution (the largest scores at the causal tail) and returns one
+# phase-qualified score_mode row.
+#
+# The FLAT (all-zero scores) rows are no longer collected. They existed because the
+# CSA module used to time its top-k on degenerate scores (unwritten history and
+# dummy-weight magnitudes), and the SDK swapped that cost for a representative one
+# with DELTA = flat.latency - top_last.latency. The module now times its top-k on
+# written history and usable scores (collect_dsv4_attn._write_index_history,
+# _give_index_scores_magnitude), so its rows need no correction. The SDK forms a
+# DELTA only for a shape that has both modes (load of the calib table,
+# crates/core/src/perfmodel/perf_database/dsv4.rs), so a table without flat rows is
+# left uncorrected. The context (v1) top_last rows stay because the context-parallel
+# composition reads them (csa_topk_top_last, same file); the generation (v2) rows
+# are collected with them.
 #
 # topK is CSA-only (compress_ratio=4) and, like the other sparse kernels,
-# TP-independent (per-token causal scan): one variant-qualified pair per shape.
+# TP-independent (per-token causal scan): one variant-qualified row per shape.
 
 
 def _make_topk_scores(
-    mode: str,
     seq_lens: torch.Tensor,
     seq: int,
     device: str,
     generator,
     topk_k: int,
 ) -> torch.Tensor:
+    """TOP_LAST scores: background near -5, each row's last ``topk_k`` causal positions near +5."""
     # score_stride must be a multiple of 4 (kernel TMA 16B alignment); allocate
     # padded width and let the kernel read [:, :seq].
     rows = seq_lens.numel()
     pad = ((seq + 3) // 4) * 4
-    if mode == "flat":
-        return torch.zeros(rows, pad, device=device)
-    if mode == "top_last":
-        s = -5.0 + 0.05 * torch.randn(rows, pad, device=device, generator=generator)
-        counts = seq_lens.to(torch.int64).clamp(min=0, max=min(topk_k, seq))
-        offsets = torch.arange(topk_k, device=device)
-        columns = seq_lens.to(torch.int64).unsqueeze(1) - counts.unsqueeze(1) + offsets.unsqueeze(0)
-        valid = offsets.unsqueeze(0) < counts.unsqueeze(1)
-        row_ids = torch.arange(rows, device=device).unsqueeze(1).expand_as(columns)
-        selected = int(valid.sum().item())
-        s[row_ids[valid], columns[valid]] = 5.0 + torch.randn(selected, device=device, generator=generator)
-        return s.contiguous()
-    raise ValueError(f"unknown topk score mode: {mode}")
+    s = -5.0 + 0.05 * torch.randn(rows, pad, device=device, generator=generator)
+    counts = seq_lens.to(torch.int64).clamp(min=0, max=min(topk_k, seq))
+    offsets = torch.arange(topk_k, device=device)
+    columns = seq_lens.to(torch.int64).unsqueeze(1) - counts.unsqueeze(1) + offsets.unsqueeze(0)
+    valid = offsets.unsqueeze(0) < counts.unsqueeze(1)
+    row_ids = torch.arange(rows, device=device).unsqueeze(1).expand_as(columns)
+    selected = int(valid.sum().item())
+    s[row_ids[valid], columns[valid]] = 5.0 + torch.randn(selected, device=device, generator=generator)
+    return s.contiguous()
 
 
 def _bench_topk_512(
     seq_lens: torch.Tensor,
-    mode: str,
     device: str,
     topk_k: int,
     variant: str,
@@ -650,7 +648,7 @@ def _bench_topk_512(
     (registry unverified_sms). The context v1_* rows therefore calibrate a kernel
     serving does not launch on SM90/SM10x; the error direction is unmeasured. Retire
     by planning context points on v2 with the raw-index output and moving the
-    consumer's context lookup to v2_*.
+    consumer's context lookup to v2_top_last.
     """
     from sglang.kernels.ops.attention.dsv4.topk import (
         plan_topk_v2,
@@ -679,7 +677,7 @@ def _bench_topk_512(
     torch.cuda.synchronize(device)
     pages = (c4_len + _dsv4_kv_page_size() - 1) // _dsv4_kv_page_size()
     page_table = torch.arange(pages, dtype=torch.int32, device=device).unsqueeze(0).repeat(rows, 1)
-    scores = _make_topk_scores(mode, seq_lens, c4_len, device, generator, topk_k=topk_k)
+    scores = _make_topk_scores(seq_lens, c4_len, device, generator, topk_k=topk_k)
     out = torch.empty((rows, topk_k), dtype=torch.int32, device=device)
     raw_indices = torch.empty_like(out) if variant == "v1" else None
 
@@ -707,24 +705,17 @@ def _bench_topk_512(
 
 
 def _bench_topk_shape(prefix: int, isl: int, bs: int, sc, device: str, *, variant: str) -> list:
-    """topk DELTA calibration for one CSA ``(prefix, isl, bs)`` shape: bench
-    topk_transform under FLAT (degenerate worst-case) and TOP_LAST
-    (representative) score distributions and return them as two
-    phase-qualified rows (for example, ``v1_flat`` and ``v1_top_last``).
+    """The top-k row of one CSA ``(prefix, isl, bs)`` shape: bench topk_transform on
+    TOP_LAST scores and return it as one phase-qualified row (for example,
+    ``v1_top_last``). Why no FLAT row: the section comment above.
 
-    Trivial when c4 <= K (no select stage, no degenerate tie-break) -> both 0
-    (DELTA 0). ``rows`` = bs*isl is the per-token causal scan count."""
+    Trivial when c4 <= K (no select stage) -> 0. ``rows`` = bs*isl is the
+    per-token causal scan count."""
     ratio = sc.csa_compress_ratio  # CSA compress ratio (=4)
     topk_k = sc.index_topk  # V4-Pro=1024, V4-Flash=512
     causal_seq = torch.arange(prefix + 1, prefix + isl + 1, dtype=torch.int32, device=device)
     seq_lens = (causal_seq // ratio).clamp(min=1).repeat(bs)
     c4_len = int(seq_lens.max().item())
     if c4_len <= topk_k:
-        return [(f"{variant}_flat", 0.0), (f"{variant}_top_last", 0.0)]
-    return [
-        (
-            f"{variant}_{mode}",
-            round(_bench_topk_512(seq_lens, mode, device, topk_k=topk_k, variant=variant), 6),
-        )
-        for mode in ("flat", "top_last")
-    ]
+        return [(f"{variant}_top_last", 0.0)]
+    return [(f"{variant}_top_last", round(_bench_topk_512(seq_lens, device, topk_k=topk_k, variant=variant), 6))]

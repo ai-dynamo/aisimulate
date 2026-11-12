@@ -148,6 +148,23 @@ def test_decode_points_are_not_bounded_by_the_prefill_chunk(monkeypatch):
     assert timed["points"] == [(4, 65536, 0)]
 
 
+def test_each_point_times_a_module_with_its_history_written(monkeypatch):
+    """The index scores get their magnitude once per runner; every point then has the index
+    keys of its history written: the prefix in context, the whole past KV in generation."""
+    for mode, points, histories in (
+        ("context", [(2, 2048, 0), (2, 2048, 512)], [0, 512]),
+        ("generation", [(4, 65536, 0), (4, 1024, 0)], [65536, 1024]),
+    ):
+        run, _timed = _runner(monkeypatch)
+        mod = sys.modules["collector.sglang.collect_dsv4_attn"]
+        prepared, written = [], []
+        monkeypatch.setattr(mod, "_give_index_scores_magnitude", lambda runner, attention: prepared.append(attention))
+        monkeypatch.setattr(mod, "_write_index_history", lambda runner, attention, batch, n: written.append(n))
+        run(points, mode=mode)
+        assert len(prepared) == 1 and prepared[0].compress_ratio == 4
+        assert written == histories
+
+
 def test_the_worker_takes_its_points_from_the_plan_row(monkeypatch):
     mod = _import_module(monkeypatch)
     with pytest.raises(RuntimeError, match=r"requires the plan row's \(prefix, sequence_lengths\) points"):
