@@ -1121,6 +1121,52 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path, re
     ]
 
 
+@pytest.mark.parametrize("schema_version", [1, 2])
+@pytest.mark.parametrize(
+    ("packages", "accepted"),
+    [
+        pytest.param({}, False, id="empty"),
+        pytest.param({"numpy": "2.1.0"}, False, id="unrelated-only"),
+        pytest.param({"aisimulate": "0.14.0", "aisim": "0.14.0"}, False, id="ambiguous"),
+        pytest.param({"aisimulate": "0.14.0"}, True, id="legacy-application"),
+        pytest.param({"aisim": "0.14.0"}, True, id="renamed-application"),
+        pytest.param({"aisimulate": "0.14.0", "numpy": "2.1.0"}, True, id="legacy-with-dependency"),
+        pytest.param({"aisim": "0.14.0", "numpy": "2.1.0"}, True, id="renamed-with-dependency"),
+    ],
+)
+def test_accuracy_catalog_preserves_one_application_identity(
+    tmp_path: Path, schema_version: int, packages: dict, accepted: bool
+) -> None:
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    relative = PAGES.PAGES_ROOT / "e2e-accuracy/summary.json"
+    summary = normalize_summary(json.loads((ROOT / relative).read_text()), target_version=schema_version)
+    package_field = "aisimulate_packages" if schema_version == 1 else "aisim_packages"
+    summary["snapshot"][package_field] = packages
+    source = tmp_path / "repo" / relative
+    source.parent.mkdir(parents=True)
+    content = json.dumps(summary)
+    source.write_text(content)
+    output = tmp_path / "site"
+
+    if not accepted:
+        with pytest.raises(PAGES.PagesBuildError, match="AISim package identity"):
+            PAGES._build_accuracy_catalog(tmp_path / "repo", output, False)
+        assert not list(output.rglob("summary.json"))
+        assert not (output / "e2e-accuracy/branches.json").exists()
+    else:
+        PAGES._build_accuracy_catalog(tmp_path / "repo", output, False)
+        catalog = json.loads((output / "e2e-accuracy/branches.json").read_text())
+        main = catalog["branches"][0]
+        assert main["branch"] == "main"
+        root_summary = json.loads((output / "e2e-accuracy/summary.json").read_text())
+        branch_summary = json.loads((output / "e2e-accuracy" / main["summary_path"]).read_text())
+        assert root_summary == branch_summary == normalize_summary(summary, target_version=1)
+        assert root_summary["schema_version"] == 1
+        assert root_summary["snapshot"]["aisimulate_packages"] == packages
+    assert source.read_text() == content
+
+
 def test_missing_local_accuracy_summary_raises_pages_build_error(tmp_path: Path) -> None:
     output = tmp_path / "site"
     with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "accuracy summary is missing") as raised:

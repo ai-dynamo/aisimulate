@@ -575,11 +575,11 @@ function validateSummary(data) {
   }
   const aicSource = data.snapshot.aic_source;
   if ((revision != null || aicSource !== undefined) && (!object(aicSource) ||
-    aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
+    !["https://github.com/ai-dynamo/aisimulate", "https://github.com/ai-dynamo/aisim"].includes(aicSource.repository) ||
     typeof aicSource.commit_sha !== "string" || !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
     (Object.hasOwn(aicSource, "cli_entry_point") &&
-      !["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
+      !["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main", "aisim.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
     throw new Error("invalid AIC (legacy CLI) source");
   }

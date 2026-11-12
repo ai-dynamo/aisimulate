@@ -121,9 +121,12 @@ def public_contract(summary):
     if "cli_entry_point" in snapshot["aic_source"] and snapshot["aic_source"]["cli_entry_point"] not in {
         "aiconfigurator.main:main",
         "aisimulate.legacy_cli.entrypoint:main",
+        "aisim.legacy_cli.entrypoint:main",
     }:
         raise ValueError("unsupported baseline entry point")
-    keys(snapshot["aisimulate_packages"], {"aisimulate"})
+    keys(snapshot["aisimulate_packages"], {"aisimulate", "aisim"})
+    if len(snapshot["aisimulate_packages"]) != 1:
+        raise ValueError("expected exactly one AISim package identity")
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
     keys(snapshot["campaign"], CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS)

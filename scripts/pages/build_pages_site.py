@@ -381,6 +381,10 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             "measurement source URL",
         )
         require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
+        require(
+            len({"aisim", "aisimulate"}.intersection(snapshot["aisimulate_packages"])) == 1,
+            "AISim package identity (expected exactly one)",
+        )
         for date in ("measurement_date_through", "aisimulate_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
@@ -397,7 +401,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             aic_source = snapshot.get("aic_source")
             require(
                 isinstance(aic_source, dict)
-                and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"
+                and aic_source.get("repository")
+                in ("https://github.com/ai-dynamo/aisimulate", "https://github.com/ai-dynamo/aisim")
                 and isinstance(aic_source.get("branch"), str)
                 and isinstance(aic_source.get("commit_sha"), str)
                 and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))
@@ -405,7 +410,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                 and (
                     "cli_entry_point" not in aic_source
                     or aic_source["cli_entry_point"]
-                    in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main")
+                    in (
+                        "aiconfigurator.main:main",
+                        "aisimulate.legacy_cli.entrypoint:main",
+                        "aisim.legacy_cli.entrypoint:main",
+                    )
                 )
                 and (revision is None or all(aic_source[key] == revision[key] for key in ("branch", "commit_sha"))),
                 "legacy AIC CLI source",
@@ -554,8 +563,6 @@ def _build_accuracy_catalog(
                 raise PagesBuildError("qualified accuracy artifact belongs to another branch")
             # The artifact was produced by a campaign, not read from a Git blob.
             # Its evaluated revision is recorded separately below.
-            if branch == "main":
-                (output_dir / "e2e-accuracy" / "summary.json").write_text(content)
         elif ref is None:
             source = repo_root / relative_path
             if source.is_symlink():
@@ -593,6 +600,8 @@ def _build_accuracy_catalog(
         destination = output_dir / "e2e-accuracy" / entry["summary_path"]
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        if branch == "main":
+            (output_dir / "e2e-accuracy" / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         entries.append(entry)
     status_path = artifacts / "status/updates.json" if artifacts else None
     if status_path is not None and status_path.exists():
