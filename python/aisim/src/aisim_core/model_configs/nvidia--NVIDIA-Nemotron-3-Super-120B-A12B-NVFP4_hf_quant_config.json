@@ -1,6 +1,753 @@
 {
+    "producer": {
+        "name": "modelopt",
+        "version": "0.43.0.dev63+g449e700f9"
+    },
     "quantization": {
-        "quant_algo": "NVFP4",
-        "kv_cache_quant_algo": "FP8"
+        "quant_algo": "MIXED_PRECISION",
+        "kv_cache_quant_algo": "FP8",
+        "quantized_layers": {
+            "backbone.layers.0.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.0.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.1.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.1.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.1.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.1.mixer.shared_experts.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.1.mixer.fc1_latent_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.2.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.2.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.3.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.3.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.3.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.3.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.3.mixer.fc1_latent_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.3.mixer.fc2_latent_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.4.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.4.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.5.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.5.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.5.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.5.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.5.mixer.fc1_latent_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.6.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.8.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.8.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.8.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.9.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.9.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.10.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.10.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.10.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.10.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.11.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.11.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.12.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.12.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.12.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.12.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.13.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.13.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.14.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.14.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.14.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.14.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.15.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.17.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.17.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.17.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.17.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.18.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.18.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.19.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.19.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.19.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.19.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.20.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.21.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.21.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.21.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.21.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.23.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.23.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.23.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.23.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.26.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.26.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.26.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.26.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.27.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.28.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.28.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.28.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.28.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.29.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.30.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.30.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.30.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.30.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.31.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.32.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.32.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.32.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.32.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.34.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.34.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.34.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.34.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.37.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.37.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.37.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.37.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.38.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.39.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.39.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.39.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.39.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.40.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.40.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.41.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.41.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.41.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.42.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.43.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.43.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.43.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.43.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.44.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.45.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.45.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.45.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.45.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.48.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.48.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.48.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.48.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.49.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.49.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.50.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.50.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.50.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.50.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.51.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.51.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.52.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.52.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.52.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.52.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.53.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.53.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.54.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.54.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.54.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.54.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.55.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.55.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.56.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.56.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.56.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.56.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.57.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.57.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.59.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.59.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.59.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.59.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.60.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.60.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.61.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.61.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.61.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.61.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.62.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.62.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.63.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.63.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.63.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.63.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.64.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.65.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.65.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.65.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.65.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.66.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.66.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.67.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.67.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.67.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.67.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.68.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.68.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.69.mixer.o_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.70.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.70.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.70.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.70.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.71.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.71.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.72.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.72.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.72.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.72.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.73.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.73.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.74.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.74.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.74.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.74.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.75.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.76.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.76.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.76.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.77.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.78.mixer.o_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.79.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.79.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.79.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.79.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.80.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.81.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.81.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.81.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.81.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.82.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.82.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.83.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.83.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.83.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.83.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.84.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.84.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.85.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.85.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.85.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.85.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.86.mixer.in_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.86.mixer.out_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.87.mixer.experts.0.up_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.87.mixer.experts.0.down_proj": {
+                "quant_algo": "NVFP4",
+                "group_size": 16
+            },
+            "backbone.layers.87.mixer.shared_experts.up_proj": {
+                "quant_algo": "FP8"
+            },
+            "backbone.layers.87.mixer.shared_experts.down_proj": {
+                "quant_algo": "FP8"
+            }
+        }
     }
 }

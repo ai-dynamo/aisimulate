@@ -370,6 +370,9 @@ class KVCacheEstimator:
             dcp_size=dcp_size,
             **encoder_layout,
         )
+        # Hardware identity for system-dependent model construction (per-layer NVFP4 lanes).
+        model_config.system = system
+        model_config.systems_path = systems_path
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
         # the capacity activation by (nextn+1); that multiplier is suppressed below

@@ -241,7 +241,7 @@ def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] 
     2. a non-empty ``quantized_layers`` map exists in either source (the two
        are merged; one module with two different algorithms is an error);
     3. the language ``quantization_config.quant_method`` is absent,
-       ``modelopt`` or ``mixed_precision``, i.e. the header declares no base
+       ``modelopt*`` or ``mixed_precision``, i.e. the header declares no base
        lane. Expert-only requants that keep a base lane (DeepSeek-V4-*-NVFP4:
        ``quant_method: fp8`` + ``weight_block_size``) quantize their
        non-expert GEMMs through that lane and are out of scope.
@@ -260,7 +260,9 @@ def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] 
     )
     if algo != "mixed_precision":
         return None
-    if _normalize_quant_algo(quant_config.get("quant_method")) not in (None, "modelopt", "mixed_precision"):
+    method = _normalize_quant_algo(quant_config.get("quant_method"))
+    # Any vLLM ModelOpt method spelling (``modelopt``, ``modelopt_mixed``, ...) declares no base lane.
+    if method not in (None, "mixed_precision") and not method.startswith("modelopt"):
         return None
     targets: dict[str, str | None] = {}
     for layer_map in (hf_section.get("quantized_layers"), quant_config.get("quantized_layers")):
@@ -776,46 +778,35 @@ def _is_routing_expert_target(target: object) -> bool:
     return ".experts." in target_name or target_name.endswith(".experts") or "routing_expert" in target_name
 
 
+def _iter_mixed_precision_layer_algos(raw_config: dict):
+    """Yield target, normalized algorithm, and whether the target is a listed layer."""
+    quant = _get_language_quantization_config(raw_config) or {}
+    hf_config = raw_config.get("hf_quant_config")
+    hf_quant = hf_config.get("quantization", {}) if isinstance(hf_config, dict) else {}
+    for source in (hf_quant, quant):
+        if not isinstance(source, dict):
+            continue
+        layers = source.get("quantized_layers")
+        if not isinstance(layers, dict):
+            continue
+        for target, metadata in layers.items():
+            yield target, _mixed_precision_layer_algo(metadata), True
+    groups = quant.get("config_groups") if isinstance(quant, dict) else None
+    if isinstance(groups, dict):
+        for group in groups.values():
+            if isinstance(group, dict):
+                algo = _infer_mixed_precision_group_algo(group)
+                for target in group.get("targets") or []:
+                    yield target, algo, False
+
+
 def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], set[str]]:
     """Collect ModelOpt mixed precision algorithms by SDK GEMM/MoE category."""
     gemm_algos: set[str] = set()
     moe_algos: set[str] = set()
-
-    def add_target(target: object, algo_value: object) -> None:
-        algo = _normalize_mixed_precision_layer_algo(algo_value)
-        if algo is None:
-            return
-        if _is_routing_expert_target(target):
-            moe_algos.add(algo)
-        else:
-            gemm_algos.add(algo)
-
-    def add_quantized_layers(quantized_layers: object) -> None:
-        if not isinstance(quantized_layers, dict):
-            return
-        for target, metadata in quantized_layers.items():
-            add_target(target, _mixed_precision_layer_algo(metadata))
-
-    hf_quant_config = raw_config.get("hf_quant_config")
-    if isinstance(hf_quant_config, dict):
-        hf_quant_section = hf_quant_config.get("quantization")
-        if isinstance(hf_quant_section, dict):
-            add_quantized_layers(hf_quant_section.get("quantized_layers"))
-
-    quant_cfg = _get_language_quantization_config(raw_config)
-    if isinstance(quant_cfg, dict):
-        add_quantized_layers(quant_cfg.get("quantized_layers"))
-        config_groups = quant_cfg.get("config_groups")
-        if isinstance(config_groups, dict):
-            for group in config_groups.values():
-                if not isinstance(group, dict):
-                    continue
-                algo = _infer_mixed_precision_group_algo(group)
-                if algo is None:
-                    continue
-                for target in group.get("targets") or []:
-                    add_target(target, algo)
-
+    for target, algo, _ in _iter_mixed_precision_layer_algos(raw_config):
+        if algo is not None:
+            (moe_algos if _is_routing_expert_target(target) else gemm_algos).add(algo)
     return gemm_algos, moe_algos
 
 
@@ -1234,8 +1225,17 @@ def resolve_nvfp4_for_system(
     """
     from aisim_core.sdk.perf_database import is_blackwell_system
 
+    # Per-layer checkpoint precision (Nemotron-H) resolves its own NVFP4 lanes from this.
+    model_config.system = system_name
     if is_blackwell_system(system_name):
         return  # native FP4 TC — nvfp4 stays as-is
+
+    # Record caller intent before the fallback fills inferred modes, so get_model
+    # still resolves per-layer checkpoint precision for the inferred ones.
+    if getattr(model_config, "_gemm_quant_mode_is_explicit", None) is None:
+        model_config._gemm_quant_mode_is_explicit = model_config.gemm_quant_mode is not None
+    if getattr(model_config, "_moe_quant_mode_is_explicit", None) is None:
+        model_config._moe_quant_mode_is_explicit = model_config.moe_quant_mode is not None
 
     gemm_q = model_config.gemm_quant_mode
     moe_q = model_config.moe_quant_mode

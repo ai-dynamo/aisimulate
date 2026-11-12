@@ -89,6 +89,7 @@ class ModelConfig:
     # reachable context table has no fp8 slice; the runtime resolvers then leave it alone.
     _fmha_quant_mode_from_data: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
     moe_quant_mode: common.MoEQuantMode | None = None
+    _moe_quant_mode_is_explicit: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
     kvcache_quant_mode: common.KVCacheQuantMode | None = None
     fmha_quant_mode: common.FMHAQuantMode | None = None
     comm_quant_mode: common.CommQuantMode | None = common.CommQuantMode.half
@@ -176,6 +177,8 @@ class ModelConfig:
     # Internal system identity used by phase/quantization-specific communication
     # dtype selection.  It travels with ModelConfig through sweep replacements.
     system: str | None = None
+    # Systems root that ``system`` resolves under (canonical API ``systems_paths``); None: ambient roots.
+    systems_path: str | None = field(default=None, kw_only=True)
     # DeepSeek-V4.1 text AR: use the backend-verified bounded decoder replay profile.
     decoder_replay: bool = False
     # Whole-forward database identity only; never changes arithmetic or memory.

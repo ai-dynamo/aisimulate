@@ -72,6 +72,9 @@ SKIPS: list[dict] = [
     {"dtype": "w4a16_mxfp4", "sm": [80, 86]},
     # FP4 tensor cores, which NVFP4 and MXFP8 x MXFP4 need, start at Blackwell (SM100).
     {"dtype": ["nvfp4", "w4a8_mxfp4_mxfp8"], "sm": [80, 86, 89, 90]},
+    # SGLang and TRT-LLM: no collector path for w4a16_nvfp4 (NVFP4 weights, BF16
+    # activations); only the vLLM GEMM and MoE collectors build that layer.
+    {"backend": ["sglang", "trtllm"], "op": ["gemm", "moe"], "dtype": "w4a16_nvfp4"},
     # SGLang: the collector times fp8_block GEMMs through DeepGEMM, which has no
     # SM89 or SM120 kernel, so every case would fail. Serving runs them on
     # Triton (SM89) and CUTLASS (SM120).
@@ -115,6 +118,16 @@ SKIPS: list[dict] = [
     # is packaged for this NVFP4 alias, so its cases fail at construction on
     # every run.
     {"backend": "vllm", "op": "moe", "model_name": "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"},
+    # vLLM: Lightning's routed experts are all ModelOpt W4A16_NVFP4, which vLLM
+    # times as its w4a16_nvfp4 lane. The nvfp4 branch requires uniformly NVFP4
+    # experts (vllm/collect_moe.py, _modelopt_mixed_expert_prefix), so these cases
+    # fail at construction on every run.
+    {
+        "backend": "vllm",
+        "op": "moe",
+        "dtype": "nvfp4",
+        "model_name": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    },
     # Large-EP MoE (moe_ep): SGLang's collector drives DeepEPMoE with FP8
     # activations on the DeepGEMM runner, so block-scaled FP8 is the one quant
     # mode it times. This keeps the coverage collected before.

@@ -424,6 +424,8 @@ def _build_recommend_tasks(base_tasks: dict, total_gpus: int) -> dict:
     rebuilt = {}
     for name, task in base_tasks.items():
         overrides = {
+            # Keep inferred quant modes inferred: replace() reruns Task resolution on the fields.
+            **task._inferred_quant_mode_resets(),
             "total_gpus": total_gpus,
             "agg_num_gpu_candidates": num_gpu_candidates,
         }

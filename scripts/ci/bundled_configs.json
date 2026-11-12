@@ -36,6 +36,11 @@
       "license_text_sha256": [
         "a413b175202f3bbe83675a74347beb4140a8b59655d827d608578a5a3371102f"
       ]
+    },
+    "LicenseRef-NVIDIA-Nemotron-Open-Model-License": {
+      "license_text_sha256": [
+        "c4ab7da59f123056f76a490f475e6f392d2be98405327965163330ca8a7b5836"
+      ]
     }
   },
   "files": [
@@ -817,31 +822,89 @@
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_config.json",
-      "sha256": "4e5eef674539c087f87eb24534cee57ee00219f18e5311eba8640d4d6bdd968a",
-      "origin": "legacy_unresolved",
-      "license": "UNKNOWN",
-      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+      "sha256": "ff5d6d643b288d4149b0bf820ecb5fe87dd9bbc08b6b811241c57840e11e30e3",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/blob/744b1880a37996c5d56bf454ae164dfd74d77c4e/config.json",
+        "revision": "744b1880a37996c5d56bf454ae164dfd74d77c4e",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-NVIDIA-Nemotron-Open-Model-License",
+      "copyright_owner": "NVIDIA CORPORATION & AFFILIATES",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "NVIDIA Nemotron 3 Super and Ultra model configuration files",
+        "license_text_sha256": "c4ab7da59f123056f76a490f475e6f392d2be98405327965163330ca8a7b5836",
+        "required_attribution": [
+          "NVIDIA CORPORATION & AFFILIATES"
+        ]
+      }
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_hf_quant_config.json",
-      "sha256": "9419fe2913d51002bed43b4aebe1e71a48978645aa79f30d7f79720eb9cd58d5",
-      "origin": "legacy_unresolved",
-      "license": "UNKNOWN",
-      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+      "sha256": "827209265a15cc7161e96773c4538da60f0980288dc0b86dd5dc2f906a5cfb4f",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/blob/744b1880a37996c5d56bf454ae164dfd74d77c4e/hf_quant_config.json",
+        "revision": "744b1880a37996c5d56bf454ae164dfd74d77c4e",
+        "path": "hf_quant_config.json"
+      },
+      "license": "LicenseRef-NVIDIA-Nemotron-Open-Model-License",
+      "copyright_owner": "NVIDIA CORPORATION & AFFILIATES",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "NVIDIA Nemotron 3 Super and Ultra model configuration files",
+        "license_text_sha256": "c4ab7da59f123056f76a490f475e6f392d2be98405327965163330ca8a7b5836",
+        "required_attribution": [
+          "NVIDIA CORPORATION & AFFILIATES"
+        ]
+      }
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json",
-      "sha256": "ca3c3905933218c19214b2222473abda4c38a884b7f8d0f312b20d54b16251d6",
-      "origin": "legacy_unresolved",
-      "license": "UNKNOWN",
-      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+      "sha256": "44a9f90390cc2b588a1882e12cacef3e4b283ce371a6f52839dfd0128b44188f",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/blob/ff433f5493e25d631c9f12b5d55c674229923d02/config.json",
+        "revision": "ff433f5493e25d631c9f12b5d55c674229923d02",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-NVIDIA-Nemotron-Open-Model-License",
+      "copyright_owner": "NVIDIA CORPORATION & AFFILIATES",
+      "modified": true,
+      "modifications": "Routed-expert entries other than expert 0 are removed from every quantized_layers map and config_groups targets list; the JSON is re-serialized in the upstream layout (src/aisim_core/model_configs/NEMOTRON3_PROVENANCE.md).",
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "NVIDIA Nemotron 3 Super and Ultra model configuration files",
+        "license_text_sha256": "c4ab7da59f123056f76a490f475e6f392d2be98405327965163330ca8a7b5836",
+        "required_attribution": [
+          "NVIDIA CORPORATION & AFFILIATES"
+        ]
+      }
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_hf_quant_config.json",
-      "sha256": "62a90df1fe0a7346f83db88da82ee5ee28dfa7cdded0dc949cfa428b94186700",
-      "origin": "legacy_unresolved",
-      "license": "UNKNOWN",
-      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+      "sha256": "984a861c893811720ae1770256db20f1acf9a5646ad5420fc5162221795f4ec5",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/blob/ff433f5493e25d631c9f12b5d55c674229923d02/hf_quant_config.json",
+        "revision": "ff433f5493e25d631c9f12b5d55c674229923d02",
+        "path": "hf_quant_config.json"
+      },
+      "license": "LicenseRef-NVIDIA-Nemotron-Open-Model-License",
+      "copyright_owner": "NVIDIA CORPORATION & AFFILIATES",
+      "modified": true,
+      "modifications": "Routed-expert entries other than expert 0 are removed from every quantized_layers map and config_groups targets list; the JSON is re-serialized in the upstream layout (src/aisim_core/model_configs/NEMOTRON3_PROVENANCE.md).",
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "NVIDIA Nemotron 3 Super and Ultra model configuration files",
+        "license_text_sha256": "c4ab7da59f123056f76a490f475e6f392d2be98405327965163330ca8a7b5836",
+        "required_attribution": [
+          "NVIDIA CORPORATION & AFFILIATES"
+        ]
+      }
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16_config.json",
@@ -866,17 +929,47 @@
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json",
-      "sha256": "f0bdfbad05ddf17f50ca06c91696e17ebcc7a7fefd3bfb2ec5a088801a7a6d5e",
-      "origin": "legacy_unresolved",
-      "license": "UNKNOWN",
-      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+      "sha256": "2801b4e45a90242f757b2ea57e7741d0577ddf374b87cc439c30eee9ead6a263",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/blob/02462641f13d3af838b904f48195b9bb8a1e4ebc/config.json",
+        "revision": "02462641f13d3af838b904f48195b9bb8a1e4ebc",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-OpenMDW-1.1",
+      "copyright_owner": "NVIDIA CORPORATION & AFFILIATES",
+      "modified": true,
+      "modifications": "Routed-expert entries other than expert 0 are removed from every quantized_layers map and config_groups targets list; the JSON is re-serialized in the upstream layout (src/aisim_core/model_configs/NEMOTRON3_PROVENANCE.md).",
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "NVIDIA Nemotron 3 Super and Ultra model configuration files",
+        "license_text_sha256": "a413b175202f3bbe83675a74347beb4140a8b59655d827d608578a5a3371102f",
+        "required_attribution": [
+          "NVIDIA CORPORATION & AFFILIATES"
+        ]
+      }
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_hf_quant_config.json",
-      "sha256": "22afb7331a805475caebf8a9a3b6ad5e498a9abacb1c575c06423a728f3f76f7",
-      "origin": "legacy_unresolved",
-      "license": "UNKNOWN",
-      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+      "sha256": "13b72036de36419afadf588717f99fe4ab94e76a9f2289dec1a13d8d62ed4d9a",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/blob/02462641f13d3af838b904f48195b9bb8a1e4ebc/hf_quant_config.json",
+        "revision": "02462641f13d3af838b904f48195b9bb8a1e4ebc",
+        "path": "hf_quant_config.json"
+      },
+      "license": "LicenseRef-OpenMDW-1.1",
+      "copyright_owner": "NVIDIA CORPORATION & AFFILIATES",
+      "modified": true,
+      "modifications": "Routed-expert entries other than expert 0 are removed from every quantized_layers map and config_groups targets list; the JSON is re-serialized in the upstream layout (src/aisim_core/model_configs/NEMOTRON3_PROVENANCE.md).",
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "NVIDIA Nemotron 3 Super and Ultra model configuration files",
+        "license_text_sha256": "a413b175202f3bbe83675a74347beb4140a8b59655d827d608578a5a3371102f",
+        "required_attribution": [
+          "NVIDIA CORPORATION & AFFILIATES"
+        ]
+      }
     },
     {
       "path": "aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json",
