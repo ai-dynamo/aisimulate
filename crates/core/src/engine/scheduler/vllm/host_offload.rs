@@ -48,8 +48,8 @@ use crate::engine::common::sequence::RequestSequence;
 use crate::engine::config::ConnectorRules;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
-    HostOffloadObservationData, HostStoreBlockMapping, HostTier, HostTierHandle, LoadOutcome,
-    Lookup, StoreOutcome, TouchedRun, TransferId,
+    HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
+    ReversedTouch, StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
@@ -116,17 +116,6 @@ impl RestoreRounds {
     }
 }
 
-/// A request's last prompt touch, reused while the tier's counts stand.
-struct PromptTouch {
-    /// [`HostTier::lru_touches`] after the touch: the prompt's evictable
-    /// blocks are still the newest, in order.
-    lru_touches: u64,
-    /// [`HostTier::admitted_blocks`] when the tier held no block of the
-    /// prompt from index `absent_from` on.
-    admitted: u64,
-    absent_from: usize,
-}
-
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
@@ -155,9 +144,7 @@ pub(super) struct VllmHostRequestState {
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
     /// With `touches_prompt`: the latest prompt touch.
-    prompt_touch: Option<PromptTouch>,
-    /// With `touches_prompt`: the blocks the prompt touches left newest.
-    prompt_run: Option<TouchedRun>,
+    prompt_touch: Option<ReversedTouch>,
 }
 
 impl VllmHostRequestState {
@@ -209,41 +196,7 @@ impl VllmHostRequestState {
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
             prompt_touch: None,
-            prompt_run: None,
         }
-    }
-
-    /// `touches_prompt`: make the prompt's evictable blocks the newest, its
-    /// first block newest of all, as touching every prompt key in reverse
-    /// does. Nothing moves while the LRU is as this request's last touch left
-    /// it, and blocks the tier lacked are skipped until it admits more.
-    fn touch_prompt(&mut self, tier: &mut HostTier) {
-        let admitted = tier.admitted_blocks();
-        let end = match &self.prompt_touch {
-            Some(last) if last.lru_touches == tier.lru_touches() => return,
-            Some(last) if last.admitted == admitted => last.absent_from,
-            _ => self.prompt_blocks,
-        };
-        let absent_from = tier.touch_reversed(&self.block_keys[..end], &mut self.prompt_run);
-        self.prompt_touch = Some(PromptTouch {
-            lru_touches: tier.lru_touches(),
-            admitted,
-            absent_from,
-        });
-    }
-
-    /// [`Self::touch_prompt`] after this request's store admitted `stored`
-    /// blocks, all before index `end`: the blocks from `end` on are still
-    /// absent.
-    fn touch_prompt_after_store(&mut self, tier: &mut HostTier, stored: usize, end: usize) {
-        let stored = stored as u64;
-        if let Some(last) = &mut self.prompt_touch
-            && last.admitted + stored == tier.admitted_blocks()
-        {
-            last.admitted += stored;
-            last.absent_from = last.absent_from.max(end.min(self.prompt_blocks));
-        }
-        self.touch_prompt(tier);
     }
 
     /// Append the keys (and router identities) of blocks the lease completed
@@ -586,7 +539,10 @@ impl VllmHostOffloadAdapter {
         if rules.touches_prompt {
             // vLLM 0.24 passes this ordered logical list after lookup to
             // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
-            request.touch_prompt(&mut tier);
+            tier.touch_reversed(
+                &request.block_keys[..request.prompt_blocks],
+                &mut request.prompt_touch,
+            );
         }
         if rules.pins_hits
             && let HostLookup::Hit(hit) = &outcome
@@ -997,7 +953,13 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = resume;
                 if rules.touches_prompt {
-                    request.touch_prompt_after_store(&mut tier, stored_blocks, end);
+                    if let Some(touch) = &mut request.prompt_touch {
+                        touch.stored(stored_blocks, end);
+                    }
+                    tier.touch_reversed(
+                        &request.block_keys[..request.prompt_blocks],
+                        &mut request.prompt_touch,
+                    );
                 }
             }
         }
@@ -1379,34 +1341,26 @@ mod tests {
     }
 
     #[test]
-    fn prompt_touch_is_redone_after_the_tier_changes() {
+    fn lookup_touches_the_prompt_again_after_other_stores() {
         let mut adapter = adapter(8);
-        // `a` is blocks a0..a3; `b` shares a0 and a1 and adds c.
-        let (_, _, mut a) = request(Uuid::from_u128(1), (1..=16).collect());
-        let (_, _, mut b) = request(Uuid::from_u128(2), (1..=8).chain(101..=104).collect());
-        let [a0, a1, a2, a3] = a.block_keys[..] else {
-            panic!("a has four prompt blocks")
+        let manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let (sequence, lease, mut host) = request(Uuid::from_u128(1), (1..=16).collect());
+        let cost = raw_cost(&manager, &sequence, &lease);
+        let [a0, a1, a2, a3] = host.block_keys[..] else {
+            panic!("the prompt has four blocks")
         };
-        let c = b.block_keys[2];
-        let touch = |adapter: &VllmHostOffloadAdapter, host: &mut VllmHostRequestState| {
-            let mut tier = adapter.host.lock();
-            host.touch_prompt(&mut tier);
-            tier.lru_order()
-        };
+        let other = HostBlockKey::new(77);
 
-        seed_host(&mut adapter, a0);
-        seed_host(&mut adapter, a1);
-        assert_eq!(touch(&adapter, &mut a), [a1, a0]);
+        let now = seed_host(&mut adapter, a0).max(seed_host(&mut adapter, a1));
+        adapter.lookup(&mut host, &sequence, &cost, 4, now);
+        assert_eq!(adapter.host.lock().lru_order(), [a1, a0]);
 
-        // Other requests store the tail the tier lacked, then c.
-        for key in [a2, a3, c] {
+        // Other requests store the tail the tier lacked, then their own block.
+        for key in [a2, a3, other] {
             seed_host(&mut adapter, key);
         }
-        assert_eq!(touch(&adapter, &mut a), [c, a3, a2, a1, a0]);
-
-        // `b` moves c, then a1 and a0 as one run.
-        assert_eq!(touch(&adapter, &mut b), [a3, a2, c, a1, a0]);
-        assert_eq!(touch(&adapter, &mut a), [c, a3, a2, a1, a0]);
+        adapter.lookup(&mut host, &sequence, &cost, 4, now);
+        assert_eq!(adapter.host.lock().lru_order(), [other, a3, a2, a1, a0]);
     }
 
     #[test]

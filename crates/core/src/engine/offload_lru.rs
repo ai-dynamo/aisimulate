@@ -16,11 +16,11 @@ use crate::engine::host_offload::HostBlockKey;
 /// deterministic tie-break, unless a G2 tier keeps release order (a free
 /// queue) or ranks blocks when their store starts.
 ///
-/// A caller that makes the same blocks the newest time after time has them
-/// join a run as it moves them. The run is whole while each of them is
-/// linked where the caller's last move left it, so the caller can move them
-/// again as one without finding them. A block that is touched alone, removed
-/// or moved into another run leaves its own no longer whole.
+/// A caller that keeps making the same blocks the newest has them join a run
+/// as it moves them. The run is whole while each of its blocks is linked
+/// where the caller last put it, so the caller can move them again without
+/// finding them. A run stops being whole when one of its blocks is touched
+/// alone, removed or joined to another run.
 pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
@@ -65,7 +65,7 @@ impl Lru {
         let node = match *slot {
             Some(node) => {
                 self.unlink(node);
-                self.leave_run(node);
+                self.join_run(node, NO_RUN);
                 node
             }
             None => *slot.insert(self.allocate(key)),
@@ -75,9 +75,9 @@ impl Lru {
     }
 
     /// Make the adjacent blocks from `oldest` through `newest` the newest,
-    /// keeping their order, as a [`Self::touch`] of each in that order does.
-    /// They stay in their run, so they must be one run's.
-    pub(crate) fn touch_run(&mut self, oldest: NonZeroU32, newest: NonZeroU32) {
+    /// keeping their order. No run is marked, so the span's blocks must
+    /// already be in the caller's run.
+    pub(crate) fn touch_span(&mut self, oldest: NonZeroU32, newest: NonZeroU32) {
         let after = self.nodes[newest.get() as usize].newer;
         if after == SENTINEL {
             return;
@@ -93,11 +93,10 @@ impl Lru {
         self.touches += 1;
     }
 
-    /// Make `oldest` and the blocks just newer the newest, as
-    /// [`Self::touch_run`] does, for as long as their keys are the last of
-    /// `keys` backwards. The blocks join `run`. Returns the newest of them
-    /// and how many of `keys` they are.
-    pub(crate) fn touch_matching_run(
+    /// From `oldest`, take the newer neighbours while their keys match `keys`
+    /// read backwards, join them all to `run` and make the span the newest.
+    /// Returns its newest block and how many keys matched.
+    pub(crate) fn touch_matching_span(
         &mut self,
         run: u32,
         oldest: NonZeroU32,
@@ -116,7 +115,7 @@ impl Lru {
                 _ => break,
             }
         }
-        self.touch_run(oldest, newest);
+        self.touch_span(oldest, newest);
         (newest, keys.len() - rest.len())
     }
 
@@ -127,8 +126,8 @@ impl Lru {
         run
     }
 
-    /// Whether `run` is whole. One that is not starts over: it is whole
-    /// again, for the caller to move each of its blocks into it.
+    /// Whether `run` was whole. It is whole afterwards: the caller rejoins
+    /// its blocks.
     pub(crate) fn resume_run(&mut self, run: u32) -> bool {
         std::mem::replace(&mut self.whole_runs[run as usize], true)
     }
@@ -136,7 +135,7 @@ impl Lru {
     pub(crate) fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
         if let Some(node) = slot.take() {
             self.unlink(node);
-            self.leave_run(node);
+            self.join_run(node, NO_RUN);
             self.vacant.push(node);
         }
     }
@@ -202,16 +201,12 @@ impl Lru {
         node
     }
 
+    /// Move `node` into `run`. The run it leaves is no longer whole.
     fn join_run(&mut self, node: NonZeroU32, run: u32) {
         let left = std::mem::replace(&mut self.nodes[node.get() as usize].run, run);
         if left != run {
             self.whole_runs[left as usize] = false;
         }
-    }
-
-    fn leave_run(&mut self, node: NonZeroU32) {
-        let run = std::mem::take(&mut self.nodes[node.get() as usize].run);
-        self.whole_runs[run as usize] = false;
     }
 
     fn unlink(&mut self, node: NonZeroU32) {
@@ -265,13 +260,13 @@ mod tests {
                     expected.retain(|key| *key != block);
                 }
                 2 => {
-                    // A run of adjacent blocks, from `block` on, moves as one.
+                    // A span of adjacent blocks, from `block` on, moves as one.
                     if let Some(start) = expected.iter().position(|key| *key == block) {
                         let end = rng.random_range(start..expected.len());
                         let node = |key: HostBlockKey| slots[key.sequence_hash() as usize].unwrap();
-                        lru.touch_run(node(expected[start]), node(expected[end]));
-                        let run: Vec<_> = expected.drain(start..=end).collect();
-                        expected.extend(run);
+                        lru.touch_span(node(expected[start]), node(expected[end]));
+                        let span: Vec<_> = expected.drain(start..=end).collect();
+                        expected.extend(span);
                     }
                 }
                 _ => {
