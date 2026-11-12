@@ -1,0 +1,2184 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Dynamo-free engine replay implementation of the Sweeper Runner contract."""
+
+from __future__ import annotations
+
+import importlib
+import json
+import logging
+import math
+import random
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, replace
+from numbers import Real
+from typing import Any, Literal, Protocol, runtime_checkable
+
+import numpy as np
+
+from aisim.sweeper.afd_parallel import AFDTopology, validate_afd_model
+from aisim_core._native import (
+    AFD_DEFAULT_ROUTING_LOCATION,
+    resolve_afd_parallelism,
+    validate_afd_attention_tp,
+    validate_afd_routing_location,
+)
+from aisim_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
+from .capacity import materialize_aic_num_gpu_blocks, reject_pipeline_parallelism, resolve_model_context_length
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from .config.engine import StateCacheConfig
+from .power import normalize_power_summary, power_metadata
+from .sweeper.provider import JSONValue
+from .sweeper.replay import (
+    REPLAY_SPEC_API_VERSION,
+    BackendDeploymentSpec,
+    EncoderPoolSpec,
+    ReplayOutputRequirements,
+    ReplayReport,
+    ReplaySpec,
+    RunnerCapabilities,
+    resolve_afd_replay_identity,
+)
+from .traffic import materialize_configured_traffic
+
+logger = logging.getLogger(__name__)
+
+_SUPPORTED_BACKEND_TOPOLOGIES = (
+    ("vllm", "agg"),
+    ("vllm", "disagg"),
+    ("sglang", "agg"),
+    ("sglang", "disagg"),
+    ("trtllm", "agg"),
+    ("trtllm", "disagg"),
+)
+
+_RUNTIME_TRAFFIC_FIELDS = frozenset(
+    {
+        "source_type",
+        "load_type",
+        "trace_path",
+        "trace_paths",
+        "trace_format",
+        "trace_block_size",
+        "weka_nested_timestamp_basis",
+        "weka_client",
+        "weka_chat_template",
+        "arrival_speedup_ratio",
+        "replay_concurrency",
+        "isl",
+        "osl",
+        "cached_prefix_tokens",
+        "request_count",
+        "turns_per_session",
+        "shared_prefix_ratio",
+        "num_prefix_groups",
+        "inter_turn_delay_ms",
+        "request_rate",
+        "arrival_interval_ms",
+        "arrival_seed",
+        "concurrency",
+        "num_request_ratio",
+        "kv_load_ratio",
+        "max_sim_time_ms",
+        "agentic_lanes",
+        "agentic_snapshot",
+        "agentic_warmup",
+        "agentic_warmup_policy",
+        "agentic_profile",
+    }
+)
+
+_AIC_TIMING_FIELD_ALIASES = {
+    "backend_version": ("backend_version", "aic_backend_version"),
+    "pp": ("aic_pp_size",),
+    "moe_tp_size": ("moe_tp_size", "aic_moe_tp_size"),
+    "moe_ep_size": ("moe_ep_size", "aic_moe_ep_size"),
+    "cp_size": ("cp_size", "aic_cp_size"),
+    "dcp": ("dcp", "dcp_size", "aic_dcp_size"),
+    "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
+    "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
+    "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
+    "fpm_fmha_dtype": ("fpm_fmha_dtype", "aic_fpm_fmha_dtype"),
+    "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
+    "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
+    "systems_path": ("systems_path",),
+    "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_profile": ("fpm_profile", "aic_fpm_profile"),
+    "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
+    "moe_backend": ("aic_moe_backend",),
+    "moe_kernel_source": ("moe_kernel_source", "aic_moe_kernel_source"),
+    "attention_backend": ("aic_attention_backend",),
+    "enable_eplb": ("aic_enable_eplb",),
+    "wideep_num_slots": ("aic_wideep_num_slots",),
+    "decoder_replay": ("decoder_replay", "aic_decoder_replay"),
+    "database_mode": ("database_mode", "aic_database_mode"),
+    "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
+    "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
+}
+
+_AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
+
+
+class RunnerUnavailableError(RuntimeError):
+    """The runtime needed for a requested replay stack is not installed."""
+
+
+class InvalidRunnerError(RuntimeError):
+    """An installed replay runtime does not implement the runner contract."""
+
+
+@runtime_checkable
+class EngineReplayRuntime(Protocol):
+    """Serialized execution seam used by the engine-only Runner."""
+
+    def run_replay_json(self, execution_spec_json: str) -> str:
+        """Run one serialized execution spec and return serialized report JSON."""
+
+
+@dataclass(frozen=True)
+class EngineReplayRunnerFactory:
+    """Create reusable engine-only Runners for Sweeper candidates.
+
+    The optional runtime is a test seam. Production factories leave it unset so
+    the dataclass remains process-serializable and each worker loads its local
+    compiled runtime lazily.
+    """
+
+    trace_block_size: int = 512
+    determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
+    # Keep each loaded trace graph for later candidates in the same worker.
+    # Only worth its retained memory when one process runs many candidates.
+    trace_graph_cache: bool = field(default=False, kw_only=True)
+    runtime: EngineReplayRuntime | None = field(default=None, repr=False, compare=False)
+
+    def capabilities(self) -> RunnerCapabilities:
+        return RunnerCapabilities(
+            replay_spec_api_version=REPLAY_SPEC_API_VERSION,
+            supported_worker_types=("monolithic", "afd"),
+            supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
+            supports_disaggregated_attention_dp=True,
+            supports_analytical_epd=True,
+            supports_deferred_encoder_overlay=True,
+            supports_native_epd=True,
+            supports_cached_prefix_tokens=True,
+            supports_mtp_expected_acceptance=True,
+            supports_generic_speculation=True,
+            supports_mtp_host_offload=True,
+            supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
+            supports_state_cache=True,
+            supports_grouped_kv_cache=True,
+            supports_tokenization=True,
+            supports_detokenization=True,
+            supports_sglang_host_loop=True,
+            supported_trace_formats=(
+                "mooncake",
+                "mooncake-delta",
+                "agentic_mooncake",
+                "applied_compute_agentic",
+                "dynamo",
+                "weka",
+            ),
+            supports_agentic_lanes=True,
+            supports_agentic_snapshots=True,
+            supports_agentic_warmup=True,
+            supports_agentic_live_warmup=True,
+            supports_agentic_primers_only=True,
+            supports_weka_client=True,
+            supports_weka_chat_template=True,
+            supports_agentic_profile=True,
+            supported_agentic_topologies=("agg", "disagg"),
+            supported_agentic_backends=("vllm", "sglang"),
+            supports_agentic_host_offload=True,
+            supports_agentic_speculative_decoding=True,
+            agentic_qualification="functional_only",
+        )
+
+    def create(self, worker_id: int) -> EngineReplayRunner:
+        return EngineReplayRunner(
+            worker_id=worker_id,
+            capabilities=self.capabilities(),
+            trace_block_size=self.trace_block_size,
+            determinism=self.determinism,
+            trace_graph_cache=self.trace_graph_cache,
+            runtime=self.runtime,
+        )
+
+
+@dataclass
+class EngineReplayRunner:
+    """Execute one candidate with the AISim Engine/Replayer composition."""
+
+    worker_id: int
+    capabilities: RunnerCapabilities
+    trace_block_size: int = 512
+    determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
+    trace_graph_cache: bool = field(default=False, kw_only=True)
+    runtime: EngineReplayRuntime | None = None
+
+    def _resolve_runtime(self) -> EngineReplayRuntime:
+        if self.runtime is not None:
+            return self.runtime
+
+        try:
+            runtime = importlib.import_module("aisim._runtime")
+        except ModuleNotFoundError as exc:
+            if exc.name != "aisim._runtime":
+                raise
+            raise RunnerUnavailableError(
+                "AISim engine replay runtime is not installed. Install a "
+                "binary aisim package or build its native extension."
+            ) from exc
+        except ImportError as exc:
+            raise RunnerUnavailableError(
+                "AISim engine replay runtime could not be loaded. Reinstall "
+                "the binary aisim package or rebuild its native extension."
+            ) from exc
+
+        if not isinstance(runtime, EngineReplayRuntime):
+            raise InvalidRunnerError("aisim._runtime must export run_replay_json(execution_spec_json: str) -> str")
+        self.runtime = runtime
+        return runtime
+
+    def run(
+        self,
+        spec: ReplaySpec,
+        *,
+        output_requirements: ReplayOutputRequirements | None = None,
+    ) -> ReplayReport:
+        output_requirements = output_requirements or ReplayOutputRequirements()
+        if self.determinism not in {"random", "canonical_v1"}:
+            raise ValueError(f"unsupported replay determinism: {self.determinism!r}")
+        if self.determinism != "random" and (spec.backend_deployment.encoder is not None):
+            raise InvalidRunnerError("canonical determinism requires native text replay")
+        if output_requirements.capture_telemetry and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.backend not in {"vllm", "sglang"}
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or spec.backend_deployment.encoder is not None
+        ):
+            raise InvalidRunnerError(
+                "telemetry capture requires offline native vLLM/SGLang aggregated or disaggregated replay "
+                "without an encoder pool"
+            )
+        if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
+            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
+        if spec.backend_deployment.has_afd and spec.workload.get("images") is not None:
+            raise InvalidRunnerError("image workloads are unsupported for AFD")
+        self.capabilities.require_compatible(spec)
+        from .sweeper.config import OptimizationGoal
+
+        metric_goal = OptimizationGoal.model_validate(spec.goal)
+        if metric_goal.uses_aiperf_metrics and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or (spec.backend_deployment.encoder is not None and spec.backend_deployment.encoder.mode == "analytical")
+        ):
+            raise InvalidRunnerError("AIPerf metric selectors require native offline request replay")
+        spec = resolve_afd_replay_identity(spec)
+        encoder = spec.backend_deployment.encoder
+        if (
+            encoder is None
+            and spec.workload.get("images") is not None
+            and _vision_role_args(spec.backend_deployment) is None
+        ):
+            raise InvalidRunnerError(
+                "image workloads require an encoder pool or an aggregated or prefill SGLang worker hosting the "
+                "vision encoder"
+            )
+        if encoder is None and spec.workload.get("images") is not None and spec.workload.get("source_type") is None:
+            # Only the workload driver lays image placeholders into prompts; a
+            # materialized request list would silently run the workload text-only.
+            raise InvalidRunnerError("native image workloads require workload-driver traffic (workload.source_type)")
+        if encoder is not None:
+            from .sweeper.config import OptimizationGoal
+            from .sweeper.epd import apply_encoder_overlay, replay_workload
+
+            if spec.adapters or spec.execution_mode != "offline":
+                raise InvalidRunnerError("encoder pools require offline static pools without adapters")
+            workload = replay_workload(spec.workload)
+            if encoder.mode == "analytical":
+                if output_requirements.capture_per_request or output_requirements.include_raw_report:
+                    raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+                if output_requirements.defer_encoder_overlay and output_requirements.capture_memory_diagnostics:
+                    raise InvalidRunnerError("a deferred encoder overlay cannot carry memory diagnostics")
+                goal = OptimizationGoal.model_validate(spec.goal)
+                if (
+                    goal.min_goodput_rps is not None
+                    or (goal.sla is not None and not goal.requires_aggregate_sla)
+                    or any(
+                        target.value.startswith("goodput")
+                        for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+                    )
+                ):
+                    raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
+                workload.require_fixed_epd()
+            images = workload.images
+            if images is None:
+                raise InvalidRunnerError("encoder pools require an image workload")
+            if (images.height, images.width, images.count) != (
+                encoder.image_height,
+                encoder.image_width,
+                encoder.image_count,
+            ):
+                raise InvalidRunnerError("encoder estimate does not match the image workload")
+            if encoder.backend != spec.backend_deployment.backend:
+                raise InvalidRunnerError("encoder and language backend must match")
+            deployment = spec.backend_deployment
+            role_args = (
+                [deployment.agg_engine_args]
+                if deployment.deployment_mode == "agg"
+                else [deployment.prefill_engine_args, deployment.decode_engine_args]
+            )
+            for args in role_args:
+                if not args or args.get("aic_model_path") != encoder.model:
+                    raise InvalidRunnerError("encoder and language model must match")
+                scopes = [args]
+                if args.get("rank") is not None:
+                    if not isinstance(args["rank"], Mapping):
+                        raise InvalidRunnerError("language rank config must be a mapping")
+                    scopes.append(args["rank"])
+                for scope in scopes:
+                    if encoder.mode == "analytical" and (
+                        scope.get("timing_model") is not None
+                        or any(
+                            scope.get(alias, "op_level") != "op_level"
+                            for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                        )
+                    ):
+                        raise InvalidRunnerError("analytical EPD requires op_level language timing")
+                    if scope.get("startup_time") not in (None, 0.0):
+                        raise InvalidRunnerError("encoder pools require static worker pools")
+            original_spec = spec
+            spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
+        memory_diagnostics = {} if output_requirements.capture_memory_diagnostics else None
+        execution_spec = _materialize_engine_execution_spec(
+            spec,
+            trace_block_size=self.trace_block_size,
+            record_per_request=output_requirements.capture_per_request,
+            memory_diagnostics=memory_diagnostics,
+        )
+        if encoder is not None and encoder.mode == "native":
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["spec"]["encoder"] = _native_encoder_spec(encoder, spec.backend_deployment)
+        if output_requirements.capture_performance_diagnostics:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["capture_performance_diagnostics"] = True
+        if output_requirements.capture_telemetry:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["capture_telemetry"] = True
+            execution_spec["telemetry_sample_interval_ms"] = output_requirements.telemetry_sample_interval_ms
+        if self.determinism != "random":
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["determinism"] = self.determinism
+        if self.trace_graph_cache and "traffic" in execution_spec:
+            execution_spec["traffic"]["trace_graph_cache"] = True
+        if spec.backend_deployment.tokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
+        if spec.backend_deployment.detokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["detokenization"] = dict(spec.backend_deployment.detokenization)
+        execution_spec_json = json.dumps(
+            execution_spec,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        try:
+            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        except MemoryError as error:
+            # Resource-aware installations classify a report storage failure as host
+            # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
+            try:
+                from .resources import ResourceLimitError
+            except ImportError:
+                raise error from None
+            failure = ResourceLimitError(str(error))
+            if hasattr(error, "fpm_query_coverage"):
+                failure.fpm_query_coverage = error.fpm_query_coverage
+            raise failure from error
+        if not isinstance(report_json, str):
+            raise InvalidRunnerError("AISim engine replay runtime report must be a JSON string")
+        try:
+            report = json.loads(report_json)
+        except json.JSONDecodeError as exc:
+            raise InvalidRunnerError("AISim engine replay runtime returned invalid report JSON") from exc
+        # The parsed report replaces the transport string, which can be as large as
+        # the per-request records it carries.
+        del report_json
+        if not isinstance(report, Mapping):
+            raise InvalidRunnerError("AISim engine replay runtime report must be a JSON object")
+        if output_requirements.capture_telemetry and not isinstance(report.get("telemetry"), Mapping):
+            raise InvalidRunnerError("AISim engine replay runtime did not provide requested telemetry")
+        resolved_basis = report.get("weka_nested_timestamp_basis")
+        if isinstance(resolved_basis, str):
+            logger.info(
+                "The complete Weka corpus uses resolved nested timestamp basis %r; auto selection, "
+                "when requested, is a corpus-wide heuristic and the resolved basis is included in source identity",
+                resolved_basis,
+            )
+        if memory_diagnostics is not None:
+            for role, memory in report.get("afd_memory", {}).items():
+                memory_diagnostics[role] = {**memory, "scope": "afd_partition_per_gpu", "status": "available"}
+            report = {**report, "memory_diagnostics": memory_diagnostics}
+        state_sizes = {
+            role: metadata["state_cache"]
+            for role, metadata in spec.backend_deployment.performance_model_metadata.items()
+            if isinstance(metadata, dict) and "state_cache" in metadata
+        }
+        if state_sizes:
+            report = {**report, "state_cache": state_sizes}
+        normalized = _normalize_engine_replay_report(
+            report,
+            include_native_report=(
+                output_requirements.include_raw_report
+                or output_requirements.capture_per_request
+                or output_requirements.capture_telemetry
+                or output_requirements.capture_memory_diagnostics
+                or output_requirements.capture_performance_diagnostics
+            ),
+        )
+        if encoder is not None:
+            if encoder.mode == "analytical":
+                if not output_requirements.defer_encoder_overlay:
+                    normalized = apply_encoder_overlay(normalized, original_spec)
+            else:
+                from .sweeper.epd import language_gpus
+
+                # The pool's GPUs are in the replay's gpu_hours; publish the totals
+                # the analytical overlay reports so the two modes stay comparable.
+                total_gpus = language_gpus(spec.backend_deployment) + encoder.total_gpus
+                normalized = ReplayReport(
+                    metrics={**normalized.metrics, "total_gpus": float(total_gpus)},
+                    metadata={**normalized.metadata, "encoder": asdict(encoder), "total_gpus": total_gpus},
+                )
+            if memory_diagnostics is not None:
+                memory_diagnostics["encoder"] = {
+                    "scope": "capacity_estimate_per_rank",
+                    "stage": "before_native_capacity_adjustments",
+                    "status": "unavailable",
+                    "unavailable_reason": "encoder pools do not export an encoder memory component estimate",
+                }
+                # Capacity estimates remain valid across the overlay. Raw language
+                # timing/records do not describe the combined EPD workload.
+                normalized = ReplayReport(
+                    metrics=normalized.metrics,
+                    metadata={**normalized.metadata, "memory_diagnostics": memory_diagnostics},
+                )
+        return normalized
+
+    def close(self) -> None:
+        """Release worker-local resources.
+
+        The current extension owns no persistent resources beyond its imported
+        module, so closing is intentionally a no-op.
+        """
+
+
+_AFD_TOPOLOGY_FIELDS = frozenset(AFDTopology.__dataclass_fields__) | {
+    "a_replica_count",
+    "f_rank_count",
+    "a_gpu_count",
+    "f_gpu_count",
+    "f_moe_tp_size",
+    "chunked_prefill_size",
+}
+
+
+def _materialize_afd_engine_role(
+    deployment: BackendDeploymentSpec,
+    spec: ReplaySpec,
+    role: str,
+) -> dict[str, JSONValue]:
+    """Materialize one independent A/F pool in its deployment role."""
+    if deployment is not spec.backend_deployment:
+        spec = replace(spec, backend_deployment=deployment)
+    spec = resolve_afd_replay_identity(spec)
+    deployment = spec.backend_deployment
+    raw = dict(getattr(deployment, "agg_engine_args" if role == "aggregated" else f"{role}_engine_args") or {})
+    allowed = {
+        "afd",
+        "startup_time",
+        "aic_model_path",
+        "aic_system",
+        "backend",
+        "engine_type",
+        "aic_backend",
+        "aic_tp_size",
+        "tensor_parallel_size",
+        "aic_attention_dp_size",
+        "dp_size",
+        "max_num_seqs",
+        "max_num_batched_tokens",
+        "num_gpu_blocks",
+        "block_size",
+        "enable_prefix_caching",
+        "max_model_len",
+        "prefill_decode_interval",
+        "sglang",
+        "timing_model",
+        "aic_nextn",
+        "nextn",
+        "aic_nextn_accepted",
+        "nextn_accepted",
+        "aic_nextn_accept_rates",
+        "aic_mtp_seed",
+        "kv_transfer_bytes_per_token",
+        "kv_transfer_bandwidth",
+        "kv_transfer_timing_mode",
+    }
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"unsupported AFD {role} engine arguments: {sorted(unknown)}")
+    topology = raw.get("afd")
+    if not isinstance(topology, Mapping):
+        raise InvalidRunnerError("AFD replay requires parallel_config.afd topology provenance")
+    unknown = set(topology) - _AFD_TOPOLOGY_FIELDS
+    if unknown:
+        raise InvalidRunnerError(f"unknown AFD topology fields: {sorted(unknown)}")
+    a_tp_size = _positive_int(topology.get("a_tp_size"), "a_tp_size")
+    validate_afd_attention_tp(a_tp_size)
+    # Reject unsupported topology before resolving model features. The second
+    # resolution below also verifies expert divisibility against source facts.
+    resolve_afd_parallelism(
+        a_tp_size,
+        _positive_int(topology.get("n_a_nodes"), "n_a_nodes"),
+        _positive_int(topology.get("n_f_nodes"), "n_f_nodes"),
+        _positive_int(topology.get("gpus_per_node"), "gpus_per_node"),
+        topology.get("f_moe_ep_size"),
+        None,
+        f_gpus_per_node=topology.get("f_gpus_per_node"),
+    )
+    routing_location = topology.get("routing_location", AFD_DEFAULT_ROUTING_LOCATION)
+    validate_afd_routing_location(routing_location)
+    metadata = deployment.performance_model_metadata.get(role)
+    if not isinstance(metadata, Mapping):
+        raise InvalidRunnerError("pure AFD replay requires performance_model_metadata.afd")
+    model = str(metadata.get("model") or "")
+    if not model:
+        raise InvalidRunnerError("AFD deployment metadata is missing the model identity")
+    backend = str(deployment.backend)
+    if backend != "sglang":
+        raise InvalidRunnerError(
+            f"AFD on the continuous path anchors the SGLang scheduler and perf data, got "
+            f"backend={backend!r}; set engine.backend='sglang'"
+        )
+    for key, expected in (
+        ("aic_model_path", model),
+        ("backend", backend),
+        ("engine_type", backend),
+        ("aic_backend", backend),
+    ):
+        if key in raw and raw[key] != expected:
+            raise ValueError(f"AFD {key} conflicts with the deployment identity")
+    hardware = str(metadata.get("hardware") or topology.get("a_system") or "")
+    backend_version = str(deployment.backend_version or "")
+    # Workloads whose per-request lengths vary cannot be priced at one frozen
+    # measurement point, so they take the instantaneous path (prefill always
+    # evaluates at the actual batch geometry; variable-length decode evaluates
+    # at the current mean KV position). Two sources of variation: trace /
+    # session / agentic traffic carries per-request lengths, and synthetic
+    # traffic with `random_range_ratio < 1.0` samples them around the declared
+    # isl/osl. Only fixed synthetic traffic (ratio 1.0) keeps the
+    # frozen stride-averaged decode identity. NOTE: the compiler stamps
+    # `source_type` on EVERY workload (including "synthetic"), so the
+    # variable-length test must key on the source KIND, not its presence.
+    source_type = spec.workload.get("source_type")
+    # Trace-like sources carry no usable declared lengths at all: isl/osl are
+    # placeholders and the KV window has to come from the model. Synthetic
+    # traffic with ratio < 1.0 still declares real upper bounds, so it varies
+    # the pricing identity without needing the whole context window reserved.
+    placeholder_lengths = spec.workload.get("trace_path") is not None or source_type not in (None, "synthetic")
+    variable_length_traffic = (
+        placeholder_lengths or _random_range_ratio(spec.workload.get("random_range_ratio", 1.0)) != 1.0
+    )
+    isl_value = spec.workload.get("isl")
+    osl_value = spec.workload.get("osl")
+    isl = _positive_int(1 if placeholder_lengths and isl_value is None else isl_value, "isl")
+    osl = _positive_int(2 if placeholder_lengths and osl_value is None else osl_value, "osl")
+    model_config = validate_afd_model(model)
+    hidden_size = _positive_int(model_config.get("hidden_size"), "hidden_size")
+    layers = model_config.get("layers")
+    num_layers = _positive_int(layers if layers is not None else model_config.get("num_hidden_layers"), "layers")
+    num_experts = int(model_config.get("num_experts") or 0)
+    if "num_experts" in topology and topology["num_experts"] != num_experts:
+        raise InvalidRunnerError("AFD num_experts disagrees with model source metadata")
+    topk = int(model_config.get("topk") or 0) if num_experts else 0
+    a_pool = {
+        "system": str(topology.get("a_system") or hardware),
+        "a_tp_size": a_tp_size,
+        "n_a_nodes": _positive_int(topology.get("n_a_nodes"), "n_a_nodes"),
+        "batch_size_per_a_replica": _positive_int(topology.get("batch_size_per_a_replica"), "batch_size_per_a_replica"),
+    }
+    f_pool = {
+        "system": str(topology.get("f_system") or hardware),
+        "f_moe_ep_size": topology.get("f_moe_ep_size"),
+        "n_f_nodes": _positive_int(topology.get("n_f_nodes"), "n_f_nodes"),
+    }
+    gpus_per_node = _positive_int(topology.get("gpus_per_node"), "gpus_per_node")
+    geometry = json.loads(
+        resolve_afd_parallelism(
+            a_pool["a_tp_size"],
+            a_pool["n_a_nodes"],
+            f_pool["n_f_nodes"],
+            gpus_per_node,
+            f_pool["f_moe_ep_size"],
+            num_experts,
+            f_gpus_per_node=topology.get("f_gpus_per_node"),
+        )
+    )
+    for name in ("a_replica_count", "f_rank_count", "a_gpu_count", "f_gpu_count", "f_moe_tp_size"):
+        if name in topology and topology[name] != geometry[name]:
+            raise InvalidRunnerError(f"AFD {name} disagrees with the pool geometry")
+    f_pool["f_moe_ep_size"] = geometry["f_moe_ep_size"]
+    afd_config: dict[str, JSONValue] = {
+        "a_pool": a_pool,
+        "f_pool": f_pool,
+        "gpus_per_node": gpus_per_node,
+        "f_gpus_per_node": topology.get("f_gpus_per_node") or gpus_per_node,
+        "num_microbatches": _positive_int(topology.get("num_microbatches"), "num_microbatches"),
+        "pipeline_layout": topology.get("pipeline_layout", "four_stage"),
+        "comm_overhead_factor": float(topology.get("comm_overhead_factor", 1.0)),
+        "routing_location": routing_location,
+    }
+    estimator_raw = metadata.get("estimator") if isinstance(metadata.get("estimator"), dict) else {}
+    estimator_config: dict[str, JSONValue] = dict(estimator_raw)
+    if isinstance(estimator_config.get("transfer_policy"), str):
+        estimator_config["transfer_policy"] = [estimator_config["transfer_policy"]]
+    raw_nextn = _pop_matching_aliases(dict(raw), "nextn", ("aic_nextn", "nextn"), None)
+    if raw_nextn is not None and metadata.get("nextn") is not None and raw_nextn != metadata["nextn"]:
+        raise ValueError("AFD nextn conflicts with performance model metadata")
+    if raw_nextn is not None and (type(raw_nextn) is not int or not 0 <= raw_nextn <= 5):
+        raise ValueError("AFD aic_nextn must be an integer in 0..=5")
+    nextn = raw_nextn if raw_nextn is not None else int(metadata.get("nextn") or 0)
+    context_length = metadata.get("context_length")
+    if raw.get("max_model_len") is not None:
+        if context_length is not None and raw["max_model_len"] != context_length:
+            raise ValueError("AFD max_model_len conflicts with context_length")
+        context_length = raw["max_model_len"]
+    if context_length is None and placeholder_lengths:
+        # Trace/agentic workloads carry placeholder isl/osl (1/2 above); an
+        # absent window would make the memory gate reserve KV for a 3-token
+        # sequence and pass deployments that OOM in reality. Reserve the
+        # model's full context instead, matching the compiler path's "max"
+        # resolution (conservative by design).
+        context_length = resolve_model_context_length(model)
+    if context_length is not None:
+        context_length = _positive_int(context_length, "context_length")
+    timing_config: dict[str, JSONValue] = {
+        "model": model,
+        "backend_version": backend_version or None,
+        "isl": isl,
+        "osl": osl,
+        "num_layers": num_layers,
+        "hidden_size": hidden_size,
+        "num_experts": num_experts,
+        "topk": topk,
+        "model_shape": {key: model_config[key] for key in ("num_shared_experts", "num_moe_layers")},
+        # Pinned before hashing/saving the ReplaySpec, with Rust-owned defaults.
+        # Rank-owned topology, backend, MTP depth and context window are
+        # resolved by Rust once; the provider carries only its own inputs.
+        "quant": metadata.get("quant") if isinstance(metadata.get("quant"), dict) else {},
+        "estimator": estimator_config,
+        **{
+            name: metadata[name]
+            for name in ("attention_backend", "moe_kernel_source")
+            if metadata.get(name) is not None
+        },
+    }
+    # SGLang reserves one request position and five admission positions, then
+    # rejects prompts at the input limit. Decode reserves two positions beyond
+    # prompt + output. Prefill hands off after its first output token, so only
+    # aggregated/decode roles need room for the full output. This also sizes KV.
+    # Variable-length traffic uses runtime admission instead of this fixed bound.
+    declared_window = int(context_length or 0)
+    required_window = {"prefill": isl + 7, "decode": isl + osl + 2, "aggregated": max(isl + 7, isl + osl + 2)}[role]
+    if declared_window and not variable_length_traffic and declared_window < required_window:
+        requirement = {"prefill": "isl+7", "decode": "isl+osl+2", "aggregated": "max(isl+7, isl+osl+2)"}[role]
+        raise InvalidRunnerError(
+            f"AFD {role} context_length={declared_window} cannot hold {requirement}={required_window}. "
+            f"Raise context_length to at least {required_window}, or use 'max'."
+        )
+    # Continuous-batching scheduler derivation (SglangCore injection):
+    # - max_num_seqs mirrors the pool's in-flight capacity
+    #   (a_replica_count * a_batch_size, the timing provider's total_batch_size);
+    # - num_gpu_blocks is intentionally NOT set: the native provider derives
+    #   the rank's KV capacity from the per-pool memory gate's A-pool budget
+    #   at construction, so runtime retraction reflects physical OOM;
+    # - chunked_prefill_size / max_prefill_tokens default to the prompt window
+    #   so every prompt pre-fills in a single pass; an explicit
+    #   afd.chunked_prefill_size smaller than the prompt enables SGLang's
+    #   native chunked prefill — each chunk pass is priced at its actual
+    #   (chunk tokens, prefix) geometry by the provider, never a full frozen
+    #   prompt step;
+    # - max_model_len makes an over-long single prompt fail loudly inside
+    #   SglangCore instead of being silently dropped.
+    block_size = 1  # SGLang page_size; read from SglangConfig once it exposes one.
+    a_replica_count = a_pool["n_a_nodes"] * gpus_per_node // a_pool["a_tp_size"]
+    max_num_seqs = a_replica_count * a_pool["batch_size_per_a_replica"]
+    for aliases, expected in (
+        (("aic_tp_size", "tensor_parallel_size"), a_tp_size),
+        (("aic_attention_dp_size", "dp_size"), a_replica_count),
+    ):
+        declared = _pop_matching_aliases(dict(raw), aliases[0], aliases, expected)
+        if type(declared) is not int or declared != expected:
+            raise ValueError(f"AFD {aliases[0]} conflicts with the pool topology ({expected})")
+    if "aic_system" in raw and raw["aic_system"] != a_pool["system"]:
+        raise ValueError("AFD aic_system conflicts with the A-pool system")
+    if "max_num_seqs" in raw:
+        limit = _positive_int(raw["max_num_seqs"], "max_num_seqs")
+        if limit > max_num_seqs:
+            raise ValueError(f"AFD max_num_seqs exceeds the pool capacity {max_num_seqs}")
+        max_num_seqs = limit
+    explicit_chunk = (
+        _positive_int(topology["chunked_prefill_size"], "afd.chunked_prefill_size")
+        if topology.get("chunked_prefill_size") is not None
+        else None
+    )
+    prompt_window = explicit_chunk or int(context_length or 0) or isl
+    if "max_num_batched_tokens" in raw:
+        prompt_window = _positive_int(raw["max_num_batched_tokens"], "max_num_batched_tokens")
+        if explicit_chunk is not None and explicit_chunk != prompt_window:
+            raise ValueError("max_num_batched_tokens conflicts with afd.chunked_prefill_size")
+    engine: dict[str, JSONValue] = {
+        "backend": backend,
+        "afd": afd_config,
+        "max_num_seqs": max_num_seqs,
+        "block_size": block_size,
+        # Preserve the declaration. Rust derives the scheduler's isl+osl cap
+        # separately so a reload retains phase-specific memory reservations.
+        "max_model_len": context_length,
+        "sglang": {
+            "chunked_prefill_size": prompt_window,
+            "max_prefill_tokens": prompt_window,
+        },
+        "timing_model": {"type": "external", "provider": "afd", "config": timing_config},
+    }
+    if "block_size" in raw and (type(raw["block_size"]) is not int or raw["block_size"] != 1):
+        raise ValueError("AFD requires block_size=1")
+    if "num_gpu_blocks" in raw:
+        engine["num_gpu_blocks"] = _positive_int(raw["num_gpu_blocks"], "num_gpu_blocks")
+    if "enable_prefix_caching" in raw:
+        if type(raw["enable_prefix_caching"]) is not bool:
+            raise ValueError("enable_prefix_caching must be a boolean")
+        engine["enable_prefix_caching"] = raw["enable_prefix_caching"]
+    if "max_num_batched_tokens" in raw:
+        engine["max_num_batched_tokens"] = prompt_window
+    if "prefill_decode_interval" in raw:
+        interval = raw["prefill_decode_interval"]
+        if type(interval) is not int or interval < 0:
+            raise ValueError("prefill_decode_interval must be a nonnegative integer")
+        engine["prefill_decode_interval"] = interval
+    if "sglang" in raw:
+        sglang = raw["sglang"]
+        if not isinstance(sglang, Mapping) or set(sglang) - {"chunked_prefill_size", "max_prefill_tokens"}:
+            raise ValueError("AFD sglang overrides support chunked_prefill_size and max_prefill_tokens")
+        for name, value in sglang.items():
+            value = _positive_int(value, f"sglang.{name}")
+            if (
+                name == "chunked_prefill_size"
+                and (explicit_chunk is not None or "max_num_batched_tokens" in raw)
+                and value != prompt_window
+            ):
+                raise ValueError("sglang.chunked_prefill_size conflicts with the configured prefill budget")
+            engine["sglang"][name] = value
+    if "timing_model" in raw and raw["timing_model"] != engine["timing_model"]:
+        raise ValueError("AFD timing_model conflicts with the native AFD provider")
+    if nextn > 0:
+        # MTP benefit side: the timing config's nextn prices verification
+        # and approximate draft work (cost side). The burst sampler that emits the
+        # accepted tokens is built by the scheduling core from the RANK
+        # config's aic_nextn — without it the decode passes silently emit one
+        # token per pass.
+        if nextn > 5:
+            raise InvalidRunnerError(f"AFD aic_nextn must be in 1..=5, got {nextn}")
+        nextn_accepted = _pop_matching_aliases(
+            dict(raw), "nextn_accepted", ("aic_nextn_accepted", "nextn_accepted"), metadata.get("nextn_accepted")
+        )
+        if metadata.get("nextn_accepted") is not None and nextn_accepted != metadata["nextn_accepted"]:
+            raise ValueError("AFD nextn_accepted conflicts with performance model metadata")
+        if nextn_accepted is None and raw.get("aic_nextn_accept_rates") is None:
+            raise InvalidRunnerError(
+                "AFD metadata nextn>0 requires nextn_accepted (average accepted draft tokens per step)"
+            )
+        engine["aic_nextn"] = nextn
+        if raw.get("aic_nextn_accept_rates") is not None:
+            if nextn_accepted is not None:
+                raise ValueError("AFD cannot combine nextn_accepted with aic_nextn_accept_rates")
+            engine["aic_nextn_accept_rates"] = raw["aic_nextn_accept_rates"]
+        else:
+            engine["aic_nextn_accept_rates"] = _accept_rates_for_expected(nextn, nextn_accepted, role="afd")
+    elif any(raw.get(k) is not None for k in ("aic_nextn_accepted", "nextn_accepted", "aic_nextn_accept_rates")):
+        raise ValueError("AFD acceptance settings require nextn > 0")
+    if "aic_mtp_seed" in raw:
+        seed = raw["aic_mtp_seed"]
+        if type(seed) is not int or not 0 <= seed <= 0xFFFF_FFFF_FFFF_FFFF:
+            raise ValueError("aic_mtp_seed must be an unsigned 64-bit integer")
+        engine["aic_mtp_seed"] = seed
+    for key in ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth", "kv_transfer_timing_mode"):
+        if key in raw:
+            engine[key] = raw[key]
+    return {"rank": engine}
+
+
+def _materialize_deployment_role(deployment, spec, raw, role, memory_diagnostics):
+    if role in deployment.afd_roles:
+        if "rank" in raw:
+            raise InvalidRunnerError(f"AFD {role} requires flat role arguments, not a nested rank descriptor")
+        return _materialize_afd_engine_role(deployment, spec, role)
+    return _materialize_engine_role(
+        deployment.backend,
+        deployment.backend_version,
+        deployment.parallel_config,
+        raw,
+        role,
+        memory_diagnostics=memory_diagnostics,
+    )
+
+
+def _materialize_engine_execution_spec(
+    spec: ReplaySpec,
+    *,
+    trace_block_size: int,
+    record_per_request: bool,
+    memory_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, JSONValue]:
+    """Translate the public Runner input into the Rust replay wire schema.
+
+    This is the only high-level-to-execution materializer. The compiled runtime
+    deliberately knows nothing about CLI, Sweeper, or provider discovery.
+    """
+
+    deployment = spec.backend_deployment
+    deployment_mode = deployment.deployment_mode
+    execution_model: str | None = None
+    if deployment_mode == "agg":
+        raw_engine_args = _required_engine_args(deployment.agg_engine_args, "aggregated")
+        execution_model = _execution_target_model(deployment, "aggregated", raw_engine_args)
+        engine = _materialize_deployment_role(deployment, spec, raw_engine_args, "aggregated", memory_diagnostics)
+        _require_parallel_match(
+            deployment.parallel_config,
+            "replicas",
+            deployment.num_workers,
+            "num_workers",
+        )
+        topology: dict[str, JSONValue] = {
+            "kind": "aggregated",
+            "workers": {
+                "initial_workers": _positive_int(deployment.num_workers, "num_workers"),
+                "startup_delay_ms": _startup_delay_ms(raw_engine_args),
+            },
+        }
+    elif deployment_mode == "disagg":
+        raw_prefill = _required_engine_args(deployment.prefill_engine_args, "prefill")
+        raw_decode = _required_engine_args(deployment.decode_engine_args, "decode")
+        # Reject ordinary-role PP before either role estimates capacity.
+        for raw, role in ((raw_prefill, "prefill"), (raw_decode, "decode")):
+            if role not in deployment.afd_roles:
+                _reject_role_pipeline_parallelism(deployment.parallel_config, raw, role)
+        prefill = _materialize_deployment_role(deployment, spec, raw_prefill, "prefill", memory_diagnostics)
+        decode = _materialize_deployment_role(deployment, spec, raw_decode, "decode", memory_diagnostics)
+        _require_parallel_match(
+            deployment.parallel_config,
+            "prefill_replicas",
+            deployment.num_prefill_workers,
+            "num_prefill_workers",
+        )
+        _require_parallel_match(
+            deployment.parallel_config,
+            "decode_replicas",
+            deployment.num_decode_workers,
+            "num_decode_workers",
+        )
+        prefill_backend = prefill["rank"].get("backend", "vllm")
+        decode_backend = decode["rank"].get("backend", "vllm")
+        if prefill_backend != decode_backend:
+            raise ValueError(
+                f"disaggregated prefill and decode must use the same backend: {prefill_backend!r} != {decode_backend!r}"
+            )
+        engine = {"prefill": prefill, "decode": decode}
+        topology = {
+            "kind": "disaggregated",
+            "prefill": {
+                "initial_workers": _positive_int(deployment.num_prefill_workers, "num_prefill_workers"),
+                "startup_delay_ms": _startup_delay_ms(raw_prefill),
+            },
+            "decode": {
+                "initial_workers": _positive_int(deployment.num_decode_workers, "num_decode_workers"),
+                "startup_delay_ms": _startup_delay_ms(raw_decode),
+            },
+            "handoff_latency_ms": 0.0,
+        }
+    else:
+        raise ValueError(f"engine replay deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
+
+    use_workload_driver = spec.workload.get("source_type") is not None
+    if use_workload_driver:
+        requests: list[dict[str, JSONValue]] = []
+        max_in_flight = _configured_in_flight_cap(spec)
+    else:
+        requests, max_in_flight = _materialize_requests(spec, trace_block_size)
+    sla = _materialize_sla(spec)
+    max_sim_time_ms = spec.workload.get("max_sim_time_ms")
+    if max_sim_time_ms is not None:
+        max_sim_time_ms = _nonnegative_time(max_sim_time_ms, "max_sim_time_ms")
+
+    execution_spec: dict[str, JSONValue] = {
+        "version": 1,
+        "topology": topology,
+        "engine": engine,
+        "adapters": {
+            "placement": {
+                "provider": "round_robin",
+                "config": None,
+            },
+            "scaling": {
+                "provider": "none",
+                "config": None,
+            },
+        },
+        "max_sim_time_ms": max_sim_time_ms,
+        "max_in_flight": max_in_flight,
+        "record_per_request": record_per_request,
+        "sla": sla,
+        "requests": requests,
+    }
+    if use_workload_driver:
+        traffic = {
+            key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
+        }
+        images = spec.workload.get("images")
+        if images is not None and spec.backend_deployment.encoder is None:
+            traffic.update(_image_traffic_fields(spec.backend_deployment, images))
+        if traffic.get("trace_format") not in {"dynamo", "weka"}:
+            traffic.setdefault("trace_block_size", trace_block_size)
+        trace_format = traffic.get("trace_format")
+        if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
+            requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if deployment_mode == "disagg":
+                prefill_model = _execution_target_model(deployment, "prefill", raw_prefill)
+                decode_model = _execution_target_model(deployment, "decode", raw_decode)
+                if requires_agentic_model and prefill_model != decode_model:
+                    raise ValueError("agentic prefill and decode must use the same configured target model")
+                if prefill_model == decode_model:
+                    execution_model = prefill_model
+                if requires_agentic_model:
+                    for role, descriptor in (("prefill", prefill), ("decode", decode)):
+                        timing = descriptor["rank"].get("timing_model")
+                        if (
+                            isinstance(timing, Mapping)
+                            and timing.get("type") == "external"
+                            and timing.get("provider") == "aic"
+                            and isinstance(timing.get("config"), Mapping)
+                            and timing["config"].get("model") != execution_model
+                        ):
+                            raise ValueError(f"agentic {role} AIC timing model must match the configured target model")
+            if requires_agentic_model and execution_model is None:
+                raise ValueError("agentic execution requires a configured target model")
+            # Dynamo may contain standard or agentic requests; native validates the loaded kind.
+            if execution_model is not None:
+                traffic["execution_model"] = execution_model
+        return {"spec": execution_spec, "traffic": traffic}
+    return execution_spec
+
+
+def _vision_role_args(deployment: BackendDeploymentSpec) -> Mapping[str, JSONValue] | None:
+    """Rank args of the language role hosting the vision encoder: the aggregated or the prefill worker.
+
+    Lower-level specifications nest the rank under `rank`, as the materializer
+    accepts them; the flat form is the rank itself.
+    """
+
+    def rank(args: Mapping[str, JSONValue] | None) -> Mapping[str, JSONValue] | None:
+        nested = args.get("rank") if args else None
+        return nested if isinstance(nested, Mapping) else args
+
+    if (rank(deployment.decode_engine_args) or {}).get("vision"):
+        raise InvalidRunnerError("the decode worker never runs the vision encoder")
+    for args in (deployment.agg_engine_args, deployment.prefill_engine_args):
+        role = rank(args)
+        if role and role.get("vision"):
+            return role
+    return None
+
+
+def _native_encoder_spec(encoder: EncoderPoolSpec, deployment: BackendDeploymentSpec) -> dict[str, JSONValue]:
+    """Lower the resolved pool to the replay's encoder component.
+
+    The embeddings fan out to every tensor-parallel rank of the language worker
+    that receives them (SGLang `zmq_to_scheduler`), so the bytes scale with its width.
+    """
+    native = encoder.native
+    assert native is not None
+    prefix = "" if deployment.deployment_mode == "agg" else "prefill_"
+    tensor = int(deployment.parallel_config[prefix + "tp"])
+    return {
+        "instances": encoder.workers,
+        "max_batch": encoder.batch_size,
+        "gpus_per_instance": encoder.tp,
+        "images_per_request": encoder.image_count,
+        "shape": dict(native.shape),
+        "preprocess_ms_per_image": native.preprocess_ms_per_image,
+        "transfer_bytes_per_image": native.transfer_bytes_per_image * tensor,
+        "transfer_bandwidth_gb_s": native.transfer_bandwidth_gb_s,
+        "timing_model": native.timing_model,
+    }
+
+
+def _image_traffic_fields(deployment: BackendDeploymentSpec, images: Mapping[str, JSONValue]) -> dict[str, JSONValue]:
+    """Lower the public image profile to the placeholder geometry the workload driver lays out."""
+    from aisim_core.sdk.backends.base_backend import image_geometry
+
+    args = _vision_role_args(deployment) or {}
+    timing = args.get("timing_model") if isinstance(args.get("timing_model"), Mapping) else {}
+    model = args.get("aic_model_path") or (timing.get("config") or {}).get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("image workloads require the language model identity in the vision-hosting engine args")
+    geometry = image_geometry(
+        model,
+        int(images["height"]),
+        int(images["width"]),
+        min_pixels=images.get("min_pixels"),
+        max_pixels=images.get("max_pixels"),
+    )
+    fields: dict[str, JSONValue] = {
+        "image_count": int(images.get("count", 1)),
+        "image_visual_tokens": geometry.visual_tokens,
+        "image_sequences": geometry.sequences,
+        "image_patch_tokens": geometry.patch_tokens,
+        "image_transformer_tokens": geometry.transformer_tokens,
+        "image_output_tokens": geometry.output_tokens,
+        "image_embedding_bytes": geometry.embedding_bytes,
+    }
+    identity = images.get("identity", "unique")
+    if isinstance(identity, Mapping):
+        fields["image_identity_pool"] = int(identity["pool"])
+    return fields
+
+
+def _execution_target_model(
+    deployment: BackendDeploymentSpec,
+    role: str,
+    raw_engine_args: Mapping[str, JSONValue],
+) -> str | None:
+    """Resolve the deployment model identity independently of timing implementation."""
+
+    metadata = deployment.performance_model_metadata.get(role)
+    if isinstance(metadata, Mapping):
+        config = metadata.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model", config.get("model_path"))
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    timing = raw_engine_args.get("timing_model")
+    if isinstance(timing, Mapping) and timing.get("provider") == "aic":
+        config = timing.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    model = raw_engine_args.get("aic_model_path")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return None
+
+
+def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
+    workload = spec.workload
+    if workload.get("source_type") == "trace":
+        value = workload.get("replay_concurrency")
+    else:
+        value = spec.concurrency
+        if value is None:
+            value = workload.get("concurrency")
+    return _positive_int(value, "concurrency") if value is not None else None
+
+
+def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str, JSONValue]:
+    aic_timing_overrides: dict[str, JSONValue] = {}
+    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
+        if target == "moe_kernel_source":
+            for alias in aliases:
+                if rank.get(alias) is None:
+                    rank.pop(alias, None)
+        configured = [alias for alias in aliases if alias in rank]
+        if len(configured) > 1:
+            names = ", ".join(configured)
+            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
+        if not configured:
+            continue
+        value = rank.pop(configured[0])
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots", "cp_size", "dcp"}:
+            value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "fpm_profile":
+            from aisim_core.sdk.fpm_profile import load_fpm_profile
+
+            value = load_fpm_profile(value).model_dump(mode="json")
+        elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
+        elif not isinstance(value, str) or not value:
+            raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
+        aic_timing_overrides[target] = value
+
+    return aic_timing_overrides
+
+
+def _required_engine_args(payload: dict[str, JSONValue] | None, role: str) -> dict[str, JSONValue]:
+    if payload is None:
+        raise ValueError(f"ReplaySpec is missing {role} engine arguments")
+    return dict(payload)
+
+
+def _startup_delay_ms(payload: Mapping[str, JSONValue]) -> float:
+    value = payload.get("startup_time", 0.0)
+    return 1_000.0 * _nonnegative_time(value, "startup_time")
+
+
+def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list[dict[str, JSONValue]], int | None]:
+    workload = spec.workload
+    trace_path = workload.get("trace_path")
+    if trace_path is not None:
+        if not isinstance(trace_path, str) or not trace_path:
+            raise TypeError("trace_path must be a non-empty string")
+        if workload.get("random_range_ratio", 1.0) != 1.0 or workload.get("random_seed", 0) != 0:
+            raise ValueError("random_range_ratio and random_seed only apply to synthetic replay")
+        if workload.get("length_sampler", "python_random") != "python_random":
+            raise ValueError("length_sampler only applies to synthetic replay")
+        configured_trace_block_size = workload.get("trace_block_size")
+        requests = materialize_configured_traffic(
+            {
+                "trace_path": trace_path,
+                "format": workload.get("trace_format", "mooncake"),
+                "trace_block_size": _positive_int(
+                    trace_block_size if configured_trace_block_size is None else configured_trace_block_size,
+                    "trace_block_size",
+                ),
+                "speedup": _positive_number(
+                    workload.get("arrival_speedup_ratio", 1.0),
+                    "arrival_speedup_ratio",
+                ),
+            }
+        )
+        cap = workload.get("replay_concurrency")
+        return requests, (_positive_int(cap, "replay_concurrency") if cap is not None else None)
+
+    isl = _positive_int(workload.get("isl"), "isl")
+    osl = _positive_int(workload.get("osl"), "osl")
+    _require_supported_synthetic_workload(workload)
+    concurrency = spec.concurrency
+    if concurrency is None and workload.get("concurrency") is not None:
+        concurrency = _positive_int(workload["concurrency"], "concurrency")
+    request_rate = workload.get("request_rate")
+    rate = _positive_number(request_rate, "request_rate") if request_rate is not None else None
+    raw_interval = workload.get("arrival_interval_ms")
+    arrival_interval_ms = _nonnegative_time(raw_interval, "arrival_interval_ms") if raw_interval is not None else None
+    if rate is not None and arrival_interval_ms is not None:
+        raise ValueError("synthetic replay cannot combine request_rate and arrival_interval_ms")
+    if concurrency is not None:
+        load = float(concurrency)
+    elif rate is not None:
+        load = rate
+    elif arrival_interval_ms is None:
+        raise ValueError("synthetic replay requires concurrency, request_rate, or arrival_interval_ms")
+    raw_request_count = workload.get("request_count")
+    if raw_request_count is not None:
+        request_count = _positive_int(raw_request_count, "request_count")
+    else:
+        if arrival_interval_ms is not None:
+            raise ValueError("synthetic replay with arrival_interval_ms requires request_count")
+        ratio = _positive_number(workload.get("num_request_ratio"), "num_request_ratio")
+        request_count = max(1, round(ratio * load))
+
+    if rate is not None:
+        arrival_seed = workload.get("arrival_seed", 42)
+        if not isinstance(arrival_seed, int) or isinstance(arrival_seed, bool) or arrival_seed < 0:
+            raise ValueError("arrival_seed must be a non-negative integer")
+        rng = random.Random(arrival_seed)
+        arrival_times = [0.0]
+        for _ in range(1, request_count):
+            arrival_times.append(arrival_times[-1] + rng.expovariate(rate) * 1_000.0)
+    else:
+        interval = arrival_interval_ms or 0.0
+        arrival_times = [index * interval for index in range(request_count)]
+
+    random_range_ratio = _random_range_ratio(workload.get("random_range_ratio", 1.0))
+    random_seed = _random_seed(workload.get("random_seed", 0))
+    sampler = workload.get("length_sampler", "python_random")
+    if sampler == "numpy_random_state":
+        if random_seed > 0xFFFF_FFFF:
+            raise ValueError("numpy_random_state random_seed must be an unsigned 32-bit integer")
+        length_rng = np.random.RandomState(random_seed)
+    elif sampler == "python_random":
+        length_rng = random.Random(random_seed)
+    else:
+        raise ValueError(f"unsupported length_sampler: {sampler!r}")
+    # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
+    input_lengths = _sample_synthetic_lengths(isl, request_count, random_range_ratio, length_rng)
+    output_lengths = _sample_synthetic_lengths(osl, request_count, random_range_ratio, length_rng)
+    requests = [
+        {
+            "id": f"synthetic-{index}",
+            "arrival_time_ms": arrival_times[index],
+            "input_tokens": input_lengths[index],
+            "output_tokens": output_lengths[index],
+            "metadata": None,
+        }
+        for index in range(request_count)
+    ]
+    cached_prefix_tokens = workload.get("cached_prefix_tokens", 0)
+    if (
+        not isinstance(cached_prefix_tokens, int)
+        or isinstance(cached_prefix_tokens, bool)
+        or cached_prefix_tokens < 0
+        or cached_prefix_tokens > min(input_lengths)
+    ):
+        raise ValueError(
+            "cached_prefix_tokens must be a non-negative integer no greater than every synthetic input length"
+        )
+    if cached_prefix_tokens:
+        prefix = list(range(1, cached_prefix_tokens + 1))
+        for index, request in enumerate(requests):
+            suffix_length = input_lengths[index] - cached_prefix_tokens
+            suffix_seed = (index + 1) * 1_000_003 + cached_prefix_tokens
+            request["input_token_ids"] = prefix + [
+                (suffix_seed + offset) & 0xFFFF_FFFF for offset in range(suffix_length)
+            ]
+    return requests, concurrency
+
+
+def _materialize_sla(spec: ReplaySpec) -> dict[str, JSONValue]:
+    raw = spec.goal.get("sla")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError("goal.sla must be a mapping")
+    return {
+        key: _positive_number(raw[key], f"sla.{key}")
+        for key in ("ttft_ms", "itl_ms", "e2e_ms")
+        if raw.get(key) is not None
+    }
+
+
+def canonical_performance_config(config: Mapping[str, Any], *, worker_type: str) -> dict[str, Any]:
+    """Normalize Runner timing metadata through the native estimator contract."""
+    from . import _runtime
+
+    return json.loads(_runtime.canonical_timing_config_json(json.dumps(dict(config), allow_nan=False), worker_type))
+
+
+def materialize_engine_launch_config(
+    deployment_backend: str,
+    deployment_backend_version: str,
+    parallel_config: Mapping[str, JSONValue],
+    raw_config: Mapping[str, JSONValue],
+    role: str,
+) -> dict[str, JSONValue]:
+    """Resolve Runner inputs into the canonical engine launch contract for adapters."""
+    from . import _runtime
+
+    descriptor = _materialize_engine_role(
+        deployment_backend, deployment_backend_version, parallel_config, raw_config, role
+    )
+    descriptor["rank"]["worker_type"] = role
+    return json.loads(
+        _runtime.engine_launch_from_replay_role_json(
+            json.dumps(descriptor, allow_nan=False),
+            _startup_delay_ms(raw_config) / 1000.0,
+        )
+    )
+
+
+def _reject_role_pipeline_parallelism(
+    parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str
+) -> None:
+    # `rank: null` falls back to the flat role fields during materialization.
+    rank = role_config.get("rank")
+    if rank is None:
+        rank = role_config
+    if not isinstance(rank, Mapping):
+        return
+    timing = rank.get("timing_model")
+    timing_config = timing.get("config") if isinstance(timing, Mapping) else None
+    if not isinstance(timing_config, Mapping):
+        timing_config = {}
+    # A pipeline width the timing identity records as unknown is the role's.
+    reject_pipeline_parallelism(
+        role,
+        parallel_config.get("pp" if role == "aggregated" else f"{role}_pp", 1),
+        role_config.get("aic_pp_size", 1),
+        rank.get("aic_pp_size", 1),
+        *(
+            value
+            for value in (timing_config.get("pp", 1), timing_config.get("pp_size", 1))
+            if value != UNKNOWN_IDENTITY
+        ),
+    )
+
+
+def _materialize_engine_role(
+    deployment_backend: str,
+    deployment_backend_version: str,
+    parallel_config: Mapping[str, JSONValue],
+    raw_config: Mapping[str, JSONValue],
+    role: str,
+    *,
+    memory_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, JSONValue]:
+    """Materialize one single-rank or attention-DP generalized engine."""
+
+    role_config = dict(raw_config)
+    # New generic schemes use caller-authored capacity; leave the existing
+    # Ngram/NextN capacity paths unchanged.
+    requested_rank = role_config.get("rank", role_config)
+    _reject_role_pipeline_parallelism(parallel_config, role_config, role)
+    if isinstance(requested_rank, Mapping):
+        requested_rank = dict(requested_rank)
+        if "rank" in role_config:
+            role_config["rank"] = requested_rank
+        else:
+            role_config = requested_rank
+        timing = requested_rank.get("timing_model")
+        timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
+        selections = (requested_rank.get("speculation"), canonical)
+        for spec in selections:
+            if spec is not None and not isinstance(spec, Mapping):
+                raise ValueError("speculation must be a mapping")
+            if isinstance(spec, Mapping) and not isinstance(spec.get("params", {}), Mapping):
+                raise ValueError("speculation params must be a mapping")
+        # Normalize disabled depth before either state-cache/capacity path.
+        # Zero cannot override another authored speculation input. Resolve
+        # aliases first, preserving duplicate and bool/float validation.
+        legacy_nextn = _pop_alias(requested_rank, "aic_nextn", ("aic_nextn", "nextn"))
+        canonical_kind = canonical.get("kind") if isinstance(canonical, Mapping) else None
+        if (
+            type(legacy_nextn) is int
+            and legacy_nextn == 0
+            and requested_rank.get("speculation") is None
+            and canonical_kind in (None, "none")
+        ):
+            if isinstance(timing_config, Mapping) and timing_config.get("nextn") not in (None, 0):
+                raise ValueError(f"engine provider {role} aic_nextn=0 conflicts with timing_model.config.nextn")
+        elif legacy_nextn is not None:
+            requested_rank["aic_nextn"] = legacy_nextn
+        if requested_rank.get("num_gpu_blocks") is None:
+            for spec in selections:
+                if isinstance(spec, Mapping) and spec.get("kind") not in ("none", "ngram"):
+                    raise ValueError(f"{spec.get('kind')} speculation requires explicit fixed KV capacity on {role}")
+    # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
+    # execution-level input and retain the native runtime's compatibility
+    # fallback after their structure has been validated below.
+    role_memory: dict[str, Any] | None = None
+    if memory_diagnostics is not None:
+        role_memory = {
+            "scope": "capacity_estimate_per_rank",
+            "stage": "before_native_capacity_adjustments",
+            "status": "unavailable",
+            "unavailable_reason": (
+                "explicit KV blocks, nested rank input, or a non-AIC capacity provider; "
+                "no memory component estimate was used by the Python materializer"
+            ),
+        }
+        memory_diagnostics[role] = role_memory
+    capacity_materialized = False
+    num_gpu_blocks_is_explicit = False
+    # A nested canonical timing config carries the CP knobs too; check them
+    # against parallel_config BEFORE capacity materialization resolves them
+    # into AIC inputs, so a mismatch cannot size the KV cache for one topology
+    # while the deployment reports another.
+    _require_nested_context_parallel_match(role_config, parallel_config, role)
+    if "rank" not in role_config:
+        state_cache = _manual_state_cache(role_config, deployment_backend, role)
+        num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
+        for name in ("aic_backend_version", "backend_version"):
+            if role_config.get(name) is None:
+                role_config.pop(name, None)
+        # Propagate authored versions before capacity preflight. Otherwise a
+        # deployment pin reaches timing only after capacity has used current.
+        timing = role_config.get("timing_model")
+        timing_config = None
+        if (
+            isinstance(timing, dict)
+            and timing.get("type") == "external"
+            and timing.get("provider") == "aic"
+            and isinstance(timing.get("config"), dict)
+        ):
+            timing_config = timing["config"]
+        version = next(
+            (
+                value
+                for value in (
+                    role_config.get("aic_backend_version"),
+                    role_config.get("backend_version"),
+                    timing_config.get("backend_version") if timing_config is not None else None,
+                    deployment_backend_version or None,
+                )
+                if value is not None
+            ),
+            None,
+        )
+        if version is not None:
+            if (
+                not num_gpu_blocks_is_explicit
+                and role_config.get("aic_backend") is not None
+                and not any(name in role_config for name in ("aic_backend_version", "backend_version"))
+            ):
+                role_config["aic_backend_version"] = version
+            if timing_config is not None and timing_config.get("backend_version") is None:
+                role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
+        if state_cache is not None:
+            role_config["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
+        else:
+            role_config = materialize_aic_num_gpu_blocks(
+                role_config,
+                **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
+            )
+            if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
+                role_memory["status"] = "available"
+                if "num_gpu_blocks" in role_memory:
+                    role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+                role_memory.pop("unavailable_reason", None)
+            capacity_materialized = (
+                role_config.get("num_gpu_blocks") is not None or role_config.get("kv_cache_capacity_bytes") is not None
+            )
+    for name in ("engine_type", "aic_backend"):
+        configured = role_config.pop(name, None)
+        if configured is not None and configured != deployment_backend:
+            raise ValueError(
+                f"{role} {name}={configured!r} conflicts with BackendDeploymentSpec backend={deployment_backend!r}"
+            )
+    role_config.pop("worker_type", None)
+    role_config.pop("startup_time", None)
+    model = role_config.pop("aic_model_path", None)
+    system = role_config.pop("aic_system", None)
+    # Capacity-only input. It has already been consumed by the Python AIC
+    # materializer and is not a native scheduler rank field. Preserve it in
+    # the AIC timing config because the native runtime rematerializes inferred
+    # capacity before execution.
+    cuda_graph_reserved_bytes = role_config.pop("cuda_graph_reserved_bytes", None)
+    timing_rank = role_config.get("rank", role_config)
+    timing = timing_rank.get("timing_model") if isinstance(timing_rank, dict) else None
+    if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+        canonical = timing.get("config")
+        if not isinstance(canonical, dict):
+            raise ValueError("external AIC timing config must be a mapping")
+        for aliases, fields in (
+            (("tensor_parallel_size", "aic_tp_size"), ("tp", "tp_size")),
+            (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),
+        ):
+            expected = canonical.get(fields[0], canonical.get(fields[1]))
+            # An unknown width leaves the role's own topology.
+            if expected is not None and expected != UNKNOWN_IDENTITY:
+                for alias in aliases:
+                    if alias in role_config and role_config[alias] != expected:
+                        raise ValueError(f"{alias} conflicts with canonical AIC timing topology")
+                if not any(alias in role_config for alias in aliases):
+                    role_config[aliases[0]] = expected
+    raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
+    raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
+    dp_size = _positive_int(
+        raw_dp_size,
+        f"engine provider {role} dp_size",
+    )
+    tensor_parallel_size = _positive_int(
+        raw_tp_size,
+        f"engine provider {role} tensor_parallel_size",
+    )
+    parallel_prefix = "" if role == "aggregated" else f"{role}_"
+    _require_parallel_match(
+        parallel_config,
+        f"{parallel_prefix}tp",
+        tensor_parallel_size,
+        f"{role} tensor parallel size",
+    )
+    _require_parallel_match(
+        parallel_config,
+        f"{parallel_prefix}attention_dp",
+        dp_size,
+        f"{role} attention DP size",
+    )
+
+    nested_rank = role_config.pop("rank", None)
+    if nested_rank is not None:
+        if role_config:
+            unexpected = ", ".join(sorted(role_config))
+            raise ValueError(f"engine provider {role} config cannot mix nested 'rank' with rank fields: {unexpected}")
+        if not isinstance(nested_rank, dict):
+            raise ValueError(f"engine provider {role} rank config must be a mapping")
+        rank: dict[str, JSONValue] = dict(nested_rank)
+        num_gpu_blocks_is_explicit = rank.get("num_gpu_blocks") is not None
+    else:
+        # Preserve the existing convenient flat aggregated form. Disaggregated
+        # role mappings may use the same shorthand.
+        rank = role_config
+
+    state_cache = _manual_state_cache(rank, deployment_backend, role)
+    if state_cache is not None:
+        # A state pool is explicit unless the compiler derived it from an FPM profile's recorded runtime memory.
+        num_gpu_blocks_is_explicit = rank.pop("num_gpu_blocks_is_explicit", True)
+        if not isinstance(num_gpu_blocks_is_explicit, bool):
+            raise ValueError("num_gpu_blocks_is_explicit must be a boolean")
+        rank["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
+
+    nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)
+    if cuda_graph_reserved_bytes is not None and nested_cuda_graph_reserved_bytes is not None:
+        raise ValueError(f"engine provider {role} config duplicates cuda_graph_reserved_bytes")
+    if nested_cuda_graph_reserved_bytes is not None:
+        cuda_graph_reserved_bytes = nested_cuda_graph_reserved_bytes
+    if cuda_graph_reserved_bytes is not None and (
+        not isinstance(cuda_graph_reserved_bytes, int)
+        or isinstance(cuda_graph_reserved_bytes, bool)
+        or not 0 <= cuda_graph_reserved_bytes <= 1 << 53
+    ):
+        raise ValueError(
+            f"engine provider {role} cuda_graph_reserved_bytes must be a non-negative integer no greater than 2**53"
+        )
+
+    configured_backend = rank.get("backend")
+    if configured_backend is not None and not isinstance(configured_backend, str):
+        raise ValueError(f"engine provider {role} rank backend must be a string")
+    backend = configured_backend or deployment_backend
+    if backend not in {"vllm", "sglang", "trtllm"}:
+        raise ValueError(f"engine replay supports vllm, sglang, and trtllm, got {backend!r}")
+    if configured_backend is not None and configured_backend != deployment_backend:
+        raise ValueError(
+            "engine provider rank backend conflicts with deployment backend: "
+            f"{configured_backend!r} != {deployment_backend!r}"
+        )
+    if "block_size" not in rank and state_cache is None:
+        # Keep scheduler capacity, AIC compilation, and synthetic-prefix
+        # materialization on one explicit backend-native block size.
+        rank["block_size"] = {
+            "vllm": 64,
+            "sglang": 1,
+            "trtllm": 32,
+        }[backend]
+    rank["backend"] = backend
+
+    memory_fraction_overrides: dict[str, JSONValue] = {}
+    for memory_field in (
+        "gpu_memory_utilization",
+        "mem_fraction_static",
+        "free_gpu_memory_fraction",
+    ):
+        if memory_field not in rank:
+            continue
+        value = rank.pop(memory_field)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+        ):
+            raise ValueError(f"engine provider {role} {memory_field} must be between 0 and 1")
+        # Preserve every inferred-capacity input for native rematerialization.
+        # A flat config is first materialized in Python, but the Rust runtime
+        # repeats that estimate because num_gpu_blocks_is_explicit remains false.
+        if not num_gpu_blocks_is_explicit:
+            memory_fraction_overrides[memory_field] = float(value)
+
+    aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
+    prefill_context_parallel_size = aic_timing_overrides.get("cp_size", 1)
+    for target in ("cp_size", "dcp"):
+        if target in aic_timing_overrides:
+            # Same contract as tp / attention_dp: a directly supplied deployment
+            # must not price one CP topology while parallel_config reports another.
+            _require_parallel_match(
+                parallel_config,
+                f"{parallel_prefix}{'cp' if target == 'cp_size' else 'dcp'}",
+                aic_timing_overrides[target],
+                f"engine provider {role} {target}",
+            )
+
+    timing_model = rank.get("timing_model")
+    uses_aic_timing = timing_model is None or (
+        isinstance(timing_model, dict)
+        and timing_model.get("type") == "external"
+        and timing_model.get("provider") == "aic"
+    )
+    if cuda_graph_reserved_bytes is not None and uses_aic_timing:
+        aic_timing_overrides["cuda_graph_reserved_bytes"] = cuda_graph_reserved_bytes
+    elif cuda_graph_reserved_bytes is not None and not capacity_materialized and not num_gpu_blocks_is_explicit:
+        raise ValueError(
+            f"engine provider {role} cuda_graph_reserved_bytes requires an AIC "
+            "timing model when nested rank capacity is inferred; set "
+            "rank.num_gpu_blocks explicitly or use AIC timing"
+        )
+    if deployment_backend_version:
+
+        def resolved_version(value):
+            if value not in {"current", "previous", "next"}:
+                return value
+            from aisim_core.sdk.perf_database import resolve_query_version
+
+            from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+            identity = timing_model.get("config", {}) if isinstance(timing_model, dict) else {}
+            roots = identity.get("systems_paths")
+            if roots is None and identity.get("systems_path") is not None:
+                roots = [identity["systems_path"]]
+            if roots is None and aic_timing_overrides.get("systems_path") is not None:
+                roots = [aic_timing_overrides["systems_path"]]
+            return resolve_query_version(
+                identity.get("system", system),
+                backend,
+                value,
+                systems_paths=list(resolve_systems_paths(roots)),
+            )
+
+        if uses_aic_timing:
+            deployment_backend_version = resolved_version(deployment_backend_version)
+        configured_version = aic_timing_overrides.get("backend_version")
+        if uses_aic_timing:
+            configured_version = resolved_version(configured_version)
+        if configured_version is not None and configured_version != deployment_backend_version:
+            raise ValueError(
+                f"engine provider {role} backend version {configured_version!r} "
+                "conflicts with BackendDeploymentSpec backend_version="
+                f"{deployment_backend_version!r}"
+            )
+        if uses_aic_timing:
+            timing_config = timing_model.get("config") if isinstance(timing_model, dict) else None
+            timing_backend_version = timing_config.get("backend_version") if isinstance(timing_config, dict) else None
+            timing_backend_version = resolved_version(timing_backend_version)
+            if timing_backend_version is not None:
+                timing_model = {**timing_model, "config": {**timing_config, "backend_version": timing_backend_version}}
+                rank["timing_model"] = timing_model
+            # A regression or learned identity may not know the version, which
+            # then cannot conflict with the deployment's.
+            if timing_backend_version not in (None, UNKNOWN_IDENTITY) and (
+                timing_backend_version != deployment_backend_version
+            ):
+                raise ValueError(
+                    f"engine provider {role} timing_model.config.backend_version="
+                    f"{timing_backend_version!r} conflicts with "
+                    "BackendDeploymentSpec backend_version="
+                    f"{deployment_backend_version!r}"
+                )
+            if timing_backend_version != UNKNOWN_IDENTITY:
+                aic_timing_overrides["backend_version"] = deployment_backend_version
+
+    # Identity and capacity inputs may coexist with a fixed/polynomial timing
+    # model. They have already served their non-timing purposes and must not be
+    # interpreted as an attempt to override that concrete timing model.
+    if not uses_aic_timing:
+        if any(
+            is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        ):
+            raise ValueError("engine model controls require an AIC timing model")
+        aic_timing_overrides.clear()
+        if capacity_materialized:
+            memory_fraction_overrides.clear()
+
+    speculation_raw = rank.pop("speculation", None)
+    timing_config = timing_model.get("config", {}) if uses_aic_timing and isinstance(timing_model, dict) else {}
+    canonical_speculation = timing_config.get("speculation")
+    canonical_kind = canonical_speculation.get("kind") if isinstance(canonical_speculation, Mapping) else None
+    speculation = None
+    if speculation_raw is not None:
+        from pydantic import TypeAdapter
+
+        from .config.engine import NgramSpeculationConfig, SpeculationConfig
+
+        speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
+        if any(
+            rank.get(key) is not None
+            for key in (
+                "aic_nextn",
+                "nextn",
+                "aic_nextn_accepted",
+                "nextn_accepted",
+                "aic_nextn_accept_rates",
+                "nextn_accept_rates",
+                "aic_mtp_seed",
+                "mtp_seed",
+            )
+        ):
+            raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        if isinstance(speculation, NgramSpeculationConfig):
+            rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        else:
+            rank["aic_nextn_accepted"] = speculation.expected_accepted_tokens
+        rank["aic_mtp_seed"] = speculation.seed
+
+    kind = speculation.kind if speculation is not None else canonical_kind
+    if (
+        rank.get("native_host_offload") is not None
+        and kind in (None, "none")
+        and any(rank.get(key) is not None for key in ("aic_nextn", "nextn"))
+    ):
+        raise ValueError("native_host_offload with speculative decoding requires canonical mtp speculation")
+    if kind not in (None, "none"):
+        supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
+        if backend not in supported:
+            raise ValueError(f"{kind} speculation requires a supported backend")
+        host_offload = rank.get("native_host_offload")
+        if host_offload is not None and not (
+            kind == "mtp"
+            and backend == "vllm"
+            and role == "aggregated"
+            and dp_size == 1
+            and rank.get("enable_prefix_caching", True) is True
+            and isinstance(host_offload, Mapping)
+            and host_offload.get("scope", "dp_rank_local") == "dp_rank_local"
+            and rank.get("g3_offload") is None
+            and rank.get("state_cache") is None
+            and rank.get("prefix_match_unit") is None
+            and not rank.get("kv_cache_groups")
+        ):
+            raise ValueError(
+                f"{kind} speculation with host_offload supports only aggregated vllm MTP, attention DP=1, "
+                "prefix caching, scope=dp_rank_local, and uniform G1/G2 without G3 or state cache"
+            )
+    if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
+        raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
+    if kind == "mtp" and rank.get("native_host_offload") is not None:
+        if rank.get("async_scheduling") is True:
+            raise ValueError("mtp speculation with host_offload requires async_scheduling=false")
+        rank["async_scheduling"] = False
+    if kind == "ngram":
+        # vLLM turns async scheduling off for ngram drafts and rejects it when
+        # requested. Resolve that here, where the speculation kind is still
+        # known: later stages see only generic draft settings, whatever timing
+        # model prices the replay.
+        if rank.get("async_scheduling") is True:
+            raise ValueError(
+                f"engine provider {role} async_scheduling: vLLM does not support async scheduling "
+                "with ngram speculative decoding"
+            )
+        rank["async_scheduling"] = False
+
+    nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
+    if nextn is not None:
+        nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
+        if nextn > 5:
+            raise ValueError(f"engine provider {role} aic_nextn must be in 1..=5")
+        rank["aic_nextn"] = nextn
+
+    accept_rates = _pop_alias(
+        rank,
+        "aic_nextn_accept_rates",
+        ("aic_nextn_accept_rates", "nextn_accept_rates"),
+    )
+    if accept_rates is not None:
+        # Canonical timing resolves depth in native replay. Keep the authored
+        # rates intact instead of requiring the same depth on the rank too.
+        if nextn is None and canonical_kind in (None, "none"):
+            raise ValueError(f"engine provider {role} aic_nextn_accept_rates requires aic_nextn")
+        if not isinstance(accept_rates, str):
+            raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")
+        rank["aic_nextn_accept_rates"] = accept_rates
+
+    nextn_accepted = _pop_alias(
+        rank,
+        "aic_nextn_accepted",
+        ("aic_nextn_accepted", "nextn_accepted"),
+    )
+    if nextn_accepted is not None:
+        if nextn is None:
+            raise ValueError(f"engine provider {role} aic_nextn_accepted requires aic_nextn")
+        if accept_rates is not None:
+            raise ValueError(f"engine provider {role} cannot set both aic_nextn_accepted and aic_nextn_accept_rates")
+        rank["aic_nextn_accept_rates"] = _accept_rates_for_expected(nextn, nextn_accepted, role=role)
+
+    mtp_seed = _pop_alias(rank, "aic_mtp_seed", ("aic_mtp_seed", "mtp_seed"))
+    if mtp_seed is not None:
+        if not isinstance(mtp_seed, int) or isinstance(mtp_seed, bool) or not 0 <= mtp_seed <= 0xFFFF_FFFF_FFFF_FFFF:
+            raise ValueError(f"engine provider {role} aic_mtp_seed must be an unsigned 64-bit integer")
+        rank["aic_mtp_seed"] = mtp_seed
+
+    if "timing_model" not in rank:
+        if not isinstance(model, str) or not model:
+            raise ValueError(f"{role} engine arguments require aic_model_path")
+        if not isinstance(system, str) or not system:
+            raise ValueError(f"{role} engine arguments require aic_system")
+        timing_config: dict[str, JSONValue] = {
+            "model": model,
+            "backend": backend,
+            "system": system,
+            "tp": tensor_parallel_size,
+            "attention_dp": dp_size,
+        }
+        block_size = rank.get("block_size")
+        if isinstance(block_size, int) and not isinstance(block_size, bool):
+            timing_config["kv_block_size"] = block_size
+        timing_config.update(memory_fraction_overrides)
+        timing_config.update(aic_timing_overrides)
+        if nextn is not None and speculation is None:
+            timing_config["nextn"] = nextn
+        rank["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": timing_config,
+        }
+    elif memory_fraction_overrides or aic_timing_overrides:
+        timing_model = rank["timing_model"]
+        if (
+            not isinstance(timing_model, dict)
+            or timing_model.get("type") != "external"
+            or timing_model.get("provider") != "aic"
+            or not isinstance(timing_model.get("config"), dict)
+        ):
+            raise ValueError("engine AIC overrides require an AIC timing model")
+        timing_model = dict(timing_model)
+        timing_config = dict(timing_model["config"])
+        timing_overrides = memory_fraction_overrides | aic_timing_overrides
+        duplicates = timing_overrides.keys() & timing_config.keys()
+        if "backend_version" in duplicates and timing_overrides["backend_version"] == timing_config["backend_version"]:
+            duplicates.remove("backend_version")
+        if duplicates:
+            duplicate = ", ".join(sorted(duplicates))
+            raise ValueError(
+                f"engine AIC option is configured both on the rank and inside timing_model.config: {duplicate}"
+            )
+        timing_config.update(timing_overrides)
+        timing_model["config"] = timing_config
+        rank["timing_model"] = timing_model
+
+    if nextn is not None:
+        timing_model = rank["timing_model"]
+        if (
+            isinstance(timing_model, dict)
+            and timing_model.get("type") == "external"
+            and timing_model.get("provider") == "aic"
+            and isinstance(timing_model.get("config"), dict)
+        ):
+            timing_model = dict(timing_model)
+            timing_config = dict(timing_model["config"])
+            if speculation is not None:
+                cost_config = speculation.cost_config()
+                if timing_config.get("nextn") not in (None, 0):
+                    raise ValueError("speculation conflicts with timing_model.config.nextn")
+                if timing_config.get("speculation") not in (None, cost_config):
+                    raise ValueError("speculation conflicts with timing_model.config.speculation")
+                if speculation.kind == "ngram" and timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("speculation requires op_level timing")
+                timing_config["speculation"] = cost_config
+            configured_nextn = timing_config.get("nextn")
+            canonical = timing_config.get("speculation")
+            if speculation is None and canonical is None and configured_nextn is not None and configured_nextn != nextn:
+                raise ValueError(
+                    f"engine provider {role} aic_nextn={nextn} conflicts with "
+                    f"timing_model.config.nextn={configured_nextn!r}"
+                )
+            if speculation is None and canonical is None:
+                timing_config["nextn"] = nextn
+            timing_model["config"] = timing_config
+            rank["timing_model"] = timing_model
+        elif speculation is not None and speculation.kind != "ngram":
+            raise ValueError(f"{speculation.kind} speculation requires external AIC timing")
+
+    host_offload = rank.get("native_host_offload")
+    if (
+        nested_rank is None
+        and isinstance(host_offload, dict)
+        and host_offload.get("scope") == "cluster_shared"
+        and host_offload.get("kv_layout_id") is None
+    ):
+        rank["native_host_offload"] = {**host_offload, "kv_layout_id": _kv_layout_id(rank, model, tensor_parallel_size)}
+
+    timing = rank.get("timing_model", {})
+    timing_config = timing.get("config", {}) if isinstance(timing, dict) and timing.get("provider") == "aic" else {}
+    if timing_config.get("cp_size") is not None:
+        prefill_context_parallel_size = timing_config["cp_size"]
+    prefill_context_parallel_size = _positive_int(
+        prefill_context_parallel_size,
+        f"engine provider {role} prefill context parallel size",
+    )
+    return {
+        "dp_size": dp_size,
+        "tensor_parallel_size": tensor_parallel_size,
+        "prefill_context_parallel_size": prefill_context_parallel_size,
+        "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
+        "rank": rank,
+    }
+
+
+def _kv_layout_id(rank: Mapping[str, JSONValue], model: JSONValue, tensor_parallel_size: int) -> str:
+    """Identity of stored KV bytes: ranks may share a G2 pool only when equal.
+
+    Uses the resolved timing identity, so per-worker quantization and attention
+    backend overrides, DCP and the canonical backend version all participate.
+    """
+    timing = rank.get("timing_model")
+    config = timing.get("config", {}) if isinstance(timing, dict) else {}
+    identity = {
+        "model": config.get("model", model),
+        "backend": rank["backend"],
+        "tp": config.get("tp", tensor_parallel_size),
+        "block_size": rank.get("block_size"),
+        "bytes_per_token": rank.get("kv_cache_bytes_per_token"),
+        **{
+            name: config.get(name)
+            for name in ("backend_version", "pp", "dcp", "kvcache_quant_mode", "attention_backend")
+        },
+    }
+    return json.dumps({k: v for k, v in identity.items() if v is not None}, sort_keys=True, separators=(",", ":"))
+
+
+def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) -> StateCacheConfig | None:
+    """Validate manual geometry before any automatic capacity materialization."""
+
+    raw = rank.get("state_cache")
+    if raw is None:
+        return None
+    state_cache = StateCacheConfig.model_validate(raw)
+    if (
+        rank.get("prefix_match_unit") is not None
+        and rank["prefix_match_unit"] != rank.get("block_size")
+        and rank.get("aic_nextn") is not None
+    ):
+        raise ValueError("sub-block prefix_match_unit does not support speculative decoding")
+    if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
+        raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
+    if rank.get("native_host_offload") is not None:
+        raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
+    if rank.get("g3_offload") is not None:
+        raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+    # Only prefill and decode roles transfer KV.
+    transfer = ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth") if role == "aggregated" else ()
+    conflicts = [
+        name
+        for name in ("gpu_memory_utilization", "mem_fraction_static", "free_gpu_memory_fraction", *transfer)
+        if rank.get(name) is not None
+    ]
+    if rank.get("cuda_graph_reserved_bytes") not in (None, 0):
+        conflicts.append("cuda_graph_reserved_bytes")
+    # Rust serializes this default explicitly; it does not enable PD transfer.
+    if role == "aggregated" and rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
+        conflicts.append("kv_transfer_timing_mode")
+    if conflicts:
+        raise ValueError(f"state_cache rejects capacity/transfer overrides: {', '.join(conflicts)}")
+    for name in ("num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"):
+        value = rank.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
+            raise ValueError(f"state_cache requires explicit positive {name} within u64")
+    if rank["num_gpu_blocks"] < state_cache.state_blocks(rank["block_size"], rank["kv_cache_bytes_per_token"]) + 1:
+        raise ValueError("state_cache capacity must fit one token block and one request state")
+    return state_cache
+
+
+def _positive_int(value: JSONValue, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _accept_rates_for_expected(nextn: int, value: JSONValue, *, role: str) -> str:
+    """Lower an explicit expected accepted-token count to conditional rates."""
+
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0.0 <= float(value) <= nextn
+    ):
+        raise ValueError(f"engine provider {role} aic_nextn_accepted must be finite and within [0, {nextn}]")
+    expected = float(value)
+    whole = int(expected)
+    fraction = expected - whole
+    rates = [1.0] * whole
+    if len(rates) < nextn:
+        rates.append(fraction)
+    rates.extend([0.0] * (nextn - len(rates)))
+    return ",".join(format(rate, ".17g") for rate in rates)
+
+
+def _random_range_ratio(value: JSONValue) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value <= 0.0
+        or value > 1.0
+    ):
+        raise ValueError(f"random_range_ratio must be finite and in (0.0, 1.0], got {value!r}")
+    return float(value)
+
+
+def _random_seed(value: JSONValue) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFFFF_FFFF_FFFF_FFFF:
+        raise ValueError("random_seed must be an unsigned 64-bit integer")
+    return value
+
+
+def _sample_synthetic_lengths(
+    upper: int,
+    count: int,
+    random_range_ratio: float,
+    rng: random.Random | np.random.RandomState,
+) -> list[int]:
+    if random_range_ratio == 1.0:
+        return [upper] * count
+    lower = int(upper * random_range_ratio)
+    if lower == 0:
+        raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
+    if isinstance(rng, np.random.RandomState):
+        return rng.randint(lower, upper + 1, size=count).tolist()
+    return [rng.randint(lower, upper) for _ in range(count)]
+
+
+def _require_nested_context_parallel_match(
+    role_config: Mapping[str, JSONValue],
+    parallel_config: Mapping[str, JSONValue],
+    role: str,
+) -> None:
+    """Reject ``timing_model.config.cp_size/dcp`` that disagree with ``parallel_config``.
+
+    The timing model may sit at the top level (flat CLI/Sweeper form) or under
+    the nested ``rank`` descriptor (execution-level input); both are checked.
+    """
+    rank_config = role_config.get("rank")
+    timing_source: Mapping[str, JSONValue] = rank_config if isinstance(rank_config, Mapping) else role_config
+    timing = timing_source.get("timing_model")
+    if not isinstance(timing, dict) or timing.get("type") != "external" or timing.get("provider") != "aic":
+        return
+    nested = timing.get("config")
+    if not isinstance(nested, dict):
+        return
+    prefix = "" if role == "aggregated" else f"{role}_"
+    for target, parallel_field in (("cp_size", "cp"), ("dcp", "dcp")):
+        value = nested.get(target)
+        if value is None:
+            continue
+        _require_parallel_match(
+            parallel_config,
+            f"{prefix}{parallel_field}",
+            _positive_int(value, f"engine provider {role} timing_model.config.{target}"),
+            f"engine provider {role} timing_model.config.{target}",
+        )
+
+
+def _require_parallel_match(
+    parallel_config: Mapping[str, JSONValue],
+    field: str,
+    actual: int,
+    label: str,
+) -> None:
+    expected = parallel_config.get(field)
+    if expected is None:
+        return
+    expected = _positive_int(expected, f"parallel_config.{field}")
+    if expected != actual:
+        raise ValueError(f"parallel_config.{field}={expected} conflicts with {label}={actual}")
+
+
+def _require_supported_synthetic_workload(
+    workload: Mapping[str, JSONValue],
+) -> None:
+    unsupported: list[str] = []
+    if workload.get("turns_per_session", 1) != 1:
+        unsupported.append("turns_per_session")
+    if workload.get("shared_prefix_ratio", 0.0) != 0.0:
+        unsupported.append("shared_prefix_ratio")
+    if workload.get("num_prefix_groups", 0) != 0:
+        unsupported.append("num_prefix_groups")
+    if workload.get("inter_turn_delay_ms", 0.0) != 0.0:
+        unsupported.append("inter_turn_delay_ms")
+    if unsupported:
+        raise ValueError("engine replay synthetic traffic does not yet support " + ", ".join(unsupported))
+
+
+def _pop_alias(
+    config: dict[str, JSONValue],
+    target: str,
+    aliases: tuple[str, ...],
+) -> JSONValue | None:
+    configured = [alias for alias in aliases if alias in config]
+    if len(configured) > 1:
+        names = ", ".join(configured)
+        raise ValueError(f"engine config duplicates {target}: {names}")
+    if not configured:
+        return None
+    return config.pop(configured[0])
+
+
+def _pop_matching_aliases(
+    config: dict[str, JSONValue],
+    target: str,
+    aliases: tuple[str, ...],
+    default: JSONValue,
+) -> JSONValue:
+    values = [config.pop(alias) for alias in aliases if alias in config]
+    if not values:
+        return default
+    if any(value != values[0] for value in values[1:]):
+        raise ValueError(f"engine config has conflicting {target} aliases")
+    return values[0]
+
+
+def _nonnegative_time(value: JSONValue, name: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    return float(value)
+
+
+def _positive_number(value: JSONValue, name: str) -> float:
+    number = _nonnegative_time(value, name)
+    if number == 0.0:
+        raise ValueError(f"{name} must be positive")
+    return number
+
+
+def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_native_report: bool) -> ReplayReport:
+    """Normalize an execution report to Sweeper's stable scoring metric names."""
+
+    payload = dict(report)
+    metrics: dict[str, float | None] = {}
+    try:
+        power = normalize_power_summary(payload)
+    except ValueError as exc:
+        raise InvalidRunnerError(str(exc)) from exc
+    payload.update(power)
+
+    def add(name: str, value: object) -> None:
+        if isinstance(value, bool) or not isinstance(value, Real):
+            return
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise InvalidRunnerError(f"engine replay metric {name!r} is not finite") from exc
+        if not math.isfinite(number):
+            raise InvalidRunnerError(f"engine replay metric {name!r} is not finite")
+        metrics[name] = number
+
+    # The Rust ReplayReport's flat serialization is the sole wire
+    # format. Per-request records remain a Rust replay concern and are not
+    # reconstructed into a second Python report model.
+    for name, value in payload.items():
+        add(name, value)
+    metadata = {
+        key: payload[key]
+        for key in (
+            "prediction_provenance",
+            "state_cache",
+            "agentic_qualification",
+            "agentic_input_format",
+            "agentic_lanes",
+            "agentic_snapshots",
+            "agentic_phases",
+            "agentic_profile",
+            "agentic_model_projection",
+            "weka_nested_timestamp_basis",
+            "fpm_query_evidence",
+        )
+        if key in payload
+    }
+    if include_native_report:
+        metadata["native_report"] = payload
+    metrics.update(normalize_power_summary(metrics))
+    metadata["power"] = power_metadata(metrics)
+    return ReplayReport(metrics=metrics, metadata=metadata)

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build and verify the only two approved AISimulate release artifacts."""
+"""Build and verify the only two approved AISim release artifacts."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ VERSION = "0.15.0"
 PYTHON_PACKAGE = "aisim"
 CRATE_PACKAGE = "aisim-core"
 REQUIRE_CLI_ALIAS = True
+PYTHON_NAMESPACE = "aisim"
 # Nightly CI stamps a dev suffix via scripts/release/apply_dev_version.py:
 # PEP 440 `0.15.0.devYYYYMMDD` in the wheel, SemVer `0.15.0-dev.YYYYMMDD` in
 # the crate, optionally followed by a ten-digit run number in both formats.
@@ -32,7 +33,7 @@ REQUIRE_CLI_ALIAS = True
 DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}(?:[0-9]{10})?")
 
 EXPECTED_PYTHON_PROJECTS = {
-    ROOT / "python" / "aisimulate" / "pyproject.toml": PYTHON_PACKAGE,
+    ROOT / "python" / "aisim" / "pyproject.toml": PYTHON_PACKAGE,
 }
 EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
@@ -47,13 +48,18 @@ def _is_source_manifest(path: Path) -> bool:
     return not IGNORED_DISCOVERY_DIRS.intersection(path.relative_to(ROOT).parts)
 
 
+def _project_root() -> Path:
+    canonical = ROOT / "python" / "aisim"
+    return canonical if (canonical / "pyproject.toml").is_file() else ROOT / "python" / "aisimulate"
+
+
 def _expected_scripts() -> dict[str, str]:
     scripts = {
-        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
-        "aisimulate": "aisimulate.supervision:main",
+        "aiconfigurator": f"{PYTHON_NAMESPACE}.legacy_cli.entrypoint:main",
+        "aisimulate": f"{PYTHON_NAMESPACE}.supervision:main",
     }
     if REQUIRE_CLI_ALIAS:
-        scripts["aisim"] = "aisimulate.supervision:main"
+        scripts["aisim"] = f"{PYTHON_NAMESPACE}.supervision:main"
     return scripts
 
 
@@ -86,7 +92,7 @@ def check_manifests() -> tuple[str, str]:
         f"expected={{{EXPECTED_CRATE!r}: {CRATE_PACKAGE!r}}}\nactual={publishable_crates}"
     )
 
-    app = _toml(ROOT / "python" / "aisimulate" / "pyproject.toml")["project"]
+    app = _toml(_project_root() / "pyproject.toml")["project"]
     crate = _toml(EXPECTED_CRATE)["package"]
     py_version = str(app["version"])
     crate_version = str(crate["version"])
@@ -143,10 +149,10 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
             "--release",
             "--out",
             str(output),
-            cwd=ROOT / "python" / "aisimulate",
+            cwd=_project_root(),
         )
 
-    with tempfile.TemporaryDirectory(prefix="aisimulate-crate-") as temp:
+    with tempfile.TemporaryDirectory(prefix="aisim-crate-") as temp:
         target = Path(temp) / "target"
         _run(
             "cargo",
@@ -207,7 +213,7 @@ def verify_output(output: Path, py_version: str, crate_version: str) -> None:
 
 def main() -> None:
     global ROOT, VERSION, EXPECTED_PYTHON_PROJECTS, EXPECTED_CRATE
-    global PYTHON_PACKAGE, CRATE_PACKAGE, REQUIRE_CLI_ALIAS
+    global PYTHON_PACKAGE, CRATE_PACKAGE, REQUIRE_CLI_ALIAS, PYTHON_NAMESPACE
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, help="Release source checkout")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
@@ -219,7 +225,9 @@ def main() -> None:
         # A historical release has its own base version. Anchor the contract
         # to its committed manifest, never to the stamped working copy.
         manifest = subprocess.check_output(
-            ["git", "show", "HEAD:python/aisimulate/pyproject.toml"], cwd=ROOT, text=True
+            ["git", "show", f"HEAD:{(_project_root() / 'pyproject.toml').relative_to(ROOT).as_posix()}"],
+            cwd=ROOT,
+            text=True,
         )
         committed_project = tomllib.loads(manifest)["project"]
         VERSION = str(committed_project["version"])
@@ -228,7 +236,8 @@ def main() -> None:
             raise ValueError(f"unsupported source distribution: {PYTHON_PACKAGE}")
         CRATE_PACKAGE = f"{PYTHON_PACKAGE}-core"
         REQUIRE_CLI_ALIAS = "aisim" in committed_project["scripts"]
-    EXPECTED_PYTHON_PROJECTS = {ROOT / "python" / "aisimulate" / "pyproject.toml": PYTHON_PACKAGE}
+        PYTHON_NAMESPACE = committed_project["scripts"]["aisimulate"].split(".", 1)[0]
+    EXPECTED_PYTHON_PROJECTS = {_project_root() / "pyproject.toml": PYTHON_PACKAGE}
     EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 
     py_version, crate_version = check_manifests()

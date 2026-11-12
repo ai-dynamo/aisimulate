@@ -13,7 +13,7 @@ repository.workspace = true
 readme = "README.md"
 
 [lib]
-name = "aisimulate_core"
+name = "aisim_core"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]

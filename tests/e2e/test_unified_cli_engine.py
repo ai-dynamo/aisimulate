@@ -16,11 +16,11 @@ from typing import Any
 import pytest
 import yaml
 
-from aisimulate import EngineReplayRunnerFactory, ReplayOutputRequirements
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.sweeper import SweepResult
-from aisimulate.sweeper.result import CandidateStatus
+from aisim import EngineReplayRunnerFactory, ReplayOutputRequirements
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisim.sweeper import SweepResult
+from aisim.sweeper.result import CandidateStatus
 
 pytestmark = [
     pytest.mark.integration,
@@ -66,7 +66,7 @@ def _run_cli(
     expected_returncode: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        [sys.executable, "-m", "aisimulate", *args],
+        [sys.executable, "-m", "aisim", *args],
         cwd=_REPO_ROOT,
         env=None if env is None else {**os.environ, **env},
         text=True,
@@ -75,8 +75,7 @@ def _run_cli(
         check=False,
     )
     assert result.returncode == expected_returncode, (
-        f"aisimulate {' '.join(args)} failed with {result.returncode}\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        f"aisim {' '.join(args)} failed with {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     return result
 
@@ -559,7 +558,7 @@ def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Pa
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "recommend",
             "--config",
             str(config),

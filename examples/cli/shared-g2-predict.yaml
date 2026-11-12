@@ -3,7 +3,7 @@
 # Cluster-shared G2 for two replicas with attention DP 2: four DP ranks share
 # one host pool. Fixed timing isolates cache ownership from performance data.
 # Compare with one private G2 cache per DP rank:
-#   aisimulate predict --stack engine --config examples/cli/shared-g2-predict.yaml \
+#   aisim predict --stack engine --config examples/cli/shared-g2-predict.yaml \
 #     --set engine.workers.aggregated.kv_cache.host_offload.scope=dp_rank_local
 traffic:
   source: {type: synthetic, input_tokens: 1024, output_tokens: 8, cached_prefix_tokens: 896}

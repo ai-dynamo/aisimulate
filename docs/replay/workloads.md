@@ -243,14 +243,14 @@ Agentic formats are qualified on the offline `engine` stack; see
 [agentic load controls](#agentic-load-controls) for supported runtimes. P/D workers
 must share one target model. Reading a `dynamo` trace does not require the Dynamo stack.
 
-Weka is the AgentX source format. AISimulate converts a Weka corpus into
+Weka is the AgentX source format. AISim converts a Weka corpus into
 Agentic Mooncake and replays it natively; the Dynamo stack is not needed.
 
 Weka producers use two timestamp conventions for requests inside a subagent:
 raw kv-cache-tester traces are relative to the subagent marker, while published
 AgentX traces are absolute. Set `traffic.source.nested_timestamp_basis` to
 `relative` or `absolute` when you know which one applies. With `auto` (the
-default), AISimulate picks `relative` for the whole corpus if any child request
+default), AISim picks `relative` for the whole corpus if any child request
 is earlier than its subagent marker, and `absolute` otherwise. The chosen basis
 is reported as `weka_nested_timestamp_basis`.
 
@@ -341,7 +341,7 @@ A Weka corpus can name several source models. Replay runs every request on
 
 ### Weka client
 
-`traffic.source.client` chooses whose replay of the corpus AISimulate follows.
+`traffic.source.client` chooses whose replay of the corpus AISim follows.
 With `recorded` (the default), a subagent starts at its recorded offset from
 the request before it, a joining turn waits its recorded gap after each child,
 and the streams of a play share their whole common hash prefix, unless a
@@ -467,7 +467,7 @@ A snapshot is cut at request boundaries. It does not model partial decode
 progress or restore an engine checkpoint: without warmup, the caches start
 empty.
 
-For a reference run, matching the seed alone is insufficient: AISimulate's
+For a reference run, matching the seed alone is insufficient: AISim's
 versioned BLAKE3 sampler is not AIPerf's NumPy sampler. Import the actual cuts
 and next sequential corpus position instead:
 
@@ -517,7 +517,7 @@ python scripts/prediction_regression/export_agentx_snapshots.py \
 `reference-dataset-metadata.json` is the reference loader's
 `DatasetMetadata.model_dump_json()` output, with every conversation, branch,
 and timestamp retained. `source-play-map.json` maps each root
-`conversation_id` from that metadata to its normalized AISimulate
+`conversation_id` from that metadata to its normalized AISim
 `source_play_id` (as recorded in `agentic_snapshots`). The root order in the
 metadata must match the replay corpus order and each root mapping must identify
 the corresponding source play; do not sort either input. The importer validates
@@ -543,7 +543,7 @@ paths must be new. For importable JSON on stdout, omit `--output` and provide
 anything is printed to stdout.
 The exporter verifies the source revision and clean source tree, invokes the
 reference `TrajectorySource` directly. It fails on unsupported samplers, timestamp-less trajectories,
-or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISimulate
+or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISim
 runtime dependency.
 
 <a id="agentic-warmup"></a>
@@ -651,7 +651,7 @@ idle guards, cancellation and result details.
 is a small offline example with fixed timing:
 
 ```bash
-aisimulate predict --config examples/cli/agentic-profile.yaml \
+aisim predict --config examples/cli/agentic-profile.yaml \
   --capture-per-request --format json --output-dir ./agentic-profile
 ```
 
@@ -682,7 +682,7 @@ with vLLM's 64-token blocks and 127 tokens with SGLang's 1-token pages.
 
 ### Behavior references
 
-AISimulate's snapshot, warmup and profile behavior is modeled on AIPerf,
+AISim's snapshot, warmup and profile behavior is modeled on AIPerf,
 InferenceX and the AgentX harness, implemented independently and not at full
 AgentX parity. Pinned revisions, licenses and known differences are listed in
 [agentic warmup](agentic/warmup.md#reference-and-validation-boundary) and

@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # AIC compatibility CLI
 
 This guide documents the legacy `aiconfigurator cli` compatibility commands that still ship
-with AISimulate. For the unified `aisimulate` CLI, see the
-[AISimulate CLI User Guide](../reference/cli.md) and
+with AISim. For the unified `aisim` CLI, see the
+[AISim CLI User Guide](../reference/cli.md) and
 [AIC migration guide](migration.md).
 
 ## Basic Command
@@ -109,7 +109,7 @@ The `generate` mode calculates the smallest tensor parallel (TP) size that fits 
 
 **Python API equivalent:**
 ```python
-from aisimulate.legacy_cli import cli_generate
+from aisim.legacy_cli import cli_generate
 
 result = cli_generate(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -216,7 +216,7 @@ aiconfigurator cli estimate \
 
 **Python API equivalent:**
 ```python
-from aisimulate.legacy_cli.api import cli_estimate
+from aisim.legacy_cli.api import cli_estimate
 
 # Aggregated estimation
 result = cli_estimate(
@@ -377,7 +377,7 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 
 **Python API equivalent:**
 ```python
-from aisimulate.legacy_cli import cli_support
+from aisim.legacy_cli import cli_support
 
 agg_supported, disagg_supported = cli_support(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -426,7 +426,7 @@ The output includes `total_gpus_needed` and `replicas_needed` columns, showing b
 
 **Python API equivalent:**
 ```python
-from aisimulate.legacy_cli import cli_recommend
+from aisim.legacy_cli import cli_recommend
 
 result = cli_recommend(
     model_path="Qwen/Qwen3-32B",
@@ -527,11 +527,11 @@ The command will create two experiments for the given problem, one is `agg` and 
 #### Spica migration
 
 The experimental Spica smart sweeper has moved to Dynamo's standalone
-[AI Simulate distribution](https://docs.nvidia.com/dynamo/dev/knowledge-base/modular-components/ai-simulate/spica/overview).
+[AISim distribution](https://docs.nvidia.com/dynamo/dev/knowledge-base/modular-components/ai-simulate/spica/overview).
 The AIC `--thorough-sweep` and `--thorough-config` flags have been removed. Install
-it from a matching Dynamo checkout with `python -m pip install ./aisimulate`, then run Spica
-through `python -m aisimulate.spica`. Runnable configurations and tools live under
-`examples/aisimulate/spica`.
+it from a matching Dynamo checkout with `python -m pip install ./aisim`, then run Spica
+through `python -m aisim.spica`. Runnable configurations and tools live under
+`examples/aisim/spica`.
 
 #### Systems Paths
 
@@ -572,7 +572,7 @@ This shows that for model `Qwen/Qwen3-32B-FP8` to deploy on 32 H200, if you requ
 
 **Python API equivalent:**
 ```python
-from aisimulate.legacy_cli import cli_default
+from aisim.legacy_cli import cli_default
 
 result = cli_default(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -805,16 +805,16 @@ Use `--generator-config path/to/file.yaml` to provide `ServiceConfig`/`K8sConfig
 - `--generator-set K8sConfig.k8s_namespace=dynamo \`
 
 #### Rule Plugin Selection
-You can switch the generator rule set via `--generator-set rule=benchmark`. This selects a rule plugin folder under `src/aisimulate/generator/rule_plugin/`.
+You can switch the generator rule set via `--generator-set rule=benchmark`. This selects a rule plugin folder under `src/aisim/generator/rule_plugin/`.
 
 - **Default (production)**: if `rule` is not provided, the generator uses the default production rules. These are tuned for deployment (e.g., adjusted max batch size and CUDA graph batch sizes).
 - **Benchmark**: `--generator-set rule=benchmark` enables rules designed to align generated configs with AIC sdk results, including:
   - wider CUDA graph batch size coverage to match simulated results
   - stricter max batch size that follows the simulated batch size
 
-You can also define your own rule sets by adding a new folder under `src/aisimulate/generator/rule_plugin/` and selecting it with `--generator-set rule=<folder_name>`.
+You can also define your own rule sets by adding a new folder under `src/aisim/generator/rule_plugin/` and selecting it with `--generator-set rule=<folder_name>`.
 
-Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aisimulate/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`.
+Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aisim/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`.
 
 The `--generator-help` command supports three section options:
 - `--generator-help` or `--generator-help all` (default): Shows both the full deployment schema and the backend parameter mappings
@@ -923,7 +923,7 @@ disagg Top Configurations: (Sorted by tokens/s/gpu)
 |  4   |    746.33    |     43.72     | 542.58 |     11955.71    | 496 (=496x1) |    16 (16=1x16)   |    1     | 16 (=8x1+1x8)  |     8      |    1 (=1x1)    |    tp1pp1   |   1   |     1      |    8 (=8x1)    |    tp8pp1   |  496  |
 +------+--------------+---------------+--------+-----------------+--------------+-------------------+----------+----------------+------------+----------------+-------------+-------+------------+----------------+-------------+-------+
 ********************************************************************************
-2025-12-01 23:36:41,892 - aisimulate.legacy_cli.main - INFO - All experiments completed in 1.92 seconds
+2025-12-01 23:36:41,892 - aisim.legacy_cli.main - INFO - All experiments completed in 1.92 seconds
 ```
 
 #### Inclusive TPOT reporting (`--inclusive-tpot`)
@@ -956,7 +956,7 @@ aiconfigurator cli default \
 The Python API equivalent accepts a `strict_sla` keyword argument:
 
 ```python
-from aisimulate.legacy_cli import cli_default
+from aisim.legacy_cli import cli_default
 
 result = cli_default(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -1038,7 +1038,7 @@ aiconfigurator cli default \
 
 **Python API equivalent:**
 ```python
-from aisimulate.legacy_cli import cli_exp
+from aisim.legacy_cli import cli_exp
 
 # Run experiments from a YAML file
 result = cli_exp(yaml_path="example.yaml")
@@ -1055,7 +1055,7 @@ config = {
 result = cli_exp(config=config)
 ```
 
-See `src/aisimulate/legacy_cli/exps/database_mode_comparison.yaml` for an example comparing different database modes.
+See `src/aisim/legacy_cli/exps/database_mode_comparison.yaml` for an example comparing different database modes.
 
 ### Benchmark Artifacts
 
@@ -1091,7 +1091,7 @@ aiconfigurator cli exp --yaml-path example.yaml
 ```
 > **YAML format:** Experiment YAML uses the flat `Task` schema — every key maps
 > 1:1 to a `Task` field, with no `mode:` selector and no `config:` /
-> `worker_config:` nesting. See [`example.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml)
+> `worker_config:` nesting. See [`example.yaml`](../../python/aisim/src/aisim/legacy_cli/example.yaml)
 > for the annotated template.
 >
 > The legacy V1 nested format (`mode` / `config` / `worker_config` /
@@ -1099,10 +1099,10 @@ aiconfigurator cli exp --yaml-path example.yaml
 > compatibility shim remains: V1 YAML still loads, but it is auto-converted to V2
 > with a `DeprecationWarning`, and any field with no V2 equivalent is rejected
 > (not silently dropped). See
-> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example_v1_deprecated.yaml)
+> [`example_v1_deprecated.yaml`](../../python/aisim/src/aisim/legacy_cli/example_v1_deprecated.yaml)
 > for the old shape. Write all new configs in the flat V2 format below.
 
-An example YAML file looks like this; see the [annotated experiment template](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml).
+An example YAML file looks like this; see the [annotated experiment template](../../python/aisim/src/aisim/legacy_cli/example.yaml).
 Let's split the yaml file into several sections.
 1. exps
 ```yaml
@@ -1210,7 +1210,7 @@ Everything omitted falls back to defaults / HF inference. With large-EP candidat
 
 Let's go through some pre-defined experiments for reference.
 1. homegeneous vs. heterogenous
-The example [yaml](../../python/aisimulate/src/aisimulate/legacy_cli/exps/hetero_disagg.yaml)
+The example [yaml](../../python/aisim/src/aisim/legacy_cli/exps/hetero_disagg.yaml)
 ```yaml
 exps:
   - exp_h200_h200
@@ -1249,7 +1249,7 @@ We defined two experiments. `exp_h200_h200` uses H200 for both prefill and decod
 **Note**: You can also compare different backends by setting different `backend_name` values (trtllm, vllm, sglang) in your experiments.
 
 2. use a specific quantization
-The example [yaml](../../python/aisimulate/src/aisimulate/legacy_cli/exps/qwen3_32b_pertensor.yaml)
+The example [yaml](../../python/aisim/src/aisim/legacy_cli/exps/qwen3_32b_pertensor.yaml)
 ```yaml
 exps:
   - exp_agg
@@ -1298,7 +1298,7 @@ exp_disagg:
 ```
 Here we override the quantization of Qwen/Qwen3-32B-FP8: the default is blockwise FP8 for GEMM, and we set per-tensor FP8 explicitly via the `*_quant_mode` fields. (The deprecated V1 way was `profiles: ["fp8"]`, which expanded to exactly these fields.)
 
-You can refer to [src/aisimulate/legacy_cli/exps](../../python/aisimulate/src/aisimulate/legacy_cli/exps) to find more reference yaml files.
+You can refer to [src/aisim/legacy_cli/exps](../../python/aisim/src/aisim/legacy_cli/exps) to find more reference yaml files.
 
 Use `exp` mode for flexible experiments, `default` mode for convenient agg vs disagg comparison with SLA optimization, and `generate` mode for quick config generation without sweeping. All modes support generating configs for frameworks automatically by `--save-dir DIR`.
 
@@ -1402,7 +1402,7 @@ the partition. Backend and Dynamo version options retain their normal meaning.
 For generation without an SLA search, use `aiconfigurator cli generate
 --model-path MODEL --system SYSTEM --backend vllm --total-gpus N
 --deployment-target slurm --generator-config slurm.yaml --save-dir ./results`.
-This compatibility CLI is included in AISimulate. Put `rule: benchmark` in the
+This compatibility CLI is included in AISim. Put `rule: benchmark` in the
 input YAML when using the benchmark sizing rules.
 
 The target produces `deploy.sbatch` for persistent serving and `benchmark.sbatch`
@@ -1424,12 +1424,12 @@ for the complete input example, outputs and current scope.
 > **YAML format:** Experiment YAML uses the flat `Task` schema — every key maps
 > 1:1 to a `Task` field, with no `mode:` selector and no `config:` /
 > `worker_config:` nesting. The examples below are in this format; see
-> [`example.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml) for the full template.
+> [`example.yaml`](../../python/aisim/src/aisim/legacy_cli/example.yaml) for the full template.
 >
 > The legacy V1 nested format is **deprecated** and kept only behind a limited
 > compatibility shim: it auto-converts to V2 with a `DeprecationWarning`, and
 > any field with no V2 equivalent is rejected rather than silently dropped. See
-> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example_v1_deprecated.yaml)
+> [`example_v1_deprecated.yaml`](../../python/aisim/src/aisim/legacy_cli/example_v1_deprecated.yaml)
 > for the old shape.
 
 ### Kernel backend values
@@ -1457,7 +1457,7 @@ The optional params of cli contains the definition of ISL, OSL, TTFT and TPOT wh
 ```bash
 aiconfigurator cli exp --yaml-path example.yaml
 ```
-The example.yaml is defined [here](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml).
+The example.yaml is defined [here](../../python/aisim/src/aisim/legacy_cli/example.yaml).
 Let's take a look at example.yaml
 ```yaml
 ## agg_full: aggregated, full control. Use as a template.
@@ -1621,7 +1621,7 @@ pool is rate-matched against the LM pools; result rows carry `(e)workers`/`(e)tp
 - `rate_match_encoder_degradation`: encode-pool rate-matching degradation (default 0.9, alongside the
   prefill/decode factors)
 
-See the `vl_epd_agg` experiment in [`python/aisimulate/src/aisimulate/legacy_cli/example.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml) for a complete template.
+See the `vl_epd_agg` experiment in [`python/aisim/src/aisim/legacy_cli/example.yaml`](../../python/aisim/src/aisim/legacy_cli/example.yaml) for a complete template.
 
 ### Practical suggestion
 In order to save search time, you need to reduce the search space by choosing fewer parallel options. Say for `*_num_gpu_candidates` here, it's DeepSeek V3 with 671B model

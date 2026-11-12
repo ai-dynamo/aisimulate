@@ -255,7 +255,7 @@ def prepare(repo, output):
 
 def write_assets(repo, destination):
     """One shared Plotly asset and the existing replay renderer, from trusted main."""
-    source = repo / "python/aisimulate/src/aisimulate/replay"
+    source = repo / "python/aisim/src/aisim/replay"
     destination.mkdir(parents=True, exist_ok=True)
     for name in ("dashboard.js", "dashboard.css", "dashboard-body.html"):
         (destination / name).write_bytes((source / name).read_bytes())
