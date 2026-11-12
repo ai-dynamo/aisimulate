@@ -70,6 +70,17 @@ AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
 analytical EPD and its deferred overlay, cached-prefix tokens, state/grouped
 cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
+`supported_worker_types` defaults to `("monolithic",)`; a runner must explicitly
+include `"afd"` to accept AFD roles. The built-in engine advertises both types.
+Deployment modes are `agg|disagg`, independent of role implementation. Ordinary
+and native AFD deployments retain ReplaySpec API 1. Role-local AFD topology and
+qualification artifacts use their own schema 2; this does not require downstream
+runners to implement AFD or upgrade the common ReplaySpec protocol. The default
+monolithic-only capability rejects AFD roles before execution.
+
+Old `afd`/`afd+pd` deployment modes and development API-2 saved inputs must be
+regenerated. API-version checks remain exact; API-2 inputs are not silently
+converted to API 1.
 
 `supports_generic_speculation` defaults to `False`; the built-in engine factory
 sets it to `True` within the [registered-scheme replay limits](../replay/engine/speculation.md#registered-schemes).
@@ -79,11 +90,18 @@ of MTP/NextN acceptance inputs; it does not establish support for EAGLE or other
 schemes' draft costs. A stack must explicitly declare generic speculation
 support and retain those costs through its timing provider.
 
+`supports_mtp_host_offload` defaults to `False` and declares the combined
+MTP + G2 contract. The built-in engine advertises it; existing external runners,
+including Dynamo, must opt in only after their runtime and dependency pins
+support the same composition. Generic speculation or G2 support alone does
+not enable it.
+
 `require_compatible(spec)` checks versions and coarse combinations before
 execution. AgentX G2 additionally requires offline vLLM, static workers (one
 aggregated worker, 1P1D, or several aggregated workers with a `dp_rank_local`
-G2 each), and DP1 on every role. G3 and speculation cannot be
-combined with AgentX G2. The [feature matrix](../replay/features.md) records the built-in
+G2 each), and DP1 on every role. G3 cannot be combined with AgentX G2.
+Speculation is limited to canonical MTP on a single aggregated worker with
+local G2, prefix caching and synchronous scheduling. The [feature matrix](../replay/features.md) records the built-in
 stack's actual boundary, including limitations stricter than a capability flag.
 
 If every backend/topology pair fails Sweeper preflight, `RunnerIncompatibleError`

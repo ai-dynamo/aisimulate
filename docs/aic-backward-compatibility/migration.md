@@ -258,8 +258,8 @@ that mode first, then the other modes in global priority order. Invalid inputs
 do not trigger fallback. An untrained regression is not ready for offline
 simulation, and queries do not switch estimators after construction.
 
-Engine-wide data policies require regular aggregated/disaggregated language
-workers with default timing in every role. AFD, analytical encoders, and
+Engine-wide data policies apply to regular aggregated/disaggregated language
+workers with default timing and to native AFD pools. Analytical encoders and
 fixed/polynomial timing retain their separate paths. Saved recommendation YAML
 preserves resolved role data roots, versions, policies, and estimator settings.
 External FPM profiles require a matching parquet/metadata pair; see the
@@ -311,7 +311,7 @@ providers can omit memory details. Analytical EPD reports available language
 memory without claiming a complete encoder breakdown.
 
 Whole-forward FPM and latency-only providers do not expose per-operation
-timing/source evidence. EPD/AFD overlays and the external Dynamo Python adapter
+timing/source evidence. Analytical EPD overlays and the external Dynamo Python adapter
 do not export a qualified combined operation report. Missing SOL evidence keeps
 the measured timing and an explicit reason.
 
@@ -355,14 +355,16 @@ selection and fallback policy.
 | GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
 
 `enable_wideep` is obsolete: topology now determines the MoE execution regime.
-The new model controls require default timing on every language role. AFD and
-analytical encoder configurations reject them. Backend/model compatibility is
+The model controls require default timing on ordinary language roles. Native
+AFD supports precision overrides, kernel selectors and MTP; EPLB, redundant
+slots and nondefault MoE backends remain unsupported. Analytical encoder
+configurations reject unsupported controls. Backend/model compatibility is
 validated by the canonical constructor before simulation. Use `--stack engine`
 for these controls and exact synthetic shared prefixes. Older Dynamo adapters
 do not support them and fail capability validation before replay. Explicit MTP
 expected acceptance also requires an opt-in runner capability; legacy acceptance-rate
-payloads retain their existing compatibility. AFD and
-AFD+PD reject positive `cached_prefix_tokens`.
+payloads retain their existing compatibility. Native AFD supports positive
+`cached_prefix_tokens` and prices the actual uncached prefill suffix.
 
 Save this bounded recommendation as `controls.yaml` to preserve a shared prefix
 and KV quantization while using the existing capacity field:
@@ -414,19 +416,39 @@ engine cache block size can produce zero hits.
 
 ### AFD translation
 
-The legacy compatibility CLI no longer supports `--estimate-mode afd` or
-`--serving-mode afd`; `--serving-mode all` now includes only agg and disagg.
-Use the unified `aisimulate recommend` and `aisimulate predict` commands for AFD.
-The former AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
-`phase: decode` and `combined_with_pd: true` select decode-side AFD with a regular
-prefill companion. The total GPU budget includes attention, FFN, and companion
-pools. This is analytical fixed-length synthetic traffic, not event-level AFD.
+Use unified `aisimulate recommend` and `aisimulate predict` with SGLang.
+The legacy CLI rejects `--estimate-mode afd` and `--serving-mode afd`;
+`--serving-mode all` selects agg and disagg.
 
-This walkthrough pins a 2,048-token context to bound KV memory and uses an
-illustrative 300 ms ITL limit. It constrains the prefill companion to TP16 and the
-AFD attention side to TP8 so this small smoke search has a qualifying topology.
-Expand the topology and scheduler domains for an optimization run. Choose limits
-appropriate to your workload.
+| Previous input | Current input | Saved-artifact action |
+| --- | --- | --- |
+| `engine.mode: afd`, top-level `engine.afd`, `phase: both` | `mode: aggregated`, `workers.aggregated.type: afd`, role-local `afd` | Recompile the deployment and regenerate qualification. |
+| `combined_with_pd: true`, `phase: prefill` or `decode` | `mode: disaggregated`; put AFD on that role and configure the opposite role explicitly | Recompile; dual-sided AFD needs an independent block per role. |
+| `boundary_on_attn`, even `true` | Remove from YAML, topology and native rank/timing inputs; boundary work stays on A | Regenerate saved deployments. Legacy Task `afd_boundary_on_attn` is still discarded for old agg/disagg experiments. |
+| Timing provider `aic-afd` | `afd`; the input boundary normalizes the old name | New metadata uses `afd`; ordinary provider `aic` is unchanged. |
+| `estimator_config.afd.frozen_decode_identity` or saved `frozen_decode_identity` | Per-pass replay batch/context pricing | Regenerate for every old value, including `false` and `null`; static forward queries remain available. |
+| Development ReplaySpec API 2, obsolete AFD topology or qualification | ReplaySpec API 1; AFD topology and qualification schema 2 | Regenerate; development intermediate formats are unsupported. |
+| AFD EngineSpec without a source layer plan | Compile through the canonical constructor | Recompile; ordinary EngineSpecs may still omit a plan. |
+
+Set `afd.a_batch_size` explicitly. Omitted F EP resolves to F GPU count;
+explicit saved EP1 is preserved and rejected on multi-GPU F pools. Standalone
+shape-name aliases are normalized and revalidated; internal mappings use canonical
+names. See [topology identity](../sweeper/afd-topology.md#topology-identity).
+
+Legacy native timing copies of rank topology/backend/MTP/context are removed
+when consistent and rejected when conflicting, before model loading.
+Top-level timing `comm_quant_mode` migrates to `quant.comm_quant_mode` with the
+same conflict check. Legacy timing `max_seq_len` migrates to optional rank
+`max_model_len`; an unset memory window removes a matching derived `isl + osl`
+scheduler cap. A differing independent legacy cap is rejected because one
+declaration cannot represent it. Reload derives an absent scheduler limit again.
+
+Source-ordered timing replaces uniform-layer approximations. With a dense prefix,
+embedding executes once at full replica batch; otherwise it executes per
+microbatch. Logits remain per microbatch. Historical numerical goldens describe
+their recorded versions, not current serving accuracy. For current configuration,
+limits and timing see [AFD](../replay/engine/analytical.md#afd).
+
 Save as `afd-recommendation.yaml`:
 
 <!-- afd-migration-contract-start -->
@@ -442,32 +464,30 @@ traffic:
   stop:
     requests_per_load_unit: 10
 engine:
-  mode: afd
-  model: Qwen/Qwen3-32B
+  mode: disaggregated
+  model: Qwen/Qwen3-30B-A3B
   context_length: 2048
   hardware: h200_sxm
-  backend: trtllm
-  backend_version: 1.3.0rc20
-  afd:
-    phase: decode
-    combined_with_pd: true
-    a_batch_size: 128
-    tp_a: 8
-    num_microbatches: 3
-    pipeline_model: optimistic
+  backend: sglang
   workers:
     prefill:
       parallelism:
         preset:
         - attention_data: 1
           moe_expert: 1
-          moe_tensor: 1
+          moe_tensor: 16
           pipeline: 1
           replicas: 1
           tensor: 16
       scheduler:
         max_batched_tokens: 8192
         max_sequences: 16
+    decode:
+      type: afd
+      afd:
+        a_batch_size: 128
+        tp_a: 1
+        num_microbatches: 3
 evaluation:
   sla:
     ttft_ms: 800
@@ -494,7 +514,7 @@ aisimulate predict --stack engine --config ./afd-search/recommendations/0001.yam
 Inspect `afd-selected/afd-replay-spec.json` and `afd-qualification.json` for
 analytical inputs and GPU accounting. AIC's capped/truncated topology search and
 this fixed attention-batch search do not enumerate identical operating points.
-See [AFD topology and limits](../replay/engine/analytical.md#afd).
+See [AFD topology and limits](../sweeper/afd-topology.md).
 
 ## Compatibility-only workflows
 
@@ -565,7 +585,7 @@ metadata does not load the native extension.
 | Previous interface | Current interface | Required caller change |
 | --- | --- | --- |
 | Legacy `sweep_agg`, `sweep_disagg` | `aisimulate.sweeper.Sweeper(...).run(config)` | Both remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
-| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `engine.afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
+| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `workers.<role>.type: afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
 | Flat Rust `build_aic_engine` adapter | `aisimulate_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
 | Positional worker/options and separate estimator constructors | `RustForwardPassPerfModel.best_available(config)` / Rust `ForwardPassPerfModel::best_available(config)` | Pass one complete `ForwardPassPerfModelConfig`; use its Rust constructor or Python SDK config class. |
 | Flat `EngineConfig` plus `ForwardPassPerfOptions` | Canonical `ForwardPassPerfModelConfig` | Convert saved legacy values with the explicit migration helper below. |
@@ -615,6 +635,13 @@ explains the retained workload routing and feature mathematics.
   supply `runtime_memory: None` when using declared memory. Runtime memory and
   the four legacy non-KV fields cannot coexist. See the
   [resource contract](../perf-model/memory.md).
+- `FpmCacheGroup` literals must supply `blocks_per_request: None` for attention
+  and convolution groups. Exhaustive matches on `FpmCacheKind` must handle
+  `State`. Serialized groups that omit the field still deserialize, and `None`
+  is not serialized.
+- `FpmRuntimeMemoryConfig` literals must supply `enable_prefix_caching`,
+  `mamba_cache_mode` and `hash_block_size_tokens` as `None`. Serialized records
+  that omit these fields still deserialize, and `None` is not serialized.
 
 ### Rust AgentX snapshot options
 
@@ -646,6 +673,13 @@ Wheel and crate versions must match. Namespace changes do not preserve removed
 constructor signatures. Exact-wheel qualification of Dynamo Router, Planner,
 Mocker, and deployment adapters remains separate from this documentation's
 example checks; see the [release gates](../../.github/release-gates.json).
+
+Role-based AFD keeps ReplaySpec API 1 for both ordinary and native AFD deployments.
+Its topology and qualification schema 2 are independent of that public runner
+contract. Ordinary API-1 consumers do not need an AFD migration; runners that do
+not advertise AFD support reject it during capability preflight. Development
+API-2 saved specs must be regenerated, not automatically downgraded. See the
+[runner contract](../adapters/runner-abi.md#capabilities).
 
 Existing `aic_*` replay transport fields, native `AicEngine` names, and FPM
 resource labels remain distinct downstream contracts. Do not rename them as

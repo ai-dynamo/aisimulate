@@ -45,6 +45,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-connrefused --retry-d
 # Pin to the image's CPython 3.13 so uv/maturin never fetch a standalone one.
 ENV UV_PYTHON=/opt/python/cp313-cp313/bin/python3
 COPY Cargo.toml Cargo.lock /workspace/
+COPY .cargo/ /workspace/.cargo/
 COPY crates/ /workspace/crates/
 COPY python/aisimulate/src/ /workspace/python/aisimulate/src/
 COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/

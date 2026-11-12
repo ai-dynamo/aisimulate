@@ -13,6 +13,8 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -156,6 +158,7 @@ class ExecutionConfig(StrictModel):
 
 
 class CandidateConstraints(StrictModel):
+    metrics: list[MetricConstraint] = Field(default_factory=list)
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
     min_goodput_rps: PositiveFiniteFloat | None = None
@@ -168,18 +171,22 @@ class CandidateConstraints(StrictModel):
 
 
 class OptimizationConfig(StrictModel):
-    target: Literal[
-        "throughput",
-        "throughput_per_gpu",
-        "throughput_per_user",
-        "goodput",
-        "goodput_per_gpu",
-        "min_gpus",
-        "ttft",
-        "e2e_latency",
-        "pareto",
-    ] = "throughput"
+    target: (
+        Literal[
+            "throughput",
+            "throughput_per_gpu",
+            "throughput_per_user",
+            "goodput",
+            "goodput_per_gpu",
+            "min_gpus",
+            "ttft",
+            "e2e_latency",
+            "pareto",
+        ]
+        | AIPerfMetric
+    ) = "throughput"
     hardware: str | None = None
+    max_topology_candidates: PositiveStrictInt = 10_000
     strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
 
@@ -264,6 +271,12 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "fmha_quant_mode",
     "comm_quant_mode",
 )
+
+# Kernel selectors consumed by the native AFD per-pool models.
+AFD_KERNEL_CONTROL_FIELDS = ("attention_backend", "moe_kernel_source")
+
+# Pool-shaping controls not consumed by native AFD models.
+AFD_UNSUPPORTED_MODEL_CONTROLS = frozenset({"enable_eplb", "wideep_num_slots", "moe_backend"})
 
 
 def is_active_engine_model_control(name: str, value: Any) -> bool:

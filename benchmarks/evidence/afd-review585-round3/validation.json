@@ -1,0 +1,315 @@
+{
+  "build": {
+    "baseline_log_sha256": "b947b8e1a09a679bbed86d3e313a7f5824348182f28bce8bcbda8200d2583319",
+    "candidate_log_sha256": "e7fd55142e85eff5c2bde2046eba02614582ca1db0eafecb09a917847f381742",
+    "command": "PYO3_PYTHON=<venv-python> cargo rustc -p aisim-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+    "comparison": "Matched release compiler/profile/dependencies/data; compile durations are not a paired compiler-speed benchmark."
+  },
+  "checks": [
+    {
+      "command": "cargo test -p aisim-core --lib --features embed-python --offline",
+      "compressed_local_log_sha256": "42fc5d49d3e62d5d23b11eda6d237433a6697ce127042a98b10cc7a5ff491887",
+      "ignored": 2,
+      "name": "Rust library",
+      "passed": 3172,
+      "skipped": 0,
+      "uncompressed_log_sha256": "8af28edb5dfbd6fa91c3d89f16272936958310225bb87b879f27f493325e5108"
+    },
+    {
+      "command": "cargo test --manifest-path crates/tests/public-api/Cargo.toml --features aisimulate-core/embed-python --offline",
+      "compressed_local_log_sha256": "42b131bd629b646b05737e987c3382ec132705ddbb025c98312c165a331b0199",
+      "ignored": 0,
+      "name": "Public Rust API",
+      "passed": 25,
+      "skipped": 0,
+      "uncompressed_log_sha256": "7476d3cd4ae1ea776da3b1b05519c1e212a6fae3bf81d9b222ae1f1f39596921"
+    },
+    {
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout -q python/aisimulate/tests/unit/sdk/test_afd*.py python/aisimulate/tests/cross_package",
+      "compressed_local_log_sha256": "43ac594b8bb2683c593caa31faaae74cb53ad82db95a80349b6bfe4551cbda3c",
+      "ignored": 0,
+      "name": "AFD SDK and public Python contracts",
+      "passed": 450,
+      "skipped": 0,
+      "uncompressed_log_sha256": "69c9444b4e9452b88fdc3bb806b0e9a08f78964af80e4e972ef915cf5a30149b"
+    },
+    {
+      "command": "python -m pytest -c pytest.ini -p no:timeout -q tests/sweeper tests/test_runner.py tests/test_cli_config.py tests/test_unified_cli.py tests/test_afd_parity_generation.py",
+      "compressed_local_log_sha256": "37cfba71d5a2fa6c2c8aa68bdb107d0a144938af2e3d7fa1b7aea215b8e7a554",
+      "ignored": 0,
+      "name": "Root callers, search, CLI and generation",
+      "passed": 2342,
+      "skipped": 5,
+      "uncompressed_log_sha256": "06c61650a3c84a3be9b9e32d76e9144add4437a0372132d2afc8a2331fbfbb77"
+    },
+    {
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -o addopts= -p no:timeout -q -n4 --color=no crates/core/parity_tests/perfmodel/test_afd_parity.py crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py crates/core/parity_tests/perfmodel/test_engine_step_parity.py crates/core/parity_tests/perfmodel/test_compile_engine_parity.py",
+      "compressed_local_log_sha256": "0fb931418a02871e705656b0af72672998dfbbc6d8d5878431d3c8ce25da5ddf",
+      "ignored": 0,
+      "name": "AFD and general parity",
+      "passed": 425,
+      "skipped": 0,
+      "uncompressed_log_sha256": "ce6d70fb1dd8078fcf5337f530beb7fff8ea4276b5037db09694e5cb8cc75be9"
+    },
+    {
+      "command": "python -m pytest -q .github/codeowners/test_codeowners.py .github/codeowners/test_aisimulate_policy.py",
+      "compressed_local_log_sha256": "cc59f2785829610e8d5f1c05dc94578ac6e81753f843ebaa64c588eae17fb596",
+      "ignored": 0,
+      "name": "Ownership policy",
+      "passed": 107,
+      "skipped": 0,
+      "uncompressed_log_sha256": "aa32b1a45b202e4423e67472853c8addf01410da06aa026bacb437295c2c821b"
+    },
+    {
+      "command": "python -m pytest -q tests/test_afd_parity_generation.py",
+      "compressed_local_log_sha256": "76f074730bc1c6148fe415272dc92baec082cfa6612db4ea14ddaa3e69190b5b",
+      "ignored": 0,
+      "name": "Generation identity regression (also in root suite)",
+      "passed": 8,
+      "skipped": 0,
+      "uncompressed_log_sha256": "cf3877f5a0006b0cfe5842a91c99c70d59a6ac6d7e439551f7f664fc7cfe8886"
+    }
+  ],
+  "compressed_reports": {
+    "layout-deltas.json": {
+      "compressed": "layout-deltas.json.gz",
+      "uncompressed_sha256": "0a22caf9cb8d38aca41ca73d7dffc23140faf48ba55c481633f7ad3dc2413800"
+    },
+    "legacy-performance.json": {
+      "compressed": "legacy-performance.json.gz",
+      "uncompressed_sha256": "eb28ad847342ea7cdb5d795857bb806d712ff4ebc7276aad8670e30db9f6bb8c"
+    },
+    "modeling-deltas.json": {
+      "compressed": "modeling-deltas.json.gz",
+      "uncompressed_sha256": "5522c5529aa1722b5465635ea97742a95350b0814f4da9d15eebae96d51987ec"
+    },
+    "replay-performance.json": {
+      "compressed": "replay-performance.json.gz",
+      "uncompressed_sha256": "6f10bd602c4b6c6b66da540b19524a45f8f3403baa48f4b62a8c6d9ba7a3d8e8"
+    }
+  },
+  "environment": {
+    "HF_HUB_OFFLINE": "1",
+    "LOKY_MAX_CPU_COUNT": "4",
+    "MPLCONFIGDIR": "/private/tmp/afd585-mpl",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PATH_prefix": "/Users/phgh/code/aisimulate/python/aisimulate/.venv/bin",
+    "PYO3_PYTHON": "/Users/phgh/code/aisimulate/python/aisimulate/.venv/bin/python",
+    "PYTHONPATH": "/Users/phgh/code/aisimulate/python/aisimulate/src:/Users/phgh/code/aisimulate/python/aisimulate/.venv/lib/python3.13/site-packages"
+  },
+  "evidence_files": {
+    "README.md": "1316c8e1584e288edc61bbc268d84737b7ed1672b12a035e02ed0f37e14a924f",
+    "forward-gate/comparison.json.gz": "f8eb4e1f928b32fd8e06579a860fe8f8d1003cffcde171d507dd712a79c576b0",
+    "forward-gate/raw-results.json.gz": "811b41296b7b71b175967248ce907c94f55c849fd1c4fddcf24afbdf5589ce3f",
+    "layout-deltas.json.gz": "b74784c23c94812e6b4e20a41d66596da5eaad6ee9c4902d2103e5e63cfaf202",
+    "legacy-performance.json.gz": "c94c6104cd283ea707d037d472fc9ccbb409d184376007b274d1de09b3d8f3bd",
+    "memory.json": "330296127e48a6bedb6ea9f52dc6f729ffdeb75a4bf068ae3d500a57e11249ce",
+    "modeling-deltas.json.gz": "97c02bae260173265f3303b74aa80e8aaf4abfc57f461d4e8a1e2cef98095622",
+    "replay-performance.json.gz": "323bf85bbfe93f4e9e41598d3f84a5705ef2031f28f3391542f336d16554e2b3",
+    "reproduce.py": "c3f6b97fcb0045b671a0d3cf5469471ac2367d8b5ec8f2c38afdb70fcbd08aa1",
+    "sources.tar.gz": "62c9f7673bd7680086d3ffdfd8e1677d4b21225ccf74e66bf9dde7a2565ecd3f"
+  },
+  "excluded_coverage": [
+    "Five cross-repository Dynamo packaging cases are skipped locally and belong in integration CI.",
+    "Rust scheduler_semantic_matrix is an ignored manual cross-revision campaign.",
+    "Rust r17_pair_replay_heals_every_fake_row is ignored without AIC_FPM_R17_PAIR_DIR.",
+    "No physical AFD serving measurement or real GPU accuracy claim."
+  ],
+  "follow_up_prefill_batched_token_fix": {
+    "memory_deltas": {
+      "all_other_summary_fields_exactly_equal": true,
+      "binary_sha256": "8a78d21a152ae8c863c693a6a2effc4d379ecdb7fa47a08ce14d486fbe9d56f7",
+      "cases": {
+        "qwen3-30b-a3b-h200-sglang-pd-prefill": [
+          {
+            "after": 121202133277.08159,
+            "before": 121244076317.08159,
+            "path": "/afd_memory/prefill/kv_budget_bytes_per_a_gpu"
+          },
+          {
+            "after": 0.140625,
+            "before": 0.1015625,
+            "path": "/afd_memory/prefill/pools/prefill/attention/components_gib_per_gpu/afd_workspace"
+          },
+          {
+            "after": 76.22011718750001,
+            "before": 76.18105468750001,
+            "path": "/afd_memory/prefill/pools/prefill/attention/components_gib_per_gpu/total"
+          },
+          {
+            "after": 4.671875,
+            "before": 0.934375,
+            "path": "/afd_memory/prefill/pools/prefill/ffn/components_gib_per_gpu/activations"
+          },
+          {
+            "after": 0.0703125,
+            "before": 0.03125,
+            "path": "/afd_memory/prefill/pools/prefill/ffn/components_gib_per_gpu/afd_workspace"
+          },
+          {
+            "after": 16.075,
+            "before": 12.298437499999999,
+            "path": "/afd_memory/prefill/pools/prefill/ffn/components_gib_per_gpu/total"
+          }
+        ],
+        "qwen3-30b-a3b-h200-sglang-pure-both": [
+          {
+            "after": 121202133277.08159,
+            "before": 121244076317.08159,
+            "path": "/afd_memory/aggregated/kv_budget_bytes_per_a_gpu"
+          },
+          {
+            "after": 0.140625,
+            "before": 0.1015625,
+            "path": "/afd_memory/aggregated/pools/prefill/attention/components_gib_per_gpu/afd_workspace"
+          },
+          {
+            "after": 76.22011718750001,
+            "before": 76.18105468750001,
+            "path": "/afd_memory/aggregated/pools/prefill/attention/components_gib_per_gpu/total"
+          },
+          {
+            "after": 4.671875,
+            "before": 0.934375,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/activations"
+          },
+          {
+            "after": 0.0703125,
+            "before": 0.03125,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/afd_workspace"
+          },
+          {
+            "after": 16.075,
+            "before": 12.298437499999999,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/total"
+          }
+        ],
+        "qwen3-30b-a3b-h200-sglang-pure-both-saturated": [
+          {
+            "after": 2.8031249999999996,
+            "before": 0.934375,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/activations"
+          },
+          {
+            "after": 14.14765625,
+            "before": 12.278906249999999,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/total"
+          }
+        ],
+        "qwen3-30b-a3b-h200-sglang-two-stage": [
+          {
+            "after": 121202133277.08159,
+            "before": 121244076317.08159,
+            "path": "/afd_memory/aggregated/kv_budget_bytes_per_a_gpu"
+          },
+          {
+            "after": 0.140625,
+            "before": 0.1015625,
+            "path": "/afd_memory/aggregated/pools/prefill/attention/components_gib_per_gpu/afd_workspace"
+          },
+          {
+            "after": 76.22011718750001,
+            "before": 76.18105468750001,
+            "path": "/afd_memory/aggregated/pools/prefill/attention/components_gib_per_gpu/total"
+          },
+          {
+            "after": 4.671875,
+            "before": 0.934375,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/activations"
+          },
+          {
+            "after": 0.0703125,
+            "before": 0.03125,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/afd_workspace"
+          },
+          {
+            "after": 16.075,
+            "before": 12.298437499999999,
+            "path": "/afd_memory/aggregated/pools/prefill/ffn/components_gib_per_gpu/total"
+          }
+        ]
+      },
+      "golden_after_sha256": "e672261809ff6d7b8cbe6f26ded3497047a2d662e6220c3fc0fad5dbc9adfb43",
+      "golden_before_sha256": "cbe5266020b9cc435bf9af2337434f2ab51be779f6db64b36e394c21d48e4c25",
+      "only_memory_fields_changed": true,
+      "untouched_cases_exactly_equal": true
+    },
+    "performance_scope": "The original five-pair performance campaigns remain attributed to the earlier candidate; no follow-up host timings are claimed.",
+    "source_manifest_in_package": "prefill-batched-token-fix/build-manifest.json",
+    "validation": {
+      "binary_sha256": "8a78d21a152ae8c863c693a6a2effc4d379ecdb7fa47a08ce14d486fbe9d56f7",
+      "build_command": "PYO3_PYTHON=\"$PWD/python/aisimulate/.venv/bin/python\" cargo rustc -p aisim-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+      "build_manifest": "build-manifest.json",
+      "checks": [
+        {
+          "command": "PYO3_PYTHON=\"$PWD/python/aisimulate/.venv/bin/python\" cargo test -p aisim-core --lib --features embed-python --offline afd_prefill_memory",
+          "passed": 2
+        },
+        {
+          "command": "python/aisimulate/.venv/bin/pytest -p no:timeout -q tests/sweeper/test_afd_search_integration.py",
+          "new_parameterized_cases": 6,
+          "passed": 203
+        },
+        {
+          "command": "python/aisimulate/.venv/bin/pytest -p no:timeout -q -c python/aisimulate/pytest.ini tests/test_afd_parity_generation.py python/aisimulate/tests/unit/sdk/test_afd_memory.py python/aisimulate/tests/unit/sdk/test_afd_kv_budget.py",
+          "passed": 56
+        },
+        {
+          "command": "python/aisimulate/.venv/bin/pytest -p no:timeout -q -n 4 -c python/aisimulate/pytest.ini crates/core/parity_tests/perfmodel/test_engine_step_parity.py crates/core/parity_tests/perfmodel/test_compile_engine_parity.py crates/core/parity_tests/perfmodel/test_afd_parity.py crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py",
+          "general_parity_passed": 389,
+          "initial_sandbox_failures": 29,
+          "initial_total_passed": 396,
+          "note": "All 29 failures were AFD CLI subprocesses blocked by sandbox process monitoring/os.nice restrictions. The 389 general parity cases passed; AFD suites were rerun with local process permissions."
+        },
+        {
+          "command": "python/aisimulate/.venv/bin/pytest -p no:timeout -q -n 4 -c python/aisimulate/pytest.ini crates/core/parity_tests/perfmodel/test_afd_parity.py crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py",
+          "execution": "with local process permissions, after refreshing four explained memory-only goldens",
+          "passed": 36
+        }
+      ],
+      "format_checks": [
+        "ruff check (changed Python file): pass",
+        "ruff format --check (changed Python file): pass",
+        "cargo fmt --all -- --check: pass",
+        "git diff --check: pass"
+      ],
+      "golden_deltas": "memory-deltas.json",
+      "loaded_binary_matches_release_build": true,
+      "performance_assessment": "One scalar min operation removed during role preparation. No added allocation, state, or per-pass work; time and memory complexity remain O(1). No host-performance benchmark rerun or measured speed claim.",
+      "regression_before_fix": "New default-limit, unchunked long-prompt test failed: reserved 8192 tokens instead of the declared 20000-token chunk capacity while processing all 16384 input tokens.",
+      "scope": "Follow-up fix for AFD prefill reservation incorrectly capped by max_num_batched_tokens; prior round-three measurements identify the earlier snapshot.",
+      "source_commit": "257b58d867a49e50384a72382ec73c989786118a"
+    }
+  },
+  "identities": {
+    "baseline": {
+      "binary_sha256": "7ca8e37934292f81e16a661c0de4aee22159b5039bf24357025b7e903742a0fb",
+      "data_tree": "912b4f8edaf5a8d53e36c3edd52bf6b5eb7f724c",
+      "source_commit": "257b58d867a49e50384a72382ec73c989786118a",
+      "source_inventory_sha256": "3ed069ebf07fe6f1c5d4cb646bde2cb2aa4d9253dbd5a6fe5d574338ab913927",
+      "source_snapshot_sha256": "d2970209f0f09a077a6775cd5bdac7c2a9a59fa13661b76dcf4ae08fed9b2a65",
+      "workspace_dirty": true
+    },
+    "candidate": {
+      "binary_sha256": "c1b97eec61a78ac749fde8a27e1c101d2926a2ef5fec7e96dd01cfa43a4f8b55",
+      "data_tree": "912b4f8edaf5a8d53e36c3edd52bf6b5eb7f724c",
+      "source_commit": "257b58d867a49e50384a72382ec73c989786118a",
+      "source_inventory_sha256": "ee3223b7d9c2c4f2fe8db45007f5934ca7760179dc48792e3d4bcd883fa16dea",
+      "source_snapshot_sha256": "1ab326013e8cc4dc649e452a1179cb57e8f1e0a1f7a3c66b618bfd618987c3a3",
+      "workspace_dirty": true
+    }
+  },
+  "log_policy": "Raw build/test/progress logs are local-only and excluded from the repository. Commands, results, exclusions and log hashes are retained here; numerical performance samples are retained separately.",
+  "non_test_checks": {
+    "cargo_fmt_all": "pass",
+    "changed_python_ruff_check": "pass",
+    "changed_python_ruff_format": "31 files already formatted",
+    "compressed_local_log_sha256": "98c6a52610f40e78c593da324fd0e2c9b3cb5ce202418d7fae963a1c1de170e8",
+    "git_diff_check": "pass",
+    "packaged_legal_files": "pass",
+    "strict_ownership": "5068/5068 explicitly owned; no catch-all-only files"
+  },
+  "python": "python/aisimulate/.venv/bin/python (3.13.16)",
+  "scope": "Local validation only; no remote Fast/Full CI was run."
+}
