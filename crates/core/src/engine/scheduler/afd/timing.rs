@@ -3,6 +3,7 @@
 
 //! AFD replay timing uses actual per-pass geometry and records each query.
 
+use std::sync::Arc;
 #[cfg(feature = "python")]
 use std::sync::Mutex;
 
@@ -20,12 +21,31 @@ use crate::perfmodel::afd::model::AfdForwardPassPerfModel;
 #[cfg(feature = "python")]
 use crate::perfmodel::afd::model::AfdOpEvidence;
 
+/// Pass shapes whose price is kept. Fixed-length traffic repeats about one
+/// decode shape per output token; a mixed-length trace has a few thousand.
+/// Each kept price holds a few KB of evidence, so a full memo is about 16 MB.
+const PRICED_PASS_CAPACITY: usize = 4096;
+
+/// `(prefill, batch size, mean ISL or mean context, mean prefix)`: everything
+/// a pass's price depends on besides the provider's fixed configuration.
+type PassShape = (bool, u32, u32, u32);
+
+/// The price of one pass shape.
+struct PricedPass {
+    step_latency_ms: f64,
+    #[cfg(feature = "python")]
+    evidence: ValidatedTimingPhase,
+}
+
 /// Replay timing provider for AFD ranks.
 pub struct AfdTimingModel {
     perf: AfdForwardPassPerfModel,
     knobs: AfdPipelineKnobs,
     isl: u32,
     osl: u32,
+    /// Replay repeats few pass shapes over many passes, so each shape's A/F
+    /// plan is priced once. Every pass still records its evidence.
+    priced: quick_cache::sync::Cache<PassShape, Arc<PricedPass>>,
     /// Power evidence accumulator: per-op energy from the two
     /// pool engines flows into the standard replay power statistics.
     #[cfg(feature = "python")]
@@ -50,9 +70,25 @@ impl AfdTimingModel {
             perf,
             isl,
             osl,
+            priced: quick_cache::sync::Cache::new(PRICED_PASS_CAPACITY),
             #[cfg(feature = "python")]
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
         }
+    }
+
+    /// The price of `shape`, which `price` computes when no pass has asked
+    /// for it yet. A failed price is not kept.
+    fn priced_pass(
+        &self,
+        shape: PassShape,
+        price: impl FnOnce() -> Result<PricedPass>,
+    ) -> Result<Arc<PricedPass>> {
+        if let Some(pass) = self.priced.get(&shape) {
+            return Ok(pass);
+        }
+        let pass = Arc::new(price()?);
+        self.priced.insert(shape, Arc::clone(&pass));
+        Ok(pass)
     }
 
     #[cfg(feature = "python")]
@@ -84,30 +120,39 @@ impl TimingModel for AfdTimingModel {
         let batch_size = checked_timing_u32(batch_size, "batch_size")?;
         let mean_isl = checked_timing_u32(mean_isl, "mean_isl")?;
         let mean_prefix = checked_timing_u32(mean_prefix, "mean_prefix")?;
-        #[cfg(feature = "python")]
-        let (metrics, operations) =
-            self.perf
-                .predict_prefill_step_with_operations(batch_size, mean_isl, mean_prefix)?;
-        #[cfg(not(feature = "python"))]
-        let metrics = self
-            .perf
-            .predict_prefill_step_ms(batch_size, mean_isl, mean_prefix)?;
-        let evaluation = evaluate_afd_metrics(
-            &AfdPipelineKnobs {
-                total_batch_size: batch_size,
-                ..self.knobs
-            },
-            &metrics,
-            AfdEvalPhase::Prefill,
-            mean_isl,
-            self.osl,
-        )?;
+        let pass = self.priced_pass((true, batch_size, mean_isl, mean_prefix), || {
+            #[cfg(feature = "python")]
+            let (metrics, operations) = self.perf.predict_prefill_step_with_operations(
+                batch_size,
+                mean_isl,
+                mean_prefix,
+            )?;
+            #[cfg(not(feature = "python"))]
+            let metrics = self
+                .perf
+                .predict_prefill_step_ms(batch_size, mean_isl, mean_prefix)?;
+            let evaluation = evaluate_afd_metrics(
+                &AfdPipelineKnobs {
+                    total_batch_size: batch_size,
+                    ..self.knobs
+                },
+                &metrics,
+                AfdEvalPhase::Prefill,
+                mean_isl,
+                self.osl,
+            )?;
+            Ok(PricedPass {
+                step_latency_ms: evaluation.step_latency_ms,
+                #[cfg(feature = "python")]
+                evidence: self.operation_evidence(operations)?,
+            })
+        })?;
         #[cfg(feature = "python")]
         self.evidence
             .lock()
             .map_err(|_| anyhow::anyhow!("AFD evidence accumulator poisoned"))?
-            .record(&self.operation_evidence(operations)?, true)?;
-        Ok(evaluation.step_latency_ms)
+            .record(&pass.evidence, true)?;
+        Ok(pass.step_latency_ms)
     }
 
     fn predict_decode_ms(
@@ -120,29 +165,35 @@ impl TimingModel for AfdTimingModel {
         let batch_size = checked_timing_u32(batch_size, "batch_size")?;
         let mean_context_length =
             checked_timing_u32(mean_context_length.max(1), "mean_context_length")?;
+        let pass = self.priced_pass((false, batch_size, mean_context_length, 0), || {
+            #[cfg(feature = "python")]
+            let (metrics, operations) = self.perf.predict_decode_step_with_operations(
+                batch_size,
+                mean_context_length,
+                0,
+            )?;
+            #[cfg(not(feature = "python"))]
+            let metrics = self
+                .perf
+                .predict_decode_step_ms(batch_size, mean_context_length, 0)?;
+            let knobs = AfdPipelineKnobs {
+                total_batch_size: batch_size,
+                ..self.knobs
+            };
+            let evaluation =
+                evaluate_afd_metrics(&knobs, &metrics, AfdEvalPhase::Decode, self.isl, self.osl)?;
+            Ok(PricedPass {
+                step_latency_ms: evaluation.step_latency_ms,
+                #[cfg(feature = "python")]
+                evidence: self.operation_evidence(operations)?,
+            })
+        })?;
         #[cfg(feature = "python")]
-        let (metrics, operations) =
-            self.perf
-                .predict_decode_step_with_operations(batch_size, mean_context_length, 0)?;
-        #[cfg(not(feature = "python"))]
-        let metrics = self
-            .perf
-            .predict_decode_step_ms(batch_size, mean_context_length, 0)?;
-        let knobs = AfdPipelineKnobs {
-            total_batch_size: batch_size,
-            ..self.knobs
-        };
-        let evaluation =
-            evaluate_afd_metrics(&knobs, &metrics, AfdEvalPhase::Decode, self.isl, self.osl)?;
-        #[cfg(feature = "python")]
-        {
-            let phase = self.operation_evidence(operations)?;
-            self.evidence
-                .lock()
-                .map_err(|_| anyhow::anyhow!("AFD timing evidence accumulator was poisoned"))?
-                .record(&phase, false)?;
-        }
-        Ok(evaluation.step_latency_ms)
+        self.evidence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("AFD timing evidence accumulator was poisoned"))?
+            .record(&pass.evidence, false)?;
+        Ok(pass.step_latency_ms)
     }
 
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
@@ -461,5 +512,54 @@ pub(crate) mod tests {
             (total - 5.0 * one_pass).abs() < 1e-9 * one_pass,
             "five decode calls must accumulate five passes: total={total} one={one_pass}"
         );
+    }
+
+    /// A repeated pass shape is priced once: the later pass returns the same
+    /// step latency and records the same evidence again. Shapes that differ in
+    /// phase, batch or length keep their own price.
+    #[cfg(feature = "python")]
+    #[test]
+    fn repeated_pass_shape_reuses_its_price_and_evidence() {
+        let timing = provider();
+        let first = timing
+            .predict_decode_ms(8, 8 * 1024, 1024, 16384)
+            .expect("decode");
+        let one_pass = timing.evidence_summary().expect("summary").decode;
+        let again = timing
+            .predict_decode_ms(8, 8 * 1024, 1024, 16384)
+            .expect("decode");
+        assert_eq!(again, first);
+        assert_eq!(timing.priced.len(), 1);
+        // Doubling is exact, so two equal passes sum to exactly twice one.
+        let two_passes = timing.evidence_summary().expect("summary").decode;
+        assert_eq!(two_passes.latency_ms, 2.0 * one_pass.latency_ms);
+        assert_eq!(two_passes.operations.len(), one_pass.operations.len());
+        for (two, one) in two_passes.operations.iter().zip(&one_pass.operations) {
+            assert_eq!(two.name, one.name);
+            assert_eq!(two.latency_ms, 2.0 * one.latency_ms, "{}", one.name);
+        }
+
+        let unshared = provider();
+        for (batch, context) in [(8, 1025), (16, 1024)] {
+            assert_eq!(
+                timing
+                    .predict_decode_ms(batch, batch * context, context, 16384)
+                    .expect("decode"),
+                unshared
+                    .predict_decode_ms(batch, batch * context, context, 16384)
+                    .expect("decode"),
+                "batch={batch} context={context}"
+            );
+        }
+        for prefix in [0, 512] {
+            assert_eq!(
+                timing.predict_prefill_ms(8, 1024, prefix).expect("prefill"),
+                unshared
+                    .predict_prefill_ms(8, 1024, prefix)
+                    .expect("prefill"),
+                "prefix={prefix}"
+            );
+        }
+        assert_eq!(timing.priced.len(), 5);
     }
 }
