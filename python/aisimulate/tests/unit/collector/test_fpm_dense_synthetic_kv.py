@@ -73,7 +73,16 @@ def _engine(plan, cell, *, version=None, groups=None):
     }
 
 
-def _dense_cell(tmp_path, *, groups=None):
+def _use_native_dense_skip(payload):
+    for row in payload["results"]:
+        row["kv_seed_regime"] = "skip:dense_model_content_insensitive"
+    for entry in (*payload["results"], *payload["iteration_groups"]):
+        entry["point"]["sample_reasons"] = [
+            reason for reason in entry["point"]["sample_reasons"] if reason != "kvwarm_fake_fallback"
+        ]
+
+
+def _dense_cell(tmp_path, *, groups=None, native_skip=False):
     plan, cell, directory = _synthetic_decode_cell(
         tmp_path,
         kvwarm=_DENSE_SKIP,
@@ -93,6 +102,8 @@ def _dense_cell(tmp_path, *, groups=None):
     payload["engine"] = _engine(plan, cell, groups=groups)
     for row in payload["results"]:
         row["kv_seed_regime"] = "fake_fallback"
+    if native_skip:
+        _use_native_dense_skip(payload)
     path.write_text(json.dumps(payload))
     return plan, cell, directory, path
 
@@ -107,15 +118,39 @@ def _regimes(case):
     [[_FULL], [_FULL, _FULL], [{"type": "UniformTypeKVCacheSpecs", "specs": [_FULL, _FULL]}]],
     ids=["full", "multiple-full", "wrapped-full"],
 )
-def test_dense_full_attention_preserves_native_samples_and_becomes_direct_eligible(tmp_path, groups):
-    case = _dense_cell(tmp_path, groups=groups)
+@pytest.mark.parametrize("native_skip", [False, True], ids=["legacy-stamp", "native-skip"])
+def test_dense_full_attention_preserves_native_samples_and_becomes_direct_eligible(tmp_path, groups, native_skip):
+    case = _dense_cell(tmp_path, groups=groups, native_skip=native_skip)
     plan, cell, directory, path = case
     before = path.read_bytes()
     rows = aggregate_cell(plan, cell, directory, expected_attempt_id="attempt")
     assert {row["kv_seed_regime"] for row in rows} == {"skip:dense_model_content_insensitive"}
     assert [row["latency_ms"] for row in rows] == [10.0, 20.0]
     assert path.read_bytes() == before
-    assert {row["kv_seed_regime"] for row in json.loads(before)["results"]} == {"fake_fallback"}
+    assert {row["kv_seed_regime"] for row in json.loads(before)["results"]} == {
+        "skip:dense_model_content_insensitive" if native_skip else "fake_fallback"
+    }
+
+
+def test_native_dense_skip_with_separate_worker_probe_uses_startup_engine_evidence(tmp_path):
+    case = _dense_cell(tmp_path, native_skip=True)
+    path = case[-1]
+    payload = json.loads(path.read_text())
+    payload["engine"].update(resolution="pending_worker_probe", resolved=None)
+    path.write_text(json.dumps(payload))
+    sidecar = path.with_name("benchmark_merged_worker_probe.json")
+    sidecar.write_text(json.dumps({"schema": "dynamo.fpm.benchmark_worker_probe", "schema_version": 1}))
+    before = path.read_bytes(), sidecar.read_bytes()
+    assert _regimes(case) == {"skip:dense_model_content_insensitive"}
+    assert (path.read_bytes(), sidecar.read_bytes()) == before
+
+
+def test_native_dense_skip_without_warmup_metadata_is_not_legacy(tmp_path):
+    case = _dense_cell(tmp_path, native_skip=True)
+    payload = json.loads(case[-1].read_text())
+    del payload["kvwarm"]
+    case[-1].write_text(json.dumps(payload))
+    assert _regimes(case) == {"fake_fallback"}
 
 
 @pytest.mark.parametrize(
@@ -141,8 +176,9 @@ def test_dense_full_attention_preserves_native_samples_and_becomes_direct_eligib
         [{**_FULL, "specs": [{"type": "ShortConvSpec"}]}],
     ],
 )
-def test_unknown_or_non_full_attention_cache_never_promotes_dense_skip(tmp_path, groups):
-    assert _regimes(_dense_cell(tmp_path, groups=groups)) == {"fake_fallback"}
+@pytest.mark.parametrize("native_skip", [False, True])
+def test_unknown_or_non_full_attention_cache_never_promotes_dense_skip(tmp_path, groups, native_skip):
+    assert _regimes(_dense_cell(tmp_path, groups=groups, native_skip=native_skip)) == {"fake_fallback"}
 
 
 @pytest.mark.parametrize(
@@ -165,8 +201,9 @@ def test_unknown_or_non_full_attention_cache_never_promotes_dense_skip(tmp_path,
         ("kv_cache", "groups", None),
     ],
 )
-def test_contradictory_or_missing_initialized_identity_stays_fake_fallback(tmp_path, section, key, value):
-    case = _dense_cell(tmp_path)
+@pytest.mark.parametrize("native_skip", [False, True])
+def test_contradictory_or_missing_initialized_identity_stays_fake_fallback(tmp_path, section, key, value, native_skip):
+    case = _dense_cell(tmp_path, native_skip=native_skip)
     payload = json.loads(case[-1].read_text())
     payload["engine"][section][key] = value
     case[-1].write_text(json.dumps(payload))
@@ -177,8 +214,9 @@ def test_contradictory_or_missing_initialized_identity_stays_fake_fallback(tmp_p
 
 
 @pytest.mark.parametrize("missing", ["engine", "model", "parallel", "versions", "kv_cache"])
-def test_historical_or_incomplete_engine_evidence_is_not_promoted(tmp_path, missing):
-    case = _dense_cell(tmp_path)
+@pytest.mark.parametrize("native_skip", [False, True])
+def test_historical_or_incomplete_engine_evidence_is_not_promoted(tmp_path, missing, native_skip):
+    case = _dense_cell(tmp_path, native_skip=native_skip)
     payload = json.loads(case[-1].read_text())
     (payload if missing == "engine" else payload["engine"]).pop(missing)
     case[-1].write_text(json.dumps(payload))
@@ -263,8 +301,9 @@ def test_historical_saved_identity_retains_dense_evidence_without_reloading_sour
         {"enabled": True, "warm_eligible": False, "skip_reason": "hybrid_state_layers_unsupported"},
     ],
 )
-def test_full_attention_does_not_convert_failed_or_disabled_warmup(tmp_path, meta):
-    case = _dense_cell(tmp_path)
+@pytest.mark.parametrize("native_skip", [False, True])
+def test_full_attention_does_not_convert_failed_or_disabled_warmup(tmp_path, meta, native_skip):
+    case = _dense_cell(tmp_path, native_skip=native_skip)
     payload = json.loads(case[-1].read_text())
     payload["kvwarm"] = meta
     case[-1].write_text(json.dumps(payload))
@@ -283,11 +322,14 @@ def test_dense_skip_with_real_kv_injection_is_rejected(tmp_path):
         _regimes(case)
 
 
-def test_unstamped_dense_point_is_not_promoted_from_skip_reason_alone(tmp_path):
+@pytest.mark.parametrize("regime", [None, "skip:dataset_unavailable", "not_applicable"])
+def test_unstamped_dense_point_is_not_promoted_from_skip_reason_alone(tmp_path, regime):
     case = _dense_cell(tmp_path)
     payload = json.loads(case[-1].read_text())
     for row, group in zip(payload["results"], payload["iteration_groups"], strict=True):
         row.pop("kv_seed_regime")
+        if regime is not None:
+            row["kv_seed_regime"] = regime
         row["point"]["sample_reasons"] = []
         group["point"]["sample_reasons"] = []
     case[-1].write_text(json.dumps(payload))
@@ -313,10 +355,11 @@ def test_existing_moe_by_construction_and_legacy_contracts_are_unchanged(tmp_pat
     }
 
 
-def test_dense_publication_keeps_legacy_classification_until_fresh_publication(tmp_path):
+@pytest.mark.parametrize("native_skip", [False, True])
+def test_dense_publication_keeps_legacy_classification_until_fresh_publication(tmp_path, native_skip):
     import pyarrow.parquet as pq
 
-    plan, cell, directory, _path = _dense_cell(tmp_path)
+    plan, cell, directory, _path = _dense_cell(tmp_path, native_skip=native_skip)
     legacy_rows = aggregate_cell(plan, cell, directory, expected_attempt_id="attempt", dense_synthetic_kv=False)
     old_table, old_meta, _ = write_formal_database(plan, legacy_rows, systems_root=tmp_path / "old")
     old_bytes = old_table.read_bytes(), old_meta.read_bytes()
@@ -403,7 +446,8 @@ def test_merged_database_does_not_upgrade_old_dense_cells(tmp_path):
 
 
 @pytest.mark.parametrize("observed", ["full", "convolution", "unreported"])
-def test_public_readiness_uses_corroborated_dense_regime(quality_case, observed):  # noqa: F811
+@pytest.mark.parametrize("native_skip", [False, True])
+def test_public_readiness_uses_corroborated_dense_regime(quality_case, observed, native_skip):  # noqa: F811
     case = quality_case
     _change_decode(case, fake="all", kvwarm=_DENSE_SKIP)
     for cell in case["plan"].cells:
@@ -411,6 +455,8 @@ def test_public_readiness_uses_corroborated_dense_regime(quality_case, observed)
             continue
         for path in (case["campaign"] / "cells" / cell.cell_id / "raw").rglob("benchmark-dp*.json"):
             payload = json.loads(path.read_text())
+            if native_skip:
+                _use_native_dense_skip(payload)
             if observed != "unreported":
                 groups = [_FULL] if observed == "full" else [_FULL, {"type": "ShortConvSpec"}]
                 payload["engine"] = _engine(case["plan"], cell, groups=groups)
@@ -420,7 +466,9 @@ def test_public_readiness_uses_corroborated_dense_regime(quality_case, observed)
     report = assess_readiness(case["request"], case["root"], case["checkpoint"].parent)
     decode = next(row for row in report["selected_cells"] if row["cell"]["workload_kind"] == "decode")
     assert decode["formal_regime_counts"], decode["blockers"]
-    assert decode["native_regime_counts"] == {"fake_fallback": 12}
+    assert decode["native_regime_counts"] == {
+        "skip:dense_model_content_insensitive" if native_skip else "fake_fallback": 12
+    }
     assert decode["direct_eligible_points"] == (12 if observed == "full" else 0)
     assert decode["status"] == ("ready" if observed == "full" else "blocked")
     assert decode["formal_regime_counts"] == {

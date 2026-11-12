@@ -256,9 +256,12 @@ def aggregate_cell(
         and _dense_synthetic_kv_eligible(plan, cell, cell_dir / "raw", collection)
     )
 
-    def _kv_seed_regime(point: dict[str, Any], phase: str) -> str:
+    def _kv_seed_regime(point: dict[str, Any], phase: str, native_regime: str | None) -> str:
         if phase == "prefill" and (not cell.execution_identity[0] or int(point["total_kv_read_tokens"]) == 0):
             return "n/a"
+        # New producers report deliberate skips without a fake-fallback stamp.
+        if native_regime == "skip:dense_model_content_insensitive":
+            return native_regime if dense_synthetic else "fake_fallback"
         if kvwarm_meta is None:
             return "legacy"
         skip_reason = kvwarm_meta.get("skip_reason")
@@ -284,11 +287,8 @@ def aggregate_cell(
         batch = int(point["batch_size"])
         total_prefill = int(point["total_prefill_tokens"])
         total_kv = int(point["total_kv_read_tokens"])
-        if (
-            cell.execution_identity[0]
-            and (phase == "decode" or total_kv > 0)
-            and _kv_seed_regime(point, phase) != "real_kv"
-        ):
+        seed_regime = _kv_seed_regime(point, phase, measurement.kv_seed_regime)
+        if cell.execution_identity[0] and (phase == "decode" or total_kv > 0) and seed_regime != "real_kv":
             raise ValueError("DeepSeek-V4.1 cached prefill/decode publication requires real_kv measurements")
         if (
             capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
@@ -331,7 +331,7 @@ def aggregate_cell(
                 "total_prefill_tokens": total_prefill,
                 "total_kv_read_tokens": total_kv,
                 "partition_policy": "balanced_v1",
-                "kv_seed_regime": _kv_seed_regime(point, phase),
+                "kv_seed_regime": seed_regime,
                 "latency_ms": max(latency for _rank, latency in measurement.rank_wall_times) * 1000.0,
                 "global_warmup_iterations": plan.options.warmup_iterations,
                 "warmup_repeats": 0,
