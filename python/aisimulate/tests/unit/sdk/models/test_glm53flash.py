@@ -587,7 +587,12 @@ def test_silicon_requires_exact_runtime_glm_tables():
     ("path", "system", "tp", "kv"),
     [("nvidia/GLM-5.3-Flash-NVFP4", "gb300", 4, None), ("zai-org/GLM-5.3-Flash", "h200_sxm", 8, "bfloat16")],
 )
-def test_packaged_silicon_prices_each_sparse_attention_layer_from_its_table(path, system, tp, kv):
+def test_packaged_silicon_prices_each_sparse_attention_layer_from_its_table(path, system, tp, kv, monkeypatch):
+    # The GLM-5.3-Flash attention and all-reduce tables are packaged for vLLM 0.31.0
+    # only. Since the vLLM 0.32.0 tables arrived, 0.31.0 is no longer a queryable slot
+    # (0.32.0 is the derived next): these are raw data coordinates, as in the fixed-
+    # runtime tests below, until the two tables are collected at 0.32.0.
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     config = replace(
         _config("SILICON", backend_version="0.31.0", enable_shared_layer=False),
         model=path,
@@ -608,19 +613,26 @@ def test_packaged_silicon_prices_each_sparse_attention_layer_from_its_table(path
         model.close()
 
 
-@pytest.mark.parametrize(("backend", "version"), _HOPPER_FP8_RUNTIMES)
+@pytest.mark.parametrize(
+    ("backend", "version", "message"),
+    [("vllm", "0.32.0", "exact runtime"), ("sglang", "0.5.22", "perf data directory not found")],
+)
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
-def test_fixed_hopper_fp8_runtimes_still_require_exact_silicon_tables(system, backend, version, monkeypatch):
+def test_fixed_hopper_fp8_runtimes_still_require_exact_silicon_tables(system, backend, version, message, monkeypatch):
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     config = _config("SILICON", backend, backend_version=version, kvcache_quant_mode="fp8").to_dict()
     config.update(system=system, tp=8, moe_tp_size=8)
     # Enabling the runtime's FP8 capability does not make analytical estimates
     # or rows from an older runtime eligible for strict measured prediction.
-    # No data directory is packaged for either new runtime, so loading fails
-    # before the per-table exact-runtime readiness check.
-    with pytest.raises(PerfDataNotAvailableError, match="perf data directory not found") as error:
+    # No data directory is packaged for SGLang 0.5.22, so loading fails before the
+    # per-table exact-runtime readiness check. vLLM 0.32.0 has generic tables but no
+    # GLM-5.3-Flash attention or all-reduce table: the exact-runtime check refuses it.
+    with pytest.raises(PerfDataNotAvailableError, match=message) as error:
         RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
-    assert f"system={system}, backend={backend}, version={version}" in str(error.value)
+    if message == "perf data directory not found":
+        assert f"system={system}, backend={backend}, version={version}" in str(error.value)
+    else:
+        assert f"{backend}/{version}" in str(error.value)
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -804,7 +816,8 @@ def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint(backend, version, tmp
 
 
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
-def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system):
+def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system, monkeypatch):
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     # Stock vLLM 0.31.0 on SM90 serves BF16 KV only. Its cache payload equals
     # SGLang BF16 (512 x 2 B latent per token per sparse layer, index keys and
     # pool tails unchanged); FP8 keeps 512 B per token on capable runtimes.
