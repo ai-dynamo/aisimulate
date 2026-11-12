@@ -1,0 +1,123 @@
+{
+  "$id": "aisim-op-declared-reuse/v1",
+  "additionalProperties": false,
+  "description": "One declared reuse with its donor resolved (``aisim-op-declared-reuse/v1``).",
+  "properties": {
+    "approved_by": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Approved By"
+    },
+    "consumer_manifest": {
+      "title": "Consumer Manifest",
+      "type": "string"
+    },
+    "declaration_path": {
+      "title": "Declaration Path",
+      "type": "string"
+    },
+    "donor_configuration_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Donor Configuration Id"
+    },
+    "donor_manifest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Donor Manifest"
+    },
+    "donor_table_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Donor Table Path"
+    },
+    "family": {
+      "title": "Family",
+      "type": "string"
+    },
+    "framework": {
+      "title": "Framework",
+      "type": "string"
+    },
+    "from_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "From Version"
+    },
+    "hardware": {
+      "title": "Hardware",
+      "type": "string"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reason"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "table": {
+      "title": "Table",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hardware",
+    "family",
+    "framework",
+    "version",
+    "table",
+    "from_version",
+    "approved_by",
+    "reason",
+    "declaration_path",
+    "consumer_manifest",
+    "donor_manifest",
+    "donor_configuration_id",
+    "donor_table_path",
+    "status"
+  ],
+  "title": "OpDeclaredReuseRow",
+  "type": "object"
+}

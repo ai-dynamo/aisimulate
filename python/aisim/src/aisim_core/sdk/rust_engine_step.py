@@ -443,6 +443,7 @@ class RustForwardPassPerfModel:
         config: ForwardPassPerfModelConfig | Mapping[str, Any] | None = None,
         *,
         state_snapshot: str | os.PathLike[str] | None = None,
+        dataset: Any | None = None,
     ) -> RustForwardPassPerfModel:
         """Construct one estimator from the canonical role-bound configuration.
 
@@ -466,6 +467,14 @@ class RustForwardPassPerfModel:
         without ``include_perf_db`` only locates the data, which must match
         the snapshot's content fingerprint. Snapshot I/O failures raise ``OSError`` subclasses
         such as ``FileNotFoundError``, never ``PerfDataNotAvailableError``.
+
+        ``dataset`` is an optional :class:`aisim_core.data.ensure.DataPin`
+        (default: the ``AISIM_DATASET``/``AISIM_DATA_LOCAL`` environment pin, if
+        any). With a pin, the dataset for the resolved ``system``/``backend``/
+        ``backend_version``/``model`` is fetched, verified and wired into the
+        configuration before construction, and the returned model's
+        ``dataset_revisions`` reports the revision used. Without a pin nothing
+        changes. Missing data raises a ``DataFetchError`` and never falls back.
         """
         import aisim_core
 
@@ -473,7 +482,12 @@ class RustForwardPassPerfModel:
             raise TypeError("best_available requires exactly one of config or state_snapshot")
         if state_snapshot is not None:
             config = _snapshot_config(state_snapshot)
-        return cls(aisim_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+        ensured = _ensure_dataset(config, dataset) if state_snapshot is None else None
+        if ensured is not None:
+            config = ensured.config
+        model = cls(aisim_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+        model.dataset_revisions = {} if ensured is None else ensured.revisions
+        return model
 
     @staticmethod
     def inspect_state_snapshot(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -1006,6 +1020,19 @@ def _snapshot_config(state_snapshot: str | os.PathLike[str]) -> dict[str, Any]:
 
 def _carries_state_snapshot(estimator_config: Any) -> bool:
     return isinstance(estimator_config, Mapping) and estimator_config.get("state_snapshot") is not None
+
+
+def _ensure_dataset(config: ForwardPassPerfModelConfig | Mapping[str, Any], pin: Any | None):
+    """Resolve and load pinned dataset inputs; ``None`` (a no-op) when no pin is configured."""
+    from aisim_core.data.ensure import ensure_data, ensuring, pin_from_environment
+
+    if ensuring():  # the loader's own readiness check constructs a model from the prepared config
+        return None
+    pin = pin if pin is not None else pin_from_environment()
+    if pin is None:
+        return None
+    payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+    return ensure_data(payload, pin)
 
 
 def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:

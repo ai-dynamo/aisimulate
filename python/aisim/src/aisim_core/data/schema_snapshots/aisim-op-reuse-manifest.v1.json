@@ -1,0 +1,64 @@
+{
+  "$id": "aisim-op-reuse-manifest/v1",
+  "additionalProperties": false,
+  "description": "One group of ``perf_data_reuse_manifest.yaml`` (``aisim-op-reuse-manifest/v1``).",
+  "properties": {
+    "frameworks": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Frameworks",
+      "type": "array"
+    },
+    "kernel_source": {
+      "title": "Kernel Source",
+      "type": "string"
+    },
+    "median_pct_divergence": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Median Pct Divergence"
+    },
+    "op_file": {
+      "title": "Op File",
+      "type": "string"
+    },
+    "systems": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Systems",
+      "type": "array"
+    },
+    "tier": {
+      "title": "Tier",
+      "type": "string"
+    },
+    "total_raw_rows": {
+      "title": "Total Raw Rows",
+      "type": "integer"
+    },
+    "within_framework_dedup_rows": {
+      "title": "Within Framework Dedup Rows",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "op_file",
+    "kernel_source",
+    "tier",
+    "systems",
+    "frameworks",
+    "total_raw_rows",
+    "within_framework_dedup_rows"
+  ],
+  "title": "OpReuseManifestRow",
+  "type": "object"
+}

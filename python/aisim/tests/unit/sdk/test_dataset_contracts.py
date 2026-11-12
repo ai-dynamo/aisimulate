@@ -405,42 +405,6 @@ def test_preparation_rejects_malformed_profile_json(dataset, keys, value):
     assert not output.exists()
 
 
-@pytest.mark.parametrize(
-    "legacy,valid",
-    [
-        ({"catalog_version": 5}, True),
-        ({"catalog_version": 6}, True),
-        ({"catalog_version": 7}, True),
-        ([], False),
-        ({}, False),
-        ({"catalog_version": []}, False),
-        ({"catalog_version": {}}, False),
-        ({"catalog_version": 5.0}, False),
-        ({"catalog_version": "5"}, False),
-        ({"catalog_version": True}, False),
-    ],
-)
-def test_legacy_fpm_discovery_requires_supported_integer_version(tmp_path, legacy, valid):
-    path = "catalog/fpm/index.json"
-    write(tmp_path, path, legacy)
-    write(
-        tmp_path,
-        "catalog/dataset.json",
-        {
-            "schema_version": "aisim-dataset-index/v1",
-            "dataset_id": "public/example",
-            "categories": {
-                "fpm": {"root": "data/fpm", "index": artifact(tmp_path, path, "category-index"), "layout": "legacy-fpm"}
-            },
-        },
-    )
-    if valid:
-        assert check_dataset(tmp_path).categories["fpm"].layout == "legacy-fpm"
-    else:
-        with pytest.raises(ValueError, match="unsupported legacy FPM index"):
-            check_dataset(tmp_path)
-
-
 @pytest.mark.parametrize("field", ["hardware", "framework", "framework_version"])
 def test_preparation_rejects_manifest_predictor_identity_mismatch(dataset, field):
     root, path, manifest = dataset
@@ -530,3 +494,128 @@ def test_preparation_names_the_basis_field_that_differs(dataset):
     ):
         prepare_execution_profile(root, path, output)
     assert not output.exists()
+
+
+def _identity(**extra):
+    return Identity(
+        hardware="h200_sxm",
+        framework="vllm",
+        framework_version="1.0",
+        operation_family=None,
+        model="m",
+        effective_settings={"tp": 1},
+        unresolved_identity=None,
+        **extra,
+    )
+
+
+def test_identity_hash_v1_ids_are_frozen():
+    # Pinned golden value computed before v2 existed: unchanged inputs keep IDs.
+    legacy = {
+        "version": 1,
+        "category": "op-latency",
+        "purpose": "execution-profile",
+        "identity": {
+            "hardware": "h200_sxm",
+            "framework": "vllm",
+            "framework_version": "1.0",
+            "operation_family": None,
+            "model": "m",
+            "effective_settings": {"tp": 1},
+            "unresolved_identity": None,
+        },
+    }
+    canonical = json.dumps(legacy, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    expected = "cfg-" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert configuration_id("op-latency", "execution-profile", _identity()) == expected
+    assert configuration_id("op-latency", "execution-profile", _identity(), version=1) == expected
+
+
+def test_identity_hash_v2_covers_new_fields():
+    base = configuration_id("op-latency", "execution-profile", _identity())
+    par = _identity(parallelism={"aggregated": {"tp": 4}})
+    v2 = configuration_id("op-latency", "execution-profile", par)
+    assert v2 != base
+    assert v2 == configuration_id("op-latency", "execution-profile", par, version=2)
+    with pytest.raises(ValueError, match="v1 cannot represent"):
+        configuration_id("op-latency", "execution-profile", par, version=1)
+    for field in (
+        {"precision": {"weights": "fp8"}},
+        {"deployment": "disaggregated"},
+        {"parallelism_complete": True},
+    ):
+        assert configuration_id("op-latency", "execution-profile", _identity(**field)) not in {base, v2}
+    with pytest.raises(ValueError, match="unsupported"):
+        configuration_id("op-latency", "execution-profile", _identity(), version=4)
+
+
+def test_identity_hash_v3_covers_deployment_facts_and_keeps_older_ids():
+    plain = _identity()
+    par = _identity(parallelism={"aggregated": {"tp": 4}})
+    # Older identities never see the new fields: their IDs are unchanged by adding them to the model.
+    assert configuration_id("e2e", "e2e-configuration", plain) == configuration_id(
+        "e2e", "e2e-configuration", plain, version=1
+    )
+    assert configuration_id("e2e", "e2e-configuration", par) == configuration_id(
+        "e2e", "e2e-configuration", par, version=2
+    )
+    seen = {configuration_id("e2e", "e2e-configuration", par)}
+    for field in (
+        {"dp_attention": {"decode": True, "prefill": False}},
+        {"dp_attention": {"decode": False, "prefill": False}},
+        {"multinode": False},
+        {"multinode": True},
+        {"offload_mode": "off"},
+        {"offload_mode": "on"},
+    ):
+        identity = _identity(parallelism={"aggregated": {"tp": 4}}, **field)
+        assert identity.uses_v3_fields()
+        cid = configuration_id("e2e", "e2e-configuration", identity)
+        assert cid == configuration_id("e2e", "e2e-configuration", identity, version=3)
+        assert cid not in seen  # each value is part of the hash
+        seen.add(cid)
+        for old in (1, 2):
+            with pytest.raises(ValueError, match="cannot represent"):
+                configuration_id("e2e", "e2e-configuration", identity, version=old)
+    # dp_attention key order does not matter; a degree is not a boolean.
+    a = _identity(dp_attention={"prefill": False, "decode": True})
+    b = _identity(dp_attention={"decode": True, "prefill": False})
+    assert configuration_id("e2e", "e2e-configuration", a) == configuration_id("e2e", "e2e-configuration", b)
+    with pytest.raises(ValueError):
+        _identity(dp_attention={"decode": 2})
+    with pytest.raises(ValueError):
+        _identity(dp_attention={"": True})
+
+
+def test_parallelism_normalization_keeps_ids_stable():
+    a = _identity(parallelism={"aggregated": {"tp": 4, "ep": 8, "dcp": 1}})
+    b = _identity(parallelism={"aggregated": {"ep": 8, "tp": 4}})
+    assert a.parallelism == {"aggregated": {"ep": 8, "tp": 4}}
+    assert configuration_id("fpm", "execution-profile", a) == configuration_id("fpm", "execution-profile", b)
+    assert _identity(parallelism={"aggregated": {"tp": 1}}).parallelism == {"aggregated": {}}
+    assert _identity(parallelism={"aggregated": {"x-new": 2}}).parallelism == {"aggregated": {"x-new": 2}}
+    for bad in ({"aggregated": {"tp": 0}}, {"aggregated": {"tp": True}}, {"aggregated": {"TP": 2}}, {"": {}}):
+        with pytest.raises(ValueError):
+            _identity(parallelism=bad)
+
+
+def test_new_categories_and_purposes_validate():
+    for category in ("eval", "systems"):
+        CategoryIndex(schema_version="aisim-category-index/v1", category=category, entries=[])
+    with pytest.raises(ValueError):
+        CategoryIndex(schema_version="aisim-category-index/v1", category="other", entries=[])
+
+
+def test_manifest_with_v2_identity_checks_hash(dataset):
+    root, path, manifest = dataset
+    identity = Identity(
+        **{**manifest["identity"], "parallelism": {"aggregated": {"tp": 2}}, "deployment": "aggregated"}
+    )
+    manifest["identity"] = identity.model_dump()
+    manifest["configuration_id"] = configuration_id("op-latency", "execution-profile", identity)
+    write(root, path, manifest)
+    assert check_manifest(root, path).identity.parallelism == {"aggregated": {"tp": 2}}
+    manifest["identity"]["parallelism"] = {"aggregated": {"tp": 4}}
+    write(root, path, manifest)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        check_manifest(root, path)

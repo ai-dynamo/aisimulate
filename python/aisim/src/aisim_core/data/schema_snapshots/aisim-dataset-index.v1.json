@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "format": {
+          "minLength": 1,
+          "title": "Format",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows"
+        },
+        "runtime_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Path"
+        },
+        "schema": {
+          "minLength": 1,
+          "title": "Schema",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "path",
+        "role",
+        "format",
+        "schema",
+        "sha256",
+        "bytes"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "CategoryReference": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "$ref": "#/$defs/Artifact"
+        },
+        "layout": {
+          "const": "category",
+          "title": "Layout",
+          "type": "string"
+        },
+        "root": {
+          "title": "Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "index",
+        "layout"
+      ],
+      "title": "CategoryReference",
+      "type": "object"
+    }
+  },
+  "$id": "aisim-dataset-index/v1",
+  "additionalProperties": false,
+  "properties": {
+    "categories": {
+      "additionalProperties": {
+        "$ref": "#/$defs/CategoryReference"
+      },
+      "propertyNames": {
+        "enum": [
+          "op-latency",
+          "fpm",
+          "e2e",
+          "eval",
+          "systems"
+        ]
+      },
+      "title": "Categories",
+      "type": "object"
+    },
+    "dataset_id": {
+      "pattern": "^[^/\\s]+/[^/\\s]+$",
+      "title": "Dataset Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "aisim-dataset-index/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "dataset_id",
+    "categories"
+  ],
+  "title": "DatasetIndex",
+  "type": "object"
+}

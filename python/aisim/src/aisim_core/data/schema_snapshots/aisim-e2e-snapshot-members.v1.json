@@ -1,0 +1,34 @@
+{
+  "$id": "aisim-e2e-snapshot-members/v1",
+  "additionalProperties": false,
+  "properties": {
+    "configuration_id": {
+      "pattern": "^cfg-[0-9a-f]{64}$",
+      "title": "Configuration Id",
+      "type": "string"
+    },
+    "manifest_path": {
+      "minLength": 1,
+      "title": "Manifest Path",
+      "type": "string"
+    },
+    "observation_id": {
+      "minLength": 1,
+      "title": "Observation Id",
+      "type": "string"
+    },
+    "record_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Record Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "configuration_id",
+    "observation_id",
+    "record_sha256",
+    "manifest_path"
+  ],
+  "title": "SnapshotMember",
+  "type": "object"
+}

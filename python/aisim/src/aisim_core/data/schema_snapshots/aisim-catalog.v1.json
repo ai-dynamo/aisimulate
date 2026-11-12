@@ -1,0 +1,216 @@
+{
+  "$id": "aisim-catalog/v1",
+  "additionalProperties": false,
+  "description": "One cell summary. ``model`` is null for the model-independent op layer.",
+  "properties": {
+    "acc_coverage": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc Coverage"
+    },
+    "acc_created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc Created At"
+    },
+    "acc_mape_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc Mape Pct"
+    },
+    "acc_n_scored": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc N Scored"
+    },
+    "acc_record_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc Record Id"
+    },
+    "acc_spec_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc Spec Sha256"
+    },
+    "acc_tier": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acc Tier"
+    },
+    "collection_quality_json": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Collection Quality Json"
+    },
+    "framework": {
+      "title": "Framework",
+      "type": "string"
+    },
+    "gpu_n_recorded": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Gpu N Recorded",
+      "type": "integer"
+    },
+    "gpu_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gpu Seconds"
+    },
+    "hardware": {
+      "title": "Hardware",
+      "type": "string"
+    },
+    "layer": {
+      "enum": [
+        "op",
+        "fpm",
+        "e2e"
+      ],
+      "title": "Layer",
+      "type": "string"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Model"
+    },
+    "n_configs": {
+      "minimum": 0,
+      "title": "N Configs",
+      "type": "integer"
+    },
+    "n_eval_records": {
+      "minimum": 0,
+      "title": "N Eval Records",
+      "type": "integer"
+    },
+    "n_evidence_gaps": {
+      "minimum": 0,
+      "title": "N Evidence Gaps",
+      "type": "integer"
+    },
+    "spec_sha256_current": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Spec Sha256 Current"
+    },
+    "stale_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stale Reason"
+    },
+    "status": {
+      "enum": [
+        "have",
+        "missing",
+        "stale"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "versions": {
+      "default": "",
+      "title": "Versions",
+      "type": "string"
+    }
+  },
+  "required": [
+    "layer",
+    "model",
+    "hardware",
+    "framework",
+    "status",
+    "n_configs",
+    "n_evidence_gaps",
+    "n_eval_records"
+  ],
+  "title": "CatalogRow",
+  "type": "object"
+}

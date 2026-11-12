@@ -436,6 +436,13 @@ def _write_resource_plan(args, plan: dict[str, Any]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.command == "data":
+        from .data_cli import run_data_command
+
+        try:
+            return run_data_command(args)
+        except KeyboardInterrupt:
+            return 130
     if args.command == "onboard":
         try:
             return run_support_command(args)

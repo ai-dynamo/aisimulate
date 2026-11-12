@@ -88,6 +88,10 @@ dev = [
     # fpm_hooks tests build msgspec structs like the engine producers do
     "msgspec>=0.18",
 ]
+hf = [
+    # Hugging Face dataset transport (aisim_core.data.fetch.HfTransport); imported lazily.
+    "huggingface_hub>=0.24",
+]
 learned = [
     # Offline trainer for the learned forward-pass model (aisim_core.sdk.fpm_learned).
     "scikit-learn>=1.4",
@@ -155,6 +159,7 @@ include = [
     { path = "collector/fpm_forward/runtime/glm53flash/LICENSE", format = "wheel" },
     # Ship estimator models and profiles with their canonical implementation.
     "src/aisim_core/sdk/**/*.md",
+    "src/aisim_core/data/schema_snapshots/*.json",
     "src/aisim_core/systems/*.yaml",
     "src/aisim_core/systems/*.csv",
     "src/aisim_core/systems/**/*.csv",

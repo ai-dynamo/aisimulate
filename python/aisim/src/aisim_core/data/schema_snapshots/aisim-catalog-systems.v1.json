@@ -1,0 +1,22 @@
+{
+  "$id": "aisim-catalog-systems/v1",
+  "additionalProperties": false,
+  "description": "A known system and the spec hash current in this checkout.",
+  "properties": {
+    "spec_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Spec Sha256",
+      "type": "string"
+    },
+    "system": {
+      "title": "System",
+      "type": "string"
+    }
+  },
+  "required": [
+    "system",
+    "spec_sha256"
+  ],
+  "title": "SystemRow",
+  "type": "object"
+}

@@ -7,8 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 
 [`hf_dataset.json`](hf_dataset.json) is an adapted index of NVIDIA-collected
 measurement metadata from
-[`nvidia/aisimulate-fpm-dataset/data/thinkingmachines--Inkling-NVFP4`](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a/data/thinkingmachines--Inkling-NVFP4)
-at immutable revision `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`. Each entry records the
+[`ai-dynamo/aisim-data/data/fpm/thinkingmachines--Inkling-NVFP4`](https://huggingface.co/datasets/ai-dynamo/aisim-data/tree/main/data/fpm/thinkingmachines--Inkling-NVFP4)
+at the immutable revision pinned in `hf_dataset.json` (the files moved byte-identically from `nvidia/aisimulate-fpm-dataset@dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`, `data/<rest>` to `data/fpm/<rest>`). Each entry records the
 original artifact paths and SHA256 digests; table contents are fetched explicitly
 and are not bundled in this directory. The dataset card declares Apache-2.0.
 The repository's canonical `THIRD_PARTY_NOTICES.md` records this adaptation.

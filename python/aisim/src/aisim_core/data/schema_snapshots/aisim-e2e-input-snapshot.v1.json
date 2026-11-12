@@ -1,0 +1,147 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "format": {
+          "minLength": 1,
+          "title": "Format",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows"
+        },
+        "runtime_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Path"
+        },
+        "schema": {
+          "minLength": 1,
+          "title": "Schema",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "path",
+        "role",
+        "format",
+        "schema",
+        "sha256",
+        "bytes"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "$id": "aisim-e2e-input-snapshot/v1",
+  "additionalProperties": false,
+  "description": "Frozen input selection. Contains inputs only (membership and acquisition).",
+  "properties": {
+    "acquisition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Artifact"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "partial"
+      ],
+      "title": "Completeness",
+      "type": "string"
+    },
+    "counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts",
+      "type": "object"
+    },
+    "members": {
+      "$ref": "#/$defs/Artifact"
+    },
+    "schema_version": {
+      "const": "aisim-e2e-input-snapshot/v1",
+      "default": "aisim-e2e-input-snapshot/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selection_policy": {
+      "minLength": 1,
+      "title": "Selection Policy",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "source_scope": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Source Scope",
+      "type": "object"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "source_scope",
+    "selection_policy",
+    "completeness",
+    "counts",
+    "members"
+  ],
+  "title": "E2eInputSnapshot",
+  "type": "object"
+}

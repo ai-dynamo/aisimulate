@@ -1,0 +1,16 @@
+{
+  "$id": "aisim-op-latency/v1",
+  "additionalProperties": true,
+  "description": "One row of an op measurement table (``aisim-op-latency/v1``).\n\nColumns differ per operation family and file (116 distinct names across the\npackaged tables); only ``kernel_source`` is common to all. The schema\ntherefore pins ``kernel_source`` and allows the family-specific columns,\nwhose names, types and units are defined by the collector for each family.",
+  "properties": {
+    "kernel_source": {
+      "title": "Kernel Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kernel_source"
+  ],
+  "title": "OpLatencyRow",
+  "type": "object"
+}
