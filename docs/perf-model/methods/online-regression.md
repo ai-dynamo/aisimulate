@@ -565,7 +565,8 @@ allows signed slopes; the intercept is always unconstrained. Fitting and
 retention may select different ordered lists of one to six distinct axes.
 The supported names are `attention`, `moe`, `n`, `E`, `P`, `maxE`, `maxP`,
 `minP`, `P2`, `F`, `nE`, `logF`, `meanE`, `meanP`, `cvE2`, `cvP2`, `logN`,
-`n2`, and `logP`. Features use scheduled work only. Request-list features require
+`n2`, `logP`, `longest_split`, and `eager` (see
+[engine-constant axes](#engine-constant-axes)). Features use scheduled work only. Request-list features require
 the corresponding aligned request lengths; unavailable input is rejected, not
 reconstructed from aggregate counts. These controls do not change the workload
 store selected from all active attention-DP ranks.
@@ -637,6 +638,43 @@ startup count must be positive integers, with `trigger <= window`. Unknown axes,
 duplicate axes, invalid grid shapes, and incompatible policy fields fail before
 estimator selection. `fit.linear` is rejected with `fit.kind: spline`;
 the spline fit and retention axes remain `[attention, moe]`.
+
+### Engine-constant axes
+
+Token and KV sums cannot tell a batch holding one very long sequence from a
+batch of equal contexts with the same totals, and a pass above the CUDA-graph
+capture limit runs eagerly. Two request-list axes model these effects, each
+with one positive constant in `fit.linear` that configuration requires
+whenever `feature_axes` or `sampling.axes` selects the axis:
+
+- `longest_split` is `max_i(past_i + extend_i) / max(1, floor(max_kv_splits / n))`
+  for a rank's `n` scheduled requests: the longest sequence over the KV splits
+  FlashInfer's TensorRT-LLM decode kernel gives each request
+  (`numCtasPerSeqKv` in
+  [`fmhaKernels.cuh`](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/include/flashinfer/trtllm/fmha/fmhaKernels.cuh),
+  v0.7.0.post1). `max_kv_splits` is the GPU's SM count over the kernel's CTAs
+  per request. `n` and the longest sequence count every scheduled request,
+  including prefill requests, which vLLM runs in the context kernel rather than
+  the decode kernel.
+- `eager` is 1 when a rank schedules more tokens, `sum_i extend_i`, than
+  `max_cudagraph_capture_size`, and 0 otherwise. vLLM runs such a pass without
+  a CUDA graph (`dispatch` in
+  [`cudagraph_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py),
+  v0.32.0).
+
+Each attention-DP rank runs its own kernel and graph, so both axes are computed
+per rank and the iteration takes the largest value. The snapshot pins the
+constants with the rest of the estimator configuration:
+
+```yaml
+estimator_config:
+  fpm_regression:
+    fit:
+      linear:
+        feature_axes: [E, P2, F, logN, longest_split, eager]
+        max_kv_splits: 74                # for example, 148 SMs / 2 CTAs per request
+        max_cudagraph_capture_size: 512
+```
 
 ### fpm5 aggregate features
 

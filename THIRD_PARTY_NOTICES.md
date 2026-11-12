@@ -2290,3 +2290,34 @@ not establish the license applicable to this configuration. Maintainer or
 Open Source Review Board confirmation is required to resolve that scope.
 The frozen legacy inventory records this unresolved status; it does not
 assert license approval or grant distribution permission.
+
+## Split decode attention and CUDA-graph dispatch regression axes
+
+The `longest_split` and `eager` regression axes in the repository-root files
+`crates/core/src/perfmodel/fpm/regression/feature_axes.rs` and
+`crates/core/src/perfmodel/fpm/estimator.rs`, with their synthetic tests in
+`crates/core/src/perfmodel/fpm/regression/tests_configured.rs`, are
+independently written regression features that model two behavioral rules:
+
+- FlashInfer v0.7.0.post1, immutable commit
+  `946200de1ae94fc93fdd0926f0a13afd1fa7f0f1`: the KV splits the TensorRT-LLM
+  decode kernel gives each request (`numCtasPerSeqKv` in
+  [`include/flashinfer/trtllm/fmha/fmhaKernels.cuh`](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/include/flashinfer/trtllm/fmha/fmhaKernels.cuh)).
+  Copyright (c) 2020-2026, NVIDIA CORPORATION. The project NOTICE reads
+  "FlashInfer, Copyright 2025-2026 NVIDIA, Copyright 2023-2026 FlashInfer
+  community (https://flashinfer.ai/)". Licensed under Apache-2.0:
+  https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/LICENSE
+- vLLM v0.32.0, immutable commit `5df63a7203cdb9328d824a27b682e77c7b9928be`:
+  a pass with more tokens than every captured CUDA graph runs without one
+  (`dispatch` in
+  [`vllm/v1/worker/gpu/cudagraph_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py)).
+  Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+  https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+  That revision has no root NOTICE file.
+
+No upstream source or test fixture is copied. The axes are modified
+simplifications: the kernel's split cap and tile choice and the CUDA-graph
+padding are not modeled, and `longest_split` counts every scheduled request,
+including prefill requests, which vLLM runs in the context kernel rather
+than the decode kernel. The Apache-2.0 license text is included in this
+repository as `LICENSE`.

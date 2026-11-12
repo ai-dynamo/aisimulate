@@ -900,12 +900,28 @@ KNOWN_BACKEND_DIRS = _KNOWN_BACKEND_DIRS
 _LEGACY_LAYOUT_WARNED: set[str] = set()
 
 
+def _has_legacy_op_layout(version_path: str) -> bool:
+    """Backend-first FPM tables are canonical; only OP data needs migration."""
+    try:
+        entries = os.listdir(version_path)
+    except OSError:
+        return False
+    return any(
+        not entry.startswith(".")
+        and entry != "fpm_forward_perf.parquet"
+        and (entry.endswith((".parquet", ".txt")) or entry in {"reuse.yaml", "collection_meta.yaml"})
+        and os.path.isfile(os.path.join(version_path, entry))
+        for entry in entries
+    )
+
+
 def _iter_backend_version_dirs(data_dir: str, backend: str):
     """Yield (version, version_path) for a backend across BOTH tree layouts.
 
     Family layout: <data_dir>/<family>/<backend>/<version> — any first-level
     directory whose name is not a known backend dir is a family dir. Legacy
-    layout: <data_dir>/<backend>/<version> (deprecated; warns once per tree).
+    layout: <data_dir>/<backend>/<version> (warns once per tree for OP data;
+    this is the canonical layout for FPM tables).
     A (backend, version) may yield several paths — one per family dir holding
     it — and callers aggregate.
     """
@@ -917,15 +933,16 @@ def _iter_backend_version_dirs(data_dir: str, backend: str):
         entry_path = os.path.join(data_dir, entry)
         if entry.startswith(".") or not os.path.isdir(entry_path):
             continue
-        if entry == backend:  # legacy layout
-            if data_dir not in _LEGACY_LAYOUT_WARNED:
-                _LEGACY_LAYOUT_WARNED.add(data_dir)
-                logger.warning(
-                    "Legacy perf-data layout (<backend>/<version>) found under %s; "
-                    "migrate to <family>/<backend>/<version> (Collector V3 design §3)",
-                    data_dir,
-                )
-            yield from _iter_version_subdirs(entry_path)
+        if entry == backend:  # canonical FPM or legacy OP layout
+            for version, version_path in _iter_version_subdirs(entry_path):
+                if data_dir not in _LEGACY_LAYOUT_WARNED and _has_legacy_op_layout(version_path):
+                    _LEGACY_LAYOUT_WARNED.add(data_dir)
+                    logger.warning(
+                        "Legacy perf-data layout (<backend>/<version>) found under %s; "
+                        "migrate to <family>/<backend>/<version> (Collector V3 design §3)",
+                        data_dir,
+                    )
+                yield version, version_path
         elif entry not in KNOWN_BACKEND_DIRS:  # family dir
             backend_path = os.path.join(entry_path, backend)
             if os.path.isdir(backend_path):

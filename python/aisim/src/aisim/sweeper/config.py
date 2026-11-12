@@ -27,7 +27,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
-from aisim.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
+from aisim.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions, WekaChatTemplate
 
 from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
@@ -324,6 +324,7 @@ class Workload(BaseModel):
     trace_format: str = "mooncake"  # replay-ready trace schema
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
     weka_client: Literal["recorded", "agentx"] | None = None
+    weka_chat_template: WekaChatTemplate | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
@@ -392,6 +393,9 @@ class Workload(BaseModel):
         result = handler(self)
         if self.agentic_warmup_policy == "repeated_prefixes":
             result.pop("agentic_warmup_policy", None)
+        # Saved workloads without a chat template serialize as before it existed.
+        if self.weka_chat_template is None:
+            result.pop("weka_chat_template", None)
         return result
 
     @property
@@ -459,6 +463,10 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_client requires Weka trace input")
+        if self.weka_chat_template is not None and (
+            self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
+        ):
+            raise ValueError("weka_chat_template requires Weka trace input")
         if self.agentic_warmup and self.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
         if self.agentic_warmup_policy == "live_trajectory_v1" and (

@@ -381,6 +381,10 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             "measurement source URL",
         )
         require(isinstance(snapshot.get("aisim_packages"), dict), "AISim packages")
+        require(
+            len({"aisim", "aisimulate"}.intersection(snapshot["aisim_packages"])) == 1,
+            "AISim package identity (expected exactly one)",
+        )
         for date in ("measurement_date_through", "aisim_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
@@ -563,8 +567,6 @@ def _build_accuracy_catalog(
                 raise PagesBuildError("qualified accuracy artifact belongs to another branch")
             # The artifact was produced by a campaign, not read from a Git blob.
             # Its evaluated revision is recorded separately below.
-            if branch == "main":
-                (output_dir / "e2e-accuracy" / "summary.json").write_text(content)
         elif ref is None:
             source = repo_root / relative_path
             if source.is_symlink():
@@ -602,6 +604,8 @@ def _build_accuracy_catalog(
         destination = output_dir / "e2e-accuracy" / entry["summary_path"]
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        if branch == "main":
+            (output_dir / "e2e-accuracy" / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         entries.append(entry)
     status_path = artifacts / "status/updates.json" if artifacts else None
     if status_path is not None and status_path.exists():

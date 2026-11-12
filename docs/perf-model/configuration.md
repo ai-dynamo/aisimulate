@@ -489,6 +489,8 @@ sample from the most populated cell when the store exceeds its budget.
 | `estimator_config.fpm_regression.fit.linear.non_negative` | `true` | `false` permits signed slopes; the intercept is always free. |
 | `estimator_config.fpm_regression.fit.linear.update_policy` | `{kind: always}` | `error_threshold` defers coefficient publication until recent prediction errors exceed its tolerances. |
 | `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18` and a positive `fit.singular_ridge_scale`. Omitted from serialization when absent. |
+| `estimator_config.fpm_regression.fit.linear.max_kv_splits` | Absent | KV splits the decode-attention kernel gives a request that runs alone: the GPU's SM count over the kernel's CTAs per request. Positive, and required when `feature_axes` or `sampling.axes` selects `longest_split`. Omitted from serialization when absent. See [engine-constant axes](methods/online-regression.md#engine-constant-axes). |
+| `estimator_config.fpm_regression.fit.linear.max_cudagraph_capture_size` | Absent | The most scheduled tokens a rank runs in a CUDA graph, as vLLM's knob of this name. Positive, and required when `feature_axes` or `sampling.axes` selects `eager`. Omitted from serialization when absent. |
 
 `feature_set: fpm5` fits the same named aggregates as the learned
 `--features fpm5` preset: active-rank, request and token counts and sums,
@@ -844,11 +846,21 @@ minus one token per decode request, but without the scheduler's KV clamp. When
 the model reads per-request detail (a regression request feature axis, or a
 learned `req_*`, `slot*` or length-variance feature), each rank also carries
 `extend_lengths` and `past_kv_lengths` (each prefill request's new tokens and
-prefix, each decode request's one token and past KV) and the population
+prefix, each decode request's verification width and past KV) and the population
 variances of the prefill requests' full prompt lengths, as the telemetry
 reports them whatever chunk of a prompt the pass computes, and of the decode
 requests' past KV; those passes are not reused from the iteration cache. Each
 rank's metrics carry its position in the group as `dp_rank`.
+
+A vLLM regression fitted at `nextn > 0` gives a valid estimate only when its
+training timings cover complete MTP rounds, drafting and verification, as a
+measured speculative-round profile's do; `nextn` records the depth, not how
+the timings were obtained. Replay times such a role only at that depth:
+the snapshot pins `nextn`, and the engine's `aic_nextn` must equal it. Each
+decode request counts once in the totals with its past KV, as in the
+telemetry; only its `extend_lengths` entry carries the tokens it verifies: one
+plus the drafts the scheduler gave it, fewer than `nextn` when the token budget
+or the context limit cuts the round short. No `draft_length` scaling applies.
 
 Construction checks that the role's workload stores are ready: pure prefill
 for a prefill worker, pure decode for a decode worker, and pure prefill and
@@ -858,8 +870,9 @@ decode in one rank pass; an SGLang rank runs a prefill batch alone (mixed chunk
 is not modeled), so it does not. Every aggregated worker whose engine runs
 attention DP above one also needs cross-rank aggregated. A regression store is
 ready with a usable fit and a learned store when the forest has it. It rejects
-a rank hosting the vision encoder, speculative decoding (`nextn > 0` or a
-speculation scheme) and bounded decoder replay, and an automatic selection that
+a rank hosting the vision encoder, a speculation scheme, `nextn > 0` for a
+learned model or a non-vLLM regression (SGLang's telemetry reports an MTP
+decode request's extend as 1), bounded decoder replay, and an automatic selection that
 would fall back to an untrained regression. Replay also rejects such a role
 whose engine sets a `decode_speedup_ratio` other than 1: replay then prices
 each rank's phases, which these estimators never do. A pass on which no rank
@@ -1020,7 +1033,7 @@ handled as follows:
 | `tp`, `pp`, `attention_dp`, `moe_tp_size` or `moe_ep_size` `unknown` | The role needs one explicit value for each unknown width, such as `parallelism: {preset: false, tensor: 1, pipeline: 1, attention_data: 1}`; known widths are still pinned. `tp * pp * attention_dp` must equal `deployment_limits.num_gpus` when known. |
 | `deployment_limits.max_kv_tokens` | Required. The role's KV capacity is fixed to that many tokens in whole `kv_block_size` blocks and KV memory is not searched; a different fixed capacity or a `memory_fraction` search is a conflict. |
 | `deployment_limits.max_num_batched_tokens`, `max_num_seqs` | Required. The role's `max_batched_tokens` and `max_sequences` domains keep only values at most the recorded limit; an empty domain is an error. |
-| `nextn > 0` | Rejected: these models price no speculative decoding. |
+| `nextn > 0` | For a vLLM regression, pinned as for a native snapshot: `engine.nextn` takes the saved depth, and `engine.nextn_accepted` is required. Rejected for other backends. |
 
 A snapshot whose `backend_version` is unset (`null`) is rejected: save the
 deployed version or `"unknown"`. `deployment_limits.num_gpus` and

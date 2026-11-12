@@ -10,8 +10,8 @@ SUMMARY_VERSION = 2
 SNAPSHOT_FIELDS = ("completed_at", "method", "packages", "sot_sha256")
 
 
-def normalize_summary(value: dict) -> dict:
-    """Read v1/v2 summaries as v2; reject ambiguous or mislabeled field names.
+def normalize_summary(value: dict, *, target_version: int = SUMMARY_VERSION) -> dict:
+    """Read v1/v2 summaries in the reader's chosen version; reject mixed fields.
 
     Only public series and snapshot field names change. Distribution names,
     URLs, campaign envelopes, identifiers, and numeric results remain intact.
@@ -20,23 +20,28 @@ def normalize_summary(value: dict) -> dict:
     if not isinstance(value, dict) or type(value.get("schema_version")) is not int:
         raise ValueError("unsupported accuracy summary schema")
     version = value["schema_version"]
-    if version not in (1, SUMMARY_VERSION):
+    if (
+        version not in (1, SUMMARY_VERSION)
+        or type(target_version) is not int
+        or target_version not in (1, SUMMARY_VERSION)
+    ):
         raise ValueError("unsupported accuracy summary schema")
     result = deepcopy(value)
-    old, new = ("aisimulate", "aisim") if version == 1 else ("aisim", "aisimulate")
+    old, other = ("aisimulate", "aisim") if version == 1 else ("aisim", "aisimulate")
+    new = "aisimulate" if target_version == 1 else "aisim"
 
-    def field(item, source, destination):
+    def field(item, source, destination, unexpected):
         if not isinstance(item, dict):
             return
-        if destination in item:
-            raise ValueError(f"summary v{version} contains unexpected field {destination}")
-        if version == 1 and source in item:
+        if unexpected in item:
+            raise ValueError(f"summary v{version} contains unexpected field {unexpected}")
+        if version != target_version and source in item:
             renamed = [(destination if key == source else key, value) for key, value in item.items()]
             item.clear()
             item.update(renamed)
 
     def series(item):
-        field(item, old, new)
+        field(item, old, new, other)
 
     def children(item, key):
         values = item.get(key, []) if isinstance(item, dict) else []
@@ -44,7 +49,7 @@ def normalize_summary(value: dict) -> dict:
 
     snapshot = result.get("snapshot")
     for suffix in SNAPSHOT_FIELDS:
-        field(snapshot, f"{old}_{suffix}", f"{new}_{suffix}")
+        field(snapshot, f"{old}_{suffix}", f"{new}_{suffix}", f"{other}_{suffix}")
     totals = result.get("totals")
     series(totals)
     groups = totals.get("by_configuration_quality", {}) if isinstance(totals, dict) else {}
@@ -61,5 +66,5 @@ def normalize_summary(value: dict) -> dict:
                     series(topology)
                     for point in children(topology, "points"):
                         series(point)
-    result["schema_version"] = SUMMARY_VERSION
+    result["schema_version"] = target_version
     return result

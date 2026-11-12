@@ -24,6 +24,7 @@ from aisim.recommend import recommendation_from_payload, recommendation_to_sweep
 from aisim.runner import EngineReplayRunnerFactory
 from aisim.sweeper.config import SearchSpace
 from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolutionError, ForwardPassEstimatorResolver
+from aisim.sweeper.state_snapshot import SnapshotRole, _validate_fitted
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisim_core.sdk.perf_database import resolve_query_version
 
@@ -594,6 +595,8 @@ def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
         "aggregated": save("aggregated", _planner("aggregated")),
         "unready": save("unready", _planner("aggregated", kinds=("decode",))),
         "nextn": save("nextn", _planner("decode", kinds=("decode",), nextn=1)),
+        "sglang-nextn": save("sglang-nextn", _planner("decode", kinds=("decode",), backend="sglang", nextn=1)),
+        "nextn-agg": save("nextn-agg", _planner("aggregated", nextn=1)),
         "no-kv": save(
             "no-kv", _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_kv_tokens": "unknown"})
         ),
@@ -774,7 +777,12 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
             lambda raw, w: w.update(scheduler={"max_batched_tokens": 16384}),
             r"max_batched_tokens=\[16384\] exceeds .*max_num_batched_tokens=8192",
         ),
-        ("nextn", lambda raw, w: None, r"records nextn=1; an fpm_regression model prices no speculative decoding"),
+        ("nextn", lambda raw, w: None, r"saved with nextn=1; set engine.nextn=1 and engine.nextn_accepted"),
+        (
+            "sglang-nextn",
+            lambda raw, w: raw["engine"].update(backend="sglang"),
+            r"records nextn=1; only a vLLM fpm_regression model prices MTP rounds",
+        ),
         ("no-kv", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-limits", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-sequences", lambda raw, w: None, r"does not record deployment_limits.max_num_seqs"),
@@ -793,6 +801,19 @@ def test_planner_snapshot_rules_fail_validation(planner_snapshots, name, edit, m
 
     with pytest.raises((ValidationError, ValueError), match=message):
         _space(raw)
+
+
+def test_a_learned_snapshot_fitted_with_mtp_is_rejected_on_vllm():
+    # Replay prices nextn > 0 only with a vLLM fpm_regression model.
+    summary = {
+        "kind": "learned_frozen",
+        "selected_estimation_mode": "fpm_learned",
+        "readiness": {"stores": [{"workload_kind": "pure_decode", "ready": True}]},
+        "identity": {"backend": "vllm", "nextn": 1},
+    }
+    snapshot = SnapshotRole(role="decode", path="snapshot", summary=summary, config={})
+    with pytest.raises(ValueError, match=r"records nextn=1; only a vLLM fpm_regression model prices MTP rounds"):
+        _validate_fitted(snapshot)
 
 
 def test_planner_snapshots_without_the_role_stores_are_rejected(planner_snapshots):
@@ -894,6 +915,17 @@ def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(plan
     # pass, so the same telemetry cannot price its role.
     with pytest.raises((ValidationError, ValueError), match=r"without a ready contains_locally_mixed workload store"):
         _space(_planner_request(planner_snapshots["vllm-pure"], mode="aggregated"))
+
+
+def test_a_vllm_planner_snapshot_fitted_with_mtp_is_recommended_and_replayed_at_its_nextn(planner_snapshots):
+    # The snapshot pins nextn 1; the engine supplies the accepted draft tokens.
+    raw = _planner_request(planner_snapshots["nextn-agg"], mode="aggregated")
+    raw["engine"].update(nextn=1, nextn_accepted=0.5)
+    result = _planner_run(raw)
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    assert candidate.prediction_config["engine"]["nextn"] == 1
+    assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
 
 
 def test_an_aggregated_planner_snapshot_with_attention_dp_needs_its_cross_rank_store(planner_snapshots):

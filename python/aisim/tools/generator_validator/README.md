@@ -8,23 +8,29 @@ The generator validator checks that generated engine configs or CLI args are acc
 - SGLang: `k8s_deploy.yaml` by parsing CLI args with `sglang.srt.server_args.ServerArgs`.
 
 ## Usage (run inside the matching runtime image)
+
+Run from the repository root with the checkout available in the container.
+Use the Python environment containing the matching backend runtime. To check
+only the entrypoint, run the script with `--help`; this does not validate a
+backend configuration.
+
 TRT-LLM runtime image:
 ```
-python -m aiconfigurator/tools/generator_validator/validator.py \
+python python/aisim/tools/generator_validator/validator.py \
   --backend trtllm \
   --path /path/to/results
 ```
 
 vLLM runtime image:
 ```
-python -m aiconfigurator/tools/generator_validator/validator.py \
+python python/aisim/tools/generator_validator/validator.py \
   --backend vllm \
   --path /path/to/results
 ```
 
 SGLang runtime image:
 ```
-python -m aiconfigurator/tools/generator_validator/validator.py \
+python python/aisim/tools/generator_validator/validator.py \
   --backend sglang \
   --path /path/to/results
 ```

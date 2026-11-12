@@ -827,6 +827,8 @@ mod tests {
                     startup_observations: 10,
                 },
                 feature_set: None,
+                max_kv_splits: None,
+                max_cudagraph_capture_size: None,
             });
             let model = ForwardPassPerfModel::best_available(config).unwrap();
             let resolved = &model.provenance().unwrap().config;

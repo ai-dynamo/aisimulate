@@ -2610,3 +2610,29 @@ def test_publisher_checks_source_bytes_before_summary_normalization(artifact, ve
     summary["schema_version"] = 999
     with pytest.raises(ValueError, match="summary checksum mismatch"):
         publish.unpack_artifact(archive(summary, qualification=qualification))
+
+
+@pytest.mark.parametrize("wrong_checksum", [False, True])
+def test_v1_artifact_is_verified_before_normalizing_to_canonical_ui_v2(artifact, wrong_checksum):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    original, run = artifact
+    legacy = normalize_summary(original, target_version=1)
+    assert legacy["schema_version"] == 1
+    assert "aisimulate" in legacy["totals"] and "aisim" not in legacy["totals"]
+    before = deepcopy(legacy)
+    qualification = None
+    if wrong_checksum:
+        qualification = {
+            **original["snapshot"]["campaign"],
+            "summary_sha256": hashlib.sha256(campaign.encoded(original)).hexdigest(),
+        }
+    payload = archive(legacy, qualification=qualification)
+    if wrong_checksum:
+        with pytest.raises(ValueError, match="summary checksum mismatch"):
+            publish.validate_artifact(payload, run)
+    else:
+        normalized = publish.validate_artifact(payload, run)
+        assert normalized == original
+        assert normalized["snapshot"]["campaign"]["schema_version"] == 1
+    assert legacy == before

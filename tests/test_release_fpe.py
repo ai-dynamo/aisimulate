@@ -202,14 +202,20 @@ def test_wheel_requires_exactly_one_package(tmp_path):
         RELEASE.wheel_identity(tmp_path)
 
 
-def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_path):
+@pytest.mark.parametrize(
+    ("package", "application"), [("aisimulate", "aisimulate"), ("aisim", "aisimulate"), ("aisim", "aisim")]
+)
+@pytest.mark.parametrize("import_fault", [None, "external", "no-origin", "missing", "unowned"])
+def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_path, package, application, import_fault):
     names = [
-        "aisim/__init__.py",
-        "aisim/_runtime.so",
-        "aisim_core/__init__.py",
-        "aisim_core/_native.py",
+        f"{application}/__init__.py",
+        f"{application}/_runtime.so",
+        f"{application}_core/__init__.py",
+        f"{application}_core/_native.py",
     ]
-    wheel = tmp_path / "aisim-test.whl"
+    if application == "aisim":
+        names += ["aisimulate/__init__.py", "aisimulate_core/__init__.py"]
+    wheel = tmp_path / f"{package}-test.whl"
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel, "w") as archive:
         for name in names:
@@ -217,23 +223,41 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
             path = site / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("release bytes")
-    dist = SimpleNamespace(files=names, locate_file=lambda p: site / p)
+    runtime = f"{application}._runtime"
+    owned = [name for name in names if import_fault != "unowned" or name != f"{application}/_runtime.so"]
+    dist = SimpleNamespace(files=owned, locate_file=lambda p: site / p)
 
     def find_spec(name):
-        path = "aisim/_runtime.so" if name == "aisim._runtime" else name + "/__init__.py"
+        # Modern compatibility imports can have an alias loader with no origin;
+        # the native implementation must be verified under its canonical name.
+        if application == "aisim" and name == "aisimulate._runtime":
+            return SimpleNamespace(origin=None)
+        if name == runtime:
+            if import_fault == "missing":
+                return None
+            if import_fault == "no-origin":
+                return SimpleNamespace(origin=None)
+            if import_fault == "external":
+                return SimpleNamespace(origin="/other/_runtime.so")
+        path = f"{application}/_runtime.so" if name == runtime else name + "/__init__.py"
         return SimpleNamespace(origin=str(site / path))
 
-    with patch.object(RELEASE.importlib.util, "find_spec", side_effect=find_spec):
+    with patch.object(RELEASE.importlib.util, "find_spec", side_effect=find_spec) as lookup:
+        if import_fault:
+            with pytest.raises(ValueError, match="not imported"):
+                RELEASE.verify_installed_wheel(wheel, distribution=dist)
+            return
         RELEASE.verify_installed_wheel(wheel, distribution=dist)
-        (site / names[0]).write_text("different source")
-        with pytest.raises(ValueError, match="differs"):
-            RELEASE.verify_installed_wheel(wheel, distribution=dist)
-        (site / names[0]).write_text("release bytes")
-    with (
-        patch.object(RELEASE.importlib.util, "find_spec", return_value=SimpleNamespace(origin="/other/__init__.py")),
-        pytest.raises(ValueError, match="not imported"),
-    ):
-        RELEASE.verify_installed_wheel(wheel, distribution=dist)
+        assert call(runtime) in lookup.call_args_list
+        if application == "aisim":
+            assert call("aisimulate._runtime") not in lookup.call_args_list
+        # Canonical implementation files and compatibility aliases must all match.
+        for name in names:
+            path = site / name
+            path.write_text("different source")
+            with pytest.raises(ValueError, match="differs"):
+                RELEASE.verify_installed_wheel(wheel, distribution=dist)
+            path.write_text("release bytes")
 
 
 def reports(root, required):
