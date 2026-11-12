@@ -2321,3 +2321,22 @@ padding are not modeled, and `longest_split` counts every scheduled request,
 including prefill requests, which vLLM runs in the context kernel rather
 than the decode kernel. The Apache-2.0 license text is included in this
 repository as `LICENSE`.
+
+## AIConfigurator PR #1611 migration
+
+The following repository-root paths contain modified adaptations of the
+AIConfigurator contribution at immutable commit `7ce66d6c01f77365e2592956f99be4ff0ae6eecc`:
+
+- `python/aisimulate/collector/sglang/collect_dsv4_attn.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/collector/sglang/collect_dsv4_attn.py
+- `python/aisimulate/tests/unit/collector/sglang/test_collect_dsv4_attn_contract.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/tests/unit/collector/sglang/test_collect_dsv4_attn_contract.py
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The contribution was submitted by xinjun.jiang. Licensed under Apache-2.0;
+the license text is included in the repository and Python distribution.
+Upstream license:
+https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/LICENSE
+
+Modified for AISimulate's current layout and contracts; source links are
+preserved beside the adapted content.
