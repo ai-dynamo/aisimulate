@@ -15,11 +15,11 @@ import shutil
 import struct
 import subprocess
 import sys
-from importlib import resources
 from pathlib import Path
 
 import pytest
 
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 from .test_external_execution_profile import profile  # noqa: F401
@@ -373,7 +373,7 @@ def test_unknown_identity_and_deployment_limits_pass_through_to_rust_unchanged(t
 
 def _systems_copy(destination: Path, system: str) -> Path:
     """Copy one system's fingerprinted inputs: top-level files and its data dir."""
-    packaged = Path(str(resources.files("aisim_core") / "systems"))
+    packaged = Path(default_systems_path())
     destination.mkdir()
     for entry in packaged.iterdir():
         if entry.is_file():

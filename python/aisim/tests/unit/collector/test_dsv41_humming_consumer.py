@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 from collector.sglang.dsv41_contract import build_manifest, write_parquet
 
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import common, rust_engine_step
 from aisim_core.sdk.config import ModelConfig
 from aisim_core.sdk.models import get_model
@@ -20,7 +21,7 @@ pytestmark = pytest.mark.unit
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
 def test_native_humming_fixture_reaches_v41_prediction(tmp_path, system, monkeypatch):
     # Synthetic selection witnesses only; no GPU measurements or accuracy claim.
-    source = Path(__file__).resolve().parents[3] / "src/aisim_core/systems"
+    source = Path(default_systems_path())
     shutil.copy(source / f"{system}.yaml", tmp_path / f"{system}.yaml")
     version = "dev1aa0e962"
     data = tmp_path / f"data/{system}/sglang/{version}"

@@ -1341,27 +1341,19 @@ mod tests {
     }
 
     fn b200_vllm_data_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/b200_sxm/vllm/0.24.0")
+        crate::test_systems::path("data/b200_sxm/vllm/0.24.0")
     }
 
     fn gb200_trtllm_data_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/gb200/trtllm/1.3.0rc20")
+        crate::test_systems::path("data/gb200/trtllm/1.3.0rc20")
     }
 
     fn h200_trtllm_data_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/h200_sxm/trtllm/1.3.0rc20")
+        crate::test_systems::path("data/h200_sxm/trtllm/1.3.0rc20")
     }
 
     fn load_spec(name: &str) -> SystemSpec {
-        let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join(format!("python/aisim/src/aisim_core/systems/{name}.yaml"));
+        let systems_yaml = crate::test_systems::path(&format!("{name}.yaml"));
         SystemSpec::load(&systems_yaml).unwrap_or_else(|_| panic!("{name}.yaml must parse"))
     }
 

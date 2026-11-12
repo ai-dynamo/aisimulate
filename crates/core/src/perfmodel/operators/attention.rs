@@ -1474,14 +1474,11 @@ pub(crate) fn b200_vllm_generation_lane_order() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn b200_vllm_db() -> PerfDatabase {
-        let systems_root = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let systems_root = crate::test_systems::path("");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 
@@ -1571,9 +1568,7 @@ mod tests {
     /// give 0.02641056 ms. These are accounting oracles, not GPU validation.
     #[test]
     fn issue551_known_measurement_omits_rope_and_kv_extras() {
-        let systems_root = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let systems_root = crate::test_systems::path("");
         let mut db = PerfDatabase::load(&systems_root, "h200_sxm", "trtllm", "1.3.0rc20")
             .expect("H200 TRT-LLM database");
         let mut op = ContextAttentionOp::new(
@@ -2526,9 +2521,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn b200_sglang_0514_db() -> PerfDatabase {
-        let systems_root = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let systems_root = crate::test_systems::path("");
         PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.14").expect("db must load")
     }
 

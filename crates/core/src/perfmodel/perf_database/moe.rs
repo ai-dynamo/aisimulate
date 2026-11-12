@@ -804,9 +804,7 @@ mod tests {
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn b200_vllm_data_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/b200_sxm/vllm/0.19.0")
+        crate::test_systems::path("data/b200_sxm/vllm/0.19.0")
     }
 
     #[test]

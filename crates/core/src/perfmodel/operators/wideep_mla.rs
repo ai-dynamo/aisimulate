@@ -128,12 +128,9 @@ impl WideEpContextMlaOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn h200_sglang_db() -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "h200_sxm", "sglang", "0.5.10").expect("db loads")
     }
 
@@ -382,9 +379,7 @@ mod tests {
     /// pinned here at the engine-owned query boundary.
     #[test]
     fn empirical_resolves_user_backends_and_exact_kernel_sources() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         let mut db = PerfDatabase::load(&root, "b200_sxm", "sglang", "0.5.10").expect("db loads");
         db.database_mode = crate::common::enums::DatabaseMode::Empirical;
 
@@ -464,9 +459,7 @@ mod tests {
     /// -> whitelist ordering (mla.py:1449-1461).
     #[test]
     fn hybrid_unloaded_table_falls_to_empirical_before_whitelist() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         let mut db = PerfDatabase::load(&root, "b200_sxm", "vllm", "0.19.0").expect("db loads");
         db.database_mode = crate::common::enums::DatabaseMode::Hybrid;
         let result = query_wideep_context_mla_table(

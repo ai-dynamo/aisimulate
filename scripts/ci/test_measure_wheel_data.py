@@ -31,5 +31,37 @@ def test_wheel_members_reads_sizes(tmp_path):
     assert out["packaged_op_data"]["bytes"] == 1000
 
 
-def test_tree_estimate_includes_packaged_data():
-    assert m.summarize(m.tree_members())["packaged_op_data"]["files"] > 0
+def test_tree_estimate_has_no_packaged_data():
+    out = m.summarize(m.tree_members())
+    assert out["packaged_op_data"]["files"] == 0
+    assert "systems-other" in out["buckets"]
+
+
+def _wheel(tmp_path, members):
+    wheel = tmp_path / "w.whl"
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_STORED) as z:
+        for name, payload in members.items():
+            z.writestr(name, payload)
+    return wheel
+
+
+def test_limit_passes_small_wheel_without_data(tmp_path):
+    wheel = _wheel(tmp_path, {"aisim_core/systems/b200_sxm.yaml": b"x" * 100})
+    assert m.main(["--wheel", str(wheel), "--max-wheel-mib", "1"]) == 0
+
+
+def test_limit_fails_oversized_wheel(tmp_path):
+    wheel = _wheel(tmp_path, {"aisim/blob.bin": b"x" * (2 * 1024 * 1024)})
+    assert m.main(["--wheel", str(wheel), "--max-wheel-mib", "1"]) == 1
+
+
+def test_limit_fails_wheel_that_packages_op_data(tmp_path):
+    wheel = _wheel(tmp_path, {"aisim_core/systems/data/h100_sxm/a.parquet": b"x"})
+    assert m.main(["--wheel", str(wheel), "--max-wheel-mib", "1"]) == 1
+
+
+def test_limit_requires_a_wheel():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        m.main(["--max-wheel-mib", "1"])

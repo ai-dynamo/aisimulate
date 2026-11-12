@@ -25,12 +25,14 @@ from pathlib import Path
 
 import pytest
 
+from aisim_core.data.default_systems import default_systems_path
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "tools" / "perf_database" / "check_collector_data.py"
 REAL_CATALOG = REPO_ROOT / "collector" / "op_backend_catalog.yaml"
-REAL_DATA_ROOT = REPO_ROOT / "src" / "aisim_core" / "systems" / "data"
+REAL_DATA_ROOT = Path(default_systems_path()) / "data"
 
 
 @pytest.fixture
@@ -402,11 +404,8 @@ class TestOrchestration:
 
 
 def test_real_tree_passes_the_check(mod):
-    """This is the gate collector-check.yml runs on every PR: the committed
-    data tree, as-is, must satisfy every rule.
-    """
-    assert mod.DATA_ROOT_DEFAULT == REAL_DATA_ROOT
-    results = mod.run_checks(mod.DATA_ROOT_DEFAULT, REAL_CATALOG)
+    """The pinned op-latency dataset, as composed for the default systems root, must satisfy every rule."""
+    results = mod.run_checks(REAL_DATA_ROOT, REAL_CATALOG)
     report, failed = mod.render_report(results)
     assert not failed, report
 

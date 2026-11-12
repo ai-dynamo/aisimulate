@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from aisim_core import _native
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import RustForwardPassPerfModel
 from aisim_core.sdk import engine as engine_module
 from aisim_core.sdk.errors import PerfDataNotAvailableError
@@ -26,7 +27,7 @@ pytestmark = pytest.mark.unit
 def profile(tmp_path, monkeypatch):
     root = tmp_path / "systems"
     root.mkdir()
-    bundled = Path(engine_module.__file__).parents[1] / "systems"
+    bundled = Path(default_systems_path())
     hardware = root / "h200_sxm.yaml"
     hardware.write_bytes((bundled / hardware.name).read_bytes())
     # Match the bundled data_dir but supply an otherwise empty local version.
@@ -542,7 +543,7 @@ def test_aggregated_profile_validates_phase_inputs(aggregated_profile, change, p
 def test_external_inputs_preserve_builtin_predictions(tmp_path, monkeypatch, role):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    bundled = Path(engine_module.__file__).parents[1] / "systems"
+    bundled = Path(default_systems_path())
     root = tmp_path / "systems"
     # Copy the same published runtime inventory; no mocked compilation or predictions.
     files = [bundled / "b200_sxm.yaml", *sorted((bundled / "data/b200_sxm").glob("*/vllm/0.24.0/*"))]

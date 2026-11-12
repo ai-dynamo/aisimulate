@@ -1152,7 +1152,7 @@ mod tests {
     /// Repo systems root (committed parquet data), mirroring the readiness
     /// tests' CARGO_MANIFEST_DIR-relative access.
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
+        crate::test_systems::path("")
     }
 
     fn golden_dir() -> PathBuf {

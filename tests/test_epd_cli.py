@@ -19,6 +19,7 @@ from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisim.runner import EngineReplayRunnerFactory
 from aisim.sweeper import SmartSearchConfig, Sweeper, SweepResult
 from aisim.sweeper.result import CandidateStatus
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk.perf_database import get_version_slots
 
 
@@ -208,7 +209,7 @@ def test_epd_language_workers_keep_native_host_offload(mode):
 def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_field):
     from aisim_core.sdk import perf_database
 
-    bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
+    bundled = Path(default_systems_path())
     system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
     system["data_dir"] = str(bundled / system["data_dir"])
     (tmp_path / "h200_sxm.yaml").write_text(yaml.safe_dump(system))

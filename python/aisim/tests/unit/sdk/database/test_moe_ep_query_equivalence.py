@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pytest
 
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import common, engine
 from aisim_core.sdk.engine_table_view import fetch_table_view
 from aisim_core.sdk.operations.base import resolve_op_data_path
@@ -44,7 +45,7 @@ from aisim_core.sdk.perf_database import get_database
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisim_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = Path(default_systems_path()) / "data"
 
 SGLANG_CONTEXT_PATH = resolve_op_data_path(
     str(SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", "wideep_context_moe_perf.parquet"

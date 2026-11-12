@@ -741,8 +741,7 @@ mod tests {
 
     fn systems() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
-        let spec = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/b200_sxm.yaml");
+        let spec = crate::test_systems::path("b200_sxm.yaml");
         std::fs::copy(spec, root.path().join("b200_sxm.yaml")).unwrap();
         std::fs::create_dir_all(root.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
         root
@@ -818,8 +817,7 @@ mod tests {
     fn a100_fpm_precision_is_checked_before_table_readiness() {
         use crate::perf_database::fpm_forward::tests::default_identity;
         let root = systems();
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/a100_sxm.yaml");
+        let source = crate::test_systems::path("a100_sxm.yaml");
         std::fs::copy(source, root.path().join("a100_sxm.yaml")).unwrap();
         std::fs::create_dir_all(root.path().join("data/a100_sxm/vllm/0.24.0")).unwrap();
         let db = PerfDatabase::load(root.path(), "a100_sxm", "vllm", "0.24.0").unwrap();
@@ -1231,8 +1229,7 @@ mod tests {
         // refuse that database, and without sharing the lookup must miss.
         use crate::operators::glm53flash::tests::{ctx, mhc_site};
         let root = tempfile::tempdir().unwrap();
-        let systems = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems");
+        let systems = crate::test_systems::path("");
         std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
         let data = root.path().join("data/gb300/mhc/vllm");
         for (version, role, latency) in [("0.31.0", "post", 0.03), ("0.30.0", "pre", 14.0)] {

@@ -14,24 +14,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from aisim_core.data.default_systems import default_systems_path
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 pytestmark = pytest.mark.unit
 
 _COLLECTOR = REPO_ROOT / "collector" / "network" / "collect_all_reduce.py"
 _SLURM_WORKER = REPO_ROOT / "collector" / "network" / "slurm" / "collect_allreduce.py"
-_GB300_TRTLLM_DATA = (
-    REPO_ROOT
-    / "src"
-    / "aisim_core"
-    / "systems"
-    / "data"
-    / "gb300"
-    / "comm"
-    / "trtllm"
-    / "1.3.0rc20"
-    / "custom_allreduce_perf.parquet"
-)
+_GB300_TRTLLM_DATA = Path(default_systems_path()) / "data/gb300/comm/trtllm/1.3.0rc20/custom_allreduce_perf.parquet"
 
 
 def _allreduce_calls(path: Path) -> list[ast.Call]:

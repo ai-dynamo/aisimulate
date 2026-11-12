@@ -21,13 +21,14 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import perf_database as pdb
 
 pytestmark = pytest.mark.unit
 
 _ALPHA = "h200_sxm"  # real system specs so PerfDatabase can construct
 _BETA = "b200_sxm"
-_REAL_SYSTEMS = Path(__file__).resolve().parents[4] / "src/aisim_core/systems"
+_REAL_SYSTEMS = Path(default_systems_path())
 
 
 def _write_gemm(root: Path, system: str, version: str) -> None:

@@ -284,9 +284,7 @@ mod tests {
     fn systems_root() -> PathBuf {
         // CARGO_MANIFEST_DIR points at aic-core/rust/aiconfigurator-core; the systems
         // dir is two levels up.
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems")
+        crate::test_systems::path("")
     }
 
     #[test]

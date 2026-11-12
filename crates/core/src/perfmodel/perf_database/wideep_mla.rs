@@ -751,21 +751,15 @@ mod tests {
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn b200_sglang_data_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/b200_sxm/sglang/0.5.10")
+        crate::test_systems::path("data/b200_sxm/sglang/0.5.10")
     }
 
     fn h200_sglang_data_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/h200_sxm/sglang/0.5.10")
+        crate::test_systems::path("data/h200_sxm/sglang/0.5.10")
     }
 
     fn load_spec(name: &str) -> SystemSpec {
-        let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join(format!("python/aisim/src/aisim_core/systems/{name}.yaml"));
+        let systems_yaml = crate::test_systems::path(&format!("{name}.yaml"));
         SystemSpec::load(&systems_yaml).unwrap_or_else(|_| panic!("{name}.yaml must parse"))
     }
 

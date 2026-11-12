@@ -744,7 +744,6 @@ fn moe_dispatch_sol(op: &MoEDispatchOp, spec: &SystemSpec, x: f64) -> Result<f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use crate::common::enums::{
         CommQuantMode, FmhaQuantMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode,
@@ -753,14 +752,12 @@ mod tests {
     /// The b200_sxm spec: mem_bw 7.7e12, bf16 2.25e15, fp8 4.5e15, fp4 9e15,
     /// intra_node_bw 8.1e11, inter_node_bw 4e10 (systems/b200_sxm.yaml).
     fn spec() -> SystemSpec {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/b200_sxm.yaml");
+        let root = crate::test_systems::path("b200_sxm.yaml");
         SystemSpec::load(&root).expect("b200 spec")
     }
 
     fn db() -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "b200_sxm", "vllm", "0.19.0").expect("db")
     }
 
@@ -775,8 +772,7 @@ mod tests {
     fn v41_stage_roofline_retains_fractional_tokens_and_bounds_only_prefill() {
         use crate::operators::{Dsv41MhcOp, Dsv41StageOp};
 
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         let db = PerfDatabase::load(&root, "gb200", "vllm", "0.19.0").expect("GB200 db");
         let leaf = Dsv41MhcOp {
             name: "mhc".into(),
@@ -1443,8 +1439,7 @@ mod tests {
     /// The serving backend selects the policy even with an explicit reuse fraction.
     #[test]
     fn dsa_generation_fpm_sol_scopes_reuse_policy_by_backend() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         for (backend, version, expected) in [
             ("sglang", "0.5.14", 1.0842777257142857),
             ("trtllm", "1.3.0rc20", 78.0 * 0.019327371428571428),

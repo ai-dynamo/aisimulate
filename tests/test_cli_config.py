@@ -25,6 +25,7 @@ from aisim.sweeper.deploy import build_backend_deployment
 from aisim.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisim.sweeper.replay import ReplaySpec
 from aisim.sweeper.sample import unroll_sample
+from aisim_core.data.default_systems import default_systems_path
 
 
 def _engine() -> dict:
@@ -2377,13 +2378,12 @@ def test_estimation_selection_survives_serialization_and_compilation(mode):
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode):
     from copy import deepcopy
-    from importlib.resources import files
     from pathlib import Path
 
     from aisim.compiler import prediction_to_replay_spec
     from aisim.sweeper.search_space import enumerate_branches
 
-    packaged = Path(str(files("aisim_core") / "systems"))
+    packaged = Path(default_systems_path())
     roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
     workers = {}
     for role in roles:

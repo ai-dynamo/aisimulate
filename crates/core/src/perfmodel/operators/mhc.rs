@@ -228,12 +228,9 @@ impl MhcModuleOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn b200_sglang_db() -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "b200_sxm", "sglang", "0.5.14").expect("db loads")
     }
 

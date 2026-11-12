@@ -34,6 +34,7 @@ from aisim.sweeper import (
 )
 from aisim.sweeper.config import Workload
 from aisim.sweeper.replay import REPLAY_SPEC_API_VERSION, RunnerCapabilities
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
 
@@ -3302,7 +3303,7 @@ def test_direct_replay_resolves_aliases_in_the_effective_systems_root(monkeypatc
 
     from aisim_core.sdk import perf_database
 
-    bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
+    bundled = Path(default_systems_path())
     system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
     system["data_dir"] = str(bundled / system["data_dir"])
     (tmp_path / "h200_sxm.yaml").write_text(yaml.safe_dump(system))

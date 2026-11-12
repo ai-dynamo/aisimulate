@@ -2978,7 +2978,7 @@ def test_curated_systems_root_resolves_to_the_sdk_default_tree():
     root = _curated_systems_root()
     assert root.parts[-2:] == ("systems", "data")
     assert "aisim_core" in root.parts
-    assert root.is_dir()
+    # The wheel no longer ships op tables, so the staging tree need not exist until a collection writes it.
 
 
 def _args_cell(workload_kind: str, parallel_strategy: str = "tep") -> FPMCell:

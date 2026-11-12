@@ -1059,9 +1059,7 @@ mod tests {
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems")
+        crate::test_systems::path("")
     }
 
     #[test]

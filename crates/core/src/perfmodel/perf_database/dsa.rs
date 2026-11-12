@@ -1486,9 +1486,7 @@ mod tests {
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn b200_sxm_spec() -> SystemSpec {
-        let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/b200_sxm.yaml");
+        let systems_yaml = crate::test_systems::path("b200_sxm.yaml");
         SystemSpec::load(&systems_yaml).expect("b200_sxm.yaml must parse")
     }
 

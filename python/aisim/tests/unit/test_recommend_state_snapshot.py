@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import shutil
 from copy import deepcopy
-from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from aisim.runner import EngineReplayRunnerFactory
 from aisim.sweeper.config import SearchSpace
 from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolutionError, ForwardPassEstimatorResolver
 from aisim.sweeper.state_snapshot import SnapshotRole, _validate_fitted
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisim_core.sdk.perf_database import resolve_query_version
 
@@ -730,7 +730,7 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
     assert _replay(aliased).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
     # Roles that name no systems root resolve it on the engine's, here the
     # only root that defines the hardware.
-    packaged = Path(str(resources.files("aisim_core") / "systems"))
+    packaged = Path(default_systems_path())
     custom = tmp_path / "systems"
     custom.mkdir()
     for entry in packaged.iterdir():

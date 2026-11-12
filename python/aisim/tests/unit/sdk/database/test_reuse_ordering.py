@@ -36,6 +36,7 @@ from aisim.sdk import common
 from aisim.sdk.operations.base import resolve_op_data_path
 from aisim.sdk.perf_database import PerfDatabase, get_database
 from aisim_core import resolve_op_sources_report_json
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk.engine_table_view import fetch_table_view
 
 pytestmark = pytest.mark.unit
@@ -43,7 +44,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm"])
 def test_sglang_mla_module_manifest_and_native_sources(system):
-    systems = Path(__file__).resolve().parents[4] / "src/aisim_core/systems"
+    systems = Path(default_systems_path())
     basename = "mla_context_module_perf.parquet"
     data = systems / "data" / system
     primary = data / "mla/sglang/0.5.14" / basename
@@ -921,7 +922,7 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
 @pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm"])
 def test_corrected_024_gemm_uses_declared_025_measurements(system):
     """Every unshadowed donor row loads; retained 0.24 primary latencies win."""
-    data = Path(__file__).resolve().parents[4] / "src/aisim_core/systems/data" / system
+    data = Path(default_systems_path()) / "data" / system
     old = pq.read_table(data / "gemm/vllm/0.24.0/gemm_perf.parquet").to_pylist()
     fresh = pq.read_table(data / "gemm/vllm/0.25.0/gemm_perf.parquet").to_pylist()
     assert all(row["gemm_dtype"] != "fp8_block" for row in old)
@@ -952,7 +953,7 @@ def test_b60_queryable_gemm_preserves_high_k_coverage(slot, high_k_source, dtype
     for m in (1, 128):
         assert {4096, 12288, 16384, 32768} <= loaded[m][4096].keys()
 
-    data = Path(__file__).resolve().parents[4] / "src/aisim_core/systems/data/b60/gemm/vllm"
+    data = Path(default_systems_path()) / "data/b60/gemm/vllm"
     # The existing measured rows are the oracle: primary rows win overlaps,
     # while previous fills high-k gaps from 0.20 rather than borrowing 0.28.
     for version, ks in ((db.version, {4096}), (high_k_source, {16384, 32768})):
