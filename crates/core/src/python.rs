@@ -4350,17 +4350,27 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("invalid AISimulate execution payload")?
             .0;
         // Repeated `spec` keys are legacy metadata only when none holds a
-        // replay; otherwise the configured envelope is ambiguous.
+        // replay; otherwise the configured envelope is ambiguous. A probe
+        // error (for example, too deep to buffer) counts as ambiguous.
         ensure!(
             spec_keys < 2
-                || !serde_json::from_str::<RepeatedSpecHoldsReplay>(payload)
-                    .is_ok_and(|probe| probe.0),
+                || matches!(
+                    serde_json::from_str::<RepeatedSpecHoldsReplay>(payload),
+                    Ok(RepeatedSpecHoldsReplay(false))
+                ),
             "invalid AISimulate execution payload: duplicate field `spec`"
         );
         if spec_keys != 1 {
-            legacy(
-                serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")?,
-            )
+            let parsed = serde_json::from_str::<ReplaySpec>(payload);
+            // Repeated `spec` keys mark a configured payload, so report its
+            // field error rather than the legacy ReplaySpec one.
+            if spec_keys >= 2
+                && parsed.is_err()
+                && let Err(error) = serde_json::from_str::<ConfiguredExecutionPayload>(payload)
+            {
+                return Err(error).context("invalid AISimulate execution payload");
+            }
+            legacy(parsed.context("invalid AISimulate execution ReplaySpec")?)
         } else {
             match serde_json::from_str::<ConfiguredExecutionPayload>(payload) {
                 Ok(ConfiguredExecutionPayload {
@@ -10443,6 +10453,41 @@ mod tests {
             let error = format!("{:#}", execute_json(&twice, capture_artifacts).unwrap_err());
             assert!(error.contains("duplicate field `spec`"), "{error}");
         }
+        // A repeated `spec` too deep for the probe to buffer is refused, not
+        // treated as metadata, when another `spec` holds a replay.
+        let (open, close) = ("[".repeat(200), "]".repeat(200));
+        let deep = format!(
+            r#"{{"spec": {nested}, "spec": {open}{close}, {}"#,
+            &bare[1..]
+        );
+        let error = format!("{:#}", execute_json(&deep, false).unwrap_err());
+        assert!(error.contains("duplicate field `spec`"), "{error}");
+        // Repeated non-replay `spec` keys on an invalid payload report the
+        // configured-payload error; without any `spec` key, the legacy one.
+        let error = format!(
+            "{:#}",
+            execute_json(
+                r#"{"spec": 1, "spec": 2, "capture_telemetry": true}"#,
+                false
+            )
+            .unwrap_err()
+        );
+        assert!(
+            error.starts_with("invalid AISimulate execution payload"),
+            "{error}"
+        );
+        assert!(
+            error.contains("invalid type: integer `1`, expected struct ReplaySpec"),
+            "{error}"
+        );
+        let error = format!(
+            "{:#}",
+            execute_json(r#"{"capture_telemetry": true}"#, false).unwrap_err()
+        );
+        assert!(
+            error.starts_with("invalid AISimulate execution ReplaySpec"),
+            "{error}"
+        );
         // When `spec` holds a replay, a bad field is reported even if the
         // top-level keys also form a replay.
         let mut ambiguous = serde_json::to_value(&spec).unwrap();
