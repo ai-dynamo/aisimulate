@@ -60,9 +60,10 @@ public as `engine::FittedIterationTiming`, so an embedder that supplies its own
 provider can price passes the same way. Build the model with
 `ForwardPassPerfModel::best_available`, wrap it with
 `FittedIterationTiming::from_model`, and check the engine's attention-DP width
-and decode speedup with `require_replay_role(attention_dp, decode_speedup_ratio)`.
-It prices every pass with model work as one iteration, mixed passes and
-per-request detail included, and rejects phase queries.
+and decode speedup with `require_replay_role(attention_dp, decode_speedup_ratio)`;
+a width the identity records must match. It prices every pass with model work as
+one iteration, mixed passes and per-request detail included, and rejects phase
+queries and decode passes whose `verify_width` is not the fitted `nextn + 1`.
 `TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
 image work then rejects it rather than treating the encoder as free. The `ais`

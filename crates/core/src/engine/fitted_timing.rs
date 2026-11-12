@@ -49,6 +49,10 @@ impl IterationKind {
 pub struct FittedIterationTiming {
     model: Arc<ForwardPassPerfModel>,
     worker_type: ForwardPassWorkerType,
+    /// The identity's attention DP, or `UNKNOWN_SIZE`.
+    attention_dp: u32,
+    /// Tokens each decode request verifies: one plus the fitted `nextn`.
+    verify_width: usize,
     /// Whether the estimator reads per-request detail, which the cache key
     /// does not hold.
     detail: bool,
@@ -96,20 +100,29 @@ impl FittedIterationTiming {
             resolved.decoder_replay,
         )?;
         let worker_type = resolved.worker_type;
-        require_iteration_stores(&model, worker_type, resolved.attention_dp)?;
+        let attention_dp = resolved.attention_dp;
+        let verify_width = resolved.nextn as usize + 1;
+        require_iteration_stores(&model, worker_type, attention_dp)?;
         let detail = model.reads_request_detail();
         Ok(Self {
             model,
             worker_type,
+            attention_dp,
+            verify_width,
             detail,
             cache: (!detail).then(|| quick_cache::sync::Cache::new(256)),
         })
     }
 
-    /// Check the replay role this timing serves: its stores at the engine's
-    /// attention-DP width, which the identity may not record, and a unit
-    /// `decode_speedup_ratio`.
+    /// Check the replay role this timing serves: the engine's attention-DP
+    /// width, which must match the identity's unless that is unknown, the
+    /// stores at that width, and a unit `decode_speedup_ratio`.
     pub fn require_replay_role(&self, attention_dp: u32, decode_speedup_ratio: f64) -> Result<()> {
+        ensure!(
+            self.attention_dp == UNKNOWN_SIZE || self.attention_dp == attention_dp,
+            "the fitted model's attention_dp={} does not match the engine's attention DP {attention_dp}",
+            self.attention_dp
+        );
         require_iteration_stores(&self.model, self.worker_type, attention_dp)?;
         require_unit_decode_speedup(&self.model, decode_speedup_ratio)
     }
@@ -143,8 +156,22 @@ impl TimingModel for FittedIterationTiming {
     }
 
     /// Price an attention-DP group pass with one canonical
-    /// `ForwardPassMetrics` query, one entry per rank.
+    /// `ForwardPassMetrics` query, one entry per rank. A decode pass's
+    /// `verify_width` must be the fitted `nextn + 1`.
     fn predict_iteration_ms(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        for rank in ranks {
+            if let Some(decode) = &rank.decode
+                && decode.batch_size > 0
+            {
+                ensure!(
+                    decode.verify_width == self.verify_width,
+                    "rank {} verifies {} tokens per decode request; the model was fitted at nextn {}",
+                    rank.dp_rank,
+                    decode.verify_width,
+                    self.verify_width - 1
+                );
+            }
+        }
         let queries = ranks
             .iter()
             .map(fitted_rank_query)
@@ -474,10 +501,10 @@ mod tests {
     use super::*;
     use crate::engine::{DecodeWork, PrefillTotals, PrefillWork};
 
-    #[test]
-    fn a_mixed_pass_is_one_query_of_the_locally_mixed_store() {
-        // A learned model: pure prefill 10 ms, pure decode 5 ms, and a pass
-        // computing both 7 ms.
+    /// A learned model, fitted at `attention_dp`: pure prefill 10 ms, pure
+    /// decode 5 ms, a rank pass computing both 7 ms, and a group whose ranks
+    /// compute different work 8 ms.
+    fn forest_timing(attention_dp: u32) -> FittedIterationTiming {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("forest.json");
         let artifact = serde_json::json!({
@@ -488,6 +515,7 @@ mod tests {
                 "pure_prefill": {"baseline": 10.0, "trees": []},
                 "pure_decode": {"baseline": 5.0, "trees": []},
                 "contains_locally_mixed": {"baseline": 7.0, "trees": []},
+                "cross_rank_aggregated": {"baseline": 8.0, "trees": []},
             },
         });
         std::fs::write(&path, artifact.to_string()).unwrap();
@@ -498,14 +526,19 @@ mod tests {
             ForwardPassWorkerType::Aggregated,
         );
         config.backend_version = Some("test-version".into());
+        config.attention_dp = attention_dp;
         config.estimation_mode = EstimationMode::FpmLearned;
         config.estimator_config.fpm_learned.artifact_path = Some(path);
         config.estimator_config.fpm_learned.adaptation = crate::LearnedAdaptation::Frozen;
         config.estimator_config.correction.enabled = false;
         let model = ForwardPassPerfModel::best_available(config).unwrap();
-        let timing = FittedIterationTiming::from_model(Arc::new(model)).unwrap();
+        FittedIterationTiming::from_model(Arc::new(model)).unwrap()
+    }
 
-        let mixed = RankWork {
+    /// One rank computing a prefill and two decodes that each verify
+    /// `verify_width` tokens.
+    fn mixed_rank(verify_width: usize) -> RankWork {
+        RankWork {
             dp_rank: 0,
             prefill: Some(PrefillWork {
                 totals: PrefillTotals {
@@ -521,13 +554,50 @@ mod tests {
                 mean_context_length: 400,
                 kv_bound_tokens: 800,
                 lengths: vec![300, 500],
-                widths: vec![1, 1],
-                verify_width: 1,
+                widths: vec![verify_width; 2],
+                verify_width,
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn a_mixed_pass_is_one_query_of_the_locally_mixed_store() {
+        let timing = forest_timing(1);
         // One query of the mixed store, not a prefill pass plus a decode pass.
-        let iteration = timing.predict_iteration_ms(&[mixed]).unwrap().unwrap();
+        let iteration = timing
+            .predict_iteration_ms(&[mixed_rank(1)])
+            .unwrap()
+            .unwrap();
         assert_eq!(iteration.total_ms, 7.0);
         assert!(timing.predict_prefill_ms(1, 112, 16).is_err());
+    }
+
+    #[test]
+    fn a_replay_role_must_match_a_known_fitted_attention_dp() {
+        forest_timing(2).require_replay_role(2, 1.0).unwrap();
+        let error = forest_timing(2)
+            .require_replay_role(1, 1.0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("attention_dp=2 does not match the engine's attention DP 1"),
+            "{error}"
+        );
+        forest_timing(UNKNOWN_SIZE)
+            .require_replay_role(1, 1.0)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_decode_pass_must_verify_the_fitted_nextn_plus_one_tokens() {
+        // Fitted at nextn 0, each decode request verifies one token.
+        let error = forest_timing(1)
+            .predict_iteration_ms(&[mixed_rank(2)])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("verifies 2 tokens per decode request; the model was fitted at nextn 0"),
+            "{error}"
+        );
     }
 }
