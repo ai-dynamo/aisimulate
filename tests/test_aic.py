@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from aisimulate import capacity as aic
+from aisim import capacity as aic
 
 pytestmark = [
     pytest.mark.unit,
@@ -71,7 +71,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         calls.append((args, kwargs))
         return 123
 
-    from aisimulate_core.sdk import memory, perf_database
+    from aisim_core.sdk import memory, perf_database
 
     monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
     version_calls = []
@@ -212,9 +212,9 @@ def test_materialize_defaults_context_parallel_knobs_to_one(monkeypatch) -> None
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
 @pytest.mark.parametrize("timing", ["default", "fixed", "polynomial"])
 def test_prediction_omitted_version_uses_current_database_for_capacity(monkeypatch, backend, timing):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import CorePredictionConfig
-    from aisimulate_core.sdk import perf_database
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import CorePredictionConfig
+    from aisim_core.sdk import perf_database
 
     expected = perf_database.get_version_slots("h200_sxm", backend)["current"]
     get_database = perf_database.get_database
@@ -253,7 +253,7 @@ def test_prediction_omitted_version_uses_current_database_for_capacity(monkeypat
 
 @pytest.mark.parametrize("version", ["current", "next", "0.24.0", "0.19.0"])
 def test_capacity_preserves_explicit_backend_version(monkeypatch, version):
-    from aisimulate_core.sdk import memory, perf_database
+    from aisim_core.sdk import memory, perf_database
 
     monkeypatch.setattr(
         perf_database,
@@ -283,7 +283,7 @@ def test_capacity_preserves_explicit_backend_version(monkeypatch, version):
 
 
 def test_capacity_without_a_database_fails_before_estimation(monkeypatch):
-    from aisimulate_core.sdk import memory, perf_database
+    from aisim_core.sdk import memory, perf_database
 
     monkeypatch.setattr(perf_database, "get_latest_database_version", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

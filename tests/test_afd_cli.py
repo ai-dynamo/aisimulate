@@ -12,17 +12,17 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-import aisimulate.main as cli
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.recommend import run_recommendation
-from aisimulate.runner import AFDCompanionTiming, AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory
-from aisimulate.sweeper import AFDLayerTimes
+import aisim.main as cli
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.recommend import run_recommendation
+from aisim.runner import AFDCompanionTiming, AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory
+from aisim.sweeper import AFDLayerTimes
 
 
 def test_afd_recommendation_preserves_oom_context_guidance(monkeypatch) -> None:
-    from aisimulate import supervision
-    from aisimulate.sweeper import afd_measure
+    from aisim import supervision
+    from aisim.sweeper import afd_measure
 
     # Keep the measurement stub in this process; no replay runs for an OOM candidate.
     monkeypatch.setattr(supervision, "in_supervised_process", lambda: True)
@@ -256,8 +256,8 @@ def test_afd_legacy_fpm_does_not_bypass_estimator_policy_validation(mode):
 
 @pytest.mark.parametrize("forward_model", ["op_level", "fpm"])
 def test_afd_recommendation_preserves_legacy_companion_selection(forward_model):
-    from aisimulate.recommend import recommendation_to_sweeper
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.recommend import recommendation_to_sweeper
+    from aisim.sweeper.config import SmartSearchConfig
 
     raw = _pure_prediction()
     raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)
@@ -317,7 +317,7 @@ def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeyp
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: EngineReplayRunnerFactory())
     monkeypatch.setattr(
-        "aisimulate.predict.prediction_to_replay_spec",
+        "aisim.predict.prediction_to_replay_spec",
         lambda config, **kwargs: compile_prediction(
             config,
             afd_performance_model=performance_model,

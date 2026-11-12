@@ -246,7 +246,7 @@ frontend and the host CPU. The values above are only an illustration.
 ## Backend versions
 
 The accepted versions are the populated slots defined by
-[`query_versions.yaml`](../../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+[`query_versions.yaml`](../../../python/aisim/src/aisim_core/systems/query_versions.yaml):
 
 - `current` is the newest completed full collection for the backend, a
   systematic campaign over the whole case plan on the fleet;
@@ -308,7 +308,7 @@ engine:
 This deployment uses `2 × 2 + 1 × 4 = 8` GPUs. Run it with:
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml --output-dir ./pd-prediction
+aisim predict --stack engine --config prediction.yaml --output-dir ./pd-prediction
 ```
 
 ## Where engine options are validated

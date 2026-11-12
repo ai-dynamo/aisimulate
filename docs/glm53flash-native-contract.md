@@ -151,7 +151,7 @@ newest data-backed vLLM and SGLang versions in the tree, they are the fleet
 `backend_version` (or `next`) and `enable_shared_layer=False`:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 model = RustForwardPassPerfModel.best_available(
     ForwardPassPerfModelConfig(
@@ -184,7 +184,7 @@ and select `database_mode="SOL"`. For example:
 
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 python - <<'PY'
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 model = RustForwardPassPerfModel.best_available(
     ForwardPassPerfModelConfig(

@@ -1,0 +1,1803 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-License-Identifier: Apache-2.0
+# Adapted and modified from vLLM at commit 98dff2a81d747d1dba01a47f939f48c3526d4206:
+# https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py
+# https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/model.py
+# https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/configs.py
+
+"""Local config facts and explicitly bounded resource estimates for onboarding.
+
+This module reads JSON and packaged hardware metadata. It never instantiates a
+model, imports remote configuration code, or builds an operation graph. Tensor
+storage estimates cover the declared vanilla decoder layouts, not arbitrary
+implementations sharing their field names. Runtime reservations and activation
+estimates are not measurements or a guarantee that a deployment fits. A layout the
+config cannot establish (unrecognized layer types, recurrent state, an architecture
+intake does not recognize) is runtime-resolved: the runtime probe measures its cache
+geometry. Intake never derives it, and a cache geometry override is a claim that
+observation import checks against the measurement.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from collections import Counter
+from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field
+from fractions import Fraction
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from aisim import quantization
+from aisim.fpm_cache_layout import cache_layout_markers, recognized_layer_types
+from aisim.fpm_profile import FpmCacheGroup, FpmModelProfile
+
+from .schema import SupportRequest
+
+_RESOURCE_FIELDS = (
+    "weights_bytes",
+    "activations_bytes",
+    "runtime_overhead_bytes",
+    "comm_overhead_bytes",
+    "kv_bytes_per_token",
+    "cache_layout",
+    "cache_groups",
+    "max_num_tokens",
+    "max_batch_size",
+)
+_MODE_ENUMS = {
+    "gemm_quant_mode": quantization.GEMMQuantMode,
+    "moe_quant_mode": quantization.MoEQuantMode,
+    "fmha_quant_mode": quantization.FMHAQuantMode,
+    "comm_quant_mode": quantization.CommQuantMode,
+    "kv_cache_dtype": quantization.KVCacheQuantMode,
+}
+_DEPLOYMENT_FIELDS = (*_MODE_ENUMS, "moe_backend", "attention_backend")
+_MODEL_FIELDS = ("architecture", "context_length", "num_experts")
+OVERRIDE_FIELDS = frozenset((*_MODEL_FIELDS, *_RESOURCE_FIELDS, *_DEPLOYMENT_FIELDS, "cache_block_sizes", "provenance"))
+INTEGER_FIELDS = frozenset(
+    (
+        "context_length",
+        "num_experts",
+        *(field for field in _RESOURCE_FIELDS if field not in {"cache_layout", "cache_groups"}),
+    )
+)
+FIELD_CHOICES = {field: tuple(enum.__members__) for field, enum in _MODE_ENUMS.items()}
+FIELD_CHOICES["cache_layout"] = ("linear", "grouped")
+_NONNEGATIVE_FIELDS = frozenset(
+    ("num_experts", "weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes")
+)
+_BYTE_FIELDS = frozenset(field for field in INTEGER_FIELDS if "bytes" in field)
+_NON_KV_FIELDS = _BYTE_FIELDS - {"kv_bytes_per_token"}
+_CACHE_GROUP_NAMES = frozenset(("full_attention", "sliding_attention", "full_convolution", "sliding_convolution"))
+# Overrides that state cache geometry. For a runtime-resolved layout, intake never asks for them, and
+# cache_layout, kv_bytes_per_token and cache_groups overrides are claims that observation import checks.
+_GEOMETRY_OVERRIDES = frozenset(("cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"))
+# Cache geometry overrides that observation import checks against the runtime probe's resources.
+CHECKED_GEOMETRY = ("cache_layout", "cache_groups", "kv_bytes_per_token")
+# Resource overrides that observation import compares with the measured resources.
+_OBSERVED_FIELDS = (*CHECKED_GEOMETRY, "max_num_tokens", "max_batch_size")
+# Provenance sources for overrides at observation import.
+_CHECKED_SOURCE = "user override; checked against the runtime probe's measurement"
+_UNUSED_BLOCK_SIZES_SOURCE = "user override; not used, because the runtime probe measured the cache block sizes"
+# Config notes that depend on how the cache layout is classified.
+LAYOUT_NOTES = ("cache_layout", "convolution_cache")
+# Fields intake reads before or without an integer, string or boolean check. Those checks reject any float, so a
+# JSON Infinity or NaN in another read field already fails with that field's name; these are checked explicitly.
+# Intake reads every other field through those checks or only for its presence, so JSON Infinity or NaN elsewhere,
+# such as NemotronH's time_step_limit, loads and never reaches an output.
+_UNTYPED_READ_FIELDS = (
+    "quantization_config",
+    "quant_algo",
+    "kv_cache_quant_algo",
+    "expert_dtype",
+    "kv_lora_rank",
+    "q_lora_rank",
+    "compress_ratios",
+    "attention_k_eq_v",
+    "max_window_layers",
+    "sliding_window_pattern",
+    "hybrid_layer_pattern",
+    "lm_head_bias",
+    "use_qk_norm",
+    "moe_router_dtype",
+    "use_mtp",
+)
+_INKLING_ARCHITECTURE = "InklingForConditionalGeneration"
+_INKLING_CACHE_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/"
+    "vllm/models/inkling/nvidia/sconv_swa_attn.py"
+)
+
+_ARCHITECTURES = {
+    "llama": "LlamaForCausalLM",
+    "mistral": "MistralForCausalLM",
+    "mixtral": "MixtralForCausalLM",
+    "qwen2": "Qwen2ForCausalLM",
+    "qwen3": "Qwen3ForCausalLM",
+    "qwen3_moe": "Qwen3MoeForCausalLM",
+    "minimax_m2": "MiniMaxM2ForCausalLM",
+    "glm_moe_dsa": "GlmMoeDsaForCausalLM",
+    "deepseek_v3": "DeepseekV3ForCausalLM",
+    "deepseek_v32": "DeepseekV32ForCausalLM",
+}
+_DENSE = frozenset(("LlamaForCausalLM", "MistralForCausalLM", "Qwen2ForCausalLM", "Qwen3ForCausalLM"))
+_FULL_ATTENTION = _DENSE | {"MixtralForCausalLM", "Qwen3MoeForCausalLM", "MiniMaxM2ForCausalLM"}
+# MLA/DSA decoders: intake asks for their cache accounting instead of leaving it to the runtime probe.
+_MLA_ARCHITECTURES = frozenset(("DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM"))
+_WEIGHT_LAYOUTS = _DENSE | {"MixtralForCausalLM"}
+_EXPERT_ALIASES = ("num_local_experts", "n_routed_experts", "num_experts")
+_INT_ALIASES = {
+    "hidden_size": ("hidden_size", "n_embd", "d_model"),
+    "intermediate_size": ("intermediate_size",),
+    "num_hidden_layers": ("num_hidden_layers", "n_layer", "num_layers"),
+    "num_attention_heads": ("num_attention_heads", "n_head"),
+    "num_key_value_heads": ("num_key_value_heads", "num_kv_heads"),
+    "head_dim": ("head_dim",),
+    "vocab_size": ("vocab_size",),
+    "context_length": ("max_position_embeddings", "n_positions", "max_seq_len", "seq_length", "model_max_length"),
+    "num_experts": _EXPERT_ALIASES,
+}
+_OPTIONAL_DIMENSIONS = frozenset(("num_key_value_heads", "head_dim", "intermediate_size"))
+_EXTRA_DIMENSIONS = (
+    "moe_intermediate_size",
+    "num_experts_per_tok",
+    "kv_lora_rank",
+    "q_lora_rank",
+    "qk_nope_head_dim",
+    "qk_rope_head_dim",
+    "v_head_dim",
+    "index_head_dim",
+    "index_n_heads",
+)
+# A runtime-resolved layout may declare these as 0 when a layer type has no such attention shape.
+_ATTENTION_INT_ALIASES = frozenset(("num_key_value_heads", "head_dim"))
+_ATTENTION_DIMENSIONS = frozenset(
+    (
+        "kv_lora_rank",
+        "q_lora_rank",
+        "qk_nope_head_dim",
+        "qk_rope_head_dim",
+        "v_head_dim",
+        "index_head_dim",
+        "index_n_heads",
+    )
+)
+_AUXILIARY_DIMENSIONS = (
+    "n_shared_experts",
+    "shared_intermediate_size",
+    "shared_expert_intermediate_size",
+    "num_nextn_predict_layers",
+    "num_mtp_modules",
+    "mtp_transformer_layers",
+    "first_k_dense_replace",
+)
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    raw: dict[str, Any]
+    # Checkpoint/collector identity in suggestions may name a multimodal wrapper.
+    decoder_architecture: str | None
+    sha256: str
+    suggestions: dict[str, Any]
+    notes: dict[str, str]
+    source_files: dict[str, str] = field(default_factory=dict)
+    # Why config.json cannot establish the cache layout; empty when it can.
+    runtime_layout: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProfileDraft:
+    profile: FpmModelProfile | None
+    resolved: dict[str, Any]
+    missing: dict[str, str]
+    sources: dict[str, str]
+    # Facts only the runtime probe can establish, by field. A draft with any has no profile.
+    pending_runtime: dict[str, str] = field(default_factory=dict)
+    # Config notes for the classification this draft used; an architecture override can change the layout notes.
+    notes: dict[str, str] = field(default_factory=dict)
+    # The pending reasons that cache_layout_markers found; empty when an unrecognized architecture is the only one.
+    layout_markers: tuple[str, ...] = ()
+    # Whether a layout without markers declares windowed or chunked attention, which the probe can report as windows.
+    declares_window: bool = False
+
+
+class ProfileRequestError(ValueError):
+    """Config facts conflict with a correctable onboarding request field."""
+
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
+
+class _UnderivableWindowLayout(ValueError):
+    """A sliding-window declaration that intake cannot derive cache groups from.
+
+    Examples are an implicit schedule, sliding layers without a window, and contradictory or malformed
+    sliding-layer indexes. The marker-layout branch of _validate_layout does not run these checks.
+    """
+
+
+def _integer(value: Any, field: str, *, minimum: int = 1, maximum: int | None = None) -> int:
+    if type(value) is not int or value < minimum or (maximum is not None and value > maximum):
+        bound = f"{minimum}..{maximum}" if maximum is not None else f">={minimum}"
+        raise ValueError(f"{field} must be an integer {bound}, not a boolean, float or numeric string")
+    return value
+
+
+def _text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise ValueError(f"{field} must be a nonempty string without NUL characters")
+    return value.strip()
+
+
+def _aliased_int(raw: Mapping[str, Any], name: str, *, runtime_resolved: bool = False) -> int | None:
+    supplied = {}
+    zero_allowed = name == "num_experts" or (runtime_resolved and name in _ATTENTION_INT_ALIASES)
+    for key in _INT_ALIASES[name]:
+        if key not in raw or (raw[key] is None and name in _OPTIONAL_DIMENSIONS):
+            continue
+        supplied[key] = _integer(raw[key], key, minimum=0 if zero_allowed else 1)
+    if len(set(supplied.values())) > 1:
+        raise ValueError(f"conflicting {name} fields: {supplied}")
+    return next(iter(supplied.values()), None)
+
+
+def _dtype(raw: Mapping[str, Any]) -> str | None:
+    values = {
+        key: _text(raw[key], key).removeprefix("torch.") for key in ("dtype", "torch_dtype") if raw.get(key) is not None
+    }
+    if len(set(values.values())) > 1:
+        raise ValueError(f"conflicting dtype fields: {values}")
+    return next(iter(values.values()), None)
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate config JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _require_finite(value: Any, field: str) -> None:
+    """Reject JSON Infinity or NaN in a field intake reads. Parsing accepts them, for fields intake never reads."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{field} must be a finite number, not Infinity or NaN")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _require_finite(item, f"{field}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_finite(item, f"{field}[{index}]")
+
+
+def _architecture(raw: Mapping[str, Any]) -> str | None:
+    architectures = raw.get("architectures")
+    architecture = None
+    if architectures is not None:
+        if not isinstance(architectures, list) or len(architectures) != 1:
+            raise ValueError("architectures must identify exactly one decoder architecture")
+        architecture = _text(architectures[0], "architectures[0]")
+    model_type = _text(raw["model_type"], "model_type") if "model_type" in raw else None
+    expected = _ARCHITECTURES.get(model_type)
+    if expected and architecture and expected != architecture:
+        raise ValueError(f"model_type={model_type!r} conflicts with architectures={architecture!r}")
+    return architecture or expected
+
+
+def _kv_cache_scheme(quant: Mapping[str, Any]) -> dict[str, Any]:
+    scheme = quant.get("kv_cache_scheme")
+    if scheme is None:
+        return {}
+    if isinstance(scheme, str):
+        if scheme.strip().upper() == "FP8":
+            return {"num_bits": 8, "type": "float"}
+        raise ValueError("unsupported quantization_config.kv_cache_scheme string; supported value is FP8")
+    if not isinstance(scheme, dict):
+        raise ValueError("quantization_config.kv_cache_scheme must be an object or FP8")
+    return scheme
+
+
+def _validate_quantization(raw: Mapping[str, Any]) -> None:
+    quant = raw.get("quantization_config")
+    if quant is None:
+        return
+    if not isinstance(quant, dict):
+        raise ValueError("quantization_config must be an object")
+    for key in ("quant_method", "quant_algo", "activation_scheme"):
+        if key in quant:
+            _text(quant[key], f"quantization_config.{key}")
+    if quant.get("quant_method") == "fp8" and quant.get("quant_algo") not in (None, "FP8"):
+        raise ValueError("conflicting quantization_config quant_method and quant_algo")
+    blocks = quant.get("weight_block_size")
+    if blocks is not None:
+        if not isinstance(blocks, list) or len(blocks) != 2:
+            raise ValueError("quantization_config.weight_block_size must contain two positive integers")
+        for block in blocks:
+            _integer(block, "quantization_config.weight_block_size")
+    for key in ("ignore", "modules_to_not_convert"):
+        if key in quant:
+            if not isinstance(quant[key], list):
+                raise ValueError(f"quantization_config.{key} must be a list of module names")
+            for name in quant[key]:
+                _text(name, f"quantization_config.{key}")
+    if quant.get("config_groups") is not None and not isinstance(quant["config_groups"], dict):
+        raise ValueError("quantization_config.config_groups must be an object")
+    for group_name, group in (quant.get("config_groups") or {}).items():
+        if not isinstance(group, dict):
+            raise ValueError(f"quantization_config.config_groups.{group_name} must be an object")
+        for key in ("input_activations", "weights"):
+            tensor = group.get(key)
+            if tensor is None:
+                continue
+            if not isinstance(tensor, dict):
+                raise ValueError(f"quantization_config.config_groups.{group_name}.{key} must be an object")
+            if "dynamic" in tensor and type(tensor["dynamic"]) is not bool:
+                raise ValueError(f"quantization_config.config_groups.{group_name}.{key}.dynamic must be a boolean")
+            if "num_bits" in tensor:
+                _integer(tensor["num_bits"], f"quantization_config.config_groups.{group_name}.{key}.num_bits")
+    scheme = _kv_cache_scheme(quant)
+    if scheme.get("type") is not None:
+        _text(scheme["type"], "quantization_config.kv_cache_scheme.type")
+    if "num_bits" in scheme:
+        _integer(scheme["num_bits"], "quantization_config.kv_cache_scheme.num_bits")
+    if "dynamic" in scheme and type(scheme["dynamic"]) is not bool:
+        raise ValueError("quantization_config.kv_cache_scheme.dynamic must be a boolean")
+
+
+def _cache_window(raw: Mapping[str, Any]) -> int | None:
+    supplied = {
+        key: _integer(raw[key], key, minimum=0)
+        for key in ("sliding_window", "sliding_window_size")
+        if raw.get(key) is not None
+    }
+    if len(set(supplied.values())) > 1:
+        raise ValueError(f"conflicting sliding-window fields: {supplied}")
+    return next(iter(supplied.values()), None)
+
+
+def _layer_types(raw: Mapping[str, Any], layers: int | None) -> list[str]:
+    types = raw["layer_types"]
+    if not isinstance(types, list) or (layers is not None and len(types) != layers):
+        raise ValueError("layer_types must have one entry per num_hidden_layers")
+    if any(not isinstance(value, str) or not value.strip() for value in types):
+        raise ValueError("layer_types entries must be nonempty strings")
+    return types
+
+
+def _attn_type_list(raw: Mapping[str, Any], layers: int | None) -> list[int]:
+    values = raw["attn_type_list"]
+    if not isinstance(values, list) or (layers is not None and len(values) != layers):
+        raise ValueError("attn_type_list must have one entry per num_hidden_layers")
+    if any(type(value) is not int for value in values):
+        raise ValueError("attn_type_list entries must be integers")
+    return values
+
+
+def _runtime_layout(raw: Mapping[str, Any], architecture: str | None, named: str | None) -> tuple[str, ...]:
+    """Sorted reasons config.json cannot establish the cache layout; empty when it can.
+
+    The markers come from cache_layout_markers, which the FPM collector checks too. ``architecture`` is the
+    decoder architecture layout checks run against; ``named`` is the architecture the config or an override
+    names, which is a multimodal wrapper's when the text config names none. Without a marker, an architecture
+    that intake does not recognize is pending too, unless intake derives a grouped cache from the config's own
+    fields. Every caller classifies through this function, and cache geometry overrides never reach it.
+    """
+    reasons = cache_layout_markers(raw, architecture)
+    if (
+        not reasons
+        and named
+        and named not in _FULL_ATTENTION | _MLA_ARCHITECTURES
+        and not _derives_grouped_cache(raw, architecture)
+    ):
+        return (f"unrecognized architecture {named}",)
+    return reasons
+
+
+def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inkling: bool = False) -> tuple[int, ...]:
+    """Resolve explicit attention retention without assuming an operation graph.
+
+    _UnderivableWindowLayout marks the declarations that the marker-layout branch of _validate_layout does
+    not check; the structure checks of _cache_window, _aliased_int and _layer_types raise ValueError.
+    """
+    window = _cache_window(raw)
+    if raw.get("use_sliding_window") is True and not window:
+        raise _UnderivableWindowLayout(
+            "use_sliding_window=true requires a positive sliding_window or sliding_window_size"
+        )
+    layers = _aliased_int(raw, "num_hidden_layers")
+    # The pinned Inkling config defaults absent/null local_layer_ids to []; a
+    # window size alone must not turn its full-attention layers into SWA.
+    # https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/configs.py
+    local = () if inkling else None
+    if "local_layer_ids" in raw and not (inkling and raw["local_layer_ids"] is None):
+        local = raw["local_layer_ids"]
+        if not isinstance(local, list) or any(type(value) is not int or value < 0 for value in local):
+            raise _UnderivableWindowLayout("local_layer_ids must be a list of nonnegative layer indexes")
+        if len(local) != len(set(local)) or (layers is not None and any(value >= layers for value in local)):
+            raise _UnderivableWindowLayout("local_layer_ids must be unique indexes below num_hidden_layers")
+        local = tuple(sorted(local))
+    if "layer_types" in raw:
+        types = _layer_types(raw, layers)
+        recognized = recognized_layer_types(architecture)
+        if any(value not in recognized for value in types):
+            raise ValueError("unsupported mixed or recurrent attention layout in layer_types")
+        indexed = tuple(index for index, value in enumerate(types) if value == "sliding_attention")
+        if local is not None and indexed != local:
+            raise _UnderivableWindowLayout("conflicting layer_types and local_layer_ids attention layouts")
+        local = indexed
+    if raw.get("use_sliding_window") is False:
+        if local:
+            raise _UnderivableWindowLayout("use_sliding_window=false conflicts with sliding attention layers")
+        return ()
+    if local is None and window:
+        if any(raw.get(key) for key in ("max_window_layers", "sliding_window_pattern", "hybrid_layer_pattern")):
+            raise _UnderivableWindowLayout("unsupported implicit sliding-window schedule; provide explicit layer_types")
+        local = tuple(range(layers or 0))
+    if local and not window:
+        raise _UnderivableWindowLayout(
+            "sliding attention layers require a positive sliding_window or sliding_window_size"
+        )
+    return local or ()
+
+
+def _grouped_cache_fields(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    """Whether the config's own fields declare windowed attention or convolution state."""
+    return bool(
+        raw.get("use_sconv")
+        or _cache_layer_ids(raw, architecture)
+        or (
+            _cache_window(raw)
+            and raw.get("use_sliding_window") is not False
+            and "layer_types" not in raw
+            and "local_layer_ids" not in raw
+        )
+    )
+
+
+def _derives_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    """Whether intake derives a grouped cache from the config's own fields.
+
+    A window layout that intake cannot derive is not one: for an unrecognized architecture, the runtime
+    probe resolves it, as for a marker layout. The structure checks that a marker layout also runs still fail.
+    """
+    try:
+        return _grouped_cache_fields(raw, architecture)
+    except _UnderivableWindowLayout:
+        return False
+
+
+def _declares_window(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    """Whether the config declares windowed or chunked attention, as intake reads its fields.
+
+    For a layout pending the runtime probe, intake derives no grouped cache, so a window here is one that intake
+    cannot derive. use_sliding_window=false turns a window size off, as in the MiMo-7B config. Intake reads no
+    chunked-attention field, so attention_chunk_size is checked here.
+    """
+    if raw.get("attention_chunk_size") is not None:
+        return True
+    try:
+        return _grouped_cache_fields(raw, architecture)
+    except _UnderivableWindowLayout:
+        return True
+
+
+def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    # Markers win over grouped fields. Callers ask only about layouts that are not pending the runtime probe,
+    # and an unrecognized architecture is pending only without grouped fields, so checking markers suffices.
+    return not _runtime_layout(raw, architecture, None) and _grouped_cache_fields(raw, architecture)
+
+
+def _validate_layout(
+    raw: Mapping[str, Any], architecture: str | None, named: str | None, *, inkling: bool = False
+) -> tuple[str, ...]:
+    """Check the declared layout; return why config.json cannot establish it, empty when it can."""
+    for key in (
+        "attention_bias",
+        "mlp_bias",
+        "tie_word_embeddings",
+        "is_encoder_decoder",
+        "use_sliding_window",
+        "use_sconv",
+    ):
+        if key in raw and type(raw[key]) is not bool:
+            raise ValueError(f"{key} must be a boolean")
+    if raw.get("is_encoder_decoder"):
+        raise ValueError("unsupported encoder-decoder text layout; supply a decoder-only config or FPM profile")
+    if inkling and raw.get("use_sconv") is not True:
+        raise ValueError(
+            "pinned Inkling runtime allocates convolution state in every decoder layer; config-based derivation "
+            "requires explicit use_sconv=true. Verify the runtime/config or provide a complete FPM profile. "
+            f"Source: {_INKLING_CACHE_SOURCE.rsplit('/', 1)[0]}/model.py"
+        )
+    runtime = _runtime_layout(raw, architecture, named)
+    if runtime:
+        # The runtime probe measures this layout's cache geometry; intake only checks the config is well formed.
+        _cache_window(raw)
+        layers = _aliased_int(raw, "num_hidden_layers")
+        if "layer_types" in raw:
+            _layer_types(raw, layers)
+        if "attn_type_list" in raw:
+            _attn_type_list(raw, layers)
+        return runtime
+    sliding = _cache_layer_ids(raw, architecture, inkling=inkling)
+    layers = _aliased_int(raw, "num_hidden_layers")
+    if "attn_type_list" in raw:
+        # Every entry is 1 here: any other integer would have made the layout runtime-resolved.
+        _attn_type_list(raw, layers)
+        if sliding:
+            raise ValueError("full-attention attn_type_list conflicts with sliding-window layer declarations")
+    if architecture in _FULL_ATTENTION and any(
+        raw.get(key) for key in ("kv_lora_rank", "q_lora_rank", "compress_ratios", "attention_k_eq_v")
+    ):
+        raise ValueError("unsupported cache/projection modifiers conflict with the declared full-attention layout")
+    for key in (
+        "swa_num_attention_heads",
+        "swa_num_key_value_heads",
+        "swa_head_dim",
+        "swa_v_head_dim",
+        "sconv_kernel_size",
+        "conv_kernel_size",
+    ):
+        if raw.get(key) is not None:
+            _integer(raw[key], key)
+    if (
+        raw.get("sconv_kernel_size") is not None
+        and raw.get("conv_kernel_size") is not None
+        and raw["sconv_kernel_size"] != raw["conv_kernel_size"]
+    ):
+        raise ValueError("conflicting sconv_kernel_size and conv_kernel_size")
+    if raw.get("use_sconv"):
+        if not inkling:
+            raise ValueError("unsupported use_sconv state outside the verified Inkling cache layout")
+        if not (raw.get("sconv_kernel_size") or raw.get("conv_kernel_size")):
+            raise ValueError("use_sconv requires an explicit sconv_kernel_size or conv_kernel_size")
+        if _dtype(raw) not in (None, "bfloat16"):
+            raise ValueError("Inkling convolution cache requires bfloat16 runtime storage")
+    return ()
+
+
+def _layout_notes(raw: Mapping[str, Any], architecture: str | None, runtime: tuple[str, ...]) -> dict[str, str]:
+    """Config notes on the cache layout, for the classification a caller used."""
+    if runtime:
+        return {
+            "cache_layout": (
+                f"cache layout pending the runtime probe ({', '.join(runtime)}). config.json does not establish "
+                "cache or state geometry. onboard probe-runtime measures it."
+            )
+        }
+    if not _uses_grouped_cache(raw, architecture):
+        return {}
+    notes = {
+        "cache_layout": (
+            "grouped cache: full-history attention, explicit sliding attention windows, and declared convolution "
+            "state are accounted separately; runtime KV dtype, block sizes and page padding are not model-config facts"
+        )
+    }
+    if raw.get("use_sconv"):
+        notes["convolution_cache"] = (
+            "Inkling convolution state uses BF16 packed K/V and output streams; "
+            f"pinned runtime layout: {_INKLING_CACHE_SOURCE}"
+        )
+    return notes
+
+
+def _validate_architecture(raw: Mapping[str, Any], architecture: str | None, experts: int | None) -> None:
+    experts_per_token = raw.get("num_experts_per_tok")
+    if experts and experts_per_token is not None and experts_per_token > experts:
+        raise ValueError("num_experts_per_tok cannot exceed the routed expert count")
+    if architecture in _DENSE and experts not in (None, 0):
+        raise ValueError("num_experts conflicts with the declared dense architecture")
+    if architecture in set(_ARCHITECTURES.values()) - _DENSE and experts == 0:
+        raise ValueError("num_experts must be positive for the declared MoE architecture")
+
+
+def load_model_config(path: str | Path) -> ModelConfig:
+    """Load local config/ModelOpt metadata with separate byte-level provenance."""
+    path = Path(path).expanduser().absolute()
+    payload = path.read_bytes()
+    # JSON Infinity and NaN parse as floats: fields intake reads reject them, and other fields are never read.
+    raw = json.loads(payload, object_pairs_hook=_unique_object)
+    if not isinstance(raw, dict):
+        raise ValueError("model config JSON must be an object")
+    document = raw
+    source_files = {}
+    notes = {
+        "modeling_scope": (
+            "Text decoder only. FPM excludes multimodal encoders, projectors, preprocessing and other non-text "
+            "components from timing and config-derived planning estimates. Observed runtime cache capacity accounts "
+            "for all components actually loaded by the worker; full multimodal latency is not modeled."
+        )
+    }
+    if "text_config" in document:
+        text_config = document["text_config"]
+        if not isinstance(text_config, dict) or not text_config:
+            raise ValueError(
+                "text_config must be a nonempty object describing one text decoder; "
+                "supply its decoder config or a complete --fpm-profile"
+            )
+        if "text_config" in text_config:
+            raise ValueError("ambiguous nested text_config; supply one text decoder config or a complete --fpm-profile")
+        raw = dict(text_config)
+        notes["decoder_config"] = "config text_config; outer model and encoder geometry are excluded"
+        inherited = []
+        for keys, inferred_keys in (
+            (("dtype", "torch_dtype"), ()),
+            (("quantization_config", "hf_quant_config", "quant_algo"), ("quant_dynamic", "kv_cache_quant_algo")),
+        ):
+            if any(raw.get(key) is not None for key in keys):
+                continue
+            for key in keys:
+                if document.get(key) is not None:
+                    raw[key] = document[key]
+                    inherited.append(key)
+            for key in inferred_keys:
+                if raw.get(key) is None and document.get(key) is not None:
+                    raw[key] = document[key]
+                    inherited.append(key)
+        if inherited:
+            notes["shared_metadata"] = (
+                f"config-level {', '.join(inherited)} inherited because text_config does not declare that metadata"
+            )
+    for key in _UNTYPED_READ_FIELDS:
+        _require_finite(raw.get(key), key)
+    sidecar_path = path.parent / "hf_quant_config.json"
+    if sidecar_path.is_file():
+        from aisim_core.sdk.fpm_model_metadata import attach_quantization_sidecar
+
+        sidecar_payload = sidecar_path.read_bytes()
+        sidecar = json.loads(sidecar_payload, object_pairs_hook=_unique_object)
+        if not isinstance(sidecar, dict):
+            raise ValueError("hf_quant_config.json must be an object")
+        # Intake reads only the sidecar's quantization section.
+        _require_finite(sidecar.get("quantization"), "hf_quant_config.json quantization")
+        if document.get("hf_quant_config") is not None and document["hf_quant_config"] != sidecar:
+            raise ValueError("conflicting inline hf_quant_config and adjacent hf_quant_config.json")
+        source_files[sidecar_path.name] = hashlib.sha256(sidecar_payload).hexdigest()
+        notes["quantization_sidecar"] = (
+            f"local ModelOpt sidecar {sidecar_path} sha256={source_files[sidecar_path.name]}; "
+            "checkpoint quantization metadata; runtime attention precision remains independent"
+        )
+        _validate_quantization(raw)
+        merged = attach_quantization_sidecar(raw, sidecar)
+        if raw is document:
+            document = merged
+        raw = merged
+    decoder_architecture = _architecture(raw)
+    architecture = decoder_architecture
+    if raw is not document:
+        if raw.get("architectures") is None and (wrapper_architecture := _architecture(document)):
+            architecture = wrapper_architecture
+            notes["architecture"] = (
+                f"config wrapper architecture={architecture} retained for checkpoint/collector identity"
+            )
+        notes["decoder_architecture"] = (
+            f"text_config decoder architecture={decoder_architecture}; used for decoder validation/resource estimates"
+            if decoder_architecture
+            else "text_config does not identify a decoder architecture; decoder resource bounds require explicit input"
+        )
+    inkling = architecture == _INKLING_ARCHITECTURE
+    # A runtime-resolved layout may use zero or absent ordinary attention dimensions.
+    # Validate its structure first, then exempt those dimensions from the GQA/MHA minimums.
+    # A multimodal wrapper names the decoder when the text config names no architecture.
+    runtime_layout = _validate_layout(raw, decoder_architecture, decoder_architecture or architecture, inkling=inkling)
+    geometry = {key: _aliased_int(raw, key, runtime_resolved=bool(runtime_layout)) for key in _INT_ALIASES}
+    for key in _EXTRA_DIMENSIONS:
+        if raw.get(key) is not None:
+            _integer(raw[key], key, minimum=0 if runtime_layout and key in _ATTENTION_DIMENSIONS else 1)
+    for key in _AUXILIARY_DIMENSIONS:
+        if raw.get(key) is not None:
+            _integer(raw[key], key, minimum=0)
+    experts = geometry["num_experts"]
+    _validate_architecture(raw, decoder_architecture, experts)
+    _validate_quantization(raw)
+    dtype = _dtype(raw)
+    heads, kv_heads = geometry["num_attention_heads"], geometry["num_key_value_heads"]
+    if heads and kv_heads and (kv_heads > heads or heads % kv_heads):
+        raise ValueError("num_key_value_heads must divide num_attention_heads and cannot exceed it")
+    dense_layers = raw.get("first_k_dense_replace")
+    if geometry["num_hidden_layers"] and dense_layers is not None and dense_layers > geometry["num_hidden_layers"]:
+        raise ValueError("first_k_dense_replace cannot exceed num_hidden_layers")
+    if decoder_architecture in _DENSE:
+        experts = 0
+    suggestions: dict[str, Any] = {}
+    notes.update({key: f"config {key}={value}" for key, value in geometry.items() if value is not None})
+    for key in (*_EXTRA_DIMENSIONS, *_AUXILIARY_DIMENSIONS):
+        if raw.get(key) is not None:
+            notes[key] = f"config {key}={raw[key]}"
+    notes.update(_layout_notes(raw, decoder_architecture, runtime_layout))
+    names = {_text(document[key], key) for key in ("_name_or_path", "name_or_path") if document.get(key)}
+    if len(names) > 1:
+        raise ValueError("conflicting _name_or_path and name_or_path identity hints")
+    if names:
+        suggestions["model"] = names.pop()
+        notes["model"] = "config _name_or_path/name_or_path hint; explicit deployment identity takes precedence"
+    for key, value in (
+        ("architecture", architecture),
+        ("context_length", geometry["context_length"]),
+        ("num_experts", experts),
+    ):
+        if value is not None:
+            suggestions[key] = value
+            notes.setdefault(
+                key, f"config declared {key}={value}" if key != "num_experts" else "known dense architecture"
+            )
+    if experts is not None:
+        suggestions["model_kind"] = "moe" if experts else "dense"
+    if dtype:
+        notes["dtype"] = (
+            f"config tensor dtype={dtype}; checkpoint storage still needs verification; "
+            "does not declare runtime attention or KV-cache precision"
+        )
+    if raw.get("auto_map") or document.get("auto_map"):
+        notes["auto_map"] = "remote-code references present; read as metadata only and never executed"
+    if raw.get("quantization_config") is not None:
+        quant = raw["quantization_config"]
+        summary = {
+            key: quant[key]
+            for key in ("quant_method", "quant_algo", "weight_block_size", "kv_cache_scheme")
+            if key in quant
+        }
+        notes["quantization"] = (
+            f"config quantization={json.dumps(summary, sort_keys=True, allow_nan=False)}; "
+            "tensor scales/exclusions require explicit weight bytes"
+        )
+    for key in ("num_nextn_predict_layers", "num_mtp_modules", "mtp_transformer_layers", "use_mtp"):
+        if key in raw:
+            notes[key] = f"config {key}={raw[key]}; checkpoint capability does not enable runtime speculative decoding"
+    return ModelConfig(
+        raw, decoder_architecture, hashlib.sha256(payload).hexdigest(), suggestions, notes, source_files, runtime_layout
+    )
+
+
+def validate_overrides(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Validate supplied values independently of a complete derived profile."""
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, Mapping):
+        raise ValueError("resource overrides must be a flat object")
+    unknown = set(overrides) - OVERRIDE_FIELDS
+    if unknown:
+        raise ValueError(f"unknown resource override fields: {', '.join(sorted(map(str, unknown)))}")
+    result = {}
+    for key, value in overrides.items():
+        if key == "cache_groups":
+            if not isinstance(value, list) or not value:
+                raise ValueError("cache_groups must be a nonempty list of runtime cache group objects")
+            value = [FpmCacheGroup.model_validate(group).model_dump(mode="json") for group in value]
+            if len({group["name"] for group in value}) != len(value):
+                raise ValueError("cache_groups names must be unique")
+        elif key == "cache_block_sizes":
+            if not isinstance(value, dict) or not value or set(value) - _CACHE_GROUP_NAMES:
+                raise ValueError("cache_block_sizes must map generated cache group names to positive block sizes")
+            value = {name: _integer(size, f"cache_block_sizes.{name}") for name, size in value.items()}
+        elif key in INTEGER_FIELDS:
+            value = _integer(
+                value,
+                key,
+                minimum=0 if key in _NONNEGATIVE_FIELDS else 1,
+                maximum=2**53 if key in _BYTE_FIELDS else None,
+            )
+        else:
+            value = _text(value, key)
+            if key in FIELD_CHOICES and value not in FIELD_CHOICES[key]:
+                raise ValueError(f"unknown {key}={value!r}; choose {', '.join(FIELD_CHOICES[key])}")
+        result[key] = value
+    if "cache_groups" in result and ("kv_bytes_per_token" in result or result.get("cache_layout") == "linear"):
+        raise ValueError("cache_groups cannot be combined with linear cache_layout or kv_bytes_per_token")
+    if "kv_bytes_per_token" in result and result.get("cache_layout") == "grouped":
+        raise ValueError("kv_bytes_per_token cannot be combined with grouped cache_layout")
+    if sum(result.get(key, 0) for key in _BYTE_FIELDS - {"kv_bytes_per_token"}) > 2**53:
+        raise ValueError("total non-KV resource bytes must not exceed 2**53")
+    return result
+
+
+def _precision_facts(config: ModelConfig) -> dict[str, tuple[str, str]]:
+    raw = config.raw
+    if config.source_files:
+        from aisim_core.sdk.models.helpers import _infer_quant_modes_from_raw_config
+
+        inferred = {
+            key: raw[key] for key in ("quant_algo", "quant_dynamic", "kv_cache_quant_algo") if raw.get(key) is not None
+        }
+        result = {}
+        if inferred.get("quant_algo") in {
+            "fp8",
+            "fp8_block",
+            "nvfp4",
+            "mxfp4",
+            "mixed_precision",
+            "compressed-tensors",
+        }:
+            # Reuse collector weight classification, discarding its legacy
+            # attention/KV defaults: weight precision never establishes them.
+            modes = _infer_quant_modes_from_raw_config({**raw, "kv_cache_quant_algo": None})
+            result.update(
+                (
+                    key,
+                    (
+                        modes[key].name,
+                        "checkpoint/FPM weight identity from config and ModelOpt sidecar; "
+                        "tensor scales/exclusions require explicit weight bytes",
+                    ),
+                )
+                for key in ("gemm_quant_mode", "moe_quant_mode")
+                if key in modes
+            )
+        kv = inferred.get("kv_cache_quant_algo")
+        if kv in {"fp8", "bfloat16"}:
+            result["kv_cache_dtype"] = (
+                kv,
+                "explicit config/ModelOpt KV quantization metadata (independent of weight quantization)",
+            )
+        else:
+            scheme = _kv_cache_scheme(raw.get("quantization_config") or {})
+            if scheme.get("num_bits") == 8 and scheme.get("type") in {"float", "int"}:
+                result["kv_cache_dtype"] = (
+                    "fp8" if scheme["type"] == "float" else "int8",
+                    "explicit config quantization_config.kv_cache_scheme (independent of weight quantization)",
+                )
+        return result
+    quant = raw.get("quantization_config")
+    if quant is None and (raw.get("hf_quant_config") is not None or raw.get("quant_algo") is not None):
+        return {}  # Unrecognized sidecar/processed metadata must not become unquantized defaults.
+    if quant is None:
+        if _dtype(raw) == "bfloat16":
+            return dict.fromkeys(
+                ("gemm_quant_mode", "moe_quant_mode"),
+                (
+                    "bfloat16",
+                    "assumption: bfloat16 tensor dtype with no inline or adjacent ModelOpt quantization metadata; "
+                    "verify deployed weight precision (checkpoint tensors are not inspected)",
+                ),
+            )
+        return {}
+    result = {}
+    method = str(quant.get("quant_method", "")).lower()
+    algorithm = str(quant.get("quant_algo", method)).lower()
+    source = (
+        "config checkpoint/FPM quantization label, matching sdk/models/helpers.py; "
+        "exclusions and tensor scales prevent inferring all tensors' storage from this label"
+    )
+    if algorithm == "fp8" and method in {"fp8", "modelopt", ""}:
+        if quant.get("weight_block_size") == [128, 128]:
+            result = dict.fromkeys(("gemm_quant_mode", "moe_quant_mode"), ("fp8_block", source))
+        elif not quant.get("weight_block_size"):
+            scheme = quant.get("activation_scheme")
+            dynamic = scheme == "dynamic" or (
+                scheme is None
+                and any(
+                    (group.get(key) or {}).get("dynamic") is True
+                    for group in (quant.get("config_groups") or {}).values()
+                    for key in ("input_activations", "weights")
+                )
+            )
+            if scheme in (None, "static", "dynamic"):
+                result["gemm_quant_mode"] = "fp8" if dynamic else "fp8_static", source
+            result["moe_quant_mode"] = "fp8", source
+    elif algorithm == "nvfp4" and method in {"nvfp4", "modelopt", ""}:
+        result = dict.fromkeys(("gemm_quant_mode", "moe_quant_mode"), ("nvfp4", source))
+    scheme = _kv_cache_scheme(quant)
+    if scheme.get("num_bits") == 8 and scheme.get("type") in {"float", "int"}:
+        result["kv_cache_dtype"] = (
+            "fp8" if scheme["type"] == "float" else "int8",
+            "explicit config quantization_config.kv_cache_scheme (independent of weight quantization)",
+        )
+    return result
+
+
+def _geometry(
+    config: ModelConfig, architecture: str | None, runtime: tuple[str, ...], request: SupportRequest | None
+) -> dict[str, int]:
+    dimensions = {
+        key: value
+        for key in _INT_ALIASES
+        if (value := _aliased_int(config.raw, key, runtime_resolved=bool(runtime))) is not None
+    }
+    if not runtime and architecture not in _FULL_ATTENTION and not _uses_grouped_cache(config.raw, architecture):
+        return dimensions
+    heads = dimensions.get("num_attention_heads")
+    hidden = dimensions.get("hidden_size")
+    if not runtime and "head_dim" not in dimensions and heads and hidden:
+        if hidden % heads:
+            raise ValueError("hidden_size must divide into attention heads when head_dim is absent")
+        dimensions["head_dim"] = hidden // heads
+    if request is not None and heads and heads % request.search.tensor_parallel:
+        raise ProfileRequestError(
+            "tensor_parallel", "num_attention_heads must divide into the selected TP attention heads"
+        )
+    if runtime:
+        # Rank-local KV heads and a derived head_dim are cache geometry, which the runtime probe measures.
+        # A declared 0 means the layout has no such attention dimension, so it is not a size to compute with.
+        return {key: value for key, value in dimensions.items() if value or key not in _ATTENTION_INT_ALIASES}
+    if request is not None and heads:
+        tp = request.search.tensor_parallel
+        kv = dimensions.get("num_key_value_heads")
+        if kv and ((kv >= tp and kv % tp) or (kv < tp and tp % kv)):
+            raise ProfileRequestError(
+                "tensor_parallel", "num_key_value_heads cannot be evenly sharded or replicated across the selected TP"
+            )
+        if kv:
+            dimensions["local_kv_heads"] = max(1, kv // tp)
+        intermediate = dimensions.get("intermediate_size")
+        mlp_tp = request.parallelism()["moe_tensor"] if architecture == "MixtralForCausalLM" else tp
+        if architecture in _WEIGHT_LAYOUTS and intermediate and intermediate % mlp_tp:
+            raise ProfileRequestError(
+                "moe_tensor_parallel" if architecture == "MixtralForCausalLM" else "tensor_parallel",
+                "intermediate_size must be divisible by the selected tensor parallel dimension",
+            )
+    return dimensions
+
+
+def _derive_cache_groups(
+    config: ModelConfig,
+    architecture: str | None,
+    request: SupportRequest | None,
+    geometry: dict[str, int],
+    values: dict[str, Any],
+    sources: dict[str, str],
+    missing: dict[str, str],
+) -> None:
+    raw = config.raw
+    if values.get("cache_layout") == "linear" or "kv_bytes_per_token" in values:
+        raise ValueError(
+            "unsupported linear cache override for declared sliding-window/convolution state; use cache_groups"
+        )
+    if "cache_layout" not in values:
+        values["cache_layout"] = "grouped"
+        sources["cache_layout"] = "config retention metadata or explicit grouped cache resource override"
+    missing.pop("kv_bytes_per_token", None)
+    layers = geometry.get("num_hidden_layers")
+    sliding = _cache_layer_ids(raw, architecture, inkling=values.get("architecture") == _INKLING_ARCHITECTURE)
+    window = _cache_window(raw)
+    if not layers:
+        missing["cache_groups"] = "provide explicit cache_groups; config does not establish the layer count"
+        return
+    tp = request.search.tensor_parallel if request else None
+    scheme = _kv_cache_scheme(raw.get("quantization_config") or {})
+    ordinary_kv = (
+        scheme.get("dynamic") is not True
+        and scheme.get("strategy") in (None, "tensor")
+        and not any(raw.get(key) for key in ("kv_lora_rank", "q_lora_rank", "compress_ratios", "attention_k_eq_v"))
+    )
+    dtype = values.get("kv_cache_dtype")
+    groups = []
+    geometry_notes = []
+    for name, indexes, retention in (
+        ("full", tuple(index for index in range(layers) if index not in sliding), None),
+        ("sliding", sliding, window),
+    ):
+        if not indexes:
+            continue
+        prefix = "swa_" if name == "sliding" else ""
+        heads = raw.get(prefix + "num_attention_heads") or geometry.get("num_attention_heads")
+        kv_heads = raw.get(prefix + "num_key_value_heads") or geometry.get("num_key_value_heads")
+        head_dim = raw.get(prefix + "head_dim") or geometry.get("head_dim")
+        value_dim = raw.get(prefix + "v_head_dim") or head_dim
+        if values.get("architecture") == _INKLING_ARCHITECTURE and value_dim != head_dim:
+            raise ValueError("pinned Inkling cache layout requires equal key and value head dimensions")
+        local_heads = None
+        if heads and kv_heads and (kv_heads > heads or heads % kv_heads):
+            raise ValueError(f"{prefix}num_key_value_heads must divide {prefix}num_attention_heads")
+        if tp and heads:
+            if heads % tp or (kv_heads and ((kv_heads >= tp and kv_heads % tp) or (kv_heads < tp and tp % kv_heads))):
+                raise ProfileRequestError(
+                    "tensor_parallel", f"{name} attention head geometry is incompatible with TP={tp}"
+                )
+            if kv_heads:
+                local_heads = max(1, kv_heads // tp)
+        bytes_per_token = None
+        if local_heads and head_dim and value_dim and dtype and ordinary_kv:
+            element_bytes = quantization.KVCacheQuantMode[dtype].value.memory
+            bytes_per_token = int(len(indexes) * local_heads * (head_dim + value_dim) * element_bytes)
+        group = {
+            "name": name + "_attention",
+            "kind": "attention",
+            "num_layers": len(indexes),
+            "sliding_window": retention,
+        }
+        groups.append((group, bytes_per_token))
+        geometry_notes.append(
+            {
+                **group,
+                "layer_ids": indexes,
+                "rank_local_kv_heads": local_heads,
+                "head_dim": head_dim,
+                "value_head_dim": value_dim,
+                "dtype": dtype,
+            }
+        )
+        if raw.get("use_sconv"):
+            hidden = geometry.get("hidden_size")
+            if tp and kv_heads and tp > kv_heads:
+                raise ProfileRequestError(
+                    "tensor_parallel",
+                    f"Inkling convolution cache requires attention TP <= {kv_heads} for {name} layers; "
+                    f"attention DP and expert parallelism are separate; source: {_INKLING_CACHE_SOURCE}",
+                )
+            if hidden and kv_heads and hidden % kv_heads:
+                raise ValueError("Inkling convolution hidden_size must divide evenly into KV-head streams")
+            # Adapted from vLLM contributors' Apache-2.0 Inkling cache layout:
+            # https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py
+            # Modified: metadata-only aggregate sizing, without tensors or model construction.
+            packed_width = None
+            if hidden and kv_heads and head_dim:
+                packed_elements = 2 * head_dim + 2 * (hidden // kv_heads)
+                packed_width = 2 ** ((packed_elements - 1).bit_length())
+            conv_bytes = len(indexes) * local_heads * packed_width * 2 if local_heads and packed_width else None
+            kernel = raw.get("sconv_kernel_size") or raw["conv_kernel_size"]
+            conv = {
+                "name": name + "_convolution",
+                "kind": "convolution",
+                "num_layers": len(indexes),
+                "sliding_window": kernel,
+            }
+            groups.append((conv, conv_bytes))
+            geometry_notes.append(
+                {
+                    **conv,
+                    "layer_ids": indexes,
+                    "rank_local_heads": local_heads,
+                    "packed_head_width": packed_width,
+                    "dtype": "bfloat16",
+                    "source": _INKLING_CACHE_SOURCE,
+                }
+            )
+    expected = {}
+    for group, _ in groups:
+        key = group["kind"], group["sliding_window"]
+        expected[key] = expected.get(key, 0) + group["num_layers"]
+    if "cache_groups" in values:
+        observed = {}
+        for group in values["cache_groups"]:
+            key = group["kind"], group.get("sliding_window")
+            observed[key] = observed.get(key, 0) + group["num_layers"]
+        if observed != expected:
+            raise ValueError(
+                "cache_groups must preserve the config's attention/convolution layer counts and retention windows"
+            )
+        sources["cache_groups"] += (
+            f"; config geometry reference: {json.dumps(geometry_notes, sort_keys=True, allow_nan=False)}"
+        )
+        return
+    block_sizes = values.get("cache_block_sizes", {})
+    if set(block_sizes) - {group["name"] for group, _ in groups}:
+        raise ValueError("cache_block_sizes contains groups not present in this model's cache layout")
+    unresolved = [
+        group["name"] for group, _ in groups if group["kind"] == "attention" and group["name"] not in block_sizes
+    ]
+    if unresolved:
+        missing["cache_block_sizes"] = (
+            "provide a JSON mapping of runtime block sizes after page unification for "
+            + ", ".join(unresolved)
+            + "; config cannot determine them. A complete cache_groups override can instead declare runtime pages."
+        )
+        # A supplied partial mapping is not a complete resolution of this field.
+        values.pop("cache_block_sizes", None)
+        return
+    if any(size is None for _, size in groups):
+        missing["cache_groups"] = (
+            "grouped cache sizing needs layer/head geometry, runtime KV dtype and completed topology; "
+            "nonstandard KV scales/packing require explicit cache_groups including their storage"
+        )
+        return
+    values["cache_groups"] = [
+        FpmCacheGroup.model_validate(
+            {
+                **group,
+                "block_size_tokens": block_sizes.get(group["name"], group["sliding_window"]),
+                "page_size_bytes": size * block_sizes.get(group["name"], group["sliding_window"]),
+            }
+        ).model_dump(mode="json")
+        for group, size in groups
+    ]
+    sources["cache_groups"] = (
+        "config tensor geometry and selected attention TP; minimum packed rank-local page bytes summed over each "
+        "group's layers. Runtime allocation padding is not known from config; review/edit cache_groups against "
+        "runtime metadata. Attention DP does not divide a rank's cache. Convolution block sizes default to the "
+        "pinned kernel width unless overridden. Geometry: "
+        + json.dumps(geometry_notes, sort_keys=True, allow_nan=False)
+    )
+
+
+def _weight_estimate(
+    config: ModelConfig,
+    request: SupportRequest | None,
+    values: dict[str, Any],
+    geometry: dict[str, int],
+    architecture: str | None,
+) -> tuple[int | None, str]:
+    raw = config.raw
+    if any(raw.get(key) is not None for key in ("quantization_config", "hf_quant_config", "quant_algo")):
+        return None, "quantized/mixed tensor storage, packing and scales require explicit rank-local weights_bytes"
+    if architecture not in _WEIGHT_LAYOUTS:
+        return (
+            None,
+            "tensor layout has no supported weight estimator; "
+            "provide rank-local weights_bytes including auxiliary tensors",
+        )
+    if request is None:
+        return None, "complete deployment identity and topology before estimating rank-local weights_bytes"
+    if values.get("gemm_quant_mode") != "bfloat16" or (
+        architecture == "MixtralForCausalLM" and values.get("moe_quant_mode") != "bfloat16"
+    ):
+        return None, "weight estimator supports unquantized bfloat16 deployment tensors only"
+    needed = (
+        "hidden_size",
+        "intermediate_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "head_dim",
+        "local_kv_heads",
+        "vocab_size",
+    )
+    absent = [key for key in needed if key not in geometry]
+    if absent:
+        return None, f"weight geometry missing {', '.join(absent)}; provide rank-local weights_bytes"
+    if any(raw.get(key) for key in (*_AUXILIARY_DIMENSIONS, "lm_head_bias")):
+        return None, "additional prediction/shared-expert tensors require explicit rank-local weights_bytes"
+    if raw.get("use_qk_norm") and architecture != "Qwen3ForCausalLM":
+        return None, "nonstandard Q/K normalization tensors require explicit weights_bytes"
+    if architecture == "Qwen2ForCausalLM" and "attention_bias" in raw:
+        return None, "Qwen2 attention-bias override is outside the vanilla tensor layout; provide weights_bytes"
+    if architecture in {"MistralForCausalLM", "MixtralForCausalLM"} and raw.get("attention_bias"):
+        return None, "nonstandard attention biases require explicit weights_bytes"
+    if architecture != "LlamaForCausalLM" and raw.get("mlp_bias"):
+        return None, "nonstandard MLP biases require explicit weights_bytes"
+    h, intermediate, layers, heads, head_dim, local_kv, vocab = (geometry[key] for key in needed)
+    tp = request.search.tensor_parallel
+    if vocab % 64 or vocab % tp:
+        return None, "runtime vocabulary padding is not established for this vocabulary/TP; provide weights_bytes"
+    q_width, kv_width = heads * head_dim // tp, local_kv * head_dim
+    attention = 2 * h * (q_width + kv_width)
+    qkv_bias = raw.get("attention_bias", architecture == "Qwen2ForCausalLM")
+    output_bias = raw.get("attention_bias", False) if architecture == "LlamaForCausalLM" else False
+    attention += (q_width + 2 * kv_width) * qkv_bias + h * output_bias
+    norms = 2 * h + (2 * head_dim if architecture == "Qwen3ForCausalLM" else 0)
+    if architecture == "MixtralForCausalLM":
+        experts = values.get("num_experts")
+        if experts is None:
+            return None, "num_experts is required for the MoE weight estimate"
+        if raw.get("mlp_bias"):
+            return None, "biased MoE tensor layout requires explicit weights_bytes"
+        parallel = request.parallelism()
+        mlp = 3 * h * (intermediate // parallel["moe_tensor"]) * (experts // parallel["moe_expert"])
+        router = h * experts  # replicated on every rank, including expert-parallel ranks
+        if raw.get("moe_router_dtype") not in (None, "bfloat16"):
+            return None, "mixed router dtype requires explicit weights_bytes"
+    else:
+        mlp = 3 * h * (intermediate // tp)
+        mlp += (2 * intermediate // tp + h) * raw.get("mlp_bias", False)
+        router = 0
+    embeddings = (vocab // tp) * h * (1 if raw.get("tie_word_embeddings", False) else 2)
+    result = 2 * (embeddings + layers * (attention + mlp + router + norms) + h)
+    return result, (
+        f"estimate: vanilla {architecture} bfloat16 tensors, TP={tp}, MoE TP={request.parallelism()['moe_tensor']}, "
+        f"EP={request.parallelism()['moe_expert']}; "
+        f"sharded embedding/head (tied={raw.get('tie_word_embeddings', False)}), "
+        "Q/K/V/output and gated MLP, configured biases, replicated RMS norms/router; "
+        "no quantization/padding/allocator extras"
+    )
+
+
+def _activation_estimate(
+    values: dict[str, Any], geometry: dict[str, int], request: SupportRequest | None, architecture: str | None
+) -> tuple[int | None, str]:
+    if architecture not in _FULL_ATTENTION or request is None:
+        return (
+            None,
+            "activation/workspace estimate unavailable for this layout or topology; "
+            "memory remains pending runtime observation",
+        )
+    if values.get("fmha_quant_mode") not in {"bfloat16", "float16"}:
+        return (
+            None,
+            "activation estimate requires an explicit 16-bit FMHA mode; memory remains pending runtime observation",
+        )
+    if "num_attention_heads" not in geometry or "head_dim" not in geometry:
+        return None, "attention width missing; memory remains pending runtime observation"
+    tp = request.search.tensor_parallel
+    # AISim's local vLLM backend shares the TRT-LLM activation estimate.
+    # Keep this narrow subset independent of backend/model imports and do not
+    # extrapolate the coefficient table to other TP sizes or DSA workspaces.
+    coefficients = {1: 22, 2: 13, 4: 10, 8: 10} if architecture not in _DENSE else {1: 11, 2: 6.5, 4: 5, 8: 5}
+    if tp not in coefficients:
+        return None, f"no activation coefficient for TP={tp}; memory remains pending runtime observation"
+    tokens = values["max_num_tokens"]
+    width = geometry["num_attention_heads"] * geometry["head_dim"]
+    result = max(70 * 1024 * 1024, tokens * width * int(2 * coefficients[tp]))
+    return result, (
+        f"estimate: sdk/backends/base_backend.py + trtllm_backend.py vLLM policy; "
+        f"max(70 MiB, 2 * max_num_tokens={tokens} * attention_width={width} * coefficient={coefficients[tp]}); "
+        f"rank-local max_batch_size={values['max_batch_size']}; no speculative decoding; not memory qualification"
+    )
+
+
+def packaged_hardware_path(system: str) -> Path:
+    """Locate wheel-owned metadata without importing the estimator SDK or native runtime."""
+    if not isinstance(system, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", system):
+        raise ValueError("system must be a packaged system name, not a path")
+    return Path(__file__).resolve().parents[2] / "aisim_core" / "systems" / f"{system}.yaml"
+
+
+def _hardware_estimates(request: SupportRequest | None) -> dict[str, tuple[int, str]]:
+    if request is None:
+        return {}
+    resource = packaged_hardware_path(request.identity.gpu)
+    if not resource.is_file():
+        return {}
+    payload = resource.read_bytes()
+    spec = yaml.safe_load(payload)
+    if not isinstance(spec, dict) or not isinstance(spec.get("misc", {}), dict):
+        raise ValueError(f"invalid packaged hardware metadata for {request.identity.gpu}")
+    misc = spec.get("misc", {})
+    source = f"estimate: packaged systems/{request.identity.gpu}.yaml sha256={hashlib.sha256(payload).hexdigest()}"
+    result = {}
+    if "other_mem" in misc:
+        value = _integer(misc["other_mem"], "system misc.other_mem", minimum=0, maximum=2**53)
+        result["runtime_overhead_bytes"] = (
+            value,
+            source + " misc.other_mem per rank; excludes CUDA graph reservation; not a measurement",
+        )
+    parallel = request.parallelism()
+    nccl = misc.get("nccl_mem", {})
+    if not isinstance(nccl, dict):
+        raise ValueError("system misc.nccl_mem must be a TP-indexed object")
+    if parallel["attention_data"] == parallel["moe_expert"] == 1 and parallel["tensor"] in nccl:
+        value = _integer(nccl[parallel["tensor"]], "system misc.nccl_mem", minimum=0, maximum=2**53)
+        result["comm_overhead_bytes"] = (
+            value,
+            source + f" misc.nccl_mem[{parallel['tensor']}] for pure TP; not a measurement",
+        )
+    return result
+
+
+def _declared_architecture(config: ModelConfig, overrides: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
+    """The decoder architecture layout checks run against, and the architecture that names the decoder.
+
+    Both are the config's own, else an override's. A multimodal wrapper names a decoder whose text config
+    names no architecture, but layout checks never run against the wrapper. Intake and observation import
+    both use this function, so they classify a layout the same way.
+    """
+    if "architecture" in config.suggestions:
+        return config.decoder_architecture, config.decoder_architecture or config.suggestions["architecture"]
+    declared = overrides.get("architecture") if isinstance(overrides, Mapping) else None
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip(), declared.strip()
+    return None, None
+
+
+def _config_notes(config: ModelConfig, architecture: str | None, runtime: tuple[str, ...]) -> dict[str, str]:
+    """config.notes, with the cache-layout notes for this classification. An architecture override can change them."""
+    notes = dict(config.notes)
+    layout = _layout_notes(config.raw, architecture, runtime)
+    for key in LAYOUT_NOTES:
+        if key in layout:
+            notes[key] = layout[key]
+        else:
+            notes.pop(key, None)
+    return notes
+
+
+def _cache_block_sizes_refusal(runtime: tuple[str, ...]) -> str:
+    """Why a layout pending the runtime probe takes no cache_block_sizes, at intake and at import."""
+    return (
+        "cache_block_sizes names config-derived cache groups, and this layout has none "
+        f"({', '.join(runtime)}); onboard probe-runtime reports the runtime cache groups with their block sizes. "
+        "Remove cache_block_sizes from the resource overrides."
+    )
+
+
+def derive_profile(
+    config: ModelConfig, request: SupportRequest | None = None, overrides: Mapping[str, Any] | None = None
+) -> ProfileDraft:
+    """Return every resolved value and actionable missing field, or a full profile.
+
+    Invalid structural facts and overrides raise immediately. ``request=None``
+    supports validating overrides and previewing config facts before collecting
+    deployment identity; it can never produce a complete deployment profile.
+    A runtime-resolved layout has no profile either: ``pending_runtime`` names the
+    cache geometry only the runtime probe can measure. Cache geometry overrides are
+    recorded as claims that observation import checks; they never complete a profile.
+    """
+    architecture, named = _declared_architecture(config, overrides)
+    runtime = _runtime_layout(config.raw, architecture, named)
+    # Refuse by key, before any value is validated, so the refusal wins whatever the value is.
+    if runtime and isinstance(overrides, Mapping) and "cache_block_sizes" in overrides:
+        raise ValueError(_cache_block_sizes_refusal(runtime))
+    supplied = validate_overrides(overrides)
+    values = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
+    sources = {key: config.notes[key] for key in values}
+    for key, (value, source) in _precision_facts(config).items():
+        values[key], sources[key] = value, source
+    values["comm_quant_mode"] = "half"
+    sources["comm_quant_mode"] = (
+        "collector FPM identity default: capabilities.py resolves comm_quant_mode=half; "
+        "not a claim about every runtime communication tensor"
+    )
+    for key in ("moe_backend", "attention_backend"):
+        values[key], sources[key] = "auto", "existing FPM deployment schema default: automatic backend selection"
+    for key, default in (("max_num_tokens", 8192), ("max_batch_size", 256)):
+        declared = getattr(request.collection, key) if request is not None else None
+        if declared is not None and key in supplied and declared != supplied[key]:
+            raise ValueError(f"collection.{key} conflicts with the resource override; provide one consistent bound")
+        values[key] = declared if declared is not None else default
+        sources[key] = (
+            "user collection override; per-rank runtime bound"
+            if declared is not None
+            else f"initial vLLM collection policy: rank-local {key}={default}; independent of validation traffic"
+        )
+    for key, value in supplied.items():
+        if key in ("architecture", "num_experts") and key in values and values[key] != value:
+            raise ValueError(f"{key} override conflicts with the source config: {value!r} != {values[key]!r}")
+        if key == "context_length" and key in values and value > values[key]:
+            raise ValueError("context_length override exceeds the source config context limit")
+        values[key], sources[key] = value, "user override; caller-declared value, not an inferred measurement"
+        if key == "comm_quant_mode" and value != "half":
+            sources[key] += "; current collector supports half and will reject this identity for new collection"
+        if runtime and key in CHECKED_GEOMETRY:
+            sources[key] = (
+                "user override; onboard import-observations checks it against the runtime probe's measurement"
+            )
+    _validate_layout(config.raw, architecture, named, inkling=values.get("architecture") == _INKLING_ARCHITECTURE)
+    _validate_architecture(config.raw, architecture, values.get("num_experts"))
+    geometry = _geometry(config, architecture, runtime, request)
+    notes = _config_notes(config, architecture, runtime)
+    if request:
+        if "num_experts" in values:
+            experts = values["num_experts"]
+            if (experts > 0) != (request.identity.model_kind == "moe"):
+                raise ProfileRequestError("model_kind", "num_experts and request identity.model_kind disagree")
+            if experts and experts % request.parallelism()["moe_expert"]:
+                raise ProfileRequestError(
+                    "moe_expert_parallel", "num_experts must be divisible by the selected moe_expert_parallel"
+                )
+        if "context_length" in values and request.search.context_length > values["context_length"]:
+            raise ProfileRequestError(
+                "context_length", "request search.context_length exceeds the configured profile context_length"
+            )
+    missing = {
+        "architecture": "provide the decoder architecture; config architectures/model_type did not identify it",
+        "context_length": "provide the supported model context length; not declared in config",
+        "num_experts": "provide the routed expert count (0 for dense); model kind is unknown from this config",
+        "gemm_quant_mode": (
+            "declare the deployed GEMM quantization mode; config does not identify a supported unambiguous mode"
+        ),
+        "moe_quant_mode": "declare the deployed MoE quantization identity, also required for dense profiles",
+        "fmha_quant_mode": (
+            "resolve attention precision from the pinned runtime or verified launch settings; "
+            "checkpoint weight dtype does not establish it"
+        ),
+        "kv_cache_dtype": (
+            "resolve KV-cache dtype from explicit checkpoint metadata, pinned runtime or verified launch settings; "
+            "weight precision does not establish it"
+        ),
+        "cache_layout": (
+            "confirm linear cache layout; unknown cache semantics cannot be inferred from ordinary head counts"
+        ),
+        "kv_bytes_per_token": (
+            "provide rank-local bytes per cached token for all persistent cache tensors; "
+            # An unrecognized architecture is pending the runtime probe instead; with none named, the layout is unknown.
+            + ("MLA/DSA" if architecture in _MLA_ARCHITECTURES else "MLA/DSA and unknown")
+            + " layouts need explicit accounting"
+        ),
+    }
+    if runtime:
+        # The runtime probe measures cache geometry: none is derived here, and none is asked of the user.
+        missing = {key: value for key, value in missing.items() if key not in _GEOMETRY_OVERRIDES}
+    elif (
+        _uses_grouped_cache(config.raw, architecture)
+        or "cache_groups" in values
+        or values.get("cache_layout") == "grouped"
+    ):
+        _derive_cache_groups(config, architecture, request, geometry, values, sources, missing)
+    elif "cache_block_sizes" in values:
+        raise ValueError("cache_block_sizes requires a grouped cache layout")
+    elif architecture in _FULL_ATTENTION:
+        if "cache_layout" not in values:
+            values["cache_layout"], sources["cache_layout"] = (
+                "linear",
+                "known full-attention GQA/MHA decoder layout; no sliding/recurrent state",
+            )
+        needed = ("num_hidden_layers", "local_kv_heads", "head_dim")
+        kv_scheme = _kv_cache_scheme(config.raw.get("quantization_config") or {})
+        ordinary_kv = kv_scheme.get("dynamic") is not True and kv_scheme.get("strategy") in (None, "tensor")
+        if (
+            "kv_bytes_per_token" not in values
+            and all(key in geometry for key in needed)
+            and "kv_cache_dtype" in values
+            and ordinary_kv
+        ):
+            layers, local_kv, head_dim = (geometry[key] for key in needed)
+            element_bytes = quantization.KVCacheQuantMode[values["kv_cache_dtype"]].value.memory
+            values["kv_bytes_per_token"] = int(2 * layers * local_kv * head_dim * element_bytes)
+            sources["kv_bytes_per_token"] = (
+                f"exact linear tensor geometry: 2 K/V * {layers} layers * {local_kv} rank-local KV heads "
+                f"* {head_dim} head_dim * {element_bytes} bytes; KV heads replicate when TP exceeds head count; "
+                "attention DP does not divide a rank's cache"
+            )
+        missing["kv_bytes_per_token"] = (
+            "linear KV calculation needs layer/head geometry, explicit runtime kv_cache_dtype and completed topology; "
+            "otherwise provide bytes per token"
+        )
+        if not ordinary_kv:
+            missing["kv_bytes_per_token"] = (
+                "nonstandard KV scaling/packing needs explicit bytes per token including scales"
+            )
+    for key, (value, source) in _hardware_estimates(request).items():
+        if key not in values:
+            values[key], sources[key] = value, source
+    for key, estimate in (("weights_bytes", _weight_estimate), ("activations_bytes", _activation_estimate)):
+        if key in values:
+            continue
+        value, source = (
+            estimate(config, request, values, geometry, architecture)
+            if key == "weights_bytes"
+            else estimate(values, geometry, request, architecture)
+        )
+        if value is not None:
+            values[key], sources[key] = value, source
+    missing = {key: value for key, value in missing.items() if key not in values}
+    for key in _BYTE_FIELDS & values.keys():
+        _integer(values[key], key, minimum=1 if key == "kv_bytes_per_token" else 0, maximum=2**53)
+    if sum(values.get(key, 0) for key in _BYTE_FIELDS - {"kv_bytes_per_token"}) > 2**53:
+        raise ValueError("total non-KV resource bytes must not exceed 2**53")
+    if runtime:
+        pending = (
+            f"measured from the selected runtime, not derived from config.json ({', '.join(runtime)}): "
+            "onboard probe-runtime measures it for this runtime and topology, and onboard import-observations "
+            "imports the measurement"
+        )
+        markers = cache_layout_markers(config.raw, architecture)
+        return ProfileDraft(
+            None,
+            values,
+            missing,
+            sources,
+            {"cache_geometry": pending},
+            notes=notes,
+            layout_markers=markers,
+            declares_window=not markers and _declares_window(config.raw, architecture),
+        )
+    if missing or request is None:
+        return ProfileDraft(None, values, missing, sources, notes=notes)
+    declared_memory = supplied.keys() >= _NON_KV_FIELDS
+    provenance = json.dumps(
+        {
+            "config_sha256": config.sha256,
+            **({"config_source_files": config.source_files} if config.source_files else {}),
+            "method": ("local config facts; byte estimates are planning evidence, not runtime limits or measurements"),
+            "memory_source": "declared" if declared_memory else "pending",
+            "planning_estimates": {
+                key: {"value": values[key], "source": sources[key]}
+                for key in sorted(_NON_KV_FIELDS & values.keys())
+                if key not in supplied
+            },
+            "config_notes": notes,
+            "fields": {key: {"value": values[key], "source": sources[key]} for key in sorted(values)},
+            "deployment_identity": request.identity.model_dump(mode="json"),
+            "parallelism": request.parallelism(),
+            **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
+        },
+        sort_keys=True,
+        allow_nan=False,
+    )
+    parallel = request.parallelism()
+    profile = FpmModelProfile.model_validate(
+        {
+            "schema_version": 1,
+            "model": request.identity.model,
+            "model_revision": request.identity.model_revision,
+            **{key: values[key] for key in _MODEL_FIELDS},
+            "provenance": provenance,
+            "deployments": [
+                {
+                    **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
+                    "system": request.identity.gpu,
+                    "backend": request.identity.framework,
+                    "backend_version": request.identity.framework_version,
+                    "tp": parallel["tensor"],
+                    "dp": parallel["attention_data"],
+                    "moe_tp": parallel["moe_tensor"],
+                    "moe_ep": parallel["moe_expert"],
+                    **{key: values[key] for key in _DEPLOYMENT_FIELDS},
+                    "resources": {
+                        **{
+                            key: values[key]
+                            for key in _RESOURCE_FIELDS
+                            if key in values and (key not in _NON_KV_FIELDS or declared_memory)
+                        },
+                        "provenance": provenance,
+                    },
+                }
+            ],
+        }
+    )
+    return ProfileDraft(profile, values, {}, sources, notes=notes)
+
+
+def _cache_group_shapes(groups: list[Any]) -> Counter[str]:
+    """Cache groups as a multiset of their geometry. Names and order carry none, and the probe chooses both."""
+    shapes: Counter[str] = Counter()
+    for group in groups:
+        shape = FpmCacheGroup.model_validate(group).model_dump(mode="json")
+        del shape["name"]
+        shapes[json.dumps(shape, sort_keys=True)] += 1
+    return shapes
+
+
+def _measured_groups(resources: Mapping[str, Any]) -> list[FpmCacheGroup]:
+    return [FpmCacheGroup.model_validate(group) for group in resources.get("cache_groups") or []]
+
+
+def _windowed_group(groups: list[FpmCacheGroup]) -> FpmCacheGroup | None:
+    """The first group that a linear cache cannot describe: one with a window or convolution state."""
+    return next((group for group in groups if group.kind != "attention" or group.sliding_window is not None), None)
+
+
+def _windowed_group_reason(group: FpmCacheGroup) -> str:
+    """Why a linear cache cannot describe this group: it has a window or convolution state."""
+    field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
+    return f"cache group {group.name} has {field}"
+
+
+def _measured_kv_bytes(resources: Mapping[str, Any]) -> Fraction | None:
+    """The measurement's rank-local bytes per cached token, when a linear cache describes it."""
+    if resources.get("cache_layout") == "linear":
+        return None if resources.get("kv_bytes_per_token") is None else Fraction(resources["kv_bytes_per_token"])
+    groups = _measured_groups(resources)
+    if not groups or _windowed_group(groups) is not None:
+        return None
+    # A group's page holds block_size_tokens tokens for every layer of the group on one rank.
+    return sum((Fraction(group.page_size_bytes, group.block_size_tokens) for group in groups), Fraction(0))
+
+
+def _linear_layout_gap(resources: Mapping[str, Any]) -> str | None:
+    """Why a linear layout cannot describe measured resources; None when it can."""
+    if resources.get("cache_layout") != "grouped":
+        return f"the measurement's cache_layout is {resources.get('cache_layout')}, not grouped"
+    groups = _measured_groups(resources)
+    group = _windowed_group(groups)
+    if group is not None:
+        return _windowed_group_reason(group)
+    measured = _measured_kv_bytes(resources)
+    if measured is None:
+        return "the measurement has no cache groups"
+    # Replay of a linear profile uses one block size, the measured one.
+    first = groups[0]
+    other = next((group for group in groups if group.block_size_tokens != first.block_size_tokens), None)
+    if other is not None:
+        return (
+            f"cache groups {first.name} and {other.name} have different block sizes, "
+            f"{first.block_size_tokens} and {other.block_size_tokens} tokens"
+        )
+    # The engine refuses vLLM blocks of fewer than 2 tokens: _validate_backend_block_sizes in config/engine.py.
+    if first.block_size_tokens < 2:
+        return (
+            f"cache group {first.name} has block_size_tokens={first.block_size_tokens}, and vLLM replay needs "
+            "blocks of at least 2 tokens"
+        )
+    if measured.denominator != 1:
+        return f"the measured bytes per token, {measured}, are not a whole number"
+    return None
+
+
+def linear_runtime_resources(resources: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Measured grouped resources in the linear layout; None when a linear cache does not describe them exactly.
+
+    Every group must be an attention group without a window, all groups must have one block size of at least 2
+    tokens, and the exact sum of page_size_bytes / block_size_tokens must be a whole number of bytes per token.
+    Every other field, such as runtime_memory and the resource provenance, is kept. Import, acceptance,
+    finalization and validation all use this function.
+    """
+    if _linear_layout_gap(resources) is not None:
+        return None
+    linear = {key: deepcopy(value) for key, value in resources.items() if key != "cache_groups"}
+    linear.update(cache_layout="linear", kv_bytes_per_token=int(_measured_kv_bytes(resources)))
+    return linear
+
+
+def linear_block_size(resources: Mapping[str, Any]) -> int | None:
+    """The measured block size, in tokens, that replay of the linear layout uses; None without a linear layout."""
+    if _linear_layout_gap(resources) is not None:
+        return None
+    return _measured_groups(resources)[0].block_size_tokens
+
+
+def linear_block_bytes(resources: Mapping[str, Any]) -> int | None:
+    """The smallest capacity, in bytes, that fills whole cache blocks in every measured group.
+
+    It is None when the measured grouped resources have no linear layout. vLLM gives a request whole blocks in every
+    group. This capacity holds the fewest tokens that fill whole blocks in every group, the lcm of the block sizes.
+    With one block size, it is one block of each group. A whole multiple of it holds exactly the tokens that the
+    linear layout counts.
+    """
+    if _linear_layout_gap(resources) is not None:
+        return None
+    tokens = math.lcm(*(group.block_size_tokens for group in _measured_groups(resources)))
+    return int(tokens * _measured_kv_bytes(resources))
+
+
+def _matches_observation(key: str, typed: Any, resources: Mapping[str, Any]) -> bool:
+    """Whether a resource override agrees with what the runtime probe measured."""
+    if key == "cache_groups":
+        measured = resources.get(key)
+        return measured is not None and _cache_group_shapes(typed) == _cache_group_shapes(measured)
+    if key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear"):
+        # The vLLM probe reports a grouped cache; full-attention groups without a window have a per-token size.
+        measured = _measured_kv_bytes(resources)
+        return measured is not None and (key == "cache_layout" or measured == typed)
+    return typed == resources.get(key)
+
+
+def _observation_mismatch(key: str, typed: Any, resources: Mapping[str, Any]) -> str:
+    """Why a resource override disagrees with what the runtime probe measured."""
+
+    def compact(value: Any) -> str:
+        return (
+            json.dumps(value, sort_keys=True, separators=(",", ":")) if isinstance(value, (dict, list)) else str(value)
+        )
+
+    claim = f"resource_overrides.{key}={compact(typed)}"
+    remedy = (
+        "the measurement is authoritative. Correct or remove the override; if the runtime changed, "
+        "run onboard probe-runtime again."
+    )
+    per_token_claim = key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear")
+    if per_token_claim and resources.get("cache_layout") != "linear":
+        measured = _measured_kv_bytes(resources)
+        if measured is not None:
+            fraction = (
+                ""
+                if measured.denominator == 1
+                else ". The measured bytes per token are not a whole number, so no integer claim can match"
+            )
+            return (
+                f"{claim} differs from the runtime probe's measured kv_bytes_per_token={measured} "
+                f"(page_size_bytes / block_size_tokens summed over its cache groups){fraction}; {remedy}"
+            )
+        group = _windowed_group(_measured_groups(resources))
+        if group is not None:
+            return (
+                f"{claim}, but the runtime probe measured no per-token cache size: its "
+                f"{_windowed_group_reason(group)}; {remedy}"
+            )
+    # A linear observation states its per-token size only in kv_bytes_per_token.
+    measured_key = "kv_bytes_per_token" if per_token_claim and resources.get("cache_layout") == "linear" else key
+    if resources.get(measured_key) is None:
+        layout = f" for its {resources['cache_layout']} cache_layout" if resources.get("cache_layout") else ""
+        return f"{claim}, but the runtime probe measured no {measured_key}{layout}; {remedy}"
+    return f"{claim} differs from the runtime probe's measured {key}={compact(resources[key])}; {remedy}"
+
+
+def profile_from_observations(
+    config: ModelConfig,
+    request: SupportRequest,
+    precision: Mapping[str, Any],
+    resources: Mapping[str, Any],
+    overrides: Mapping[str, Any] | None = None,
+) -> FpmModelProfile:
+    """Combine validated model metadata with independently observed cache groups.
+
+    Runtime grouping need not match config-derived planning groups. No estimated
+    geometry or non-KV byte declaration is substituted for the observation. Cache
+    geometry, scheduler and precision overrides must agree with it, and the
+    measurement is authoritative: cache groups compare without names or order,
+    and a cache_layout: linear or kv_bytes_per_token claim compares with the
+    measured bytes per token.
+    """
+    supplied = validate_overrides(overrides)
+    metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
+    for key in _MODEL_FIELDS:
+        if key in supplied:
+            if key in metadata and (
+                supplied[key] > metadata[key] if key == "context_length" else supplied[key] != metadata[key]
+            ):
+                raise ValueError(f"{key} override conflicts with the source config")
+            metadata[key] = supplied[key]
+    missing = set(_MODEL_FIELDS) - metadata.keys()
+    if missing:
+        raise ValueError("model metadata remains unresolved: " + ", ".join(sorted(missing)))
+    architecture, named = _declared_architecture(config, supplied)
+    runtime = _validate_layout(
+        config.raw, architecture, named, inkling=metadata["architecture"] == _INKLING_ARCHITECTURE
+    )
+    # The checkpoint's overrides reach import without intake, so the same refusal applies here.
+    if runtime and "cache_block_sizes" in supplied:
+        raise ValueError(_cache_block_sizes_refusal(runtime))
+    _validate_architecture(config.raw, architecture, metadata["num_experts"])
+    _geometry(config, architecture, runtime, request)
+    for key in _OBSERVED_FIELDS:
+        if key in supplied and not _matches_observation(key, supplied[key], resources):
+            raise ValueError(_observation_mismatch(key, supplied[key], resources))
+    for key in _DEPLOYMENT_FIELDS:
+        if key in supplied and supplied[key] != precision.get(key):
+            raise ValueError(f"resource_overrides.{key} differs from observed precision")
+    checked = {*_OBSERVED_FIELDS, *_DEPLOYMENT_FIELDS}
+    notes = _config_notes(config, architecture, runtime)
+    if runtime:
+        notes["cache_layout"] = (
+            f"cache layout measured by the runtime probe ({', '.join(runtime)}). config.json does not establish "
+            "cache or state geometry; these resources are onboard probe-runtime observations."
+        )
+    # A matching linear claim gives back the measured full-attention groups in the linear layout. A grouped claim,
+    # or no linear claim, keeps the measured groups.
+    measured, layout_provenance = dict(resources), {}
+    claimed = " and ".join(key for key in ("cache_layout", "kv_bytes_per_token") if key in supplied)
+    layout_claim = supplied.get("cache_layout")
+    if resources.get("cache_layout") == "grouped" and (
+        layout_claim == "linear" or (layout_claim is None and "kv_bytes_per_token" in supplied)
+    ):
+        linear = linear_runtime_resources(resources)
+        if linear is None:
+            # A claim can match groups that have no linear layout: groups with different or too small block sizes,
+            # or, for a cache_layout claim without kv_bytes_per_token, a sum that is not a whole number.
+            layout_provenance["cache_layout_reason"] = (
+                f"grouped: the supplied {claimed} matched the measured full-attention groups, but "
+                f"{_linear_layout_gap(resources)}"
+            )
+        else:
+            measured = linear
+            layout_provenance["cache_layout_reason"] = (
+                f"linear: import wrote the linear layout because the supplied {claimed} matched the measured "
+                "full-attention groups"
+            )
+            layout_provenance["measured_cache_groups"] = resources["cache_groups"]
+    parallel = request.parallelism()
+    return FpmModelProfile.model_validate(
+        {
+            "schema_version": 1,
+            "model": request.identity.model,
+            "model_revision": request.identity.model_revision,
+            **metadata,
+            "provenance": json.dumps(
+                {
+                    "method": "validated runtime resources with local model configuration metadata",
+                    "config_sha256": config.sha256,
+                    **({"config_source_files": config.source_files} if config.source_files else {}),
+                    "config_notes": notes,
+                    "user_overrides": {
+                        key: {
+                            "value": value,
+                            "source": (
+                                _CHECKED_SOURCE
+                                if key in checked
+                                else _UNUSED_BLOCK_SIZES_SOURCE
+                                if key == "cache_block_sizes"
+                                else "user assumption"
+                            ),
+                        }
+                        for key, value in supplied.items()
+                    },
+                    "source_profile_provenance": request.fpm_profile.provenance if request.fpm_profile else None,
+                    **layout_provenance,
+                },
+                sort_keys=True,
+                allow_nan=False,
+            ),
+            "deployments": [
+                {
+                    **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
+                    "system": request.identity.gpu,
+                    "backend": request.identity.framework,
+                    "backend_version": request.identity.framework_version,
+                    "tp": parallel["tensor"],
+                    "dp": parallel["attention_data"],
+                    "moe_tp": parallel["moe_tensor"],
+                    "moe_ep": parallel["moe_expert"],
+                    **precision,
+                    "resources": measured,
+                }
+            ],
+        }
+    )

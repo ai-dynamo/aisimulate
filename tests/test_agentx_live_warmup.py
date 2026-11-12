@@ -6,17 +6,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.config.traffic import (
+from aisim.config.traffic import (
     TrafficPredictionConfig,
     TrafficRecommendationConfig,
 )
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper import (
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper import (
     BackendDeploymentSpec,
     ReplayOutputRequirements,
     ReplaySpec,
 )
-from aisimulate.sweeper.config import Workload
+from aisim.sweeper.config import Workload
 
 
 @pytest.mark.parametrize("backend,tp,dp", [("vllm", 8, 4), ("vllm", 16, 2), ("sglang", 8, 1)])
@@ -197,7 +197,7 @@ def test_live_warmup_workload_serialization_keeps_the_policy_explicit():
 
 @pytest.mark.parametrize("stack,online", [("legacy", False), ("engine", True)])
 def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(tmp_path, monkeypatch, capsys, stack, online):
-    from aisimulate import cli_args, supervision
+    from aisim import cli_args, supervision
 
     prior = tmp_path / "prediction.json"
     prior.write_bytes(b"previous valid results\n")
@@ -239,7 +239,7 @@ def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(tmp_path, m
 
 
 def test_supervisor_default_recommendation_without_traffic_keeps_existing_path(tmp_path, monkeypatch):
-    from aisimulate import cli_args, supervision
+    from aisim import cli_args, supervision
 
     raw = {
         "engine": {

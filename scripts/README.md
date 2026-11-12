@@ -35,7 +35,7 @@ and verification contract live in `benchmarks/evidence/collector/pr244/`.
 ## Dependencies
 
 `pyproject.toml` is the source for script dependency declarations. Its standard
-`[dependency-groups]` keep tooling out of the installed AISimulate wheel. Jobs
+`[dependency-groups]` keep tooling out of the installed AISim wheel. Jobs
 using only the standard library need no dependency group. Campaigns still
 install their exact evaluated wheel separately; this manifest must not install
 the current checkout in its place.
@@ -57,7 +57,7 @@ group is also included in Pages, which imports the resolver during validation.
 Fast CI regenerates every group lock with
 `uv==0.12.6` from the hashed CI lock and rejects changed or missing locks. It retains existing transitive pins unless
 the declarations require a change; use `--upgrade` for an intentional refresh.
-The `ci`, `pages`, and `readme` groups use pytest 9 to match AISimulate's dev extra.
+The `ci`, `pages`, and `readme` groups use pytest 9 to match AISim's dev extra.
 Do not use `uv sync` in a wheel-evaluation environment: it can remove the wheel under test.
 Historical release builds install tooling dependencies from the current harness
 and retain a fallback to the source revision's old wheel-builder location.
@@ -67,4 +67,4 @@ resolve a dependency group together with the selected wheel's dev extra where a
 joint resolution is required.
 
 The application/runtime dependencies remain in
-[`python/aisimulate/pyproject.toml`](../python/aisimulate/pyproject.toml).
+[`python/aisim/pyproject.toml`](../python/aisim/pyproject.toml).

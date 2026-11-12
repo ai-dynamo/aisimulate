@@ -1299,7 +1299,7 @@ def test_hub_cache_blob_symlinks_are_allowed_only_for_the_resolved_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     shared: bool,
 ) -> None:
-    snapshot = tmp_path / "datasets--nvidia--aisimulate-fpm-dataset" / "snapshots" / REVISION
+    snapshot = tmp_path / "datasets--nvidia--aisim-fpm-dataset" / "snapshots" / REVISION
     content = f"{json.dumps(_fpm_payload())}\n".encode()
     _build_dataset(
         snapshot,
@@ -1351,7 +1351,7 @@ def test_hub_cache_snapshot_rejects_symlink_outside_its_own_blobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    snapshot = tmp_path / "datasets--nvidia--aisimulate-fpm-dataset" / "snapshots" / REVISION
+    snapshot = tmp_path / "datasets--nvidia--aisim-fpm-dataset" / "snapshots" / REVISION
     content = f"{json.dumps(_fpm_payload())}\n".encode()
     _build_dataset(
         snapshot,
