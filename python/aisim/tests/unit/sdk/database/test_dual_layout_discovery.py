@@ -66,7 +66,9 @@ def test_canonical_fpm_layout_has_no_migration_warning(systems_root, caplog, fam
     assert not any("Legacy perf-data layout" in record.getMessage() for record in caplog.records)
 
 
-@pytest.mark.parametrize("legacy_op", ["gemm_perf.parquet", "gemm_perf.txt"])
+@pytest.mark.parametrize(
+    "legacy_op", ["gemm_perf.parquet", "gemm_perf.txt", "reuse.yaml", "collection_meta.yaml", "SHARED_LAYER_REUSE.txt"]
+)
 @pytest.mark.parametrize("legacy_version", ["0.29.0", "0.28.0"])
 def test_fpm_layout_does_not_hide_legacy_op_warning(systems_root, caplog, legacy_op, legacy_version):
     caplog.set_level(logging.WARNING)
@@ -75,10 +77,19 @@ def test_fpm_layout_does_not_hide_legacy_op_warning(systems_root, caplog, legacy
     get_supported_databases(str(systems_root))
     assert not any("Legacy perf-data layout" in record.getMessage() for record in caplog.records)
 
-    _write(systems_root, f"data/h200_sxm/vllm/{legacy_version}/{legacy_op}")
+    legacy_path = f"data/h200_sxm/vllm/{legacy_version}/{legacy_op}"
+    if legacy_op == "reuse.yaml":
+        _write_yaml(systems_root, legacy_path, {"reuse": [_REUSE_ENTRY]})
+    elif legacy_op == "collection_meta.yaml":
+        _write_yaml(systems_root, legacy_path, {"tables": {"gemm_perf": {"status": "complete"}}})
+    else:
+        _write(systems_root, legacy_path)
+    # A collection sidecar alone still needs migration, but does not declare
+    # usable data for an otherwise empty version.
+    expected_versions = {"0.29.0"} if legacy_op == "collection_meta.yaml" else {"0.29.0", legacy_version}
     for _ in range(2):
         supported = get_supported_databases(str(systems_root))
-        assert supported["h200_sxm"]["vllm"] == sorted({"0.29.0", legacy_version})
+        assert supported["h200_sxm"]["vllm"] == sorted(expected_versions)
     assert len([record for record in caplog.records if "Legacy perf-data layout" in record.getMessage()]) == 1
 
 
