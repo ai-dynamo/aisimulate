@@ -5,6 +5,7 @@
 Unit tests for CLI utility functions in utils.py.
 """
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -812,6 +813,75 @@ def test_load_match_prefers_sla_compliant_partial_load(
     assert not configs["agg"].iloc[0]["sla_satisfied"]
     assert configs["agg"].iloc[0]["load_satisfied"] == sla_fallback_fits_load
     assert scores["agg"] == 200.0
+
+
+def test_load_match_partial_load_reaches_final_summary(caplog):
+    from aisimulate.legacy_cli import main as cli_main
+
+    caplog.set_level("INFO")
+    tasks = {}
+    for mode, capacity, tpot, throughput in (("agg", 1.0, 40.0, 200.0), ("disagg", 3.0, 25.0, 150.0)):
+        task = MagicMock(
+            primary_model_path="unit-test-model",
+            primary_backend_name="trtllm",
+            backend_name="trtllm",
+            serving_mode=mode,
+            total_gpus=4,
+            tpot=30.0,
+            request_latency=None,
+            is_moe=False,
+        )
+        task.to_yaml.return_value = "test config"
+        row = {
+            "backend": "trtllm",
+            "parallel": "tp2_pp1_dp1",
+            "(d)parallel": "tp1_pp1_dp1",
+            "tpot": tpot,
+            "ttft": 100.0,
+            "request_latency": 1000.0,
+            "tokens/s/user": 1000.0 / tpot,
+            "tokens/s/gpu": throughput,
+            "seq/s": capacity,
+            "request_rate": capacity,
+            "concurrency": capacity,
+            "num_total_gpus": 2,
+            "tp": 2,
+            "pp": 1,
+            "dp": 1,
+            "bs": 8,
+        }
+        if mode == "disagg":
+            for role in ("p", "d"):
+                row.update(
+                    {
+                        f"({role}){key}": value
+                        for key, value in {"workers": 1, "tp": 1, "pp": 1, "dp": 1, "bs": 8}.items()
+                    }
+                )
+        task.run.return_value = pd.DataFrame([row])
+        tasks[mode] = task
+
+    # Keep the real summary and worker tables: the selected fallback must be consumable.
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=4, target_request_rate=12.0
+    )
+
+    assert chosen == "disagg"
+    assert scores == {"agg": 200.0, "disagg": 150.0}
+    assert all(frame.iloc[0]["gpu_budget_satisfied"] for frame in configs.values())
+    assert all(frame.iloc[0]["total_gpus_needed"] == 4 for frame in configs.values())
+    assert not configs["agg"].iloc[0]["sla_satisfied"]
+    assert configs["disagg"].iloc[0]["sla_satisfied"]
+    assert not configs["disagg"].iloc[0]["load_satisfied"]
+    assert configs["disagg"].iloc[0]["load_served_pct"] == 50.0
+
+    logged = re.sub(r"\x1b\[[0-9;]*m", "", caplog.text)
+    assert "Best Experiment Chosen: disagg" in logged
+    assert "disagg GPUs needed: 4 (replicas: 2)" in logged
+    assert "WARNING: only 50.0% of target load can be served" in logged
+    assert "Per-GPU Throughput: 150.00 tokens/s/gpu" in logged
+    assert "Request Rate: 6.00 req/s" in logged
+    assert "disagg Top Configurations: (Ranked by total_gpus_needed)" in logged
 
 
 @pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
