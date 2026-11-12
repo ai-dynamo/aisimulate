@@ -12,11 +12,17 @@ tables:
     rows: 65220
     status: complete
     collections:
-    - collector_ref: 026273982812b5c360da07a15eced9b02db0dee6
-      collector_hash: sha256:dbbc78fb565a4d307e25c98cae9ba4965c8a074ab0526977502528ac36eebd8c
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
       case_plan_hash: sha256:22c917465b4e8f48bf920b2f64290c2f0f217c2e067a3601c83342ff4a7aa37e
-      collected_at: '2026-11-10'
-      rows: 65220
+      collected_at: '2026-11-11'
+      rows: 63985
+      status: complete
+    - collector_ref: ac3df2a90
+      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
+      case_plan_hash: sha256:343eac44aa3805383b3b027f56cfee830f2ec69f1ab5189328da85bccbcb1fee
+      collected_at: '2026-11-12'
+      rows: 1235
       status: complete
   dsa_generation_module_perf:
     rows: 10152
