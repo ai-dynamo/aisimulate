@@ -1441,8 +1441,10 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         if worker is None or worker.kv_cache.state_cache is None:
             continue
         roles.append(role)
+        # Automatic block geometry is checked after state sizing resolves it.
         if (
             worker.kv_cache.prefix_match_unit is not None
+            and worker.kv_cache.block_size is not None
             and worker.kv_cache.prefix_match_unit != worker.kv_cache.block_size
             and (engine.speculation is not None or engine.nextn > 0)
         ):

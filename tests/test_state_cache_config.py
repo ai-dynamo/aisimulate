@@ -655,6 +655,71 @@ def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estim
     assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 30067200}
 
 
+@pytest.mark.parametrize("block_size", [None, 256])
+@pytest.mark.parametrize("depth", [1, 3])
+@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize("disaggregated", [False, True])
+def test_auto_dsv4_full_block_mtp_matching_uses_resolved_geometry(
+    auto_dsv4_payload, forbid_estimators, block_size, depth, canonical, disaggregated
+):
+    raw = auto_dsv4_payload
+    raw["engine"]["hardware"] = "b200_sxm"
+    if canonical:
+        raw["engine"]["speculation"] = {
+            "kind": "mtp",
+            "params": {"depth": depth},
+            "expected_accepted_tokens": 0.0,
+            "seed": 42,
+        }
+    else:
+        raw["engine"].update(nextn=depth, nextn_accepted=0.0)
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker.update(timing={"type": "default"}, parallelism={"tensor": 8, "moe_expert": 8})
+    worker["kv_cache"].update(block_size=block_size, prefix_match_unit=256)
+    if disaggregated:
+        _to_pd(raw)
+    config = CorePredictionConfig.model_validate(raw)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    deployment = prediction_to_replay_spec(config).backend_deployment
+    ranks = (
+        [deployment.prefill_engine_args, deployment.decode_engine_args]
+        if disaggregated
+        else [deployment.agg_engine_args]
+    )
+    for rank in ranks:
+        assert rank["block_size"] == rank["prefix_match_unit"] == 256
+        if canonical:
+            assert rank["speculation"]["params"]["depth"] == depth
+        else:
+            assert rank["aic_nextn"] == depth
+        # Each of the four sliding-window groups adds one row for depths 1 and 3.
+        assert rank["state_cache"] == {"bytes_per_request": 30 * 1002240}
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize("disaggregated", [False, True])
+def test_auto_dsv4_sub_block_mtp_matching_is_rejected_after_sizing(auto_dsv4_payload, canonical, disaggregated):
+    raw = auto_dsv4_payload
+    raw["engine"]["hardware"] = "b200_sxm"
+    if canonical:
+        raw["engine"]["speculation"] = {
+            "kind": "mtp",
+            "params": {"depth": 1},
+            "expected_accepted_tokens": 0.0,
+            "seed": 42,
+        }
+    else:
+        raw["engine"].update(nextn=1, nextn_accepted=0.0)
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker.update(timing={"type": "default"}, parallelism={"tensor": 8, "moe_expert": 8})
+    worker["kv_cache"]["prefix_match_unit"] = 128
+    if disaggregated:
+        _to_pd(raw)
+    config = CorePredictionConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="sub-block prefix_match_unit.*speculative"):
+        prediction_to_replay_spec(config)
+
+
 def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimators):
     _to_pd(auto_dsv4_payload, kv_transfer={"bytes_per_token": "auto", "bandwidth_gb_per_second": 50})
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload)).backend_deployment
