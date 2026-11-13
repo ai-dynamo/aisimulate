@@ -67,22 +67,41 @@ def test_worker_processes_inherit_the_invoked_command(monkeypatch):
 
 
 @pytest.mark.parametrize("command", ["aisim", "aisimulate"])
-@pytest.mark.parametrize("inherited", [None, "aisimulate"], ids=["unset", "stale"])
+@pytest.mark.parametrize("inherited", [None, "opposite"], ids=["unset", "conflicting"])
 def test_supervisor_passes_the_actual_command_name_to_its_worker(monkeypatch, tmp_path, command, inherited):
     if inherited is None:
         monkeypatch.delenv(package_identity.PROGRAM_ENVIRONMENT, raising=False)
     else:
-        monkeypatch.setenv(package_identity.PROGRAM_ENVIRONMENT, inherited)
+        monkeypatch.setenv(package_identity.PROGRAM_ENVIRONMENT, "aisimulate" if command == "aisim" else "aisim")
     monkeypatch.setattr(sys, "argv", [f"/venv/bin/{command}"])
     monkeypatch.setattr(supervision, "discover_host", lambda: SimpleNamespace(process_memory_bytes=0))
     monkeypatch.setattr(supervision, "resolve_budget", lambda _policy, _host: {"memory_limit_bytes": 1})
     seen = {}
+    real_popen = subprocess.Popen
 
     class StopWorker(Exception):
         pass
 
     def popen(command, *, env, start_new_session):
         seen.update(env)
+        # Execute the actual parser in a child with the supervisor's environment
+        # and the worker's argv[0], before substituting resource enforcement.
+        with monkeypatch.context() as child:
+            child.setattr(subprocess, "Popen", real_popen)
+            worker = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.argv[0] = '/site-packages/aisim/resource_worker.py'; "
+                    "from aisim.cli_args import build_parser; build_parser().parse_args(['unknown-command'])",
+                ],
+                env={**env, "PYTHONPATH": str(Path(aisim.__file__).resolve().parent.parent)},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        assert worker.returncode == 2, worker.stdout + worker.stderr
+        seen["worker_error"] = worker.stderr
         raise StopWorker
 
     monkeypatch.setattr(supervision.subprocess, "Popen", popen)
@@ -91,6 +110,8 @@ def test_supervisor_passes_the_actual_command_name_to_its_worker(monkeypatch, tm
             ["worker"], policy=supervision.ResourceConfig(), timeout=None, events_output=None, directory=tmp_path
         )
     assert seen[package_identity.PROGRAM_ENVIRONMENT] == command
+    assert seen["worker_error"].startswith(f"usage: {command} ")
+    assert f"{command}: error:" in seen["worker_error"]
 
 
 def test_every_command_and_option_is_available_under_both_names(monkeypatch):
