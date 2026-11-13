@@ -64,7 +64,7 @@ Install AISim by itself to use the built-in simulation engine without a
 Dynamo dependency. Use a fresh virtual environment for each installation profile.
 This branch builds the renamed `aisim` distribution. The following commands
 require an `aisim` release on your selected index; until that publication is
-available, use a historical `aisim` release in its own environment or
+available, use a historical `aisimulate` release in its own environment or
 [develop from source](#develop-from-source).
 
 <!-- readme-check: release-install -->
@@ -128,8 +128,9 @@ In an engine-only environment, remove the former distributions before upgrading:
 
 <!-- readme-check: release-upgrade -->
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisim
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
 python3 -m pip install --upgrade aisim
+python3 -m pip install --force-reinstall --no-deps aisim
 python3 -m pip check
 ```
 
