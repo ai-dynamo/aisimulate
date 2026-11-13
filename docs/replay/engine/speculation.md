@@ -148,7 +148,7 @@ engine:
 Or from the command line:
 
 ```bash
-aisimulate predict -c prediction.yaml \
+aisim predict -c prediction.yaml \
   --set 'engine.speculation={kind: ngram, num_speculative_tokens: 3, acceptance_rates: [0.8, 0.6, 0.4], seed: 42}' \
   --output-dir ./ngram-prediction
 ```

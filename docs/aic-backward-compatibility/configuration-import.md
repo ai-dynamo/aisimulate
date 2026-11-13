@@ -11,13 +11,13 @@ commands.
 
 ## Dashboard server-knob taxonomy
 
-`aisimulate/config_adapter/config/server_knob_groups.yaml` is the presentation
+`aisim/config_adapter/config/server_knob_groups.yaml` is the presentation
 source of truth for normalized dashboard knobs across vLLM, SGLang, and
 TRT-LLM. The three backends share one group taxonomy. Backend flag support
 remains separate in
-`aisimulate/generator/config/backend_config_mapping.yaml`.
+`aisim/generator/config/backend_config_mapping.yaml`.
 
-The YAML also lists knobs that the current AISimulate replay API cannot carry.
+The YAML also lists knobs that the current AISim replay API cannot carry.
 Dashboard consumers must show those knobs as unavailable instead of inventing
 an `auto` default.
 
@@ -27,13 +27,13 @@ external recipes into AIC estimate requests; it does not register a Replay runne
 
 ## Public API
 
-Import the API from `aisimulate.sdk.config_adapter`:
+Import the API from `aisim.sdk.config_adapter`:
 
 ```python
 from pathlib import Path
 
-from aisimulate.legacy_cli.api import cli_estimate
-from aisimulate.sdk.config_adapter import (
+from aisim.legacy_cli.api import cli_estimate
+from aisim.sdk.config_adapter import (
     AdapterOverrides,
     DynamoRecipeSource,
     InferenceXSource,
@@ -84,7 +84,7 @@ Helm, expand templates, or execute recipe shell. An unrendered
 
 ### 2. Generate and inspect the adaptation report
 
-Run this command from the AISimulate repository root:
+Run this command from the AISim repository root:
 
 ```bash
 uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
@@ -246,7 +246,7 @@ quantization, context limits, and per-role memory fractions. Replay consumes the
 same deployment's scheduler, cache, chunked-prefill, and workload settings through
 `ReplaySpec`; its result is independent of baseline success.
 
-The [resolution strategy](../../python/aisimulate/src/aisimulate/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
+The [resolution strategy](../../python/aisim/src/aisim/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
 explains source resolution, replay configuration, provenance, and validation.
 The [accuracy audit](../../pages/e2e-accuracy/README.md#source-resolved-policy-follow-up)
 records differential evidence and remaining engine/evidence limits. Historical

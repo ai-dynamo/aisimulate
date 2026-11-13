@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
+//! JSON-only PyO3 boundary for one materialized AISim replay execution.
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -26,9 +26,9 @@ use crate::replay::{
     loadgen::{
         AgenticProfileOptions, AgenticSnapshotOptions, AgenticWarmupPolicy, ArrivalSpec, DelaySpec,
         DynamoRequestTrace, LengthSpec, SyntheticImages, SyntheticTraceSpec, Trace,
-        ValidatedAgenticGraph, WekaClient, WekaImportOptions, WekaNestedTimestampBasis,
-        WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
-        load_weka_agentic_graph_cached,
+        ValidatedAgenticGraph, WekaChatTemplate, WekaClient, WekaImportOptions,
+        WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        load_agentic_mooncake, load_weka_agentic_graph_cached,
     },
 };
 use crate::{
@@ -127,6 +127,8 @@ struct RuntimeTraffic {
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
     #[serde(default)]
     weka_client: Option<WekaClient>,
+    #[serde(default)]
+    weka_chat_template: Option<WekaChatTemplate>,
     /// Keep the loaded Weka graph for later runs in this process (sweeps).
     #[serde(default)]
     trace_graph_cache: bool,
@@ -2788,7 +2790,7 @@ fn aic_capacity_kwargs<'py>(
 
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     Python::with_gil(|py| -> PyResult<usize> {
-        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisim_core.sdk.memory")?;
         let kwargs = aic_capacity_kwargs(py, config, role)?;
         memory
             .getattr("estimate_num_gpu_blocks")?
@@ -2810,7 +2812,7 @@ fn estimate_aic_grouped_budget(
     role: &ReplayRoleConfig,
 ) -> Result<crate::perfmodel::fpm::FpmCacheBudget> {
     let serialized = Python::with_gil(|py| -> PyResult<String> {
-        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisim_core.sdk.memory")?;
         let kwargs = aic_capacity_kwargs(py, config, role)?;
         kwargs.del_item("scheduler_block_size")?;
         kwargs.set_item("context_length", role.rank.max_model_len)?;
@@ -3057,7 +3059,7 @@ fn resolve_encoder_timing(
     ensure!(
         provider == "aic",
         "native timing provider {provider:?} is not installed; only \"aic\" is \
-         available in the AISimulate runtime"
+         available in the AISim runtime"
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid encoder AIC timing configuration")?;
@@ -3374,7 +3376,7 @@ fn resolve_role_timing(
     ensure!(
         provider == "aic",
         "native timing provider {provider:?} is not installed; only \"aic\" and \"afd\" are \
-         available in the AISimulate runtime"
+         available in the AISim runtime"
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
@@ -3483,7 +3485,7 @@ fn check_afd_memory_fit_and_kv_budget_py(
         ForwardPassWorkerType::Aggregated => "both",
     };
     Python::with_gil(|py| {
-        let module = py.import("aisimulate.sdk.afd_memory")?;
+        let module = py.import("aisim.sdk.afd_memory")?;
         let common = PyDict::new(py);
         common.set_item("model_path", &config.model)?;
         common.set_item("backend_name", config.backend.as_str())?;
@@ -3969,6 +3971,10 @@ fn build_runtime_input(
             || (traffic.source_type == "trace" && traffic.trace_format.as_deref() == Some("weka")),
         "weka_client requires Weka trace input"
     );
+    ensure!(
+        traffic.source_type == "trace" || traffic.weka_chat_template.is_none(),
+        "weka_chat_template requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
@@ -3977,6 +3983,10 @@ fn build_runtime_input(
         ensure!(
             format == "weka" || traffic.weka_nested_timestamp_basis.is_none(),
             "weka_nested_timestamp_basis requires Weka input"
+        );
+        ensure!(
+            format == "weka" || traffic.weka_chat_template.is_none(),
+            "weka_chat_template requires Weka input"
         );
         ensure!(
             traffic.agentic_lanes != Some(0),
@@ -4038,6 +4048,7 @@ fn build_runtime_input(
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
                     client: traffic.weka_client.unwrap_or_default(),
+                    chat_template: traffic.weka_chat_template,
                 },
                 traffic.trace_graph_cache,
             )?;
@@ -4698,7 +4709,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         determinism,
         serving_path,
         telemetry_sample_interval_ms,
-    ) = match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
+    ) = match serde_json::from_str(payload).context("invalid AISim execution ReplaySpec")? {
         ExecutionPayload::Configured {
             spec,
             traffic,
@@ -5053,7 +5064,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         }
         .map_err(Into::into)
     })()
-    .context("AISimulate replay failed");
+    .context("AISim replay failed");
     let (mut report, artifacts, resolved_weka_timestamp_basis) = match replay_result {
         Ok(result) => result,
         Err(error) => {
@@ -5087,7 +5098,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     // Keep large capture arrays out of the intermediate summary Value tree.
     let telemetry = report.telemetry.take();
     let mut report_json =
-        serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+        serde_json::to_value(&report).context("serializing AISim replay report summary")?;
     if telemetry.is_some() {
         report_json["telemetry"] = serde_json::Value::Null;
     }
@@ -5122,7 +5133,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("agentic execution did not declare its configured target model")?;
         let object = report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
+            .context("AISim replay report did not serialize as an object")?;
         object.insert(
             "agentic_qualification".to_string(),
             serde_json::Value::String("functional_only".to_string()),
@@ -5156,7 +5167,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         // serialization, one `Value` at a time.
         report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?
+            .context("AISim replay report did not serialize as an object")?
             .insert("per_request".to_string(), serde_json::Value::Null);
     }
     let report_json = ReportWithRecords {
@@ -5169,9 +5180,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             "report": report_json,
             "artifacts": artifacts,
         });
-        return serde_json::to_string(&output).context("serializing AISimulate replay output");
+        return serde_json::to_string(&output).context("serializing AISim replay output");
     }
-    serde_json::to_string(&report_json).context("serializing AISimulate replay output")
+    serde_json::to_string(&report_json).context("serializing AISim replay output")
 }
 
 /// The report object with its `per_request` placeholder serialized as the
@@ -5352,7 +5363,7 @@ fn _build_source_files_json() -> &'static str {
     include_str!(concat!(env!("OUT_DIR"), "/build-source-files.json"))
 }
 
-/// AISimulate native runtime module.
+/// AISim native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_build_source_files_json, module)?)?;
@@ -5380,16 +5391,16 @@ mod tests {
 
     #[test]
     fn replay_coverage_errors_preserve_the_original_chain() {
-        let original = || anyhow::anyhow!("original failure").context("AISimulate replay failed");
+        let original = || anyhow::anyhow!("original failure").context("AISim replay failed");
         let wrapped = replay_failure(original(), Ok(Some(serde_json::json!({}))));
         assert_eq!(
             format!("{wrapped:#}"),
-            "AISimulate replay failed: original failure"
+            "AISim replay failed: original failure"
         );
         let missing = replay_failure(original(), Err(anyhow::anyhow!("coverage unavailable")));
         assert_eq!(
             format!("{missing:#}"),
-            "FPM coverage diagnostics failed: coverage unavailable: AISimulate replay failed: original failure"
+            "FPM coverage diagnostics failed: coverage unavailable: AISim replay failed: original failure"
         );
     }
 
@@ -5634,7 +5645,7 @@ mod tests {
             "create exact report sample file: No space left on device".to_string(),
         ))
         .context("collecting replay report")
-        .context("AISimulate replay failed");
+        .context("AISim replay failed");
         let expected_message = format!("{error:#}");
 
         Python::with_gil(|py| {
@@ -5647,7 +5658,7 @@ mod tests {
     #[test]
     fn replay_python_error_keeps_other_failures_as_runtime_errors() {
         pyo3::prepare_freethreaded_python();
-        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let error = anyhow::anyhow!("invalid replay input").context("AISim replay failed");
         let expected_message = format!("{error:#}");
 
         Python::with_gil(|py| {
@@ -5662,7 +5673,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let error =
             anyhow::Error::new(crate::AfdRoutingLocation::F.ensure_supported().unwrap_err())
-                .context("AISimulate replay failed");
+                .context("AISim replay failed");
         let expected_message = format!("{error:#}");
         Python::with_gil(|py| {
             let mapped = replay_python_error(error);
@@ -6707,19 +6718,17 @@ mod tests {
         use crate::perfmodel::engine::spec::EngineSpec;
 
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
-        if let Err(error) =
-            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
-        {
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
             assert!(
                 !required,
                 "native_phase_evidence_matches_python_bridge: \
                  AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
-                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 `aisim_core.sdk.engine` is not importable: {error}. \
                  Install the Python SDK and set PYTHONPATH for the embedded interpreter."
             );
             eprintln!(
                 "native_phase_evidence_matches_python_bridge: SKIP — \
-                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 `aisim_core.sdk.engine` is not importable: {error}. \
                  Set AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 + PYTHONPATH to enforce."
             );
             return;
@@ -6735,7 +6744,7 @@ mod tests {
         config.moe_ep_size = Some(4);
         config.systems_paths = vec![
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
         ];
         let mut native =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
@@ -9911,15 +9920,13 @@ mod tests {
     /// TensorRT-LLM 1.3.0rc20 model, whose GEMM and attention tables do.
     fn packaged_op_level_timing(test: &str, power: bool) -> Option<AicTimingModel> {
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
-        if let Err(error) =
-            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
-        {
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
             assert!(
                 !required,
-                "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisimulate_core.sdk.engine` \
+                "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisim_core.sdk.engine` \
                  is not importable: {error}"
             );
-            eprintln!("{test}: SKIP — `aisimulate_core.sdk.engine` is not importable: {error}");
+            eprintln!("{test}: SKIP — `aisim_core.sdk.engine` is not importable: {error}");
             return None;
         }
         let mut config = aic_config();
@@ -9935,7 +9942,7 @@ mod tests {
         config.kv_block_size = Some(16);
         config.systems_paths = vec![
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
         ];
         let mut timing =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
@@ -10741,7 +10748,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let db = crate::perf_database::PerfDatabase::load(
             &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
             "h200_sxm",
             "sglang",
             "0.5.6.post2",

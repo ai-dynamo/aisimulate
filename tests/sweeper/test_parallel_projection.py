@@ -3,12 +3,12 @@
 
 import pytest
 
-from aisimulate.sweeper.parallel_enum import (
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.parallel_projection import (
+from aisim.sweeper.parallel_projection import (
     AGG_ATTENTION_MODE,
     AGG_FFN_MODE,
     AGG_GPUS_PER_ENGINE,
@@ -24,7 +24,7 @@ from aisimulate.sweeper.parallel_projection import (
     InfeasibleParallelSelection,
     ParallelConfigProjector,
 )
-from aisimulate.sweeper.search_space import BranchSpace
+from aisim.sweeper.search_space import BranchSpace
 
 
 def _role(*, gpus: int, attention: str, ffn: str, replicas: int) -> ReplicaParallelConfig:

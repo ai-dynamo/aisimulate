@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 
-from aisimulate.sweeper import (
+from aisim.sweeper import (
     ReplayReport,
     RunnerCapabilities,
     SmartSearchConfig,

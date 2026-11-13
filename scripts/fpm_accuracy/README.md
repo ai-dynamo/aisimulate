@@ -2,7 +2,7 @@
 
 Development-only evaluation code adapted from NVIDIA AISim FPM Gym at
 `e8221729db2802e822f6919fd68bc2941743385b`:
-[Public migrated source](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
+[Public migrated source](https://github.com/ai-dynamo/aisim/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
 This is the modified public copy, not a mirror of the predecessor revision.
 
 Licensed under Apache-2.0 with maintainer-confirmed migration permission.
@@ -118,7 +118,7 @@ campaign checks the wheel hash and runs `pip check` after both installs.
 The files under `dashboard/` adapt the corresponding
 `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`
 from Gym revision `f934c030afc3a03cb04d8f3ff4709194f7445c98`; see the
-[public dashboard migration](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
+[public dashboard migration](https://github.com/ai-dynamo/aisim/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
 Copyright NVIDIA CORPORATION & AFFILIATES; Apache-2.0, under the existing
 maintainer-confirmed migration permission. Imports were renamed, unused data
 contracts and the GitLab publication helper removed, and publication moved to

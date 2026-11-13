@@ -10,16 +10,16 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError, _materialize_engine_execution_spec
-from aisimulate.sweeper.afd_parallel import AFDInfeasible
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerCapabilities
-from aisimulate.sweeper.sample import unroll_sample
-from aisimulate.sweeper.sampler import RandomBranchSampler
-from aisimulate.sweeper.search_space import RunnerIncompatibleError, enumerate_branches
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisim.runner import EngineReplayRunnerFactory, InvalidRunnerError, _materialize_engine_execution_spec
+from aisim.sweeper.afd_parallel import AFDInfeasible
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerCapabilities
+from aisim.sweeper.sample import unroll_sample
+from aisim.sweeper.sampler import RandomBranchSampler
+from aisim.sweeper.search_space import RunnerIncompatibleError, enumerate_branches
 
 COMBINATIONS = [
     ("aggregated", ("aggregated",)),
@@ -190,9 +190,9 @@ def test_afd_companion_preserves_and_executes_host_loop_and_frontend(frontend):
 
 @pytest.mark.parametrize("shadow_root", [False, True])
 def test_native_afd_memory_and_kv_budget_use_custom_pool_specs(tmp_path, shadow_root):
-    import aisimulate_core
+    import aisim_core
 
-    packaged = Path(aisimulate_core.__file__).parent / "systems"
+    packaged = Path(aisim_core.__file__).parent / "systems"
     system = yaml.safe_load((packaged / "h200_sxm.yaml").read_text())
     system["data_dir"] = str(packaged / "data/h200_sxm")
     for name, capacity in (("custom_a", 64), ("custom_f", 32)):
@@ -481,7 +481,7 @@ def test_complete_domain_limit_never_truncates():
 def test_runner_capability_gate_runs_before_model_lookup(monkeypatch):
     smart = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(recommendation()))
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware", lambda *a, **k: pytest.fail("hardware lookup")
+        "aisim.sweeper.search_space.resolve_model_hardware", lambda *a, **k: pytest.fail("hardware lookup")
     )
     with pytest.raises(RunnerIncompatibleError):
         enumerate_branches(
@@ -541,7 +541,7 @@ def test_kernel_mtp_and_quantization_identity_survives_search_and_reload(mode, a
     sample = unroll_sample(
         search_space=smart.search_space, selection=suggestion.selection, parallel_config=suggestion.parallel_config
     )
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     estimators = ForwardPassEstimatorResolver(smart.search_space).resolve_candidate(sample)
     deployment = build_backend_deployment(sample, backend_version="0.5.14", forward_pass_estimators=estimators)
@@ -572,7 +572,7 @@ def test_memory_failure_in_either_afd_role_prevents_replay(role):
 
 
 def test_search_candidate_uses_dynamic_pricing_before_execution():
-    from aisimulate.sweeper.search import _materialize_one
+    from aisim.sweeper.search import _materialize_one
 
     raw = recommendation("aggregated", ("aggregated",))
     smart = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
@@ -595,7 +595,7 @@ def test_search_candidate_uses_dynamic_pricing_before_execution():
 
 
 def test_native_memory_diagnostics_cover_each_role_and_can_qualify_the_artifact():
-    from aisimulate.afd_artifacts import build_afd_qualification
+    from aisim.afd_artifacts import build_afd_qualification
 
     raw = prediction()
     raw["engine"]["workers"]["decode"]["afd"].update(n_a_nodes=2, n_f_nodes=2, pipeline_layout="two_stage")
@@ -660,7 +660,7 @@ def test_afd_communication_precision_changes_native_sol_prediction():
 def test_native_afd_topology_drives_both_timing_and_gpu_accounting():
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     raw = prediction("aggregated", ("aggregated",))
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
@@ -678,7 +678,7 @@ def test_native_afd_topology_drives_both_timing_and_gpu_accounting():
 def test_native_afd_backend_is_validated_before_model_loading():
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     raw = prediction("aggregated", ("aggregated",))
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
@@ -696,7 +696,7 @@ def test_native_afd_backend_is_validated_before_model_loading():
 def test_native_afd_memory_reserves_each_phase_without_promoting_derived_context(mode, context_length, legacy):
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
     raw = prediction(mode, roles)
@@ -792,7 +792,7 @@ def test_native_afd_prefill_context_does_not_reserve_the_decode_output(afd_roles
 def test_native_afd_undeclared_window_still_limits_runtime_prompt_length():
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     raw = prediction("aggregated", ("aggregated",))
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
@@ -809,9 +809,9 @@ def test_native_afd_undeclared_window_still_limits_runtime_prompt_length():
 
 
 def hetero_specs(tmp_path, a_width, f_width):
-    import aisimulate_core
+    import aisim_core
 
-    root = Path(aisimulate_core.__file__).parent / "systems"
+    root = Path(aisim_core.__file__).parent / "systems"
     system = yaml.safe_load((root / "h200_sxm.yaml").read_text())
     system["data_dir"] = str(root / "data/h200_sxm")
     for name, width in (("hetero_a", a_width), ("hetero_f", f_width)):
@@ -887,8 +887,8 @@ def test_afd_retains_one_shared_version_across_hardware(monkeypatch, requested):
     def resolve(system, backend, *args, **kwargs):
         return "0.5.14" if system == "h200_sxm" else "0.5.15"
 
-    monkeypatch.setattr("aisimulate.sweeper.kv_estimate.resolve_backend_version", resolve)
-    monkeypatch.setattr("aisimulate_core.sdk.perf_database.resolve_query_version", resolve)
+    monkeypatch.setattr("aisim.sweeper.kv_estimate.resolve_backend_version", resolve)
+    monkeypatch.setattr("aisim_core.sdk.perf_database.resolve_query_version", resolve)
     with pytest.raises(ValueError, match="common|resolves differently"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
 
@@ -896,8 +896,8 @@ def test_afd_retains_one_shared_version_across_hardware(monkeypatch, requested):
 @pytest.mark.parametrize("requested", [None, "current", "previous", "next"])
 @pytest.mark.parametrize("ordinary_companion", [False, True])
 def test_recommendation_pins_one_afd_version_and_reuses_resolution(monkeypatch, requested, ordinary_companion):
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
-    from aisimulate.sweeper.search import _materialize_one
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.search import _materialize_one
 
     raw = recommendation(afd_roles=("decode",)) if ordinary_companion else recommendation("aggregated", ("aggregated",))
     raw["engine"]["backend_version"] = requested
@@ -909,8 +909,8 @@ def test_recommendation_pins_one_afd_version_and_reuses_resolution(monkeypatch, 
         calls.append((system, tuple(kwargs["systems_paths"])))
         return "0.5.14"
 
-    monkeypatch.setattr("aisimulate.sweeper.kv_estimate.resolve_backend_version", resolve)
-    monkeypatch.setattr("aisimulate_core.sdk.perf_database.resolve_query_version", resolve)
+    monkeypatch.setattr("aisim.sweeper.kv_estimate.resolve_backend_version", resolve)
+    monkeypatch.setattr("aisim_core.sdk.perf_database.resolve_query_version", resolve)
     (branch,) = enumerate_branches(smart, max_seq_len=2048)
     suggestion = RandomBranchSampler(branch, seed=7).suggest(1)[0]
     resolver = ForwardPassEstimatorResolver(smart.search_space)
@@ -939,7 +939,7 @@ def test_recommendation_pins_one_afd_version_and_reuses_resolution(monkeypatch, 
 
 @pytest.mark.parametrize("requested", [None, "current"])
 def test_recommendation_rejects_different_afd_pool_versions(tmp_path, requested):
-    from aisimulate.sweeper.search import _materialize_one
+    from aisim.sweeper.search import _materialize_one
 
     hetero_specs(tmp_path, 8, 8)
     (tmp_path / "query_versions.yaml").write_text(
@@ -1049,7 +1049,7 @@ def test_saved_replay_rejects_unsupported_topology_schema_before_model_lookup(ve
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction()))
     role = spec.backend_deployment.afd_roles[0]
     spec.backend_deployment.parallel_config[role]["schema_version"] = version
-    monkeypatch.setattr("aisimulate.runner.validate_afd_model", lambda _: pytest.fail("model lookup"))
+    monkeypatch.setattr("aisim.runner.validate_afd_model", lambda _: pytest.fail("model lookup"))
     runner = EngineReplayRunnerFactory().create(0)
     try:
         with pytest.raises(ValueError, match="AFD topology schema"):
@@ -1061,7 +1061,7 @@ def test_saved_replay_rejects_unsupported_topology_schema_before_model_lookup(ve
 def test_current_saved_json_replays_with_identical_semantics_despite_environment(monkeypatch):
     import json
 
-    from aisimulate.sweeper.replay import BackendDeploymentSpec, canonical_json
+    from aisim.sweeper.replay import BackendDeploymentSpec, canonical_json
 
     current = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction()))
     wire = json.loads(canonical_json(current))
@@ -1135,7 +1135,7 @@ def test_afd_log_integer_domain_rejects_at_public_input(field):
 
 @pytest.mark.parametrize("ratio", [0.5, [0.1, 0.9], "generic"])
 def test_sdk_afd_rejects_every_kv_ratio_load_form(ratio):
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     payload = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("aggregated", ("aggregated",)))
@@ -1153,7 +1153,7 @@ def test_sdk_afd_rejects_every_kv_ratio_load_form(ratio):
 
 @pytest.mark.parametrize("key", ["parallel_configs", "parallel_configs_by_mode"])
 def test_sdk_afd_rejects_obsolete_parallel_pins(key):
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     payload = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("aggregated", ("aggregated",)))
@@ -1178,7 +1178,7 @@ def test_retired_pricing_config_rejected_before_replay(value, mode, roles):
 def test_raw_afd_block_units_reject_before_any_memory_query(monkeypatch, blocks, size):
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction("aggregated", ("aggregated",))))
     execution = _materialize_engine_execution_spec(spec, trace_block_size=64, record_per_request=True)
@@ -1186,11 +1186,9 @@ def test_raw_afd_block_units_reject_before_any_memory_query(monkeypatch, blocks,
     rank["block_size"] = size
     if blocks is not None:
         rank["num_gpu_blocks"] = blocks
+    monkeypatch.setattr("aisim.sdk.afd_memory.check_afd_memory_fit", lambda **kwargs: pytest.fail("memory queried"))
     monkeypatch.setattr(
-        "aisimulate.sdk.afd_memory.check_afd_memory_fit", lambda **kwargs: pytest.fail("memory queried")
-    )
-    monkeypatch.setattr(
-        "aisimulate.sdk.afd_memory.estimate_afd_kv_budget_bytes", lambda **kwargs: pytest.fail("capacity queried")
+        "aisim.sdk.afd_memory.estimate_afd_kv_budget_bytes", lambda **kwargs: pytest.fail("capacity queried")
     )
     with pytest.raises(RuntimeError, match="AFD requires block_size=1"):
         _runtime.run_replay_json(json.dumps(execution))
@@ -1225,8 +1223,8 @@ def test_prefill_pool_budget_accepts_the_reported_two_a_four_f_geometry():
 def test_long_prefill_memory_uses_sglang_limits_for_fit_and_kv_budget(monkeypatch, batched_tokens, chunk_size):
     import json
 
-    from aisimulate import _runtime
-    from aisimulate.sdk import afd_memory
+    from aisim import _runtime
+    from aisim.sdk import afd_memory
 
     raw = prediction("aggregated", ("aggregated",))
     raw["engine"]["context_length"] = 20000
@@ -1268,7 +1266,7 @@ def test_long_prefill_memory_uses_sglang_limits_for_fit_and_kv_budget(monkeypatc
 def test_unit_block_auto_capacity_preserves_controlled_64_token_admission(monkeypatch):
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     raw = prediction("aggregated", ("aggregated",))
     raw["engine"]["context_length"] = 128
@@ -1279,9 +1277,7 @@ def test_unit_block_auto_capacity_preserves_controlled_64_token_admission(monkey
     rank = execution["spec"]["engine"]["rank"]
     rank["enable_prefix_caching"] = False
     rank["sglang"].update(schedule_conservativeness=0.0, chunked_prefill_size=128, max_prefill_tokens=128)
-    monkeypatch.setattr(
-        "aisimulate.sdk.afd_memory.estimate_afd_kv_budget_bytes", lambda **kwargs: (64 * 32768.0, 32768.0)
-    )
+    monkeypatch.setattr("aisim.sdk.afd_memory.estimate_afd_kv_budget_bytes", lambda **kwargs: (64 * 32768.0, 32768.0))
     result = json.loads(_runtime.run_replay_json(json.dumps(execution)))
     assert result["completed_requests"] == 2
     assert result["total_input_tokens"] == 64 and result["total_output_tokens"] == 32
@@ -1291,7 +1287,7 @@ def test_unit_block_auto_capacity_preserves_controlled_64_token_admission(monkey
 
 @pytest.mark.parametrize("field", ["parallel_custom_configs_by_mode", "parallel_independent_by_mode"])
 def test_sdk_keeps_supported_ordinary_companion_search_domains(field):
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     payload = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("disaggregated", ("decode",)))
@@ -1358,7 +1354,7 @@ def test_public_afd_parallelism_aliases_have_one_canonical_identity():
 
 @pytest.mark.parametrize("kind", ["independent", "custom"])
 def test_sdk_afd_parallel_constraints_are_enforced(kind):
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     payload = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("aggregated", ("aggregated",)))
@@ -1381,7 +1377,7 @@ def test_sdk_afd_parallel_constraints_are_enforced(kind):
 
 
 def test_sdk_common_afd_runtime_fields_survive_search_save_and_recompile():
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     source = CoreRecommendationConfig.model_validate(recommendation("aggregated", ("aggregated",)))
     payload = recommendation_to_sweeper(source).model_dump(mode="json")
@@ -1419,7 +1415,7 @@ def test_sdk_common_afd_runtime_fields_survive_search_save_and_recompile():
     ],
 )
 def test_sdk_afd_unsupported_runtime_inputs_are_rejected(field, value):
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     payload = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("aggregated", ("aggregated",)))
@@ -1500,7 +1496,7 @@ def test_afd_role_kv_precision_override_is_used_for_pd_transfer():
 def test_native_afd_rejects_outer_dp(dp_size):
     import json
 
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction("aggregated", ("aggregated",))))
     execution = _materialize_engine_execution_spec(spec, trace_block_size=1, record_per_request=False)
@@ -1529,7 +1525,7 @@ def test_flat_afd_aliases_validate_topology_and_keep_common_runtime_args():
 
 
 def test_sdk_afd_compact_integer_ranges_are_normalized_without_role_knobs():
-    from aisimulate.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.config import SmartSearchConfig
 
     payload = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("aggregated", ("aggregated",)))

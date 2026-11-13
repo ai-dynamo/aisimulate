@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # MoE workload sampling
 
-The collector's [`helper.py`](../../../python/aisimulate/collector/helper.py)
+The collector's [`helper.py`](../../../python/aisim/collector/helper.py)
 builds expert-load quotas and token assignments for synthetic MoE measurements.
 Persist the selected workload distribution with the table identity; it changes
 kernel efficiency and must not be inferred from a precision label.

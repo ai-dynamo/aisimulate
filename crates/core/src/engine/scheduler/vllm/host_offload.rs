@@ -49,7 +49,7 @@ use crate::engine::config::ConnectorRules;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
     HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
-    StoreOutcome, TransferId,
+    ReversedTouch, StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
@@ -143,6 +143,8 @@ pub(super) struct VllmHostRequestState {
     /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
+    /// With `touches_prompt`: the latest prompt touch.
+    prompt_touch: Option<ReversedTouch>,
 }
 
 impl VllmHostRequestState {
@@ -193,6 +195,7 @@ impl VllmHostRequestState {
             confirmed_tokens: 0,
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
+            prompt_touch: None,
         }
     }
 
@@ -536,13 +539,10 @@ impl VllmHostOffloadAdapter {
         if rules.touches_prompt {
             // vLLM 0.24 passes this ordered logical list after lookup to
             // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
-            for key in request.block_keys[..request.prompt_blocks]
-                .iter()
-                .rev()
-                .copied()
-            {
-                tier.touch(key);
-            }
+            tier.touch_reversed(
+                &request.block_keys[..request.prompt_blocks],
+                &mut request.prompt_touch,
+            );
         }
         if rules.pins_hits
             && let HostLookup::Hit(hit) = &outcome
@@ -953,13 +953,13 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = resume;
                 if rules.touches_prompt {
-                    for key in request.block_keys[..request.prompt_blocks]
-                        .iter()
-                        .rev()
-                        .copied()
-                    {
-                        tier.touch(key);
+                    if let Some(touch) = &mut request.prompt_touch {
+                        touch.stored(stored_blocks, end);
                     }
+                    tier.touch_reversed(
+                        &request.block_keys[..request.prompt_blocks],
+                        &mut request.prompt_touch,
+                    );
                 }
             }
         }
@@ -1341,6 +1341,29 @@ mod tests {
     }
 
     #[test]
+    fn lookup_touches_the_prompt_again_after_other_stores() {
+        let mut adapter = adapter(8);
+        let manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let (sequence, lease, mut host) = request(Uuid::from_u128(1), (1..=16).collect());
+        let cost = raw_cost(&manager, &sequence, &lease);
+        let [a0, a1, a2, a3] = host.block_keys[..] else {
+            panic!("the prompt has four blocks")
+        };
+        let other = HostBlockKey::new(77);
+
+        let now = seed_host(&mut adapter, a0).max(seed_host(&mut adapter, a1));
+        adapter.lookup(&mut host, &sequence, &cost, 4, now);
+        assert_eq!(adapter.host.lock().lru_order(), [a1, a0]);
+
+        // Other requests store the tail the tier lacked, then their own block.
+        for key in [a2, a3, other] {
+            seed_host(&mut adapter, key);
+        }
+        adapter.lookup(&mut host, &sequence, &cost, 4, now);
+        assert_eq!(adapter.host.lock().lru_order(), [other, a3, a2, a1, a0]);
+    }
+
+    #[test]
     fn h2d_reserves_real_g1_capacity_and_cancel_releases_it() {
         let mut adapter = adapter(2);
         let destination_id = Uuid::from_u128(1);
@@ -1683,6 +1706,45 @@ mod tests {
             "generated/lookahead tokens are never stored"
         );
         assert!(!adapter.has_work());
+    }
+
+    #[test]
+    fn chunk_stores_keep_the_prompt_in_touch_order() {
+        let mut adapter = adapter(12);
+        let owner = Uuid::from_u128(34);
+        let (mut sequence, mut lease, mut host) = request(owner, (0..48).collect());
+        let mut manager = G1Manager::new_with_caching(16, 4, KvEventPublishers::default(), 0, true);
+        for chunk in 0..3 {
+            // A four-block store takes 4 ms, so each lands before the next.
+            let now_ms = 4.0 * chunk as f64;
+            adapter.advance(&mut manager, now_ms);
+            let computed = 16 * (chunk + 1);
+            assert!(matches!(
+                manager.allocate_native(owner, &mut lease, computed, 0),
+                NativeAllocation::Ready { .. }
+            ));
+            manager.finalize_native_computed_prefix(
+                owner,
+                computed - 16,
+                computed,
+                &mut sequence,
+                &mut lease,
+            );
+            adapter.observe_completed_blocks(
+                owner,
+                &mut host,
+                &lease,
+                computed,
+                48,
+                4,
+                &mut manager,
+                now_ms,
+            );
+            adapter.complete_engine_boundary(&mut manager, now_ms);
+            // The landed chunks, the prompt's first block newest.
+            let landed: Vec<_> = host.block_keys[..4 * chunk].iter().rev().copied().collect();
+            assert_eq!(adapter.host.lock().lru_order(), landed);
+        }
     }
 
     #[test]

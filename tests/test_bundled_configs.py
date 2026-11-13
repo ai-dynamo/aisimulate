@@ -18,13 +18,13 @@ from scripts.ci import check_bundled_configs as checker
 
 pytestmark = pytest.mark.unit
 REVISION = "1" * 40
-CONFIG = "aisimulate_core/model_configs/example_config.json"
+CONFIG = "aisim_core/model_configs/example_config.json"
 
 
 @pytest.fixture
 def fixture(tmp_path):
     root = tmp_path / "source"
-    path = root / "python/aisimulate/src" / CONFIG
+    path = root / "python/aisim/src" / CONFIG
     path.parent.mkdir(parents=True)
     path.write_text('{"model_type": "example"}\n')
     license_text = "Example custom license. Copyright Example Owner.\n"
@@ -73,7 +73,7 @@ def wheel_file(root, path, name="test.whl", extra=None):
     with zipfile.ZipFile(wheel, "w") as z:
         z.writestr(CONFIG, path.read_bytes())
         for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:
-            z.writestr(f"aisimulate-1.dist-info/licenses/{name}", (root / name).read_bytes())
+            z.writestr(f"aisim-1.dist-info/licenses/{name}", (root / name).read_bytes())
         for name, data in (extra or {}).items():
             z.writestr(name, data)
     return wheel
@@ -99,10 +99,10 @@ def test_custom_licensed_config_is_in_csv_and_provenance(fixture, tmp_path):
     assert report["files"][0]["source"]["revision"] == REVISION
 
 
-@pytest.mark.parametrize("location", ["aisimulate_core/model_configs/new.json", "aisimulate/unexpected/copy.json"])
+@pytest.mark.parametrize("location", ["aisim_core/model_configs/new.json", "aisim/unexpected/copy.json"])
 def test_new_config_requires_an_inventory_entry(fixture, location):
     root, _, _, inventory, _ = fixture
-    path = root / "python/aisimulate/src" / location
+    path = root / "python/aisim/src" / location
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"architectures": ["ExampleModel"]}')
     with pytest.raises(checker.InventoryError, match="no provenance entry"):
@@ -324,7 +324,7 @@ def test_wheel_missing_declared_config_is_caught(fixture):
     wheel = root.parent / "missing-config.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:
-            archive.writestr(f"aisimulate-1.dist-info/licenses/{name}", (root / name).read_bytes())
+            archive.writestr(f"aisim-1.dist-info/licenses/{name}", (root / name).read_bytes())
     with pytest.raises(checker.InventoryError, match=r"missing=\[.*example_config.json"):
         checker.validate(root, inventory, wheel_path=wheel)
 
@@ -357,7 +357,7 @@ def test_wheel_rejects_legal_payloads_that_differ_from_source(fixture, legal_nam
             data = (root / name).read_bytes()
             if name == legal_name:
                 data += b"Changed during packaging.\n"
-            archive.writestr(f"aisimulate-1.dist-info/licenses/{name}", data)
+            archive.writestr(f"aisim-1.dist-info/licenses/{name}", data)
     with pytest.raises(checker.InventoryError, match=rf"packaged {legal_name}.*differs from its source"):
         checker.validate(root, inventory, wheel_path=wheel)
 
@@ -371,7 +371,7 @@ def test_rename_without_a_new_inventory_entry_fails(fixture):
 
 def test_historical_subset_requires_matching_hash_and_notice(fixture):
     root, path, entry, inventory, save = fixture
-    stale = {**entry, "path": "aisimulate_core/model_configs/newer_config.json"}
+    stale = {**entry, "path": "aisim_core/model_configs/newer_config.json"}
     save([entry, stale])
     with pytest.raises(checker.InventoryError, match="missing source"):
         checker.validate(root, inventory)
@@ -412,18 +412,18 @@ def test_current_inventory_is_complete_and_does_not_relabel_unknowns():
 
 def test_packaged_deepseek_v3_notice_preserves_unresolved_scope(tmp_path):
     entries = checker.inventory_entries(checker.ROOT / checker.INVENTORY)
-    name = "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json"
+    name = "aisim_core/model_configs/deepseek-ai--DeepSeek-V3_config.json"
     entry = entries[name]
     assert entry["origin"] == "legacy_unresolved"
     assert entry["license"] == "UNKNOWN"
     canonical = (checker.ROOT / "THIRD_PARTY_NOTICES.md").read_bytes()
-    packaged = checker.ROOT / "python/aisimulate/THIRD_PARTY_NOTICES.md"
+    packaged = checker.ROOT / "python/aisim/THIRD_PARTY_NOTICES.md"
     assert packaged.read_bytes() == canonical
     # Exercise the legal payload reader with the packaging input, not a second
     # handwritten notice fixture. Hosted wheel builds validate the real wheel.
     wheel_path = tmp_path / "legal-payload.whl"
     with zipfile.ZipFile(wheel_path, "w") as wheel:
-        wheel.writestr("aisimulate-1.dist-info/licenses/THIRD_PARTY_NOTICES.md", packaged.read_bytes())
+        wheel.writestr("aisim-1.dist-info/licenses/THIRD_PARTY_NOTICES.md", packaged.read_bytes())
     contents = checker.read_wheel(wheel_path, {})
     text = checker.notice_text(checker.ROOT, "THIRD_PARTY_NOTICES.md", contents.legal_files)
     sections = dict(re.findall(r"^## (.*?)\n(.*?)(?=^## |\Z)", text, re.M | re.S))
@@ -437,7 +437,7 @@ def test_packaged_deepseek_v3_notice_preserves_unresolved_scope(tmp_path):
 
 @pytest.mark.parametrize("missing_license", ["GLM-5.3 License", "NVIDIA Open Model Agreement"])
 def test_nvfp4_notice_requires_both_license_texts(tmp_path, missing_license):
-    name = "aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json"
+    name = "aisim_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json"
     entry = checker.inventory_entries(checker.ROOT / checker.INVENTORY)[name]
     canonical = (checker.ROOT / "THIRD_PARTY_NOTICES.md").read_text()
     section = entry["notice"]["section"]

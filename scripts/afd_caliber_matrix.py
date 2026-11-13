@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-AISIMULATE_CLI = [sys.executable, "-m", "aisimulate"]
+AISIM_CLI = [sys.executable, "-m", "aisim"]
 
 METRICS = (
     "mean_ttft_ms",
@@ -43,7 +43,7 @@ OPEN_LOOP_LOADS = (
 def _run(config_path: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix="afd-caliber-") as run_dir:
         subprocess.run(
-            [*AISIMULATE_CLI, "predict", "--config", str(config_path), "--output-dir", run_dir, "--format", "json"],
+            [*AISIM_CLI, "predict", "--config", str(config_path), "--output-dir", run_dir, "--format", "json"],
             check=True,
             cwd=_REPO_ROOT,
             capture_output=True,

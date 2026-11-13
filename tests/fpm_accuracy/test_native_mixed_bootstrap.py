@@ -22,12 +22,12 @@ from scripts.fpm_accuracy.models.mixed_scenario import MixedOriginalA
 from scripts.fpm_accuracy.scenarios import score_scenario
 
 # Pages installs only Gym dependencies; the contracts shard must exercise native tests.
-if "AISIMULATE_TEST_WHEEL" in os.environ:
-    import_module("aisimulate_core.sdk")
+if "AISIM_TEST_WHEEL" in os.environ:
+    import_module("aisim_core.sdk")
 else:
-    pytest.importorskip("aisimulate_core.sdk")
-phase_fixtures = import_module("python.aisimulate.tests.unit.sdk.test_fpm_phase_readiness")
-training_support = import_module("python.aisimulate.tests.unit.sdk.fpm_training_support")
+    pytest.importorskip("aisim_core.sdk")
+phase_fixtures = import_module("python.aisim.tests.unit.sdk.test_fpm_phase_readiness")
+training_support = import_module("python.aisim.tests.unit.sdk.fpm_training_support")
 training_support.import_sklearn()
 phase_roots = phase_fixtures.phase_roots
 scenario_case = scenario_fixtures.scenario_case
@@ -42,7 +42,7 @@ pytestmark = pytest.mark.unit
     ids=["legacy", "legacy-with-repeats", "recovered"],
 )
 def test_reconstructed_pair_reaches_native_validation(phase_roots, scenario_case, sidecar_repeats, recover):
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     config, make_root = phase_roots
     parquet = Path(make_root("legacy-pair")) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
@@ -114,8 +114,8 @@ def test_reconstructed_pair_reaches_native_validation(phase_roots, scenario_case
 def test_scheduled_missing_prior_errors_preserve_native_mixed_bootstrap(
     phase_roots, scenario_case, monkeypatch, method
 ):
-    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, fpm_learned
-    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+    from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, fpm_learned
+    from aisim_core.sdk.errors import PerfDataNotAvailableError
 
     monkeypatch.setenv("LOKY_MAX_CPU_COUNT", "1")
     config, make_root = phase_roots
