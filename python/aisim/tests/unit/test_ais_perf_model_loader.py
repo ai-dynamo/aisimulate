@@ -1994,7 +1994,7 @@ import sys
 
 import aisim_core.ais_perf_model as apm
 
-heavy = ["numpy", "pandas", "pyarrow", "yaml", "aisim.sweeper", "aisim_core._native",
+heavy = ["numpy", "pandas", "pyarrow", "yaml", "aisim._runtime", "aisim.sweeper", "aisim_core._native",
          "aisim_core.sdk", "aisim_core.datasets"]
 
 def loaded():
