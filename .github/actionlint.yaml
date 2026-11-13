@@ -8,3 +8,4 @@ self-hosted-runner:
   labels:
     - prod-aisim-default-amd64-v1
     - prod-aisim-default-arm64-v1
+    - dynamo-cpu-4gi-amd64
