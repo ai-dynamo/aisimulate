@@ -16,9 +16,11 @@ REGISTRY: list[OpEntry] = [
         get_func="get_kimi_k31_dsa_context_test_cases",
         run_func="run_kimi_k31_dsa_fullnode",
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
-        # Native TP1/2/4 eager boundary verified on B300 (SM103). Other
-        # targeted architectures still require their own native GPU campaign.
-        unverified_sms=(80, 86, 89, 90, 100, 120),
+        # Native eager boundary verified on B300 SM103 TP1/2/4 and H100/H200
+        # SM90 TP1/2/4/8 (jobs 3174260/3174259: dense, sparse, prefix, decode).
+        # SM100 B200 TP1/2 passed the same four paths (job 5772967).
+        # TP4/8 and ARM GB200 still require their allocation-specific smoke.
+        unverified_sms=(80, 86, 89, 120),
     ),
     OpEntry(
         op="kimi_k31_dsa_generation_module",
@@ -26,7 +28,7 @@ REGISTRY: list[OpEntry] = [
         get_func="get_kimi_k31_dsa_generation_test_cases",
         run_func="run_kimi_k31_dsa_fullnode",
         perf_filename=PerfFile.DSA_GENERATION_MODULE,
-        unverified_sms=(80, 86, 89, 90, 100, 120),
+        unverified_sms=(80, 86, 89, 120),
     ),
     OpEntry(
         op="dsv41_module",

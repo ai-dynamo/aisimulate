@@ -1,0 +1,338 @@
+[
+  {
+    "name": "tp1-01-context",
+    "phase": "context",
+    "case": [
+      128,
+      1,
+      96,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 1,
+    "selected_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708",
+    "returncode": 0,
+    "started_at": 1794273071.807867,
+    "finished_at": 1794273164.9362338,
+    "log_sha256": "9b8e9b7f48a88d32185c0292d4a605e5a9f4cd01457a59ed5f47a0735bfac22c",
+    "csv_sha256": "9cfef4ed34db2053b931488bfd8e377c4b10e7e9e9ea3edd7a22c00fca469ba2"
+  },
+  {
+    "name": "tp1-02-context",
+    "phase": "context",
+    "case": [
+      4096,
+      1,
+      96,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 1,
+    "selected_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708",
+    "returncode": 0,
+    "started_at": 1794273164.9365678,
+    "finished_at": 1794273198.171296,
+    "log_sha256": "62bd661ce2821ecdc93e8c8a72020dceffdace690cdb636645599e28283978b8",
+    "csv_sha256": "243802410acc2484112be335f9ce6e130b01744b51c703e8a34f972c5b7d1333"
+  },
+  {
+    "name": "tp1-03-context",
+    "phase": "context",
+    "case": [
+      512,
+      1,
+      96,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      32768
+    ],
+    "tp_size": 1,
+    "selected_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708",
+    "returncode": 0,
+    "started_at": 1794273198.171701,
+    "finished_at": 1794273225.3274913,
+    "log_sha256": "1374e06f9743e57f639f7778c75cea10c8519f16e2195fca6d601f679d6a0432",
+    "csv_sha256": "94af77d94d5508bfe108b3fbc9db53bf71ed1f37687f828cc55e617f00ccb17b"
+  },
+  {
+    "name": "tp1-04-generation",
+    "phase": "generation",
+    "case": [
+      2048,
+      1,
+      96,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 1,
+    "selected_sha256": "b3302e9e483d659d9152a03955556c6cfc6012228e91a22d75f03454db2f2708",
+    "returncode": 0,
+    "started_at": 1794273225.327847,
+    "finished_at": 1794273270.1143959,
+    "log_sha256": "6529a7193404a06058ee14f9aaba538ce27e5ac235d6ca9db7741d1db9813f66",
+    "csv_sha256": "2f88304a3df712f2303afed40e090c5c3fbb851d5981e839efbeb3999cc92f20"
+  },
+  {
+    "name": "tp2-01-context",
+    "phase": "context",
+    "case": [
+      128,
+      1,
+      48,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 2,
+    "selected_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874",
+    "returncode": 0,
+    "started_at": 1794273270.1151168,
+    "finished_at": 1794273315.7328186,
+    "log_sha256": "7da79e27774b69ddee4ee04e49549a631e9730993549fd93d73241d3138cf7ad",
+    "csv_sha256": "41a03d2722057d148509381abb38b4b48edbc9d6baa1ce0a95516d73b7bc6aeb"
+  },
+  {
+    "name": "tp2-02-context",
+    "phase": "context",
+    "case": [
+      4096,
+      1,
+      48,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 2,
+    "selected_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874",
+    "returncode": 0,
+    "started_at": 1794273315.7332003,
+    "finished_at": 1794273344.7312655,
+    "log_sha256": "7f764d0c03fa24ccad801f4aabffa924d85edce24cedd98b512eaf12b5ea3b4d",
+    "csv_sha256": "6a9ab46d3636655f6c8ee3acf2d7d3ee03623de869d2e149985543a6f1daaacf"
+  },
+  {
+    "name": "tp2-03-context",
+    "phase": "context",
+    "case": [
+      512,
+      1,
+      48,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      32768
+    ],
+    "tp_size": 2,
+    "selected_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874",
+    "returncode": 0,
+    "started_at": 1794273344.7316723,
+    "finished_at": 1794273373.4053178,
+    "log_sha256": "423278d0579ac8663870433b657fc63822c1836e32e3794743cb62c23542543e",
+    "csv_sha256": "604b54b5ed30e6045b2083465eb2c57ab6d4fbdb42e0ee81080357b879f5a615"
+  },
+  {
+    "name": "tp2-04-generation",
+    "phase": "generation",
+    "case": [
+      2048,
+      1,
+      48,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 2,
+    "selected_sha256": "7ae6556fa34d9b2ad59b8c5c5ea04610c0b9c14539a23aa50568b891ae8c0874",
+    "returncode": 0,
+    "started_at": 1794273373.4057841,
+    "finished_at": 1794273402.5278192,
+    "log_sha256": "5ecc28f08379c6078b65e6d93f49153bc9217e237f1c06fc0618cf7fc72e0e5d",
+    "csv_sha256": "8dc929161ce4b2066ba2ee117f31683c4625fbcbecb6f212cf17f411a7ea1592"
+  },
+  {
+    "name": "tp4-01-context",
+    "phase": "context",
+    "case": [
+      128,
+      1,
+      24,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 4,
+    "selected_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d",
+    "returncode": 0,
+    "started_at": 1794273402.5284874,
+    "finished_at": 1794273438.145357,
+    "log_sha256": "1d43f7c8b26d1b05409adee1dc2ed157341a792ec58006e5c24b100d2751905c",
+    "csv_sha256": "bbc86fe2e672ee203c76db83ae7181004f306504afd69b09c1bfa7107d769eda"
+  },
+  {
+    "name": "tp4-02-context",
+    "phase": "context",
+    "case": [
+      4096,
+      1,
+      24,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 4,
+    "selected_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d",
+    "returncode": 0,
+    "started_at": 1794273438.1458244,
+    "finished_at": 1794273469.5890942,
+    "log_sha256": "4e8be7f782f4dce81a548ad307d0d46bd62c0515b3fb94fcf2f07f8d752684c6",
+    "csv_sha256": "c6ee6eab959145d3623ab93cd7ef6c2abd69e28b4c3f2d4b73777264167c51d3"
+  },
+  {
+    "name": "tp4-03-context",
+    "phase": "context",
+    "case": [
+      512,
+      1,
+      24,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      32768
+    ],
+    "tp_size": 4,
+    "selected_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d",
+    "returncode": 0,
+    "started_at": 1794273469.5897756,
+    "finished_at": 1794273500.5430934,
+    "log_sha256": "da51bf9d2ef2355826540f9538b2635a8b1420ce472dcb7ca37c108bda69b3b4",
+    "csv_sha256": "0b4c6ee4b3f1c6662e3c173345e5fa06feeb89215e8ca369b5275785211cc5c2"
+  },
+  {
+    "name": "tp4-04-generation",
+    "phase": "generation",
+    "case": [
+      2048,
+      1,
+      24,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 4,
+    "selected_sha256": "ffdc7f509ac5aa89c5a8a6cdb8dc85f1684e354b4f391419d97fd49e2ed66c7d",
+    "returncode": 0,
+    "started_at": 1794273500.543687,
+    "finished_at": 1794273532.2447193,
+    "log_sha256": "fb57c56a076b19119e0c491f5ddad519465139523ee28c48dea5405a6fffafce",
+    "csv_sha256": "7568c0a9246c9154ac1e03d665ebdf47d65443ea27e84841d282a020646c7a0d"
+  },
+  {
+    "name": "tp8-01-context",
+    "phase": "context",
+    "case": [
+      128,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273532.2452269,
+    "finished_at": 1794273571.276412,
+    "log_sha256": "0a20e835ccfd14a6a62edca097a2cfbb97009167d1bd84719742546479984f5a",
+    "csv_sha256": "bc6a5d6ec8e2c8e3c4e2a7f8dcbba7c1d38bf72d62dc0497df62bb1737503c9c"
+  },
+  {
+    "name": "tp8-02-context",
+    "phase": "context",
+    "case": [
+      4096,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273571.2768645,
+    "finished_at": 1794273606.896958,
+    "log_sha256": "2b4b59747a0347bd569b8c08fb432bbfb35652fec7b08dbe6b394da726f59dd2",
+    "csv_sha256": "8c065ab55764abac0531023f6eec86b5a65e1a0c97bd2a8a57c2f786ff151767"
+  },
+  {
+    "name": "tp8-03-context",
+    "phase": "context",
+    "case": [
+      512,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      32768
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273606.8975198,
+    "finished_at": 1794273642.4678905,
+    "log_sha256": "9c9e572cbda759a11f2c8a82982edf15cfd336fe93d1c457a2bc557305e0c49c",
+    "csv_sha256": "8983d71ce087b78feb972590ea84f5dd823d2f562824b8dc63c7cd86743f5a96"
+  },
+  {
+    "name": "tp8-04-generation",
+    "phase": "generation",
+    "case": [
+      2048,
+      1,
+      12,
+      "fp8",
+      "bfloat16",
+      "bfloat16",
+      "moonshotai/Kimi-K3.1-Pro",
+      0
+    ],
+    "tp_size": 8,
+    "selected_sha256": "34f508b58be44317c70a085e664c5003a16882134e7e76e3a898971b671bd855",
+    "returncode": 0,
+    "started_at": 1794273642.468377,
+    "finished_at": 1794273677.4629495,
+    "log_sha256": "92707f4ea84668c54a4c25d028ac44a29bd8911d6219f71c6a7cf39ba52191a1",
+    "csv_sha256": "daa6889ce3cdccd91cefc534fc667a343cb3ad774686e6bf270a9b3c245b11bf"
+  }
+]

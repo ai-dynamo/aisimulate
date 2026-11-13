@@ -1,0 +1,37 @@
+{
+  "source_head": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+  "system": "b300_sxm",
+  "count": 4,
+  "passed": 4,
+  "points": [
+    {
+      "name": "tp8-01-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 1.5014081001281738,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-02-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 3.0027198791503906,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-03-context",
+      "phase": "context",
+      "tp_size": 8,
+      "latency_ms": 2.041872024536133,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    },
+    {
+      "name": "tp8-04-generation",
+      "phase": "generation",
+      "tp_size": 8,
+      "latency_ms": 2.2293758392333984,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    }
+  ],
+  "scope": "Explicit standalone native qualification smoke; no model accuracy claim"
+}

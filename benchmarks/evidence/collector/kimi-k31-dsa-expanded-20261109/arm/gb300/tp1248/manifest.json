@@ -1,0 +1,51 @@
+{
+  "schema": "kimi-k31-arm-public-evidence-manifest/v1",
+  "files": [
+    {
+      "path": "native-observations.json",
+      "sha256": "970ed7cfd04ffd03423e70c0bc3b047e0a71acbddc8586481e1f8a3577b5d4d7",
+      "bytes": 77553
+    },
+    {
+      "path": "raw-formal/dsa_context_module_perf.txt",
+      "sha256": "d630c4049755e6165aa803bcb40e0be0585df00a110b5dd8ae8b6dc824c7779e",
+      "bytes": 12124
+    },
+    {
+      "path": "raw-formal/dsa_generation_module_perf.txt",
+      "sha256": "ae7ce11769606b5c8758b5d4fde0c1cc88bafcb2e08b8d28315171d51a946a41",
+      "bytes": 10352
+    },
+    {
+      "path": "selection.json",
+      "sha256": "39d0fd362a5ca16ec797d6bfe8cfab0814b2cdc53ac411942cb309a483edfe90",
+      "bytes": 33153
+    },
+    {
+      "path": "source.json",
+      "sha256": "7f67ee5689751578c883bf03255af1578d8e53bd5e3f2373cd16d1311d588440",
+      "bytes": 3791
+    },
+    {
+      "path": "summary.json",
+      "sha256": "0447bd928096611d4f2032e20c70bf06ec544751417d454ff0f3cd55df11caf7",
+      "bytes": 27173
+    },
+    {
+      "path": "tables/collection_meta.yaml",
+      "sha256": "960fd4ffe73e54d7990b26fdc6d54d3217f9473e96cceec4304e4e9037e1550e",
+      "bytes": 1254
+    },
+    {
+      "path": "tables/dsa_context_module_perf.parquet",
+      "sha256": "80320366d22b4e2a983d89aeb58280c17f11b3a276d7a9c7941e806bc688129a",
+      "bytes": 6018
+    },
+    {
+      "path": "tables/dsa_generation_module_perf.parquet",
+      "sha256": "d79234bcf55ca77424a285fbe56ea93cca7b8ff50b527b94226be2df77e8fc6b",
+      "bytes": 5905
+    }
+  ],
+  "scope": "Bounded completed-campaign evidence. No raw native logs, host identifiers or absolute paths are included."
+}

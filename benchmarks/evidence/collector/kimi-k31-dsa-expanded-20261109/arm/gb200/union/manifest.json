@@ -1,0 +1,34 @@
+{
+  "files": [
+    {
+      "path": "collection_meta.yaml",
+      "sha256": "f2aefb51819140bea50c5fe2b5080db934fe2fee9ad9c881e0a146a4f728bc82",
+      "bytes": 2610
+    },
+    {
+      "path": "derivation.json",
+      "sha256": "0b715c2cd6f0e7d8613cc1f0c5a392130a2bcf3b98fc59c5182d7ddff976b277",
+      "bytes": 2480
+    },
+    {
+      "path": "dsa_context_module_perf.parquet",
+      "sha256": "e48b9cf93f867e3623ee250d63373ea61a959b922718dc814800295a15571f93",
+      "bytes": 6018
+    },
+    {
+      "path": "dsa_generation_module_perf.parquet",
+      "sha256": "efe67b67e311b301c905fe15f2b4bfcf33aeacba0954b7f71a64466126efc585",
+      "bytes": 5897
+    },
+    {
+      "path": "metadata-migration.json",
+      "sha256": "2539880c827f5582001c2979222096c27d5a15d08aa4265abc7e428799e8238f",
+      "bytes": 8095
+    },
+    {
+      "path": "strict-consumer.json",
+      "sha256": "5237fe64645f696db4c674cf7f16d19455a6d55a71826bf48d274f37ae727b02",
+      "bytes": 15719
+    }
+  ]
+}

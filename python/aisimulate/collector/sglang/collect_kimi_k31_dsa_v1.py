@@ -19,8 +19,9 @@ Deviation: this initial lane explicitly configures eager serving. Its rows
 carry an ``_eager`` kernel_source suffix. Native graph replay/overlap can change
 latency in either direction; qualification must compare graph serving before
 removing this note or claiming default-serving prediction accuracy. The
-registry admits SM103 after native B300 TP1/2/4 boundary validation; other
-targeted SMs remain unverified.
+registry admits SM103 after native B300 TP1/2/4 boundary validation and SM90
+after H100/H200 TP1/2/4/8 dense/sparse/prefix/decode smoke, and SM100 after
+B200 TP1/2 smoke of those four paths. Other TP/topology runs need their own smoke.
 """
 
 from __future__ import annotations
@@ -30,21 +31,28 @@ import copy
 import importlib.metadata
 import json
 import logging
+import platform
 import statistics
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from collector.framework_manifest import platform_runtime_version
 from collector.helper import get_sm_version, log_perf
 from collector.op_plans import ModuleCase, plan_cases
-
-__compat__ = "sglang==0.0.0.dev1+g41208373c.d20261104"
 
 MODEL = "moonshotai/Kimi-K3.1-Pro"
 MODEL_REVISION = "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
 ARCHITECTURE = "KimiK31ForConditionalGeneration"
-RUNTIME_VERSION = "0.0.0.dev1+g41208373c.d20261104"
+# Exact package builds of the same audited official source/image index. Keep
+# this startup guard independent of externally supplied runtime manifests.
+RUNTIME_VERSIONS = {
+    "x86_64": "0.0.0.dev1+g41208373c.d20261104",
+    "aarch64": "0.0.0.dev1+ge79de62d2.d20261104",
+}
+RUNTIME_VERSION = platform_runtime_version({"platform_versions": RUNTIME_VERSIONS})
+__compat__ = f"sglang=={RUNTIME_VERSION}"
 SOURCE_COMMIT = "afcd7d6b487a9cbe73e25941971b4cc107e6f9ae"
 NATIVE_HEADS = 96
 HISTORY_CHUNK_TOKENS = 8192
@@ -222,6 +230,8 @@ def _run_native_case(case, device, perf_filename):
 
 
 def _assert_runtime() -> None:
+    if platform.system() != "Linux":
+        raise RuntimeError("native Kimi K3.1 collection requires Linux; CPU-only planning remains available")
     version = importlib.metadata.version("sglang")
     if version != RUNTIME_VERSION:
         raise RuntimeError(f"native Kimi K3.1 requires exactly {RUNTIME_VERSION}; found {version}")
@@ -346,13 +356,24 @@ def validate_forward_batch(batch, case: ModuleCase, phase: str) -> dict:
     return receipt
 
 
-def _rank_main(rank, server_args, port_args, case_values, phase, output, first_gpu):
+def local_tp_size(tp: int, nnodes: int, node_rank: int) -> int:
+    """Match native one_batch.main's contiguous, equal per-node TP groups."""
+    if nnodes < 1 or tp % nnodes or not 0 <= node_rank < nnodes:
+        raise ValueError("native TP must divide evenly across valid node ranks")
+    return tp // nnodes
+
+
+def _rank_main(local_rank, server_args, port_args, case_values, phase, output, first_gpu):
     import torch
     from sglang.benchmark.one_batch import _init_process_global_configs, load_model
     from sglang.srt.runtime_context import SpawnRanks, publish, spawn_world_rank
 
     case = ModuleCase(*case_values)
-    gpu = first_gpu + rank
+    # Pinned one_batch.main maps each node's local GPU ordinal separately from
+    # its global TP rank. NVL systems expose four GPUs per physical host.
+    local_size = local_tp_size(validate_case(case), server_args.nnodes, server_args.node_rank)
+    rank = server_args.node_rank * local_size + local_rank
+    gpu = first_gpu + local_rank
     torch.cuda.set_device(gpu)
     publish(
         server_args,
@@ -449,23 +470,36 @@ def main() -> None:
     parser.add_argument("--phase", choices=("context", "generation"), required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--nnodes", type=int, default=1)
+    parser.add_argument("--node-rank", type=int, default=0)
+    parser.add_argument("--dist-init-addr")
     args = parser.parse_args()
     case = ModuleCase(*json.loads(args.case))
     tp = validate_case(case)
+    local_size = local_tp_size(tp, args.nnodes, args.node_rank)
+    if args.nnodes > 1 and not args.dist_init_addr:
+        raise ValueError("multi-node collection requires the same --dist-init-addr on every node")
     _assert_runtime()
     import torch
+    from huggingface_hub import constants as hf_constants
     from huggingface_hub import hf_hub_download, snapshot_download
     from sglang.srt.entrypoints.engine import _set_envs_and_config
     from sglang.srt.server_args import PortArgs, ServerArgs
 
     first_gpu = int(args.device.rsplit(":", 1)[-1])
-    if first_gpu + tp > torch.cuda.device_count():
-        raise RuntimeError(f"FIXME(kernel-limit): does not fit: native TP{tp} requires {tp} available GPUs")
+    if first_gpu < 0 or first_gpu + local_size > torch.cuda.device_count():
+        raise RuntimeError(
+            f"FIXME(kernel-limit): does not fit: native TP{tp} across {args.nnodes} nodes "
+            f"requires {local_size} available GPUs per node"
+        )
     config_path = hf_hub_download(MODEL, "config.json", revision=MODEL_REVISION)
     config = single_layer_config(json.loads(Path(config_path).read_text()))
     tokenizer_path = snapshot_download(
         MODEL,
         revision=MODEL_REVISION,
+        # Explicit cache-only lookup avoids repository-tree enumeration in
+        # offline campaigns with a preverified immutable checkpoint snapshot.
+        local_files_only=hf_constants.HF_HUB_OFFLINE,
         # Native one_batch loads this checkpoint's TikTokenTokenizer even
         # for synthetic token IDs. Its only local Python dependency is
         # encoding_k3.py; both were inspected at this immutable revision.
@@ -482,6 +516,9 @@ def main() -> None:
             load_format="dummy",
             dtype="bfloat16",
             tp_size=tp,
+            nnodes=args.nnodes,
+            node_rank=args.node_rank,
+            dist_init_addr=args.dist_init_addr,
             trust_remote_code=True,
             disable_radix_cache=True,
             disable_cuda_graph=True,
@@ -502,7 +539,7 @@ def main() -> None:
         torch.multiprocessing.spawn(
             _rank_main,
             args=(server_args, ports, list(case), args.phase, args.output, first_gpu),
-            nprocs=tp,
+            nprocs=local_size,
             join=True,
         )
 

@@ -124,7 +124,7 @@ def test_stock_runtime_cannot_select_native_preview_collector():
         assert "@sha256:" in runtime.image()
         assert entry.run_func == "run_kimi_k31_dsa_fullnode"
         assert not entry.unverified
-        assert set(entry.unverified_sms) == {80, 86, 89, 90, 100, 120}
+        assert set(entry.unverified_sms) == {80, 86, 89, 120}
         assert resolve_module(entry, runtime.version) == "collector.sglang.collect_kimi_k31_dsa_v1"
         assert resolve_module(entry, get_collector_runtime("sglang").version) is None
         assert _check_compat(f"sglang=={RUNTIME_VERSION}", RUNTIME_VERSION)
@@ -282,3 +282,22 @@ def test_native_history_continuation_fails_closed(failure):
     with pytest.raises(RuntimeError, match="native"):
         _extend_history(SimpleNamespace(extend=extend), [req], 7, chunk_tokens=3)
     assert calls == 2
+
+
+@pytest.mark.parametrize(
+    ("tp", "nodes", "rank", "expected"), [(1, 1, 0, 1), (4, 1, 0, 4), (8, 2, 0, 4), (8, 2, 1, 4), (8, 4, 3, 2)]
+)
+def test_native_tp_layout_preserves_global_group_and_local_devices(tp, nodes, rank, expected):
+    from collector.sglang.collect_kimi_k31_dsa_v1 import local_tp_size
+
+    assert local_tp_size(tp, nodes, rank) == expected
+    ranks = [node * expected + local for node in range(nodes) for local in range(expected)]
+    assert ranks == list(range(tp))
+
+
+@pytest.mark.parametrize(("nodes", "rank"), [(0, 0), (3, 0), (2, -1), (2, 2)])
+def test_native_tp_layout_rejects_incomplete_groups(nodes, rank):
+    from collector.sglang.collect_kimi_k31_dsa_v1 import local_tp_size
+
+    with pytest.raises(ValueError, match="divide evenly"):
+        local_tp_size(8, nodes, rank)

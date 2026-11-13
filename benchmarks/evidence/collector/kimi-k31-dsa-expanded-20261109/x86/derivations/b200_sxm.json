@@ -1,0 +1,134 @@
+{
+  "schema": "public-disjoint-native-row-union-v1",
+  "system": "b200_sxm",
+  "inputs": [
+    {
+      "label": "tp1",
+      "path": "original/b200_sxm/tp1",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "a7554e0e4f982c66a482f86421e5d0387784bbc03a54dcda1c1d5e12847c6b5c",
+          "bytes": 5592
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "e951014316550b0725fab5fa851e93eb9d6e0cd030479a6c29658d87dae0c610",
+          "bytes": 5544
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "ec90146632b0226fac0c0c9a7eaef57e5b2cecd61b97f8c7037d43a1b0b81790",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "2988c60fd407a64ea755401e2289e92204fb1af7",
+        "campaign": "new-tp12",
+        "scope": "New 24-point formal TP campaign. TP1/2 and TP4/8 use distinct allocations and hosts; each follows its own four-path smoke."
+      }
+    },
+    {
+      "label": "tp2",
+      "path": "original/b200_sxm/tp2",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "3ef4c7fbe3e7d70f9eed2a582506a9bcaa54e8cd431619d1c8e123bd4609ac9e",
+          "bytes": 5592
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "3a6227bc8e14cb83e9eef4b95d99ec5ddc16e69ad2dca6ad9bf8a0b241802b3a",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "9e05c53664aaef9988f0658abcd4dc6b346e57cdb3524f4942a494ce5ee5eea7",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "2988c60fd407a64ea755401e2289e92204fb1af7",
+        "campaign": "new-tp12",
+        "scope": "New 24-point formal TP campaign. TP1/2 and TP4/8 use distinct allocations and hosts; each follows its own four-path smoke."
+      }
+    },
+    {
+      "label": "tp4",
+      "path": "original/b200_sxm/tp4",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "b98c269dc7d31e5f7e3cf63f42f5019ad8ab7145bb1efec54bd11cf90c493980",
+          "bytes": 5592
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "4368fa21c819fdbcdc2750cd7100e26a1b07443245467f6cad4a765704967295",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "3c4c9bdc5fb525b19b96dccb29dcb0b642050ab908e53443bcfe83bece556346",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "2988c60fd407a64ea755401e2289e92204fb1af7",
+        "campaign": "new-tp48",
+        "scope": "New 24-point formal TP campaign. TP1/2 and TP4/8 use distinct allocations and hosts; each follows its own four-path smoke."
+      }
+    },
+    {
+      "label": "tp8",
+      "path": "original/b200_sxm/tp8",
+      "files": [
+        {
+          "name": "dsa_context_module_perf.parquet",
+          "sha256": "2f17a98ddc7434d583943a7f98342e8aa2b4cb1060b3fb7e9ceba5d4b30ae391",
+          "bytes": 5592
+        },
+        {
+          "name": "dsa_generation_module_perf.parquet",
+          "sha256": "e9536679e5277de3bf9be73a25998406ea21984f74ef46914daccdc266de7a87",
+          "bytes": 5552
+        },
+        {
+          "name": "collection_meta.yaml",
+          "sha256": "38c59b39fc53158fa16fa030f47b9931131903e961337150273e070076b6ea98",
+          "bytes": 1099
+        }
+      ],
+      "origin": {
+        "collector_ref": "2988c60fd407a64ea755401e2289e92204fb1af7",
+        "campaign": "new-tp48",
+        "scope": "New 24-point formal TP campaign. TP1/2 and TP4/8 use distinct allocations and hosts; each follows its own four-path smoke."
+      }
+    }
+  ],
+  "output_files": {
+    "collection_meta.yaml": "1e06eff0ddedbcd34e8613a7f7e3ab609876c594374d1bf544d89e7a9c8e583b",
+    "dsa_context_module_perf.parquet": "b3349e5ab19ef38f412aef718951a458dceadd94be1c4c73faaa4fc67f17b2bf",
+    "dsa_generation_module_perf.parquet": "203911bf1681726fdc4952345f4f148171bd07cff5f32f48d85d88afb659da88"
+  },
+  "counts": {
+    "dsa_context_module_perf": 52,
+    "dsa_generation_module_perf": 44
+  },
+  "validation": {
+    "all_column_rows_preserved": true,
+    "source_collection_events_preserved": true,
+    "disjoint_measurement_keys": true
+  },
+  "exact_event_multiset_verified": true,
+  "collection_event_counts": {
+    "dsa_context_module_perf": 4,
+    "dsa_generation_module_perf": 4
+  },
+  "original_derivation_sha256": "67fdc0d107363998b46781f01579074cc162545b752d2b2d17a6d9d519195e46",
+  "executed_merge_script_sha256": "f1d60e80493cb6a96d1c74ac58540ac6b1312c9f8938bf753988bb2fbcdb8d8f",
+  "portable_merge_script_sha256": "f1d60e80493cb6a96d1c74ac58540ac6b1312c9f8938bf753988bb2fbcdb8d8f",
+  "selected_cases_sha256": "30ec13991a609f89a710fd1094370055b44e40508458e1a2f0b632d0dd4709b2",
+  "scope": "No rows, latencies, kernel labels, or source events are synthesized or fitted."
+}

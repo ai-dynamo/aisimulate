@@ -1,0 +1,177 @@
+{
+  "schema": "kimi-k31-complete-coverage-inventory/v1",
+  "base_commit": "21b6c794896491c539d0ddde2c43ae31e4873ec3",
+  "frozen_matrix_sha256": "80a1f1dfa5ad10f50e811d8b988242123bfa680c6e4e76a1f2ac66ce60ded05b",
+  "public_matrix_sha256": "2be7715977ba7066177f70cb57be7d955e98de87379aeccb374c9f730fc779f1",
+  "new_configurations": 21,
+  "new_measured_points": 504,
+  "retained_existing_points": 72,
+  "total_rows": 576,
+  "exact_frozen_case_sets": true,
+  "original_b300_rows_unchanged": true,
+  "systems": [
+    {
+      "system": "h100_sxm",
+      "tp_sizes": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "context_rows": 52,
+      "generation_rows": 44,
+      "total_rows": 96,
+      "new_rows": 96,
+      "files": [
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/h100_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_context_module_perf.parquet",
+          "sha256": "225d4f16109eaae1f309fee460d69e74b41f4128013f2e9d6dc5f718e86c97b9"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/h100_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_generation_module_perf.parquet",
+          "sha256": "f855ee59058e4b457d0de8abcff88b8274b60957d313eb5651e0bab89748df0b"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/h100_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/collection_meta.yaml",
+          "sha256": "871d9da3aafd47d365e13ed5442c7cf0401eee0cd62b2ca52bd4553157fec6c7"
+        }
+      ]
+    },
+    {
+      "system": "h200_sxm",
+      "tp_sizes": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "context_rows": 52,
+      "generation_rows": 44,
+      "total_rows": 96,
+      "new_rows": 96,
+      "files": [
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_context_module_perf.parquet",
+          "sha256": "25ac358df4c1ce77b933cd79b28f62eba1d514a21a2b47b782b2b842a2e1a2fe"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_generation_module_perf.parquet",
+          "sha256": "ca1d0dbcb167aa141cb6643ba268761bdcdcfb7d7fdc087db7de6400f0d9cc9c"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/collection_meta.yaml",
+          "sha256": "871d9da3aafd47d365e13ed5442c7cf0401eee0cd62b2ca52bd4553157fec6c7"
+        }
+      ]
+    },
+    {
+      "system": "b200_sxm",
+      "tp_sizes": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "context_rows": 52,
+      "generation_rows": 44,
+      "total_rows": 96,
+      "new_rows": 96,
+      "files": [
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_context_module_perf.parquet",
+          "sha256": "b3349e5ab19ef38f412aef718951a458dceadd94be1c4c73faaa4fc67f17b2bf"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_generation_module_perf.parquet",
+          "sha256": "203911bf1681726fdc4952345f4f148171bd07cff5f32f48d85d88afb659da88"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/collection_meta.yaml",
+          "sha256": "1e06eff0ddedbcd34e8613a7f7e3ab609876c594374d1bf544d89e7a9c8e583b"
+        }
+      ]
+    },
+    {
+      "system": "gb200",
+      "tp_sizes": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "context_rows": 52,
+      "generation_rows": 44,
+      "total_rows": 96,
+      "new_rows": 96,
+      "files": [
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb200/sparse_attention/sglang/0.0.0.dev1+ge79de62d2.d20261104/dsa_context_module_perf.parquet",
+          "sha256": "e48b9cf93f867e3623ee250d63373ea61a959b922718dc814800295a15571f93"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb200/sparse_attention/sglang/0.0.0.dev1+ge79de62d2.d20261104/dsa_generation_module_perf.parquet",
+          "sha256": "efe67b67e311b301c905fe15f2b4bfcf33aeacba0954b7f71a64466126efc585"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb200/sparse_attention/sglang/0.0.0.dev1+ge79de62d2.d20261104/collection_meta.yaml",
+          "sha256": "f2aefb51819140bea50c5fe2b5080db934fe2fee9ad9c881e0a146a4f728bc82"
+        }
+      ]
+    },
+    {
+      "system": "gb300",
+      "tp_sizes": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "context_rows": 52,
+      "generation_rows": 44,
+      "total_rows": 96,
+      "new_rows": 96,
+      "files": [
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb300/sparse_attention/sglang/0.0.0.dev1+ge79de62d2.d20261104/dsa_context_module_perf.parquet",
+          "sha256": "80320366d22b4e2a983d89aeb58280c17f11b3a276d7a9c7941e806bc688129a"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb300/sparse_attention/sglang/0.0.0.dev1+ge79de62d2.d20261104/dsa_generation_module_perf.parquet",
+          "sha256": "d79234bcf55ca77424a285fbe56ea93cca7b8ff50b527b94226be2df77e8fc6b"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb300/sparse_attention/sglang/0.0.0.dev1+ge79de62d2.d20261104/collection_meta.yaml",
+          "sha256": "960fd4ffe73e54d7990b26fdc6d54d3217f9473e96cceec4304e4e9037e1550e"
+        }
+      ]
+    },
+    {
+      "system": "b300_sxm",
+      "tp_sizes": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "context_rows": 52,
+      "generation_rows": 44,
+      "total_rows": 96,
+      "new_rows": 24,
+      "files": [
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_context_module_perf.parquet",
+          "sha256": "2a48b18ee074e1d4bbfcf33633c463192119784bbc29ae9458c7eb2b5fe4bb66"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/dsa_generation_module_perf.parquet",
+          "sha256": "393a9454236207c6e22b8dd71a74d54187e426ac33468541a17af63b9c6672c0"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.0.0.dev1+g41208373c.d20261104/collection_meta.yaml",
+          "sha256": "fe4961e53e7879ad21b0523250077cd9c529043f12ab8e258b8580c1786bcae7"
+        }
+      ]
+    }
+  ],
+  "scope": "Native isolated eager DSA component coverage. Exact row identity and data integrity do not establish prediction accuracy, common-input TP numerical correctness or whole-model memory fit."
+}

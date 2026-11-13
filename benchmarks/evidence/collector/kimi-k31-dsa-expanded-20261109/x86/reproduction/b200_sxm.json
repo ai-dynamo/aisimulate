@@ -1,0 +1,18 @@
+{
+  "system": "b200_sxm",
+  "portable_merge_sha256": "f1d60e80493cb6a96d1c74ac58540ac6b1312c9f8938bf753988bb2fbcdb8d8f",
+  "input_labels": [
+    "tp1",
+    "tp2",
+    "tp4",
+    "tp8"
+  ],
+  "output_files": {
+    "collection_meta.yaml": "1e06eff0ddedbcd34e8613a7f7e3ab609876c594374d1bf544d89e7a9c8e583b",
+    "dsa_context_module_perf.parquet": "b3349e5ab19ef38f412aef718951a458dceadd94be1c4c73faaa4fc67f17b2bf",
+    "dsa_generation_module_perf.parquet": "203911bf1681726fdc4952345f4f148171bd07cff5f32f48d85d88afb659da88"
+  },
+  "all_three_output_files_byte_identical": true,
+  "canonical_provenance_api_source": "21b6c794896491c539d0ddde2c43ae31e4873ec3",
+  "scope": "Portable exact union reproduced; no new GPU timing or accuracy experiment."
+}

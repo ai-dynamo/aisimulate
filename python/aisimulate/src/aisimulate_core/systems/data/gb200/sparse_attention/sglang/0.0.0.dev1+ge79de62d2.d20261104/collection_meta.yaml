@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: sglang
+  version: 0.0.0.dev1+ge79de62d2.d20261104
+  image: lmsysorg/sglang:dev-kimi-k31-pro
+  image_variant: arm64 child sha256:3c2b577c398ea3557009b2001fac542473443e86997deb8360bf85a980cda240
+  image_digest: sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391
+  source_commit: afcd7d6b487a9cbe73e25941971b4cc107e6f9ae
+tables:
+  dsa_context_module_perf:
+    rows: 52
+    status: complete
+    collections:
+    - collector_ref: f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b
+      collector_hash: sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f
+      case_plan_hash: sha256:617e899776b031c108b679194ea1d3a72b6aa04508cf796745f2856421e5ccc0
+      collected_at: '2026-11-10'
+      rows: 13
+      status: complete
+    - collector_ref: f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b
+      collector_hash: sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f
+      case_plan_hash: sha256:8932911cdf28edc49a5ffa74d418f5466ab132c8ed97413876b340229121ae16
+      collected_at: '2026-11-10'
+      rows: 26
+      status: complete
+    - collector_ref: f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b
+      collector_hash: sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f
+      case_plan_hash: sha256:6c63179e57609e07d9d7ca60926bbdea256ea3b96c0472d843fad06b1df25aa8
+      collected_at: '2026-11-10'
+      rows: 13
+      status: complete
+  dsa_generation_module_perf:
+    rows: 44
+    status: complete
+    collections:
+    - collector_ref: f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b
+      collector_hash: sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f
+      case_plan_hash: sha256:6be4a3043cee2976628d52831dd20f213a219dfe0ceec72b27c169f788c682f3
+      collected_at: '2026-11-10'
+      rows: 11
+      status: complete
+    - collector_ref: f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b
+      collector_hash: sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f
+      case_plan_hash: sha256:26f69c460d58cd99ca66caabc8995354e5e1eaeee731b45f89336f2cf86f9852
+      collected_at: '2026-11-10'
+      rows: 22
+      status: complete
+    - collector_ref: f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b
+      collector_hash: sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f
+      case_plan_hash: sha256:cc0abe0887902cf726ae80836b1616b6c88c3572a6a7532ee58cddc1ee7620c9
+      collected_at: '2026-11-10'
+      rows: 11
+      status: complete

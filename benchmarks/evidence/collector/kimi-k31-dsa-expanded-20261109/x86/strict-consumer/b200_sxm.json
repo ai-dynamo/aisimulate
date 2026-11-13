@@ -1,0 +1,889 @@
+{
+  "system": "b200_sxm",
+  "strict_provenance": true,
+  "rows_verified": 96,
+  "attempted_cases": 96,
+  "failed_cases": [],
+  "failed_events": [],
+  "source_files": [
+    {
+      "name": "dsa_context_module_perf.parquet",
+      "sha256": "b3349e5ab19ef38f412aef718951a458dceadd94be1c4c73faaa4fc67f17b2bf"
+    },
+    {
+      "name": "dsa_generation_module_perf.parquet",
+      "sha256": "203911bf1681726fdc4952345f4f148171bd07cff5f32f48d85d88afb659da88"
+    },
+    {
+      "name": "collection_meta.yaml",
+      "sha256": "1e06eff0ddedbcd34e8613a7f7e3ab609876c594374d1bf544d89e7a9c8e583b"
+    }
+  ],
+  "results": [
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7376
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8056
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4541
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4249
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8888
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 3.0612
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 5.7703
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 12.2317
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 27.0326
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8084
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8182
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 3.9358
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 24.5837
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7429
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7648
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.3618
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4152
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7321
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.6773
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 3.0773
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 6.0678
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 12.8297
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7732
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7373
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 1.9908
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 11.7984
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7868
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8141
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2861
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4077
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8107
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 2.1062
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 2.0111
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 4.5372
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 9.8959
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 1.259
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8312
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 1.0741
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 7.4863
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8046
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7915
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.3068
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.3795
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.7836
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 2.1954
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.8104
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 2.8846
+    },
+    {
+      "phase": "context",
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 6.6933
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.8168
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.814
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+      "latency_ms": 0.6799
+    },
+    {
+      "phase": "context",
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 4.2853
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0194
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.012
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.011
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0251
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0416
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0308
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0208
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0294
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0416
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0242
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "tp": 1,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0267
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2159
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2072
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2069
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2075
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.245
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2448
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2249
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2116
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.219
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2192
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "tp": 2,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2226
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.1352
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.1518
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0733
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.096
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0865
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.1093
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.0863
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.1195
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.1016
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.1193
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "tp": 4,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.141
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4155
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.3949
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4289
+    },
+    {
+      "phase": "generation",
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4226
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 2.033
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.4112
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.372
+    },
+    {
+      "phase": "generation",
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.3758
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2099
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.2834
+    },
+    {
+      "phase": "generation",
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "tp": 8,
+      "kernel_source": "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+      "latency_ms": 1.8594
+    }
+  ],
+  "scope": "Exact native SILICON retrieval validates exported data integrity; this is not an accuracy score."
+}

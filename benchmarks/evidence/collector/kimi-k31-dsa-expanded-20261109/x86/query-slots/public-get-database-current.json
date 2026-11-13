@@ -1,0 +1,67 @@
+{
+  "checks": [
+    {
+      "system": "h100_sxm",
+      "phase": "context",
+      "query_slot": "current",
+      "resolved_query_version": "0.5.21",
+      "measured_source_version": "0.0.0.dev1+g41208373c.d20261104",
+      "tp": 8,
+      "latency_ms": 0.7891,
+      "source_table_sha256": "225d4f16109eaae1f309fee460d69e74b41f4128013f2e9d6dc5f718e86c97b9"
+    },
+    {
+      "system": "h100_sxm",
+      "phase": "generation",
+      "query_slot": "current",
+      "resolved_query_version": "0.5.21",
+      "measured_source_version": "0.0.0.dev1+g41208373c.d20261104",
+      "tp": 8,
+      "latency_ms": 1.0976,
+      "source_table_sha256": "f855ee59058e4b457d0de8abcff88b8274b60957d313eb5651e0bab89748df0b"
+    },
+    {
+      "system": "h200_sxm",
+      "phase": "context",
+      "query_slot": "current",
+      "resolved_query_version": "0.5.21",
+      "measured_source_version": "0.0.0.dev1+g41208373c.d20261104",
+      "tp": 8,
+      "latency_ms": 0.7918,
+      "source_table_sha256": "25ac358df4c1ce77b933cd79b28f62eba1d514a21a2b47b782b2b842a2e1a2fe"
+    },
+    {
+      "system": "h200_sxm",
+      "phase": "generation",
+      "query_slot": "current",
+      "resolved_query_version": "0.5.21",
+      "measured_source_version": "0.0.0.dev1+g41208373c.d20261104",
+      "tp": 8,
+      "latency_ms": 1.1019,
+      "source_table_sha256": "ca1d0dbcb167aa141cb6643ba268761bdcdcfb7d7fdc087db7de6400f0d9cc9c"
+    },
+    {
+      "system": "b300_sxm",
+      "phase": "context",
+      "query_slot": "current",
+      "resolved_query_version": "0.5.21",
+      "measured_source_version": "0.0.0.dev1+g41208373c.d20261104",
+      "tp": 8,
+      "latency_ms": 1.4862,
+      "source_table_sha256": "2a48b18ee074e1d4bbfcf33633c463192119784bbc29ae9458c7eb2b5fe4bb66"
+    },
+    {
+      "system": "b300_sxm",
+      "phase": "generation",
+      "query_slot": "current",
+      "resolved_query_version": "0.5.21",
+      "measured_source_version": "0.0.0.dev1+g41208373c.d20261104",
+      "tp": 8,
+      "latency_ms": 2.258,
+      "source_table_sha256": "393a9454236207c6e22b8dd71a74d54187e426ac33468541a17af63b9c6672c0"
+    }
+  ],
+  "query_versions_sha256": "6bb30d2beca0967eb94366db42e6a70364a5e0b02d6779499b3a9ad3de5a89e7",
+  "native_sha256": "e2d4b9174491173f3f0f4690280c60f4f8b6bead1967f501aea45c298c0fe607",
+  "scope": "Current query-slot backward-fill consumes measured source coordinates with strict provenance and exact SILICON latency. It does not qualify the newer serving runtime or establish prediction accuracy."
+}

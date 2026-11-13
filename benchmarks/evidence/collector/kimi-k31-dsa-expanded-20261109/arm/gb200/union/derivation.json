@@ -1,0 +1,47 @@
+{
+  "system": "gb200",
+  "inputs": [
+    {
+      "label": "tp1",
+      "formal_import_derivation_sha256": "2c3fcd7407608d3c6e04c96bfa4b06c4a712287b7e887ed2f3cfa192d9952ffa",
+      "source_files": {
+        "dsa_context_module_perf.parquet": "63d96ffa48410403bd19cee48ee6cd1cacfce2391348e53b2ce41e558e72c71d",
+        "collection_meta.yaml": "0de8343b04aeab39fc59f998a5cd4f5e81aa3777ad03b5756ef73e1fffbbe21a",
+        "dsa_generation_module_perf.parquet": "ff111b3e16c49111d1a6da9bc6e61a32645e4544028f5818a62f66f9c11d5a16"
+      }
+    },
+    {
+      "label": "tp24",
+      "formal_import_derivation_sha256": "4c2ab1d29fd4c144d8b50321f5d4c82a25fbf46f9e439c53408cf1c040e2c08c",
+      "source_files": {
+        "dsa_context_module_perf.parquet": "e1673aadeb3e4b19f3482a799a97a4e87fbbb0020b24f2760e2441146a1cd509",
+        "collection_meta.yaml": "84cf4c213c3a17769fb74c6d661bd9daf64be99ac04776049156c1468a18d4ca",
+        "dsa_generation_module_perf.parquet": "f09a0595180cbcd5e4693214a49319fe2cee2a3352206b53b48ba4aaab3adf3b"
+      }
+    },
+    {
+      "label": "tp8",
+      "formal_import_derivation_sha256": "7b73b828fd7b1877bf6727531948e4b8153eea75f7a736ff984c809a18fc6953",
+      "source_files": {
+        "dsa_context_module_perf.parquet": "c2ec3310fee1a167483997dee20cb97670ce3a77969e1a7aa5bf951d76e638a7",
+        "collection_meta.yaml": "929754acb5cbd5e62ee1738d238e50c8fff0254af56617928bc182fd2c889bb2",
+        "dsa_generation_module_perf.parquet": "1ffbb1c878d1ef3a4cc97fe980366998becab8d5d53576919f8d74001cfd6d12"
+      }
+    }
+  ],
+  "output_files": {
+    "collection_meta.yaml": "f2aefb51819140bea50c5fe2b5080db934fe2fee9ad9c881e0a146a4f728bc82",
+    "dsa_context_module_perf.parquet": "e48b9cf93f867e3623ee250d63373ea61a959b922718dc814800295a15571f93",
+    "dsa_generation_module_perf.parquet": "efe67b67e311b301c905fe15f2b4bfcf33aeacba0954b7f71a64466126efc585"
+  },
+  "merge_script_sha256": "f59bafc6b26c292be2e3e0e467df6d0e2108581bf71a52aa0b83c4eba1f1313a",
+  "all_column_rows_preserved": true,
+  "all_collection_event_semantics_preserved": true,
+  "original_v1_sidecars_preserved": true,
+  "event_schema_migration": "Explicit integer-zero classified_failures omitted from v2 events; full original v1 fields retained in source sidecars and migration ledger.",
+  "collection_event_counts": {
+    "dsa_context_module_perf": 3,
+    "dsa_generation_module_perf": 3
+  },
+  "private_derivation_sha256": "0aa7d991ad9fac6a8df329f3483377b7a098812b47b040e8ca18491e472add00"
+}

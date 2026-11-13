@@ -9,6 +9,8 @@ import pytest
 import yaml
 from collector.framework_manifest import (
     get_collector_runtime,
+    load_manifest,
+    platform_runtime_version,
     require_collector_runtime,
     resolve_op_runtime,
     validate_resolution,
@@ -92,7 +94,7 @@ def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
             assert backend == "sglang" and entry.op.startswith("kimi_k31_dsa_")
             runtime = require_collector_runtime(
                 backend,
-                "0.0.0.dev1+g41208373c.d20261104",
+                platform_runtime_version(load_manifest()["frameworks"]["sglang"]["models"]["moonshotai/Kimi-K3.1-Pro"]),
                 requested_ops={entry.op},
                 model_path="moonshotai/Kimi-K3.1-Pro",
             )
@@ -109,6 +111,11 @@ def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
         declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
         version = next(iter(versions))
         allowed = {f'__compat__ = "{backend}=={version}"'}
+        if module == "collector.sglang.collect_kimi_k31_dsa_v1":
+            from collector.sglang.collect_kimi_k31_dsa_v1 import __compat__
+
+            assert __compat__ == f"sglang=={version}"
+            allowed = {'__compat__ = f"sglang=={RUNTIME_VERSION}"'}
         if module in _SOURCE_BUILD_PIN_EXCEPTIONS:
             allowed = {_SOURCE_BUILD_PIN_EXCEPTIONS[module]}
         assert len(declarations) == 1 and declarations[0] in allowed, (module, declarations)

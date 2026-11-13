@@ -1,0 +1,884 @@
+{
+  "system": "gb200",
+  "version": "0.0.0.dev1+ge79de62d2.d20261104",
+  "planned_points": 96,
+  "measured_points": 96,
+  "observed_cuda_oom_skips": [],
+  "strict_provenance": true,
+  "shared_layer": false,
+  "all_column_rows_preserved": true,
+  "all_collection_event_semantics_preserved": true,
+  "original_v1_sidecars_preserved": true,
+  "event_schema_migration": "Explicit integer-zero classified_failures omitted from v2 events; full original v1 fields retained in source sidecars and migration ledger.",
+  "collection_event_counts": {
+    "dsa_context_module_perf": 3,
+    "dsa_generation_module_perf": 3
+  },
+  "checks": [
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2755
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2543
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2256
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.2463
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.3753
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.0384
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.0954
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 2.9695
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 4.1063
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 5.5043
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 26.0777
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 12.159
+    },
+    {
+      "phase": "context",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 27.0659
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2923
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.3531
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2967
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.0826
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.0847
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.4119
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.3329
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 3.4629
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.8064
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 2.8402
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 11.2359
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 5.5519
+    },
+    {
+      "phase": "context",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 11.9276
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2892
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2562
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2625
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.0017
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.0917
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2511
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.3034
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 3.1373
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.0835
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 3.0672
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 6.8941
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 4.318
+    },
+    {
+      "phase": "context",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 9.346
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.2615
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 128,
+      "step": 0,
+      "latency_ms": 1.3231
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2449
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 512,
+      "step": 2048,
+      "latency_ms": 2.0653
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 512,
+      "step": 32768,
+      "latency_ms": 2.0596
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 512,
+      "step": 0,
+      "latency_ms": 1.2623
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.2919
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 2048,
+      "step": 8192,
+      "latency_ms": 2.8953
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 2048,
+      "step": 0,
+      "latency_ms": 1.2027
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 2.8437
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 4096,
+      "step": 0,
+      "latency_ms": 4.1358
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 8192,
+      "step": 0,
+      "latency_ms": 2.8044
+    },
+    {
+      "phase": "context",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 16384,
+      "step": 0,
+      "latency_ms": 6.4134
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.6037
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.8045
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.7615
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.6029
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.661
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.6856
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.6375
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.6719
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.6972
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.6215
+    },
+    {
+      "phase": "generation",
+      "tp": 1,
+      "heads": 96,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.6752
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.9543
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.0784
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.128
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.9555
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 2.0726
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 2.1066
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.968
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 2.0923
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 2.1131
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.9727
+    },
+    {
+      "phase": "generation",
+      "tp": 2,
+      "heads": 48,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 2.0687
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.7294
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.7579
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 1.8369
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.7257
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.8182
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.821
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.7131
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.8452
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.8508
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.7073
+    },
+    {
+      "phase": "generation",
+      "tp": 4,
+      "heads": 24,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 1.8508
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.0033
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.1179
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 16,
+      "isl": 1,
+      "step": 2047,
+      "latency_ms": 2.0
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 2.0354
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 2.168
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 16,
+      "isl": 1,
+      "step": 8191,
+      "latency_ms": 1.956
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 2.0558
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 2.1855
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 16,
+      "isl": 1,
+      "step": 32767,
+      "latency_ms": 1.9912
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 1,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 2.0135
+    },
+    {
+      "phase": "generation",
+      "tp": 8,
+      "heads": 12,
+      "batch": 4,
+      "isl": 1,
+      "step": 131071,
+      "latency_ms": 2.1592
+    }
+  ],
+  "scope": "Exact native SILICON lookup validates the observed disjoint partition union, not full-model accuracy."
+}

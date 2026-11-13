@@ -1,0 +1,167 @@
+{
+  "schema": "kimi-k31-v1-to-v2-zero-failure-event-migration/v1",
+  "original_invalid_union_sha256": "2c633defa7facc42b26b74f8e6a06a212940130b70631fbdb01209826ae3bbc8",
+  "original_public_root_manifest_sha256": "2b06c3a72759c297ed21ed292c27c20d5e6172b448b41f670f8403006262adbf",
+  "source_sidecar_bytes_unchanged": true,
+  "measurement_parquet_bytes_unchanged": true,
+  "strict_python_schema_validation": "R1-R7 PASS after explicit zero-only projection; original v1 union failed R1.",
+  "canonical_data_check_log_sha256": "117c54405cb05306092b99f5efd6a38197a953f91dc53961ee2f85564f4a634c",
+  "events": [
+    {
+      "source_index": 0,
+      "source_sidecar_sha256": "0de8343b04aeab39fc59f998a5cd4f5e81aa3777ad03b5756ef73e1fffbbe21a",
+      "table": "dsa_context_module_perf",
+      "original_v1_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:617e899776b031c108b679194ea1d3a72b6aa04508cf796745f2856421e5ccc0",
+        "collected_at": "2026-11-10",
+        "rows": 13,
+        "classified_failures": 0,
+        "status": "complete"
+      },
+      "projected_v2_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:617e899776b031c108b679194ea1d3a72b6aa04508cf796745f2856421e5ccc0",
+        "collected_at": "2026-11-10",
+        "rows": 13,
+        "status": "complete"
+      },
+      "omitted_v1_field": {
+        "classified_failures": 0
+      },
+      "reason": "Schema-v2 event contract has no classified_failures field or replacement. Original v1 bytes retain explicit zero; every legal event field is unchanged."
+    },
+    {
+      "source_index": 0,
+      "source_sidecar_sha256": "0de8343b04aeab39fc59f998a5cd4f5e81aa3777ad03b5756ef73e1fffbbe21a",
+      "table": "dsa_generation_module_perf",
+      "original_v1_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:6be4a3043cee2976628d52831dd20f213a219dfe0ceec72b27c169f788c682f3",
+        "collected_at": "2026-11-10",
+        "rows": 11,
+        "classified_failures": 0,
+        "status": "complete"
+      },
+      "projected_v2_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:6be4a3043cee2976628d52831dd20f213a219dfe0ceec72b27c169f788c682f3",
+        "collected_at": "2026-11-10",
+        "rows": 11,
+        "status": "complete"
+      },
+      "omitted_v1_field": {
+        "classified_failures": 0
+      },
+      "reason": "Schema-v2 event contract has no classified_failures field or replacement. Original v1 bytes retain explicit zero; every legal event field is unchanged."
+    },
+    {
+      "source_index": 1,
+      "source_sidecar_sha256": "84cf4c213c3a17769fb74c6d661bd9daf64be99ac04776049156c1468a18d4ca",
+      "table": "dsa_context_module_perf",
+      "original_v1_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:8932911cdf28edc49a5ffa74d418f5466ab132c8ed97413876b340229121ae16",
+        "collected_at": "2026-11-10",
+        "rows": 26,
+        "classified_failures": 0,
+        "status": "complete"
+      },
+      "projected_v2_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:8932911cdf28edc49a5ffa74d418f5466ab132c8ed97413876b340229121ae16",
+        "collected_at": "2026-11-10",
+        "rows": 26,
+        "status": "complete"
+      },
+      "omitted_v1_field": {
+        "classified_failures": 0
+      },
+      "reason": "Schema-v2 event contract has no classified_failures field or replacement. Original v1 bytes retain explicit zero; every legal event field is unchanged."
+    },
+    {
+      "source_index": 1,
+      "source_sidecar_sha256": "84cf4c213c3a17769fb74c6d661bd9daf64be99ac04776049156c1468a18d4ca",
+      "table": "dsa_generation_module_perf",
+      "original_v1_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:26f69c460d58cd99ca66caabc8995354e5e1eaeee731b45f89336f2cf86f9852",
+        "collected_at": "2026-11-10",
+        "rows": 22,
+        "classified_failures": 0,
+        "status": "complete"
+      },
+      "projected_v2_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:26f69c460d58cd99ca66caabc8995354e5e1eaeee731b45f89336f2cf86f9852",
+        "collected_at": "2026-11-10",
+        "rows": 22,
+        "status": "complete"
+      },
+      "omitted_v1_field": {
+        "classified_failures": 0
+      },
+      "reason": "Schema-v2 event contract has no classified_failures field or replacement. Original v1 bytes retain explicit zero; every legal event field is unchanged."
+    },
+    {
+      "source_index": 2,
+      "source_sidecar_sha256": "929754acb5cbd5e62ee1738d238e50c8fff0254af56617928bc182fd2c889bb2",
+      "table": "dsa_context_module_perf",
+      "original_v1_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:6c63179e57609e07d9d7ca60926bbdea256ea3b96c0472d843fad06b1df25aa8",
+        "collected_at": "2026-11-10",
+        "rows": 13,
+        "classified_failures": 0,
+        "status": "complete"
+      },
+      "projected_v2_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:6c63179e57609e07d9d7ca60926bbdea256ea3b96c0472d843fad06b1df25aa8",
+        "collected_at": "2026-11-10",
+        "rows": 13,
+        "status": "complete"
+      },
+      "omitted_v1_field": {
+        "classified_failures": 0
+      },
+      "reason": "Schema-v2 event contract has no classified_failures field or replacement. Original v1 bytes retain explicit zero; every legal event field is unchanged."
+    },
+    {
+      "source_index": 2,
+      "source_sidecar_sha256": "929754acb5cbd5e62ee1738d238e50c8fff0254af56617928bc182fd2c889bb2",
+      "table": "dsa_generation_module_perf",
+      "original_v1_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:cc0abe0887902cf726ae80836b1616b6c88c3572a6a7532ee58cddc1ee7620c9",
+        "collected_at": "2026-11-10",
+        "rows": 11,
+        "classified_failures": 0,
+        "status": "complete"
+      },
+      "projected_v2_event": {
+        "collector_ref": "f7a7d4eaf5a08bd19ca7362dafc0c0418a179c3b",
+        "collector_hash": "sha256:bc64b2889ffd5e29e71390f9c96a57e6a256b0897409db38e7757ed6195f6a5f",
+        "case_plan_hash": "sha256:cc0abe0887902cf726ae80836b1616b6c88c3572a6a7532ee58cddc1ee7620c9",
+        "collected_at": "2026-11-10",
+        "rows": 11,
+        "status": "complete"
+      },
+      "omitted_v1_field": {
+        "classified_failures": 0
+      },
+      "reason": "Schema-v2 event contract has no classified_failures field or replacement. Original v1 bytes retain explicit zero; every legal event field is unchanged."
+    }
+  ]
+}
