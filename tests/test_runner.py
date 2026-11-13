@@ -481,7 +481,7 @@ def test_runner_canonical_mtp_g2_rejects_unsupported_cache_compositions(field, v
         "aic_nextn_accept_rates": "1,0.5",
         field: value,
     }
-    with pytest.raises(ValueError, match="uniform G1/G2 without G3"):
+    with pytest.raises(ValueError, match="no G3 or grouped caches"):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
             _spec(deployment=replace(deployment, agg_engine_args=args))
         )

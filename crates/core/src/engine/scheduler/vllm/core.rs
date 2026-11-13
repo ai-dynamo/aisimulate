@@ -679,7 +679,8 @@ pub(crate) struct VllmCore {
     /// Whether a G2 restore under MTP resumes at the loaded prefix. vLLM
     /// v0.32.0 adds the connector hit to the local hit, and only an annotated
     /// drafter KV group loses the last chunk of the connector hit. A uniform
-    /// cache has no such group.
+    /// cache has no such group; a state-cache rank does, and keeps the joint
+    /// lookup's rule.
     mtp_restore_keeps_loaded_prefix: bool,
     kv_event_buffer: Option<CapturedKvEventBuffer>,
     source_holds: SourceHolds<HeldVllmPrefill>,
@@ -938,7 +939,7 @@ impl VllmCore {
                     .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
-        let native_host_offload = args
+        let mut native_host_offload = args
             .native_host_offload
             .as_ref()
             .map(|config| {
@@ -965,6 +966,17 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
+        if let Some(adapter) = native_host_offload.as_mut()
+            && args.state_cache.is_some()
+        {
+            // Validated: G2 takes only a sliding-window state.
+            adapter.set_state_rows(super::host_offload::HostStateRows {
+                rows: kv_manager.state_blocks_per_request(),
+                mtp: args.aic_nextn.is_some(),
+            })?;
+            kv_manager.record_retained_prompt_boundaries();
+        }
+        // After the state rows: a rank that offloads state holds its sources.
         if let Some(order) = native_host_offload
             .as_ref()
             .and_then(VllmHostOffloadAdapter::store_source_hold)
@@ -2368,7 +2380,7 @@ impl VllmCore {
                     ) {
                         HostLookup::Miss => {}
                         HostLookup::Hit(hit) => {
-                            host_hit = Some(if let Some(nextn) = native_mtp_depth {
+                            host_hit = if let Some(nextn) = native_mtp_depth {
                                 let requires_logits = !policy::generation_complete(
                                     &request.sequence,
                                     self.args.max_model_len,
@@ -2395,10 +2407,43 @@ impl VllmCore {
                                     work.slot_end.div_ceil(self.args.block_size)
                                 });
                                 let footprint = footprint.max(hit.destination_blocks());
-                                hit.with_request_footprint_blocks(footprint)
+                                Some(hit.with_request_footprint_blocks(footprint))
+                            } else if let Some(blocks) = hit.state_resume_blocks() {
+                                // After the load the request resumes at the
+                                // restored checkpoint, so admission weighs that
+                                // resume, not the G1 hit below it. It reads
+                                // only the cached tokens of this cost.
+                                let resumed = PrefillCost {
+                                    cached_tokens: blocks * self.args.block_size,
+                                    ..cost.clone()
+                                };
+                                let idle = PrefillCost {
+                                    active_cached_tokens: 0,
+                                    ..resumed.clone()
+                                };
+                                let needed = self.kv_manager.admission_requirement(
+                                    &request.sequence.lease,
+                                    request.sequence.len(),
+                                    &idle,
+                                    0,
+                                );
+                                // A cache hit is optional: admit cold a request
+                                // that even an idle pool could not admit beside
+                                // the checkpoint it would restore.
+                                if matches!(
+                                    needed,
+                                    AllocationRequirement::Blocks(needed)
+                                        if needed + hit.restored_state_blocks()
+                                            <= self.args.num_gpu_blocks
+                                ) {
+                                    cost = resumed;
+                                    Some(hit)
+                                } else {
+                                    None
+                                }
                             } else {
-                                hit
-                            });
+                                Some(hit)
+                            };
                         }
                         HostLookup::Deferred => {
                             self.state
@@ -2457,12 +2502,13 @@ impl VllmCore {
                                     .as_deref()
                                     .map(VllmHostRequestState::reserved_blocks)
                                     .unwrap_or_default();
-                                let inflight_prefill_reserved_blocks =
-                                    if host_hit.is_some() && native_mtp_depth.is_none() {
-                                        pass_prefill_reserved_blocks
-                                    } else {
-                                        0
-                                    };
+                                let inflight_prefill_reserved_blocks = match &host_hit {
+                                    // The load also brings the checkpoint it resumes at.
+                                    Some(hit) if native_mtp_depth.is_none() => {
+                                        pass_prefill_reserved_blocks + hit.restored_state_blocks()
+                                    }
+                                    _ => 0,
+                                };
                                 let decide_admission = if keeps_loaded_prefix {
                                     policy::decide_waiting_admission_with_adjusted_cost
                                 } else {
@@ -2681,6 +2727,16 @@ impl VllmCore {
 
         if let Some(adapter) = self.native_host_offload.as_mut() {
             let (running, requests) = (&self.state.running, &mut self.state.requests);
+            for (owner, boundary) in self.kv_manager.take_retained_prompt_boundaries() {
+                // A request preempted in this pass computed no checkpoint.
+                if let Some(host) = requests
+                    .get_mut(&owner)
+                    .filter(|_| scheduled.contains_key(&owner))
+                    .and_then(|request| request.host_offload.as_deref_mut())
+                {
+                    host.note_retained_boundary(boundary / self.args.block_size);
+                }
+            }
             for uuid in running
                 .iter()
                 .copied()

@@ -329,14 +329,26 @@ impl G1Manager {
         lease: &BlockRequestLease,
         g1_prefix_blocks: usize,
         transferred_suffix: &[crate::engine::common::hashing::SequenceHash],
+        restored_state: Option<crate::engine::common::hashing::SequenceHash>,
     ) -> G1Acquire<DestinationReservation> {
         into_g1_acquire(self.inner.reserve_external_prefix_lease(
             owner,
             lease,
             g1_prefix_blocks,
             transferred_suffix,
+            restored_state,
         ))
         .map(|inner| DestinationReservation { inner })
+    }
+
+    pub(crate) fn record_retained_prompt_boundaries(&mut self) {
+        self.inner.record_retained_prompt_boundaries();
+    }
+
+    /// Sliding-window boundaries `(owner, tokens)` retained by prompt passes
+    /// since the last call.
+    pub(crate) fn take_retained_prompt_boundaries(&mut self) -> Vec<(Uuid, usize)> {
+        self.inner.take_retained_prompt_boundaries()
     }
 
     pub(crate) fn native_destination_pending_dependencies(

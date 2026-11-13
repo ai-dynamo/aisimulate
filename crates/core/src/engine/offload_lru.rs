@@ -74,10 +74,29 @@ impl Lru {
         count: usize,
         mut is_eligible: impl FnMut(HostBlockKey) -> bool,
     ) -> Vec<HostBlockKey> {
-        self.oldest_first()
-            .filter(|key| is_eligible(*key))
-            .take(count)
-            .collect()
+        self.victims_covering(count, |key| is_eligible(key).then_some(1))
+            .0
+    }
+
+    /// The oldest entries whose weights cover `blocks`, and the weight they
+    /// cover, which is below `blocks` when the eligible entries run out.
+    /// `weight_of` gives an eligible entry's weight and `None` otherwise.
+    pub(crate) fn victims_covering(
+        &self,
+        blocks: usize,
+        mut weight_of: impl FnMut(HostBlockKey) -> Option<usize>,
+    ) -> (Vec<HostBlockKey>, usize) {
+        let (mut victims, mut covered) = (Vec::new(), 0);
+        for key in self.oldest_first() {
+            if covered >= blocks {
+                break;
+            }
+            if let Some(weight) = weight_of(key) {
+                victims.push(key);
+                covered += weight;
+            }
+        }
+        (victims, covered)
     }
 
     fn oldest_first(&self) -> impl Iterator<Item = HostBlockKey> + '_ {

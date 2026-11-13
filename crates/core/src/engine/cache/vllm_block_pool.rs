@@ -548,6 +548,19 @@ impl VllmBlockPool {
         weight: usize,
         reservation: &mut BlockReservation,
     ) -> BlockCopyId {
+        let id = self.publish_held_state_group(prefix, weight, reservation);
+        self.release(id);
+        id
+    }
+
+    /// [`Self::publish_state_group`] without the release: the copy stays
+    /// referenced, so it cannot be reclaimed until the caller releases it.
+    pub(crate) fn publish_held_state_group(
+        &mut self,
+        prefix: SequenceHash,
+        weight: usize,
+        reservation: &mut BlockReservation,
+    ) -> BlockCopyId {
         assert!(self.groups_state_copies() && weight > 0);
         for _ in 0..weight {
             let Some(source_reuse) = reservation.fresh.pop() else {
@@ -569,7 +582,6 @@ impl VllmBlockPool {
         self.group_weights.insert(id, weight);
         self.group_extra_blocks += weight - 1;
         self.cache_private_key(id, CacheKey::State { prefix, slot: 0 });
-        self.release(id);
         id
     }
 

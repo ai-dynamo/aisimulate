@@ -101,9 +101,9 @@ note = "vLLM reuses whole blocks, except hybrid KV models at prefix_match_unit; 
 [[sections.rows]]
 name = "Hybrid KV cache (per-request state)"
 doc = "replay/engine/kv-cache.md#state-cache"
-# config/engine.py: state_cache requires backend=vllm, aggregated or disaggregated, G1 only.
+# config/engine.py: state_cache requires backend=vllm, aggregated or disaggregated; G2 for a sliding-window state.
 cells = ["limited", "not_supported", "not_supported"]
-note = "Kimi K3 and DeepSeek V4 state in G1, aggregated and P/D; prefix reuse resumes from state snapshots. No G2/G3 or recommend."
+note = "Kimi K3 and DeepSeek V4 state in G1, aggregated and P/D; prefix reuse resumes from state snapshots. G2 offload for a sliding-window state (DeepSeek V4) only. No G3 or recommend."
 
 [[sections.rows]]
 name = "Frontend tokenization cost"

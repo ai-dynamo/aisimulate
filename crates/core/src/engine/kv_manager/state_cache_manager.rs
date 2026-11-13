@@ -22,6 +22,7 @@ use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, VllmBlockPool,
 };
 use crate::engine::common::hashing::SequenceHash;
+use crate::engine::common::sequence::RequestSequence;
 use crate::engine::config::SlidingWindowStateConfig;
 use rustc_hash::FxHashSet;
 
@@ -38,6 +39,9 @@ pub(crate) struct StateRequest {
     working_cached: bool,
     previous: Vec<BlockCopyId>,
     previous_step: u64,
+    // A checkpoint restored from the host tier, referenced until the request
+    // is admitted and resumes from it.
+    restored: Option<BlockCopyId>,
     // Indices into the manager's per-step copy-reference queue, not extra refs.
     copy_holds: Vec<usize>,
     copy_step: u64,
@@ -46,6 +50,26 @@ pub(crate) struct StateRequest {
     snapshot_hash: Option<SequenceHash>,
     snapshot_step: u64,
     snapshot_owned: bool,
+}
+
+/// The highest boundary, in blocks, at which a request with a `hit_blocks`
+/// token hit may resume from a state checkpoint, and the token blocks past
+/// that boundary the resume also needs. vLLM leaves the last token to compute.
+/// It also drops the MTP block from the hit; for a sliding window that block
+/// must lie inside the block-aligned token hit, so the state hit lands one
+/// block lower.
+pub(crate) fn state_resume_limit(
+    sequence: &RequestSequence,
+    block_size: usize,
+    mtp_enabled: bool,
+    hit_blocks: usize,
+) -> (usize, usize) {
+    if sequence.generated_tokens() >= sequence.max_output_tokens() {
+        return (hit_blocks, 0);
+    }
+    let drafter_blocks = usize::from(mtp_enabled);
+    let limit = hit_blocks.min(sequence.len().saturating_sub(1) / block_size);
+    (limit.saturating_sub(drafter_blocks), drafter_blocks)
 }
 
 pub(crate) struct StateCacheManager {
@@ -225,6 +249,16 @@ impl StateCacheManager {
         }
         state.copy_holds.push(self.step_copy_holds.len());
         self.step_copy_holds.push(Some(id));
+    }
+
+    pub(crate) fn hold_restored(&self, state: &mut StateRequest, id: BlockCopyId) {
+        assert!(state.restored.replace(id).is_none());
+    }
+
+    pub(crate) fn release_restored(&self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
+        if let Some(id) = state.restored.take() {
+            pool.release(id);
+        }
     }
 
     pub(crate) fn hold_previous(&self, state: &mut StateRequest, id: BlockCopyId) {
@@ -410,6 +444,7 @@ impl StateCacheManager {
     }
 
     pub(crate) fn release(&mut self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
+        self.release_restored(pool, state);
         for id in state.previous.drain(..) {
             pool.release(id);
         }

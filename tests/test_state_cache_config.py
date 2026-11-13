@@ -21,6 +21,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 FLASH = "deepseek-ai/DeepSeek-V4-Flash"
 
 STATE = {"bytes_per_request": 1500}
+WINDOW = {**STATE, "sliding_window_lookahead_tokens": 0}
 KV = {"block_size": 64, "bytes_per_token": 16, "capacity": {"type": "fixed", "bytes": 8192}, "state_cache": STATE}
 RANK = {"block_size": 64, "num_gpu_blocks": 8, "kv_cache_bytes_per_token": 16, "state_cache": STATE}
 
@@ -124,10 +125,19 @@ def test_manual_geometry_rejects_invalid_unsigned_integers(field, value):
         ({"block_size": None}, "explicit positive block_size"),
         ({"bytes_per_token": "auto"}, "explicit positive bytes_per_token"),
         ({"capacity": {"type": "default"}}, "requires fixed"),
-        ({"host_offload": {"num_host_blocks": 8}}, "G1 only"),
+        ({"host_offload": {"num_host_blocks": 8}}, "only a sliding-window state_cache"),
         (
             {"host_offload": {"num_host_blocks": 8}, "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8}},
-            "G1 only",
+            "does not support g3_offload",
+        ),
+        # A sliding-window state is offloaded only by the default connector and without KVCR.
+        (
+            {"state_cache": WINDOW, "host_offload": {"num_host_blocks": 8, "connector": "offloading_v0_32"}},
+            "connector=offloading_v0_24",
+        ),
+        (
+            {"state_cache": WINDOW, "host_offload": {"num_host_blocks": 8}, "kvcr": {}},
+            "does not support kvcr",
         ),
         ({"state_cache": {"bytes_per_request": 1500, "tokens_per_block": 64}}, "Extra inputs"),
     ],
@@ -135,6 +145,10 @@ def test_manual_geometry_rejects_invalid_unsigned_integers(field, value):
 def test_manual_geometry_rejects_unusable_capacity(overrides, error):
     with pytest.raises(ValidationError, match=error):
         KvCachePredictionConfig.model_validate({**KV, **overrides})
+
+
+def test_sliding_window_state_accepts_host_offload():
+    KvCachePredictionConfig.model_validate({**KV, "state_cache": WINDOW, "host_offload": {"num_host_blocks": 8}})
 
 
 @pytest.mark.parametrize(

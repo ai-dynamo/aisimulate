@@ -1735,13 +1735,12 @@ def _materialize_engine_role(
                 or (isinstance(host_offload, Mapping) and host_offload.get("scope", "dp_rank_local") == "dp_rank_local")
             )
             and rank.get("g3_offload") is None
-            and rank.get("state_cache") is None
             and rank.get("prefix_match_unit") is None
             and not rank.get("kv_cache_groups")
         ):
             raise ValueError(
                 f"{kind} speculation with host_offload supports only vllm MTP with prefix caching, "
-                "scope=dp_rank_local on aggregated workers, and uniform G1/G2 without G3 or state cache"
+                "scope=dp_rank_local on aggregated workers, and no G3 or grouped caches"
             )
     if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
         raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
@@ -1943,11 +1942,17 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     ):
         raise ValueError("sub-block prefix_match_unit does not support speculative decoding")
     if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
-        raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
-    if rank.get("native_host_offload") is not None:
-        raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
+        raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode worker")
     if rank.get("g3_offload") is not None:
-        raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+        raise ValueError("state_cache does not support g3_offload")
+    host = rank.get("native_host_offload")
+    if host is not None:
+        if state_cache.sliding_window is None:
+            raise ValueError("native_host_offload supports only a sliding-window state_cache")
+        if isinstance(host, Mapping) and host.get("connector", "offloading_v0_24") != "offloading_v0_24":
+            raise ValueError("state_cache requires host_offload.connector=offloading_v0_24")
+        if rank.get("kvcr") is not None:
+            raise ValueError("state_cache does not support kvcr")
     # Only prefill and decode roles transfer KV.
     transfer = ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth") if role == "aggregated" else ()
     conflicts = [

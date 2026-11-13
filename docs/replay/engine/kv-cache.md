@@ -345,20 +345,22 @@ and shared bandwidths; otherwise the run is rejected. In `recommend` with
 
 ### Supported
 
-G2 supports vLLM aggregated and token-only disaggregated workers with prefix
-caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
-ngram speculation, `state_cache`, and Belady eviction.
+G2 supports vLLM aggregated and disaggregated workers with prefix
+caching and any `attention_data`. It also offloads the checkpoints of a
+sliding-window [state cache](#state-cache). It is rejected with SGLang,
+TensorRT-LLM, ngram speculation, a recurrent `state_cache`, and Belady eviction.
 
 Canonical `engine.speculation.kind: mtp` can combine with G2 on aggregated and
-token-only disaggregated vLLM workers, with any `attention_data`, prefix
-caching and no G3. An aggregated worker needs `scope: dp_rank_local`; prefill
-and decode workers take either scope. Use explicit fixed KV capacity and
-default timing. Scheduling is synchronous. Separate draft models and grouped
-caches are unsupported. See
+disaggregated vLLM workers, with any `attention_data`, prefix caching and no
+G3. An aggregated worker needs `scope: dp_rank_local`; prefill and decode
+workers take either scope. Use explicit fixed KV capacity and default timing.
+Scheduling is synchronous. Separate draft models and grouped caches are
+unsupported. See
 [speculation](speculation.md#registered-schemes) for the complete composition.
 
-An aggregated worker models single-module MTP with one uniform shared
-FullAttention cache. This combined behavior is adapted and modified from the
+An aggregated worker with a uniform token cache models single-module MTP with
+one shared FullAttention cache. This combined behavior is adapted and modified
+from the
 [vLLM v0.32.0 scheduler](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py)
 and [OffloadingConnector](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py),
 Copyright contributors to the vLLM project, Apache-2.0. Prompt stores exclude
@@ -368,17 +370,23 @@ padded verification budget is rejected instead of retried indefinitely; this
 is a simulation capacity guard. The scheduling baseline does not change the
 version or provenance of the performance data used for timing.
 
-Prefill and decode workers keep the speculative lifecycle they have without
-G2. G2 stores complete prompt blocks only, so drafts never reach it. A restore
-resumes at the loaded prefix, as on an aggregated worker. Accepted drafts that
-take a G1 block a store still reads make the forward that writes it wait for
-that copy, and so does preempting a request whose store is in flight; a store
-prepared in that same pass delays the rank's next pass. A preempted request
-resumes once G1 has room for its tokens and its next one; a shared pool keeps
-the G1 blocks it copies until each copy completes, so its stores can delay
-that. The capacity guard above does not cover these workers: when G1 holds
-fewer than about two requests, a replay can end with a stall error or not
-terminate, with or without G2. Size G1 for several concurrent requests.
+Prefill and decode workers, and workers with a sliding-window state cache, keep
+the speculative lifecycle they have without G2. G2 stores complete prompt
+blocks only, so drafts never reach it. With a uniform token cache a restore
+resumes at the loaded prefix, as on an aggregated worker. With a sliding-window
+state cache it resumes one block short of the G2 hit and recomputes that
+block, as vLLM's drafter KV group loads a connector hit without its last
+block; replay loads the block before recomputing it, so such a restore moves
+one block more than vLLM. Accepted drafts that take a G1 block a store still
+reads make the forward that writes it wait for that copy, and so does
+preempting a request whose store is in flight; a store prepared in that same
+pass delays the rank's next pass. A preempted request resumes once G1 has room
+for its tokens, its state and its next token; a shared pool, and a rank that
+offloads state checkpoints, keep the G1 blocks they copy until each copy
+completes, so their stores can delay that. The capacity guard above does not
+cover these workers: when G1 holds fewer than about two requests, a replay can
+end with a stall error or not terminate, with or without G2. Size G1 for
+several concurrent requests.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
@@ -654,14 +662,53 @@ than the padded `bytes_per_request` for Kimi K3 at TP8), transfers it after all
 but the last prompt token and recomputes that token on the decode worker. Replay
 transfers the state for the whole prompt and does not model the recompute.
 
+With [G2 host offload](#host-offload-g2), a sliding-window state's retained checkpoints
+follow the prompt blocks into the host cache, as vLLM's offloading connectors
+store the sliding-window blocks that retention keeps. A checkpoint is one G2
+entry that takes a block per state row (26 for DeepSeek-V4-Flash, 30 with one draft token), so
+`num_host_blocks` must exceed one checkpoint. With the default retention every
+prompt block retains a checkpoint. Replay copies a whole window per checkpoint
+where vLLM's overlapping windows share blocks, so state then takes about a
+checkpoint's rows times the G2 space and store time of the prompt blocks, more
+than in vLLM. Set `retention_interval` as the deployment does (`0`, or an
+interval of at least one checkpoint's tokens) to keep the pool for prompt
+blocks. The checkpoints a prompt pass retains are stored in one cohort with
+that pass's prompt blocks, as the connector issues one store per request and
+step. G2 takes the whole cohort or none of it, and evicts none of its blocks
+to make room for the rest. A cohort that found no room is offered again with
+what the next pass adds; one larger than the pool is never stored, and replay
+warns once. A boundary reached during decode is not stored. A restore resumes at the highest boundary that has
+both its token blocks and its whole checkpoint in G2, below the logits cap and,
+with speculative decoding, one block below the token hit. If G2 evicted a
+checkpoint, the restore uses a lower boundary or recomputes. A lookup makes
+the checkpoint it resumes at the newest in G2; checkpoints at lower boundaries
+age and are evicted first. The restored checkpoint becomes a G1 checkpoint that
+the request holds until it is admitted, beside the state it then writes. The
+load is admitted with room for both, whatever shallower hit G1 has; a hit that
+even an idle G1 could not admit beside the request is skipped, and admission
+proceeds on the G1 lookup alone.
+
+A rank that offloads state follows the default connector
+(`offloading_v0_24`); the other connector profiles are not implemented for
+state checkpoints, so the order in which G2 evicts checkpoints is that connector's.
+Its stores keep the G1 token blocks they copy until the whole cohort is
+copied, as a shared pool's do, and the checkpoints in the cohort lengthen that
+copy. vLLM also flushes a store before a pass reuses one of its
+sliding-window blocks, so that pass waits for the copy. Replay holds no G1
+block for a checkpoint, so G2 can keep a checkpoint that G1 skipped or evicted. Ranks whose states differ in size (with
+and without draft tokens) do not read each other's checkpoints from a shared
+pool. G2 occupancy counts a checkpoint's rows as blocks; checkpoints publish no
+`host_pinned` KV events.
+
 Supported: aggregated and P/D vLLM, fixed `capacity` (or the
 [recorded pool](#state-pool-from-recorded-runtime-memory) of an FPM profile), `predict --stack engine`;
-inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
+inferred geometry for Kimi K3 and DeepSeek V4 at PP=1; G2 for a sliding-window state.
 Speculative decoding supports `prefix_match_unit` equal to `block_size`.
 Sub-block matching with speculation remains unsupported.
 
-Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
-`prefix_match_unit`.
+Rejected: `recommend`, G3 offload, G2 with a recurrent state, with
+`kvcr` or with a `host_offload.connector` other than `offloading_v0_24`, and
+speculative decoding with sub-block `prefix_match_unit`.
 
 ## Other cache modes
 

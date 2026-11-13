@@ -107,11 +107,12 @@ an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
 `kind: mtp` also supports [G2 host offload](kv-cache.md#host-offload-g2)
-on aggregated and token-only P/D vLLM workers with prefix caching enabled and
-any `attention_data`. An aggregated worker needs
-`host_offload.scope: dp_rank_local` and uses synchronous, single-module MTP
-with a uniform shared FullAttention cache. Prefill and decode workers take
-either scope and keep the lifecycle described under [MTP](#mtp); see
+on aggregated and P/D vLLM workers with prefix caching enabled and any
+`attention_data`. An aggregated worker needs
+`host_offload.scope: dp_rank_local`; with a uniform token cache it uses
+synchronous, single-module MTP with a uniform shared FullAttention cache.
+Prefill and decode workers take either scope. They, and workers with a
+sliding-window state cache, keep the lifecycle described under [MTP](#mtp); see
 [what G2 supports](kv-cache.md#supported). Agentic G2 additionally requires a
 single static aggregated worker with `attention_data: 1`. Separate draft
 models, other speculative schemes,
