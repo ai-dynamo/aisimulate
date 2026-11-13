@@ -30,6 +30,25 @@ regression use `best_available(config)`, with explicit mode, worker identity,
 and migrated tuning options. Native FPM retains its compatibility adapter for
 older branch wheels that do not provide the canonical configuration type.
 
+The upstream op-based adapter is still removed. A new, opt-in op-level
+baseline (`AicOpLevelPredictor`) scores AISim's operation-level timing on the
+same measured steps:
+
+```bash
+python -m scripts.fpm_accuracy.run_fpm_accuracy ... --op-level-config op_level.json
+```
+
+`op_level.json` is a JSON object of `ForwardPassPerfModelConfig` fields that the
+worker record does not carry. Examples are `backend_version` (the queryable
+database version), the quantization modes, `attention_backend`,
+`moe_kernel_source` and `enable_shared_layer`. Use `{}` when the record is
+enough.
+
+The baseline reads no FPM artifact. It runs with silicon data,
+`fallback_policy: deny` and correction disabled, and it is never tuned. The
+summary then lists `op_level` after the default methods. Without the option,
+the published methods and output are unchanged.
+
 Gym regression selects the measured signed 4×1 lazy configuration through
 `estimator_config`: attention/MoE features and retention axes, 64 observations
 per store, minimum five observations, ridge 1e-9, no scheduled rebuilds, signed

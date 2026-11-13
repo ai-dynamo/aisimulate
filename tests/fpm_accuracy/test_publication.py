@@ -345,3 +345,20 @@ def test_summary_methods_accept_legacy_and_learned_lists(summary):
     with_input["rows"][0]["results"]["learned"]["artifact"] = with_input["rows"][0]["results"]["warmup"]["artifact"]
     with pytest.raises(ValueError, match="learned has no FPM input"):
         validate_summary(with_input)
+
+
+def test_local_summary_may_add_the_op_level_baseline(summary):
+    from copy import deepcopy
+
+    from scripts.fpm_accuracy.contract import OP_LEVEL_METHODS
+
+    local = deepcopy(summary)
+    local["methods"] = list(OP_LEVEL_METHODS)
+    for row in local["rows"]:
+        if row["status"] == "ready":
+            row["results"]["op_level"] = deepcopy(row["results"]["regression"]) | {"artifact": None}
+            row["results"].setdefault("learned", deepcopy(row["results"]["regression"]) | {"artifact": None})
+    validate_summary(local)
+    local["methods"] = [*OP_LEVEL_METHODS, "other"]
+    with pytest.raises(ValueError, match="unexpected predictors"):
+        validate_summary(local)

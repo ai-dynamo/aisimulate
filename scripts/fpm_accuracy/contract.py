@@ -16,6 +16,8 @@ HF_REPO = "nvidia/aisimulate-fpm-dataset"
 # Evaluations before the learned method publish LEGACY_METHODS; both remain valid.
 LEGACY_METHODS = ("warmup", "nowarmup", "regression")
 METHODS = (*LEGACY_METHODS, "learned")
+# Local evaluations may add the op-level baseline (run_fpm_accuracy.py --op-level-config).
+OP_LEVEL_METHODS = (*METHODS, "op_level")
 WORKLOADS = ("all", "prefill", "decode", "mixed")
 COUNTS = ("measured_count", "predicted_count", "unavailable_count", "error_count", "tuning_error_count")
 
@@ -77,7 +79,9 @@ def strict_json(data):
 def validate_summary(summary):
     keys(summary, ("schema_version", "snapshot", "methods", "rows"))
     require(type(summary["schema_version"]) is int and summary["schema_version"] in (1, 2), "unsupported schema")
-    require(summary["methods"] in (list(LEGACY_METHODS), list(METHODS)), "unexpected predictors")
+    require(
+        summary["methods"] in (list(LEGACY_METHODS), list(METHODS), list(OP_LEVEL_METHODS)), "unexpected predictors"
+    )
     snapshot = summary["snapshot"]
     keys(
         snapshot,
