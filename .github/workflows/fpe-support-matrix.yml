@@ -49,7 +49,7 @@ jobs:
   generate:
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: discover-shards
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 480
     strategy:
       fail-fast: false
