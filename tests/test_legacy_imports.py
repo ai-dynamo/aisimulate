@@ -67,16 +67,18 @@ def test_legacy_plugin_namespace_remains_discoverable(monkeypatch):
 
 def test_module_execution_and_console_commands_share_cli():
     environment = {**os.environ, "NO_COLOR": "1"}
-    results = [
-        subprocess.run(command, capture_output=True, text=True, check=True, env=environment).stdout
-        for command in (
-            [sys.executable, "-m", "aisim", "--help"],
-            [sys.executable, "-m", "aisimulate", "--help"],
-            [str(Path(sys.executable).parent / "aisim"), "--help"],
-            [str(Path(sys.executable).parent / "aisimulate"), "--help"],
-        )
-    ]
-    assert results[0]
+    results = []
+    for program, command in (
+        ("aisim", [sys.executable, "-m", "aisim", "--help"]),
+        ("aisimulate", [sys.executable, "-m", "aisimulate", "--help"]),
+        ("aisim", [str(Path(sys.executable).parent / "aisim"), "--help"]),
+        ("aisimulate", [str(Path(sys.executable).parent / "aisimulate"), "--help"]),
+    ):
+        output = subprocess.run(command, capture_output=True, text=True, check=True, env=environment, timeout=30).stdout
+        prefix = f"usage: {program} "
+        assert output.startswith(prefix), output
+        # Launcher identity intentionally differs; all remaining help must match.
+        results.append("usage: <command> " + output.removeprefix(prefix))
     assert len(set(results)) == 1
 
 
