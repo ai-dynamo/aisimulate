@@ -1867,6 +1867,47 @@ impl VllmCore {
         }
     }
 
+    /// Whether a preempted request would resume without the blocks its
+    /// emission takes. vLLM resumes a request only with room for the token it
+    /// sampled last, and speculative emission takes that token's blocks in the
+    /// pass that samples it. Resumed without them, the request is preempted by
+    /// the same pass and resumed again at the same instant, without end while
+    /// the stores of a shared pool hold the blocks. Only a rank with a host
+    /// pool waits: its queue serves the handoffs and restores that own G1
+    /// blocks first, so the waiting request cannot keep them from finishing.
+    fn resumed_emission_lacks_blocks(&self, uuid: Uuid, cost: &PrefillCost) -> bool {
+        if self.native_host_offload.is_none()
+            || self.speculative_sampler.is_none()
+            || self.native_mtp_depth.is_some()
+        {
+            return false;
+        }
+        let request = &self.state.requests[&uuid];
+        if request.status != RequestStatus::Preempted || request.sequence.num_allocated_tokens() > 0
+        {
+            return false;
+        }
+        let remaining =
+            policy::remaining_generation_tokens(&request.sequence, self.args.max_model_len);
+        let (AllocationRequirement::Blocks(resumed), AllocationRequirement::Blocks(emitted)) = (
+            request
+                .sequence
+                .admission_requirement(&self.kv_manager, cost, 0),
+            self.kv_manager.decode_requirement(
+                &request.sequence.lease,
+                request.sequence.len(),
+                remaining.min(1),
+            ),
+        ) else {
+            return false;
+        };
+        let free = self
+            .args
+            .num_gpu_blocks
+            .saturating_sub(self.kv_manager.num_active_blocks());
+        resumed + emitted > free
+    }
+
     fn host_inflight_tail_blocks(&self) -> usize {
         self.state
             .requests
@@ -2527,6 +2568,15 @@ impl VllmCore {
                 }
             } else {
                 decision
+            };
+            let decision = match decision {
+                AdmissionDecision::Admit { prefill_cost }
+                    if host_hit.is_none()
+                        && self.resumed_emission_lacks_blocks(uuid, &prefill_cost) =>
+                {
+                    AdmissionDecision::Wait
+                }
+                decision => decision,
             };
             let prefill_cost = match decision {
                 AdmissionDecision::Admit { prefill_cost } => prefill_cost,

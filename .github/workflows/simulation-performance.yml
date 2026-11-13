@@ -165,7 +165,7 @@ jobs:
     needs: select
     if: needs.select.outputs.run_comparison == 'true'
     name: Build simulation wheel (${{ matrix.side }})
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -181,7 +181,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -260,7 +260,7 @@ jobs:
     needs: [select, build]
     if: needs.select.outputs.run_comparison == 'true'
     name: Simulation Performance (advisory)
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 75
     defaults:
       run:
@@ -268,7 +268,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     env:
       BASE_SHA: ${{ needs.select.outputs.base_sha }}
