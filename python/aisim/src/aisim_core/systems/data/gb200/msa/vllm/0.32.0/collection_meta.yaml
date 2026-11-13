@@ -13,19 +13,19 @@ tables:
     rows: 37050
     status: complete
     collections:
-    - collector_ref: 727b37943
-      collector_hash: sha256:694fee90a3f2495605c3941ebffc6fe067a818b408d05abdef5921fa289281ec
+    - collector_ref: c07c57eb5
+      collector_hash: sha256:a5167308325e884626b6248623805d057d7417abcc12e324867835804b671335
       case_plan_hash: sha256:91170af15cc24be33b24add68cdc4772263f44742c4302ae82934bbebebfe53f
-      collected_at: '2026-11-11'
+      collected_at: '2026-11-13'
       rows: 37050
       status: complete
   msa_generation_module_perf:
     rows: 5790
     status: complete
     collections:
-    - collector_ref: 727b37943
-      collector_hash: sha256:694fee90a3f2495605c3941ebffc6fe067a818b408d05abdef5921fa289281ec
+    - collector_ref: c07c57eb5
+      collector_hash: sha256:a5167308325e884626b6248623805d057d7417abcc12e324867835804b671335
       case_plan_hash: sha256:6c5d2fb798c47a543660d55955ddb36305d54d1b1b22bfc6294af2def5ee3fa0
-      collected_at: '2026-11-11'
+      collected_at: '2026-11-12'
       rows: 5790
       status: complete
