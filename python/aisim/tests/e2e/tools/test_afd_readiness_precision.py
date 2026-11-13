@@ -28,6 +28,7 @@ def _raw():
     return yaml.safe_load((ROOT / "crates/core/parity_tests/perfmodel/configs/afd-predict-pure.yaml").read_text())
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_afd_reports_request_weighted_user_throughput(tmp_path):
     from aisim.aiperf_metrics import AIPerfMetric, metric_value
 
@@ -75,6 +76,7 @@ def test_native_afd_reports_request_weighted_user_throughput(tmp_path):
     assert actual > 1000 / (sum(itls) / len(itls))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     "lengths,prefill_limit,expected_bound",
     [([64], 1, 64), ([31, 32, 32], 64, 95)],
@@ -160,6 +162,7 @@ def test_sol_replay_without_measured_data_still_checks_pool_memory(tmp_path, f_p
         runner.close()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("system,expected", [("h200_sxm", "nvfp4_wo"), ("b200_sxm", "nvfp4")])
 def test_pool_precision_matches_memory_and_preserves_request(system, expected, monkeypatch):
     captured = []
@@ -203,6 +206,7 @@ def test_pool_precision_matches_memory_and_preserves_request(system, expected, m
     assert overrides == {"gemm_quant_mode": "nvfp4", "moe_quant_mode": "nvfp4"}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("missing_pool", ["A", "F"])
 @pytest.mark.parametrize("missing_kind", ["table", "bucket"])
 def test_missing_communication_rejects_before_memory_or_execution(tmp_path, monkeypatch, missing_pool, missing_kind):
@@ -242,6 +246,7 @@ def test_missing_communication_rejects_before_memory_or_execution(tmp_path, monk
         runner.close()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     "model,n_f,tp,positive",
     [
@@ -307,6 +312,7 @@ def test_precision_rejection_identifies_pool_gpu_and_request(tmp_path):
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_prediction_discloses_requested_and_effective_pool_precision(tmp_path):
     from aisim.main import main
 

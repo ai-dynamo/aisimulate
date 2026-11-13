@@ -445,6 +445,7 @@ def test_power_report_table_surfaces_withheld_power_as_unavailable() -> None:
     assert "42.00" not in active_power_row
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_b200_power_survives_native_json_and_runner_normalization() -> None:
     # Pin the measured-data identity and workload from migration section 4.11.
     report = _run(

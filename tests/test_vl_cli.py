@@ -78,6 +78,7 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank(cache_mib):
     assert spec.workload["isl"] == 128  # placeholders are laid out by the workload driver
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("cache_mib", [0, 100])
 def test_native_vl_memory_detail_matches_schema(tmp_path, capsys, cache_mib):
     from jsonschema import Draft202012Validator
@@ -141,6 +142,7 @@ def test_vision_requires_an_image_workload():
         CorePredictionConfig.model_validate(raw)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):
     path = tmp_path / "predict.yaml"
     path.write_text(yaml.safe_dump(_prediction()))
@@ -328,6 +330,7 @@ def _recommendation():
     return raw
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     recommendation = _recommendation()
     # A relative stop is resolved per candidate; the saved prediction must still be
@@ -395,6 +398,7 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
         validate_vl_prediction_mapping(raw, spec)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @reads_saved_config
 def test_profile_backed_recommendation_pins_the_resolved_stages(tmp_path, capsys):
     path = tmp_path / "table.json"
@@ -490,6 +494,7 @@ def test_rust_profiles_resolve_only_the_transports_the_tp_domain_uses(tmp_path):
     assert transports(4) == {"shm": 5.0}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @reads_saved_config
 def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsys):
     raw = _prediction()
@@ -543,6 +548,7 @@ def test_materialized_request_lists_reject_image_workloads():
         EngineReplayRunnerFactory().create(0).run(legacy)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_nested_rank_vision_replays_like_the_flat_worker(mode):
     from aisim.runner import _materialize_engine_role
@@ -582,6 +588,7 @@ def _disaggregated_prediction():
     return raw
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_vl_disaggregated_prefill_hosts_the_loop_and_the_encoder(tmp_path, capsys):
     raw = _disaggregated_prediction()
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
@@ -628,6 +635,7 @@ def test_native_vl_schema_rejects_host_fields_on_the_decode_worker():
         CorePredictionConfig.model_validate(raw)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @reads_saved_config
 def test_native_vl_disaggregated_recommend_keys_the_prefill_worker(tmp_path, capsys):
     raw = _disaggregated_prediction()
@@ -690,6 +698,7 @@ def _native_epd_prediction(table_path):
     return raw
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_encoder_pool_gates_the_language_worker(tmp_path, capsys):
     table = tmp_path / "table.json"
     table.write_text(json.dumps(_host_table()))
@@ -771,6 +780,7 @@ def test_native_encoder_pool_rejects_unsupported(kind, fragment):
         CorePredictionConfig.model_validate(raw)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_encoder_pool_honors_the_pixel_budget(tmp_path):
     table = tmp_path / "table.json"
     table.write_text(json.dumps(_host_table()))
@@ -789,6 +799,7 @@ def test_native_encoder_pool_honors_the_pixel_budget(tmp_path):
     assert encoder.native.transfer_bytes_per_image < default.encoder.native.transfer_bytes_per_image
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_encoder_pool_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     table = tmp_path / "table.json"
     table.write_text(json.dumps(_host_table()))
@@ -839,6 +850,7 @@ def test_native_encoder_pool_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["encoder_latency_ms"] == report["encoder_latency_ms"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_encoder_pool_accepts_rate_loads(tmp_path, capsys):
     table = tmp_path / "table.json"
     table.write_text(json.dumps(_host_table()))
@@ -850,6 +862,7 @@ def test_native_encoder_pool_accepts_rate_loads(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 4
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("case", ["constant_rate", "rate_relative_stop", "kv_capacity_fraction", "fixed_timing"])
 def test_prediction_mapping_accepts_the_scored_spellings(case):
     """The callback compares resolved execution meaning, not the compiler's derived keys."""

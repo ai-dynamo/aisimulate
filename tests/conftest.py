@@ -6,6 +6,8 @@
 from importlib.util import find_spec
 from pathlib import Path
 
+import pytest
+
 # Source-only tooling may inspect the repository before building the native
 # extension. Ignore runtime suites until the standalone package is available.
 try:
@@ -32,3 +34,15 @@ if not _core_available:
     )
 if not _sweeper_available:
     collect_ignore.append(str(Path(__file__).parent / "sweeper"))
+
+
+@pytest.fixture
+def raw_data_coordinates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit perf-data versions outside the queryable slots.
+
+    For tests that pin one collection as a raw data coordinate (a version that
+    ``systems/query_versions.yaml`` no longer lists) through a surface without
+    an ``allow_unlisted_version`` parameter: configs, the CLI, engine
+    compilation. Request it with ``pytest.mark.usefixtures``.
+    """
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")

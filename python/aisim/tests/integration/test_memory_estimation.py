@@ -116,6 +116,7 @@ def test_estimate_kv_cache_validates_before_breakdown():
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("case", NATIVE_CASES, ids=lambda c: f"{c[2]}-{c[4]}")
 def test_estimate_kv_cache_native_dict_shape(case):
     """The dict has the expected fields; tolerance_adjusted is None without a tolerance."""
@@ -149,6 +150,7 @@ def test_estimate_kv_cache_native_dict_shape(case):
     assert est["tolerance_adjusted"] is None
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("case", NATIVE_CASES, ids=lambda c: f"{c[2]}-{c[4]}")
 def test_estimate_kv_cache_tolerance_applied(case):
     """tolerance_fraction=0.05 -> tolerance_adjusted set, bytes == floor(raw * 0.95)."""
@@ -170,6 +172,7 @@ def test_estimate_kv_cache_tolerance_applied(case):
     assert adj_est["total_kv_size_bytes"] == raw["total_kv_size_bytes"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("case", NATIVE_CASES, ids=lambda c: f"{c[2]}-{c[4]}")
 def test_estimate_num_gpu_blocks_floor_conversion(case):
     """The AIC helper returns floor(tokens / block_size); tolerance picks adjusted tokens."""

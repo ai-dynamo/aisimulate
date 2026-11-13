@@ -429,6 +429,7 @@ def test_native_replay_rejects_malformed_canonical_speculation(speculation, entr
             materialize_engine_launch_config("vllm", "0.24.0", {}, deployment.agg_engine_args, "aggregated")
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("accept_rates", [None, "", "  ", "1,0.5"])
 @pytest.mark.parametrize("explicit_depth", [False, True])
 def test_native_canonical_speculation_requires_authored_acceptance(accept_rates, explicit_depth):
@@ -487,6 +488,7 @@ def test_runner_canonical_mtp_g2_rejects_unsupported_cache_compositions(field, v
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     "backend,speculation",
     [
@@ -531,6 +533,7 @@ def test_public_runner_rejects_generic_trtllm_in_both_representations(location):
     assert runtime.execution_spec is None
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy():
     from aisim import _runtime
 
