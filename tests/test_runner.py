@@ -3216,16 +3216,19 @@ def test_workload_driver_rejects_length_sampler_before_native_execution(source_t
 
 
 @pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "canonical_none", "canonical_fallback", "nested"])
-@pytest.mark.parametrize("version", ["", "next", "literal_next"])
+@pytest.mark.parametrize("version", ["", "alias", "literal"])
 def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tmp_path, layout, version):
     from aisim import _runtime
     from aisim_core.sdk import perf_database
 
     slots = perf_database.get_version_slots("h200_sxm", "vllm")
-    expected = slots["next" if version == "literal_next" else version or "current"]
-    if version == "literal_next":
-        version = expected
-    assert slots["next"] != slots["current"]
+    # A slot other than current, so capacity falling back to the default
+    # version is visible: next while the fleet has a development version,
+    # otherwise previous (next then resolves to current).
+    other = "next" if slots["next"] != slots["current"] else "previous"
+    assert slots[other] != slots["current"]
+    expected = slots[other] if version else slots["current"]
+    version = {"": "", "alias": other, "literal": expected}[version]
     phase = "python"
     consumed_versions = {"python": [], "native": []}
     get_database = perf_database.get_database
