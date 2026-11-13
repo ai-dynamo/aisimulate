@@ -5664,6 +5664,16 @@ pub(crate) mod tests {
             vec![sample(|op| matches!(op, Op::MlaBmm(_)))],
         ));
         assert_eq!(mixed.memo_field(), None);
+        // A token scale takes its op's field unless it scales up.
+        let scaled = |numerator, denominator| {
+            Op::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(moe[0].clone()),
+                numerator,
+                denominator,
+            })
+        };
+        assert_eq!(scaled(1, 2).memo_field(), Some(MemoField::NumTokens));
+        assert_eq!(scaled(2, 1).memo_field(), None);
         for op in samples.iter().chain([&overlap, &fallback]) {
             let Some(field) = op.memo_field() else {
                 continue;

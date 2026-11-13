@@ -620,9 +620,9 @@ impl Op {
     /// values price identically whatever the rest of the context holds. A
     /// composite qualifies when every member reads the same field: an overlap
     /// or fallback queries its members at its own context, and a token scale
-    /// queries its op at a scaled one. A token scale also scales the other of
-    /// batch size and token count, which matters only if that overflows
-    /// `u32`. `None` for ops that read several fields (attention, the
+    /// queries its op at a scaled one. A token scale that scales up has no
+    /// field: scaling the other of batch size and token count can overflow
+    /// `u32`. `None` also for ops that read several fields (attention, the
     /// whole-model forward) or none of the rank walks' fields.
     pub(crate) fn memo_field(&self) -> Option<MemoField> {
         fn common<'o>(ops: impl IntoIterator<Item = &'o Op>) -> Option<MemoField> {
@@ -650,7 +650,7 @@ impl Op {
             | Op::P2P(_)
             | Op::Mhc(_) => Some(MemoField::NumTokens),
             Op::MlaBmm(_) => Some(MemoField::BatchSize),
-            Op::TokenScale(op) => op.op.memo_field(),
+            Op::TokenScale(op) if op.numerator <= op.denominator => op.op.memo_field(),
             Op::Overlap(op) => common(op.group_a.iter().chain(&op.group_b)),
             Op::Fallback(op) => common(std::iter::once(op.primary.as_ref()).chain(&op.fallback)),
             _ => None,
