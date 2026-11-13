@@ -15,12 +15,12 @@ permissions:
 jobs:
   spdx-headers:
     name: Source Compliance
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 5
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -39,11 +39,11 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: prod-aisimulate-default-amd64-v1
+            runner: prod-aisim-default-amd64-v1
             cargo_deny_target: x86_64-unknown-linux-musl
             cargo_deny_sha256: 0e8c2aa59128612c90d9e09c02204e912f29a5b8d9a64671b94608cbe09e064f
           - arch: arm64
-            runner: prod-aisimulate-default-arm64-v1
+            runner: prod-aisim-default-arm64-v1
             cargo_deny_target: aarch64-unknown-linux-musl
             cargo_deny_sha256: 2b3567a60b7491c159d1cef8b7d8479d1ad2a31e29ef49462634ad4552fcc77d
     runs-on: ${{ matrix.runner }}
@@ -51,7 +51,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -84,11 +84,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -113,11 +113,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -155,11 +155,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -316,11 +316,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -359,11 +359,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
@@ -384,11 +384,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@v7
