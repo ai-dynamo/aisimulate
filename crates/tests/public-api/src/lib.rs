@@ -1226,7 +1226,7 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use aisimulate_core::replay::{
+        use aisim_core::replay::{
             DirectRequest, ReplayEngineFactory, ReplayError, ReplaySpec, ReplayTerminalStatus,
             ReplayTopology, ReplayWorkloadSource, Replayer,
         };

@@ -9,8 +9,8 @@ use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModelConfig};
-use aisimulate_core::replay::{
+use aisim_core::engine::{Backend, EngineConfig, TimingModelConfig};
+use aisim_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, DirectRequest, PerRequestRecord, ReplayCaptureOptions,
     ReplayComposition, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayError,
     ReplayReport, ReplayRequestContext, ReplayResult, ReplayRuntimeInput, ReplayScalingDecision,
