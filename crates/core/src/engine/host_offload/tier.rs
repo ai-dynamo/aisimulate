@@ -353,6 +353,8 @@ pub(crate) struct HostTier {
     /// Router identity of each block, retained while residency is published.
     meta: FxHashMap<HostBlockKey, HostBlockMeta>,
     completion_epoch: u64,
+    /// See [`Self::lookup_epoch`].
+    lookup_epoch: u64,
     next_transfer_id: u64,
     current_time_ms: f64,
     warned_structurally_unfittable: bool,
@@ -402,6 +404,7 @@ impl HostTier {
             clients: FxHashMap::default(),
             meta: FxHashMap::default(),
             completion_epoch: 0,
+            lookup_epoch: 0,
             next_transfer_id: 0,
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
@@ -623,6 +626,7 @@ impl HostTier {
 
         let transfer_id = self.allocate_transfer_id();
         self.admitted_blocks += missing.len() as u64;
+        self.lookup_epoch += 1;
         for key in &missing {
             let mut entry = Entry {
                 state: EntryState::PendingStore { transfer_id },
@@ -681,6 +685,7 @@ impl HostTier {
     }
 
     fn remove_residents(&mut self, request_id: Uuid, victims: &[HostBlockKey], now_ms: f64) {
+        self.lookup_epoch += 1;
         for victim in victims {
             let mut entry = self
                 .entries
@@ -894,6 +899,7 @@ impl HostTier {
             .remove(&id)
             .filter(|transfer| transfer.kind == Kind::External)
             .expect("external G2 reservation missing");
+        self.lookup_epoch += 1;
         for key in &transfer.blocks {
             let entry = self.entries.get_mut(key).unwrap();
             assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
@@ -932,6 +938,7 @@ impl HostTier {
             "external G2 reservation missing"
         );
         let transfer = self.transfers.remove(&id).unwrap();
+        self.lookup_epoch += 1;
         for key in transfer.blocks {
             let mut entry = self.entries.remove(&key).unwrap();
             assert_eq!(entry.load_pins, 0);
@@ -1141,6 +1148,13 @@ impl HostTier {
             Some(EntryState::PendingStore { transfer_id }) => Lookup::Pending { transfer_id },
             Some(EntryState::Resident) => Lookup::Hit,
         }
+    }
+
+    /// Moves whenever an entry appears, disappears or becomes resident, the
+    /// only changes to a [`Self::lookup`] answer, so answers read at one
+    /// epoch hold until it moves.
+    pub(crate) fn lookup_epoch(&self) -> u64 {
+        self.lookup_epoch
     }
 
     /// Apply framework-defined recency order. Not-ready or pinned blocks are
@@ -1424,6 +1438,7 @@ impl HostTier {
                 .clients
                 .get(&client)
                 .is_some_and(|client| client.holds_completed_sources);
+            self.lookup_epoch += 1;
             for key in &blocks {
                 let entry = self
                     .entries
@@ -2270,6 +2285,49 @@ pub(crate) mod tests {
         assert_eq!(tier.lru_order(), [7, 3, 9, 2, 1].map(key));
         tier.touch_reversed(&prompt, &mut last);
         assert_eq!(tier.lru_order(), [7, 9, 3, 2, 1].map(key));
+    }
+
+    #[test]
+    fn lookup_epoch_moves_only_when_a_lookup_answer_changes() {
+        let mut tier = tier(4);
+        let mut seen = tier.lookup_epoch();
+        let mut moved = |tier: &HostTier| std::mem::replace(&mut seen, tier.lookup_epoch()) != seen;
+
+        // A store: absent, then pending, then resident.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.prepare_store(C, request_id(), &[key(1)], None, 0.0)
+        else {
+            panic!("1 must be absent")
+        };
+        assert!(moved(&tier));
+        tier.submit_prepared_stores(C, 0.0);
+        assert!(!moved(&tier));
+        let now = tier.transfer_deadline(transfer_id).unwrap();
+        tier.tick(C, now);
+        assert!(moved(&tier));
+
+        // A touch, a pin and a load change no answer.
+        tier.touch(key(1));
+        tier.pin_external(&[key(1)]);
+        tier.unpin_external(&[key(1)]);
+        let now = load(&mut tier, &[key(1)], now);
+        assert!(!moved(&tier));
+
+        // An external reservation: pending, then resident or rolled back.
+        for (block, lands) in [(2, true), (3, false)] {
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.reserve_external(C, request_id(), &[key(block)], None, now)
+            else {
+                panic!("the block must be absent")
+            };
+            assert!(moved(&tier));
+            if lands {
+                tier.complete_external(transfer_id);
+            } else {
+                tier.cancel_external(transfer_id);
+            }
+            assert!(moved(&tier));
+        }
     }
 
     #[test]
