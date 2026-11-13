@@ -84,6 +84,10 @@ Helm, expand templates, or execute recipe shell. An unrendered
 
 ### 2. Generate and inspect the adaptation report
 
+Use an active AISim development environment with the `dev` extra installed
+(`uv pip install -e './python/aisim[dev]'` from the repository root). The helper
+requires `jsonschema`, which is not included in the base install.
+
 Run this command from the AISim repository root:
 
 ```bash

@@ -16,6 +16,10 @@ Create versioned AIC estimate requests without silently dropping operating point
 
 ## Adapt a known format
 
+Use an active AISim development environment with the `dev` extra installed
+(`uv pip install -e './python/aisim[dev]'` from the repository root). The helper
+requires `jsonschema`, which is not included in the base install.
+
 Run from the AISim repository root:
 
 ```bash
