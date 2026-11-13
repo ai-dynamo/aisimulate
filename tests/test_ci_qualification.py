@@ -59,7 +59,8 @@ def test_valid_manifest_is_accepted(case):
 
 
 def test_manifest_records_no_baseline_commit():
-    # The commit that last changed the manifest is the source of its values.
+    # The manifest records no source commit. Its history (git log -p) shows
+    # which PR changed the expected values.
     manifest = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())
     assert "baseline_source_sha" not in manifest
 
