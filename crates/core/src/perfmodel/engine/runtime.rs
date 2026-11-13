@@ -503,7 +503,7 @@ impl RankKey {
 /// function of its key, so a hit returns exactly what the dispatch would.
 const RANK_MEMO_CAPACITY: usize = 4096;
 
-/// Single-coordinate op results an [`OpMemo`] keeps: one entry per op
+/// Single-field op results an [`OpMemo`] keeps: one entry per op
 /// and token count (or batch size) its rank walks reached. A vLLM DP32 replay
 /// with 8192-token chunks reached about 56,000.
 const OP_MEMO_CAPACITY: usize = 131_072;
@@ -821,7 +821,7 @@ pub struct Engine {
     /// Ranks priced without diagnostics or lookup coverage, by workload;
     /// allocated on first use. See [`Self::rank_pricing`].
     rank_memo: OnceLock<Memo<RankKey, Arc<RankPricing>>>,
-    /// Single-coordinate op results shared by the rank memo's misses;
+    /// Single-field op results shared by the rank memo's misses;
     /// allocated on first use. See [`Self::operation_rank_latency_ms`].
     op_memo: OnceLock<OpMemo>,
     /// Name lists of walks without name slots, shared across ranks.
@@ -3714,7 +3714,7 @@ impl Engine {
         has_decode: bool,
         operations: &mut OperationObserver,
     ) -> Result<f64, AicError> {
-        let cache = self
+        let op_memo = self
             .op_memo
             .get_or_init(|| OpMemo::new(OP_MEMO_CAPACITY, &self.context_ops, &self.generation_ops));
         if self.has_dsv41_stages() {
@@ -3780,7 +3780,7 @@ impl Engine {
             return get_mix_step_ops(
                 &self.context_ops,
                 &self.generation_ops,
-                Some(cache),
+                Some(op_memo),
                 &self.db,
                 ctx_tokens,
                 gen_tokens,
@@ -3824,7 +3824,7 @@ impl Engine {
                     run_context_ops_planned(
                         &self.context_ops,
                         None,
-                        Some(cache),
+                        Some(op_memo),
                         &self.db,
                         n_prefill,
                         new_tokens_per_req,
@@ -3857,7 +3857,7 @@ impl Engine {
             total += run_generation_ops_step_planned(
                 &self.generation_ops,
                 None,
-                Some(cache),
+                Some(op_memo),
                 &self.db,
                 n_decode,
                 1,
@@ -5688,13 +5688,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn op_cache_answers_kv_independent_ops_with_the_dispatch_result() {
+    fn op_memo_answers_kv_independent_ops_with_the_dispatch_result() {
         // Each pair keeps a rank's token counts and changes only its KV: the
         // second walk reuses the first's GEMM and elementwise results and
         // re-prices only attention, yet matches a cold engine's dispatch.
         let engine = build_engine(None);
         let mut cold = build_engine(None);
-        let cache_len = |engine: &Engine| engine.op_memo.get().map_or(0, OpMemo::len);
+        let memo_len = |engine: &Engine| engine.op_memo.get().map_or(0, OpMemo::len);
         let pairs = [
             (rank_fpm(2, 1024, 256, 0, 0), rank_fpm(2, 1024, 4096, 0, 0)),
             (
@@ -5718,7 +5718,7 @@ pub(crate) mod tests {
                     .unwrap();
                 assert_eq!(warm.latency_ms.to_bits(), fresh.latency_ms.to_bits());
                 assert_eq!(warm.operations, fresh.operations);
-                let len = cache_len(&engine);
+                let len = memo_len(&engine);
                 assert!(len > 0);
                 // The KV-only change adds no entry.
                 assert_eq!(*entries.get_or_insert(len), len);
@@ -5727,11 +5727,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn op_cache_hits_note_the_tier_their_miss_fired() {
+    fn op_memo_hits_note_the_tier_their_miss_fired() {
         use crate::session::OpList;
         let engine = build_engine(None);
         let db = engine.database();
-        let cache = OpMemo::new(16, &engine.context_ops, &engine.generation_ops);
+        let memo = OpMemo::new(16, &engine.context_ops, &engine.generation_ops);
         // The fixture's leading rmsnorm reads only the token count.
         let op = &engine.context_ops[0];
         assert!(op.memo_field().is_some());
@@ -5740,7 +5740,7 @@ pub(crate) mod tests {
         db.reset_provenance();
         // A miss keeps the caller's tier and stores only the one it fired.
         db.note_provenance(ProvenanceTier::XQuant);
-        let miss = cache.query(db, OpList::Context, 0, &ctx, || {
+        let miss = memo.query(db, OpList::Context, 0, &ctx, || {
             db.note_provenance(ProvenanceTier::XShape);
             Ok(result.clone())
         });
@@ -5749,7 +5749,7 @@ pub(crate) mod tests {
         // A hit notes that stored tier although its query, which debug builds
         // re-run, fires none.
         db.reset_provenance();
-        let hit = cache.query(db, OpList::Context, 0, &ctx, || Ok(result.clone()));
+        let hit = memo.query(db, OpList::Context, 0, &ctx, || Ok(result.clone()));
         assert_eq!(hit.unwrap(), result);
         assert_eq!(db.worst_provenance(), ProvenanceTier::XShape);
     }

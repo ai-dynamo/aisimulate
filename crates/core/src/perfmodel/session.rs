@@ -78,17 +78,17 @@ impl OpMemo {
     }
 }
 
-/// [`OpMemo::query`] through `cache` when there is one.
+/// [`OpMemo::query`] through `op_memo` when there is one.
 fn shared_query(
-    cache: Option<&OpMemo>,
+    op_memo: Option<&OpMemo>,
     db: &PerfDatabase,
     list: OpList,
     index: usize,
     op: &Op,
     ctx: &RuntimeContext,
 ) -> Result<PerformanceResult, AicError> {
-    match cache {
-        Some(cache) => cache.query(db, list, index, ctx, || op.query(db, ctx)),
+    match op_memo {
+        Some(op_memo) => op_memo.query(db, list, index, ctx, || op.query(db, ctx)),
         None => op.query(db, ctx),
     }
 }
@@ -320,13 +320,13 @@ pub(crate) fn run_context_ops_with<'a>(
 }
 
 /// [`run_context_ops_with`] over an op list with its [`OpListPlan`], reusing
-/// `cache`'s results when given one. The sink also receives each op's index
+/// `op_memo`'s results when given one. The sink also receives each op's index
 /// in `ops`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_context_ops_planned<'a>(
     ops: &'a [Op],
     plan: Option<&OpListPlan>,
-    cache: Option<&OpMemo>,
+    op_memo: Option<&OpMemo>,
     db: &PerfDatabase,
     batch_size: u32,
     effective_isl: u32,
@@ -353,7 +353,7 @@ pub(crate) fn run_context_ops_planned<'a>(
                 seq_imbalance_correction_scale,
                 None,
             );
-            shared_query(cache, db, OpList::Context, index, op, &ctx)
+            shared_query(op_memo, db, OpList::Context, index, op, &ctx)
         })?;
         total += result.latency_ms;
         on_op(index, op, result);
@@ -501,13 +501,13 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
 }
 
 /// [`run_generation_ops_step_beamed_with`] over an op list with its
-/// [`OpListPlan`], reusing `cache`'s results when given one. The sink also
+/// [`OpListPlan`], reusing `op_memo`'s results when given one. The sink also
 /// receives each op's index in `ops`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_generation_ops_step_planned<'a>(
     ops: &'a [Op],
     plan: Option<&OpListPlan>,
-    cache: Option<&OpMemo>,
+    op_memo: Option<&OpMemo>,
     db: &PerfDatabase,
     batch_size: u32,
     beam_width: u32,
@@ -531,7 +531,7 @@ pub(crate) fn run_generation_ops_step_planned<'a>(
             continue;
         }
         let result = memo.query(index, || {
-            shared_query(cache, db, OpList::Generation, index, op, &ctx)
+            shared_query(op_memo, db, OpList::Generation, index, op, &ctx)
         })?;
         total += result.latency_ms;
         on_op(index, op, result);
@@ -611,13 +611,13 @@ pub(crate) fn generation_op_runtime(
 /// `on_op` observes each queried op: whether it runs in a context pass
 /// (passes 1 and 2) or the decode pass, its index in its op list, the op,
 /// its runtime context, its RAW result and the divisor the total applies to
-/// it (pass 2's `scale_factor`, otherwise 1). `cache`, when given, answers
-/// single-coordinate ops ([`OpMemo`]).
+/// it (pass 2's `scale_factor`, otherwise 1). `op_memo`, when given, answers
+/// single-field ops ([`OpMemo`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mix_step_ops<'a>(
     context_ops: &'a [Op],
     generation_ops: &'a [Op],
-    cache: Option<&OpMemo>,
+    op_memo: Option<&OpMemo>,
     db: &PerfDatabase,
     ctx_tokens: u32,
     gen_tokens: u32,
@@ -667,7 +667,7 @@ pub(crate) fn get_mix_step_ops<'a>(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        let result = shared_query(cache, db, OpList::Context, index, op, &ctx)?;
+        let result = shared_query(op_memo, db, OpList::Context, index, op, &ctx)?;
         total += result.latency_ms;
         on_op(true, index, op, &ctx, result, 1.0);
     }
@@ -703,7 +703,7 @@ pub(crate) fn get_mix_step_ops<'a>(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        let result = shared_query(cache, db, OpList::Context, index, op, &ctx)?;
+        let result = shared_query(op_memo, db, OpList::Context, index, op, &ctx)?;
         total += result.latency_ms / scale_factor;
         on_op(true, index, op, &ctx, result, scale_factor);
     }
@@ -730,7 +730,7 @@ pub(crate) fn get_mix_step_ops<'a>(
                 gen_seq_imbalance_correction_scale: 1.0,
                 num_image_tokens: 0,
             };
-            let result = shared_query(cache, db, OpList::Generation, index, op, &ctx)?;
+            let result = shared_query(op_memo, db, OpList::Generation, index, op, &ctx)?;
             total += result.latency_ms;
             on_op(false, index, op, &ctx, result, 1.0);
         }

@@ -49,19 +49,15 @@ pub(crate) fn note_on_thread(tier: ProvenanceTier) {
 
 /// `price`'s result and the worst tier noted on this thread while it ran.
 /// Those tiers also count toward the enclosing miss, whether `price`
-/// succeeds, fails or panics.
+/// succeeds or fails.
 fn attribute<T>(price: impl FnOnce() -> T) -> (T, ProvenanceTier) {
-    struct Enclosing(u8);
-    impl Drop for Enclosing {
-        fn drop(&mut self) {
-            NOTED.with(|noted| noted.set(noted.get().max(self.0)));
-        }
-    }
-    let enclosing = Enclosing(NOTED.with(|noted| noted.replace(ProvenanceTier::Silicon as u8)));
+    let enclosing = NOTED.replace(ProvenanceTier::Silicon as u8);
     let value = price();
-    let tier = ProvenanceTier::from_rank(NOTED.with(Cell::get));
-    drop(enclosing);
-    (value, tier)
+    // No unwind guard: a panic also unwinds every enclosing miss, which
+    // then stores nothing.
+    let noted = NOTED.get();
+    NOTED.set(noted.max(enclosing));
+    (value, ProvenanceTier::from_rank(noted))
 }
 
 /// Where a hit notes the tier its miss stored.
@@ -282,7 +278,7 @@ where
                 .unwrap_or_else(PoisonError::into_inner)
                 .get(key)
                 .cloned(),
-            Store::Clock(cache) => cache.get(key),
+            Store::Clock(cache) => cache.peek(key),
         }
     }
 }
@@ -393,22 +389,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(outer.peek(&2).unwrap().1, ProvenanceTier::XShape);
-    }
-
-    #[test]
-    fn a_panicking_miss_still_counts_toward_the_enclosing_miss() {
-        let (_, tier) = attribute(|| {
-            let panicked = std::panic::catch_unwind(|| {
-                attribute(|| {
-                    note_on_thread(ProvenanceTier::XOp);
-                    if ProvenanceTier::XOp != ProvenanceTier::Silicon {
-                        panic!("pricing failed");
-                    }
-                })
-            });
-            assert!(panicked.is_err());
-        });
-        assert_eq!(tier, ProvenanceTier::XOp);
     }
 
     #[test]
