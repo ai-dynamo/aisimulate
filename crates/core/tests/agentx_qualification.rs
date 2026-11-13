@@ -552,6 +552,86 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     assert_eq!(restore.output_length, 0);
 }
 
+/// [`g2_spec`] with one shared pool, on two workers per role of two
+/// attention-DP ranks each.
+fn g2_fleet_spec(disaggregated: bool, h2d: f64) -> ReplaySpec {
+    let mut spec = g2_spec(disaggregated, true, Some(8), h2d);
+    spec.topology = if disaggregated {
+        let pool = || WorkerPoolSpec {
+            initial_workers: 2,
+            ..Default::default()
+        };
+        ReplayTopology::Disaggregated {
+            prefill: pool(),
+            decode: pool(),
+            handoff_latency_ms: 1.0,
+        }
+    } else {
+        ReplayTopology::aggregated(2)
+    };
+    spec.engine["dp_size"] = serde_json::json!(2);
+    spec
+}
+
+#[rstest]
+fn agentx_g2_fleet_warmup_shares_the_pool_across_ranks_before_profiling(
+    #[values(false, true)] disaggregated: bool,
+) {
+    let mut spec = g2_fleet_spec(disaggregated, 1.0);
+    // The primer's two-block store takes 200 ms.
+    spec.engine["rank"]["native_host_offload"]["d2h_bandwidth_gbps"] = serde_json::json!(0.01);
+    let warm = run_g2(spec, g2_snapshot_driver(true, false));
+    let phases = warm.agentic_phases.as_ref().unwrap();
+    assert_eq!(phases.phase, AgenticReplayPhase::Profile);
+    let origin = phases.profile_start_ms.unwrap();
+    let settled = phases
+        .requests
+        .iter()
+        .filter_map(|row| row.quiescent_at_ms)
+        .max_by(f64::total_cmp)
+        .unwrap();
+    assert!(origin >= settled, "{phases:?}");
+    // The first warm-up request runs on another rank, so it restores the
+    // primer's prefix from the shared pool once that store has landed.
+    let second = &phases.requests[1];
+    let waited = second.quiescent_at_ms.unwrap() - second.dispatched_at_ms.unwrap();
+    assert!(waited >= 200.0, "{second:?}");
+    assert_eq!(warm.request_counts.completed_requests, 3);
+    assert_eq!(warm.g2_domains.len(), 1);
+    // Round-robin picks the rank, so the parent's two blocks come from that
+    // rank's G1 or from the pool.
+    let restore = g2_request(&warm, "restore");
+    let g1 = restore.first_admission_g1_reused_input_tokens.unwrap();
+    let host = restore.first_admission_host_reused_input_tokens.unwrap();
+    assert_eq!(g1 + host, 8);
+}
+
+#[rstest]
+fn agentx_g2_fleet_profile_cancels_a_restore_from_the_shared_pool(
+    #[values(false, true)] disaggregated: bool,
+) {
+    let mut driver = g2_snapshot_driver(false, true);
+    driver
+        .enable_agentic_profile(AgenticProfileOptions {
+            // As in the single-worker case: the restored parent's two-block
+            // H2D outlasts the profile.
+            duration_seconds: 0.1,
+            response_grace_seconds: 0.0,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut spec = g2_fleet_spec(disaggregated, 0.01);
+    spec.max_sim_time_ms = None;
+    let report = run_g2(spec, driver);
+    let profile = report.agentic_profile.as_ref().unwrap();
+    assert_eq!(profile.canceled_requests, 1, "{profile:?}");
+    assert_eq!(profile.client_in_flight_requests, 0);
+    assert_eq!(profile.server_unsettled_requests, 0);
+    assert_eq!(profile.finished_at_ms, Some(100.0));
+    let restore = g2_request(&report, "restore");
+    assert_eq!(restore.terminal_status, ReplayTerminalStatus::Canceled);
+}
+
 fn snapshot_pin_report(
     graph: &ValidatedAgenticGraph,
     mode: &str,

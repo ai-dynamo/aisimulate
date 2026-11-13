@@ -108,13 +108,12 @@ fallback can select OP without discarding the scheme.
 
 `kind: mtp` also supports [G2 host offload](kv-cache.md#host-offload-g2)
 on aggregated and token-only P/D vLLM workers with prefix caching enabled and
-any `attention_data`. An aggregated worker needs
-`host_offload.scope: dp_rank_local` and uses synchronous, single-module MTP
-with a uniform shared FullAttention cache. Prefill and decode workers take
-either scope and keep the lifecycle described under [MTP](#mtp); see
-[what G2 supports](kv-cache.md#supported). Agentic G2 additionally requires a
-single static aggregated worker with `attention_data: 1`. Separate draft
-models, other speculative schemes,
+any `attention_data`, including agentic traffic on static workers. An
+aggregated worker needs `host_offload.scope: dp_rank_local` and uses
+synchronous, single-module MTP with a uniform shared FullAttention cache.
+Prefill and decode workers take either scope and keep the lifecycle described
+under [MTP](#mtp); see [what G2 supports](kv-cache.md#supported). Separate
+draft models, other speculative schemes,
 asynchronous scheduling, and G3 are outside this combined
 scope. Keep the canonical `engine.speculation` block, fixed KV capacity and
 default timing; acceptance and seed remain workload assumptions. This composition
