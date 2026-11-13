@@ -292,12 +292,12 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         python-version: ["3.11", "3.12", "3.13"]
-    runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
+    runs-on: prod-aisim-default-${{ matrix.arch }}-v1
     timeout-minutes: 15
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       # Keep the license policy/tooling at the workflow revision. Older
@@ -351,7 +351,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: prod-aisimulate-default-amd64-v1
+            runner: prod-aisim-default-amd64-v1
             rust_target: x86_64-unknown-linux-gnu
             rustup_init_sha256: 4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
             uv_target: x86_64-unknown-linux-gnu
@@ -359,7 +359,7 @@ jobs:
             # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
             container_image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
           - arch: arm64
-            runner: prod-aisimulate-default-arm64-v1
+            runner: prod-aisim-default-arm64-v1
             rust_target: aarch64-unknown-linux-gnu
             rustup_init_sha256: 9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
             uv_target: aarch64-unknown-linux-gnu
@@ -379,7 +379,7 @@ jobs:
       # for the runner's node24-based actions.
       image: ${{ matrix.container_image }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
     defaults:
       run:
         shell: bash
