@@ -353,6 +353,9 @@ pub(crate) struct HostTier {
     /// Router identity of each block, retained while residency is published.
     meta: FxHashMap<HostBlockKey, HostBlockMeta>,
     completion_epoch: u64,
+    /// Bumped whenever an entry appears, disappears or becomes resident: the
+    /// only changes to what [`Self::lookup`] answers.
+    lookup_epoch: u64,
     next_transfer_id: u64,
     current_time_ms: f64,
     warned_structurally_unfittable: bool,
@@ -402,6 +405,7 @@ impl HostTier {
             clients: FxHashMap::default(),
             meta: FxHashMap::default(),
             completion_epoch: 0,
+            lookup_epoch: 0,
             next_transfer_id: 0,
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
@@ -623,6 +627,7 @@ impl HostTier {
 
         let transfer_id = self.allocate_transfer_id();
         self.admitted_blocks += missing.len() as u64;
+        self.lookup_epoch += 1;
         for key in &missing {
             let mut entry = Entry {
                 state: EntryState::PendingStore { transfer_id },
@@ -681,6 +686,7 @@ impl HostTier {
     }
 
     fn remove_residents(&mut self, request_id: Uuid, victims: &[HostBlockKey], now_ms: f64) {
+        self.lookup_epoch += 1;
         for victim in victims {
             let mut entry = self
                 .entries
@@ -894,6 +900,7 @@ impl HostTier {
             .remove(&id)
             .filter(|transfer| transfer.kind == Kind::External)
             .expect("external G2 reservation missing");
+        self.lookup_epoch += 1;
         for key in &transfer.blocks {
             let entry = self.entries.get_mut(key).unwrap();
             assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
@@ -932,6 +939,7 @@ impl HostTier {
             "external G2 reservation missing"
         );
         let transfer = self.transfers.remove(&id).unwrap();
+        self.lookup_epoch += 1;
         for key in transfer.blocks {
             let mut entry = self.entries.remove(&key).unwrap();
             assert_eq!(entry.load_pins, 0);
@@ -1141,6 +1149,12 @@ impl HostTier {
             Some(EntryState::PendingStore { transfer_id }) => Lookup::Pending { transfer_id },
             Some(EntryState::Resident) => Lookup::Hit,
         }
+    }
+
+    /// Changes whenever any key's [`Self::lookup`] answer does, so answers
+    /// read at one epoch hold until it moves.
+    pub(crate) fn lookup_epoch(&self) -> u64 {
+        self.lookup_epoch
     }
 
     /// Apply framework-defined recency order. Not-ready or pinned blocks are
@@ -1424,6 +1438,7 @@ impl HostTier {
                 .clients
                 .get(&client)
                 .is_some_and(|client| client.holds_completed_sources);
+            self.lookup_epoch += 1;
             for key in &blocks {
                 let entry = self
                     .entries
