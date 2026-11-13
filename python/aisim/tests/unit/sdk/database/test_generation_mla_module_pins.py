@@ -18,14 +18,14 @@ import pytest
 from aisim.sdk import common
 from aisim.sdk.perf_database import get_database
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("raw_data_coordinates")]
 
 
 @pytest.mark.parametrize(
     ("system", "b", "s", "num_heads", "gemm", "expected_ms"),
     [
-        # Re-anchored to the current slot (1.3.0rc20) after the version-slot
-        # adoption: pins hold the primary rows' numbers, no longer sensitive
+        # Anchored to the 1.3.0rc20 collection (a raw data coordinate since it
+        # left the slots): pins hold the primary rows' numbers, not sensitive
         # to sibling/cross-backend donor churn on retired versions.
         ("gb200", 8, 4097, 128, common.GEMMQuantMode.bfloat16, 0.0979000000000000),
         ("gb200", 8, 3000, 128, common.GEMMQuantMode.bfloat16, 0.0961323730468750),

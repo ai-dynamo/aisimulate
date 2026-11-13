@@ -391,9 +391,10 @@ def test_native_attention_preserves_positional_options_and_keyword_widths(round_
 def real_database():
     from aisim_core.sdk.perf_database import get_database_view
 
-    return get_database_view("h100_sxm", "vllm", "0.24.0")
+    return get_database_view("h100_sxm", "vllm", "0.24.0", allow_unlisted_version=True)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("draft_count", [1, 3, 7])
 @pytest.mark.parametrize("batch_size", [1, 512])
@@ -425,6 +426,7 @@ def test_every_standalone_draft_op_matches_independent_decode(real_database, dra
         assert actual[f"draft_{name}"] == pytest.approx(draft_count * latency, rel=1e-10), name
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("tree_shape", [[1, 1], [2, 3], [4, 8]])
 @pytest.mark.parametrize("batch_size", [1, 512])
@@ -472,6 +474,7 @@ def test_every_tree_draft_op_queries_its_own_width(real_database, tree_shape, ba
         assert actual[2] == pytest.approx(expected.energy, rel=1e-10), actual[0]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("mutation", ["params", "draft_config"])
 def test_materialized_config_snapshot_keeps_cache_and_graph_consistent(real_database, mutation):
@@ -518,6 +521,7 @@ def test_materialized_config_snapshot_keeps_cache_and_graph_consistent(real_data
         _engine_handle_cache_clear()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
 def test_draft_query_width_survives_copy_and_standalone_consumer(real_database, round_trip):
@@ -571,6 +575,7 @@ def test_draft_width_does_not_silently_admit_unsupported_python_graphs():
         build_ops_json([op])
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("draft_path", ["Qwen/Qwen3-30B-A3B", "Qwen/Qwen3.5-35B-A3B"])
 @pytest.mark.parametrize("draft_count", [1, 3])
@@ -619,6 +624,7 @@ def test_moe_draft_native_forward_repetition_preserves_context_and_metadata(real
             assert row[3:] == (source, metadata), name
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("ctx_tokens,gen_requests,prefix", [(0, 7, 0), (128, 0, 64), (128, 7, 64), (8000, 7, 64)])
 def test_mixed_draft_native_phases_match_independent_queries(real_database, ctx_tokens, gen_requests, prefix):
@@ -685,6 +691,7 @@ def _assert_public_mixed_rows(estimate, native):
     assert sum(estimate.per_op_latency_ms.values()) == pytest.approx(estimate.latency_ms)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("gen_requests", [0, 7])
 @pytest.mark.parametrize("database_mode", ["SILICON", "SOL"])
@@ -722,6 +729,7 @@ def test_public_mixed_draft_names_values_and_sources_match_native(draft, databas
     _assert_public_mixed_rows(estimate, native)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("gen_requests", [0, 7])
 @pytest.mark.parametrize("depth", [0, 2])
@@ -748,6 +756,7 @@ def test_public_mixed_ar_and_mtp_keep_legacy_names_and_defaults(real_database, g
         assert estimate.per_op_source["generation_attention"] == "silicon"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_database, monkeypatch):
     from aisim.sdk.inference_session import InferenceSession
@@ -787,6 +796,7 @@ def test_public_mixed_duplicate_draft_names_merge_sources_and_metadata(real_data
     assert estimate.moe_comm_fallbacks == (MoECommFallback(*context_fallback), MoECommFallback(*generation_fallback))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("gen_requests", [0, 1])
 def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests):
@@ -848,6 +858,7 @@ def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests)
         _engine_handle_cache_clear()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 @pytest.mark.parametrize("round_trip", ["copy", "deepcopy", "pickle"])
 def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(real_database, round_trip):

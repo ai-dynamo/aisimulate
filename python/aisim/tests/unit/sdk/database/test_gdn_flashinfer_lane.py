@@ -40,7 +40,7 @@ import pytest
 from aisim.sdk.perf_database import get_database
 from aisim_core.sdk.operations.mamba import GDNKernel
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("raw_data_coordinates")]
 
 # Arbitrary synthetic shape for the pure-SOL formula tests below (no data
 # lookup involved — see ``database_mode="SOL"``), same convention as

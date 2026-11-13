@@ -62,6 +62,7 @@ def test_query_gdn_vllm_0271_context_scan_prefers_own_flashinfer_rows():
     assert float(result) == pytest.approx(own_raw, rel=1e-9)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_query_gdn_vllm_0240_context_scan_still_resolves_own_flashinfer_rows():
     """Version-gate widening preserves the existing 0.24.0 alias walk."""
     db = get_database("gb300", "vllm", "0.24.0")

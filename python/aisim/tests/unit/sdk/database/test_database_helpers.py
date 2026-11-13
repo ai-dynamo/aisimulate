@@ -398,6 +398,7 @@ def test_perf_database_clear_runtime_caches_clears_lru_state(perf_database):
     assert cache_clear_calls == ["cleared"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_empirical_and_silicon_views_use_distinct_shared_layer_templates(perf_database):
     """Formula-only views must not inherit sibling SILICON rows."""
     empirical = perf_database.get_database_view("b200_sxm", "trtllm", "1.3.0rc20", database_mode="EMPIRICAL")
@@ -408,6 +409,7 @@ def test_empirical_and_silicon_views_use_distinct_shared_layer_templates(perf_da
     assert silicon.enable_shared_layer is True
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_database_view_configuration_is_isolated_and_same_key_is_reused(perf_database):
     from aisim.sdk import common
 
@@ -462,6 +464,7 @@ def test_database_view_configuration_is_isolated_and_same_key_is_reused(perf_dat
         template.clear_runtime_caches()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_configured_view_cache_normalizes_keys_and_separates_roots(perf_database):
     import copy
 
@@ -492,6 +495,7 @@ def test_configured_view_cache_normalizes_keys_and_separates_roots(perf_database
     template.clear_runtime_caches()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_clearing_template_runtime_caches_refreshes_configured_copy(perf_database):
     from aisim.sdk import common
 
@@ -519,6 +523,7 @@ def test_clearing_template_runtime_caches_refreshes_configured_copy(perf_databas
         template.clear_runtime_caches()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_configured_view_rejects_incompatible_shared_layer_template(perf_database):
     from aisim.sdk import common
 

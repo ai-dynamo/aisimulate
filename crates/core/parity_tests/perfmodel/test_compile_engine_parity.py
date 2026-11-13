@@ -80,7 +80,7 @@ pytestmark = pytest.mark.integration
 #            Fallback-MLA path and the sglang perf tables.
 #   trtllm : gpt-oss-20b (MoE -> exercises the `TrtllmAlltoall` flavor +
 #            trtllm comm quant + trtllm MoE) and Nemotron-Super-49B (dense,
-#            CustomAllReduce-heavy), both b200_sxm/trtllm/current (1.3.0rc20). The MoE
+#            CustomAllReduce-heavy), both b200_sxm/trtllm/current. The MoE
 #            case is the load-bearing one: it is the only subset member that
 #            hits the trtllm dispatch-flavor branch.
 _SUBSET_IDS_BY_BACKEND = {
@@ -598,8 +598,9 @@ def _build_wideep_sglang():
         _WIDEEP_SGLANG_SYSTEM,
         "sglang",
         _WIDEEP_SGLANG_VERSION,
-        # Current-slot primary data plus approved cross-version donors for
-        # the large-EP tables form the production H200 query shape.
+        # This version's primary data plus approved cross-version donors for
+        # the large-EP tables; a frozen data coordinate outside the slots.
+        allow_unlisted_version=True,
     )
     assert database is not None, f"missing shipped {_WIDEEP_SGLANG_SYSTEM}/sglang/{_WIDEEP_SGLANG_VERSION} database"
     compute_eps = database.moe_expert_compute_coverage(
@@ -649,8 +650,9 @@ def _build_gb200_wideep_sglang():
         _GB200_WIDEEP_SGLANG_SYSTEM,
         "sglang",
         _GB200_WIDEEP_SGLANG_VERSION,
-        # Current-slot primary data plus approved cross-version donors for
-        # the large-EP tables form the production GB200 query shape.
+        # This version's primary data plus approved cross-version donors for
+        # the large-EP tables; a frozen data coordinate outside the slots.
+        allow_unlisted_version=True,
     )
     assert database is not None, (
         f"missing shipped {_GB200_WIDEEP_SGLANG_SYSTEM}/sglang/{_GB200_WIDEEP_SGLANG_VERSION} database"
@@ -826,7 +828,8 @@ def _build_wideep_trtllm():
     shared by the parity test (handle side) and the golden capture."""
     from aisim.sdk import common
 
-    database = _quiet(perf_database.get_database, "gb200", "trtllm", "1.3.0rc20")
+    # A frozen data coordinate outside the queryable slots.
+    database = _quiet(perf_database.get_database, "gb200", "trtllm", "1.3.0rc20", allow_unlisted_version=True)
     if database is None:
         pytest.skip("no perf database for gb200/trtllm/1.3.0rc20")
     model_config = config.ModelConfig(

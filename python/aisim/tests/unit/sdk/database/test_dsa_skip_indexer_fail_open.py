@@ -7,7 +7,7 @@ import pytest
 
 from aisim.sdk.operations.dsa import ContextDSAModule, GenerationDSAModule
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("raw_data_coordinates")]
 
 
 @pytest.mark.parametrize(

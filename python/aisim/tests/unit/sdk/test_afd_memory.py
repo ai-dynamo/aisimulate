@@ -506,6 +506,7 @@ def test_kv_gate_agrees_with_the_shared_budget_formula(monkeypatch, of_free, res
         _check_a_pool(a_weight_gb=weights)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_mtp_memory_scales_only_decode_and_reduces_kv_budget():
     from aisim.sdk.backends.factory import get_backend
 

@@ -918,6 +918,7 @@ def test_vetoed_primary_with_no_donor_loads_nothing_through_the_engine_view(syst
     assert view is None or not view, f"the vetoed primary leaked into the engine view: {view!r}"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm", "gb200", "gb300", "h100_sxm", "h200_sxm"])
 def test_corrected_024_gemm_uses_declared_025_measurements(system):
     """Every unshadowed donor row loads; retained 0.24 primary latencies win."""

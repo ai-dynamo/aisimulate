@@ -561,7 +561,11 @@ def _planner(
         **overrides,
     }
     model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**fields))
-    reference = _native(worker, estimator_config={})
+    # The reference only shapes the synthetic observations. This tiny model's
+    # decode estimate is flat in batch and KV tokens to within table noise, and
+    # on the vLLM 0.32.0 tables the non-negative fit collapses to zero slopes
+    # (store never ready), so keep the collection the fixture was tuned on.
+    reference = _native(worker, estimator_config={}, backend_version="0.30.0")
     iterations = []
     for index in range(48):
         prefills, decodes = 1 + index % 4, 1 + index % 8

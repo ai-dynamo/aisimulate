@@ -183,6 +183,7 @@ def _sources(model, *, prefill):
     return {op["name"]: op["source"] for op in ops}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
     model = RustForwardPassPerfModel.best_available(_silicon("sglang", "0.5.14"))
     try:
@@ -204,6 +205,7 @@ def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
     assert {decode["generation_mamba_conv1d"], decode["generation_mamba_ssm"]} == {"sol"}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_vllm_silicon_has_no_nvfp4_moe_rows_at_top_k_22():
     model = RustForwardPassPerfModel.best_available(_silicon("vllm", "0.24.0"))
     try:

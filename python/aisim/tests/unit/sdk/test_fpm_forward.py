@@ -702,6 +702,7 @@ class TestForwardModelRewrite:
         # Weight bytes captured from the original lists keep memory estimation intact.
         assert model.context_ops[0].get_weights() == pytest.approx(expected_weights)
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_fpm_spec_preserves_explicit_attention_backend_for_nested_ops(self):
         from aisim.sdk.engine import build_engine_spec_json
         from aisim.sdk.perf_database import get_database
@@ -741,6 +742,7 @@ class TestForwardModelRewrite:
         assert context_lane_order[0] == attention_backend
         assert generation_lane_order[0] == attention_backend
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_fpm_spec_carries_external_parquet_path(self):
         from aisim_core.sdk.engine import build_engine_spec_json
 

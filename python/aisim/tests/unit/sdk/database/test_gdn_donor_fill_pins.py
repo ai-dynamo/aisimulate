@@ -25,7 +25,7 @@ import pytest
 from aisim.sdk.perf_database import get_database
 from aisim_core.sdk.operations.mamba import GDNKernel
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("raw_data_coordinates")]
 
 
 def _gdn_context_lane(db, kernel_source, model_key):

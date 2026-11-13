@@ -15,6 +15,7 @@ from aisim.sdk import common, engine
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     ("system", "version", "explicit", "expected"),
     [

@@ -32,6 +32,7 @@ def _config(replay=False, backend="sglang"):
     }
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_builder_preserves_replay_and_backend_guard():
     sample = {
         "version": 1,
@@ -59,6 +60,7 @@ def test_compile_engine_rejects_unsupported_decoder_replay(model_path, backend):
         compile_engine(model_path, "gb300", backend, decoder_replay=True)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("extends", [((1, 1023), (1023, 1)), ((512, 512), (512, 512)), ((1, 1023), (2, 1022))])
 def test_replay_fpm_rejects_multiple_prefills_even_with_equal_prompts(extends):
     # FPM v1 reports variance of full prompt lengths, not actual extends.
@@ -82,6 +84,7 @@ def test_replay_fpm_rejects_multiple_prefills_even_with_equal_prompts(extends):
     assert full.estimate_forward_pass_time_ms(sample) > 0
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("query", [1, 127, 128, 129])
 def test_replay_fpm_single_prefill_matches_explicit_static_geometry(query):
     from aisim_core.sdk.engine import EngineHandle
@@ -111,6 +114,7 @@ def test_replay_fpm_single_prefill_matches_explicit_static_geometry(query):
     )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_compile_engine_resolves_v41_native_expert_lane(monkeypatch):
     from aisim_core.sdk import engine
 

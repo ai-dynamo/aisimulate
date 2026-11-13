@@ -217,6 +217,7 @@ def test_model_preflight_rejects_interleaved_dense_before_database_preparation()
         validate_afd_model("meta-llama/Llama-4-Maverick-17B-128E-Instruct")
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("fallback_policy", ["deny", "allow", "regression"])
 def test_canonical_pool_constructor_cannot_fallback_from_nonprefix_dense(fallback_policy):
     from aisim_core.sdk import RustForwardPassPerfModel

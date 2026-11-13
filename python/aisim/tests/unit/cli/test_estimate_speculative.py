@@ -190,6 +190,7 @@ print(json.dumps({"tpot": result.tpot, "costs": costs}))
     assert hybrid["tpot"] == pytest.approx((target_ms + sum(op_drafts.values())) / 2.8, abs=0.0005 / 2.8 + 0.0005)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("consumer", ["cli_estimate", "task"])
 def test_aggregate_prices_different_draft_work_at_identical_verification_width(consumer):
     from aisim.sdk.task_v2 import Task
@@ -232,6 +233,7 @@ def test_aggregate_prices_different_draft_work_at_identical_verification_width(c
 
 
 class TestEstimateSpeculativeBlock:
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_agg_scheme_folds_acceptance(self):
         baseline = cli_estimate(mode="agg", **COMMON)
         spec = cli_estimate(mode="agg", speculative=SPEC_BLOCK, **COMMON)
@@ -246,11 +248,13 @@ class TestEstimateSpeculativeBlock:
         zero = cli_estimate(mode="agg", speculative={**SPEC_BLOCK, "accepted_tokens": 0.0}, **COMMON)
         assert spec.tpot < zero.tpot
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_static_gen_scheme_projection(self):
         baseline = cli_estimate(mode="static_gen", **COMMON)
         spec = cli_estimate(mode="static_gen", speculative=SPEC_BLOCK, **COMMON)
         assert 0 < spec.tpot < baseline.tpot
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_mtp_sugar_still_desugars_to_nextn(self):
         # mtp inside the block must be EXACTLY the legacy pair: a wrong
         # acceptance mapping or a silent AR fallback would still produce a
@@ -265,6 +269,7 @@ class TestEstimateSpeculativeBlock:
         assert explicit.tpot == pytest.approx(legacy.tpot)
         assert explicit.tpot != pytest.approx(baseline.tpot)  # not an AR fallback
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_mtp_block_still_valid_for_disagg(self):
         # The disagg rejection below covers SCHEME methods only: mtp
         # desugars to the legacy nextn pair and must keep working outside
@@ -364,6 +369,7 @@ def test_cli_draft_count_uses_scheme_parameter(cli_parser, method, token_key):
     assert _speculative_block_from_args(args)["params"] == {token_key: 3}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_cli_flags_reach_real_estimate(cli_parser, monkeypatch, capsys):
     import aisim.legacy_cli.api as cli_api
     import aisim.legacy_cli.main as cli_main
@@ -393,6 +399,7 @@ def test_cli_flags_reach_real_estimate(cli_parser, monkeypatch, capsys):
     assert "Performance Estimate" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_cli_aggregate_draft_flags_price_full_native_draft_work(cli_parser, monkeypatch, capsys):
     import math
 
@@ -496,6 +503,7 @@ def test_cli_mtp_block_preserves_auto_depth(cli_parser, monkeypatch, depth):
     assert (args.nextn, args.nextn_accepted) == (depth, 0.7)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_estimate_mtp_block_without_depth_preserves_resolved_auto(monkeypatch):
     monkeypatch.setattr("aisim.legacy_cli.api._resolve_nextn_auto", lambda path: 1)
     explicit = cli_estimate(

@@ -145,12 +145,14 @@ shards.
 The pinned runtimes are data coordinates `vllm/0.31.0` (stock v0.31.0, no overlay)
 and `sglang/0.5.20`. The GLM Ops tables for GB300, GB200, B300 (`b300_sxm`),
 H200 (`h200_sxm`) and H100 (`h100_sxm`) are packaged under
-`systems/data/<system>/<family>/<backend>/<version>/`. Because they are the
-newest data-backed vLLM and SGLang versions in the tree, they are the fleet
-`next` slot (`systems/query_versions.yaml`). Select them with the explicit
-`backend_version` (or `next`) and `enable_shared_layer=False`:
+`systems/data/<system>/<family>/<backend>/<version>/`. Both are older than the
+`current` slots (vLLM 0.32.0, SGLang 0.5.23 in `systems/query_versions.yaml`)
+and are not queryable versions; the full GLM table set has not been collected
+at the current versions. Set `AIC_ALLOW_UNLISTED_VERSIONS=1` and select them with the
+explicit `backend_version` and `enable_shared_layer=False`:
 
 ```python
+# Run with AIC_ALLOW_UNLISTED_VERSIONS=1.
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 model = RustForwardPassPerfModel.best_available(
@@ -178,9 +180,10 @@ on H100/H200 with **vLLM >= 0.32.0** or **SGLang >= 0.5.22**. Select the
 does not silently convert KV precision. Earlier runtimes still reject the
 FP8 request with a version-specific diagnostic.
 
-These newer versions are not yet in the packaged queryable-version slots.
-For an analytical evaluation, opt in with `AIC_ALLOW_UNLISTED_VERSIONS=1`
-and select `database_mode="SOL"`. For example:
+vLLM 0.32.0 is the `current` slot. SGLang 0.5.22 has no packaged data and is
+not a queryable version; the `current` SGLang slot (0.5.23) also qualifies.
+For an analytical evaluation of an unlisted version, opt in with
+`AIC_ALLOW_UNLISTED_VERSIONS=1` and select `database_mode="SOL"`. For example:
 
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 python - <<'PY'

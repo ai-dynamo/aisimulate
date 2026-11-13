@@ -56,6 +56,7 @@ def _encoder_df(mode: str, *, latency: float = 1.25, memory: float = 0.5) -> pd.
     return pd.DataFrame({"encoder_latency": [latency, latency], memory_column: [memory, memory]})
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("model", QWEN3_VL_MODELS)
 def test_all_default_qwen3_vl_variants_have_encoder_implementations_and_image_commands(monkeypatch, model):
     calls = []
@@ -90,6 +91,7 @@ def test_all_default_qwen3_vl_variants_have_encoder_implementations_and_image_co
     assert "--num-images 1" in commands["agg"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     "model",
     [
@@ -121,6 +123,7 @@ def test_dense_and_moe_qwen3_vl_cover_agg_and_disagg_without_text_only_duplicate
     assert all(call["image_workload"] == SUPPORT_MATRIX_IMAGE_WORKLOAD for call in calls)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     ("mode", "latency", "memory", "expected_field"),
     [
@@ -439,6 +442,7 @@ def test_legacy_encoder_row_cannot_be_upgraded_without_image_evidence(tmp_path, 
         SupportMatrix.__new__(SupportMatrix).save_results_to_csv([row], str(tmp_path / "support.csv"))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     ("system", "backend", "version", "expected"),
     [
@@ -620,6 +624,7 @@ def test_preflight_replay_command_must_not_carry_image_arguments(monkeypatch):
     assert any("must not carry image arguments" in error for error in errors)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("model", ["Qwen/Qwen3.5-27B", "nvidia/Qwen3.6-35B-A3B-NVFP4"])
 def test_qwen35_encoder_is_implemented_through_the_nested_vision_config(monkeypatch, model):
     calls = []

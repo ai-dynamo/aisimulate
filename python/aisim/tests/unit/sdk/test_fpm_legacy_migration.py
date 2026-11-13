@@ -32,6 +32,7 @@ def _reload(canonical):
     return ForwardPassPerfModelConfig(**json.loads(json.dumps(canonical.to_dict())))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("role", ["a", "f"])
 def test_legacy_afd_pool_identity_survives_migration_reload_and_compilation(role, monkeypatch):
     from aisim_core.sdk import engine
@@ -69,6 +70,7 @@ def test_legacy_afd_pool_identity_rejects_an_unsupported_backend():
         ForwardPassPerfModelConfig.from_legacy_engine_config(_legacy_config(afd_pool_role="a"), "aggregated")
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode", ["auto", "fixed", "dynamic_local", "hybrid"])
 def test_correction_mode_survives_reload_and_controls_native_feedback(mode):
     config = ForwardPassPerfModelConfig(

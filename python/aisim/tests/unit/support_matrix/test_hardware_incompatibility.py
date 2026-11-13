@@ -148,6 +148,7 @@ def test_run_single_test_propagates_hardware_preflight_failures(monkeypatch):
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     ("model", "backend", "version", "message"),
     [

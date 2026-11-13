@@ -299,8 +299,9 @@ def test_sol_tp8_preserves_hopper_kv_identity_with_fixed_runtimes(backend, versi
     # inventory exceeds TP4 headroom on H100). SOL needs only the system spec.
     # Fixed runtime versions admit both KV identities without coercing FP8
     # to BF16; the selected identity must survive a saved-config round trip.
-    # These runtimes are not yet packaged query-version slots: use the public
-    # opt-in without claiming a maintained measured-data baseline.
+    # SGLang 0.5.22 has no packaged data and is not a query-version slot (vLLM
+    # 0.32.0 is the current slot): use the public opt-in without claiming a
+    # maintained measured-data baseline.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     config = ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
@@ -362,10 +363,10 @@ def _hopper_sol(system, backend, tp, kv=None, backend_version=None):
 def test_fp8_sparse_kv_is_rejected_on_hopper_with_older_runtimes(system, tp, backend, version, monkeypatch):
     # The pinned older runtimes lack the Hopper FP8 KV fixes; selecting a
     # newer runtime must not silently change the behavior of these versions.
-    # These are raw data coordinates: sglang 0.5.20 sits between the
-    # previous (0.5.14) and current (0.5.21) slots since the 2026-10
-    # campaign, so the fixture escape is needed exactly as in the fixed-
-    # runtime test below.
+    # These are raw data coordinates: since the 2026-11 campaign vLLM 0.31.0
+    # sits between the previous (0.30.0) and current (0.32.0) slots and SGLang
+    # 0.5.20 is older than both of its slots, so the fixture escape is needed
+    # exactly as in the fixed-runtime test below.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     for kv in ("fp8", None):
         with pytest.raises(Exception, match=r"SM90.*bfloat16"):
@@ -394,9 +395,8 @@ def test_hopper_kv_capability_is_versioned_in_compiled_engine_handles(backend, v
     # without forward-pass readiness; the runtime-version rule holds there too.
     from aisim_core.sdk.engine import EngineHandle
 
-    # Every version here is a raw data coordinate (the fixed runtimes, and
-    # sglang 0.5.20 which sits between the previous and current slots since
-    # the 2026-10 campaign); vllm 0.31.0 happens to be the derived `next`.
+    # vLLM 0.31.0, SGLang 0.5.20 and SGLang 0.5.22 are raw data coordinates
+    # outside the slots; vLLM 0.32.0 is the current slot.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
 
     def compile_handle(kv):
@@ -589,9 +589,9 @@ def test_silicon_requires_exact_runtime_glm_tables():
 )
 def test_packaged_silicon_prices_each_sparse_attention_layer_from_its_table(path, system, tp, kv, monkeypatch):
     # The GLM-5.3-Flash attention and all-reduce tables are packaged for vLLM 0.31.0
-    # only. Since the vLLM 0.32.0 tables arrived, 0.31.0 is no longer a queryable slot
-    # (0.32.0 is the derived next): these are raw data coordinates, as in the fixed-
-    # runtime tests below, until the two tables are collected at 0.32.0.
+    # only. 0.31.0 is older than the current slot (0.32.0) and not queryable: these
+    # are raw data coordinates, as in the fixed-runtime tests below, until the two
+    # tables are collected at 0.32.0.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     config = replace(
         _config("SILICON", backend_version="0.31.0", enable_shared_layer=False),

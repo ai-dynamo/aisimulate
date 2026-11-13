@@ -594,6 +594,7 @@ def _phase_attention(model):
     return result
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("layout", _SILICON_LAYOUTS, ids=lambda layout: "tp{}-moetp{}-ep{}".format(*layout))
 @pytest.mark.parametrize(("backend", "version"), _SILICON_RUNTIMES)
 @pytest.mark.parametrize("system", _SILICON_SYSTEMS)
@@ -613,6 +614,7 @@ def test_packaged_silicon_covers_the_checkpoint_precision(glm53_export, system, 
         model.close()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_coarse_attention_mode_has_no_silicon_rows(glm53, monkeypatch):
     # Negative control: pricing attention at the coarse fp8_static mode (the
     # behaviour without the targets-only rule) selects DSA rows that do not exist.

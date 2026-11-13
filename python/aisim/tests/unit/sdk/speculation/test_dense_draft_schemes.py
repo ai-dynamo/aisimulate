@@ -580,6 +580,7 @@ def test_public_standalone_draft_rejects_mismatched_injected_geometry():
         REPLAY_CONFIG.validate_python(changed)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("cost", REPLAY_SCHEMES)
 def test_canonical_cost_preserves_all_schemes_without_replay_expansion(cost):
     model = RustForwardPassPerfModel.best_available(
@@ -626,6 +627,7 @@ def test_disabled_scheme_is_cost_only():
         REPLAY_CONFIG.validate_python({"kind": "none", "expected_accepted_tokens": 0})
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     "cost,target,backend,tp,error",
     [
