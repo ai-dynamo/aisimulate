@@ -8,10 +8,10 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.config.engine import AFDSearchRecommendationConfig, AFDTopologyPredictionConfig
-from aisimulate.sweeper.afd_parallel import (
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig
+from aisim.config.engine import AFDSearchRecommendationConfig, AFDTopologyPredictionConfig
+from aisim.sweeper.afd_parallel import (
     AFDInfeasible,
     AFDReasonCategory,
     AFDSearchConfig,
@@ -19,7 +19,7 @@ from aisimulate.sweeper.afd_parallel import (
     enumerate_afd_topologies,
     validate_afd_model,
 )
-from aisimulate_core._native import resolve_afd_parallelism, validate_afd_model_shape
+from aisim_core._native import resolve_afd_parallelism, validate_afd_model_shape
 
 
 def _topology(**overrides):
@@ -108,7 +108,7 @@ def test_unsupported_geometry_raises_not_implemented(changes, match):
     ],
 )
 def test_model_gate_uses_source_features(shape, match, monkeypatch):
-    from aisimulate_core.sdk.models import afd
+    from aisim_core.sdk.models import afd
 
     monkeypatch.setattr(
         afd,
@@ -127,7 +127,7 @@ def test_model_gate_uses_source_features(shape, match, monkeypatch):
 
 
 def test_missing_source_facts_are_not_defaulted_to_supported(monkeypatch):
-    from aisimulate_core.sdk.models import afd
+    from aisim_core.sdk.models import afd
 
     monkeypatch.setattr(afd, "_get_model_info", lambda model: dict(layers=48, num_experts=128, topk=8))
     with pytest.raises(ValueError, match="num_shared_experts"):
@@ -187,6 +187,6 @@ def test_predict_tp_reaches_standard_data_preflight(monkeypatch):
             },
         }
     )
-    monkeypatch.setattr("aisimulate.compiler.validate_afd_model", lambda *args: {"num_experts": 128})
+    monkeypatch.setattr("aisim.compiler.validate_afd_model", lambda *args: {"num_experts": 128})
     with pytest.raises(RuntimeError, match="no perf database"):
         prediction_to_replay_spec(config)

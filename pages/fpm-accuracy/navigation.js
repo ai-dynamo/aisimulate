@@ -32,8 +32,8 @@
     time.dateTime = date;
     const items = [
       item('span', 'Daily evaluation'), time,
-      item('a', 'Evaluation run', `https://github.com/ai-dynamo/aisimulate/actions/runs/${snapshot.run_id}/attempts/${snapshot.run_attempt}`, 'evaluation-run'),
-      item('a', `AISim ${snapshot.commit_sha.slice(0,8)}`, `https://github.com/ai-dynamo/aisimulate/commit/${encodeURIComponent(snapshot.commit_sha)}`, 'evaluation-aisim'),
+      item('a', 'Evaluation run', `https://github.com/ai-dynamo/aisim/actions/runs/${snapshot.run_id}/attempts/${snapshot.run_attempt}`, 'evaluation-run'),
+      item('a', `AISim ${snapshot.commit_sha.slice(0,8)}`, `https://github.com/ai-dynamo/aisim/commit/${encodeURIComponent(snapshot.commit_sha)}`, 'evaluation-aisim'),
       item('a', `HF ${snapshot.hf_revision.slice(0,8)}`, `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/${encodeURIComponent(snapshot.hf_revision)}`, 'evaluation-hf'),
     ];
     items.forEach((element, index) => {

@@ -11,12 +11,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use aisimulate_core::engine::{
+use aisim_core::engine::{
     Backend, EngineConfig, KvEvent, KvEventData, KvEventTier, SglangConfig, SglangHiCacheConfig,
     SglangHiCacheWritePolicy, TimingModelConfig,
 };
-use aisimulate_core::replay::loadgen::ReplayRequestPayload;
-use aisimulate_core::replay::{
+use aisim_core::replay::loadgen::ReplayRequestPayload;
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, CURRENT_REPLAY_SPEC_VERSION, EngineEventBatch, NoReplayMetadata,
     PerRequestRecord, Placement, PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement,
     ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,

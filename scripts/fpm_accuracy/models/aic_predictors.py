@@ -221,16 +221,16 @@ def _import_aisim_forward_pass_perf_model() -> Any:
     """Import AISim only when a concrete predictor is constructed."""
 
     try:
-        from aisimulate_core.sdk import RustForwardPassPerfModel
+        from aisim_core.sdk import RustForwardPassPerfModel
     except ImportError as exc:
         raise DependencyError(
-            "AISim predictors require aisimulate. Install the sibling AISim checkout in this environment."
+            "AISim predictors require aisim. Install the sibling AISim checkout in this environment."
         ) from exc
     return RustForwardPassPerfModel
 
 
 def _canonical_config_type() -> Any:
-    from aisimulate_core import sdk
+    from aisim_core import sdk
 
     return getattr(sdk, "ForwardPassPerfModelConfig", None)
 

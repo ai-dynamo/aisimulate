@@ -23,8 +23,8 @@ from typing import Any
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory, ReplayOutputRequirements
-from aisimulate.compiler import prediction_to_replay_spec
+from aisim import CorePredictionConfig, EngineReplayRunnerFactory, ReplayOutputRequirements
+from aisim.compiler import prediction_to_replay_spec
 from scripts.prediction_regression.qualify_weka_samples import DATASET, DATASET_REVISION, fetch_two_rows, qualify
 
 
@@ -128,7 +128,7 @@ def run_cli(root: Path, directory: Path, config: dict[str, Any]) -> dict[str, An
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "predict",
             "--stack",
             "engine",
@@ -252,7 +252,7 @@ def main() -> int:
     progress("AgentX replay functional qualification | fixed timing; not a benchmark result.")
     progress("4 groups: vLLM/SGLang x Weka/v2; 3 runs each (Python, Python repeat, CLI) = 12 replays.")
     progress("Each Python request-progress bar belongs to the labeled run immediately above it.")
-    with tempfile.TemporaryDirectory(prefix="aisimulate-agentx-replay-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="aisim-agentx-replay-") as temporary:
         directory = Path(temporary)
         if args.trace is None:
             with phase("Prepare: download 2 pinned published source rows"):

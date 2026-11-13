@@ -70,7 +70,7 @@ def release_items(path: str) -> list[dict]:
     """Read every page of release metadata from the fixed upstream repository."""
     items = []
     for page in range(1, 101):
-        headers = {"Accept": "application/vnd.github+json", "User-Agent": "aisimulate-accuracy"}
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "aisim-accuracy"}
         if token := os.environ.get("GITHUB_TOKEN"):
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(

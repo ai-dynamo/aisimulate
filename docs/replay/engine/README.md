@@ -250,7 +250,7 @@ frontend and the host CPU. The values above are only an illustration.
 ## Backend versions
 
 The accepted versions are the populated slots defined by
-[`query_versions.yaml`](../../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+[`query_versions.yaml`](../../../python/aisim/src/aisim_core/systems/query_versions.yaml):
 
 - `current` is the newest completed full collection for the backend, a
   systematic campaign over the whole case plan on the fleet;
@@ -384,7 +384,7 @@ release removes them. Use `engine.ais_perf_model`.
 
 - A configuration file that writes one of them prints one deprecation warning
   that lists the fields. A field that only repeats its default does not count.
-- `aisimulate perf-model migrate prediction.yaml` shows the converted block
+- `aisim perf-model migrate prediction.yaml` shows the converted block
   and writes nothing. Add `--output prediction.yaml` to convert the file in
   place; comments and formatting of the file are not kept. See
   [perf-model tools](../../reference/cli.md#perf-model).
@@ -414,7 +414,7 @@ engine:
 This deployment uses `2 × 2 + 1 × 4 = 8` GPUs. Run it with:
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml --output-dir ./pd-prediction
+aisim predict --stack engine --config prediction.yaml --output-dir ./pd-prediction
 ```
 
 ## Where engine options are validated

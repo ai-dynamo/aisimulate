@@ -21,7 +21,7 @@ decode KV cache across the existing TP ranks and adds no GPUs). Both default to
 one and stay out of the serialized identity when unset.
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -96,7 +96,7 @@ Regression and learned models read no performance data, so their identity only
 records the deployment they were calibrated on. A producer such as the Dynamo
 planner, which may not know that deployment's hardware, versions, parallelism or
 precision, records `"unknown"` instead of a guess. In memory an unknown integer
-holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisimulate_core::UNKNOWN_SIZE`), which
+holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisim_core::UNKNOWN_SIZE`), which
 serializes back to `"unknown"`, so the configuration round-trips exactly;
 `unknown_identity_facts()` lists them. Unknown widths are not checked against
 each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
@@ -141,7 +141,7 @@ An explicit source is rejected for dense graphs, MegaMoE modules, large-EP exper
 Ordinary prefill/decode companions of AFD roles use the canonical timing provider
 and preserve exact-source requests under the same eligibility rules. Fixed or
 polynomial timing and whole-forward FPM reject incompatible source selectors.
-These controls describe standalone AISimulate behavior, not downstream Dynamo
+These controls describe standalone AISim behavior, not downstream Dynamo
 planner integration.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
@@ -235,7 +235,7 @@ Rust callers now construct the public struct instead of the former
 `ForwardPassSpeculationConfig::Ngram` enum variant:
 
 ```rust
-use aisimulate_core::{
+use aisim_core::{
     BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModel,
     ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, ForwardPassWorkerType,
 };
@@ -614,7 +614,7 @@ Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
 and fails, without selecting another estimator, when:
 
 - the manifest digest, a pinned file's size or digest, or the snapshot format
-  differs: snapshots load only in the same `aisimulate-core` version with the
+  differs: snapshots load only in the same `aisim-core` version with the
   same state layout and engine-specification schema;
 - the configuration, compared field by field after normalization, differs
   from the saved identity (the error names the first differing field);
@@ -693,7 +693,7 @@ data as external data.
 The manifest schema version is 2. Version 1 manifests, written before
 snapshots were relocatable (for example by nightly
 `0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
-the save location. A snapshot restores only in the aisimulate-core version
+the save location. A snapshot restores only in the aisim-core version
 that wrote it, so a version 1 snapshot from a published nightly cannot be
 relocated: restore it in place with the build that wrote it, or tune and save
 a new snapshot with a current build, which rejects the old one with an error
@@ -893,12 +893,12 @@ Replay reads no other `deployment_limits` entry.
 ## Unified perf-model input
 
 `ais_perf_model` is one value that describes the perf model of each worker
-type. You write it once and use it everywhere: in the `aisimulate perf-model`
+type. You write it once and use it everywhere: in the `aisim perf-model`
 tools, as `engine.ais_perf_model` in `predict` and `recommend` YAML, and as
 `search_space.ais_perf_model` in a Sweeper search.
 
 Dynamo components that use the [loader](api/python.md#ais-perf-model-loader),
-`aisimulate_core.ais_perf_model`, read the same value. A Dynamo release whose
+`aisim_core.ais_perf_model`, read the same value. A Dynamo release whose
 components do not use it may read a different `ais_perf_model` mapping; see
 the documentation of that release.
 
@@ -915,7 +915,7 @@ the documentation of that release.
 Check a file before you use it. `check` builds every entry in it:
 
 ```bash
-aisimulate perf-model check ./perf-model.yaml
+aisim perf-model check ./perf-model.yaml
 ```
 
 A consumer builds only the entry for its own worker type, so run `check` in
@@ -945,20 +945,20 @@ Each config is an entry.
   - a perf-model file, a template file named by `from`, and inline JSON;
   - the value written under `engine.ais_perf_model` or
     `search_space.ais_perf_model` in a `predict`, `recommend` or search YAML
-    file, when `aisimulate predict`, `aisimulate recommend`,
+    file, when `aisim predict`, `aisim recommend`,
     `CorePredictionConfig.from_yaml`, `CoreRecommendationConfig.from_yaml` or
     `SmartSearchConfig.from_yaml` reads the file.
 
   A configuration file reports it like this:
   `engine.ais_perf_model in predict.yaml: the key 'estimation_mode' is written twice (lines 9 and 11); write it once`.
-  `aisimulate predict` and `aisimulate recommend` then exit with code `2`
+  `aisim predict` and `aisim recommend` then exit with code `2`
   before they touch the output directory. A key that a YAML merge (`<<`)
   brings in does not repeat a key written next to it.
 - A key written twice is not checked in a value given with `--set`. The YAML
   reader keeps the last value there. It does the same for a key repeated
   anywhere else in a configuration file, such as an old estimator field. When
   `ais_perf_model` itself is written twice in its section, the value that is
-  kept is the one that is checked. `aisimulate perf-model migrate` reads a
+  kept is the one that is checked. `aisim perf-model migrate` reads a
   configuration file without this check. Python data passed to
   `model_validate` cannot hold a key twice.
 - When a consumer needs a worker type the value does not have, the error lists
@@ -966,7 +966,7 @@ Each config is an entry.
 
 ### File or inline JSON
 
-A value given as text, to `aisimulate perf-model check` or to the
+A value given as text, to `aisim perf-model check` or to the
 [loader](api/python.md#ais-perf-model-loader), is read like this:
 
 | Value | Read as |
@@ -975,7 +975,7 @@ A value given as text, to `aisimulate perf-model check` or to the
 | Anything else | A file path. A `.json` file is read as JSON, any other file as YAML. |
 
 ```bash
-aisimulate perf-model check \
+aisim perf-model check \
   '{"model": "Qwen/Qwen3-32B", "system": "h200_sxm", "backend": "vllm"}' \
   --worker-type aggregated
 ```
@@ -1044,7 +1044,7 @@ path:
   real folder, as it does for the old field.
 
 This differs from the old estimator fields. Their relative paths start at the
-working directory. `aisimulate perf-model migrate` rewrites them to start at
+working directory. `aisim perf-model migrate` rewrites them to start at
 the folder of the converted file. When `migrate` is given the file through a
 symbolic link in another folder, as the configuration file or as `FILE`, it
 writes them as absolute paths; see
@@ -1191,7 +1191,7 @@ agree. `fpm_profile` stays engine-wide.
 #### Overrides with `--set`
 
 ```bash
-aisimulate predict -c prediction.yaml \
+aisim predict -c prediction.yaml \
   --set engine.ais_perf_model.estimation_mode=op_level
 ```
 
@@ -1232,10 +1232,10 @@ warning then says to remove the old field; see
 ### Limits in this release
 
 - **Dataset entries.** `from: {dataset: ...}` works in
-  `aisimulate perf-model check` and in Python code that calls the
+  `aisim perf-model check` and in Python code that calls the
   [loader](api/python.md#ais-perf-model-loader). `predict` and `recommend`
   configurations reject it:
-  `dataset entries are not supported in predict and recommend configs yet; use 'aisimulate perf-model check' or a Dynamo component`.
+  `dataset entries are not supported in predict and recommend configs yet; use 'aisim perf-model check' or a Dynamo component`.
   A search configuration rejects it with the same message for search configs.
   The message names a Dynamo component: a Dynamo component that uses the
   loader and gives it a workspace folder can take a dataset entry.
@@ -1254,10 +1254,10 @@ warning then says to remove the old field; see
   checked. Every other identity key is an error.
 - **Generated files.** Candidate files written by `recommend`
   (`recommendations/NNNN.yaml`) and replay configurations written by
-  `aisimulate onboard` still use the old fields. Reading one back prints the
+  `aisim onboard` still use the old fields. Reading one back prints the
   deprecation warning. Do not migrate a replay configuration written by
-  `aisimulate onboard`. For such a file the warning ends with
-  `('aisimulate onboard' wrote this file and rejects it once it is changed, so leave it as it is)`
+  `aisim onboard`. For such a file the warning ends with
+  `('aisim onboard' wrote this file and rejects it once it is changed, so leave it as it is)`
   in place of the `migrate` command. This holds for the `predict.yaml` that
   `onboard` writes next to its `validation.json`, and for the
   `matched/predict.yaml` that serving validation writes in the folder of its
@@ -1267,7 +1267,7 @@ warning then says to remove the old field; see
 - **Simulated router.** The key sets the simulated engines. A `router`
   section is read only by the router adapter of a serving-stack integration;
   the `engine` stack rejects a configuration that has one. The adapter defines
-  the keys of the section, and AISimulate hands the section to it without
+  the keys of the section, and AISim hands the section to it without
   reading them.
 
 ### Old estimator fields
@@ -1280,7 +1280,7 @@ Loading a configuration file that writes an old field prints one warning that
 lists every old field:
 
 ```text
-ais-perf-model: engine.estimation_mode, engine.workers.decode.timing.systems_paths are deprecated and will be removed in the next release; use engine.ais_perf_model (run 'aisimulate perf-model migrate prediction.yaml' to convert the file)
+ais-perf-model: engine.estimation_mode, engine.workers.decode.timing.systems_paths are deprecated and will be removed in the next release; use engine.ais_perf_model (run 'aisim perf-model migrate prediction.yaml' to convert the file)
 ```
 
 The command in the warning shows the conversion and writes nothing. Preview
@@ -1288,9 +1288,9 @@ the conversion, then write it:
 
 ```bash
 # Preview: print the new block and the fields it removes.
-aisimulate perf-model migrate prediction.yaml
+aisim perf-model migrate prediction.yaml
 # Write: convert the file in place.
-aisimulate perf-model migrate prediction.yaml --output prediction.yaml
+aisim perf-model migrate prediction.yaml --output prediction.yaml
 ```
 
 The preview ends with
@@ -1334,7 +1334,7 @@ shows the old and the new spelling of one search side by side.
   `role_estimator_controls.<role>.transfer_policy`. A `null` there replaces
   the top-level policy for that role with every transfer kind; see
   [Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
-- `aisimulate predict` and `aisimulate recommend` print the warning. So do
+- `aisim predict` and `aisim recommend` print the warning. So do
   `CorePredictionConfig.from_yaml`, `CoreRecommendationConfig.from_yaml` and
   `SmartSearchConfig.from_yaml`. Validating Python data with `model_validate`
   does not warn.
@@ -1354,12 +1354,12 @@ shows the old and the new spelling of one search side by side.
   null override. `--set engine.ais_perf_model.<key>` after the null override
   is an error, also when the warning of that run ends with the `--set` hint
   above.
-- For a replay configuration that `aisimulate onboard` wrote and that is
+- For a replay configuration that `aisim onboard` wrote and that is
   unchanged, the warning ends with
-  `('aisimulate onboard' wrote this file and rejects it once it is changed, so leave it as it is)`;
+  `('aisim onboard' wrote this file and rejects it once it is changed, so leave it as it is)`;
   see [Limits in this release](#limits-in-this-release).
 - The warning category is `AisPerfModelDeprecationWarning`, a `FutureWarning`
-  in `aisimulate_core.ais_perf_model`. With `PYTHONWARNINGS=error` the command
+  in `aisim_core.ais_perf_model`. With `PYTHONWARNINGS=error` the command
   fails with exit code `1`.
 - `timing.type`, `timing.prefill_ms` and `timing.decode_ms` are not
   deprecated.
@@ -1578,7 +1578,7 @@ FPM also checks the preserved GEMM/MoE identity before selecting a timing cell,
 including profiles without an original op-level graph.
 Missing hardware metadata still follows the system-spec/data diagnostics.
 Serving runtimes may execute FP8 checkpoints through weight-only kernels such as
-Marlin on these GPUs; AISimulate does not model that path.
+Marlin on these GPUs; AISim does not model that path.
 
 ### KV precision and token capacity
 
@@ -1595,7 +1595,7 @@ recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 | KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
 | Other supported configurations | BF16 |
 
-These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+These are AISim policies, not serving-engine defaults. `torch_dtype: bfloat16`
 does not prevent FP8 KV inference. For regular language roles using default timing,
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;

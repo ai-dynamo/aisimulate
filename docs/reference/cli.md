@@ -5,11 +5,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # CLI reference
 
-Use `aisimulate predict` for one concrete deployment and `aisimulate recommend`
+Use `aisim predict` for one concrete deployment and `aisim recommend`
 for a bounded search. Start with the [quickstart](../getting-started/quickstart.md)
 for a complete input, or consult [configuration](configuration.md) for the YAML
-shape. `aisimulate onboard` has its own [FPM self-service guide](../perf-model/fpm-self-service/implementation.md).
-`aisimulate perf-model` checks and converts perf-model inputs; see [perf-model tools](#perf-model).
+shape. `aisim onboard` has its own [FPM self-service guide](../perf-model/fpm-self-service/implementation.md).
+`aisim perf-model` checks and converts perf-model inputs; see [perf-model tools](#perf-model).
 The separate [AIC compatibility CLI](../aic-backward-compatibility/cli.md) retains
 its six established workflows.
 
@@ -19,9 +19,9 @@ its six established workflows.
 
 | Command | Purpose | Example invocation | Result |
 |---|---|---|---|
-| `predict` | Evaluate one concrete deployment under a workload. | `aisimulate predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
-| `recommend` | Search deployment and load choices for an optimization goal. | `aisimulate recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
-| `perf-model` | Check a perf-model input, convert old estimator fields to it, or fetch FPM data. | `aisimulate perf-model check ./perf-model.yaml` | One line per worker type with `ok` or `failed` and the error. See [perf-model tools](#perf-model). |
+| `predict` | Evaluate one concrete deployment under a workload. | `aisim predict -c prediction.yaml --output-dir ./prediction-output` | A metrics summary and `prediction-output/prediction.json`. |
+| `recommend` | Search deployment and load choices for an optimization goal. | `aisim recommend -c recommendation.yaml --output-dir ./recommendation-output` | Ranked configurations, `recommendation.json`, and concrete YAML files under `recommendations/`. |
+| `perf-model` | Check a perf-model input, convert old estimator fields to it, or fetch FPM data. | `aisim perf-model check ./perf-model.yaml` | One line per worker type with `ok` or `failed` and the error. See [perf-model tools](#perf-model). |
 
 `recommend` also accepts repeatable `--output NAME` options. Each selected output adapter requires
 a same-named top-level configuration section, may observe live candidate and round notifications,
@@ -39,8 +39,8 @@ illustrate the output format. Captured detail examples are simulation results, n
 | `-c`, `--config PATH` | path | Required | Input YAML file. |
 | `--stack NAME` | string | `engine` | Built-in or discovered execution stack. This selection is CLI-only and is never written into YAML. |
 | `--set PATH=YAML_VALUE` | repeatable assignment | None | Set a supported configuration path after loading YAML. |
-| `--output-dir PATH` | path | `./aisimulate-output` | Directory for durable results. |
-| `--overwrite` | flag | `false` | Replace known AISimulate output files in an existing output directory. |
+| `--output-dir PATH` | path | `./aisim-output` | Directory for durable results. |
+| `--overwrite` | flag | `false` | Replace known AISim output files in an existing output directory. |
 | `--format table\|json` | enum | `table` | Standard-output presentation. It does not change durable output files. |
 
 `predict` also accepts:
@@ -57,7 +57,7 @@ The CLI deliberately does not expose field-specific flags such as `--request-per
 ### Eager execution and CUDA graphs
 
 These flags control the vLLM worker used for FPM collection. `--enforce-eager`
-is a worker flag, not an `aisimulate predict` or `onboard init` option.
+is a worker flag, not an `aisim predict` or `onboard init` option.
 
 | Setting | CUDA graphs | `torch.compile` |
 |---|---|---|
@@ -78,7 +78,7 @@ explains the current qualification limit and conflicting graph settings.
 `--set` uses a dot-separated path and parses its value as YAML:
 
 ```bash
-aisimulate predict \
+aisim predict \
   --config prediction.yaml \
   --set traffic.load.concurrency=8 \
   --set engine.workers.aggregated.parallelism.replicas=2 \
@@ -106,8 +106,8 @@ The following rules apply:
 routing and Planner behavior, install a [matched integration](../getting-started/installation.md#optional-dynamo-integration) and select it explicitly:
 
 ```bash
-aisimulate predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
-aisimulate recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
+aisim predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
+aisim recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
 ```
 
 A config containing `router` or `planner` requires the corresponding installed adapters; the
@@ -126,7 +126,7 @@ the built-in engine is installed:
 stack 'dynamo' is unavailable; installed stacks: engine. Install the distribution that provides the requested stack.
 ```
 
-Install the integration in the same Python environment as `aisimulate`. Implementation details
+Install the integration in the same Python environment as `aisim`. Implementation details
 for stack and adapter authors are in [adapter contracts](../adapters/README.md).
 
 <a id="outputs"></a>
@@ -162,7 +162,7 @@ Consult the
 
 ### Power and energy detail
 
-Use `aisimulate predict --stack engine --config prediction.yaml --detail energy`
+Use `aisim predict --stack engine --config prediction.yaml --detail energy`
 to show phase and operation evidence alongside the normal power summary.
 `--detail all` includes energy. `--diagnostics power` remains a compatibility
 alias for its original stdout envelope. `--diagnostics-top-n N` bounds table
@@ -276,7 +276,7 @@ requested `auto` mode. The same fields appear in saved `prediction.json`.
 ### Prediction details
 
 ```bash
-aisimulate predict -c prediction.yaml --detail summary,memory,time \
+aisim predict -c prediction.yaml --detail summary,memory,time \
   --format json --output-dir ./prediction-details
 ```
 
@@ -346,13 +346,13 @@ are CLI-only; this change adds no YAML configuration fields.
 
 ## Perf-model tools
 
-`aisimulate perf-model` works on the
+`aisim perf-model` works on the
 [unified perf-model input](../perf-model/configuration.md#unified-perf-model-input).
 
 ```bash
-aisimulate perf-model check ./perf-model.yaml
-aisimulate perf-model migrate prediction.yaml
-aisimulate perf-model fetch --list
+aisim perf-model check ./perf-model.yaml
+aisim perf-model migrate prediction.yaml
+aisim perf-model fetch --list
 ```
 
 | Action | Purpose |
@@ -374,9 +374,9 @@ action accepts `--format table|json`; the default is `table`.
 ### `perf-model check`
 
 ```bash
-aisimulate perf-model check ./perf-model.yaml
-aisimulate perf-model check ./perf-model.yaml --worker-type decode --format json
-aisimulate perf-model check \
+aisim perf-model check ./perf-model.yaml
+aisim perf-model check ./perf-model.yaml --worker-type decode --format json
+aisim perf-model check \
   '{"model": "Qwen/Qwen3-32B", "system": "h200_sxm", "backend": "vllm"}' \
   --worker-type aggregated
 ```
@@ -431,15 +431,15 @@ aggregated   (not set)        failed: ValueError: <error text>
 ### `perf-model migrate`
 
 ```bash
-aisimulate perf-model migrate prediction.yaml
-aisimulate perf-model migrate prediction.yaml --output prediction.new.yaml
-aisimulate perf-model migrate prediction.yaml --output prediction.new.yaml --overwrite
+aisim perf-model migrate prediction.yaml
+aisim perf-model migrate prediction.yaml --output prediction.new.yaml
+aisim perf-model migrate prediction.yaml --output prediction.new.yaml --overwrite
 ```
 
 `migrate` converts the [deprecated estimator fields](../perf-model/configuration.md#old-estimator-fields)
 of a `predict`, `recommend` or Sweeper search configuration to
 `engine.ais_perf_model` or `search_space.ais_perf_model`. It converts
-AISimulate configuration files only.
+AISim configuration files only.
 
 | Option | Meaning |
 |---|---|
@@ -495,7 +495,7 @@ Without `--output`, `migrate` prints the plan and writes nothing: the new
   permission it exits `2` with `could not write <FILE>: <reason>`, and the
   file stays as it was. Other hard links to `FILE` keep the old text.
 - **JSON.** A `FILE` that ends with `.json`, in any letter case, is written as
-  JSON. A `.json` configuration converted in place stays JSON. AISimulate
+  JSON. A `.json` configuration converted in place stays JSON. AISim
   reads configuration files as YAML. When the JSON text would not be read
   back as the same config, `migrate` writes nothing and exits `2`:
   `cannot write small.json as JSON: engine.ais_perf_model.estimator_config.ridge is 1e-05 and would be read back from the file as '1e-05'; name a file that does not end with .json to write YAML`.
@@ -526,7 +526,7 @@ Without `--output`, `migrate` prints the plan and writes nothing: the new
   `cannot_convert`), the new `ais_perf_model` value, the `removed` fields,
   `notes`, `problems` and the `output` file.
 
-Do not migrate a replay configuration written by `aisimulate onboard`.
+Do not migrate a replay configuration written by `aisim onboard`.
 `onboard` compares that file with the workload it reviewed, and rejects the
 converted file:
 
@@ -541,9 +541,9 @@ warning without the `migrate` command; see
 ### `perf-model fetch`
 
 ```bash
-aisimulate perf-model fetch --list
-aisimulate perf-model fetch --list kimi_k3_fpm
-aisimulate perf-model fetch kimi_k3_fpm gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0 --allow-unqualified
+aisim perf-model fetch --list
+aisim perf-model fetch --list kimi_k3_fpm
+aisim perf-model fetch kimi_k3_fpm gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0 --allow-unqualified
 ```
 
 `fetch MANIFEST PROFILE` downloads one [published FPM profile](../perf-model/fpm-self-service/README.md#reuse-a-published-profile)
@@ -558,7 +558,7 @@ ID of a packaged manifest.
 | Option | Meaning |
 |---|---|
 | `--list` | List the profiles of `MANIFEST` and their admission without downloading data. Without `MANIFEST`, list the profiles of every packaged manifest. |
-| `--cache-dir DIR` | Cache folder. Default: `aisimulate/fpm` under `$XDG_CACHE_HOME`, or under `~/.cache` when that variable is unset. |
+| `--cache-dir DIR` | Cache folder. Default: `aisim/fpm` under `$XDG_CACHE_HOME`, or under `~/.cache` when that variable is unset. |
 | `--local-files-only` | Never download; use only what the cache holds. |
 | `--allow-unqualified` | Accept a profile that is not admitted for serving, such as development data. The profile stays unadmitted. |
 
@@ -625,8 +625,8 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 
 | Symptom | What to check | Example fix |
 |---|---|---|
-| `aisimulate: command not found` | The environment containing AISimulate must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisimulate`. |
-| Installation reports an unsupported Python version | AISimulate requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
+| `aisim: command not found` | The environment containing AISim must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisim`. |
+| Installation reports an unsupported Python version | AISim requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
 | Configuration or trace file cannot be found | Check the path and the directory where you ran the command. | Run from the directory containing `prediction.yaml`, or use absolute paths. |
 | Output directory is not empty | Each run needs an empty directory or explicit overwrite. | Add `--output-dir ./another-prediction`, or `--overwrite` to replace known outputs. |
 | Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install a matched pair from the [installation guide](../getting-started/installation.md#optional-dynamo-integration) and use `--stack dynamo`. |
@@ -635,7 +635,7 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 | No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
 | Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../perf-model/methods/whole-forward.md). |
-| `host cost table ... does not exist yet` (or a missing-row message) | A native SGLang VL prediction reads the frontend stage from a host cost table row measured on the serving host; the message prints the `collect` command that adds the row. | Run the printed `python -m aisimulate.vl.collect ...` with `--sglang-python` pointing at the serving venv, then rerun `predict`; see [SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md). |
+| `host cost table ... does not exist yet` (or a missing-row message) | A native SGLang VL prediction reads the frontend stage from a host cost table row measured on the serving host; the message prints the `collect` command that adds the row. | Run the printed `python -m aisim.vl.collect ...` with `--sglang-python` pointing at the serving venv, then rerun `predict`; see [SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
 For automation, check the exit code as well as standard output. `--format json` changes successful

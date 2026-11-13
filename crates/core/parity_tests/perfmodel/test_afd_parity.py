@@ -13,7 +13,7 @@ timing provider) against the rebuilt goldens:
 
 Run from the repository root:
 
-    python/aisimulate/.venv/bin/pytest -q crates/core/parity_tests/perfmodel/test_afd_parity.py
+    python/aisim/.venv/bin/pytest -q crates/core/parity_tests/perfmodel/test_afd_parity.py
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
 GOLDEN_DIR = Path(__file__).resolve().parent / "goldens"
-AISIMULATE_CLI = [sys.executable, "-m", "aisimulate"]
+AISIM_CLI = [sys.executable, "-m", "aisim"]
 
 import afd_parity
 
@@ -54,7 +54,7 @@ def _run_native(config: Path, *overrides: str) -> dict:
     with tempfile.TemporaryDirectory(prefix="afd-parity-") as run_dir:
         subprocess.run(
             [
-                *AISIMULATE_CLI,
+                *AISIM_CLI,
                 "predict",
                 "--stack",
                 "engine",
@@ -120,10 +120,10 @@ def test_kernel_selectors_native_cli_complete_in_all_afd_roles(config_name):
 def test_native_afd_compilation_preserves_selectors_on_the_executed_ops(lane, monkeypatch):
     import yaml
 
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate_core.sdk import engine
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim_core.sdk import engine
 
     compiled = []
     build = engine.build_engine_spec_json

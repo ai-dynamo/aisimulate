@@ -3,8 +3,8 @@
 
 //! Replay-level KVCR: a hinted request pulls a prefix from a peer rank's G2.
 
-use aisimulate_core::engine::KvcrPullCounts;
-use aisimulate_core::replay::{
+use aisim_core::engine::KvcrPullCounts;
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
     ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
     ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec, Replayer,

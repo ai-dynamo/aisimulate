@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! AFD replay timing uses actual per-pass geometry and records each query.
+//! AFD replay timing uses actual per-pass geometry and records each pass.
 
+use std::sync::Arc;
 #[cfg(feature = "python")]
 use std::sync::Mutex;
 
@@ -20,12 +21,29 @@ use crate::perfmodel::afd::model::AfdForwardPassPerfModel;
 #[cfg(feature = "python")]
 use crate::perfmodel::afd::model::AfdOpEvidence;
 
+/// Pass shapes whose price is kept. Fixed-length traffic repeats about one
+/// decode shape per output token; a mixed-length trace has a few thousand.
+/// Each kept price holds a few KB of evidence, so a full memo is about 16 MB.
+const PRICED_PASS_CAPACITY: usize = 4096;
+
+/// `(prefill, batch size, mean ISL or mean context, mean prefix)`: everything
+/// a pass's price depends on besides the provider's fixed configuration.
+type PassShape = (bool, u32, u32, u32);
+
+struct PricedPass {
+    step_latency_ms: f64,
+    #[cfg(feature = "python")]
+    evidence: ValidatedTimingPhase,
+}
+
 /// Replay timing provider for AFD ranks.
 pub struct AfdTimingModel {
     perf: AfdForwardPassPerfModel,
     knobs: AfdPipelineKnobs,
     isl: u32,
     osl: u32,
+    /// Price of each pass shape seen so far.
+    priced: quick_cache::sync::Cache<PassShape, Arc<PricedPass>>,
     /// Power evidence accumulator: per-op energy from the two
     /// pool engines flows into the standard replay power statistics.
     #[cfg(feature = "python")]
@@ -50,9 +68,65 @@ impl AfdTimingModel {
             perf,
             isl,
             osl,
+            priced: quick_cache::sync::Cache::new(PRICED_PASS_CAPACITY),
             #[cfg(feature = "python")]
             evidence: Mutex::new(TimingEvidenceAccumulator::default()),
         }
+    }
+
+    /// Step latency of a pass of `shape`. A shape is priced on its first pass;
+    /// every pass records its evidence.
+    fn pass_ms(&self, shape: PassShape) -> Result<f64> {
+        let pass = match self.priced.get(&shape) {
+            Some(pass) => pass,
+            None => {
+                let pass = Arc::new(self.price(shape)?);
+                self.priced.insert(shape, Arc::clone(&pass));
+                pass
+            }
+        };
+        #[cfg(feature = "python")]
+        self.evidence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("AFD timing evidence accumulator was poisoned"))?
+            .record(&pass.evidence, shape.0)?;
+        Ok(pass.step_latency_ms)
+    }
+
+    /// Takes only the shape, so a kept price cannot depend on anything
+    /// outside the memo key.
+    fn price(&self, (prefill, batch_size, length, prefix): PassShape) -> Result<PricedPass> {
+        #[cfg(feature = "python")]
+        let (metrics, operations) = if prefill {
+            self.perf
+                .predict_prefill_step_with_operations(batch_size, length, prefix)?
+        } else {
+            self.perf
+                .predict_decode_step_with_operations(batch_size, length, prefix)?
+        };
+        #[cfg(not(feature = "python"))]
+        let metrics = if prefill {
+            self.perf
+                .predict_prefill_step_ms(batch_size, length, prefix)?
+        } else {
+            self.perf
+                .predict_decode_step_ms(batch_size, length, prefix)?
+        };
+        let knobs = AfdPipelineKnobs {
+            total_batch_size: batch_size,
+            ..self.knobs
+        };
+        let (phase, input_length) = if prefill {
+            (AfdEvalPhase::Prefill, length)
+        } else {
+            (AfdEvalPhase::Decode, self.isl)
+        };
+        let evaluation = evaluate_afd_metrics(&knobs, &metrics, phase, input_length, self.osl)?;
+        Ok(PricedPass {
+            step_latency_ms: evaluation.step_latency_ms,
+            #[cfg(feature = "python")]
+            evidence: self.operation_evidence(operations)?,
+        })
     }
 
     #[cfg(feature = "python")]
@@ -84,30 +158,7 @@ impl TimingModel for AfdTimingModel {
         let batch_size = checked_timing_u32(batch_size, "batch_size")?;
         let mean_isl = checked_timing_u32(mean_isl, "mean_isl")?;
         let mean_prefix = checked_timing_u32(mean_prefix, "mean_prefix")?;
-        #[cfg(feature = "python")]
-        let (metrics, operations) =
-            self.perf
-                .predict_prefill_step_with_operations(batch_size, mean_isl, mean_prefix)?;
-        #[cfg(not(feature = "python"))]
-        let metrics = self
-            .perf
-            .predict_prefill_step_ms(batch_size, mean_isl, mean_prefix)?;
-        let evaluation = evaluate_afd_metrics(
-            &AfdPipelineKnobs {
-                total_batch_size: batch_size,
-                ..self.knobs
-            },
-            &metrics,
-            AfdEvalPhase::Prefill,
-            mean_isl,
-            self.osl,
-        )?;
-        #[cfg(feature = "python")]
-        self.evidence
-            .lock()
-            .map_err(|_| anyhow::anyhow!("AFD evidence accumulator poisoned"))?
-            .record(&self.operation_evidence(operations)?, true)?;
-        Ok(evaluation.step_latency_ms)
+        self.pass_ms((true, batch_size, mean_isl, mean_prefix))
     }
 
     fn predict_decode_ms(
@@ -120,29 +171,7 @@ impl TimingModel for AfdTimingModel {
         let batch_size = checked_timing_u32(batch_size, "batch_size")?;
         let mean_context_length =
             checked_timing_u32(mean_context_length.max(1), "mean_context_length")?;
-        #[cfg(feature = "python")]
-        let (metrics, operations) =
-            self.perf
-                .predict_decode_step_with_operations(batch_size, mean_context_length, 0)?;
-        #[cfg(not(feature = "python"))]
-        let metrics = self
-            .perf
-            .predict_decode_step_ms(batch_size, mean_context_length, 0)?;
-        let knobs = AfdPipelineKnobs {
-            total_batch_size: batch_size,
-            ..self.knobs
-        };
-        let evaluation =
-            evaluate_afd_metrics(&knobs, &metrics, AfdEvalPhase::Decode, self.isl, self.osl)?;
-        #[cfg(feature = "python")]
-        {
-            let phase = self.operation_evidence(operations)?;
-            self.evidence
-                .lock()
-                .map_err(|_| anyhow::anyhow!("AFD timing evidence accumulator was poisoned"))?
-                .record(&phase, false)?;
-        }
-        Ok(evaluation.step_latency_ms)
+        self.pass_ms((false, batch_size, mean_context_length, 0))
     }
 
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
@@ -240,8 +269,7 @@ pub(crate) mod tests {
     }
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
     }
 
     fn golden_dir() -> PathBuf {
@@ -461,5 +489,36 @@ pub(crate) mod tests {
             (total - 5.0 * one_pass).abs() < 1e-9 * one_pass,
             "five decode calls must accumulate five passes: total={total} one={one_pass}"
         );
+    }
+
+    /// A repeated pass shape is priced once. Shapes that differ in phase,
+    /// batch, length or prefix keep their own price.
+    #[test]
+    fn repeated_pass_shape_is_priced_once() {
+        let timing = provider();
+        let shape: PassShape = (false, 8, 1024, 0);
+        let first = timing
+            .predict_decode_ms(8, 8 * 1024, 1024, 16384)
+            .expect("decode");
+        let kept = timing.priced.get(&shape).expect("kept");
+        let again = timing
+            .predict_decode_ms(8, 8 * 1024, 1024, 16384)
+            .expect("decode");
+        assert_eq!(again, first);
+        // A second price would replace the kept `Arc`.
+        assert!(Arc::ptr_eq(
+            &kept,
+            &timing.priced.get(&shape).expect("kept")
+        ));
+
+        for (batch, context) in [(8, 1025), (16, 1024)] {
+            timing
+                .predict_decode_ms(batch, batch * context, context, 16384)
+                .expect("decode");
+        }
+        for prefix in [0, 512] {
+            timing.predict_prefill_ms(8, 1024, prefix).expect("prefill");
+        }
+        assert_eq!(timing.priced.len(), 5);
     }
 }

@@ -9,31 +9,31 @@ from dataclasses import replace
 import pytest
 import yaml
 
-from aisimulate.cli_args import _apply_overrides
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.cli import prediction_mapping
-from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.sweeper.config import SearchSpace
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.forward_pass_estimator import (
+from aisim.cli_args import _apply_overrides
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.cli import prediction_mapping
+from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisim.sweeper.config import SearchSpace
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.forward_pass_estimator import (
     ForwardPassEstimatorResolutionError,
     ForwardPassEstimatorResolver,
 )
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import (
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import (
     ForwardPassEstimatorSpec,
     ReplaySpec,
     canonical_json,
 )
-from aisimulate.sweeper.sample import unroll_sample
-from aisimulate_core.ais_perf_model import AisPerfModelDeprecationWarning
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim.sweeper.sample import unroll_sample
+from aisim_core.ais_perf_model import AisPerfModelDeprecationWarning
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
-# AISimulate still writes the old estimator fields into the configs it saves, so reading one back warns.
-reads_saved_config = pytest.mark.filterwarnings("ignore::aisimulate_core.ais_perf_model.AisPerfModelDeprecationWarning")
+# AISim still writes the old estimator fields into the configs it saves, so reading one back warns.
+reads_saved_config = pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning")
 
 FITS = [
     {"kind": "linear"},

@@ -21,7 +21,7 @@ _spec.loader.exec_module(parity)
 def test_standalone_parity_import_keeps_the_installed_package_first(tmp_path, module):
     # Model a non-editable wheel: its runtime lives beside its __init__.py,
     # while the checkout is only the source of the parity tests and scripts.
-    package = tmp_path / "site-packages/aisimulate"
+    package = tmp_path / "site-packages/aisim"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("from . import _runtime\n")
     (package / "_runtime.py").write_text("installed = True\n")
@@ -32,9 +32,9 @@ def test_standalone_parity_import_keeps_the_installed_package_first(tmp_path, mo
         "target, installed = map(Path, sys.argv[1:])\n"
         "sys.path.insert(0, str(target.parent))\n"
         "runpy.run_path(str(target))\n"
-        "import aisimulate\n"
-        "assert Path(aisimulate.__file__).parent == installed\n"
-        "assert aisimulate._runtime.installed\n"
+        "import aisim\n"
+        "assert Path(aisim.__file__).parent == installed\n"
+        "assert aisim._runtime.installed\n"
     )
     subprocess.run(
         [sys.executable, "-c", code, str(target), str(package)],
@@ -166,7 +166,7 @@ def test_golden_job_runs_both_afd_suites_with_installed_python():
     assert "test_afd_parity.py" in commands
     assert "test_afd_execution_plan_parity.py" in commands
     source = (root / "crates/core/parity_tests/perfmodel/test_afd_parity.py").read_text()
-    assert 'AISIMULATE_CLI = [sys.executable, "-m", "aisimulate"]' in source
+    assert 'AISIM_CLI = [sys.executable, "-m", "aisim"]' in source
 
 
 def test_snapshot_checks_archive_contents_and_digest(tmp_path):
@@ -203,7 +203,7 @@ def test_source_inventory_includes_untracked_runtime_inputs(tmp_path, monkeypatc
     new = tmp_path / "crates/core/src/new.rs"
     new.parent.mkdir(parents=True)
     new.write_text("new runtime source")
-    new_python = tmp_path / "python/aisimulate/src/aisimulate/new.py"
+    new_python = tmp_path / "python/aisim/src/aisim/new.py"
     new_python.parent.mkdir(parents=True)
     new_python.write_text("new_runtime = True")
     monkeypatch.setattr(parity, "ROOT", tmp_path)
@@ -211,14 +211,14 @@ def test_source_inventory_includes_untracked_runtime_inputs(tmp_path, monkeypatc
     assert {
         "Cargo.toml",
         "crates/core/src/new.rs",
-        "python/aisimulate/src/aisimulate/new.py",
+        "python/aisim/src/aisim/new.py",
     } <= parity._source_inputs()
 
 
 @pytest.fixture
 def built_workspace(tmp_path, monkeypatch):
     """A tiny Git checkout and extension whose identity was captured at build time."""
-    import aisimulate
+    import aisim
 
     root = tmp_path.resolve()
     contents = {
@@ -229,8 +229,8 @@ def built_workspace(tmp_path, monkeypatch):
         "crates/core/build.rs": "build script",
         "crates/core/src/lib.rs": "pub fn original() {}",
         "crates/core/src/obsolete.rs": "pub fn obsolete() {}",
-        "python/aisimulate/src/aisimulate/current.py": "value = 1",
-        "python/aisimulate/src/aisimulate_core/systems/data/control.json": "{}",
+        "python/aisim/src/aisim/current.py": "value = 1",
+        "python/aisim/src/aisim_core/systems/data/control.json": "{}",
     }
     for name, content in contents.items():
         path = root / name
@@ -247,7 +247,7 @@ def built_workspace(tmp_path, monkeypatch):
     binary = root / "runtime.so"
     binary.write_bytes(b"compiled extension")
     runtime = SimpleNamespace(__file__=str(binary), _build_source_files_json=lambda: built)
-    monkeypatch.setattr(aisimulate, "_runtime", runtime, raising=False)
+    monkeypatch.setattr(aisim, "_runtime", runtime, raising=False)
     return root, runtime
 
 
@@ -255,11 +255,11 @@ def built_workspace(tmp_path, monkeypatch):
 def test_snapshot_accepts_matching_build_and_current_python(built_workspace, change):
     root, _ = built_workspace
     if change in {"python", "staged"}:
-        (root / "python/aisimulate/src/aisimulate/current.py").write_text("value = 2")
+        (root / "python/aisim/src/aisim/current.py").write_text("value = 2")
         if change == "staged":
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
     elif change == "untracked":
-        (root / "python/aisimulate/src/aisimulate/new.py").write_text("value = 3")
+        (root / "python/aisim/src/aisim/new.py").write_text("value = 3")
     output = root / "evidence/manifest.json"
     manifest = parity._write_build_snapshot(output)
     assert manifest["workspace_dirty"] is (change != "none")
