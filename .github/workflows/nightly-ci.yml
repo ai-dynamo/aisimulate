@@ -297,7 +297,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       # Keep the license policy/tooling at the workflow revision. Older
@@ -380,7 +380,7 @@ jobs:
       # for the runner's node24-based actions.
       image: ${{ matrix.container_image }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
     defaults:
       run:
         shell: bash
