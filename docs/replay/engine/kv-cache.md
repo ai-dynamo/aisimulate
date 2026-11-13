@@ -373,10 +373,12 @@ G2. G2 stores complete prompt blocks only, so drafts never reach it. A restore
 resumes at the loaded prefix, as on an aggregated worker. Accepted drafts that
 take a G1 block a store still reads make the forward that writes it wait for
 that copy, and so does preempting a request whose store is in flight; a store
-prepared in that same pass delays the rank's next pass. The capacity guard above does
-not cover these workers: when G1 holds fewer than about two requests, a replay
-can end with a stall error or not terminate, with or without G2. Size G1 for
-several concurrent requests.
+prepared in that same pass delays the rank's next pass. A preempted request
+resumes once G1 has room for its tokens and its next one; a shared pool keeps
+the G1 blocks it copies until each copy completes, so its stores can delay
+that. The capacity guard above does not cover these workers: when G1 holds
+fewer than about two requests, a replay can end with a stall error or not
+terminate, with or without G2. Size G1 for several concurrent requests.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
