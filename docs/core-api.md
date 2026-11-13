@@ -17,19 +17,19 @@ control, see the [Replay Python API](replay/api/python.md).
 
 ## Python prediction API
 
-Use `aisimulate.predict.run_prediction` to compile and execute one public
+Use `aisim.predict.run_prediction` to compile and execute one public
 `CorePredictionConfig`. It checks runner capabilities, creates and closes the
 runner, and returns a `PredictionResult` with the same summary the CLI renders.
 
 Use `prediction.yaml` from the [README prediction example](../README.md#predict-one-deployment).
-In the activated AISimulate environment, save the following as
+In the activated AISim environment, save the following as
 `predict_example.py` and run `python predict_example.py` from the directory
 containing the YAML file.
 
 ```python
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.predict import run_prediction
-from aisimulate.runner import EngineReplayRunnerFactory
+from aisim.config.cli import CorePredictionConfig
+from aisim.predict import run_prediction
+from aisim.runner import EngineReplayRunnerFactory
 
 if __name__ == "__main__":
     result = run_prediction(
@@ -50,7 +50,7 @@ See the [prediction configuration guide](reference/cli.md) for timing and worklo
 | `adapter_configs` | Optional raw adapter blocks keyed by section name. |
 | `providers` | Resolved config adapters keyed by `"<stack>.<section>"`; required for every supplied adapter block. Core config does not accept Router/Planner top-level sections. |
 | `execution_mode` | Defaults to `"offline"`; the selected runner must support the requested mode. The built-in engine stack is offline. |
-| `output_requirements` | Optional `ReplayOutputRequirements` from `aisimulate.sweeper.replay`. Omission enables raw-report capture except for analytical EPD. An explicit value replaces that default. |
+| `output_requirements` | Optional `ReplayOutputRequirements` from `aisim.sweeper.replay`. Omission enables raw-report capture except for analytical EPD. An explicit value replaces that default. |
 
 `PredictionResult` contains:
 
@@ -73,35 +73,39 @@ runner metrics remain available in `report` for debugging.
 
 After creating a runner, the call closes it even when execution fails. Runner
 execution exceptions are wrapped in `PredictionExecutionError`, preserving the
-cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt` and
-`ResourceLimitError` propagate unchanged; configuration, compilation, capability
-and runner-creation failures also propagate directly.
+cause and any `fpm_query_coverage` attribute. `KeyboardInterrupt`,
+`ResourceLimitError`, and `UnsupportedVisionFamilyError` propagate unchanged;
+configuration, compilation, capability and runner-creation failures also
+propagate directly. `UnsupportedVisionFamilyError` is a `ValueError` subclass
+for image processors that native VL replay does not support. Diagnostics that
+include exception type names, such as failed sweep candidate reasons, report
+`UnsupportedVisionFamilyError` for this refusal; their reason category is unchanged.
 
 The call does not create output directories, save report files or print results.
 The caller owns those actions and resource budgets. Passing the plain engine
 factory does not enable the CLI's host-memory admission or subprocess supervision;
 use the CLI for the automatic [local resource controls](reference/local-resources.md).
 
-Source: [prediction entry point](../python/aisimulate/src/aisimulate/predict.py).
+Source: [prediction entry point](../python/aisim/src/aisim/predict.py).
 
 ## Python recommendation API
 
-Use `aisimulate.recommend.run_recommendation` to search a public
+Use `aisim.recommend.run_recommendation` to search a public
 `CoreRecommendationConfig` and return a `SweepResult`. This entry point lowers
 the public configuration into the [Sweeper SDK](sweeper/sdk.md); it does not
 accept a `SmartSearchConfig` in place of `CoreRecommendationConfig`.
 
 Use `recommendation.yaml` from the [README recommendation example](../README.md#recommend-a-deployment).
-In the activated AISimulate environment, save the following as
+In the activated AISim environment, save the following as
 `recommend_example.py` and run `python recommend_example.py` from the directory
 containing the YAML file.
 
 Keep the main guard because recommendation runs in supervised subprocesses.
 
 ```python
-from aisimulate.config.cli import CoreRecommendationConfig
-from aisimulate.recommend import run_recommendation
-from aisimulate.runner import EngineReplayRunnerFactory
+from aisim.config.cli import CoreRecommendationConfig
+from aisim.recommend import run_recommendation
+from aisim.runner import EngineReplayRunnerFactory
 
 if __name__ == "__main__":
     result = run_recommendation(
@@ -151,5 +155,5 @@ Invalid core input fails schema validation. Supervised execution failures raise
 and cancellation raises `KeyboardInterrupt`. Individual candidate failures are
 recorded in the result rather than necessarily stopping the entire search.
 
-Source: [recommendation entry point](../python/aisimulate/src/aisimulate/recommend.py)
-and [result contract](../python/aisimulate/src/aisimulate/sweeper/result.py).
+Source: [recommendation entry point](../python/aisim/src/aisim/recommend.py)
+and [result contract](../python/aisim/src/aisim/sweeper/result.py).

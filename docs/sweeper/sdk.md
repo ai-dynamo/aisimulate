@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Use the public `Sweeper` execution interface with an explicit runner factory.
 `SmartSearchConfig` is the SDK schema. Do not pass its YAML directly to
-`aisimulate recommend`, which accepts the [public CLI schema](../reference/configuration.md).
+`aisim recommend`, which accepts the [public CLI schema](../reference/configuration.md).
 
 ## Execute a built-in engine sweep
 
@@ -16,8 +16,8 @@ analytical encoder integration, with the [limits](../replay/engine/analytical.md
 described by Replay. Run from the repository root:
 
 ```python
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper import SmartSearchConfig, Sweeper
 
 if __name__ == "__main__":
     config = SmartSearchConfig.from_yaml("examples/sweeper/epd.yaml")
@@ -117,7 +117,7 @@ learned model through the canonical constructor, which reads its source and
 rejects a role whose forest lacks a store the role needs. See the
 [learned configuration](../perf-model/fpm_ml/configuration.md).
 
-An explicit positive `context_length` is passed as AISimulate's internal
+An explicit positive `context_length` is passed as AISim's internal
 `max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
 prefill/decode deployments. Prompts at or above the limit are rejected, and
 generation stops when prompt plus output reaches the limit. A role-specific
@@ -220,6 +220,7 @@ Every `Workload` field:
 | `trace_path` | `str \| None` | `None` | Path to a replay trace. Its presence selects the trace shape and **forbids** all synthetic fields. |
 | `trace_format` | `str` | `"mooncake"` | Replay-ready trace schema. A runner may validate supported formats. |
 | `weka_client` | `Literal["recorded", "agentx"] \| None` | `None` | [Weka client](../replay/workloads.md#weka-client) whose replay to follow; `None` selects `recorded`. Requires `source_type: trace`, `trace_path`, and `trace_format: weka`. |
+| `weka_chat_template` | `WekaChatTemplate \| None` | `None` | [Chat-template tokens](../replay/workloads.md#weka-chat-template) to add to replayed prompts: `request_tokens`, `user_tokens`, `assistant_tokens`, `tail_tokens` and `append_tail_tokens`, each a nonnegative integer, with `append_tail_tokens <= tail_tokens <= request_tokens`. `None` replays the trace's lengths. Requires `source_type: trace`, `trace_path`, and `trace_format: weka`. |
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`) and the optional import fields below. Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
@@ -258,8 +259,9 @@ cuts for matched comparisons. The live warmup policy follows the pinned referenc
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
 `supports_agentic_profile` for `agentic_profile`, `supports_agentic_live_warmup` for
-`live_trajectory_v1`, `supports_agentic_primers_only` for `primers_only`, and `supports_weka_client`
-for `weka_client: agentx`; unsupported runners fail validation.
+`live_trajectory_v1`, `supports_agentic_primers_only` for `primers_only`, `supports_weka_client`
+for `weka_client: agentx`, and `supports_weka_chat_template` for `weka_chat_template`; unsupported
+runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 

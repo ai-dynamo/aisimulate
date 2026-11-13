@@ -57,8 +57,8 @@ def main():
     parser.add_argument("--flush-updates", action="store_true", help="fit a pending partial update batch before saving")
     args = parser.parse_args()
 
-    from aisimulate_core.sdk import RustForwardPassPerfModel
-    from aisimulate_core.sdk.fpm_learned import iter_fpm_records
+    from aisim_core.sdk import RustForwardPassPerfModel
+    from aisim_core.sdk.fpm_learned import iter_fpm_records
 
     run, role, output = args.run_dir.resolve(), args.role, args.output_dir.resolve()
     source = run / "selected" / f"{role}.online.jsonl"

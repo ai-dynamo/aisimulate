@@ -141,7 +141,7 @@ def test_interpolation_support_misses_are_unavailable_without_changing_estimator
         pass
 
     monkeypatch.setitem(
-        sys.modules, "aisimulate_core.sdk.errors", SimpleNamespace(PerfDataNotAvailableError=PerfDataNotAvailableError)
+        sys.modules, "aisim_core.sdk.errors", SimpleNamespace(PerfDataNotAvailableError=PerfDataNotAvailableError)
     )
 
     def estimate(rows):
@@ -180,7 +180,7 @@ def test_interpolation_does_not_hide_corruption_capability_or_untyped_failures(b
         pass
 
     monkeypatch.setitem(
-        sys.modules, "aisimulate_core.sdk.errors", SimpleNamespace(PerfDataNotAvailableError=PerfDataNotAvailableError)
+        sys.modules, "aisim_core.sdk.errors", SimpleNamespace(PerfDataNotAvailableError=PerfDataNotAvailableError)
     )
     kind = PerfDataNotAvailableError if typed else ValueError
 

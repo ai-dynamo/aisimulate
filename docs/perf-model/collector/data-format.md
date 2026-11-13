@@ -29,7 +29,7 @@ outcomes, not reasons to remove intended coverage before collection.
 ## Table layout and runtime pins
 
 ```text
-python/aisimulate/src/aisimulate_core/systems/data/
+python/aisim/src/aisim_core/systems/data/
   <system>/<family>/<backend>/<version>/
     <table>_perf.parquet
     collection_meta.yaml
@@ -141,11 +141,11 @@ systems, the effect on predicted latency (over, under or unknown), the
 framework source or evidence behind it, and, when known, how the deviation
 could be retired. Data comments and docs point to that code instead of
 restating it. Cases a collection leaves out are not deviations: they are
-entries in `python/aisimulate/collector/skips.py`, with the reason as a
+entries in `python/aisim/collector/skips.py`, with the reason as a
 comment. Moving a pin means re-checking the notes of the bumped families,
 keeping each that still holds and deleting the rest.
 
 The authoritative implementations are
-[`collector`](../../../python/aisimulate/collector/),
-[`perf_database.py`](../../../python/aisimulate/src/aisimulate_core/sdk/perf_database.py),
+[`collector`](../../../python/aisim/collector/),
+[`perf_database.py`](../../../python/aisim/src/aisim_core/sdk/perf_database.py),
 and the [native table loaders](../../../crates/core/src/perfmodel/perf_database/).

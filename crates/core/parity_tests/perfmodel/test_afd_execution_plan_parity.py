@@ -41,15 +41,15 @@ def test_real_layout_native_replay_matches_independent_golden(name, tmp_path):
 
 
 def test_new_layout_native_plan_survives_engine_json_and_binary_round_trip(monkeypatch):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate_core._native import (
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim_core._native import (
         AicEngine,
         engine_spec_bincode_from_json,
         engine_spec_json_from_bincode,
     )
-    from aisimulate_core.sdk import engine
+    from aisim_core.sdk import engine
 
     compiled = []
     build = engine.build_engine_spec_json
@@ -62,9 +62,7 @@ def test_new_layout_native_plan_survives_engine_json_and_binary_round_trip(monke
             restored = json.loads(engine_spec_json_from_bincode(binary))
             assert restored["schema_version"] == engine.ENGINE_SPEC_SCHEMA_VERSION == 30
             assert restored["afd_plan"] == spec["afd_plan"]
-            assert (
-                restored["engine"]["extra"]["afd_pool_role"] == spec["afd_plan"]["role"]
-            )
+            assert restored["engine"]["extra"]["afd_pool_role"] == spec["afd_plan"]["role"]
             AicEngine.from_spec(binary)
             compiled.append(restored)
         return text
@@ -74,27 +72,21 @@ def test_new_layout_native_plan_survives_engine_json_and_binary_round_trip(monke
     raw["traffic"]["stop"]["requests"] = 1
     runner = EngineReplayRunnerFactory().create(0)
     try:
-        report = runner.run(
-            prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-        )
+        report = runner.run(prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)))
     finally:
         runner.close()
     assert report.metrics["completed_requests"] == 1
     assert {spec["afd_plan"]["role"] for spec in compiled} == {"a", "f"}
     for spec in compiled:
         plan = spec["afd_plan"]
-        assert [plan["context"]["templates"][i]["routed"] for i in plan["layers"]] == [
-            False
-        ] * 3 + [True] * 58
+        assert [plan["context"]["templates"][i]["routed"] for i in plan["layers"]] == [False] * 3 + [True] * 58
         assert plan["shared_inter_size"] == 2048
 
 
 def test_native_cli_rejects_interleaved_dense_model_with_a_nonzero_exit():
     config = GOLDEN.parent.parent / "configs" / "afd-predict-pure.yaml"
     with pytest.raises(subprocess.CalledProcessError) as error:
-        _run_native(
-            config, "engine.model=meta-llama/Llama-4-Maverick-17B-128E-Instruct"
-        )
+        _run_native(config, "engine.model=meta-llama/Llama-4-Maverick-17B-128E-Instruct")
     assert error.value.returncode != 0
     assert "dense layer 2 follows routed layer 1" in error.value.stderr
 
@@ -102,10 +94,10 @@ def test_native_cli_rejects_interleaved_dense_model_with_a_nonzero_exit():
 def test_dense_prefix_full_batch_activation_reaches_memory_fit_and_kv_budget(
     monkeypatch,
 ):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sdk import afd_memory
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim.sdk import afd_memory
 
     captured = {}
     for name in ("check_afd_memory_fit", "estimate_afd_kv_budget_bytes"):
@@ -117,15 +109,11 @@ def test_dense_prefix_full_batch_activation_reaches_memory_fit_and_kv_budget(
 
         monkeypatch.setattr(afd_memory, name, capture)
     raw = copy.deepcopy(CASES["deepseek_v32_tp2"]["config"])
-    raw["engine"]["workers"]["aggregated"]["afd"].update(
-        a_batch_size=8, num_microbatches=3
-    )
+    raw["engine"]["workers"]["aggregated"]["afd"].update(a_batch_size=8, num_microbatches=3)
     raw["traffic"]["stop"]["requests"] = 1
     runner = EngineReplayRunnerFactory().create(0)
     try:
-        report = runner.run(
-            prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-        )
+        report = runner.run(prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)))
     finally:
         runner.close()
     assert report.metrics["completed_requests"] == 1
@@ -140,12 +128,10 @@ def test_dense_prefix_full_batch_activation_reaches_memory_fit_and_kv_budget(
 
 
 @pytest.mark.parametrize("variable", [False, True])
-def test_single_request_prefill_is_independent_of_configured_batch_capacity(
-    variable, tmp_path
-):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory
+def test_single_request_prefill_is_independent_of_configured_batch_capacity(variable, tmp_path):
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory
 
     raw = copy.deepcopy(CASES["qwen_tp2"]["config"])
     raw["traffic"]["source"].update(input_tokens=128, output_tokens=1)
@@ -176,11 +162,7 @@ def test_single_request_prefill_is_independent_of_configured_batch_capacity(
         raw["engine"]["workers"]["aggregated"]["afd"]["a_batch_size"] = capacity
         runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)
         try:
-            results.append(
-                runner.run(
-                    prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-                ).metrics
-            )
+            results.append(runner.run(prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))).metrics)
         finally:
             runner.close()
     for result in results:
@@ -190,7 +172,7 @@ def test_single_request_prefill_is_independent_of_configured_batch_capacity(
 
 
 def test_canonical_f_ep64_constructor_builds_only_routed_compute(monkeypatch):
-    from aisimulate_core.sdk import (
+    from aisim_core.sdk import (
         ForwardPassPerfModelConfig,
         RustForwardPassPerfModel,
         engine,

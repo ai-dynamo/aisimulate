@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: MiniMaxM3ForCausalLM
+model_path: MiniMaxAI/MiniMax-M3
+model_paths:
+  - MiniMaxAI/MiniMax-M3
+  - nvidia/MiniMax-M3-NVFP4
+include_base: true
+description: >
+  MiniMax-M3 MoE + MSA sparse-attention model-centric collection plan.
+  Layers 0-2 are dense (GQA attention + 12288 dense MLP), layers 3-59 are
+  MSA sparse attention + 128-expert top-4 MoE with one shared expert
+  (shared_intermediate_size 3072). The MSA module is collected via the
+  msa_*_module ops (attention_type: msa under mla_module); the dense
+  layers' cost is approximated as MSA+MoE by the SDK model
+  (aisim_core/sdk/models/minimax_m3.py docstring), so no dense
+  attention profile is declared.
+
+model_case_values:
+  moe:
+    # BF16 checkpoint. DeepSeekV3-style routing: fp32 sigmoid scoring +
+    # e_score_correction_bias + routed_scaling_factor 2.0, no expert
+    # groups (TRT-LLM modeling_minimaxm3.py MiniMaxM3Gate;
+    # HF config scoring_func=sigmoid, use_routing_bias=true,
+    # routed_scaling_factor=2.0). The shared expert
+    # (shared_intermediate_size 3072) is modeled by the SDK as separate
+    # GEMM ops, not part of the routed-MoE benchmark shape.
+    - model_path: MiniMaxAI/MiniMax-M3
+      hidden_size: 6144
+      inter_size: 3072
+      topk: 4
+      num_experts: 128
+      # SGLang's MiniMaxM3MoE passes FusedMoE no routing method and runs SiLU
+      # SwiGLU with the checkpoint's alpha / limit (swiglu_alpha 1.702,
+      # swiglu_limit 7.0; beta 1.0, every runner's default once alpha is set),
+      # and applies routed_scaling_factor in its TopK only
+      # (models/minimax_m3.py:421-452 at v0.5.23; scaling placement:
+      # collector/sglang/collect_moe.py deviation note).
+      sglang_moe_gemm1_alpha: 1.702
+      sglang_moe_gemm1_clamp_limit: 7.0
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routed_scaling_factor: 2.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      # BF16 artifact serves BF16 MoE. Quant-distinct artifacts get their
+      # own rows (with their own model_path) — never merged here
+      # (case_authoring.md: quant-distinct artifacts are separate rows);
+      # see the nvidia/MiniMax-M3-NVFP4 row below.
+      quantization_modes: [bfloat16]
+    # nvidia/MiniMax-M3-NVFP4 (ModelOpt MIXED_PRECISION): routed experts
+    # w1/w2/w3 are NVFP4 group_size 16 — the dtype this MoE row collects.
+    # Attention/dense-MLP/shared-expert projections are MXFP8 (priced by the
+    # SDK as fp8_block; not a routed-MoE artifact axis), block_sparse_moe.gate
+    # stays unquantized. Same 6144/3072 topk4 x128 geometry and DeepSeekV3
+    # sigmoid routing as the BF16 parent above. The base nvfp4 quant-mode axis
+    # carries the min_sm 100 hardware floor (Blackwell-only collection).
+    - model_path: nvidia/MiniMax-M3-NVFP4
+      hidden_size: 6144
+      inter_size: 3072
+      topk: 4
+      num_experts: 128
+      # SGLang's MiniMaxM3MoE passes FusedMoE no routing method and runs SiLU
+      # SwiGLU with the checkpoint's alpha / limit (swiglu_alpha 1.702,
+      # swiglu_limit 7.0; beta 1.0, every runner's default once alpha is set),
+      # and applies routed_scaling_factor in its TopK only
+      # (models/minimax_m3.py:421-452 at v0.5.23; scaling placement:
+      # collector/sglang/collect_moe.py deviation note).
+      sglang_moe_gemm1_alpha: 1.702
+      sglang_moe_gemm1_clamp_limit: 7.0
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routed_scaling_factor: 2.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      quantization_modes: [nvfp4]
+  mla_module:
+    # model_aliases (NOT model_paths): the MSA module benchmark is
+    # artifact-insensitive — dummy weights, identical sparse geometry in both
+    # checkpoints' configs, and the GEMM/KV precision is an explicit sweep
+    # axis (never resolved from the artifact), so the NVFP4 artifact provably
+    # cannot change the invoked kernel or the persisted key
+    # (case_authoring.md aliasing rule). The alias keeps exact-targeting
+    # COLLECTOR_MODEL_PATH=nvidia/MiniMax-M3-NVFP4 populating the MSA plan
+    # (review 4969690316 Spec-2: an advertised artifact must not expand to
+    # zero cases) while rows stay keyed to the single canonical model.
+    - model_path: MiniMaxAI/MiniMax-M3
+      model_aliases:
+        - nvidia/MiniMax-M3-NVFP4
+      attention_type: msa
+      native_num_heads: 64
+      # Real shards only: the MSA collectors
+      # derive per-rank heads as 64 // tp -> 64/32/16/8/4 (kv/index heads
+      # 4/2/1/1/1). The shared 12-value head grid also produced 128/96/48/
+      # 24/12, which no M3 deployment reaches; 48 and 96 shard to 3/6 index
+      # heads and only ever failed the decode scorer's power-of-2 tile.
+      # TP 16 is the ceiling anyone runs this model at.
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+      # Native MSA, with a 32K new-query anchor and intermediate retained history.
+      long_context_cases:
+        context:
+          - [1, 512, 786432]
+          - [1, 32768, 786432]
+          - [1, 512, 917504]
+          - [1, 32768, 917504]
+          - [1, 32768, 262144]
+          - [4, 32768, 131072]
+        generation:
+          - [1, 786432, 0]
+          - [4, 786432, 0]
+          - [8, 786432, 0]
+          - [16, 786432, 0]
+          - [32, 786432, 0]
+          - [1, 917504, 0]
+          - [4, 917504, 0]
+          - [8, 917504, 0]
+          - [16, 917504, 0]
+          - [32, 917504, 0]
+          - [8, 1048575, 0]
+          - [16, 1048575, 0]
+          - [32, 1048575, 0]
+
+all_frameworks_op_cases:
+  gemm:
+    cases: all
+  moe:
+    cases: all
+
+framework_specific_op_cases:
+  trtllm:
+    msa_context_module:
+      cases: all
+    msa_generation_module:
+      cases: all
+  vllm:
+    msa_context_module:
+      cases: all
+    msa_generation_module:
+      cases: all
+  sglang:
+    msa_context_module:
+      cases: all
+    msa_generation_module:
+      cases: all

@@ -17,10 +17,10 @@ The four phase/kind tables are `dsv4_csa_context_module_perf.parquet`,
 and `dsv4_hca_generation_module_perf.parquet`, under the `sparse_attention` family.
 The collector stages CSV-formatted `.txt` output and finalizes Parquet with
 provenance. Inspect the current SGLang registry and
-[`collect_dsv4_attn.py`](../../../python/aisimulate/collector/sglang/collect_dsv4_attn.py)
+[`collect_dsv4_attn.py`](../../../python/aisim/collector/sglang/collect_dsv4_attn.py)
 for runtime and case support.
 
-From `python/aisimulate/`, inspect the retained plan before a GPU run:
+From `python/aisim/`, inspect the retained plan before a GPU run:
 
 ```bash
 python3 collector/collect.py --backend sglang \

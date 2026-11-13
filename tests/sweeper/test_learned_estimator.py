@@ -41,9 +41,9 @@ def _prediction(decode_timing: dict | None = None, *, fixed: bool = False) -> di
 
 
 def _replay(raw: dict):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config.cli import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config.cli import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory
 
     runner = EngineReplayRunnerFactory().create(0)
     try:
@@ -56,9 +56,9 @@ def _replay(raw: dict):
 @pytest.mark.parametrize("boundary", ["runner", "native"])
 def test_raw_learned_replay_reads_its_source_at_construction(tmp_path, source_field, boundary):
     """Low-level replay accepts learned timing and fails only on the missing source."""
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config.cli import CorePredictionConfig
-    from aisimulate.runner import EngineReplayRunnerFactory, _materialize_engine_execution_spec
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config.cli import CorePredictionConfig
+    from aisim.runner import EngineReplayRunnerFactory, _materialize_engine_execution_spec
 
     replay = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(fixed=True)))
     source = tmp_path / "missing-learned-source"
@@ -77,7 +77,7 @@ def test_raw_learned_replay_reads_its_source_at_construction(tmp_path, source_fi
         },
     }
     if boundary == "native":
-        from aisimulate import _runtime
+        from aisim import _runtime
 
         execution = _materialize_engine_execution_spec(replay, trace_block_size=512, record_per_request=False)
         execution["spec"]["engine"]["decode"]["rank"]["timing_model"] = timing
@@ -96,7 +96,7 @@ def test_raw_learned_replay_reads_its_source_at_construction(tmp_path, source_fi
 def test_a_learned_decode_role_prices_each_decode_iteration(tmp_path):
     """A tiny forest fitted to a constant decode time times every decode pass."""
     pytest.importorskip("sklearn")
-    from aisimulate_core.sdk.fpm_learned import train
+    from aisim_core.sdk.fpm_learned import train
 
     iterations = []
     for index in range(64):

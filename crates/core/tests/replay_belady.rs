@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{Backend, EngineConfig, KvEvictionPolicy, TimingModelConfig};
-use aisimulate_core::replay::{
+use aisim_core::engine::{Backend, EngineConfig, KvEvictionPolicy, TimingModelConfig};
+use aisim_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig,
     ReplayEngineFactory, ReplayError, ReplayReport, ReplayRequest, ReplaySpec, ReplayTopology,
     Replayer, WorkerPoolSpec,
@@ -253,7 +253,7 @@ fn unsupported_forecast_inputs_fail_before_execution() {
         attention_dp.engine["dp_size"] = json!(2);
         let mut host_offload = base.clone();
         host_offload.engine["rank"]["native_host_offload"] =
-            serde_json::to_value(aisimulate_core::engine::NativeHostOffloadConfig::new(8)).unwrap();
+            serde_json::to_value(aisim_core::engine::NativeHostOffloadConfig::new(8)).unwrap();
         let mut g3_offload = base.clone();
         g3_offload.engine["rank"]["g3_offload"] =
             json!({"scope": "worker_local", "num_g3_blocks": 8});
