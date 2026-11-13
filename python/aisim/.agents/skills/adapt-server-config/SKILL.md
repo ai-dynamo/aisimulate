@@ -16,16 +16,20 @@ Create versioned AIC estimate requests without silently dropping operating point
 
 ## Adapt a known format
 
-Run from the aiconfigurator repository root:
+Use an active AISim development environment with the `dev` extra installed
+(`uv pip install -e './python/aisim[dev]'` from the repository root). The helper
+requires `jsonschema`, which is not included in the base install.
+
+Run from the AISim repository root:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format inferencex --config configs-record.json --benchmark benchmark-row.json \
   --overrides '{"backend_version":"0.19.0"}'
 ```
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo --deploy deploy.yaml --perf perf.yaml \
   --overrides '{"system_name":"h200_sxm"}'
 ```
@@ -48,7 +52,7 @@ Read [custom-mapping.md](references/custom-mapping.md). Inspect the source, then
 Obtain confirmation before creating canonical request JSON. After confirmation, create `aic-estimate-request/1.0.0` JSON and validate it:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format request --request request.json
 ```
 
@@ -59,7 +63,7 @@ Do not add heuristic behavior to the SDK. Do not infer missing model identity, s
 Adaptation never runs an estimate. Add `--run-estimate` only when the user explicitly asks to execute estimates:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo --deploy deploy.yaml --perf perf.yaml \
   --overrides '{"system_name":"h200_sxm"}' --run-estimate
 ```
