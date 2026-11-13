@@ -64,6 +64,31 @@ The trainer also accepts the event-plane sink format (one flat FPM JSON per
 line, as written by an `FpmEventSubscriber` sink) and the Dynamo trace envelope
 (`{"event": {"fpm": {...}}}`).
 
+### Recording without the Dynamo runtime
+
+Dynamo's `InstrumentedScheduler` also runs inside a plain vLLM server, so a
+step capture can keep exactly the serving stack of a measured end-to-end run.
+Start the server with
+`--scheduler-cls dynamo.vllm.instrumented_scheduler.InstrumentedScheduler`,
+with the `ai-dynamo` and `ai-dynamo-runtime` packages importable, and with the
+runtime hooks on `PYTHONPATH` (see [hooks](design.md#2a-per-request-fields-and-the-runtime-hooks-that-add-them)).
+The scheduler publishes each step over ZMQ on port `DYN_FORWARDPASS_METRIC_PORT`
+(default 20380) plus the DP rank. Record it with:
+
+```bash
+python -m aisim_core.fpm_record --endpoint tcp://127.0.0.1:20380 \
+    --output /results/fpm/steps.jsonl.gz --ready-file /results/fpm/recorder.ready
+```
+
+Start the recorder before the server and stop it with SIGTERM after the
+traffic ends. It drains queued messages, then writes
+`steps.jsonl.gz.summary.json` with per-endpoint message, heartbeat and
+sequence-gap counts. Each line is `{"recv_ms", "endpoint", "seq", "fpm"}`,
+which the trainer reads directly. The recorder decodes payloads untyped, so the
+hook fields survive. A sequence gap means the subscriber lost messages, but a
+clean summary does not prove that nothing was lost, because a publisher can
+drop a message before numbering it.
+
 Keep the engine posture fixed while collecting: async scheduling, CUDA-graph
 capture list, and max batched tokens all change `wall_time` and belong to the
 model's identity.
