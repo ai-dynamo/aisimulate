@@ -117,8 +117,9 @@ impl RestoreRounds {
 }
 
 /// A lookup's walk over G2: the `matched` leading blocks of `range` that G2
-/// holds, and whether any of them waits for a store or load in flight.
-#[derive(Clone, Copy)]
+/// holds, and whether any of them waits for a store or load in flight. The
+/// default is a walk of no blocks.
+#[derive(Debug, Default, PartialEq)]
 struct HitWalk {
     /// [`HostTier::lookup_epoch`] and the adapter's `load_keys_epoch`.
     epochs: (u64, u64),
@@ -158,9 +159,10 @@ pub(super) struct VllmHostRequestState {
     accessed_blocks: BTreeSet<usize>,
     /// With `touches_prompt`: the latest prompt touch.
     prompt_touch: Option<ReversedTouch>,
-    /// The latest lookup's walk, which a waiting request's next lookup
-    /// reuses while G2 and the keys being loaded are unchanged.
-    hit_walk: Option<HitWalk>,
+    /// The latest lookup's walk. A blocked queue head looks up again on
+    /// every pass and reuses it while G2 and the keys being loaded are
+    /// unchanged.
+    hit_walk: HitWalk,
 }
 
 impl VllmHostRequestState {
@@ -213,7 +215,7 @@ impl VllmHostRequestState {
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
             prompt_touch: None,
-            hit_walk: None,
+            hit_walk: HitWalk::default(),
         }
     }
 
@@ -534,6 +536,8 @@ impl VllmHostOffloadAdapter {
         {
             HostLookup::Deferred
         } else {
+            let epochs = (tier.lookup_epoch(), *load_keys_epoch);
+            let range = (base_g1_blocks, end);
             let walk = || {
                 let mut matched = 0usize;
                 let mut deferred = false;
@@ -545,28 +549,20 @@ impl VllmHostOffloadAdapter {
                     }
                     matched += 1;
                 }
-                (matched, deferred)
-            };
-            // A request blocked at the head of the queue looks up again on
-            // every pass, mostly against the G2 it saw the pass before.
-            let epochs = (tier.lookup_epoch(), *load_keys_epoch);
-            let range = (base_g1_blocks, end);
-            let (matched, deferred) = match request.hit_walk {
-                Some(seen) if seen.epochs == epochs && seen.range == range => {
-                    debug_assert_eq!((seen.matched, seen.deferred), walk());
-                    (seen.matched, seen.deferred)
-                }
-                _ => {
-                    let (matched, deferred) = walk();
-                    request.hit_walk = Some(HitWalk {
-                        epochs,
-                        range,
-                        matched,
-                        deferred,
-                    });
-                    (matched, deferred)
+                HitWalk {
+                    epochs,
+                    range,
+                    matched,
+                    deferred,
                 }
             };
+            if (request.hit_walk.epochs, request.hit_walk.range) != (epochs, range) {
+                request.hit_walk = walk();
+            }
+            debug_assert_eq!(request.hit_walk, walk());
+            let HitWalk {
+                matched, deferred, ..
+            } = request.hit_walk;
             let keys = &request.block_keys[base_g1_blocks..base_g1_blocks + matched];
             if matched == 0 {
                 HostLookup::Miss
@@ -1415,57 +1411,29 @@ mod tests {
     #[test]
     fn a_waiting_request_s_repeated_lookup_follows_g2_and_peer_loads() {
         // A blocked queue head looks up on every pass. Each lookup must see
-        // the blocks G2 gained or lost and the loads peers started or
-        // cancelled since the one before.
-        fn hit_blocks(
-            adapter: &mut VllmHostOffloadAdapter,
-            manager: &G1Manager,
-            (sequence, lease, host): &mut (
-                RequestSequence,
-                BlockRequestLease,
-                VllmHostRequestState,
-            ),
-            now: f64,
-        ) -> Option<usize> {
-            let cost = raw_cost(manager, sequence, lease);
-            match adapter.lookup(host, sequence, &cost, 4, now) {
+        // the blocks G2 gained and the loads peers started or finished since
+        // the one before.
+        let mut adapter = adapter(2);
+        let mut manager = G1Manager::new_with_caching(8, 4, KvEventPublishers::default(), 0, true);
+        let prompt = (1..=9).collect::<Vec<u32>>();
+        let (sequence, lease, mut waiting) = request(Uuid::from_u128(1), prompt.clone());
+        let (peer_sequence, peer_lease, mut peer) = request(Uuid::from_u128(2), prompt);
+        let [first, second] = [0, 1].map(|index| waiting.block_keys[index]);
+        let mut hit_blocks = |adapter: &mut VllmHostOffloadAdapter, manager: &G1Manager, now| {
+            let cost = raw_cost(manager, &sequence, &lease);
+            match adapter.lookup(&mut waiting, &sequence, &cost, 4, now) {
                 HostLookup::Miss => Some(0),
                 HostLookup::Hit(hit) => Some(hit.keys.len()),
                 HostLookup::Deferred => None,
             }
-        }
-
-        let mut adapter = adapter(2);
-        let mut manager = G1Manager::new_with_caching(8, 4, KvEventPublishers::default(), 0, true);
-        let prompt = (1..=9).collect::<Vec<u32>>();
-        let mut waiting = request(Uuid::from_u128(1), prompt.clone());
-        let (peer_sequence, peer_lease, mut peer) = request(Uuid::from_u128(2), prompt);
-        let [first, second] = [0, 1].map(|index| waiting.2.block_keys[index]);
+        };
 
         let now = seed_host(&mut adapter, first);
         for _ in 0..2 {
-            assert_eq!(
-                hit_blocks(&mut adapter, &manager, &mut waiting, now),
-                Some(1)
-            );
+            assert_eq!(hit_blocks(&mut adapter, &manager, now), Some(1));
         }
-        // `second` is a hit to wait for while its store is in flight.
-        let StoreOutcome::Prepared { transfer_id, .. } =
-            adapter
-                .host
-                .lock()
-                .prepare_store(C, Uuid::nil(), &[second], None, now)
-        else {
-            panic!("the second block was absent")
-        };
-        adapter.host.lock().submit_prepared_stores(C, now);
-        assert_eq!(hit_blocks(&mut adapter, &manager, &mut waiting, now), None);
-        let now = adapter.host.lock().transfer_deadline(transfer_id).unwrap();
-        adapter.host.lock().tick(C, now);
-        assert_eq!(
-            hit_blocks(&mut adapter, &manager, &mut waiting, now),
-            Some(2)
-        );
+        let now = seed_host(&mut adapter, second);
+        assert_eq!(hit_blocks(&mut adapter, &manager, now), Some(2));
 
         // A peer's load changes no G2 entry, yet defers the hit until it ends.
         let cost = raw_cost(&manager, &peer_sequence, &peer_lease);
@@ -1476,20 +1444,10 @@ mod tests {
             adapter.start_load(peer.owner, &mut peer, &peer_lease, hit, &mut manager, now),
             StartLoad::Queued
         ));
-        assert_eq!(hit_blocks(&mut adapter, &manager, &mut waiting, now), None);
-        assert!(adapter.cancel_request(&mut peer, &mut manager, now, now));
-        assert_eq!(
-            hit_blocks(&mut adapter, &manager, &mut waiting, now),
-            Some(2)
-        );
-
-        // The lookups left `second` the oldest, so a third block evicts it.
-        let (_, _, other) = request(Uuid::from_u128(3), vec![11, 12, 13, 14]);
-        let now = seed_host(&mut adapter, other.block_keys[0]);
-        assert_eq!(
-            hit_blocks(&mut adapter, &manager, &mut waiting, now),
-            Some(1)
-        );
+        assert_eq!(hit_blocks(&mut adapter, &manager, now), None);
+        let now = adapter.next_deadline().expect("the load is in flight");
+        assert_eq!(adapter.advance(&mut manager, now).completed_loads.len(), 1);
+        assert_eq!(hit_blocks(&mut adapter, &manager, now), Some(2));
     }
 
     #[test]

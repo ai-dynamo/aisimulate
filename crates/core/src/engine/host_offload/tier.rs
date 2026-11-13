@@ -353,8 +353,7 @@ pub(crate) struct HostTier {
     /// Router identity of each block, retained while residency is published.
     meta: FxHashMap<HostBlockKey, HostBlockMeta>,
     completion_epoch: u64,
-    /// Bumped whenever an entry appears, disappears or becomes resident: the
-    /// only changes to what [`Self::lookup`] answers.
+    /// See [`Self::lookup_epoch`].
     lookup_epoch: u64,
     next_transfer_id: u64,
     current_time_ms: f64,
@@ -1151,8 +1150,9 @@ impl HostTier {
         }
     }
 
-    /// Changes whenever any key's [`Self::lookup`] answer does, so answers
-    /// read at one epoch hold until it moves.
+    /// Moves whenever an entry appears, disappears or becomes resident, the
+    /// only changes to a [`Self::lookup`] answer, so answers read at one
+    /// epoch hold until it moves.
     pub(crate) fn lookup_epoch(&self) -> u64 {
         self.lookup_epoch
     }
@@ -2285,6 +2285,49 @@ pub(crate) mod tests {
         assert_eq!(tier.lru_order(), [7, 3, 9, 2, 1].map(key));
         tier.touch_reversed(&prompt, &mut last);
         assert_eq!(tier.lru_order(), [7, 9, 3, 2, 1].map(key));
+    }
+
+    #[test]
+    fn lookup_epoch_moves_only_when_a_lookup_answer_changes() {
+        let mut tier = tier(4);
+        let mut seen = tier.lookup_epoch();
+        let mut moved = |tier: &HostTier| std::mem::replace(&mut seen, tier.lookup_epoch()) != seen;
+
+        // A store: absent, then pending, then resident.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.prepare_store(C, request_id(), &[key(1)], None, 0.0)
+        else {
+            panic!("1 must be absent")
+        };
+        assert!(moved(&tier));
+        tier.submit_prepared_stores(C, 0.0);
+        assert!(!moved(&tier));
+        let now = tier.transfer_deadline(transfer_id).unwrap();
+        tier.tick(C, now);
+        assert!(moved(&tier));
+
+        // A touch, a pin and a load change no answer.
+        tier.touch(key(1));
+        tier.pin_external(&[key(1)]);
+        tier.unpin_external(&[key(1)]);
+        let now = load(&mut tier, &[key(1)], now);
+        assert!(!moved(&tier));
+
+        // An external reservation: pending, then resident or rolled back.
+        for (block, lands) in [(2, true), (3, false)] {
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.reserve_external(C, request_id(), &[key(block)], None, now)
+            else {
+                panic!("the block must be absent")
+            };
+            assert!(moved(&tier));
+            if lands {
+                tier.complete_external(transfer_id);
+            } else {
+                tier.cancel_external(transfer_id);
+            }
+            assert!(moved(&tier));
+        }
     }
 
     #[test]

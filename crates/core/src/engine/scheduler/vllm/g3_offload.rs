@@ -19,15 +19,17 @@ struct G3StagingState {
 }
 
 /// The leading keys G2 held, resident or pending, at a request's latest
-/// [`VllmG3OffloadAdapter::stage`]. Staging changes nothing before the first
-/// key G2 lacks, so the next one resumes there while G2 is unchanged.
+/// [`VllmG3OffloadAdapter::stage`]. A blocked queue head stages again on
+/// every pass, and staging only notes whether one of these keys is pending,
+/// so while G2 is unchanged the next one resumes at the first key G2 lacks.
+/// The default is a reading of no keys.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct HeldPrefix {
     /// The [`HostTier::lookup_epoch`] the keys were read at.
     epoch: u64,
-    /// How many keys were staged: a suffix of the request's prompt blocks,
+    /// How many keys were read: a suffix of the request's prompt blocks,
     /// which its length identifies.
-    keys: usize,
+    keys_len: usize,
     len: usize,
     /// Whether any of the `len` keys was pending.
     pending: bool,
@@ -35,24 +37,20 @@ pub(super) struct HeldPrefix {
 
 impl HeldPrefix {
     fn read(tier: &HostTier, keys: &[HostBlockKey]) -> Self {
-        let mut pending = false;
-        let len = keys
-            .iter()
-            .take_while(|key| match tier.lookup(**key) {
-                Lookup::Hit => true,
-                Lookup::Pending { .. } => {
-                    pending = true;
-                    true
-                }
-                Lookup::Miss => false,
-            })
-            .count();
-        Self {
+        let mut held = Self {
             epoch: tier.lookup_epoch(),
-            keys: keys.len(),
-            len,
-            pending,
+            keys_len: keys.len(),
+            ..Self::default()
+        };
+        for key in keys {
+            match tier.lookup(*key) {
+                Lookup::Hit => {}
+                Lookup::Pending { .. } => held.pending = true,
+                Lookup::Miss => break,
+            }
+            held.len += 1;
         }
+        held
     }
 }
 
@@ -127,13 +125,10 @@ impl VllmG3OffloadAdapter {
             self.attempted_at = now;
             self.attempted.clear();
         }
-        // A request blocked at the head of the queue stages again on every
-        // pass, mostly against the G2 it saw the pass before.
-        if (held.epoch, held.keys) == (tier.lookup_epoch(), keys.len()) {
-            debug_assert_eq!(*held, HeldPrefix::read(tier, keys));
-        } else {
+        if (held.epoch, held.keys_len) != (tier.lookup_epoch(), keys.len()) {
             *held = HeldPrefix::read(tier, keys);
         }
+        debug_assert_eq!(*held, HeldPrefix::read(tier, keys));
         let (mut plan, mut no_room) = (None::<ExternalPlan>, None);
         let mut deferred = held.pending;
         let mut registry = self.registry.lock().unwrap();
@@ -722,6 +717,10 @@ mod tests {
         let [a, b] = [1, 2].map(HostBlockKey::new);
         let mut now = seed_secondary(&registry, &mut tier, &[a, b]);
         let (mut restore, mut held) = (RestoreRounds::default(), HeldPrefix::default());
+        let mut stage =
+            |g3: &mut VllmG3OffloadAdapter, tier: &mut HostTier, restore: &mut _, now| {
+                g3.stage(tier, C, Uuid::nil(), restore, &mut held, &[a, b], None, now)
+            };
         // Rank progress before round 10 starts the count over.
         let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
         for round in 0..rounds {
@@ -729,28 +728,10 @@ mod tests {
             if round == 10 {
                 g3.note_rank_progress();
             }
-            assert!(g3.stage(
-                &mut tier,
-                C,
-                Uuid::nil(),
-                &mut restore,
-                &mut held,
-                &[a, b],
-                None,
-                now
-            ));
+            assert!(stage(&mut g3, &mut tier, &mut restore, now));
             if round == 0 {
                 // Waiting on the pending promotion is not another round.
-                assert!(g3.stage(
-                    &mut tier,
-                    C,
-                    Uuid::nil(),
-                    &mut restore,
-                    &mut held,
-                    &[a, b],
-                    None,
-                    now
-                ));
+                assert!(stage(&mut g3, &mut tier, &mut restore, now));
                 assert_eq!(restore.rounds_without_progress, 1);
             }
             now += 1.0;
