@@ -13,7 +13,8 @@ use crate::engine::host_offload::HostBlockKey;
 /// relinks in O(1). The caller keeps each block's node in a slot, normally a
 /// field of the block's own entry; node 0 is the sentinel between the newest
 /// and oldest blocks. Callers make a cohort newest in key order, the tiers'
-/// deterministic tie-break.
+/// deterministic tie-break, unless a G2 tier keeps release order (a free
+/// queue) or ranks blocks when their store starts.
 pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
@@ -62,6 +63,11 @@ impl Lru {
         }
     }
 
+    /// Number of linked blocks.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len() - 1 - self.vacant.len()
+    }
+
     /// The `count` oldest blocks that pass `is_eligible`.
     pub(crate) fn victims(
         &self,
@@ -75,13 +81,21 @@ impl Lru {
     }
 
     fn oldest_first(&self) -> impl Iterator<Item = HostBlockKey> + '_ {
-        let mut node = self.nodes[SENTINEL as usize].newer;
+        self.oldest_after(None).map(|(_, key)| key)
+    }
+
+    /// Linked nodes newer than `cursor`, oldest first; all of them for `None`.
+    pub(crate) fn oldest_after(
+        &self,
+        cursor: Option<NonZeroU32>,
+    ) -> impl Iterator<Item = (NonZeroU32, HostBlockKey)> + '_ {
+        let start = cursor.map_or(SENTINEL, NonZeroU32::get);
+        let mut node = self.nodes[start as usize].newer;
         std::iter::from_fn(move || {
-            (node != SENTINEL).then(|| {
-                let LruNode { key, newer, .. } = self.nodes[node as usize];
-                node = newer;
-                key
-            })
+            let current = NonZeroU32::new(node)?;
+            let LruNode { key, newer, .. } = self.nodes[node as usize];
+            node = newer;
+            Some((current, key))
         })
     }
 

@@ -1,0 +1,297 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: NemotronHForCausalLM
+model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+model_paths:
+  - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+  - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+  - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+  - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+  - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+  - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
+  - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+  - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+  - nvidia/Nemotron-H-56B-Base-8K
+  - nvidia/nemotron-ultra-rl-050826
+include_base: true
+description: >
+  Nemotron-H hybrid Mamba/MoE model-centric collection plan.
+
+model_case_values:
+  attention:
+    - id: nemotron_h_nano_attention
+      model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+      model_aliases:
+        - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+      num_attention_heads: 32
+      num_key_value_heads: 2
+      head_dim: 128
+      window_size: 0
+      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
+    - id: nemotron_h_super_attention
+      model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      num_attention_heads: 32
+      num_key_value_heads: 2
+      head_dim: 128
+      window_size: 0
+      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
+    - id: nemotron_h_ultra_attention
+      model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+      model_aliases:
+        - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+        - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
+        - nvidia/nemotron-ultra-rl-050826
+      num_attention_heads: 64
+      num_key_value_heads: 2
+      head_dim: 128
+      window_size: 0
+      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
+    - id: nemotron_h_56b_attention
+      model_path: nvidia/Nemotron-H-56B-Base-8K
+      num_attention_heads: 64
+      num_key_value_heads: 8
+      head_dim: 128
+      window_size: 0
+      sglang_backends: {90: fa3, 100: flashinfer, 103: flashinfer, 120: flashinfer}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
+  moe:
+    - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+      hidden_size: 2688
+      inter_size: 1856
+      topk: 6
+      num_experts: 128
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        bfloat16: {90: flashinfer_cutlass, 100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      quantization_modes: [bfloat16]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+      hidden_size: 2688
+      inter_size: 1856
+      topk: 6
+      num_experts: 128
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      quantization_modes: [nvfp4]
+    # Lightning is the nvfp4-native checkpoint release of the 30B/A3B shape
+    # (same topk=6/e128/h2688/i1856 router geometry as Nano-BF16 above,
+    # verified against the published checkpoint config); a separate row
+    # keeps its quant-distinct identity out of the BF16 row
+    # (case_authoring.md: quant-sensitive checkpoint artifacts use separate
+    # model rows even when geometry is identical).
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      hidden_size: 2688
+      inter_size: 1856
+      topk: 6
+      num_experts: 128
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      # vLLM reads this checkpoint's packaged HF config
+      # (model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json,
+      # added in its own human-approved commit).
+      quantization_modes: [nvfp4]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      hidden_size: 4096
+      inter_size: 2688
+      topk: 22
+      num_experts: 512
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 5.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      # vLLM: its FlashInfer NVFP4 path was limited to top-k <= 10
+      # (not re-checked at 0.31.0), so these topk=22
+      # cases may fail on vLLM; a failure is recorded.
+      quantization_modes: [nvfp4]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      hidden_size: 1024
+      inter_size: 2688
+      topk: 22
+      num_experts: 512
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 5.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      # Same vLLM top-k note as above.
+      quantization_modes: [nvfp4]
+    # vLLM routes Nemotron-H experts through moe_latent_size=1024.
+    - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+      hidden_size: 1024
+      inter_size: 2688
+      topk: 22
+      num_experts: 512
+      quantization_modes: [fp8]
+    # Ultra uses its outer hidden width in SGLang/TRT-LLM, while vLLM routes
+    # experts through moe_latent_size=2048. Both geometries are planned for
+    # every backend.
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+      hidden_size: 8192
+      inter_size: 5120
+      topk: 22
+      num_experts: 512
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 5.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        bfloat16: {90: flashinfer_cutlass, 100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      quantization_modes: [bfloat16]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+      hidden_size: 2048
+      inter_size: 5120
+      topk: 22
+      num_experts: 512
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 5.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        bfloat16: {90: flashinfer_cutlass, 100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      quantization_modes: [bfloat16]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
+      hidden_size: 8192
+      inter_size: 5120
+      topk: 22
+      num_experts: 512
+      quantization_modes: [fp8]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
+      hidden_size: 2048
+      inter_size: 5120
+      topk: 22
+      num_experts: 512
+      quantization_modes: [fp8]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+      hidden_size: 8192
+      inter_size: 5120
+      topk: 22
+      num_experts: 512
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 5.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      quantization_modes: [nvfp4]
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+      hidden_size: 2048
+      inter_size: 5120
+      topk: 22
+      num_experts: 512
+      sglang_moe_activation: relu2
+      sglang_moe_is_gated: false
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 5.0
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
+      # Same vLLM top-k note as the Super rows above.
+      quantization_modes: [nvfp4]
+  mamba2:
+    - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+      model_aliases:
+        - nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+      d_model: 2688
+      d_state: 128
+      d_conv: 4
+      nheads: 64
+      head_dim: 64
+      n_groups: 8
+      chunk_size: 128
+    - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      d_model: 4096
+      d_state: 128
+      d_conv: 4
+      nheads: 128
+      head_dim: 64
+      n_groups: 8
+      chunk_size: 128
+    - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+      model_aliases:
+        - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+        - nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
+        - nvidia/nemotron-ultra-rl-050826
+      d_model: 8192
+      d_state: 128
+      d_conv: 4
+      nheads: 256
+      head_dim: 64
+      n_groups: 8
+      chunk_size: 128
+    - model_path: nvidia/Nemotron-H-56B-Base-8K
+      d_model: 8192
+      d_state: 256
+      d_conv: 4
+      nheads: 256
+      head_dim: 64
+      n_groups: 8
+      chunk_size: 128
+
+all_frameworks_op_cases:
+  moe:
+    cases: all
+
+framework_specific_op_cases:
+  trtllm:
+    mamba2:
+      cases: all

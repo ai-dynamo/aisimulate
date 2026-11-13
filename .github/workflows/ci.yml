@@ -248,7 +248,6 @@ jobs:
     uses: ./.github/workflows/collector-check.yml
     with:
       expected_sha: ${{ github.sha }}
-      base_sha: ${{ needs.verify-target.outputs.comparison-base }}
 
   prediction-regression:
     name: Prediction Regression
@@ -280,7 +279,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -321,7 +320,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -343,7 +342,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -359,7 +358,7 @@ jobs:
           # Separate Cargo directories avoid a build lock between maturin's
           # release extension and the debug embedding test executables.
           CARGO_TARGET_DIR="${RUNNER_TEMP}/python-extension-target" \
-            python -m pip install './python/aisimulate[dev]' &
+            python -m pip install './python/aisim[dev]' &
           package_pid=$!
           export PYO3_PYTHON="${pythonLocation}/bin/python"
           cargo test --workspace --features embed-python,replay-bench --no-run &
@@ -386,7 +385,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -417,7 +416,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -433,14 +432,14 @@ jobs:
           name: application-test-wheel-${{ matrix.arch }}
           path: dist
       - name: Verify exact staged wheel
-        run: python python/aisimulate/tools/verify_release_wheels.py dist
+        run: python python/aisim/tools/verify_release_wheels.py dist
       - name: Smoke-test exact staged wheel
         run: |
           python -m venv staged-wheel-smoke
-          staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
+          staged-wheel-smoke/bin/python -m pip install --no-deps dist/*.whl
           staged-wheel-smoke/bin/python -c \
-            "import aisimulate, aisimulate_core; \
-            assert aisimulate_core._build_smoke() > 0"
+            "import aisim, aisim_core; \
+            assert aisim_core._build_smoke() > 0"
       - name: Preserve wheel for trusted staging
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -466,7 +465,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -606,7 +605,7 @@ jobs:
     container:
       image: ${{ matrix.container_image }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -617,6 +616,18 @@ jobs:
       - run: python -m pip install --require-hashes -r scripts/release/requirements.txt
       - name: Build the application test wheel once
         run: python scripts/release/build_manylinux_wheel.py --output-dir application-test-dist
+      - name: Check exact wheel configuration provenance
+        run: |
+          python scripts/ci/check_bundled_configs.py extract --check \
+            --wheel application-test-dist/*.whl \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-application"
+      - name: Preserve wheel configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-application-${{ matrix.arch }}
+          # Reports are root files; extracted payloads live in files/.
+          path: ${{ runner.temp }}/bundled-configs-application/*.*
+          if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: application-test-wheel-${{ matrix.arch }}
@@ -649,7 +660,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -668,24 +679,24 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          wheels=(application-test-dist/aisimulate-*.whl)
+          wheels=(application-test-dist/*.whl)
           if [[ "${#wheels[@]}" -ne 1 ]]; then
             echo "::error::expected exactly one application test wheel, found ${#wheels[@]}"
             exit 1
           fi
           python -m pip install uv
           python -m uv pip install --system "${wheels[0]}[dev,learned]"
-          echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
+          echo "AISIM_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
-          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" --group scripts/pyproject.toml:ci --group scripts/pyproject.toml:fpm-accuracy --group scripts/pyproject.toml:e2e-accuracy
+          python -m uv pip install --system "${AISIM_TEST_WHEEL}[dev]" --group scripts/pyproject.toml:ci --group scripts/pyproject.toml:fpm-accuracy --group scripts/pyproject.toml:e2e-accuracy
           python -m pip check
           python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
           python scripts/ci/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
-            python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
-            python/aisimulate/tests/cross_package
+            python/aisim/tests/unit/cli/test_aisim_compatibility.py \
+            python/aisim/tests/cross_package
           aiconfigurator version
           python -m pytest -q -c pytest.ini tests -n 4 \
             --ignore=tests/test_ci_workflow_contracts.py
@@ -698,7 +709,7 @@ jobs:
           --splitting-algorithm least_duration
           -n 4
           --timeout=180
-        working-directory: python/aisimulate
+        working-directory: python/aisim
       - name: Upload collected test assignments
         if: always() && matrix.shard.suite == 'contracts'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -709,7 +720,7 @@ jobs:
       - name: Run recommendation E2E without parallel resource contention
         if: matrix.shard.suite == 'cli-build' && matrix.shard.group == 1
         run: python -m pytest -q tests/e2e/cli/test_cli_recommend.py --timeout=180
-        working-directory: python/aisimulate
+        working-directory: python/aisim
       - name: Run migrated integration tests against the installed wheel
         if: matrix.shard.suite == 'integration'
         run: >-
@@ -717,7 +728,7 @@ jobs:
           tests/integration
           -n 2
           --timeout=600
-        working-directory: python/aisimulate
+        working-directory: python/aisim
       - name: Run remaining CLI build tests
         if: matrix.shard.suite == 'cli-build'
         run: >-
@@ -729,7 +740,7 @@ jobs:
           --splitting-algorithm least_duration
           -n 4
           --timeout=180
-        working-directory: python/aisimulate
+        working-directory: python/aisim
       - name: Run support-matrix build tests
         if: matrix.shard.suite == 'support-matrix'
         run: >-
@@ -738,7 +749,7 @@ jobs:
           -m build
           -n auto
           --timeout=180
-        working-directory: python/aisimulate
+        working-directory: python/aisim
       - name: Run tool build tests
         if: matrix.shard.suite == 'tools-build'
         run: >-
@@ -747,7 +758,7 @@ jobs:
           -m build
           -n auto
           --timeout=600
-        working-directory: python/aisimulate
+        working-directory: python/aisim
 
   python-compliance:
     name: Python Dependency Licenses
@@ -770,7 +781,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -796,7 +807,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -805,8 +816,8 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install AISimulate and development dependencies
-        run: python -m pip install './python/aisimulate[dev]'
+      - name: Install AISim and development dependencies
+        run: python -m pip install './python/aisim[dev]'
       - name: Verify interpreter and dependency compatibility
         run: |
           python -m pip check
@@ -814,7 +825,7 @@ jobs:
       - name: Test unified-package contracts
         run: >-
           python -m pytest -q
-          python/aisimulate/tests/cross_package
+          python/aisim/tests/cross_package
 
   engine-golden-regression:
     name: Engine Golden Regression
@@ -825,7 +836,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -835,18 +846,20 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
-      - name: Install AISimulate and development dependencies
-        run: python -m pip install './python/aisimulate[dev]'
+      - name: Install AISim and development dependencies
+        run: python -m pip install './python/aisim[dev]'
       - name: Run engine-step golden regression suite
         run: >-
           python -m pytest -q -rx -n 4
-          -c python/aisimulate/pytest.ini
+          -c python/aisim/pytest.ini
           crates/core/parity_tests/perfmodel/test_engine_step_parity.py
       - name: Run compiled-engine golden regression suite
         run: >-
           python -m pytest -q -rx -n 4
-          -c python/aisimulate/pytest.ini
+          -c python/aisim/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+          crates/core/parity_tests/perfmodel/test_afd_parity.py
+          crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py
       - name: Check native prediction numerical sentinels
         run: |
           python scripts/prediction_regression/check_prediction_numerics.py --fetch-baseline-only
@@ -877,7 +890,7 @@ jobs:
     container:
       image: ${{ matrix.container_image }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -890,19 +903,19 @@ jobs:
       - run: python -m venv release-smoke
       - run: >-
           release-smoke/bin/python -m pip install
-          dist/aisimulate-*.whl
+          dist/*.whl
       - run: release-smoke/bin/python -m pip check
       - run: >-
           release-smoke/bin/python -c
           "import importlib.metadata as metadata; import pathlib, tomllib;
-          expected = tomllib.loads(pathlib.Path('python/aisimulate/pyproject.toml').read_text())['project']['version'];
-          import aisimulate, aisimulate_core;
-          assert aisimulate.__version__ == aisimulate_core.__version__ == expected;
-          assert metadata.version('aisimulate') == expected;
+          expected = tomllib.loads(pathlib.Path('python/aisim/pyproject.toml').read_text())['project']['version'];
+          import aisim, aisim_core;
+          assert aisim.__version__ == aisim_core.__version__ == expected;
+          assert metadata.version('aisim') == expected;
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
-          forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
+          forbidden = {'aisim-core', 'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"
-      - run: release-smoke/bin/aisimulate --help
+      - run: release-smoke/bin/aisim --help
       - run: release-smoke/bin/aiconfigurator version
 
   readme-commands:

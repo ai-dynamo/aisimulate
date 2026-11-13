@@ -10,9 +10,10 @@ the same native engine cache that will serve the measured suffix. Its input is
 a prepared snapshot, its original prompt identity context, and the selected
 engine configuration. Its output is retained KV state and separate preparation
 evidence. The default `repeated_prefixes` policy preserves the snapshot frontier;
-the opt-in `live_trajectory_v1` policy advances it. The next sections describe
-the backward-compatible default; see [live trajectory policy](#live-trajectory-policy)
-for the alternative.
+the opt-in `live_trajectory_v1` policy advances it, and the opt-in
+`primers_only` policy sends only the primers. The next sections describe the
+backward-compatible default; see [live trajectory policy](#live-trajectory-policy)
+and [primers-only policy](#primers-only-policy) for the alternatives.
 
 ## Request inputs and outputs
 
@@ -63,9 +64,12 @@ The opt-in control is `traffic.load.agentic_warmup: true`, alongside positive
 `agentic_lanes` and `agentic_snapshot: {seed: ...}`. Omitting the control keeps
 the existing cold snapshot behavior. The built-in Engine runner supports offline
 vLLM and SGLang replay with either aggregated workers or separate prefill/decode
-pools and HBM-only KV cache. vLLM also supports local or shared
+pools and HBM-only KV cache, including
+[speculative decoding](../engine/speculation.md) with explicit acceptance
+assumptions; ngram requires vLLM. vLLM also supports local or shared
 [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
-with attention DP1 on every role. Speculative decoding remains disabled. For example:
+or local G2 on several static aggregated workers, with attention DP1 on every role and
+speculative decoding disabled. For example:
 
 ```yaml
 traffic:
@@ -88,7 +92,8 @@ it remains resident on every worker.
 
 Weka, Agentic Mooncake, and agentic Dynamo trace inputs use this same offline
 path. Reading a Dynamo trace does not require the Dynamo integration. Agentic
-TensorRT-LLM, G3 offload, speculative decoding, and online P/D are rejected;
+TensorRT-LLM, G3 offload, speculative decoding with G2 offload, and online P/D
+are rejected;
 the built-in runner does not silently change the requested configuration.
 Dynamo-owned routing and online integration require separate downstream
 qualification.
@@ -185,7 +190,7 @@ unchanged when the policy is omitted.
 The policy follows the accelerated request-count warmup contract in
 [AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py):
 
-AISimulate additionally scales source-clock primer leads using its trace-arrival
+AISim additionally scales source-clock primer leads using its trace-arrival
 `speedup`; the reference has no such scaling knob. `speedup: 1` preserves the
 reference's primer timing.
 
@@ -228,7 +233,7 @@ unbounded continuous-profile livelock guard remains enabled afterward.
 This is native functional qualification, not a claim of byte-exact HTTP prompt
 or hardware-performance parity. The reference's sampler must be aligned with
 [imported initial selections](../workloads.md#agentic-snapshot); identical
-seeds alone are insufficient. AISimulate still uses its normalized dependency
+seeds alone are insufficient. AISim still uses its normalized dependency
 graph and logical prefix identities, not the reference tokenizer/chat-template
 payloads. Request scheduling ties use stable native graph order, not wall-clock
 callback timing or random UUID ordering. CPU fixtures cover branching,
@@ -242,6 +247,32 @@ results retain it in metadata; full native reports and CLI JSON preserve the sam
 evidence. Per-request agentic identities allow events to be attributed to their
 original play even when a future phase reuses its lane.
 
+
+## Primers-only policy
+
+`traffic.load.agentic_warmup_policy: primers_only` sends each continuing
+conversation's primer and nothing else. It models NVIDIA AIPerf's snapshot
+warmup when no cache-pressure warmup is configured, as in its
+`inferencex-agentx-mvp` scenario
+([`agentic_replay.py`](https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py),
+`_execute_warmup` and `_capped_warmup_lead_ms`, Apache-2.0). It requires
+`agentic_warmup: true`; a continuous profile is optional. SDK integrations need
+the explicit `supports_agentic_primers_only` capability.
+
+1. Primers are timed as in step 1 of the live policy: leads are divided by
+   `speedup`, capped at `agentic_profile.global_idle_cap_seconds` (10 s without
+   a profile) and aligned globally. Independent streams of a lane prime
+   concurrently.
+2. No other preparation request follows (`warmup_expected` is 0). Once every
+   primer has succeeded and settled, the saved frontier resumes as after
+   `repeated_prefixes`. With nothing to prime, the profile opens at once.
+
+AIPerf 0.13.0 caps warmup leads only with a trace idle-gap cap, which the
+`inferencex-agentx-mvp` scenario forbids; later AIPerf caps them at its system
+idle-gap cap ([#1413](https://github.com/ai-dynamo/aiperf/pull/1413)). AIPerf
+aborts only when a root conversation's primer fails, while AISim stops at
+any failed primer, as with its other policies. Compare against a real AIPerf run
+only with the matching AIPerf version.
 
 ## Reference and validation boundary
 
@@ -258,11 +289,12 @@ These references identify behavior, not a claim that website prose, figures, or 
 The [retained source audit](../../../benchmarks/evidence/accuracy/replay-evidence.md)
 records the original comparison and review boundary.
 
-AISimulate uses its native dependency graph, a versioned BLAKE3-based snapshot
+AISim uses its native dependency graph, a versioned BLAKE3-based snapshot
 sample (or imported cuts), and disjoint per-play token identities. The default
 warmup repeats saved primer inputs; `live_trajectory_v1` advances the graph as
-described above. Matching preparation request counts does not establish
-full AgentX parity. Qualification must cover exact inputs, one output token,
-ten requests per lane, barrier ordering, failure handling, timer preservation,
+described above, and `primers_only` stops after the primers. Matching
+preparation request counts does not establish full AgentX parity.
+Qualification must cover exact inputs, one output token, the policy's request
+count per lane, barrier ordering, failure handling, timer preservation,
 cache reuse with caching enabled/disabled, and deterministic cold/warm runs.
 The public reports remain `functional_only`, not hardware accuracy evidence.

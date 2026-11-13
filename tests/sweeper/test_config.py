@@ -6,10 +6,10 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.config import CoreRecommendationConfig
-from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.sweeper import OptimizationTarget, SmartSearchConfig
-from aisimulate.sweeper.config import (
+from aisim.config import CoreRecommendationConfig
+from aisim.recommend import recommendation_to_sweeper
+from aisim.sweeper import OptimizationTarget, SmartSearchConfig
+from aisim.sweeper.config import (
     OptimizationGoal,
     SearchSpace,
     SLATarget,
@@ -32,6 +32,113 @@ def _workload(**overrides):
     }
 
 
+def _session(**load):
+    session = _workload(
+        concurrency=None,
+        source_type="synthetic-session",
+        turns_per_session=4,
+        shared_prefix_ratio=0.5,
+        num_prefix_groups=8,
+    )
+    return {**session, **load}
+
+
+@pytest.mark.parametrize("backend", [["vllm"], ["trtllm"], ["vllm", "trtllm"]])
+def test_decode_radix_cache_rejects_searches_without_sglang(backend):
+    with pytest.raises(ValidationError, match="decode_radix_cache requires a search with backend=sglang"):
+        SearchSpace(**_search_space(backend=backend, decode_radix_cache=True))
+
+
+@pytest.mark.parametrize("modes", [["disagg"], ["agg", "disagg"]])
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"decode_enable_prefix_caching": False}, "decode_enable_prefix_caching=true"),
+        ({"aic_nextn": 2, "nextn_accepted": 1.0}, "incompatible with speculative decoding"),
+    ],
+)
+def test_decode_radix_cache_rejects_invalid_mixed_searches_at_config_time(modes, overrides, message):
+    values = _search_space(
+        backend=["vllm", "sglang"],
+        deployment_mode=modes,
+        decode_radix_cache=True,
+        decode_enable_prefix_caching=True,
+    )
+    with pytest.raises(ValidationError, match=message):
+        SearchSpace(**(values | overrides))
+
+
+@pytest.mark.parametrize("modes", [["agg"], ["disagg"], ["agg", "disagg"]])
+def test_decode_radix_cache_accepts_valid_mixed_searches(modes):
+    space = SearchSpace(
+        **_search_space(
+            backend=["vllm", "sglang"],
+            deployment_mode=modes,
+            decode_radix_cache=True,
+            decode_enable_prefix_caching=True,
+        )
+    )
+    assert SearchSpace.model_validate_json(space.model_dump_json()) == space
+
+
+def test_decode_radix_cache_does_not_restrict_an_aggregated_only_search():
+    SearchSpace(
+        **_search_space(
+            backend=["vllm", "sglang"],
+            deployment_mode=["agg"],
+            decode_radix_cache=True,
+            aic_nextn=2,
+            nextn_accepted=1.0,
+        )
+    )
+
+
+@pytest.mark.parametrize("role", [None, "agg", "prefill", "decode"])
+def test_search_space_accepts_learned_timing_without_loading_source(role):
+    policy = {
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
+    }
+    overrides = policy if role is None else {"role_estimator_controls": {role: policy}}
+    space = SearchSpace(**_search_space(**overrides))
+    controls = space.role_estimator_controls.get(role, {}) if role is not None else {}
+    assert controls.get("estimation_mode", space.estimation_mode) == "fpm_learned"
+
+
+@pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
+def test_search_space_schema_advertises_supported_replay_modes(schema_mode):
+    field = SearchSpace.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"}
+    assert set(field["enum"]) == supported
+    assert field["type"] == "string"
+    assert field["default"] == "auto"
+    for mode in supported:
+        space = SearchSpace(**_search_space(estimation_mode=mode))
+        assert SearchSpace.model_validate_json(space.model_dump_json()).estimation_mode == mode
+    with pytest.raises(ValidationError, match="estimation_mode"):
+        SearchSpace(**_search_space(estimation_mode=None))
+
+
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+def test_search_space_preserves_normalized_role_estimator_controls_on_reload(role):
+    space = SearchSpace(
+        **_search_space(
+            role_estimator_controls={
+                role: {
+                    "estimation_mode": "fpm_interpolation",
+                    "fallback_policy": "deny",
+                    "database_mode": "silicon",
+                }
+            }
+        )
+    )
+    expected = {"estimation_mode": "fpm_interpolation", "fallback_policy": "deny", "database_mode": "SILICON"}
+    assert space.role_estimator_controls == {role: expected}
+    restored = SearchSpace.model_validate_json(space.model_dump_json())
+    assert restored.role_estimator_controls == {role: expected}
+    assert restored.estimation_mode == "auto"
+
+
 def test_min_gpus_requires_sla_and_rejects_pareto_use():
     with pytest.raises(ValidationError, match="SLA bound"):
         OptimizationGoal(target="min_gpus")
@@ -52,9 +159,23 @@ def test_min_gpus_rejects_invalid_min_goodput(minimum):
     [
         (_workload(concurrency=None, request_rate=10), None, "requires min_goodput_rps"),
         (_workload(concurrency=None, request_rate=10), 11, "cannot exceed"),
-        (_workload(concurrency=None, kv_load_ratio=0.5), None, "fixed synthetic"),
-        ({"trace_path": "trace.jsonl"}, 1, "fixed synthetic"),
-        (_workload(load_search_field="concurrency", load_choices=[2, 4]), None, "fixed synthetic"),
+        (_workload(concurrency=None, kv_load_ratio=0.5), None, "fixed absolute traffic load"),
+        (_workload(load_search_field="concurrency", load_choices=[2, 4]), None, "fixed absolute traffic load"),
+        # Two sessions/s of four turns offer 8 requests/s.
+        (_session(request_rate=2), None, "requires min_goodput_rps"),
+        (_session(request_rate=2), 9, "cannot exceed"),
+        ({"trace_path": "trace.jsonl"}, None, "requires min_goodput_rps"),
+        (
+            {"trace_path": "trace.jsonl", "load_search_field": "arrival_speedup_ratio", "load_choices": [1.0, 2.0]},
+            1,
+            "fixed absolute traffic load",
+        ),
+        (
+            {"trace_path": "trace.jsonl", "replay_concurrency": 8, "load_type": "trace_timestamps"},
+            None,
+            "load_type matching",
+        ),
+        ({"trace_path": "trace.jsonl", "load_type": "concurrency"}, 1, "load_type matching"),
     ],
 )
 def test_min_gpus_sdk_validates_workload(workload, minimum, error):
@@ -73,6 +194,40 @@ def test_min_gpus_sdk_accepts_goodput_floor_equal_to_offered_request_rate():
         goal={"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": 10},
     )
     assert config.goal.min_goodput_rps == config.workload.request_rate == 10
+
+
+@pytest.mark.parametrize(
+    ("workload", "minimum"),
+    [
+        (_session(request_rate=2, load_type="constant_rate"), 8),
+        (_session(concurrency=4, load_type="concurrency"), None),
+        ({"trace_path": "trace.jsonl"}, 1),
+        ({"trace_path": "trace.jsonl", "source_type": "trace", "load_type": "trace_timestamps"}, 1),
+        (
+            {"trace_path": "trace.jsonl", "source_type": "trace", "load_type": "concurrency", "replay_concurrency": 8},
+            None,
+        ),
+        (
+            {
+                "trace_path": "plays.jsonl",
+                "source_type": "trace",
+                "trace_format": "agentic_mooncake",
+                "load_type": "trace_timestamps",
+                "agentic_lanes": 4,
+            },
+            None,
+        ),
+    ],
+    ids=["session-rate", "session-concurrency", "trace-sdk", "trace-timestamps", "trace-concurrency", "agentic-lanes"],
+)
+def test_min_gpus_sdk_accepts_fixed_session_and_trace_loads(workload, minimum):
+    config = SmartSearchConfig(
+        search_space=_search_space(),
+        adapters={"dynamo.router": {"search_space": {"policy": "kv_router"}}},
+        workload=workload,
+        goal={"target": "min_gpus", "sla": {"ttft_ms": 500}, "min_goodput_rps": minimum},
+    )
+    assert config.goal.target is OptimizationTarget.MIN_GPUS
 
 
 @pytest.mark.parametrize(
@@ -98,8 +253,37 @@ def test_min_gpus_sdk_validates_synthetic_load_type(load, load_type, valid):
     if valid:
         assert SmartSearchConfig(**args).workload.load_type == load_type
     else:
-        with pytest.raises(ValidationError, match="synthetic load_type"):
+        with pytest.raises(ValidationError, match="load_type matching"):
             SmartSearchConfig(**args)
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_min_gpus_sdk_accepts_dynamo_router_over_static_pools(mode):
+    config = SmartSearchConfig(
+        search_space=_search_space(deployment_mode=[mode]),
+        adapters={"dynamo.router": {"search_space": {"policy": "kv_router"}}},
+        workload=_workload(),
+        goal={"target": "min_gpus", "sla": {"itl_ms": 30}},
+    )
+    assert list(config.adapters) == ["dynamo.router"]
+
+
+@pytest.mark.parametrize(
+    ("adapters", "error"),
+    [
+        (["dynamo.planner"], "Planner autoscaling"),
+        (["dynamo.router", "dynamo.planner"], "Planner autoscaling"),
+        (["example.placement"], "only the dynamo.router adapter"),
+    ],
+)
+def test_min_gpus_sdk_rejects_planner_and_unknown_adapters(adapters, error):
+    with pytest.raises(ValidationError, match=error):
+        SmartSearchConfig(
+            search_space=_search_space(),
+            adapters={name: {} for name in adapters},
+            workload=_workload(),
+            goal={"target": "min_gpus", "sla": {"itl_ms": 30}},
+        )
 
 
 def test_backend_only_yaml_and_adapter_search_space_load(tmp_path):
@@ -275,6 +459,12 @@ def test_backend_choice_subset_is_accepted():
 def test_invalid_or_empty_backend_choices_are_rejected(field, value):
     with pytest.raises(ValidationError):
         SearchSpace(**_search_space(**{field: value}))
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_obsolete_afd_deployment_modes_are_rejected(mode):
+    with pytest.raises(ValidationError, match="deployment_mode has invalid choice"):
+        SearchSpace(**_search_space(deployment_mode=[mode]))
 
 
 def test_pinned_parallel_config_requires_one_deployment_mode():

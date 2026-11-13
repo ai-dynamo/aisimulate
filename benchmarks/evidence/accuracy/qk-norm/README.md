@@ -6,7 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # Decode Q/K normalization accounting
 
 CPU-only reproduction and source audit for [AISimulate issue #434](https://github.com/ai-dynamo/aisimulate/issues/434).
-The baseline is `c9e7363bf5983b980fe6622f7b064ee7adff5f5d`. Both prediction runs
+The baseline is upstream main at `f85518b36f5488a4c8f6c9553a85d523f173bbb6`;
+the corrected model is this change merged onto it. Both prediction runs
 use checked-in H200/vLLM 0.24.0 profiles, BF16 activations/KV, tensor parallelism
 1, and `RustForwardPassPerfModel.best_available` with explicit `op_level`
 estimation. No GPU experiments or model weights are needed.
@@ -27,7 +28,8 @@ normalization execution time. These implementations provide fused and unfused
 paths; a backend name and version alone do not identify the active path.
 [backend-review.json](backend-review.json) retains immutable commits, inspected
 source-file fingerprints and the profile evidence boundary. No upstream code
-is copied into this change.
+is copied into this change. The audit covers those pinned commits and was done
+in October 2026; later backend releases were not inspected.
 
 The vLLM collector times its low-level attention closure with already-produced
 Q/K/V inputs (`collector/vllm/collect_attn.py`, `run`), optionally including KV
@@ -90,12 +92,12 @@ preparation, first-query and warm-query cache boundaries remain unchanged.
 Build each matching revision, then run from the repository root:
 
 ```bash
-uv sync --project python/aisimulate --extra dev --reinstall-package aisimulate
-python/aisimulate/.venv/bin/python benchmarks/evidence/accuracy/qk-norm/reproduce.py
+uv sync --project python/aisim --extra dev --reinstall-package aisim
+python/aisim/.venv/bin/python benchmarks/evidence/accuracy/qk-norm/reproduce.py
 ```
 
-The baseline predates the script; save it outside the checkout before switching
-revisions. `before.jsonl` and `after.jsonl` retain 12 paired points: two Qwen3
+The baseline does not contain the script; save it outside the checkout before
+switching revisions. `before.jsonl` and `after.jsonl` retain 12 paired points: two Qwen3
 models, batches 1 and 8, and KV lengths 64, 576 and 4096.
 
 `attention_ms` and `decode_step_ms` are predictions. `nearest_kernel_ms` is the
@@ -134,13 +136,6 @@ retained in `post_freeze_pins`, with no test-matrix or tolerance changes.
 validation counts. In the five per-op cases, only generation-attention latency
 changes; op sets, other latencies, source tags and energies are identical.
 
-The refreshed Qwen3.8 vLLM records also contain four pre-existing discrepancies:
-3 us in each `static_ctx` value and 5 us in each `disagg_ttft` value. An isolated
-build of the original source and the corrected release return identical prefill
-values. The audit retains both values and the old goldens; these small shifts
-are unrelated to the decode correction.
-
-
 For batch 1 and KV length 576, the paired decode-step predictions are:
 
 | Model | Before (ms) | After (ms) |
@@ -152,34 +147,38 @@ All 12 pairs retain the same nearest-table references and source tags. The
 change in total decode prediction equals the generation-attention change.
 These are CPU-computed predictions from unchanged GPU profiles.
 
-The original refresh updates 119 engine-step records, 21 compile-engine
-references and five per-op cases. Of the 119 engine-step records, 118 change
-numerically; the rounded AFD control remains identical to the original
-baseline. That original model and refresh use source revision
-`88a4f8b40ee7370174e5c6ef13304d418a056432`.
+The refresh starts from the baseline's goldens and updates only the records
+that the correction changes: those where a full `pin_goldens.py` refresh on
+the corrected build differs from a full refresh on a build of the baseline.
+That is 116 engine-step records (30 cases; 29 records on each of the static,
+mixed, aggregated and disaggregated surfaces), 21 compile-engine references
+and five per-op cases. Every changed value decreases. The changed metrics are
+generation time, the totals and steps that include it, TPOT, request time and
+aggregated TTFT; no `static_ctx` or `disagg_ttft` value changes. For example,
+`qwen3-30b-a3b-b60-vllm-scan-coverage` keeps static context at 133.227 ms and
+its generation changes from 9.784 to 8.517 ms. Both parity suites pass on the
+corrected model (389 tests).
 
-After incorporating upstream main at `4730b2c1006ec19b9513f09e4c9ad93e67c41265`,
-the four `qwen3-30b-a3b-b60-vllm-scan-coverage` records are an exception: they
-combine upstream's vLLM 0.28.0/XPU calibration with the unchanged Q/K formula
-and were selectively pinned from `173a390abbb25269e6bd74267ec415f54e2f1ea7`.
-Compared with upstream, B60 static context remains 133.227 ms and generation
-changes from 9.784 to 8.517 ms. The combined model at
-`d6722c4a9bec8101946f4a63cc1de94b72283067` passed both parity suites (390 tests).
+Four engine-step records in the baseline's goldens are not reproduced by a
+build of the baseline in this environment: the static, mixed and aggregated
+records of `llama4-scout-b200-vllm-isl1024-osl2` (at most 0.033 ms) and
+last-digit differences in `nemotron-nas-b200-trtllm-isl1024-osl2::agg`. They
+are independent of this change and keep the baseline's values;
+`golden-review.json` lists them.
 
-The existing 16-case B200 native stability manifest now records that combined
-model as its source. Only its eight decode expectations change; all eight
-prefill expectations, query inputs, and tolerances are unchanged. These are
-proposed prediction references, not measured hardware accuracy or maintainer
-acceptance. The source was rebuilt in release mode, and its imported native
-binary and numerical environment were verified before capturing all 16 values.
-`golden-review.json` records each old/new value and its independent derivation.
-This source is a PR-branch merge commit. Its exact-SHA fetch succeeds in a
-fresh shallow PR checkout, but that does not guarantee availability after a
-squash merge. The [canonical baseline handoff](../../../../docs/ci/README.md#numerical-and-installed-package-evidence)
+The 16-case B200 native stability manifest records the corrected model as its
+source. Only its eight decode expectations change; all eight prefill
+expectations, query inputs, and tolerances equal the baseline's manifest.
+These are proposed prediction references, not measured hardware accuracy or
+maintainer acceptance. The source was rebuilt in release mode, and its imported
+native binary and numerical environment were verified before capturing all 16
+values. `golden-review.json` records each old/new value and its independent
+derivation. This source is a PR-branch merge commit. The
+[canonical baseline handoff](../../../../docs/ci/README.md#numerical-and-installed-package-evidence)
 requires revalidation at the actual main-branch commit and a follow-up manifest
-repin. Keep this capture SHA as historical evidence; the durability follow-up
-must preserve the recorded expectations and tolerances unless a separate,
-explained modeling change is reviewed.
+repin after a squash merge. The durability follow-up must preserve the recorded
+expectations and tolerances unless a separate, explained modeling change is
+reviewed.
 
 B200's effective bandwidth is 6.16 TB/s. The old expression charges 8.8 generic
 3 us intercepts per layer, or 0.0264 ms. Let `t` be the hand-counted four-pass
@@ -200,40 +199,38 @@ values are 0.0000032914285714285715 and 0.00000128 ms, respectively.
 | MiniMax-M2.5: vLLM | -1.6368 | -417.2423424 |
 
 The long-output cases total 255 decode steps. All eight deltas agree with the
-native changes within 0.000000000001 ms. The original PR and combined model
-produce identical B200 values; the Rust performance-model and B200 profile
-trees are unchanged between the PR's base and incorporated upstream main.
-Thus these shifts come from the intended formula change, rather than the B60
-promotion. This algebraic check does not calibrate the fixed normalization
+native changes within 0.000000000001 ms, and the eight prefill values are
+identical on the baseline and corrected builds. Thus these shifts come from the
+intended formula change alone. This algebraic check does not calibrate the fixed normalization
 costs omitted by the approximation described above.
 
 Reproduce the existing numerical check with the matching native build:
 
 ```bash
-python/aisimulate/.venv/bin/python scripts/prediction_regression/check_prediction_numerics.py \
+python/aisim/.venv/bin/python scripts/prediction_regression/check_prediction_numerics.py \
   --output numerical-sentinels.json
 ```
 
-Validation on the original implementation (with its refreshed goldens):
+Validation of the corrected model (with its refreshed goldens):
 
 ```bash
-cargo test -p aisimulate-core --lib perfmodel::operators
-# 318 passed
+cargo test -p aisim-core --lib perfmodel::operators
+# 361 passed
 
-python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
-  python/aisimulate/tests/unit/sdk/database/test_attention_lanes.py \
-  python/aisimulate/tests/unit/sdk/test_forward_pass_speculation.py \
-  python/aisimulate/tests/cross_package/test_single_oracle_contract.py
-# 100 passed
+python/aisim/.venv/bin/python -m pytest -q -p no:timeout \
+  python/aisim/tests/unit/sdk/database/test_attention_lanes.py \
+  python/aisim/tests/unit/sdk/test_forward_pass_speculation.py \
+  python/aisim/tests/cross_package/test_single_oracle_contract.py
+# 109 passed
 
-python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
-  python/aisimulate/tests/unit/sdk/test_rust_engine_step.py -k canonical
-# 26 passed, 65 deselected
+python/aisim/.venv/bin/python -m pytest -q -p no:timeout \
+  python/aisim/tests/unit/sdk/test_rust_engine_step.py -k canonical
+# 26 passed, 73 deselected
 
-python/aisimulate/.venv/bin/python -m pytest -q -n 4 -p no:timeout \
+python/aisim/.venv/bin/python -m pytest -q -n 4 -p no:timeout \
   crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
   crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
-# 390 passed
+# 389 passed
 ```
 
 Rust formatting, repository Ruff checks/formatting, documentation links,

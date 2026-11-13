@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::BTreeSet;
 
@@ -7,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::engine::{EncoderShape, TimingModelConfig};
+use crate::replay::protocol::AuthoredKvHints;
 use crate::replay::{ReplayError, ReplayResult, SlaThresholds};
 
 pub const CURRENT_REPLAY_SPEC_VERSION: u32 = 1;
@@ -270,6 +274,9 @@ pub struct ReplayRequest {
     /// replay may omit it; adapters must never invent tokens when it is needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_token_ids: Option<Vec<u32>>,
+    /// Optional SGLang cache namespace. Empty is equivalent to absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     pub output_tokens: usize,
     /// Optional exact generated-token plan. When present, its length controls
     /// native generation while `output_tokens` remains the authored maximum.
@@ -282,6 +289,14 @@ pub struct ReplayRequest {
     /// `dp_rank`, matching Dynamo's request-routing contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefill_dp_rank: Option<u32>,
+    /// Optional peer-fetch hint naming the worker and attention-DP rank that hold a prefix of
+    /// this prompt, as when a client attaches a `kv.fetch` hint directly. A `source_dp_rank`
+    /// outside the `dp_size` of the pool that places the request (aggregated, or prefill in
+    /// P/D) fails when replay starts. A source worker that is unknown, not yet ready, draining
+    /// or removed is ignored. Round-robin forwards the hint only toward live workers that
+    /// advertise router hints, and the disaggregated decode pool ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hints: Option<AuthoredKvHints>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Zero-based turn index within `session_id`, when the workload has one.

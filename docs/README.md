@@ -3,9 +3,9 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate documentation
+# AISim documentation
 
-AISimulate predicts LLM serving behavior and searches deployment configurations
+AISim predicts LLM serving behavior and searches deployment configurations
 offline. Start with the [quickstart](getting-started/quickstart.md) to predict a
 deployment, search under a GPU budget, and evaluate the selected configuration.
 
@@ -55,13 +55,15 @@ implementation, while the product layers above describe user capabilities.
 ## Support and accuracy
 
 [Performance-model coverage](perf-model/support-matrix.md) and
-[Replay features](replay/features.md) answer different questions. The public
-[FPE matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) probes a
+[Replay features](replay/features.md) answer different questions. The
+[Feature Support Matrix](https://ai-dynamo.org/aisim/feature-support-matrix/)
+summarizes Replay features per engine. The public
+[FPE matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/) probes a
 specific strict-native op-level query surface. It does not certify all FPM
 methods, orchestration paths, or end-to-end accuracy.
 
-Use the [FPM accuracy](https://ai-dynamo.org/aisimulate/fpm-accuracy/) and
-[E2E accuracy](https://ai-dynamo.org/aisimulate/e2e-accuracy/) dashboards for
+Use the [FPM accuracy](https://ai-dynamo.org/aisim/fpm-accuracy/) and
+[E2E accuracy](https://ai-dynamo.org/aisim/e2e-accuracy/) dashboards for
 measurement-backed results within their recorded scope. A configuration that
 runs successfully is not necessarily an accurate prediction. Replay and
 Sweeper remain experimental; validate shortlisted configurations on the target

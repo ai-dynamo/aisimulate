@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "implementation_commit": "437a07776b542bc37386778ed357889d6a1555eb",
+  "implementation_tree": "3c82d6867da3c291361031ca901d491e92286293",
+  "base_commit": "747458b0828e52bcbcc9b3546b215149c70e426f",
+  "review_comment": "https://github.com/ai-dynamo/aisimulate/pull/534#discussion_r4342976460",
+  "pre_merge_warning": "Cross-Layer Contract: document serialized diagnostics source values and test the native-to-Python boundary",
+  "native_build_commit": "747458b0828e52bcbcc9b3546b215149c70e426f",
+  "native_module_sha256": "a7a414e773426a448325290c8c324aacb24faeb6e8034994d0f83cdcb9772316",
+  "native_build_source_binding": "Reused the release extension built from 747458b0 for merge validation. No Rust source, Cargo manifests, or lockfiles differ from that commit. The only SDK production-file change is docstrings; its Python AST is identical after removing docstrings. Tests import this worktree native extension and SDK.",
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "python_environment": {
+    "executable": "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+    "version": "3.12.13",
+    "PYTHONPATH": "$PWD/python/aisimulate/src",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  },
+  "checks": [
+    {
+      "name": "Rust FPM",
+      "status": "passed",
+      "passed": 283,
+      "command": "CARGO_TARGET_DIR=/Users/yueqiz/Documents/ChatGPT/AISimulate/target cargo test --locked --offline -p aisimulate-core --lib --no-default-features perfmodel::fpm:: -- --nocapture",
+      "log_sha256": "3430978a1900bfbe4a6ce3ddefb9a9a39d0032c8978afdfb564bb14cd94de486",
+      "log_summary": "test result: ok. 283 passed; 0 failed; 0 ignored; 0 measured; 1938 filtered out; finished in 10.63s"
+    },
+    {
+      "name": "Python SDK and public API",
+      "status": "passed",
+      "passed": 189,
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_export.py python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py python/aisimulate/tests/unit/sdk/test_fpm_learned.py python/aisimulate/tests/cross_package/test_core_public_api.py -q",
+      "log_sha256": "f231de5f70d06c04e162adec5fb705349ee9e4810dc16502c756f0ea43b6bf38",
+      "log_summary": "======================== 189 passed, 1 warning in 2.73s ========================"
+    },
+    {
+      "name": "Documentation local destinations",
+      "status": "passed",
+      "passed": null,
+      "command": "python scripts/ci/check_documentation_links.py",
+      "log_sha256": "46ef423c7445fc587e98fa7ac3aeb135c31f1a3f762abe56c880fea967fdcac7",
+      "log_summary": "Checked local destinations in 81 Markdown files (anchors and remote URLs excluded)."
+    }
+  ],
+  "coverage": [
+    "Frozen calibrated seed: 10 ms before feedback, 20 ms after five admitted labels, 10 ms after forest export/reload with empty correction stores; exporting leaves the original model unchanged. Disabled calibration remains 10 ms.",
+    "Public learned and learned_with_correction diagnostics values before/after actual frozen calibration.",
+    "Public learned_online diagnostics value before/after fitting, checkpoint resume, and flush for leaf-only/structural updates and eager/lazy refresh.",
+    "Public learned_causal_selector diagnostics value before/after 96 chronological feedback rows, real expert switches, flush, and canonical config reconstruction."
+  ],
+  "source_sha256": {
+    "docs/perf-model/configuration.md": "fd9aa7d59eb7bdf1d6fe3ccd4f42318ca2ebff4ea6fd8e9544a97e78fd991985",
+    "docs/perf-model/fpm_ml/configuration.md": "aac13ad111fa3c202ec2d29066ccf149f627235d8330e5645ca4dcab804221bd",
+    "docs/perf-model/fpm_ml/learned-forward-pass-model.md": "a1ad48e5b4e31f73891b48569a65efb0ea89b1f79e6c06f5b398a93a449e050d",
+    "python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py": "d5188ea7342d1191a6f8087b4698281663ddf2b33fb10044a7c4c1441d978eb8",
+    "python/aisimulate/tests/unit/sdk/test_fpm_learned.py": "7648ee6f6dd2e74685660537a285a36fb4d756e90907070e00d833affcb79b10",
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py": "b41a04728c2800547f84da8113449ef8e8caac5d9f6cdc1f17113a11eaa7fc54",
+    "python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py": "dcaa43c7c51616694d78154039b023ef485c02eda736645ec98d5625adbe0864"
+  },
+  "format_checks": [
+    "Ruff check and format --check on the SDK facade and all three changed integration-test files",
+    "git diff --check",
+    "Commit hooks: Ruff check and format passed"
+  ],
+  "dependency_manifests_changed": false,
+  "frozen_goldens_changed": false,
+  "limits": [
+    "Local macOS correctness checks; not a claim about GitHub CI.",
+    "No new estimator behavior, performance measurement, or serving-accuracy result.",
+    "The earlier validation.json and compatibility receipt retain their original revision provenance."
+  ]
+}

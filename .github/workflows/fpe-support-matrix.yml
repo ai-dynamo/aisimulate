@@ -41,7 +41,7 @@ jobs:
       # quay.io/pypa/manylinux_2_28_x86_64:2026.08.24-1
       image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4dc41da7df20400310c80d162a2fe2d2c2f3d9734d8dec20f6b9843711618deb
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     outputs:
       wheel-sha256: ${{ steps.digest.outputs.sha256 }}
@@ -95,9 +95,10 @@ jobs:
           python3 - <<'PY'
           import hashlib, os
           from pathlib import Path
-          wheels = list(Path("fpe-wheel").glob("aisimulate-*.whl"))
+          from scripts.release.package_identity import wheels as product_wheels
+          wheels = product_wheels(Path("fpe-wheel"))
           if len(wheels) != 1:
-              raise SystemExit("expected exactly one AISimulate wheel")
+              raise SystemExit("expected exactly one AISim wheel")
           digest = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"sha256={digest}\n")
@@ -118,6 +119,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
+      required-probes: ${{ steps.shards.outputs.required_probes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -153,7 +155,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     strategy:
       fail-fast: false
@@ -186,15 +188,15 @@ jobs:
           python -m pip install --force-reinstall fpe-wheel/*.whl
           python -m pip check
           python - <<'PY'
-          from importlib.metadata import distribution
+          from scripts.release.package_identity import installed_distribution
           from pathlib import Path
-          from aisimulate import _runtime
-          dist = distribution("aisimulate")
+          from aisim import _runtime
+          dist = installed_distribution()
           runtime = Path(_runtime.__file__).resolve()
           owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()
-                   if str(p).startswith("aisimulate/_runtime.")}
+                   if str(p).startswith("aisim/_runtime.")}
           if runtime not in owned:
-              raise SystemExit(f"native runtime is not owned by the installed AISimulate wheel: {runtime}")
+              raise SystemExit(f"native runtime is not owned by the installed AISim wheel: {runtime}")
           print(runtime)
           PY
       - name: Generate strict-native op-level coverage through the FPE SDK
@@ -239,8 +241,10 @@ jobs:
       - name: Require complete same-wheel reports and native sentinels
         env:
           EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}
+          EXPECTED_PROBES: ${{ needs.discover-shards.outputs.required-probes }}
         run: |
           printf '%s\n' "${EXPECTED_SHARDS}" > fpe-release-shards.json
+          printf '%s\n' "${EXPECTED_PROBES}" > fpe-release-probes.json
           python3 scripts/fpe/run_release_fpe.py package --wheel-dir fpe-wheel \
             --reports fpe-support-matrix --destination fpe-nightly-web
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

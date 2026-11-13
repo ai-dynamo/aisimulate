@@ -61,7 +61,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,7 +102,7 @@ jobs:
           base_tip="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
           base_sha="$(git merge-base "${PR_HEAD_SHA}" "${base_tip}")"
 
-          gate_path="python/aisimulate/tools/forward_perf_gate"
+          gate_path="python/aisim/tools/forward_perf_gate"
           skip_reason=""
           for revision_label in base head; do
             if [[ "${revision_label}" == "base" ]]; then
@@ -150,7 +150,7 @@ jobs:
 
           controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
             ":(glob)${gate_path}/*.py" \
-            "python/aisimulate/tools/prediction_regression_gate/grid.py")"
+            "python/aisim/tools/prediction_regression_gate/grid.py")"
           if [[ -n "${controller_changes}" ]]; then
             echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
           else
@@ -187,31 +187,31 @@ jobs:
           set -euo pipefail
           mkdir -p "${BASE_DIST}" "${HEAD_DIST}"
           (
-            cd "${BASE_SRC}/python/aisimulate"
+            cd "${BASE_SRC}/python/aisim"
             CARGO_TARGET_DIR="${RUNNER_TEMP}/forward-perf-base-target" \
               python -m maturin build --release --locked --out "${BASE_DIST}"
           )
           (
-            cd "${HEAD_SRC}/python/aisimulate"
+            cd "${HEAD_SRC}/python/aisim"
             CARGO_TARGET_DIR="${RUNNER_TEMP}/forward-perf-head-target" \
               python -m maturin build --release --locked --out "${HEAD_DIST}"
           )
           python -m venv "${BASE_VENV}"
           python -m venv "${HEAD_VENV}"
-          "${BASE_VENV}/bin/python" -m pip install "${BASE_DIST}"/aisimulate-*.whl
-          "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/aisimulate-*.whl
+          "${BASE_VENV}/bin/python" -m pip install "${BASE_DIST}"/*.whl
+          "${HEAD_VENV}/bin/python" -m pip install "${HEAD_DIST}"/*.whl
 
       - name: Run paired benchmark
         if: steps.revisions.outputs.run_comparison == 'true'
         run: |
           set -euo pipefail
           "${BASE_VENV}/bin/python" \
-            "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
+            "${BASE_SRC}/python/aisim/tools/forward_perf_gate/run.py" \
             --base-python "${BASE_VENV}/bin/python" \
-            --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --base-worker "${BASE_SRC}/python/aisim/tools/forward_perf_gate/worker.py" \
             --base-revision "${BASE_SHA}" \
             --head-python "${HEAD_VENV}/bin/python" \
-            --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --head-worker "${HEAD_SRC}/python/aisim/tools/forward_perf_gate/worker.py" \
             --head-revision "${HEAD_SHA}" \
             --output-dir "${RESULTS_DIR}"
 
@@ -220,12 +220,12 @@ jobs:
         run: |
           set -euo pipefail
           "${HEAD_VENV}/bin/python" \
-            "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" \
+            "${HEAD_SRC}/python/aisim/tools/forward_perf_gate/run.py" \
             --base-python "${BASE_VENV}/bin/python" \
-            --base-worker "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --base-worker "${BASE_SRC}/python/aisim/tools/forward_perf_gate/worker.py" \
             --base-revision "${BASE_SHA}" \
             --head-python "${HEAD_VENV}/bin/python" \
-            --head-worker "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/worker.py" \
+            --head-worker "${HEAD_SRC}/python/aisim/tools/forward_perf_gate/worker.py" \
             --head-revision "${HEAD_SHA}" \
             --output-dir "${RESULTS_DIR}/head-controller"
 

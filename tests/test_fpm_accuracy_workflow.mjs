@@ -17,8 +17,8 @@ const entry = (branch, revision, nightly = "") => ({ branch, sha: revision, nigh
 const run = {
   id: 123, head_sha: sha, head_branch: "main", event: "schedule",
   path: ".github/workflows/nightly-ci.yml", status: "waiting", conclusion: null,
-  repository: { full_name: "ai-dynamo/aisimulate" },
-  head_repository: { full_name: "ai-dynamo/aisimulate" },
+  repository: { full_name: "ai-dynamo/aisim" },
+  head_repository: { full_name: "ai-dynamo/aisim" },
 };
 
 async function resolve({ event = "schedule", runs = [run], built = true, expired = false, inputs = {}, branches = [], hfResponse = { ok: true, sha: "d".repeat(40) } } = {}) {
@@ -35,7 +35,7 @@ async function resolve({ event = "schedule", runs = [run], built = true, expired
   const context = vm.createContext({
     fetch: async () => ({ok: hfResponse.ok, json: async () => ({sha: hfResponse.sha})}),
     require: createRequire(import.meta.url),
-    context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisimulate" } },
+    context: { eventName: event, sha, repo: { owner: "ai-dynamo", repo: "aisim" } },
     process: { env: inputs },
     core: { notice() {}, setOutput: (name, value) => { outputs[name] = value; } },
     github: { rest: { actions, repos: { listBranches: "branches" } }, paginate: async (method, args) => {
@@ -141,4 +141,18 @@ test("manual migration previews pin an exact dataset revision", async () => {
   assert.deepEqual(result, [entry("main", sha)]);
   await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "migration-branch"} }), /full commit SHA/);
   await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "e".repeat(40)} }), /differs/);
+});
+
+test("complete scenario campaigns use the pinned HF revision and exact installed branch wheel", () => {
+  const branch = readFileSync(new URL('../.github/workflows/fpm-accuracy-branch.yml', import.meta.url), 'utf8');
+  const evaluation = branch.match(/python -m scripts\.fpm_accuracy\.run_fpm_accuracy[\s\S]*?--comparison-output[^\n]*/)[0];
+  assert.match(evaluation, /--scenarios/);
+  assert.match(evaluation, /--wheel "\$\{RUNNER_TEMP\}"\/accuracy-wheel\/\*\.whl/);
+  assert.match(evaluation, /--commit "\$\{EXPECTED_SHA\}" --branch "\$\{EVALUATED_BRANCH\}"/);
+  assert.match(evaluation, /--evaluator-sha "\$\{GITHUB_SHA\}" --hf-revision "\$\{HF_REVISION\}"/);
+  assert.doesNotMatch(evaluation, /--local-dataset|--configuration/);
+  assert.match(branch, /timeout-minutes: 360/);
+  assert.doesNotMatch(branch, /continue-on-error|if: always\(\)/);
+  const pages = readFileSync(new URL('../.github/workflows/pages.yml', import.meta.url), 'utf8');
+  assert.match(pages, /python scripts\/pages\/check_fpm_scenarios_browser\.py/);
 });

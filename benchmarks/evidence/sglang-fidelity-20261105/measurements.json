@@ -1,0 +1,139 @@
+{
+  "workload": "sglang_fidelity::extended_offline_soak_profile",
+  "requests_per_case": 1000,
+  "seeds": 8,
+  "host_policies": [
+    "write_through",
+    "write_through_selective",
+    "write_back"
+  ],
+  "overlap": [
+    false,
+    true
+  ],
+  "gpu_pages": 32,
+  "page_tokens": 64,
+  "host_page_counts": [
+    8,
+    24,
+    40,
+    56,
+    72
+  ],
+  "cpu": "Intel Xeon Platinum 8559C",
+  "affinity": [
+    2
+  ],
+  "build": "release, opt-level=3, codegen-units=1, thin LTO, debug=1",
+  "baseline_binary_sha256": "864d897e165a84ad2e876b90585f5b12b28a6586fa6cdce865bfb5e5fb71b573",
+  "deterministic_result": {
+    "completed": 48000,
+    "first_admission_reused_tokens": 7148160,
+    "output_tokens": 3113946,
+    "requests_per_case": 1000,
+    "seeds": 8,
+    "terminal_ms_sum": 755785598.8518975
+  },
+  "aa_elapsed_ms": {
+    "a": [
+      2351.313638,
+      2411.628009,
+      2365.0590700000002,
+      2354.422869,
+      2358.496808,
+      2369.5069160000003
+    ],
+    "b": [
+      2348.121239,
+      2360.058739,
+      2361.798002,
+      2361.912111,
+      2381.78863,
+      2344.400984
+    ]
+  },
+  "aa_median_ratio_b_over_a": 0.9996,
+  "aa_bootstrap_95_percent_ci": [
+    0.9872,
+    1.0051
+  ],
+  "aa_mann_whitney_p": 0.575,
+  "sampling_note": "Primary elapsed_ms excludes waiting for a periodic host service before each trial. External process wall time includes that wait and is not used for conclusions.",
+  "source_revision": "27390abfb9c099effe4b88f8b64ed527e47d2fd9",
+  "source_tree": "6892aca43ce277178eccc7c5848f72f726df4cd3",
+  "profiling_binary_sha256": "1fd5d1d170552adb0dc4f4bda375619ff37b9b5e460b40ca98021408b88796be",
+  "profiling_build_extra_flags": "-Cforce-frame-pointers=yes -Cforce-unwind-tables=yes",
+  "profile": {
+    "event": "cycles:u",
+    "frequency_hz": 999,
+    "call_graph": "dwarf,32768",
+    "decode_inline": false,
+    "lost_samples": 0,
+    "selected_thread_cycles": 7743853968,
+    "folded_cycles": 7743853968,
+    "dso_percent": {
+      "binary": 66.17249887685382,
+      "libc": 32.39518356578596,
+      "vdso": 0.5987782981395189,
+      "libm": 0.5559429345891818,
+      "unknown": 0.2775963246315184
+    },
+    "steady_state_filter": "AggRuntimeImpl::drain_current_timestamp",
+    "steady_state_cycles": 7254256653,
+    "steady_state_leaf_percent": [
+      {
+        "symbol": "__memmove_avx512_unaligned_erms",
+        "percent": 14.250252540658213
+      },
+      {
+        "symbol": "SglangCore::schedule_pass",
+        "percent": 14.09952489862644
+      },
+      {
+        "symbol": "EngineComponent::drive_ready",
+        "percent": 4.5830669757528915
+      },
+      {
+        "symbol": "malloc",
+        "percent": 4.451822832411716
+      },
+      {
+        "symbol": "AggRuntime::drain_current_timestamp",
+        "percent": 4.229714616908523
+      },
+      {
+        "symbol": "_int_malloc",
+        "percent": 3.80563338472221
+      },
+      {
+        "symbol": "SchedulerRank::resolve_pass",
+        "percent": 2.873037734525272
+      },
+      {
+        "symbol": "<replay::report::StreamingDistribution>::add",
+        "percent": 2.7063402963391128
+      },
+      {
+        "symbol": "_int_free",
+        "percent": 2.6278367049663856
+      },
+      {
+        "symbol": "AggRuntime::process_worker_completion_payload",
+        "percent": 2.481375895703369
+      },
+      {
+        "symbol": "realloc",
+        "percent": 1.9474360745366917
+      },
+      {
+        "symbol": "EngineComponent::complete_pass",
+        "percent": 1.9024611838475023
+      }
+    ]
+  },
+  "optimization": {
+    "accepted": false,
+    "ab_trials": 0,
+    "reason": "No small safe optimization was established from the measured hotspots; no speedup claim."
+  }
+}

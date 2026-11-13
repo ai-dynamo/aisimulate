@@ -14,23 +14,23 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from aisimulate import main as cli
-from aisimulate.capacity import materialize_aic_num_gpu_blocks
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.support.plan import create_plan
-from aisimulate.support.schema import SupportRequest
-from aisimulate.sweeper.config import Workload
-from aisimulate.sweeper.kv_load import resolve_kv_load
-from aisimulate.sweeper.model_hw import parallel_configs_for
+from aisim import main as cli
+from aisim.capacity import materialize_aic_num_gpu_blocks
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.support.plan import create_plan
+from aisim.support.schema import SupportRequest
+from aisim.sweeper.config import Workload
+from aisim.sweeper.kv_load import resolve_kv_load
+from aisim.sweeper.model_hw import parallel_configs_for
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
 def grouped_case(tmp_path, monkeypatch):
-    import aisimulate_core
-    from aisimulate_core.sdk import engine, memory
+    import aisim_core
+    from aisim_core.sdk import engine, memory
 
     def no_graph(*_args, **_kwargs):
         pytest.fail("grouped FPM workflow constructed an analytical model")
@@ -104,7 +104,7 @@ def grouped_case(tmp_path, monkeypatch):
     }
     root = tmp_path / "systems"
     root.mkdir()
-    system = yaml.safe_load((Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml").read_text())
+    system = yaml.safe_load((Path(aisim_core.__file__).parent / "systems/h200_sxm.yaml").read_text())
     # A deliberately tiny fake GPU creates meaningful byte pressure in CPU tests.
     system["gpu"]["mem_capacity"] = 4096
     (root / "h200_sxm.yaml").write_text(yaml.safe_dump(system))
@@ -116,7 +116,7 @@ def _write_timings(root, profile, *, decode_ceiling=8192):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+    from aisim_core.sdk.fpm_profile import load_fpm_profile
 
     rows = []
     for index, deployment in enumerate(load_fpm_profile(profile).deployments):
@@ -220,6 +220,24 @@ def _mixed_profile(profile):
     return profile
 
 
+# Two pool blocks of 64 bytes for every running request, whatever its length.
+_STATE_GROUP = {
+    "name": "state",
+    "kind": "state",
+    "num_layers": 2,
+    "block_size_tokens": 64,
+    "page_size_bytes": 64,
+    "blocks_per_request": 2,
+}
+
+
+def _with_state_group(profile):
+    profile = deepcopy(profile)
+    for deployment in profile["deployments"]:
+        deployment["resources"]["cache_groups"].append(dict(_STATE_GROUP))
+    return profile
+
+
 @pytest.mark.parametrize("unrelated", ["topology", "hardware", "version"])
 def test_mixed_profile_predict_preserves_selected_linear_prefix_cache(grouped_case, tmp_path, unrelated):
     profile, root = grouped_case
@@ -243,8 +261,8 @@ def test_mixed_profile_predict_preserves_selected_linear_prefix_cache(grouped_ca
 
 @pytest.mark.parametrize("preset", [False, True])
 def test_mixed_profile_recommendation_preserves_pinned_linear_prefix_cache(grouped_case, tmp_path, monkeypatch, preset):
-    from aisimulate.recommend import _run_recommendation, recommendation_to_sweeper
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.recommend import _run_recommendation, recommendation_to_sweeper
+    from aisim.sweeper.search_space import enumerate_branches
 
     profile, root = grouped_case
     raw = _prediction(_mixed_profile(profile), root)
@@ -260,7 +278,7 @@ def test_mixed_profile_recommendation_preserves_pinned_linear_prefix_cache(group
     branches = enumerate_branches(smart)
     assert len(branches) == 1
     assert {candidate.shape.tp for candidate in branches[0].parallel_configs} == {2}
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     path = tmp_path / "linear-recommend.yaml"
     path.write_text(yaml.safe_dump(raw))
     output = tmp_path / "linear-recommendation"
@@ -288,8 +306,8 @@ def _mixed_search(profile, root):
 
 @pytest.mark.parametrize("filter_by", ["hardware", "version", "budget", "pin", "mode_pin", "choices", "log_range"])
 def test_mixed_search_ignores_unreachable_grouped_deployments(grouped_case, filter_by):
-    from aisimulate.sweeper.config import SmartSearchConfig
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.search_space import enumerate_branches
 
     profile, root = grouped_case
     raw = _mixed_search(profile, root)
@@ -319,8 +337,8 @@ def test_mixed_search_ignores_unreachable_grouped_deployments(grouped_case, filt
 
 @pytest.mark.parametrize("placement", ["aggregated", "disaggregated", "heterogeneous"])
 def test_mixed_recommendation_linear_fixed_capacity_and_disaggregation(grouped_case, placement):
-    from aisimulate.recommend import recommendation_to_sweeper
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.recommend import recommendation_to_sweeper
+    from aisim.sweeper.search_space import enumerate_branches
 
     profile, root = grouped_case
     raw = _prediction(_mixed_profile(profile), root)
@@ -355,8 +373,8 @@ def test_mixed_recommendation_linear_fixed_capacity_and_disaggregation(grouped_c
 
 
 def test_mixed_search_keeps_both_layouts_when_grouped_settings_are_supported(grouped_case):
-    from aisimulate.sweeper.config import SmartSearchConfig
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.search_space import enumerate_branches
 
     profile, root = grouped_case
     raw = _mixed_search(profile, root)
@@ -376,7 +394,7 @@ def test_mixed_search_keeps_both_layouts_when_grouped_settings_are_supported(gro
     ],
 )
 def test_mixed_search_rejects_reachable_grouped_unsupported_settings(grouped_case, update, error):
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.sweeper.config import SearchSpace
 
     profile, root = grouped_case
     raw = _mixed_search(profile, root)
@@ -386,8 +404,8 @@ def test_mixed_search_rejects_reachable_grouped_unsupported_settings(grouped_cas
 
 
 def test_public_recommendation_rejects_reachable_grouped_before_estimating(grouped_case, tmp_path, monkeypatch, capsys):
-    from aisimulate.recommend import _run_recommendation
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisim.recommend import _run_recommendation
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     def no_estimator(*_args, **_kwargs):
         pytest.fail("unsupported grouped recommendation reached estimator construction")
@@ -399,7 +417,7 @@ def test_public_recommendation_rejects_reachable_grouped_before_estimating(group
     raw["optimization"] = {"constraints": {"max_candidate_gpus": 2}}
     raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1}
     CoreRecommendationConfig.model_validate(raw)
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     monkeypatch.setattr(RustForwardPassPerfModel, "best_available", no_estimator)
     path = tmp_path / "unsupported-recommend.yaml"
     path.write_text(yaml.safe_dump(raw))
@@ -454,6 +472,35 @@ def test_public_predict_uses_group_bytes_with_tp_and_dep(grouped_case, tmp_path,
     assert "estimated_num_gpu_blocks" not in memory
 
 
+@pytest.mark.parametrize("dep", [False, True])
+def test_public_predict_runs_with_a_state_group(grouped_case, tmp_path, dep):
+    profile, root = grouped_case
+    raw = _prediction(_with_state_group(profile), root, dep=dep)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    diagnostics = {}
+    lowered = materialize_aic_num_gpu_blocks(spec.backend_deployment.agg_engine_args, memory_diagnostics=diagnostics)
+    # The state group reaches the engine configuration with its block count. No other group has the key.
+    assert lowered["kv_cache_groups"] == diagnostics["cache_groups"]
+    groups = {group["name"]: group for group in lowered["kv_cache_groups"]}
+    assert groups["state"] == {**_STATE_GROUP, "sliding_window": None}
+    assert all("blocks_per_request" not in group for name, group in groups.items() if name != "state")
+    assert lowered["kv_cache_capacity_bytes"] == 3486
+    # 2048 full-history + 656 sliding-window + 272 convolution + 128 state bytes (2 blocks of 64).
+    assert diagnostics["request_peak_cache_bytes"] == 3104
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "prediction"
+    arguments = ["predict", "-c", str(path), "--output-dir", str(output), "--detail", "memory", "--capture-per-request"]
+    assert cli.main(arguments) == 0
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["completed_requests"] == 2
+    assert all(row["output_length"] == 4 for row in report["per_request"])
+    assert report["fpm_query_coverage"]["status"] == "covered"
+    memory = report["details"]["sections"]["memory"]["roles"]["aggregated"]
+    assert memory["total_kv_size_bytes"] == 3486
+    assert memory["total_kv_size_tokens"] is None
+
+
 def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, tmp_path):
     profile, root = grouped_case
     # Window-only allocation is bounded, but the first decode after the
@@ -479,9 +526,9 @@ def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, t
 def test_grouped_recommendation_exports_a_runnable_prediction(
     grouped_case, tmp_path, monkeypatch, relative_load, observed_memory
 ):
-    from aisimulate.recommend import _run_recommendation
+    from aisim.recommend import _run_recommendation
 
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     profile, root = grouped_case
     if observed_memory:
         for deployment in profile["deployments"]:
@@ -534,8 +581,8 @@ def test_grouped_recommendation_exports_a_runnable_prediction(
     ],
 )
 def test_native_grouped_rematerialization_checks_identity_and_budget(grouped_case, field, value, error):
-    from aisimulate import _runtime
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim import _runtime
+    from aisim.runner import EngineReplayRunnerFactory
 
     profile, root = grouped_case
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(profile, root)))
@@ -572,7 +619,7 @@ def test_grouped_capacity_preserves_graph_reservation_and_rejects_fixed_blocks(g
 
 
 def test_grouped_topology_admission_uses_each_rank_byte_budget_before_collection(grouped_case, monkeypatch):
-    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisim_core.sdk import RustForwardPassPerfModel
 
     profile, root = grouped_case
     # DEP has an explicitly larger rank-local weight reservation. It leaves
@@ -634,6 +681,48 @@ def test_grouped_kv_load_uses_bytes_without_inventing_token_capacity(grouped_cas
         )
         # 1216 full-history + 528 sliding-window + 16 convolution bytes.
         assert result.role_request_cache_bytes == {"agg": 1760}
+        assert result.role_capacity_bytes == {"agg": 3486 * candidate.shape.dp}
+        assert result.concurrency_capacity == candidate.shape.dp
+        assert result.role_capacity_tokens == {}
+
+
+def test_grouped_state_group_adds_fixed_bytes_per_request(grouped_case):
+    profile, root = grouped_case
+    profile = _with_state_group(profile)
+    candidates = parallel_configs_for(
+        profile["model"],
+        "h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        deployment_mode="agg",
+        gpu_budget=2,
+        max_num_tokens=128,
+        max_batch_size=4,
+        fpm_profile=profile,
+        systems_paths=[str(root)],
+    )
+    assert len(candidates) == 2
+    for candidate in candidates:
+        sample = {
+            "model_name": profile["model"],
+            "hardware_sku": "h200_sxm",
+            "backend": "vllm",
+            "fpm_profile": profile,
+            "systems_paths": [str(root)],
+            "agg_block_size": 64,
+            "agg_max_num_batched_tokens": 128,
+            "agg_max_num_seqs": 4,
+            "agg_gpu_memory_utilization": 0.9,
+        }
+        result = resolve_kv_load(
+            sample,
+            workload=Workload(isl=1152, osl=4, kv_load_ratio=1.0, request_count=2),
+            parallel_config=candidate,
+            ratio=1.0,
+            backend_version="0.25.1",
+        )
+        # The 1760 bytes of the other groups plus 2 state blocks of 64 bytes. The capacity does not change.
+        assert result.role_request_cache_bytes == {"agg": 1888}
         assert result.role_capacity_bytes == {"agg": 3486 * candidate.shape.dp}
         assert result.concurrency_capacity == candidate.shape.dp
         assert result.role_capacity_tokens == {}
@@ -765,7 +854,7 @@ def test_grouped_onboarding_profile_reaches_real_collector_preview_and_render(
 
 @pytest.mark.parametrize("dep", [False, True])
 def test_onboard_validation_replays_windowed_weka_with_full_context(grouped_case, tmp_path, monkeypatch, dep):
-    from aisimulate import supervision
+    from aisim import supervision
 
     profile, _root = grouped_case
     request = SupportRequest.model_validate(
@@ -854,8 +943,8 @@ def test_onboard_validation_replays_windowed_weka_with_full_context(grouped_case
 
 @pytest.mark.parametrize("profile_field", ["aic_fpm_profile", "fpm_profile"])
 def test_grouped_runner_capability_rejects_unsupported_stack(grouped_case, profile_field):
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.replay import RunnerCapabilities
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim.sweeper.replay import RunnerCapabilities
 
     profile, root = grouped_case
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(profile, root)))
@@ -890,8 +979,8 @@ def test_grouped_runner_capability_rejects_unsupported_stack(grouped_case, profi
 
 
 def test_aggregated_only_grouped_profile_skips_unavailable_disagg(grouped_case):
-    from aisimulate.sweeper.config import SmartSearchConfig
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.sweeper.config import SmartSearchConfig
+    from aisim.sweeper.search_space import enumerate_branches
 
     profile, root = grouped_case
     for deployment in profile["deployments"]:

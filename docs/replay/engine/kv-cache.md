@@ -12,6 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 | G1 | GPU memory | `block_size`, `prefix_caching`, `bytes_per_token`, `capacity` |
 | G2 | Host (CPU) memory | `host_offload` |
 | G3 | Storage shared by workers | `g3_offload` |
+| G2 peer fetch (KVCR) | Another rank's G2 | `kvcr` |
 
 Recurrent-state models also use `state_cache`; see
 [state cache](#state-cache).
@@ -32,6 +33,7 @@ engine:
         g3_offload:              # optional G3: aggregated only, requires host_offload
           scope: cluster_shared
           num_g3_blocks: 16384
+        # kvcr: {}               # optional KVCR peer fetch: not on decode, requires private host_offload, not with g3_offload
 ```
 
 ## KV cache fields
@@ -42,6 +44,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 |---|---|---|---|
 | `block_size` | vLLM `64`, SGLang `1`, TensorRT-LLM `32` | Searchable; fixed by default | Tokens per block. vLLM and TensorRT-LLM require at least 2. |
 | `prefix_caching` | `true` | fixed | Keep completed prompt blocks for reuse by later requests. |
+| `decode_radix_cache` | `false` | fixed | SGLang `decode` only. Enables the decode worker's radix cache (`--disaggregation-decode-enable-radix-cache`); requires `prefix_caching: true` and no speculative decoding. See [SGLang decode radix cache](#sglang-decode-radix-cache). |
 | `bytes_per_token` | `auto` | fixed | KV bytes per token on one TP shard. `auto` derives it from the model, KV precision and this role's parallelism. |
 | `capacity.type` | `default` | fixed | `default` sizes G1 from GPU memory; `fixed` uses `blocks` or `bytes`. |
 | `capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`, SGLang `0.88` | Searchable; fixed by default | In `(0, 1]`. `default` capacity only. Same meaning as vLLM `gpu_memory_utilization`, SGLang `mem_fraction_static`, TensorRT-LLM `free_gpu_memory_fraction`. |
@@ -49,9 +52,21 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `capacity.blocks` | Unset | fixed | G1 blocks per attention-DP rank. `fixed` capacity only. |
 | `capacity.bytes` | Unset | predict only | G1 bytes per attention-DP rank, instead of `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, unless `state_cache: {}` infers them. |
 | `host_offload` | Unset (off) | fixed | G2 block; see [host offload](#host-offload-g2). |
+| `hicache` | Unset (off) | Rejected | SGLang host KV cache for aggregated prediction; see [SGLang HiCache](#sglang-hicache). |
 | `g3_offload` | Unset (off) | Rejected | G3 block; see [G3 offload](#g3-offload). |
+| `kvcr` | Unset (off) | Rejected | KVCR block; see [KVCR peer fetch](#kvcr-peer-fetch). |
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
 | `prefix_match_unit` | Unset | Rejected | Prefix-matching granularity with `state_cache`. |
+
+The block-size defaults above are simulation defaults. When a Sweeper candidate's
+role block size is absent or `null`, the deployment generator omits `--block-size`
+(vLLM), `--page-size` (SGLang), or `kv_cache_config.tokens_per_block`
+(TensorRT-LLM), allowing the engine to choose its runtime default. Explicit values
+are preserved. For SGLang and TensorRT-LLM, generating a fixed `capacity.blocks`
+requires an explicit `block_size` matching the runtime: the generator must
+convert the block count to a token capacity and cannot infer runtime geometry
+from a simulation default. vLLM accepts the block count directly. Set
+`block_size` explicitly when simulation and deployment must use the same value.
 
 ## GPU cache (G1)
 
@@ -72,20 +87,143 @@ on. Partial blocks are never reused. When G1 is full, each backend applies its
 own policy: requests wait or are preempted, and unused cached blocks are
 evicted least recently used first.
 
+For SGLang, complete prompt pages enter the radix cache after prefill; decoded
+pages enter when a request finishes or a running request is cancelled. In overlap
+mode, prefill reuse becomes visible when the forward result is observed. A
+completed disaggregated source publishes its prompt before the transfer hold;
+the hold retains its path lock and partial tail. A transferred destination keeps
+its prompt private until running admission, or caches its full pages when a
+ready request is cancelled.
+
+SGLang KV events follow those radix insertions, rather than page allocation.
+Compatible consecutive stores and removals are batched, with stores retaining
+their parent links and session IDs. Events flush after prefill, every 40 decode
+forwards and on idle. Under memory pressure, decode retraction stably orders
+requests by descending output length and then ascending prompt length, retracts
+from the end, and evicts unused cache toward a 20-token reserve per survivor.
+These contracts follow [SGLang v0.5.20](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e).
+
+### SGLang decode radix cache
+
+An SGLang decode server runs a chunk cache unless it is launched with
+`--disaggregation-decode-enable-radix-cache`, which is off by default, so an
+SGLang `decode` worker caches nothing unless `decode_radix_cache: true` is set.
+Without it, transferred prompts and decoded output stay private to their
+request, the worker publishes no KV events, and every transfer moves the whole
+prompt. With it, the worker reuses cached prefixes and publishes a transferred
+prompt at running admission, as described above. Like SGLang, the simulator
+rejects the decode radix cache with speculative decoding. An SGLang decode
+worker always serves its waiting queue first-come first-served. This follows
+[SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d)
+(`arg_groups/pd_disaggregation_hook.py`, `disaggregation/decode.py`).
+
+For raw Sweeper `SearchSpace` inputs, `decode_radix_cache: true` requires
+`decode_enable_prefix_caching: true` and no speculation when the domain includes
+SGLang disaggregated candidates. Validation rejects invalid combinations before
+enumeration; deployment lowering also checks direct sample inputs. Analytical
+AFD and AFD+P/D do not model this cache and reject the setting. A sweep may include other backends,
+whose samples omit the SGLang-only radix flag. The recommendation path carries
+both controls from the worker's `kv_cache` configuration. A search with no
+SGLang backend rejects `decode_radix_cache: true`.
+
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
 
 | Field | Meaning |
 | --- | --- |
+| `first_admission_reused_input_tokens` | Prompt tokens reused from all tiers when the request was first admitted; later readmissions do not change it. |
+| `reused_input_tokens` | Largest reuse across the request's prefill admissions, or across all admissions without a prefill stage. |
 | `first_admission_g1_reused_input_tokens` | Prompt tokens served from G1 when the request was first admitted. |
-| `first_admission_host_reused_input_tokens` | Prompt tokens restored from G2 (and G3). |
+| `first_admission_host_reused_input_tokens` | Prompt tokens restored from G2, including G3 restores and KVCR pulls. |
 | `admission_history` | Every admission of the request, including after preemption, with the pool it reused from. |
 
 The Dynamo KV Router's overlap score is a routing estimate; these fields record
-what Replay actually reused.
+what Replay actually reused. A readmission after preemption can reuse KV the
+request itself computed, which raises `reused_input_tokens` but not
+`first_admission_reused_input_tokens`; the summary's
+`first_admission_prefix_cache_reused_ratio` aggregates the latter.
+
+### SGLang request cache salt
+
+Native `Request`, authored Rust `ReplaySpec.requests`, and configured inline
+Python requests accept this per-request field:
+
+| Field | Default | Rules |
+| --- | --- | --- |
+| `cache_salt` | Absent | Optional string. Empty is equivalent to absent. Nonempty salts require the native SGLang backend. |
+
+Requests reuse a prefix only within the same salt namespace, even when their
+token IDs match. The namespace also applies to LPM scores, waiting-queue
+deduplication, P/D destination matching, and Belady input-demand forecasts.
+Session IDs remain attribution and do not separate cache contents.
+Built-in trace formats keep their existing unsalted schema; custom deferred
+replay requests carry salt in their `DirectRequest` metadata.
+
+Stored KV events carry `cache_salt`; removals reference the same salted hashes.
+AISim retains its XXH3 block/sequence representation, with unchanged identities
+for unsalted requests. It models the namespace behavior of
+[SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d),
+without reproducing SGLang's SHA256 event encoding. Placement adapters hashing
+a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
+
+This is a simulator contract pinned to SGLang v0.5.22. AISim does not check
+the installed serving runtime's support for `cache_salt` or the decode radix
+flag; verify both capabilities when deploying an older SGLang version.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>
+
+## SGLang HiCache
+
+Set `engine.workers.aggregated.kv_cache.hicache` to model SGLang v0.5.22
+caching on a private host pool for each attention-DP rank.
+Prefix caching must be enabled. This is supported for aggregated prediction
+and native offline replay; disaggregated roles, recommendation, Belady eviction,
+external storage, and peer KVCR fetch are not supported by this option.
+
+| Field under `hicache` | Default | Meaning |
+|---|---|---|
+| `num_host_blocks` | Required | Positive host capacity per attention-DP rank. |
+| `write_policy` | `write_through` | `write_through`, `write_through_selective`, or `write_back`; see below. |
+| `d2h_bandwidth_gbps` | `32` | Device-to-host bandwidth in decimal GB/s; zero is unlimited. |
+| `h2d_bandwidth_gbps` | `32` | Host-to-device bandwidth in decimal GB/s; zero is unlimited. |
+| `latency_to_first_byte_ms` | `0` | Non-negative latency per transfer operation. |
+
+Host pages use the GPU page geometry: `block_size * bytes_per_token` bytes.
+The compiler resolves `bytes_per_token: auto` from the model and rank layout.
+Native engine configurations place these fields under `sglang.hicache` and
+require `kv_cache_bytes_per_token`.
+
+With `write_through`, completed chunk and request inserts back up their canonical
+radix pages, including materialized output pages. `write_through_selective` waits
+for a node's second insertion observation; each request counts newly covered
+prefixes once, including reused pages. These policies back up ancestors first.
+Each step submits one merged D2H operation;
+its acknowledgement publishes host residency and releases the independent GPU
+page locks. GPU eviction preserves backed-up radix nodes. Host eviction removes
+only unlocked, host-only leaves in last-access order and may reclaim old entries
+even when the new node ultimately cannot fit.
+
+`write_back` instead backs up the selected GPU eviction leaf and waits for its
+D2H acknowledgement before releasing the device pages. This wait delays batch
+selection and forward execution. Host pressure first reclaims redundant copies
+that remain on the GPU, sparing evictable GPU leaves on the first pass, then
+reclaims host-only leaves. In-flight transfers and host source locks protect
+their copies. If a backup cannot fit, eviction drops the selected device leaf
+and its eligible host-only descendants together.
+
+Admission selects the prefill shape before queuing H2D and budgets both the host
+prefix and new GPU work. Load-back restores the entire promised host prefix or
+recomputes admission without it; host hits below ten tokens are recomputed.
+Ordinary forward duration includes the maximum of compute and dependent H2D,
+without a per-layer pipeline model. With `host_loop`, this duration belongs to
+the launched forward; its results are observed by a later loop iteration.
+Admission reports device and host reuse separately. Host transfers continue to
+drain and emit cache events after the last request completes or is cancelled.
+
+These semantics follow public SGLang v0.5.22 at
+[`baa9befa`](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d).
+The separate `host_offload` option below models vLLM connectors.
 
 ## Host offload (G2)
 
@@ -120,7 +258,7 @@ traffic:
 ```
 
 ```bash
-aisimulate predict --stack engine --config host-offload-prediction.yaml --capture-per-request
+aisim predict --stack engine --config host-offload-prediction.yaml --capture-per-request
 ```
 
 | Knob (under `host_offload`) | Default | Rules |
@@ -132,6 +270,7 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 | `latency_to_first_byte_ms` | `0.0` | Fixed delay before each transfer starts moving bytes. |
 | `shared_d2h_bandwidth_gbps` | `80.0` | Total GPU→host bandwidth of the pool. `cluster_shared` only. |
 | `shared_h2d_bandwidth_gbps` | `80.0` | Total host→GPU bandwidth of the pool. `cluster_shared` only. |
+| `connector` | `offloading_v0_24` | vLLM connector whose rules G2 follows: `offloading_v0_24`, `offloading_v0_32` or `simple_cpu_v0_32`. The last two need the aggregated worker, `dp_rank_local` and no `g3_offload` or `kvcr`; see [connector profiles](#g2-connector-profiles). |
 
 `recommend` keeps `host_offload` fixed; its size and bandwidth are not searched.
 
@@ -147,6 +286,35 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 - A decode rank with G2 admits requests whose P/D handoff has arrived before
   other waiting requests, as vLLM's FCFS scheduler does.
 
+<a id="g2-connector-profiles"></a>
+
+### Connector profiles
+
+`connector` picks the vLLM CPU-offload connector whose store, lookup and
+eviction rules G2 follows:
+
+| | `offloading_v0_24` (default) | `offloading_v0_32` | `simple_cpu_v0_32` |
+| --- | --- | --- | --- |
+| vLLM connector | `OffloadingConnector`, vLLM 0.24 | `OffloadingConnector` with the CPU backend, vLLM v0.32.0 | `SimpleCPUOffloadConnector` in eager mode, vLLM v0.32.0 |
+| Stored blocks | Prompt blocks as they are computed, after any blocks loaded from G2 | The same; a finishing request also offers prompt blocks it could not store earlier | Every block one pass after it is computed, decode blocks included, scanned from block 0 at each admission; blocks already in G2, such as those just loaded, are skipped. A finishing request stores the rest. |
+| Eviction order | Least recently used. Each lookup and store makes the prompt's resident blocks the newest, its first block newest of all. | Least recently used by rank. A block is ranked when its store starts; a finishing request re-ranks every block it stored, offered or loaded, its first block newest. | First in, first out by store completion. A completed load or a dropped lookup pin makes its blocks the newest; a block already in G2 is not refreshed. |
+| A hit whose store is in flight | Defers the request | Defers the request | Misses |
+| A hit another request is loading | Defers the request | Defers the request | Both requests load it |
+| The request's own store in flight | Defers its lookup | Defers its lookup | Does not defer |
+| A hit before its load | Not pinned | Not pinned | Pinned until the request loads it or looks it up again |
+| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes, then freed first block first |
+| A preemption | Waits for the preempted request's stores | The same | Waits for every transfer in flight |
+
+vLLM main has changed some of these rules since v0.32.0. Each profile models the
+rules of the version it names; none was compared with a running vLLM. The model
+also differs from vLLM v0.32.0 here:
+
+- `offloading_v0_32` offers and re-ranks a finishing request's blocks when the
+  request finishes. vLLM does both in its next step, after that step's other
+  stores.
+- After a preemption, `simple_cpu_v0_32` loads only prompt blocks from G2 and
+  recomputes the request's output blocks, which vLLM reloads.
+
 <a id="g2-scope"></a>
 <a id="g2-ownership"></a>
 
@@ -160,8 +328,12 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 For example, two replicas with `attention_data: 2` and `num_host_blocks: 4096`
 get four private 4096-block caches with `dp_rank_local`, or one 4096-block
 cache with `cluster_shared`. In a shared pool, transfers in the same direction
-share bandwidth equally: four ranks at 32 GB/s under an 80 GB/s pool each move
-at 20 GB/s while all four transfer.
+share bandwidth max-min fairly per transfer, not per rank: four ranks at
+32 GB/s, each running one transfer under an 80 GB/s pool, each move at 20 GB/s.
+Pool bandwidth a rank cannot use because its own limit binds goes to the other
+ranks: with one rank running nine transfers and another running one, both at
+32 GB/s, each rank moves 32 GB/s in total. Under a 20 GB/s pool the same ten
+transfers each get 2 GB/s, so the busier rank moves 18 GB/s.
 
 `cluster_shared` models a deployment-wide host cache such as Mooncake Store or
 LMCache. vLLM's native offload has no equivalent, so it has no native parity
@@ -175,7 +347,24 @@ and shared bandwidths; otherwise the run is rejected. In `recommend` with
 
 G2 supports vLLM aggregated and token-only disaggregated workers with prefix
 caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
-native MTP, ngram speculation, `state_cache`, and Belady eviction.
+ngram speculation, `state_cache`, and Belady eviction.
+
+Canonical `engine.speculation.kind: mtp` can combine with G2 only on an
+aggregated vLLM worker with `attention_data: 1`, `scope: dp_rank_local`, prefix
+caching and no G3. Use explicit fixed KV capacity and default timing. This
+models synchronous single-module MTP with one uniform shared FullAttention
+cache; separate draft models and grouped caches are unsupported. See
+[speculation](speculation.md#registered-schemes) for the complete composition.
+
+This combined behavior is adapted and modified from the
+[vLLM v0.32.0 scheduler](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py)
+and [OffloadingConnector](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py),
+Copyright contributors to the vLLM project, Apache-2.0. Prompt stores exclude
+unverified drafts, and G1 copy sources stay protected until their transfer
+completes. A next step that can never fit physical KV capacity or the total
+padded verification budget is rejected instead of retried indefinitely; this
+is a simulation capacity guard. The scheduling baseline does not change the
+version or provenance of the performance data used for timing.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
@@ -213,7 +402,8 @@ These defaults are modeling assumptions, not measured values.
   `worker_local`, workers cannot read each other's blocks.
 - G3 evicts least recently used blocks that are not being transferred.
 - With `worker_local`, total bandwidth grows with the worker count (16 workers
-  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits.
+  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits and
+  divides them max-min fairly, as in a [shared G2 pool](#g2-scope).
 
 To compare scopes at equal total capacity with `N` workers, use
 `num_g3_blocks: C` for `worker_local` and `N × C` for `cluster_shared`. Set the
@@ -224,13 +414,120 @@ read/write jobs and bytes, evictions, resident blocks and
 `cross_worker_read_blocks` (blocks read by a worker other than the writer).
 
 Supported: aggregated vLLM with `attention_data: 1`, prefix caching, and either
-G2 scope; fixed or Planner-scaled workers. Rejected: `recommend`, P/D, and
-native MTP.
+G2 scope; fixed or Planner-scaled workers. Rejected: `recommend`, P/D,
+native MTP, and a `host_offload.connector` other than `offloading_v0_24`.
 
 When a request's prefix is larger than G2 can hold, restores can keep evicting
 each other. If the rank makes no progress for 1,024 consecutive restore rounds,
 the request recomputes the missing part instead. Each time this happens
 `g3_offload.bypassed_restores` increments. vLLM has no such rule.
+
+<a id="kvcr-peer-fetch"></a>
+
+## KVCR peer fetch
+
+KVCR (KV Cache Runner) lets a rank pull a prompt prefix it is missing from
+another rank's G2 over the network, instead of recomputing it. A router attaches
+a hint naming the source rank; without hints KVCR does nothing. It requires
+private G2 (`host_offload` with the default `scope: dp_rank_local`). Add it next
+to `host_offload` in the [host offload example](#host-offload-g2):
+
+```yaml
+kvcr:
+  latency_to_first_byte_ms: 1.0
+  bandwidth_gbps: 50.0
+```
+
+| Knob (under `kvcr`) | Default | Rules |
+|---|---|---|
+| `latency_to_first_byte_ms` | `1.0` | Fixed delay before each pull moves bytes, for the control round trip and the source pin. |
+| `bandwidth_gbps` | `50.0` | Per source rank (one attention-DP rank of a worker), decimal GB/s (a 400 Gb/s NIC is `50`). All GPUs of the rank share it, and so do concurrent pulls from it, equally. `0` means unlimited. |
+
+`kvcr: {}` uses the defaults. These defaults are modeling assumptions, not
+measured values.
+
+### How KVCR behaves
+
+- When some of a hinted request's prompt blocks are in neither G1 nor the
+  rank's own G2, the rank checks the source's G2 block by block, in prompt
+  order, and pulls each missing block the source holds. It stops at the first
+  block the source lacks.
+- A pull starts when the source finishes its current forward pass, including
+  a pass that starts at the same instant the pull is requested, waits
+  `latency_to_first_byte_ms`, then moves bytes. Each pulled block carries the
+  KV of every GPU of the source rank: G2 block bytes times the role's
+  `parallelism.tensor` (native `tensor_parallel_size`). The ranks of one worker run
+  their passes in lockstep, so a pull from another DP rank of the same worker
+  starts when the worker's current pass ends. Pulled blocks land in the rank's
+  own G2 and load to G1 like any G2 hit, so pull and load time add to TTFT.
+- Requests on one rank that need the same blocks share one pull. A request that
+  ends while its pull is in flight leaves the pulled blocks in G2.
+
+The model simplifies KVCR:
+
+- The rank sees the source's G2 contents when it looks up the prefix. The
+  source's blocks are then protected from eviction until the rank takes the
+  landed pull: as soon as it lands if the rank's worker is idle, otherwise when
+  that worker's current pass ends. The pulled blocks become usable in the
+  rank's G2 at the same point.
+- The rank reserves G2 slots only for the blocks the source holds, all in one
+  reservation per pull. A pull never evicts from the rank's G2 a block of the
+  hinted prompt that the rank's G1 does not hold; it stops at the first block
+  it has no other room for. G2 copies of prompt blocks already in G1 stay
+  evictable, since the request does not load them.
+- While its pull is in flight, a request is not looked up again, as vLLM skips
+  a request that waits for remote KV.
+- Pulls do not fail or time out, and the first pull between two ranks has no
+  connection setup cost.
+- A pull moves one block share per tensor-parallel GPU. KV that each GPU
+  replicates (an MLA latent, or a KV head shared by several GPUs when
+  `num_kv_heads` is smaller than `tensor`) is counted once per GPU.
+
+When a request's prefix is larger than G2 can hold, pulls can keep evicting
+each other. If the rank makes no progress for 1,024 consecutive pull rounds,
+the request recomputes the missing part instead. Each time this happens
+`kvcr.bypassed` increments. vLLM has no such rule.
+
+The prediction summary includes a `kvcr` section: `pulls` by result (`success`,
+or `partial` when the source held only part of the missing blocks or the rank
+had no free G2 slot for the rest, including a block the same request already
+pulled at that instant), pulled `blocks` and `bytes` (summed over
+the GPUs of each source rank),
+`remote_deliver_ms` (total time from submit to landing in G2), `source_wait_ms`
+(total time spent waiting for the source's pass to end) and `loaded_blocks`
+(pulled blocks, counted when their first load into G1 starts). `bypassed`
+appears only when it is nonzero. The counters update as the pool's ranks run.
+A run stopped by `traffic.stop.max_virtual_time_seconds` (native
+`max_sim_time_ms`) can miss pulls that landed during a pass still running at
+the cutoff; a run that completes counts every pull.
+
+Ranks without incoming pulls skip shared KVCR deadline lookups. Other KVCR
+bookkeeping still queries shared pool state from per-rank calls. Large worker
+or attention-DP pools can substantially increase replay wall time. Further
+overhead reductions are deferred; they must preserve CanonicalV1 replay output bytes.
+
+### Supported
+
+KVCR supports vLLM aggregated workers with any `attention_data`, and pulls
+between the prefill ranks of P/D. Workers may be fixed or Planner-scaled; a
+draining worker is removed only after every pull from or into it has landed and
+been taken by its target. Rejected: missing or `cluster_shared` `host_offload`,
+a `host_offload.connector` other than `offloading_v0_24`, `g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
+`parallelism.prefill_context` above 1 (native `prefill_context_parallel_size`), and `recommend`.
+Everything G2 rejects is rejected too, including SGLang and TensorRT-LLM.
+
+Hints come from the placement policy (see
+[native composition](../../adapters/native-composition.md#placementpolicy)) or
+from `kv_hints` on native ReplaySpec requests (see
+[Rust API](../api/rust.md#serializable-spec)). Replay ignores a hint that names
+the receiving rank. CLI traffic carries no hints, so
+`aisim predict --stack engine` runs KVCR idle: apart from the `kvcr`
+section, the results equal G2 alone.
+
+For a complete CLI example with router-generated hints, follow
+[Simulate KVCR peer reuse](../dynamo.md#simulate-kvcr-peer-reuse). It uses
+`--stack dynamo`, two workers with private G2, and a Mooncake trace, and compares
+KVCR-enabled replay against a G2-only baseline.
 
 <a id="state-cache"></a>
 <a id="manual-state-cache-sizing"></a>
@@ -259,6 +556,8 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
 | `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
+| `state_cache.retention_interval` | Unset (every block boundary) | DeepSeek V4 with inferred bytes only. vLLM's `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`: `0` or a multiple of the resolved `block_size`. DeepSeek V4 rejects `prefix_match_unit`. |
+| `state_cache.sliding_window_lookahead_tokens` | Inferred (DeepSeek V4: 64) | Tokens past the full-attention hit that the MTP layer's sliding-window group reads; sizing fills it. Set it only with explicit `bytes_per_request`, to replay a state resolved earlier. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
 
 `state_cache: {}` infers Kimi K3 geometry from the model. `block_size` is then
@@ -267,7 +566,7 @@ For example, TP8 with FP8 KV and `block_size: 128` resolves to 1536-token blocks
 of 13824 bytes per token. The same estimate is available in the SDK:
 
 ```python
-from aisimulate_core.sdk import estimate_state_cache
+from aisim_core.sdk import estimate_state_cache
 
 state = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8, kvcache_quant_mode="fp8", block_size=128)
 ```
@@ -287,10 +586,47 @@ for every token of a prefill chunk until the next step (3,360 rows for an
 8,192-token chunk), and a prefix hit restores 22 of the 26 rows. None of these
 is modeled.
 
-Prefix reuse resumes from a stored state snapshot, so it does not land on every
-matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
+DeepSeek V4's state is a sliding window that vLLM caches block by block, so a
+later request can resume at a retained boundary the earlier request passed,
+wherever its steps ended. `retention_interval` selects the boundaries, as
+`VLLM_PREFIX_CACHE_RETENTION_INTERVAL` does in vLLM v0.32.0: unset keeps every
+256-token boundary; `0` keeps only the last boundary below each prompt's end; a
+positive value additionally keeps one boundary per interval. With speculative
+decoding the group holding the MTP layer also needs the 64 tokens after a
+boundary, and they must lie inside the block-aligned token hit, so a hit lands
+one block lower and vLLM keeps the boundary one block lower instead. A 40,000-token
+prompt with `retention_interval: 32768` keeps 32,768 and 39,936 without
+speculative decoding, and 32,768 and 39,680 with it; its next turn resumes at
+39,936 or 39,680. Each retained boundary holds one reclaimable state copy
+(vLLM keeps about 22 of the 26 rows) until eviction. vLLM also keeps state
+where a request's cache hit stopped short of a longer shared prefix; replay
+does not model that. vLLM keeps the window in the request's own blocks, while
+replay copies the state, so a full pool with nothing to evict skips the
+boundary. This model needs inferred geometry: with `bytes_per_request` set,
+DeepSeek V4 falls back to one recurrent-style checkpoint per request.
+
+Kimi K3's recurrent state resumes only from a stored snapshot, so it does not
+land on every matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
 24,300-token prompt keeps snapshots at 23,040 and 24,192 tokens. A later request
 sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode.
+
+### State pool from recorded runtime memory
+
+An `engine.fpm_profile` whose deployment records `resources.runtime_memory`
+rejects fixed capacity, because the pool is the one the backend allocated when
+the profile was collected. With inferred state geometry (`state_cache` without
+`bytes_per_request`), leave `capacity` at `type: default`. Each rank's pool is
+then the recorded `runtime_memory.kv_cache_bytes` in whole blocks of the
+resolved geometry: `kv_cache_bytes // (block_size * bytes_per_token)`.
+`capacity.memory_fraction` must equal the recorded `gpu_memory_utilization`,
+and the context length must not exceed the recorded `max_model_len`.
+Leave `capacity.cuda_graph_reserved_bytes` unset, because the recorded pool
+already excludes graph memory. A grouped FPM cache and `prefill_context` or
+`decode_context` above 1 are not supported here. Every
+`engine.speculation.kind` except `ngram` requires fixed capacity, so it cannot
+use a recorded pool; set the draft depth with `engine.nextn` instead.
+The block count follows the inferred row size, so it can differ from the count
+the backend logged when that build packs its cache groups differently.
 
 In `mode: disaggregated`, set `state_cache` on both `prefill` and `decode`;
 each role sizes its own state. The decode worker reserves the prompt blocks
@@ -304,16 +640,21 @@ than the padded `bytes_per_request` for Kimi K3 at TP8), transfers it after all
 but the last prompt token and recomputes that token on the decode worker. Replay
 transfers the state for the whole prompt and does not model the recompute.
 
-Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
+Supported: aggregated and P/D vLLM, fixed `capacity` (or the
+[recorded pool](#state-pool-from-recorded-runtime-memory) of an FPM profile), `predict --stack engine`;
 inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
-Rejected: `recommend`, G2/G3 offload, and speculative decoding with
+Speculative decoding supports `prefix_match_unit` equal to `block_size`.
+Sub-block matching with speculation remains unsupported.
+
+Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 `prefix_match_unit`.
 
 ## Other cache modes
 
 - **Grouped caches.** Some whole-forward (FPM) profiles describe several KV
   groups, such as sliding-window and full attention, sharing one byte budget.
-  Replay then allocates each group separately. Grouped caches require cold
+  Replay then allocates each group separately. A `state` group holds a fixed
+  number of blocks for each running request. Grouped caches require cold
   aggregated vLLM with `prefix_caching: false`, no offload, no P/D and default
   capacity. See [memory accounting](../../perf-model/memory.md).
 - **Belady eviction.** The native ReplaySpec field
@@ -327,16 +668,20 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with
 ## Agentic traffic with G2
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
-one aggregated worker, or one prefill and one decode worker, all with
-`attention_data: 1`, static workers and no speculative decoding. Either G2 scope
-works; G3 is not supported. Results are qualified `functional_only`.
+one aggregated worker, one prefill and one decode worker, or several aggregated
+workers that each own a `dp_rank_local` G2. All need `attention_data: 1` and static
+workers. Without speculation, either G2 scope works with one worker per role.
+Canonical MTP additionally supports a single aggregated worker with local G2 and
+prefix caching, within the [combined scope](#supported) above. Other speculation
+and G3 are not supported. `kvcr` is accepted but never pulls, because agentic
+traffic carries no router hint. Results are qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:
 
 ```bash
-aisimulate predict --stack engine --config examples/cli/agentx-g2-local.yaml \
+aisim predict --stack engine --config examples/cli/agentx-g2-local.yaml \
   --capture-per-request --output-dir ./agentx-g2-local --format json
-aisimulate predict --stack engine --config examples/cli/agentx-g2-shared-pd.yaml \
+aisim predict --stack engine --config examples/cli/agentx-g2-shared-pd.yaml \
   --capture-per-request --output-dir ./agentx-g2-shared --format json
 ```
 

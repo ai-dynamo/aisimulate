@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-dynamo.github.io/aisimulate/cli/prediction-details.schema.json",
-  "title": "AISimulate prediction details v1",
+  "$id": "https://ai-dynamo.github.io/aisim/cli/prediction-details.schema.json",
+  "title": "AISim prediction details v1",
   "type": "object",
   "properties": {
     "schema_version": {
@@ -1488,6 +1488,13 @@
           "items": {
             "$ref": "#/$defs/fpmQuery"
           }
+        },
+        "operations": {
+          "description": "Operation-graph ranks only: per-operation latency and energy whose latencies sum to latency_ms. Omitted for whole-forward ranks.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rankOperation"
+          }
         }
       },
       "required": [
@@ -1501,9 +1508,44 @@
       ],
       "additionalProperties": false
     },
+    "rankOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "energy_wms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "energy_wms",
+        "source",
+        "details"
+      ],
+      "additionalProperties": false
+    },
     "fpmEstimate": {
       "type": "object",
       "properties": {
+        "unavailable_reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
         "latency_ms": {
           "type": [
             "number",

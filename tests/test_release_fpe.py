@@ -3,17 +3,21 @@
 
 """Release package isolation and producer-to-publisher contract tests."""
 
+import copy
 import csv
+import importlib.metadata
 import importlib.util
 import io
 import json
+import os
 import shlex
 import subprocess
+import sys
 import zipfile
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -35,6 +39,79 @@ SHA = "a" * 40
 TOOLING = "b" * 40
 WHEEL = "c" * 64
 IDENTITY = {"schema_version": 1, "source_branch": "release/0.12.0", "source_sha": SHA, "tooling_sha": TOOLING}
+
+
+@pytest.fixture
+def probe_plan():
+    selectors = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+    return {
+        **IDENTITY,
+        "wheel_sha256": WHEEL,
+        "selectors": selectors,
+        "probes": [{**selector, "backend_version": "1.0"} for selector in selectors],
+    }
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+def test_required_probes_follow_selected_source_current_version(probe_plan, version):
+    expected = [{**p, "backend_version": version} for p in probe_plan["probes"]]
+    combinations = [tuple(p[k] for k in ("model", "system", "backend", "backend_version")) for p in expected]
+    # A higher development version is also queryable. The source's current
+    # resolver, rather than lexical ordering or report successes, decides.
+    combinations += [(m, s, b, "99.0") for m, s, b, _ in combinations]
+    resolver = Mock(return_value=version)
+    receipt = {**IDENTITY, "wheel_sha256": WHEEL}
+    plan = RELEASE.discover_required_probes(combinations, receipt, resolver)
+    assert plan == {**receipt, "selectors": probe_plan["selectors"], "probes": expected}
+    assert resolver.call_args_list == [call(p["system"], p["backend"], "current") for p in expected]
+    assert RELEASE.validate_required_probes(plan, receipt) == expected
+
+
+def test_required_probe_discovery_rejects_missing_current_version(probe_plan):
+    receipt = {**IDENTITY, "wheel_sha256": WHEEL}
+    resolver = Mock(side_effect=ValueError("no queryable versions defined"))
+    with pytest.raises(ValueError, match="no queryable versions"):
+        RELEASE.discover_required_probes([], receipt, resolver)
+
+
+@pytest.mark.parametrize("missing_index", range(4))
+def test_required_probe_discovery_cannot_drop_an_absent_identity(probe_plan, missing_index):
+    combinations = [
+        tuple(p[k] for k in ("model", "system", "backend", "backend_version")) for p in probe_plan["probes"]
+    ]
+    combinations.pop(missing_index)
+    with pytest.raises(ValueError, match="absent from the selected-source inventory"):
+        RELEASE.discover_required_probes(combinations, {**IDENTITY, "wheel_sha256": WHEEL}, Mock(return_value="1.0"))
+
+
+@pytest.mark.parametrize("field", ["source_sha", "tooling_sha", "source_branch", "schema_version", "wheel_sha256"])
+def test_resolved_probe_plan_rejects_mixed_provenance(probe_plan, field):
+    probe_plan[field] = "different"
+    with pytest.raises(ValueError, match="provenance or policy"):
+        RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
+
+
+@pytest.mark.parametrize("version", [None, "", " ", "current", "previous", "next", True])
+def test_resolved_probe_plan_requires_concrete_versions(probe_plan, version):
+    probe_plan["probes"][0]["backend_version"] = version
+    with pytest.raises(ValueError, match="invalid resolved FPE probe"):
+        RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
+
+
+@pytest.mark.parametrize("change", ["missing", "empty", "duplicate", "wrong_model", "wrong_policy"])
+def test_resolved_probe_plan_cannot_change_required_coverage(probe_plan, change):
+    if change == "missing":
+        probe_plan["probes"].pop()
+    elif change == "empty":
+        probe_plan["probes"] = []
+    elif change == "duplicate":
+        probe_plan["probes"][1] = probe_plan["probes"][0]
+    elif change == "wrong_model":
+        probe_plan["probes"][0]["model"] = "test/unrelated"
+    else:
+        probe_plan["selectors"][0]["backend_version"] = "previous"
+    with pytest.raises(ValueError, match="every selector|invalid resolved|provenance or policy"):
+        RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
 
 
 def test_discovery_automatically_includes_future_releases_and_pins_tips(tmp_path):
@@ -119,20 +196,26 @@ def test_identity_rejects_wrong_source_and_modified_checkouts(tmp_path):
 def test_wheel_requires_exactly_one_package(tmp_path):
     with pytest.raises(ValueError, match="exactly one"):
         RELEASE.wheel_identity(tmp_path)
-    (tmp_path / "aisimulate-one.whl").write_bytes(b"one")
-    (tmp_path / "aisimulate-two.whl").write_bytes(b"two")
+    (tmp_path / "aisim-one.whl").write_bytes(b"one")
+    (tmp_path / "aisim-two.whl").write_bytes(b"two")
     with pytest.raises(ValueError, match="exactly one"):
         RELEASE.wheel_identity(tmp_path)
 
 
-def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_path):
+@pytest.mark.parametrize(
+    ("package", "application"), [("aisimulate", "aisimulate"), ("aisim", "aisimulate"), ("aisim", "aisim")]
+)
+@pytest.mark.parametrize("import_fault", [None, "external", "no-origin", "missing", "unowned"])
+def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_path, package, application, import_fault):
     names = [
-        "aisimulate/__init__.py",
-        "aisimulate/_runtime.so",
-        "aisimulate_core/__init__.py",
-        "aisimulate_core/_native.py",
+        f"{application}/__init__.py",
+        f"{application}/_runtime.so",
+        f"{application}_core/__init__.py",
+        f"{application}_core/_native.py",
     ]
-    wheel = tmp_path / "aisimulate-test.whl"
+    if application == "aisim":
+        names += ["aisimulate/__init__.py", "aisimulate_core/__init__.py"]
+    wheel = tmp_path / f"{package}-test.whl"
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel, "w") as archive:
         for name in names:
@@ -140,27 +223,44 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
             path = site / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("release bytes")
-    dist = SimpleNamespace(files=names, locate_file=lambda p: site / p)
+    runtime = f"{application}._runtime"
+    owned = [name for name in names if import_fault != "unowned" or name != f"{application}/_runtime.so"]
+    dist = SimpleNamespace(files=owned, locate_file=lambda p: site / p)
 
     def find_spec(name):
-        path = "aisimulate/_runtime.so" if name == "aisimulate._runtime" else name + "/__init__.py"
+        # Modern compatibility imports can have an alias loader with no origin;
+        # the native implementation must be verified under its canonical name.
+        if application == "aisim" and name == "aisimulate._runtime":
+            return SimpleNamespace(origin=None)
+        if name == runtime:
+            if import_fault == "missing":
+                return None
+            if import_fault == "no-origin":
+                return SimpleNamespace(origin=None)
+            if import_fault == "external":
+                return SimpleNamespace(origin="/other/_runtime.so")
+        path = f"{application}/_runtime.so" if name == runtime else name + "/__init__.py"
         return SimpleNamespace(origin=str(site / path))
 
-    with patch.object(RELEASE.importlib.util, "find_spec", side_effect=find_spec):
+    with patch.object(RELEASE.importlib.util, "find_spec", side_effect=find_spec) as lookup:
+        if import_fault:
+            with pytest.raises(ValueError, match="not imported"):
+                RELEASE.verify_installed_wheel(wheel, distribution=dist)
+            return
         RELEASE.verify_installed_wheel(wheel, distribution=dist)
-        (site / names[0]).write_text("different source")
-        with pytest.raises(ValueError, match="differs"):
-            RELEASE.verify_installed_wheel(wheel, distribution=dist)
-        (site / names[0]).write_text("release bytes")
-    with (
-        patch.object(RELEASE.importlib.util, "find_spec", return_value=SimpleNamespace(origin="/other/__init__.py")),
-        pytest.raises(ValueError, match="not imported"),
-    ):
-        RELEASE.verify_installed_wheel(wheel, distribution=dist)
+        assert call(runtime) in lookup.call_args_list
+        if application == "aisim":
+            assert call("aisimulate._runtime") not in lookup.call_args_list
+        # Canonical implementation files and compatibility aliases must all match.
+        for name in names:
+            path = site / name
+            path.write_text("different source")
+            with pytest.raises(ValueError, match="differs"):
+                RELEASE.verify_installed_wheel(wheel, distribution=dist)
+            path.write_text("release bytes")
 
 
-def reports(root):
-    required = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+def reports(root, required):
     groups = defaultdict(list)
     for probe in required:
         row = {
@@ -210,16 +310,17 @@ def reports(root):
     return [{"system": s, "backend": b} for s, b in sorted(groups)]
 
 
-def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
+def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path, probe_plan):
     source = tmp_path / "reports"
-    shards = reports(source)
+    shards = reports(source, probe_plan["probes"])
     destination = tmp_path / "web"
-    RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
+    RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
     qualification = json.loads((destination / "fpe-qualification.json").read_text())
     assert qualification["source_sha"] == SHA
     assert qualification["tooling_sha"] == TOOLING
     assert qualification["source_branch"] == "release/0.12.0"
     assert qualification["required_probe_count"] == 4
+    assert qualification["required_probes"] == probe_plan["probes"]
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         for path in destination.rglob("*"):
@@ -231,21 +332,112 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
     assert len(rows) == 4
     assert all(
         shlex.split(row["Command"])[3:6]
-        == ["release-source/python/aisimulate/.venv/bin/python", "scripts/fpe/run_release_fpe.py", "probe"]
+        == ["release-source/python/aisim/.venv/bin/python", "scripts/fpe/run_release_fpe.py", "probe"]
         for row in rows
     )
     assert all(SHA in row["Command"] and TOOLING in row["Command"] for row in rows)
     assert all(row["SourceSHA"] == SHA for row in rows)
 
 
-def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path):
+def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path, probe_plan):
     source = tmp_path / "reports"
-    shards = reports(source)
+    shards = reports(source, probe_plan["probes"])
     next(source.rglob("fpe_support_matrix.json")).unlink()
     destination = tmp_path / "web"
     with pytest.raises(ValueError, match="missing shards"):
-        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
     assert not destination.exists()
+
+
+def test_passing_previous_version_cannot_replace_a_failed_current_probe(tmp_path, probe_plan):
+    source = tmp_path / "reports"
+    shards = reports(source, probe_plan["probes"])
+    for path in source.rglob("fpe_support_matrix.json"):
+        payload = json.loads(path.read_text())
+        previous_rows = [{**row, "backend_version": "0.9"} for row in payload["results"]]
+        for row in payload["results"]:
+            row.update(status="PERF_DATA_MISSING", latency_ms=None)
+        payload["results"].extend(previous_rows)
+        payload["metadata"]["plan_count"] *= 2
+        path.write_text(json.dumps(payload))
+    destination = tmp_path / "web"
+    with pytest.raises(ValueError, match="required known-good probes no longer pass"):
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
+    assert not destination.exists()
+
+
+def test_packaging_rejects_another_wheels_probe_plan_before_creating_output(tmp_path, probe_plan):
+    source = tmp_path / "reports"
+    shards = reports(source, probe_plan["probes"])
+    wrong_plan = copy.deepcopy(probe_plan)
+    wrong_plan["wheel_sha256"] = "d" * 64
+    destination = tmp_path / "web"
+    with pytest.raises(ValueError, match="provenance or policy"):
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=wrong_plan)
+    assert not destination.exists()
+
+
+def test_discovery_plan_round_trips_through_packaging_cli(tmp_path, monkeypatch, probe_plan):
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    receipt = {**IDENTITY, "wheel_sha256": WHEEL}
+    (wheel_dir / "provenance.json").write_text(json.dumps(receipt))
+    report_dir = tmp_path / "reports"
+    reports(report_dir, probe_plan["probes"])
+    combinations = [
+        tuple(p[k] for k in ("model", "system", "backend", "backend_version")) for p in probe_plan["probes"]
+    ]
+    verified = Mock()
+
+    def resolve_version(system, backend, alias):
+        verified.assert_called_once()
+        assert alias == "current"
+        return "1.0"
+
+    # The source harness exports its own SDK (including older release package
+    # names); discovery must resolve through that module after wheel validation.
+    selected_source = SimpleNamespace(
+        SupportMatrix=lambda: SimpleNamespace(generate_combinations=lambda: combinations),
+        perf_database=SimpleNamespace(resolve_query_version=resolve_version),
+    )
+    monkeypatch.setitem(sys.modules, "tools.support_matrix.support_matrix", selected_source)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(RELEASE, "identity", Mock(return_value=IDENTITY))
+    monkeypatch.setattr(RELEASE, "wheel_identity", Mock(return_value=(wheel_dir / "test.whl", WHEEL)))
+    monkeypatch.setattr(RELEASE, "verify_installed_wheel", verified)
+    monkeypatch.setattr(RELEASE, "prepare_harness", Mock(return_value=tmp_path / "harness"))
+    for name, value in (("FPE_SOURCE_SHA", SHA), ("FPE_TOOLING_SHA", TOOLING), ("FPE_BRANCH", "release/0.12.0")):
+        monkeypatch.setenv(name, value)
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    destination = tmp_path / "web"
+    plan_path = tmp_path / "resolved-probes.json"
+    arguments = [
+        "--wheel-dir",
+        str(wheel_dir),
+        "--shards",
+        str(tmp_path / "shards.json"),
+        "--required-probes",
+        str(plan_path),
+        "--reports",
+        str(report_dir),
+        "--destination",
+        str(destination),
+    ]
+    monkeypatch.setattr(sys, "argv", ["run_release_fpe.py", "discover", *arguments])
+    RELEASE.main()
+    assert json.loads(plan_path.read_text()) == probe_plan
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert json.loads(outputs["required_probes"]) == probe_plan
+
+    # The packaging job has no installed SDK; it must consume the captured plan.
+    monkeypatch.delitem(sys.modules, "tools.support_matrix.support_matrix")
+    verified.reset_mock()
+    monkeypatch.setattr(sys, "argv", ["run_release_fpe.py", "package", *arguments])
+    RELEASE.main()
+    verified.assert_not_called()
+    result = json.loads((destination / "fpe-qualification.json").read_text())
+    assert result["required_probes"] == probe_plan["probes"]
 
 
 @pytest.mark.parametrize("branch", ["main", "release/0.12.0"])
@@ -257,3 +449,86 @@ def test_current_harness_keeps_selected_source_and_tooling_identities_distinct(t
             "source_sha": SHA,
             "tooling_sha": TOOLING,
         }
+
+
+@pytest.mark.parametrize("installed", [(), ("aisim",), ("aisimulate",), ("aisim", "aisimulate")])
+def test_distribution_identity_requires_exactly_one_installed_product(monkeypatch, installed):
+    from scripts.release.package_identity import installed_distribution
+
+    distributions = {name: SimpleNamespace(version="0.13.0", metadata={"Name": name}) for name in installed}
+
+    def lookup(name):
+        if name in distributions:
+            return distributions[name]
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lookup)
+    if len(installed) == 2:
+        with pytest.raises(RuntimeError, match="both installed.*overlapping"):
+            installed_distribution()
+    elif installed:
+        assert installed_distribution() is distributions[installed[0]]
+    else:
+        with pytest.raises(importlib.metadata.PackageNotFoundError):
+            installed_distribution()
+
+
+@pytest.mark.parametrize("installed", [(), ("aisim",), ("aisimulate",), ("aisim", "aisimulate")])
+def test_installed_package_verifier_rejects_old_application_overlap(monkeypatch, installed):
+    path = ROOT / "python/aisim/tools/verify_installed_package_layers.py"
+    spec = importlib.util.spec_from_file_location("verify_installed_layers", path)
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    monkeypatch.setattr(verifier, "_distribution_version", lambda name: "0.13.0" if name in installed else None)
+    requirements = Mock(return_value=[])
+    monkeypatch.setattr(importlib.metadata, "requires", requirements)
+    if installed == ("aisim",):
+        assert verifier._verify_metadata() == "0.13.0"
+        requirements.assert_called_once_with("aisim")
+    else:
+        expected = "both installed.*overlapping" if "aisim" in installed else "aisim distribution is not installed"
+        with pytest.raises(RuntimeError, match=expected):
+            verifier._verify_metadata()
+        requirements.assert_not_called()
+
+
+@pytest.mark.parametrize("case", ["new", "historical", "mixed", "source-only", "missing"])
+def test_copied_fpe_harness_resolves_the_installed_release_version(tmp_path, case):
+    source = tmp_path / "selected-release"
+    inventory = source / RELEASE.PROBES / "support_matrix.py"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text("# Selected release inventory fixture.\n")
+    harness = RELEASE.prepare_harness(source, tmp_path / "harness")
+    metadata = tmp_path / "installed-metadata"
+    metadata.mkdir()
+    names = {"new": ["aisim"], "historical": ["aisimulate"], "mixed": ["aisim", "aisimulate"]}.get(case, [])
+    for name in names:
+        dist = metadata / f"{name}-0.12.0.dist-info"
+        dist.mkdir()
+        (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 0.12.0\n")
+    if case == "source-only":
+        (harness / "pyproject.toml").write_text('[project]\nversion = "0.13.0"\n')
+    else:
+        assert not (harness / "pyproject.toml").exists()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "from tools.support_matrix.generate_fpe_support_matrix import _source_version; print(_source_version())",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(harness), str(metadata)))},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if case == "mixed":
+        assert result.returncode != 0
+        assert "aisim and aisimulate are both installed" in result.stderr
+    elif case == "missing":
+        assert result.returncode != 0
+        assert "FileNotFoundError" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == ("0.13.0" if case == "source-only" else "0.12.0")

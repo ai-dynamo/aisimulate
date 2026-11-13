@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from AISim FPM Gym; see README.md for pinned source and modifications.
 
-"""Pinned, hash-verified access to the AISimulate FPM Hugging Face dataset."""
+"""Pinned, hash-verified access to the AISim FPM Hugging Face dataset."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -66,6 +67,17 @@ _FPM_V7_SELECTOR_FIELDS = frozenset(
         "input_modality",
         "engram_residency",
         "fmha_resolution",
+    }
+)
+_FPM_V7_OPTIONAL_SELECTOR_FIELDS = frozenset(
+    {
+        "measurement_policy",
+        "measurement_repeats",
+        "warmup_repeats",
+        "state_protocol",
+        "timing_boundary",
+        "sglang_allocator_max_split_size_mb",
+        "sglang_allocator_policy_sha256",
     }
 )
 _FPM_CONFIGURATION_FIELDS = (
@@ -714,7 +726,7 @@ class HfDataset:
         selector_fields = set(selector)
         expected_fields = set(expected_identity)
         if metadata["schema_version"] == 7:
-            expected_fields |= _FPM_V7_SELECTOR_FIELDS
+            expected_fields |= _FPM_V7_SELECTOR_FIELDS | (_FPM_V7_OPTIONAL_SELECTOR_FIELDS & selector_fields)
         if selector_fields != expected_fields:
             missing = sorted(expected_fields - selector_fields)
             unknown = sorted(selector_fields - expected_fields)
@@ -731,10 +743,16 @@ class HfDataset:
             raise DataError(f"FPM sidecar {artifact.metadata_path} selects a different configuration: {mismatches}")
         parquet_identity = dict(expected_identity)
         if metadata["schema_version"] == 7:
-            for field in _FPM_V7_SELECTOR_FIELDS:
+            execution_fields = expected_fields - set(expected_identity)
+            for field in execution_fields:
                 value = selector[field]
                 if field in {"enable_wideep", "enable_eplb"}:
                     valid = type(value) is bool
+                elif field in {"measurement_repeats", "warmup_repeats", "sglang_allocator_max_split_size_mb"}:
+                    minimum = 0 if field == "warmup_repeats" else 1
+                    valid = type(value) is int and value >= minimum
+                elif field == "sglang_allocator_policy_sha256":
+                    valid = isinstance(value, str) and _SHA256.fullmatch(value) is not None
                 elif field == "model_config_sha256":
                     # Empty is the producer's legacy model-config identity.
                     valid = isinstance(value, str) and (value == "" or _SHA256.fullmatch(value) is not None)
@@ -745,7 +763,7 @@ class HfDataset:
             # Check pair consistency only: these values are not an authoritative
             # configuration-to-execution binding. Native staging rejects every
             # v7 pair, even if all rows agree, until that binding is available.
-            parquet_identity.update({field: selector[field] for field in _FPM_V7_SELECTOR_FIELDS})
+            parquet_identity.update({field: selector[field] for field in execution_fields})
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows
@@ -856,6 +874,17 @@ class HfDataset:
         result: list[MeasurementObservation] = []
         seen: set[str] = set()
         for order, parsed in enumerate(observations):
+            event_time_ms = None
+            if parsed.chronology_key is not None:
+                if not parsed.chronology_key:
+                    raise DataError("measurement chronology requires a normalized event timestamp")
+                event_time_ms = parsed.chronology_key[0]
+                if (
+                    type(event_time_ms) not in (int, float)
+                    or event_time_ms < 0
+                    or (isinstance(event_time_ms, float) and not math.isfinite(event_time_ms))
+                ):
+                    raise DataError("normalized measurement event_time_ms must be finite and non-negative")
             identity = {
                 "configuration_id": configuration_id,
                 "source_file_id": parsed.source_file.measurement_file_id,
@@ -888,6 +917,7 @@ class HfDataset:
                     source_row=parsed.source_row,
                     iteration=parsed.iteration,
                     event_time=parsed.event_time,
+                    event_time_ms=event_time_ms,
                 )
             )
         return tuple(result)

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::ENGINE_SPEC_SCHEMA_VERSION;
 use crate::common::enums::EncoderParallel;
 use crate::common::error::AicError;
-use crate::perfmodel::EngineConfig;
+use crate::perfmodel::{AfdExecutionPlan, EngineConfig};
 
 /// Public name for the serializable op. Aliases the crate's [`Op`] enum so
 /// the "OpSpec" surface exists without duplicating the definition.
@@ -65,6 +65,8 @@ pub struct EngineSpec {
     /// price encoder calls (`ForwardPassPerfModelConfig::encoder_parallel`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<VisionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub afd_plan: Option<AfdExecutionPlan>,
 }
 
 /// Vision-encoder ops grouped by the token count each group runs on. Image
@@ -110,9 +112,61 @@ struct BincodeWire {
     context_ops: Vec<OpSpec>,
     generation_ops: Vec<OpSpec>,
     vision: Option<VisionSpec>,
+    afd_plan: Option<AfdExecutionPlan>,
+}
+
+/// Borrowed twin of [`BincodeWire`]; identical encoding without cloning ops.
+#[derive(Serialize)]
+struct BincodeWireRef<'a> {
+    schema_version: u32,
+    engine_json: String,
+    context_ops: &'a [OpSpec],
+    generation_ops: &'a [OpSpec],
+    vision: &'a Option<VisionSpec>,
+    afd_plan: &'a Option<AfdExecutionPlan>,
 }
 
 impl EngineSpec {
+    /// SHA-256 of this spec's bincode wire encoding with every storage
+    /// location cleared: `systems_path`, `fpm_parquet_path` and the copy of
+    /// the FPM parquet path inside the `extra["estimator_config"]` controls
+    /// the Python compiler embeds. Their contents are fingerprinted
+    /// separately, so a relocated copy of the same data compiles to the same
+    /// digest.
+    pub(crate) fn content_sha256(&self) -> Result<String, AicError> {
+        use sha2::{Digest, Sha256};
+        let mut engine = self.engine.clone();
+        engine.systems_path = None;
+        engine.fpm_parquet_path = None;
+        if let Some(controls) = engine.extra.get_mut("estimator_config") {
+            let mut value: serde_json::Value = serde_json::from_str(controls)
+                .map_err(|e| AicError::EngineSpec(format!("extra.estimator_config: {e}")))?;
+            if let Some(settings) = value
+                .get_mut("fpm_interpolation")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                settings.remove("fpm_parquet_path");
+            }
+            *controls = value.to_string();
+        }
+        let engine_json = serde_json::to_string(&engine)
+            .map_err(|e| AicError::EngineSpec(format!("engine JSON encode: {e}")))?;
+        let mut digest = Sha256::new();
+        bincode::serialize_into(
+            &mut digest,
+            &BincodeWireRef {
+                schema_version: self.schema_version,
+                engine_json,
+                context_ops: &self.context_ops,
+                generation_ops: &self.generation_ops,
+                vision: &self.vision,
+                afd_plan: &self.afd_plan,
+            },
+        )
+        .map_err(|e| AicError::EngineSpec(format!("bincode encode: {e}")))?;
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
     /// Build a spec, stamping the current [`ENGINE_SPEC_SCHEMA_VERSION`].
     pub fn new(
         engine: EngineConfig,
@@ -120,6 +174,7 @@ impl EngineSpec {
         generation_ops: Vec<OpSpec>,
     ) -> Self {
         Self {
+            afd_plan: None,
             schema_version: ENGINE_SPEC_SCHEMA_VERSION,
             engine,
             context_ops,
@@ -140,6 +195,7 @@ impl EngineSpec {
             context_ops: self.context_ops.clone(),
             generation_ops: self.generation_ops.clone(),
             vision: self.vision.clone(),
+            afd_plan: self.afd_plan.clone(),
         };
         bincode::serialize(&wire).map_err(|e| AicError::EngineSpec(format!("bincode encode: {e}")))
     }
@@ -192,6 +248,7 @@ impl EngineSpec {
             context_ops: wire.context_ops,
             generation_ops: wire.generation_ops,
             vision: wire.vision,
+            afd_plan: wire.afd_plan,
         })
     }
 }
@@ -204,15 +261,16 @@ mod tests {
     use crate::common::enums::{
         BackendKind, CommQuantMode, FmhaQuantMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode,
     };
+    use crate::operators::afd_comm::AfdTransferDirection;
     use crate::operators::moe_dispatch::DispatchFlavor;
     use crate::operators::op::{FallbackOp, OverlapOp};
     use crate::operators::{
-        ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
-        Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
-        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp,
-        GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-        MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
-        WideEpContextMlaOp, WideEpGenerationMlaOp,
+        AfdCombineOp, AfdFCollectiveOp, AfdTransferOp, ContextAttentionOp, ContextMlaOp,
+        CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp, Dsv41AttentionOp,
+        Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp, EmbeddingOp,
+        EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op,
+        MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp,
+        MoeOp, NcclOp, P2POp, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
     use crate::{
@@ -424,6 +482,8 @@ mod tests {
             pp_size: 4,
             hidden_size: 4096,
             seq_split: 1,
+            span_gpus: None,
+            force_scale_out: false,
         }
     }
 
@@ -874,6 +934,51 @@ mod tests {
                 children: vec![],
                 measured: vec![],
             }),
+            OpSpec::MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp {
+                name: "measured".into(),
+                system: "testsys".into(),
+                backend: "vllm".into(),
+                version: "1.0".into(),
+                is_context: true,
+                weight_bytes: 0.0,
+                scale_factor: 1.0,
+                cells: vec![crate::operators::measured_composite::MeasuredCell {
+                    shape: [1, 4, 0],
+                    latency_ms: 2.0,
+                }],
+            }),
+            // Appended AFTER MeasuredComposite (schema 30): the four AFD comm
+            // variants. Tail-append keeps every earlier index stable.
+            OpSpec::AfdTransfer(AfdTransferOp {
+                f_gpus_per_node: None,
+                name: "afd_transfer".into(),
+                scale_factor: 1.0,
+                direction: AfdTransferDirection::A2f,
+                hidden_size: 5120,
+                a_replica_count: 4,
+                f_rank_count: 16,
+                gpus_per_node: 8,
+                num_experts: 8,
+                topk: 2,
+                comm_quant_mode: CommQuantMode::Half,
+                comm_overhead_factor: 1.0,
+            }),
+            OpSpec::AfdFAllGather(AfdFCollectiveOp {
+                operation: "all_gather".into(),
+                ..AfdFCollectiveOp::all_gather("afd_f_all_gather", 1.0)
+            }),
+            OpSpec::AfdFReduceScatter(AfdFCollectiveOp {
+                operation: "reduce_scatter".into(),
+                ..AfdFCollectiveOp::reduce_scatter("afd_f_reduce_scatter", 1.0)
+            }),
+            OpSpec::AfdCombine(AfdCombineOp {
+                name: "afd_combine".into(),
+                scale_factor: 1.0,
+                hidden_size: 5120,
+                a_tp_size: 8,
+                f_moe_ep_size: 4,
+                comm_quant_mode: CommQuantMode::Half,
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -924,7 +1029,12 @@ mod tests {
                 | OpSpec::Glm53Router(_)
                 | OpSpec::Glm53Ffn(_)
                 | OpSpec::Glm53Primitive(_)
+                | OpSpec::MeasuredComposite(_)
                 | OpSpec::Dsv41Linear(_)
+                | OpSpec::AfdTransfer(_)
+                | OpSpec::AfdFAllGather(_)
+                | OpSpec::AfdFReduceScatter(_)
+                | OpSpec::AfdCombine(_)
                 | OpSpec::TokenScale(_) => {}
             }
         }
@@ -1020,7 +1130,8 @@ mod tests {
         // Appending is the only safe growth direction.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
-        // Keep the main-branch TokenScale index; V41 variants append after it.
+        // Keep the main-branch TokenScale index; V41 variants append after it,
+        // followed by GLM, MeasuredComposite, then the four AFD variants.
         let appended: Vec<_> = all_op_variants()
             .iter()
             .skip(36)
@@ -1032,15 +1143,34 @@ mod tests {
             vec![36, 37, 38, 39, 40],
             "V41 appended indices moved"
         );
+        assert_eq!(
+            index_of(&all_op_variants()[46]),
+            46,
+            "MeasuredComposite index moved"
+        );
         // GLM-5.3-Flash variants append after the V41 variants.
-        let glm_appended: Vec<_> = all_op_variants().iter().skip(41).map(index_of).collect();
+        let glm_appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(41)
+            .take(5)
+            .map(index_of)
+            .collect();
         assert_eq!(
             glm_appended,
             vec![41, 42, 43, 44, 45],
             "GLM appended indices moved"
         );
         assert_eq!(
-            46,
+            all_op_variants()
+                .iter()
+                .skip(47)
+                .map(index_of)
+                .collect::<Vec<_>>(),
+            vec![47, 48, 49, 50],
+            "AFD appended indices moved"
+        );
+        assert_eq!(
+            51,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -1053,6 +1183,38 @@ mod tests {
             let decoded: OpSpec = bincode::deserialize(&bytes).expect("deserialize op");
             assert_eq!(op, decoded, "round-trip mismatch for {:?}", op);
         }
+    }
+
+    #[test]
+    fn content_digest_ignores_every_data_location() {
+        let spec = |systems: &str, parquet: &str, method: &str| {
+            let mut engine = sample_engine_config();
+            engine.systems_path = Some(systems.into());
+            engine.fpm_parquet_path = Some(parquet.into());
+            engine.extra.insert(
+                "estimator_config".into(),
+                serde_json::json!({"fpm_interpolation": {
+                    "fpm_parquet_path": parquet,
+                    "method": method,
+                }})
+                .to_string(),
+            );
+            EngineSpec::new(engine, all_op_variants(), Vec::new())
+                .content_sha256()
+                .unwrap()
+        };
+        let base = spec("/a/systems", "/a/fpm.parquet", "direct");
+        assert_eq!(spec("/b/systems", "/b/other.parquet", "direct"), base);
+        assert_ne!(spec("/a/systems", "/a/fpm.parquet", "sol"), base);
+        let mut engine = sample_engine_config();
+        engine
+            .extra
+            .insert("estimator_config".into(), "{not json".into());
+        assert!(
+            EngineSpec::new(engine, Vec::new(), Vec::new())
+                .content_sha256()
+                .is_err()
+        );
     }
 
     #[test]
@@ -1218,15 +1380,15 @@ mod tests {
         let bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
         // The final op ends in interpolation (4 bytes), empty sol_ops (8),
-        // original-FMHA None (1), and recorded-DCP None (1); the absent vision
-        // section (1) follows it.
-        let selector = bytes.len() - 15;
+        // original-FMHA None (1), recorded-DCP None (1), then the absent
+        // vision and AFD-plan sections (one byte each).
+        let selector = bytes.len() - 16;
         assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
         // Recreate both branches' incompatible payloads, not just their stamps.
         for version in [20u32, 21, 22, 23, 24, 25, 26, 27, 28] {
             let mut stale = bytes.clone();
             // Schemas before 29 end with the last op.
-            stale.pop();
+            stale.truncate(stale.len() - 2);
             // The decoupling branch's 21 and the merged 25 through 28 carry the selector.
             if !matches!(version, 21 | 25 | 26 | 27 | 28) {
                 stale.drain(selector..selector + 4);
@@ -1315,16 +1477,10 @@ mod tests {
         let spec = EngineSpec::new(sample_engine_config(), vec![], vec![attention]);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-        // The optional vision section closes the wire (`None` is one zero byte);
-        // before it, SglangFp8Bf16 is enum1 (four bytes), the final field of the
-        // final op. Removing both restores the actual prior Dsv41Attention
-        // schema18 shape.
-        assert_eq!(bytes[bytes.len() - 1], 0u8);
-        assert_eq!(
-            &bytes[bytes.len() - 5..bytes.len() - 1],
-            &1u32.to_le_bytes()
-        );
-        bytes.truncate(bytes.len() - 5);
+        // Both optional sections follow the final SglangFp8Bf16 enum.
+        let op_end = bytes.len() - 2;
+        assert_eq!(&bytes[op_end - 4..op_end], &1u32.to_le_bytes());
+        bytes.truncate(op_end - 4);
         bytes[..4].copy_from_slice(&18u32.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
@@ -1445,6 +1601,7 @@ mod tests {
         // a deliberately malformed `engine_json`.
         let wire = BincodeWire {
             schema_version: ENGINE_SPEC_SCHEMA_VERSION,
+            afd_plan: None,
             engine_json: "this is not json".to_string(),
             context_ops: vec![],
             generation_ops: vec![],
@@ -1461,6 +1618,70 @@ mod tests {
             }
             other => panic!("expected EngineSpec engine-JSON error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn afd_execution_plan_survives_the_positional_wire() {
+        use crate::perfmodel::afd::plan::{AfdLayerTemplate, AfdPhasePlan};
+        let mut spec = handshake_spec();
+        let phase = AfdPhasePlan {
+            templates: vec![AfdLayerTemplate {
+                attention_kind: "global".into(),
+                routed: true,
+                ops: vec![0],
+                rank_ops: vec![],
+                work_scale: 1.0,
+            }],
+            prefix: vec![],
+            suffix: vec![],
+        };
+        spec.afd_plan = Some(AfdExecutionPlan {
+            role: crate::AfdPoolRole::A,
+            model: spec.engine.model_name.clone(),
+            hidden_size: 32,
+            num_experts: 4,
+            topk: 2,
+            layers: vec![0, 0],
+            shared_inter_size: 16,
+            context: phase.clone(),
+            generation: phase,
+        });
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        assert_eq!(
+            serde_json::from_str::<EngineSpec>(&serde_json::to_string(&spec).unwrap()).unwrap(),
+            spec
+        );
+
+        // The digest uses the same positional encoding, including the AFD plan,
+        // without cloning the op lists. Check both absent and populated plans.
+        for plan in [None, spec.afd_plan.clone()] {
+            let mut candidate = spec.clone();
+            candidate.afd_plan = plan;
+            let borrowed = BincodeWireRef {
+                schema_version: candidate.schema_version,
+                engine_json: serde_json::to_string(&candidate.engine).unwrap(),
+                context_ops: &candidate.context_ops,
+                generation_ops: &candidate.generation_ops,
+                vision: &candidate.vision,
+                afd_plan: &candidate.afd_plan,
+            };
+            assert_eq!(
+                bincode::serialize(&borrowed).unwrap(),
+                candidate.to_bincode().unwrap()
+            );
+        }
+        let digest = spec.content_sha256().unwrap();
+        let mut changed = spec.clone();
+        changed.afd_plan.as_mut().unwrap().layers.push(0);
+        assert_ne!(changed.content_sha256().unwrap(), digest);
+        changed.afd_plan = None;
+        assert_ne!(changed.content_sha256().unwrap(), digest);
+
+        // Relocating identical data must not change a plan's content identity.
+        spec.engine.systems_path = Some("/relocated/systems".into());
+        spec.engine.fpm_parquet_path = Some("/relocated/fpm.parquet".into());
+        assert_eq!(spec.content_sha256().unwrap(), digest);
     }
     #[test]
     fn speculative_width_json_defaults_and_bincode_version_gate() {
@@ -1600,5 +1821,26 @@ mod tests {
             EngineSpec::from_bincode(&previous),
             Err(AicError::UnsupportedSchemaVersion { got: 23, .. })
         ));
+    }
+
+    #[test]
+    fn old_p2p_wire_layout_is_rejected_before_decode() {
+        let spec = EngineSpec::new(sample_engine_config(), vec![OpSpec::P2P(p2p())], vec![]);
+        let mut bytes = spec.to_bincode().unwrap();
+        let op = bincode::serialize(&OpSpec::P2P(p2p())).unwrap();
+        let start = bytes.windows(op.len()).position(|x| x == op).unwrap();
+        // The baseline v27 P2P op has neither span Option tag nor force-scale-out bool.
+        bytes.drain(start + op.len() - 2..start + op.len());
+        for version in [27_u32, 28, 29, 31] {
+            bytes[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                EngineSpec::from_bincode(&bytes),
+                Err(AicError::UnsupportedSchemaVersion {
+                    got,
+                    expected: 30,
+                    ..
+                }) if got == version
+            ));
+        }
     }
 }

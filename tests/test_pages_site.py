@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -32,7 +35,7 @@ FPE_SPEC.loader.exec_module(FPE)
 
 NEW_SHA = "a" * 40
 OLD_SHA = "b" * 40
-REPOSITORY = "ai-dynamo/aisimulate"
+REPOSITORY = "ai-dynamo/aisim"
 LEGACY_FPE_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 
 
@@ -475,7 +478,7 @@ class FpePagesTest(unittest.TestCase):
                 )
 
     def test_probe_status_contract_matches_the_qualifier(self):
-        path = ROOT / "python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py"
+        path = ROOT / "python/aisim/tools/support_matrix/qualify_fpe_support_matrix.py"
         spec = importlib.util.spec_from_file_location("qualify_fpe", path)
         qualifier = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(qualifier)
@@ -870,6 +873,11 @@ class LegacySnapshotTest(unittest.TestCase):
             dataset.mkdir(parents=True)
             (dataset / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"]}))
             (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
+        replay = Path("python/aisim/src/aisim/replay")
+        (self.repository / replay).mkdir(parents=True, exist_ok=True)
+        for name in ("dashboard.html", "dashboard-body.html", "dashboard.js", "dashboard.css", "plotly-js-LICENSE.txt"):
+            shutil.copyfile(ROOT / replay / name, self.repository / replay / name)
+        copy_feature_sources(self.repository)
         self.dataset = self.repository / PAGES.SYSTEMS_ROOT / "support_matrix"
         self.data_sha = self.commit("2026-09-04T11:42:50-07:00", "legacy data")
         (docs / "support-matrix/index.html").write_text("new website, same data")
@@ -985,6 +993,9 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn(Path("e2e-accuracy/summary.json"), files)
             self.assertIn(Path("fpe-support-matrix/index.html"), files)
             self.assertIn(Path("fpe-support-matrix/fpe-support-matrix-preview.png"), files)
+            self.assertIn(Path("feature-support-matrix/index.html"), files)
+            feature_files = {path for path in files if path.parts[0] == "feature-support-matrix"}
+            self.assertEqual(feature_files, {Path("feature-support-matrix/index.html")})
             self.assertIn(Path("support-matrix/index.html"), files)
             self.assertIn(Path("data/fpe-support-matrix/index.json"), files)
             self.assertIn(Path("data/support-matrix/index.json"), files)
@@ -998,6 +1009,7 @@ class PagesSiteTest(unittest.TestCase):
             landing_page = (output_dir / "index.html").read_text()
             self.assertIn('href="./e2e-accuracy/"', landing_page)
             self.assertIn('href="./fpe-support-matrix/"', landing_page)
+            self.assertIn('href="./feature-support-matrix/"', landing_page)
             self.assertIn('href="./support-matrix/"', landing_page)
             self.assertNotIn('href="./universe/"', landing_page)
 
@@ -1006,7 +1018,7 @@ class PagesSiteTest(unittest.TestCase):
                     continue
                 text = (output_dir / path).read_text()
                 self.assertNotIn("raw.githubusercontent.com", text)
-                self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", text)
+                self.assertNotIn("api.github.com/repos/ai-dynamo/aisim", text)
 
     def test_deployed_matrices_use_packaged_public_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1021,7 +1033,7 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn("../data/fpe-support-matrix", fpe_page)
             self.assertIn('href="../"', fpe_page)
             self.assertNotIn("raw.githubusercontent.com", fpe_page)
-            self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", fpe_page)
+            self.assertNotIn("api.github.com/repos/ai-dynamo/aisim", fpe_page)
 
     def test_public_artifact_rejects_symlinked_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1040,7 +1052,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("release_schema", [1, 2])
+def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path, release_schema: int) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -1060,11 +1073,14 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
     release_summary["snapshot"]["aic_commit_sha"] = "a" * 40
     release_summary["snapshot"]["aic_source"] = {
-        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "repository": "https://github.com/ai-dynamo/aisim",
         **release_summary["snapshot"]["evaluated_revision"],
     }
-    source.write_text(json.dumps(release_summary))
-    legacy_source = repo / "python/aisimulate/docs/e2e-accuracy/summary.json"
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    saved_release = normalize_summary(release_summary, target_version=release_schema)
+    source.write_text(json.dumps(saved_release))
+    legacy_source = repo / "python/aisim/docs/e2e-accuracy/summary.json"
     legacy_source.parent.mkdir(parents=True)
     source.rename(legacy_source)
     (source.parent / "app.js").write_text("untrusted release javascript")
@@ -1090,18 +1106,65 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     assert entries["release/0.13.0"]["summary_path"] is None
     assert entries["release/0.13.0"]["status"] == "unavailable"
     assert entries["release/0.12.0"]["published_from_commit"] == release_sha
-    assert entries["release/0.12.0"]["published_source_path"] == "python/aisimulate/docs/e2e-accuracy/summary.json"
+    assert entries["release/0.12.0"]["published_source_path"] == "python/aisim/docs/e2e-accuracy/summary.json"
     assert entries["main"]["published_source_path"] == "pages/e2e-accuracy/summary.json"
     assert not list(output.rglob("*.js"))
     assert len({entry["summary_path"] for entry in entries.values() if entry["summary_path"]}) == 3
     published = json.loads((output / "e2e-accuracy" / entries["release/0.12.0"]["summary_path"]).read_text())
     assert published == release_summary
+    assert json.loads(git("show", f"{release_sha}:python/aisim/docs/e2e-accuracy/summary.json")) == saved_release
     # A deleted release disappears on the next catalog build.
     git("update-ref", "-d", "refs/remotes/origin/release/0.12.0")
     PAGES._build_accuracy_catalog(repo, output, True)
     assert "release/0.12.0" not in [
         entry["branch"] for entry in json.loads((output / "e2e-accuracy/branches.json").read_text())["branches"]
     ]
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+@pytest.mark.parametrize(
+    ("packages", "accepted"),
+    [
+        pytest.param({}, False, id="empty"),
+        pytest.param({"numpy": "2.1.0"}, False, id="unrelated-only"),
+        pytest.param({"aisimulate": "0.14.0", "aisim": "0.14.0"}, False, id="ambiguous"),
+        pytest.param({"aisimulate": "0.14.0"}, True, id="legacy-application"),
+        pytest.param({"aisim": "0.14.0"}, True, id="renamed-application"),
+        pytest.param({"aisimulate": "0.14.0", "numpy": "2.1.0"}, True, id="legacy-with-dependency"),
+        pytest.param({"aisim": "0.14.0", "numpy": "2.1.0"}, True, id="renamed-with-dependency"),
+    ],
+)
+def test_accuracy_catalog_preserves_one_application_identity(
+    tmp_path: Path, schema_version: int, packages: dict, accepted: bool
+) -> None:
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    relative = PAGES.PAGES_ROOT / "e2e-accuracy/summary.json"
+    summary = normalize_summary(json.loads((ROOT / relative).read_text()), target_version=schema_version)
+    package_field = "aisimulate_packages" if schema_version == 1 else "aisim_packages"
+    summary["snapshot"][package_field] = packages
+    source = tmp_path / "repo" / relative
+    source.parent.mkdir(parents=True)
+    content = json.dumps(summary)
+    source.write_text(content)
+    output = tmp_path / "site"
+
+    if not accepted:
+        with pytest.raises(PAGES.PagesBuildError, match="AISim package identity"):
+            PAGES._build_accuracy_catalog(tmp_path / "repo", output, False)
+        assert not list(output.rglob("summary.json"))
+        assert not (output / "e2e-accuracy/branches.json").exists()
+    else:
+        PAGES._build_accuracy_catalog(tmp_path / "repo", output, False)
+        catalog = json.loads((output / "e2e-accuracy/branches.json").read_text())
+        main = catalog["branches"][0]
+        assert main["branch"] == "main"
+        root_summary = json.loads((output / "e2e-accuracy/summary.json").read_text())
+        branch_summary = json.loads((output / "e2e-accuracy" / main["summary_path"]).read_text())
+        assert root_summary == branch_summary == normalize_summary(summary, target_version=2)
+        assert root_summary["schema_version"] == 2
+        assert root_summary["snapshot"]["aisim_packages"] == packages
+    assert source.read_text() == content
 
 
 def test_missing_local_accuracy_summary_raises_pages_build_error(tmp_path: Path) -> None:
@@ -1158,7 +1221,7 @@ def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
     del missing_metric["models"][0]["workloads"][0]["gpus"][0]["aic"]["ttft_mape_pct"]
     invalid_cases.append(missing_metric)
     broken_coverage = deepcopy(valid)
-    broken_coverage["totals"]["aisimulate"]["status_counts"]["success"] += 1
+    broken_coverage["totals"]["aisim"]["status_counts"]["success"] += 1
     invalid_cases.append(broken_coverage)
     bad_topology = deepcopy(valid)
     bad_topology["models"][0]["workloads"][0]["gpus"][0]["topologies"] = [{"id": "missing-points"}]
@@ -1179,14 +1242,17 @@ def test_generated_topology_summary_satisfies_publication_contract() -> None:
         PAGES._accuracy_summary(json.dumps(summary))
 
 
-def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
+@pytest.mark.parametrize(
+    "repository", ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]
+)
+def test_publication_rejects_invalid_legacy_cli_provenance(repository: str) -> None:
     from copy import deepcopy
 
     summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     summary["snapshot"].update(
         evaluated_revision={"branch": "main", "commit_sha": "d" * 40},
         aic_commit_sha="d" * 40,
-        aic_source={"repository": "https://github.com/ai-dynamo/aisimulate", "branch": "main", "commit_sha": "d" * 40},
+        aic_source={"repository": repository, "branch": "main", "commit_sha": "d" * 40},
     )
     assert PAGES._accuracy_summary(json.dumps(summary)) == summary
     for change in (
@@ -1256,3 +1322,248 @@ def test_accuracy_gpu_count_is_validated_without_multinode_flag():
         topology["total_gpus"] = value
         with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "GPU count"):
             PAGES._accuracy_summary(json.dumps(summary))
+
+
+FEATURES = PAGES.feature_matrix
+FEATURE_DATA = ROOT / FEATURES.DATA_PATH
+ALL_SUPPORTED = 'cells = ["supported", "supported", "supported"]'
+TOKENIZATION_DOC = "replay/engine/README.md"
+TOKENIZATION_ROW = (
+    f'name = "Frontend tokenization cost"\ndoc = "{TOKENIZATION_DOC}#request-tokenization"\n{ALL_SUPPORTED}'
+)
+
+
+def copy_feature_sources(destination: Path) -> None:
+    """Copy the page template, its data and every documentation page the data links."""
+    data = FEATURES.load(FEATURE_DATA.read_text(encoding="utf-8"), source="test")
+    docs = {"docs/" + row["doc"].partition("#")[0] for section in data["sections"] for row in section["rows"]}
+    for relative in (FEATURES.DATA_PATH, FEATURES.TEMPLATE_PATH, *sorted(docs)):
+        (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination / relative)
+
+
+def init_repository(path: Path):
+    path.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    return git
+
+
+def render_main(text: str, template: str | None = None) -> str:
+    data = FEATURES.load(text, source="test")
+    template = template if template is not None else (ROOT / FEATURES.TEMPLATE_PATH).read_text(encoding="utf-8")
+    return FEATURES.render(template, [FEATURES.Snapshot("main", None, data)])
+
+
+@pytest.mark.parametrize(
+    ("heading", "slug"),
+    [
+        ("## Request tokenization", "request-tokenization"),
+        ("## _Tokenization_", "tokenization"),
+        ("## **Bold** and *emphasis*", "bold-and-emphasis"),
+        ("## [Linked text](other.md) here", "linked-text-here"),
+        ("## `host_offload` scope", "host_offload-scope"),
+        ("## GPU cache (G1)", "gpu-cache-g1"),
+        ("### MTP / EAGLE", "mtp--eagle"),
+        ('## Fields <a id="custom"></a>', "fields"),
+        ("## `client[0](request)`", "client0request"),
+        ("## gpu_cache_policy", "gpu_cache_policy"),
+        ("## __Strong__ snake_case", "strong-snake_case"),
+        ("## [Run `foo`](other.md)", "run-foo"),
+    ],
+)
+def test_feature_matrix_anchors_follow_github_heading_slugs(heading: str, slug: str) -> None:
+    assert slug in FEATURES.anchors(heading + "\n")
+
+
+def test_feature_matrix_links_to_an_underscore_anchor() -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8").replace(
+        'doc = "replay/engine/workers.md"', 'doc = "replay/engine/workers.md#gpu_cache_policy"', 1
+    )
+    data = FEATURES.load(text, source="test")
+    workers = (ROOT / "docs/replay/engine/workers.md").read_text(encoding="utf-8")
+
+    def read_doc(path: str) -> str | None:
+        page = (ROOT / "docs" / path).read_text(encoding="utf-8")
+        return page + "\n## gpu_cache_policy\n" if path == "replay/engine/workers.md" else page
+
+    assert "gpu_cache_policy" not in workers
+    FEATURES.check_docs(data, read_doc, source="test")
+    with pytest.raises(FEATURES.FeatureMatrixError, match="no anchor #gpu_cache_policy"):
+        FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source="test")
+
+
+def test_feature_matrix_links_resolve_to_documentation() -> None:
+    data = FEATURES.load(FEATURE_DATA.read_text(encoding="utf-8"), source=FEATURES.DATA_PATH)
+    FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source=FEATURES.DATA_PATH)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (ALL_SUPPORTED, 'cells = ["planned", "supported", "supported"]', "invalid cell"),
+        (ALL_SUPPORTED, 'cells = ["supported", "supported"]', "one cell per column"),
+        (ALL_SUPPORTED, 'cells = ["supported:", "supported", "supported"]', "invalid cell"),
+        ('doc = "replay/engine/workers.md"', 'doc = "../../README.md"', "Markdown path"),
+        ('doc = "replay/engine/workers.md"', 'doc = "https://example.com/a.md"', "Markdown path"),
+        ('note = "Engine-specific', 'notes = "Engine-specific', "unknown keys"),
+        ("schema_version = 1", "schema_version = 2", "schema_version"),
+        ('id = "scheduling"', 'id = "topology"', "duplicate section id"),
+    ],
+)
+def test_feature_matrix_rejects_invalid_data(old: str, new: str, message: str) -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8")
+    assert old in text
+    with pytest.raises(FEATURES.FeatureMatrixError, match=message):
+        FEATURES.load(text.replace(old, new, 1), source="test")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("#request-tokenization", "#no-such-anchor", "has no anchor #no-such-anchor"),
+        (f'"{TOKENIZATION_DOC}#', '"replay/engine/missing.md#', "docs/replay/engine/missing.md does not exist"),
+    ],
+)
+def test_feature_matrix_rejects_missing_doc_targets(old: str, new: str, message: str) -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8")
+    assert old in text
+    data = FEATURES.load(text.replace(old, new, 1), source="test")
+    with pytest.raises(FEATURES.FeatureMatrixError, match=message):
+        FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source="test")
+
+
+def test_feature_matrix_escapes_text_and_keeps_literal_braces() -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8")
+    text = text.replace('name = "Aggregated serving"', 'name = "<script>x</script>"', 1)
+    text = text.replace('note = "Engine-specific', 'note = "{{VIEWS}} Engine-specific', 1)
+    page = render_main(text)
+    assert "<script>x</script>" not in page
+    assert "&lt;script&gt;x&lt;/script&gt;" in page
+    assert "{{VIEWS}} Engine-specific" in page
+    template = (ROOT / FEATURES.TEMPLATE_PATH).read_text(encoding="utf-8")
+    for broken in (template.replace("{{VIEWS}}", ""), template + "{{EXTRA}}"):
+        with pytest.raises(FEATURES.FeatureMatrixError, match="once each"):
+            render_main(FEATURE_DATA.read_text(encoding="utf-8"), broken)
+
+
+def test_feature_matrix_renders_main_and_release_views(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    git = init_repository(repo)
+    (repo / "README.md").write_text("before the matrix\n")
+    git("add", ".")
+    git("commit", "-qm", "release without matrix data")
+    git("update-ref", "refs/remotes/origin/release/0.12.0", git("rev-parse", "HEAD"))
+    copy_feature_sources(repo)
+    data = repo / FEATURES.DATA_PATH
+    data.write_text(
+        FEATURE_DATA.read_text(encoding="utf-8").replace(
+            TOKENIZATION_ROW, TOKENIZATION_ROW.replace('"supported"', '"not_supported"')
+        )
+    )
+    git("add", ".")
+    git("commit", "-qm", "release matrix data")
+    release_sha = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", release_sha)
+    git("update-ref", "refs/remotes/origin/release/0.9.0", release_sha)
+    shutil.copyfile(FEATURE_DATA, data)
+    git("commit", "-qam", "main matrix data")
+    main_sha = git("rev-parse", "HEAD")
+
+    output = tmp_path / "site"
+    PAGES._build_feature_matrix(repo, output, True)
+    page = (output / "feature-support-matrix/index.html").read_text(encoding="utf-8")
+
+    options = re.findall(r'<option value="([^"]+)">', page)
+    assert options == ["main", "release/0.13.0", "release/0.9.0"]
+    views = dict(re.findall(r'<div data-branch="([^"]+)"( hidden)?>', page))
+    assert views == {"main": "", "release/0.13.0": " hidden", "release/0.9.0": " hidden"}
+    main_view, release_view = page.split('data-branch="release/0.13.0"')
+    release_view = release_view.split('data-branch="release/0.9.0"')[0]
+    assert f"/commit/{main_sha}" in main_view
+    assert f"/blob/{main_sha}/docs/{TOKENIZATION_DOC}#request-tokenization" in main_view
+    assert f"/commit/{release_sha}" in release_view
+    assert f"/blob/{release_sha}/docs/{TOKENIZATION_DOC}#request-tokenization" in release_view
+    assert f"/blob/{release_sha}/{FEATURES.DATA_PATH}" in release_view
+    assert "/blob/release/" not in page
+    assert 'id="release-0-13-0-kv-cache"' in release_view
+    assert 'id="kv-cache"' in main_view
+    tokenization = re.compile(r"Frontend tokenization cost</a></th>(.*?)</tr>", re.DOTALL)
+    assert tokenization.search(main_view).group(1).count("Not supported") == 0
+    assert tokenization.search(release_view).group(1).count("Not supported") == 3
+
+    output_without_refs = tmp_path / "site-main"
+    PAGES._build_feature_matrix(repo, output_without_refs, False)
+    page = (output_without_refs / "feature-support-matrix/index.html").read_text(encoding="utf-8")
+    assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
+
+
+def test_feature_matrix_builds_from_a_source_archive(tmp_path: Path) -> None:
+    copy_feature_sources(tmp_path)
+    PAGES._build_feature_matrix(tmp_path, tmp_path / "site", False)
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text(encoding="utf-8")
+    assert "/commit/" not in page
+    assert f"/blob/main/docs/{TOKENIZATION_DOC}" in page
+    assert 'data-branch="main"' in page
+
+
+def test_feature_matrix_omits_release_doc_missing_from_that_release(tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    git = init_repository(repo)
+    copy_feature_sources(repo)
+    (repo / "docs" / TOKENIZATION_DOC).unlink()
+    git("add", ".")
+    git("commit", "-qm", "release without the tokenization page")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
+    copy_feature_sources(repo)
+    PAGES._build_feature_matrix(repo, tmp_path / "site", True)
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text(encoding="utf-8")
+    assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
+    warning = capsys.readouterr().out
+    assert re.search(f"::warning::.*release/0.13.0.*docs/{TOKENIZATION_DOC} does not exist", warning)
+
+
+def test_feature_matrix_omits_invalid_release_data_but_rejects_invalid_main(tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    git = init_repository(repo)
+    copy_feature_sources(repo)
+    (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "broken release data")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
+    shutil.copyfile(FEATURE_DATA, repo / FEATURES.DATA_PATH)
+    PAGES._build_feature_matrix(repo, tmp_path / "site", True)
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text(encoding="utf-8")
+    assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
+    assert "::warning::feature support matrix omits release/0.13.0" in capsys.readouterr().out
+    (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
+    with pytest.raises(PAGES.PagesBuildError, match="invalid feature support matrix"):
+        PAGES._build_feature_matrix(repo, tmp_path / "site-broken-main", True)
+
+
+@pytest.mark.parametrize("version", [0, 3, True, None, "2"])
+def test_accuracy_reader_rejects_unknown_summary_versions(version):
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["schema_version"] = version
+    with pytest.raises(PAGES.PagesBuildError, match="unsupported accuracy summary schema"):
+        PAGES._accuracy_summary(json.dumps(summary))
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("location", ["totals", "snapshot"])
+def test_accuracy_reader_rejects_mixed_summary_fields(version, location):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    summary = normalize_summary(
+        json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text()), target_version=version
+    )
+    source, other = ("aisimulate", "aisim") if version == 1 else ("aisim", "aisimulate")
+    suffix = "_packages" if location == "snapshot" else ""
+    summary[location][other + suffix] = summary[location][source + suffix]
+    with pytest.raises(PAGES.PagesBuildError, match="unexpected field"):
+        PAGES._accuracy_summary(json.dumps(summary))

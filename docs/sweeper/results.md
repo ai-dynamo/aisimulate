@@ -13,7 +13,7 @@ subtitle: A lossless candidate ledger with scalar and Pareto views
 `SweepResult` is the canonical result envelope for both exhaustive and optimizer-guided execution.
 The complete candidate ledger is the source of truth. Scalar top-N and Pareto fronts are views that
 refer to ledger rows by stable `candidate_id`; they do not discard the other evaluated candidates.
-The unified `aisimulate recommend` command writes this envelope as `recommendation.json` beside
+The unified `aisim recommend` command writes this envelope as `recommendation.json` beside
 the selected `recommendations/*.yaml` prediction inputs.
 
 ```python
@@ -43,7 +43,7 @@ when supplied by the runner. GPU-count selection happens before the top-N view i
 | `schema_version` | Result contract version. New results emit `1.1`; reading `1.0` explicitly upgrades the envelope and defaults resource-limited counts to zero. |
 | `candidate_retention` | `all`, `feasible`, or `views`; counts always describe the complete run. |
 | `counts` | Outcome and cache counts for the complete run. |
-| `candidates` | Retained candidate records in evaluation order. |
+| `candidates` | Retained candidate records in a reproducible order: each batch's pre-replay rejections, then its replays in suggestion order, independent of which parallel evaluation finishes first. |
 | `views.top_n` | Best-first scalar candidate IDs, limited by `top_n`. |
 | `views.pareto_front` | Non-dominated candidate IDs in frontier order. |
 | `provenance` | Search strategy, run ID/time, implementation, input fingerprint, and validated input config. |
@@ -62,7 +62,7 @@ Every materialized or capability-gated candidate attempt has one record when ret
 | `candidate_id` | Stable within the result, formatted `candidate-NNNNNN`. |
 | `status` | `feasible`, `infeasible`, `unsupported`, `timed_out`, `failed`, or `resource_limited`. |
 | `config` | Concrete backend, topology, engine knobs, load, and adapter configuration available at the terminal status. |
-| `prediction_config` | Concrete public `aisimulate predict` configuration when produced by the unified CLI. |
+| `prediction_config` | Concrete public `aisim predict` configuration when produced by the unified CLI. |
 | `used_gpus` | Provisioned GPU count, or `null` if materialization failed before it was known. Unit: GPUs. |
 | `score` | Scalar score normalized so larger is better; for a Pareto row it is the first objective's raw value. |
 | `metrics` | Normalized replay metrics in natural units for every attempt that completed replay, including attempts later classified infeasible. Empty only when no valid replay report exists. |
@@ -93,7 +93,7 @@ candidate metrics, power provenance, and `SweepResult.to_json()`. Publication
 validation rejects numeric watts below the coverage gate. Null values never
 become zero or enter objective arithmetic.
 
-This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
+This contract applies to AISim `ReplayReport` and `SweepResult` outputs.
 Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
 their legacy schema and sentinels; the [AIC mapping](../aic-backward-compatibility/migration.md#legacy-aic-result-mapping) describes conversion targets,
 not an automatic converter. They do not satisfy this power contract as-is. A
@@ -249,7 +249,7 @@ status 3 to make this partial coverage visible. See [local execution resources](
   tabular view of the result. See [local resources](../reference/local-resources.md) for the diagnostic files.
 - Each numbered YAML is a concrete prediction config. It excludes `optimization`, `optimizer`, and
   `preset`, contains no domains or `auto` values, and can be passed directly to
-  `aisimulate predict`.
+  `aisim predict`.
 
 For scalar optimization, file numbering follows best-to-worst rank. For Pareto optimization, it
 follows the deterministic display order of the complete nondominated front; that order does not

@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
+use std::cmp::Reverse;
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -18,7 +22,8 @@ use super::config::{SglangConfig, floor_to_block};
 use super::request::SglangRequest;
 
 /// SGLang `SGLANG_RETRACT_DECODE_STEPS`: decode steps worth of KV reserved per surviving request
-/// when `retract_decode` re-estimates `new_token_ratio`.
+/// when `retract_decode` re-estimates `new_token_ratio`, and the per-request token reserve that
+/// `release_req` evicts cached pages toward after each retraction.
 pub(super) const RETRACT_DECODE_STEPS: usize = 20;
 
 #[derive(Default)]
@@ -31,12 +36,59 @@ pub(super) struct DecodeResult {
     /// surviving requests at the retraction point (before this pass's forward), when a retraction
     /// happened.
     pub(super) new_token_ratio_estimate: Option<f64>,
+    /// When the step's unpriced work ends: the step's start time. The core
+    /// adds the decode forward's duration from [`Self::decode`].
     pub(super) end_ms: f64,
+    /// The decode batch the step's forward computes, when it has one.
+    pub(super) decode: Option<DecodeShape>,
     pub(super) decode_acceptance: DecodeAcceptance,
     /// Prefix-cache commits the host loop applies when it observes this forward:
     /// `(request, sequence length materialized)`. Empty without a host loop, where
     /// the commits were applied directly.
     pub(super) cache_commits: Vec<(Uuid, usize)>,
+}
+
+/// The decode batch of a step, as the timing provider prices it.
+#[derive(Debug, Default)]
+pub(super) struct DecodeShape {
+    /// Batch rows, including finished rows still in the batch.
+    pub(super) batch_size: usize,
+    /// Sum of the rows' sequence lengths, each including its current token.
+    pub(super) active_kv_tokens: usize,
+    pub(super) mean_context_length: usize,
+    /// Each row's sequence length.
+    pub(super) lengths: Vec<usize>,
+    /// Whether the batch ran. A step whose page reservation failed after the
+    /// capacity preflight asks the provider but charges no time; a provider
+    /// that prices only whole iterations is not asked.
+    pub(super) charged: bool,
+}
+
+/// Decode time of `shape` priced by the scheduler's provider, with the decode
+/// speedup applied when `apply_speedup` is set.
+pub(super) fn price_decode_shape(
+    shape: &DecodeShape,
+    config: &SglangConfig,
+    apply_speedup: bool,
+) -> anyhow::Result<Duration> {
+    if !shape.charged && !config.perf_model.prices_phases() {
+        // The step computed no forward, and the provider has no decode phase.
+        return Ok(Duration::ZERO);
+    }
+    let decode_time = config.perf_model.predict_decode_time(
+        shape.batch_size,
+        shape.active_kv_tokens,
+        shape.mean_context_length,
+        config.total_kv_tokens,
+    )?;
+    let effective_ratio = config.speedup_ratio * config.decode_speedup_ratio;
+    let speedup_ratio = if apply_speedup { effective_ratio } else { 0.0 };
+    let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
+    Ok(if shape.charged {
+        Duration::from_secs_f64(modeled_ms / 1_000.0)
+    } else {
+        Duration::ZERO
+    })
 }
 
 /// What a scheduler pass asks the step simulation to do with `running`.
@@ -61,51 +113,53 @@ fn retraction_ratio_estimate(running: &[SglangRequest]) -> f64 {
 
 fn decode_page_growth_needed<'a>(
     running: impl Iterator<Item = &'a SglangRequest>,
-    block_size: usize,
+    config: &SglangConfig,
     max_burst: usize,
 ) -> usize {
     running
         .map(|req| {
-            let target = if req.pending_terminal {
-                // `prepare_for_decode` still allocates the finished row's slot: the
-                // scheduler has not observed the finish, so `filter_batch` kept it.
-                super::config::ceil_to_block(req.current_sequence_len(), block_size)
+            let committed = if req.pending_terminal && config.speculative_max_tokens.is_some() {
+                req.materialized_tokens
             } else {
-                let burst = max_burst.min(req.remaining_output_tokens());
-                super::config::ceil_to_block(req.current_sequence_len() + burst, block_size)
+                // A sampled bonus has no KV. A length stop inside accepted drafts does.
+                req.current_sequence_len()
+                    + max_burst
+                        .saturating_sub(1)
+                        .min(req.remaining_output_tokens())
             };
+            let target = super::config::ceil_to_block(committed, config.block_size);
             target.saturating_sub(req.allocated_tokens)
         })
         .sum()
 }
 
-/// Allocate the KV slot a ghost decode row receives for the token that finished
-/// it. `alloc_for_decode` commits the slot like any other row's, so the request
-/// caches it with the rest of its KV when the scheduler observes the finish.
-fn allocate_ghost_slot(
+/// Materialize only tokens consumed by a forward, independently of sampled output.
+fn materialize_through(
     req: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
     reservation: &mut DecodeTokenReservation,
     block_size: usize,
+    tokens: usize,
 ) {
-    if req.materialized_tokens >= req.current_sequence_len() {
-        return;
-    }
-    // The finishing token's KV is computed by this row, so its page can be cached.
+    debug_assert!(tokens <= req.current_sequence_len());
     req.kv_lease
         .ensure_page_hashes(&req.sequence_tokens, block_size);
-    let crossing_page_boundary = req.materialized_tokens + 1 > req.allocated_tokens;
-    kv_manager.extend_decode(&mut req.kv_lease, reservation);
-    if crossing_page_boundary {
-        req.allocated_tokens += block_size;
+    while req.materialized_tokens < tokens {
+        let crossing_page_boundary = req.materialized_tokens + 1 > req.allocated_tokens;
+        kv_manager.extend_decode(&mut req.kv_lease, reservation);
+        if crossing_page_boundary {
+            req.allocated_tokens += block_size;
+        }
+        req.materialized_tokens += 1;
     }
-    req.materialized_tokens += 1;
     req.debug_assert_invariants(block_size);
 }
 
 /// Make the prefix a forward materialized visible to admission. Under the host
 /// loop the scheduler learns it only when it observes that forward's result
-/// (`maybe_cache_unfinished_req`), so the commit is recorded, not applied.
+/// (`maybe_cache_unfinished_req`), so the commit is recorded, not applied. A
+/// request's cached prefix only grows until then, so a commit that adds no page
+/// now adds none when observed and is not recorded.
 fn commit_materialized_prefix(
     req: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
@@ -113,7 +167,11 @@ fn commit_materialized_prefix(
     deferred: &mut Vec<(Uuid, usize)>,
 ) {
     if config.host_loop {
-        deferred.push((req.uuid, req.materialized_tokens));
+        if uncached_aligned_prefix(req, config, req.materialized_tokens).is_some()
+            || kv_manager.needs_host_insert(&req.kv_lease, req.materialized_tokens)
+        {
+            deferred.push((req.uuid, req.materialized_tokens));
+        }
     } else {
         cache_materialized_prefix(req, kv_manager, config);
     }
@@ -130,10 +188,18 @@ fn decode_capacity_state(
     // Full partial pages are already owned by PagePool and excluded from
     // `actual_available`; subtracting their slack again would double-charge it.
     let logical_available = actual_available;
-    let page_growth_needed =
-        decode_page_growth_needed(running.iter(), config.block_size, max_burst);
+    let page_growth_needed = decode_page_growth_needed(running.iter(), config, max_burst);
 
     (actual_available, logical_available, page_growth_needed)
+}
+
+pub(super) fn decode_memory_fits(
+    running: &[SglangRequest],
+    kv_manager: &SglangKvManager,
+    config: &SglangConfig,
+) -> bool {
+    let (_, available, needed) = decode_capacity_state(running, kv_manager, config, 1);
+    available >= needed
 }
 
 pub(super) fn cache_materialized_prefix(
@@ -141,7 +207,13 @@ pub(super) fn cache_materialized_prefix(
     kv_manager: &mut SglangKvManager,
     config: &SglangConfig,
 ) {
-    cache_prefix_through(req, kv_manager, config, req.materialized_tokens);
+    cache_prefix_through_ready(
+        req,
+        kv_manager,
+        config,
+        req.materialized_tokens,
+        !config.host_loop,
+    );
 }
 
 /// Cache the page-aligned prefix through `tokens`, bounded by what the request
@@ -152,10 +224,22 @@ pub(super) fn cache_prefix_through(
     config: &SglangConfig,
     tokens: usize,
 ) {
-    let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
-    if aligned_tokens == 0 || aligned_tokens <= req.cached_tokens() {
+    cache_prefix_through_ready(req, kv_manager, config, tokens, true);
+}
+
+fn cache_prefix_through_ready(
+    req: &mut SglangRequest,
+    kv_manager: &mut SglangKvManager,
+    config: &SglangConfig,
+    tokens: usize,
+    backup_ready: bool,
+) {
+    let Some(aligned_tokens) = uncached_aligned_prefix(req, config, tokens) else {
+        if backup_ready {
+            kv_manager.backup_cached_prefix(&mut req.kv_lease, tokens);
+        }
         return;
-    }
+    };
 
     if !req.kv_lease.is_active() {
         panic!(
@@ -166,7 +250,24 @@ pub(super) fn cache_prefix_through(
 
     let sequence = &req.sequence_tokens[..aligned_tokens];
     kv_manager.extend_cached_prefix(sequence, &mut req.kv_lease);
+    if backup_ready {
+        kv_manager.backup_cached_prefix(&mut req.kv_lease, aligned_tokens);
+    }
     req.debug_assert_invariants(config.block_size);
+}
+
+/// The page-aligned length through `tokens` to cache, when it extends the
+/// request's cached prefix.
+fn uncached_aligned_prefix(
+    req: &SglangRequest,
+    config: &SglangConfig,
+    tokens: usize,
+) -> Option<usize> {
+    if !config.enable_prefix_caching {
+        return None;
+    }
+    let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
+    (aligned_tokens > req.cached_tokens()).then_some(aligned_tokens)
 }
 
 #[cfg(test)]
@@ -218,12 +319,13 @@ fn check_decode_mem_for_burst(
             break;
         }
 
-        let Some((idx, _)) = running
-            .iter()
-            .enumerate()
-            .filter(|(_, req)| !req.pending_terminal)
-            .min_by_key(|(_, req)| req.output_len())
-        else {
+        // `retract_decode` stably sorts the batch once, longest output first and then shortest
+        // prompt first, retracts from the end, and keeps the survivors in that order. Ghost rows
+        // are sorted with the batch but never retracted.
+        if retracted.is_empty() && running.iter().any(|req| !req.pending_terminal) {
+            running.sort_by_key(|req| (Reverse(req.output_len()), req.prompt_len()));
+        }
+        let Some(idx) = running.iter().rposition(|req| !req.pending_terminal) else {
             break;
         };
 
@@ -247,12 +349,18 @@ fn check_decode_mem_for_burst(
             logical_available_blocks_before: Some(logical_available_blocks_before),
             required_blocks_before: Some(required_blocks_before),
         });
+        // `release_req` evicts cached pages toward a reserve for the remaining requests. Only the
+        // next step's demand decides whether to retract another request.
+        let reserve = running.len() * RETRACT_DECODE_STEPS;
+        let available = kv_manager.cache().available_tokens();
+        if available < reserve {
+            kv_manager.evict(reserve - available);
+        }
         retracted.push(req);
     }
 
     let available = kv_manager.cache().available_tokens();
-    let page_growth_needed =
-        decode_page_growth_needed(running.iter(), config.block_size, max_burst);
+    let page_growth_needed = decode_page_growth_needed(running.iter(), config, max_burst);
     if available < page_growth_needed {
         kv_manager.evict(page_growth_needed - available);
     }
@@ -289,15 +397,14 @@ pub(super) fn simulate_decode_step(
     current_time_ms: f64,
     apply_speedup: bool,
 ) -> DecodeResult {
-    let mut result = simulate_decode_step_with_sampler(
-        running,
-        kv_manager,
-        config,
-        None,
-        current_time_ms,
-        apply_speedup,
-    )
-    .expect("SGLang decode simulation failed");
+    let mut result =
+        simulate_decode_step_with_sampler(running, kv_manager, config, None, current_time_ms)
+            .expect("SGLang decode simulation failed");
+    if let Some(shape) = &result.decode {
+        let total_time =
+            price_decode_shape(shape, config, apply_speedup).expect("SGLang decode pricing failed");
+        result.end_ms += total_time.as_secs_f64() * 1000.0;
+    }
     for mut request in result.completed_requests.drain(..) {
         cleanup_completed_request(&mut request, kv_manager, config.block_size);
     }
@@ -309,9 +416,7 @@ pub(super) fn simulate_decode_step(
 /// batch (`check_finished` in `process_batch_result_prefill`) without ever giving that token a KV
 /// slot; the others get their slot at the next decode step (`prepare_for_decode`), where the
 /// decode memory check and retraction live. This is a pure prefill forward, so it never retracts
-/// and takes no decode time. When the first-output slots do not fit even after evicting cached
-/// pages, the continuing requests keep their first token until the next decode step (which is
-/// where SGLang would have to retract for them).
+/// and takes no decode time or output-token KV slot.
 fn prefill_first_tokens(
     running: &mut Vec<SglangRequest>,
     kv_manager: &mut SglangKvManager,
@@ -323,34 +428,36 @@ fn prefill_first_tokens(
     let mut completed_indices = Vec::new();
     let mut cache_commits = Vec::new();
 
-    // Requests that finish with their first token need no KV slot.
+    // Prefill computes the prompt's KV and samples one output without computing its KV.
     for (idx, req) in running.iter_mut().enumerate() {
-        if req.remaining_output_tokens() != 1 {
+        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+        if req.pending_terminal {
             continue;
         }
         let token_id = req.next_output_token();
-        req.append_final_output_token(token_id);
+        req.append_output_token(token_id, config.block_size);
         req.debug_assert_invariants(config.block_size);
+        let completed = req.remaining_output_tokens() == 0;
         output_signals.push(OutputSignal {
             uuid: req.uuid,
             token_id: Some(token_id),
-            completed: true,
+            completed,
             rejected: false,
             cached_tokens: None,
             handoff_delay_ms: compute_prefill_handoff_delay_ms(
                 config.worker_type,
-                true,
+                completed,
                 req.prompt_len(),
                 config.kv_transfer_bandwidth,
                 config.kv_transfer_bytes_per_token,
             ),
         });
-        if config.host_loop {
-            // The scheduler observes this completion one iteration later; until then
-            // the request stays a member of the next batch.
-            req.pending_terminal = true;
-        } else {
-            completed_indices.push(idx);
+        if completed {
+            if config.host_loop {
+                req.pending_terminal = true;
+            } else {
+                completed_indices.push(idx);
+            }
         }
     }
     let mut newly_completed = Vec::with_capacity(completed_indices.len());
@@ -358,58 +465,8 @@ fn prefill_first_tokens(
         newly_completed.push(running.remove(idx));
     }
     newly_completed.reverse();
-    completed_requests.extend(newly_completed);
 
-    // The rest need a slot for the first output token; a row that finished on it takes its ghost
-    // slot in the next decode step. Make room by evicting cached pages only.
-    let needed = decode_page_growth_needed(
-        running.iter().filter(|req| !req.pending_terminal),
-        config.block_size,
-        1,
-    );
-    let available = kv_manager.cache().available_tokens();
-    if available < needed {
-        kv_manager.evict(needed - available);
-    }
-    let reserved_pages = needed / config.block_size;
-    let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
-        return DecodeResult {
-            completed_requests,
-            output_signals,
-            end_ms: current_time_ms,
-            ..DecodeResult::default()
-        };
-    };
-    for req in running.iter_mut() {
-        if req.pending_terminal {
-            continue;
-        }
-        let crossing_page_boundary = req.current_sequence_len() + 1 > req.allocated_tokens;
-        kv_manager.extend_decode(&mut req.kv_lease, &mut reservation);
-        if crossing_page_boundary {
-            req.allocated_tokens += config.block_size;
-        }
-        let token_id = req.next_output_token();
-        req.append_output_token(token_id, config.block_size);
-        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
-        req.debug_assert_invariants(config.block_size);
-        output_signals.push(OutputSignal {
-            uuid: req.uuid,
-            token_id: Some(token_id),
-            completed: false,
-            rejected: false,
-            cached_tokens: None,
-            handoff_delay_ms: compute_prefill_handoff_delay_ms(
-                config.worker_type,
-                false,
-                req.prompt_len(),
-                config.kv_transfer_bandwidth,
-                config.kv_transfer_bytes_per_token,
-            ),
-        });
-    }
-    debug_assert!(reservation.len() <= reserved_pages);
-    kv_manager.release_decode_reservation(reservation);
+    completed_requests.extend(newly_completed);
 
     DecodeResult {
         completed_requests,
@@ -441,7 +498,6 @@ pub(super) fn simulate_decode_step_with_sampler(
     config: &SglangConfig,
     sampler: Option<&mut SpeculativeDecodeSampler>,
     current_time_ms: f64,
-    apply_speedup: bool,
 ) -> anyhow::Result<DecodeResult> {
     simulate_step(
         running,
@@ -449,7 +505,6 @@ pub(super) fn simulate_decode_step_with_sampler(
         config,
         sampler,
         current_time_ms,
-        apply_speedup,
         StepKind::Decode,
     )
 }
@@ -468,7 +523,6 @@ pub(super) fn simulate_prefill_first_tokens(
         config,
         None,
         current_time_ms,
-        false,
         StepKind::PrefillFirstToken,
     )
 }
@@ -479,7 +533,6 @@ fn simulate_step(
     config: &SglangConfig,
     mut sampler: Option<&mut SpeculativeDecodeSampler>,
     current_time_ms: f64,
-    apply_speedup: bool,
     kind: StepKind,
 ) -> anyhow::Result<DecodeResult> {
     if running.is_empty() {
@@ -586,25 +639,20 @@ fn simulate_step(
         });
     }
 
-    let total_context: usize = running
+    let lengths: Vec<usize> = running
         .iter()
         .map(SglangRequest::current_sequence_len)
-        .sum();
-    let avg_context = total_context / running.len();
-    let active_kv_tokens = total_context;
-    let decode_time = config.perf_model.predict_decode_time(
-        running.len(),
-        active_kv_tokens,
-        avg_context,
-        config.total_kv_tokens,
-    )?;
-    let effective_ratio = config.speedup_ratio * config.decode_speedup_ratio;
-    let speedup_ratio = if apply_speedup { effective_ratio } else { 0.0 };
-    let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
-    let total_time = Duration::from_secs_f64(modeled_ms / 1_000.0);
+        .collect();
+    let total_context: usize = lengths.iter().sum();
+    let mut decode = DecodeShape {
+        batch_size: running.len(),
+        active_kv_tokens: total_context,
+        mean_context_length: total_context / running.len(),
+        lengths,
+        charged: false,
+    };
 
-    let reserved_page_tokens =
-        decode_page_growth_needed(running.iter(), config.block_size, max_burst);
+    let reserved_page_tokens = decode_page_growth_needed(running.iter(), config, max_burst);
     let reserved_pages = reserved_page_tokens / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
         tracing::warn!(
@@ -618,20 +666,31 @@ fn simulate_step(
             pressure_events,
             new_token_ratio_estimate,
             end_ms: current_time_ms,
+            decode: Some(decode),
             ..DecodeResult::default()
         });
     };
+    decode.charged = true;
 
     output_signals.reserve(running.len());
     let mut completed_indices = Vec::new();
-    let mut cache_commits = Vec::new();
+    let cache_commits = Vec::new();
     let mut decode_acceptance = DecodeAcceptance::default();
 
     for (idx, req) in running.iter_mut().enumerate() {
         if req.pending_terminal {
-            allocate_ghost_slot(req, kv_manager, &mut reservation, config.block_size);
+            if config.speculative_max_tokens.is_none() {
+                materialize_through(
+                    req,
+                    kv_manager,
+                    &mut reservation,
+                    config.block_size,
+                    req.current_sequence_len(),
+                );
+            }
             continue;
         }
+        let input_len = req.current_sequence_len();
         let remaining = req.remaining_output_tokens();
         let accepted =
             if config.worker_type == crate::engine::common::protocols::WorkerType::Prefill {
@@ -651,14 +710,8 @@ fn simulate_step(
         }
         let burst = accepted.min(remaining);
         for _ in 0..burst {
-            let crossing_page_boundary = req.current_sequence_len() + 1 > req.allocated_tokens;
-            kv_manager.extend_decode(&mut req.kv_lease, &mut reservation);
-            if crossing_page_boundary {
-                req.allocated_tokens += config.block_size;
-            }
             let token_id = req.next_output_token();
             req.append_output_token(token_id, config.block_size);
-            req.debug_assert_invariants(config.block_size);
 
             let is_complete = req.output_len() >= req.max_output_tokens;
             output_signals.push(OutputSignal {
@@ -684,10 +737,15 @@ fn simulate_step(
                 }
                 break;
             }
-
-            commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
-            req.debug_assert_invariants(config.block_size);
         }
+        let committed = input_len + accepted.saturating_sub(1).min(burst);
+        materialize_through(
+            req,
+            kv_manager,
+            &mut reservation,
+            config.block_size,
+            committed,
+        );
     }
 
     debug_assert!(reservation.len() <= reserved_pages);
@@ -706,7 +764,8 @@ fn simulate_step(
         output_signals,
         pressure_events,
         new_token_ratio_estimate,
-        end_ms: current_time_ms + total_time.as_secs_f64() * 1000.0,
+        end_ms: current_time_ms,
+        decode: Some(decode),
         decode_acceptance,
         cache_commits,
     })

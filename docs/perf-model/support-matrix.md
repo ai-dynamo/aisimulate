@@ -17,17 +17,68 @@ queries, Replay feature support, and measured accuracy are separate results.
 | `fpm_interpolation`, `method: direct` | Verified architecture metadata, resource profile, genuine phase measurements | Exact identity and measured brackets; no out-of-domain extrapolation or analytical graph. |
 | `fpm_interpolation`, `method: sol` | Registered analytical model and matching forward table/sidecar | Only the implemented SOL transfer domain; not every analytical operation is supported by the FPM SOL evaluator. |
 | `fpm_regression` | Valid observed iterations for the selected workload store | Cold or unusable stores return no nonempty prediction. One ready store does not train another. |
+| `fpm_learned` | Explicit selection with `fallback_policy: deny` and exactly one inference artifact or checkpoint; online adaptation requires a training/runtime checkpoint, and the causal selector requires a training seed | Standalone canonical API with complete per-iteration `ForwardPassMetrics`; absent learned stores return `None`. Replay, engine CLI prediction/recommendation, and Sweeper timing price each pass with one iteration query and require the role's forest stores; latency-only. |
 
 See [selection and fallback](configuration.md#selection-and-fallback) and
-[whole-forward coverage](methods/whole-forward.md). Explicit invalid configuration
-is not converted into a fallback estimator.
+[whole-forward coverage](methods/whole-forward.md). Learned source identity,
+adaptation and correction requirements are documented in
+[learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
+Explicit invalid configuration is not converted into a fallback estimator.
+
+For learned-model cold start and native mixed fallback, see the
+[online GBDT tutorial](fpm-self-service/online-gbdt.md). The application owns
+initial fitting and observation admission. Native Replay consumes a prepared
+model; an application fallback wrapper does not run inside it. Complete portable
+state snapshots do not support `temporary_mixed_composition`; see the
+[persistence options](fpm-self-service/online-gbdt.md#6-save-resume-and-hand-the-model-to-replay).
+
+Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
+use the NemotronH text model. AISim reads the nested `llm_config` and
+accepts `linear_attention` and `full_attention` layer names. The bundled
+`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` export stores routed
+and shared experts as NVFP4 with 4-bit activations. In its 88 decoder
+layers, the Mamba and attention projections are static per-tensor FP8, and
+so is the LM head. Its latent projections and router stay BF16, as do the
+attention projections of its one multi-token prediction (MTP) layer, and
+its KV cache is FP8. AISim infers `nvfp4` for the routed experts. It
+prices the Mamba, attention, shared-expert and latent projections as
+`fp8_static`, and the router and LM-head GEMMs in BF16. For the shared
+experts, the latent projections and the LM head, these lanes differ from
+the stored precision and are approximations. An inferred `W4A16_NVFP4` MoE
+label, which this export does not use, selects the vLLM `nvfp4` execution
+lane. Explicit precision overrides retain their values. AISim does
+not build the MTP layer as its own attention and MoE block. With `nextn`
+above zero, it scales every decode operation, the Mamba operations
+included, by `(nextn + L) / L` for `L` decoder layers. That factor is an
+approximation: it spreads the cost of the attention-plus-MoE MTP block
+evenly over the hybrid graph. Accepted-token progress is applied
+separately by the upper prediction layer, and the MTP weights and KV
+cache are not counted. This support adds no vision modeling and no
+measured timing data. The text path compiles, but the published matrix
+marks every row of this checkpoint `FAIL` with `ENCODER_UNSUPPORTED`,
+because the export declares a vision encoder that AISim does not
+model; the SDK tests cover the text path.
+
+The bundled `nvidia/Qwen3.5-397B-A17B-NVFP4-V2` export has the same text
+configuration as `nvidia/Qwen3.5-397B-A17B-NVFP4` and a different
+quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)
+`in_proj_qkv`, `in_proj_z` and `out_proj` projections, its full-attention
+projections and its shared-expert projections are static per-tensor FP8, and
+its KV cache is FP8. AISim prices those projections as `fp8_static`, the
+routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
+GEMMs in BF16, as the export stores them. Two lanes are approximations. The
+export keeps the GDN `in_proj_a` and `in_proj_b` projections in BF16, but
+AISim prices them with the other GDN projections as `fp8_static`. The
+export also keeps its multi-token prediction (MTP) layer in BF16. With
+`nextn` above zero, AISim scales the decode graph by `(nextn + L) / L`
+for `L` decoder layers, so it prices that layer with the decoder-layer lanes.
 
 ## Published FPE matrix
 
-The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+The [FPE Support Matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/)
 is a **strict-native op-level** probe of `EngineHandle.compile` and representative
 forward queries. It does not call `best_available`, enable regression fallback,
-or rescue missing data with HYBRID. It is not a matrix of all three estimator paths.
+or rescue missing data with HYBRID. It is not a matrix of all estimator paths.
 
 Rows retain model/architecture, system, backend/version, resolved precision,
 topology, role, phase, source SHA, package version, and a reproducer. Aggregated
@@ -40,14 +91,20 @@ and query failures remain distinct.
 
 GLM-5.3-Flash build-time rejections of unsupported parallelism, non-native
 checkpoint precision, or backends outside vLLM/SGLang are `SDK_UNREPRESENTABLE`.
-The backend rejection describes AISimulate's modeling coverage; it does not
+The backend rejection describes AISim's modeling coverage; it does not
 establish that the backend itself cannot run the model.
 These rows retain their diagnostics and phases,
-with no latency or `PASS` status. Only the recognized `NotImplementedError`
-diagnostics receive these categories. Unexpected build errors and query-time
+with no latency or `PASS` status. Only recognized build-time diagnostics
+receive these categories. Unexpected build errors and query-time
 failures still block nightly qualification. Matching currently uses the exact
-exception type and message. Other restrictions (nextn/decoder replay,
-megamoe/wideep, and non-FP8 KV) and changed diagnostics remain blocking until
+exception type and message. The native build-time GLM-5.3-Flash Hopper FP8-KV
+rejection for vLLM before 0.32.0 or SGLang before 0.5.22 is
+`FRAMEWORK_INCOMPATIBLE`; this is a runtime-version limitation, not a hardware
+prohibition. Newer runtimes remain subject to exact-runtime performance-data
+coverage. See the [KV runtime requirements](../glm53flash-native-contract.md)
+for SGLang's required TileLang launch flags. Other restrictions
+(nextn/decoder replay, megamoe/wideep, and unsupported KV dtypes) and changed
+diagnostics remain blocking until
 explicitly classified; adding those probe axes requires extending coverage.
 
 The site's branch selector identifies the tested main or release snapshot.
@@ -58,10 +115,13 @@ Pages publication belong to [CI accuracy](../ci/accuracy.md).
 ## Versions the CLI accepts
 
 The matrix probes every backend version that has bundled performance data.
-`aisimulate predict` and `aisimulate recommend` accept only the queryable
-versions of each GPU and backend: `current`, plus `previous` when configured in
-[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml),
-and `next` when a newer data-backed version is available. A `PASS` row at
+`aisim predict` and `aisim recommend` accept only the queryable
+versions of each GPU and backend, defined in
+[`query_versions.yaml`](../../python/aisim/src/aisim_core/systems/query_versions.yaml):
+`current` (the newest completed full collection), `previous` (the full
+collection it replaced, when configured) and `next` (the in-development
+version: the highest version newer than `current` with any measurements
+landed, or `current` itself when nothing newer has data). A `PASS` row at
 any other version is SDK coverage only; the CLI rejects it with an error that
 names the accepted versions. To run the same model, GPU and backend from the
 CLI, set `engine.backend_version: current` or a version the error names.
@@ -69,9 +129,16 @@ CLI, set `engine.backend_version: current` or a version the error names.
 but it does not qualify that version for the CLI and later stages can still
 fail.
 
+Older, unlisted data versions can still fill missing shapes in a queryable
+version. For example, B60 vLLM `previous` (0.26.0) needs the retained 0.20.0
+GEMM table for `k=16384` and `k=32768`; its primary grid stops at `k=12288`.
+The 0.28.0 measurements cannot fill those gaps because automatic fallback
+only uses earlier versions. Keep this older table until the supported versions
+have replacement coverage. Primary measurements still take precedence.
+
 ## Accuracy and replay
 
-The [accuracy dashboards](https://ai-dynamo.org/aisimulate/) publish separate
+The [accuracy dashboards](https://ai-dynamo.org/aisim/) publish separate
 FPM and end-to-end comparisons. Interpret each result with its measured runtime,
 workload, source revision, and timing boundary. Separate passing prefill and
 decode engine probes do not establish disaggregated rate matching or queueing.

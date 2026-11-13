@@ -12,9 +12,9 @@ from importlib.resources import files
 
 import pyarrow.parquet as pq
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-path = files("aisimulate_core") / "systems/data/h200_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet"
+path = files("aisim_core") / "systems/data/h200_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet"
 table = pq.read_table(path).to_pandas()
 for model, layers, heads in [("Qwen/Qwen3-8B", 36, 32), ("Qwen/Qwen3-0.6B", 28, 16)]:
     perf = RustForwardPassPerfModel.best_available(

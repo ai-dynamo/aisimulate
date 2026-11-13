@@ -6,12 +6,12 @@
 
 use std::num::NonZeroU32;
 
-use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
-use aisimulate_core::engine::{
+use aisim_core::engine::generalized::{EngineIdentity, SchedulerCommand};
+use aisim_core::engine::{
     Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
     SharedG2Pool,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
     ReplaySpec, Replayer,
 };
@@ -381,11 +381,13 @@ fn shared_g2_g3_chunked_recompute_of_a_preempted_request_completes() {
     // preempted after its seventh output token fills block 4, then readmitted
     // with a 16-token prefix hit and a 3-token budget: the chunk 16..19 leaves
     // the final generated block unhashed, which debug builds used to reject.
-    // r9 later restores 8 tokens from the shared G2 pool.
+    // r9 later restores 8 tokens from the shared G2 pool. The schedule assumes
+    // synchronous admission.
     let report = run(
         json!({"kind": "aggregated", "workers": {"initial_workers": 1}}),
         json!({
             "rank": small_rank(8, 4, 3, json!({
+                "async_scheduling": false,
                 "g3_offload": {
                     "num_g3_blocks": 64,
                     "read_bandwidth_gbps": 0.5,
@@ -449,12 +451,14 @@ fn serve_prompt(engine: &mut Engine, id: u128, now_ms: &mut f64) -> usize {
             SchedulerCommand::new(
                 0,
                 Command::Submit(Request {
+                    cache_salt: None,
                     images: Vec::new(),
                     request_id,
                     tokens: PROMPT.to_vec(),
                     max_output_tokens: 1,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
             ),
             *now_ms,

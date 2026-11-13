@@ -1,93 +1,121 @@
 {
-  "base_revision": "c9e7363bf5983b980fe6622f7b064ee7adff5f5d",
-  "corrected_model_revision": "88a4f8b40ee7370174e5c6ef13304d418a056432",
+  "base_revision": "f85518b36f5488a4c8f6c9553a85d523f173bbb6",
+  "corrected_model": "This change merged onto base_revision. The merge commit is the baseline_source_sha in .github/prediction-numerical-sentinels.json and the git_head of the refreshed post_freeze_pins.",
   "per_op_generation_attention_changes": [
     {
       "case": "minimax-m25-b200-sglang-isl1024-osl2",
-      "before_ms": 2.551590493426754,
-      "after_ms": 0.9147904934267539
+      "before_ms": 2.1702700298122157,
+      "after_ms": 0.5334700298122156
     },
     {
       "case": "minimax-m25-b200-vllm-isl1024-osl2",
-      "before_ms": 2.3136602801521837,
-      "after_ms": 0.6768602801521837
+      "before_ms": 2.4160554583372416,
+      "after_ms": 0.7792554583372419
     },
     {
       "case": "minimax-m25-b200-vllm-sampled-prefix",
-      "before_ms": 8.94131490870533,
-      "after_ms": 2.3944323487053305
+      "before_ms": 9.278525771226136,
+      "after_ms": 2.731643211226136
     },
     {
       "case": "minimax-m27-b200-vllm-isl1024-osl2",
-      "before_ms": 2.3136602801521837,
-      "after_ms": 0.6768602801521837
+      "before_ms": 2.4160554583372416,
+      "after_ms": 0.7792554583372419
     },
     {
       "case": "qwen3-30b-a3b-b200-vllm-isl1024-osl2",
-      "before_ms": 1.7847456839086753,
-      "after_ms": 0.5175456839086752
+      "before_ms": 1.7918450022034613,
+      "after_ms": 0.5246450022034612
     }
   ],
   "compile_engine_records": 21,
-  "engine_step_records": 118,
-  "engine_step_refreshed_records": 119,
-  "unchanged_rounded_afd_control": "qwen3-30b-a3b-h200-vllm-afd::afd",
+  "engine_step_records": 116,
+  "engine_step_cases": 30,
   "engine_step_changed_metrics": {
     "agg_request": 29,
     "agg_tpot": 29,
     "agg_ttft": 29,
     "disagg_request": 29,
     "disagg_tpot": 29,
-    "mixed_step": 31,
+    "mixed_step": 29,
     "static_gen": 29,
-    "static_total": 29,
-    "disagg_ttft": 2,
-    "static_ctx": 2
+    "static_total": 29
   },
-  "preexisting_prefill_golden_discrepancies": [
+  "refresh_selection": "Records whose full pin_goldens.py refresh on the corrected build differs from a full refresh on a build of base_revision. Only these are refreshed; every changed value decreases.",
+  "base_golden_records_not_reproduced_by_base_build": [
     {
-      "case": "qwen38-max-gb300-vllm-0271-bf16-disagg",
-      "metric": "disagg_ttft",
-      "old_golden_ms": 178.925,
-      "original_native_ms": 178.92,
-      "corrected_native_ms": 178.92
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::agg",
+      "metric": "agg_request",
+      "golden_ms": 83.36025598147515,
+      "base_build_ms": 83.39250623752467
     },
     {
-      "case": "qwen38-max-gb300-vllm-0271-bf16-disagg",
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::agg",
+      "metric": "agg_tpot",
+      "golden_ms": 18.898943991282422,
+      "base_build_ms": 18.91412058236455
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::agg",
+      "metric": "agg_ttft",
+      "golden_ms": 64.46131199019273,
+      "base_build_ms": 64.47838565516012
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::mixed",
+      "metric": "mixed_step",
+      "golden_ms": 18.898943991282426,
+      "base_build_ms": 18.914120582364554
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::static",
       "metric": "static_ctx",
-      "old_golden_ms": 90.366,
-      "original_native_ms": 90.363,
-      "corrected_native_ms": 90.363
+      "golden_ms": 18.142,
+      "base_build_ms": 18.141
     },
     {
-      "case": "qwen38-max-gb300-vllm-0271-fp8-agg",
-      "metric": "disagg_ttft",
-      "old_golden_ms": 160.238,
-      "original_native_ms": 160.243,
-      "corrected_native_ms": 160.243
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::static",
+      "metric": "static_gen",
+      "golden_ms": 4.597,
+      "base_build_ms": 4.613
     },
     {
-      "case": "qwen38-max-gb300-vllm-0271-fp8-agg",
-      "metric": "static_ctx",
-      "old_golden_ms": 80.928,
-      "original_native_ms": 80.931,
-      "corrected_native_ms": 80.931
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::static",
+      "metric": "static_total",
+      "golden_ms": 22.739,
+      "base_build_ms": 22.753999999999998
+    },
+    {
+      "record": "nemotron-nas-b200-trtllm-isl1024-osl2::agg",
+      "metric": "agg_request",
+      "golden_ms": 71.66048925588844,
+      "base_build_ms": 71.66048925588842
+    },
+    {
+      "record": "nemotron-nas-b200-trtllm-isl1024-osl2::agg",
+      "metric": "agg_tpot",
+      "golden_ms": 24.291691273182522,
+      "base_build_ms": 24.29169127318252
+    },
+    {
+      "record": "nemotron-nas-b200-trtllm-isl1024-osl2::agg",
+      "metric": "agg_ttft",
+      "golden_ms": 47.368797982705914,
+      "base_build_ms": 47.36879798270591
     }
   ],
+  "base_golden_records_not_reproduced_note": "Independent of this change; these records keep the base goldens.",
   "native_sha256": {
-    "original_debug": "a559e2c6b5c563967ce94f20aed03080358e0f742dbec6b500aed9c1661742c8",
-    "corrected_release": "617dab43d46c8b14f306e8a9b884fcd278f4067e08ab513704f19b4f3a9b1ebb"
+    "base_release": "dcc0d9a182c88d775294d8e66528abe1c4f78a7e06ca78b8bba04adeb8976136",
+    "corrected_release": "152d3f436a6228862eaba73f4ef5f34a1ce7fd0a5e8ff5a15466d54761467a8f"
   },
   "validation": {
-    "rust_operator_tests": 318,
-    "python_focused_tests": 100,
+    "rust_operator_tests": 361,
+    "python_focused_tests": 109,
     "python_canonical_tests": 26,
-    "parity_tests": 390
+    "parity_tests": 389
   },
-  "b60_merge_refresh": {
-    "upstream_revision": "4730b2c1006ec19b9513f09e4c9ad93e67c41265",
-    "pin_source_revision": "173a390abbb25269e6bd74267ec415f54e2f1ea7",
-    "validated_model_revision": "d6722c4a9bec8101946f4a63cc1de94b72283067",
+  "b60_scan_coverage": {
     "case": "qwen3-30b-a3b-b60-vllm-scan-coverage",
     "surfaces": [
       "agg",
@@ -95,15 +123,11 @@
       "mixed",
       "static"
     ],
-    "reason": "Combine upstream vLLM 0.28.0/XPU calibration with unchanged bandwidth-only Q/K normalization.",
     "static_context_ms": 133.227,
-    "upstream_static_generation_ms": 9.784,
-    "combined_static_generation_ms": 8.517
+    "base_static_generation_ms": 9.784,
+    "corrected_static_generation_ms": 8.517
   },
   "native_prediction_sentinels": {
-    "previous_source_revision": "d066e918705b98e2d55eed55743ce8d225f129ea",
-    "source_revision": "d6722c4a9bec8101946f4a63cc1de94b72283067",
-    "native_release_sha256": "44e2621e10ede5fc0434cf094b1060b87bd648ef7eabd245218995391d55a8eb",
     "interpretation": "Proposed simulator stability references for the deliberate Q/K accounting change; not measured hardware accuracy or maintainer acceptance.",
     "unchanged_prefill_cases": 8,
     "changed_decode_cases": 8,
@@ -129,6 +153,8 @@
         "one_token_traffic_ms_per_layer": 1.28e-06
       }
     },
+    "previous_source_revision": "fc6e26a82dea7fe49317d48ae97523323ee940b7",
+    "native_release_sha256": "152d3f436a6228862eaba73f4ef5f34a1ce7fd0a5e8ff5a15466d54761467a8f",
     "maximum_delta_residual_ms": 5.684341886080801e-13,
     "changes": [
       {

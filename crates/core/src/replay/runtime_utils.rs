@@ -14,6 +14,23 @@ use crate::engine::HandoffId;
 #[cfg(test)]
 use crate::replay::protocol::DirectRequest;
 
+/// Preserve the dispatch failure even when policy cleanup also fails.
+pub(super) fn dispatch_failure(error: anyhow::Error, abort: anyhow::Result<()>) -> anyhow::Error {
+    match abort {
+        Ok(()) => error,
+        Err(cleanup) => {
+            use super::error::{ReplayError, runtime_error};
+            let message = format!("{error:#}; placement dispatch_aborted failed: {cleanup:#}");
+            match runtime_error(error) {
+                ReplayError::Engine(_) => ReplayError::Engine(message),
+                ReplayError::Placement(_) => ReplayError::Placement(message),
+                _ => ReplayError::Invariant(message),
+            }
+            .into()
+        }
+    }
+}
+
 /// Result of advancing a replay runtime to its next settled semantic boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ReplayStepOutcome {

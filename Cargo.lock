@@ -32,13 +32,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core"
-version = "0.13.0"
+name = "aisim-core"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "bincode",
  "blake3",
- "ddsketchy",
  "derive_builder",
  "fixedbitset",
  "flate2",
@@ -61,6 +60,7 @@ dependencies = [
  "slotmap",
  "tempfile",
  "thiserror",
+ "tikv-jemallocator",
  "tracing",
  "uuid",
  "xxhash-rust",
@@ -299,12 +299,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "ddsketchy"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "724389b6953e2cef5558663e625e64220f473443132a7c64477742a0caeff621"
 
 [[package]]
 name = "derive_builder"
@@ -1318,6 +1312,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]

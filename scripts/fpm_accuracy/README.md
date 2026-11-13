@@ -2,7 +2,8 @@
 
 Development-only evaluation code adapted from NVIDIA AISim FPM Gym at
 `e8221729db2802e822f6919fd68bc2941743385b`:
-https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/e8221729db2802e822f6919fd68bc2941743385b/src/aisim_fpm
+[Public migrated source](https://github.com/ai-dynamo/aisim/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
+This is the modified public copy, not a mirror of the predecessor revision.
 
 Licensed under Apache-2.0 with maintainer-confirmed migration permission.
 See the root THIRD_PARTY_NOTICES.md and LICENSE.
@@ -16,7 +17,7 @@ Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
 overview and per-variant heatmap aggregates. Optional notification evidence retains observation-order hashes
 and compressed percentage-error sequences separately from public Pages artifacts; it does not retain
-raw measured or predicted latencies. See [daily reporting](../../docs/ci/accuracy.md#daily-accuracy-report).
+raw measured or predicted latencies. See [weekly reporting](../../docs/ci/accuracy.md#weekly-accuracy-report).
 The public `skipped_count` combines excluded and unavailable source observations;
 the Overview labels this count “excluded or unavailable.” It does not mean
 that all of these observations were deliberately filtered out.
@@ -67,7 +68,15 @@ full-catalog selector validation, including historical bindings.
 Schema v7 FPM pairs retain hash, row-count, base-configuration, and internal
 sidecar/Parquet consistency validation. Selector flags must be booleans, the
 model-config hash must be a lowercase SHA-256 (or the producer's empty legacy
-identity), and other execution fields must be nonblank strings. This does not
+identity), and other execution fields must be nonblank strings. Optional v7
+collection selectors (`measurement_policy`, `state_protocol`, `timing_boundary`,
+`measurement_repeats`, `warmup_repeats`, `sglang_allocator_max_split_size_mb`,
+and `sglang_allocator_policy_sha256`) are also checked against every Parquet row
+when present. A matching first row does not admit mismatched later rows.
+Repeat counts and allocator size must be integers: warmups may be
+zero, while measurements and allocator size must be positive. The allocator
+policy hash must be a nonempty lowercase SHA-256. Unknown selector fields still
+fail closed; older v7 pairs need not include these optional fields. This does not
 establish a binding to an authoritative execution identity in the selected
 configuration. Every v7 pair is therefore rejected by native staging, even if
 its sidecar and rows agree. Supporting v7 prediction requires that binding and
@@ -108,7 +117,8 @@ campaign checks the wheel hash and runs `pip check` after both installs.
 
 The files under `dashboard/` adapt the corresponding
 `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`
-from [Gym commit f934c030afc3a03cb04d8f3ff4709194f7445c98](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/f934c030afc3a03cb04d8f3ff4709194f7445c98).
+from Gym revision `f934c030afc3a03cb04d8f3ff4709194f7445c98`; see the
+[public dashboard migration](https://github.com/ai-dynamo/aisim/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
 Copyright NVIDIA CORPORATION & AFFILIATES; Apache-2.0, under the existing
 maintainer-confirmed migration permission. Imports were renamed, unused data
 contracts and the GitLab publication helper removed, and publication moved to
@@ -148,3 +158,38 @@ Overrides and accepted observation membership restrict which runs enter public
 summary/detail v2 assets. Missing metadata in historical evaluations remains
 Unknown. Request metrics are separate Parquet evidence; only compact chart JSON
 is served publicly. No source request IDs or prompt text enter chart assets.
+
+## Scenario comparison
+
+`run_fpm_accuracy.py --scenarios` evaluates the five data populations exposed by
+[Scenario Comparison](../../pages/fpm-accuracy/README.md#scenario-comparison):
+self-benchmark A, distributed holdout B, strict online C, A+C and temporal B+C.
+The nine B/B+C training shares use deterministic, target-blind splits. Every
+cell owns fresh predictor state and retains all test observations in its
+coverage denominator; MAPE averages successful predictions only.
+
+Protocol v13 admits the first observation at or after each five-second event-time
+tick, after prediction and scoring. The first tick is five seconds after the
+first test timestamp. Cold start uses the same admission schedule. Missing
+chronology is reported explicitly; file order is never converted to a clock.
+
+The adapters construct models through `RustForwardPassPerfModel.best_available`
+and prepare GBDT seeds with the AISim SDK trainer. The native API owns tree
+updates, hybrid calibration, causal selection and PR #639 mixed composition.
+Original-A source hashes bind fallback eligibility; B and C cannot acquire an
+A prior. Standalone A+C enables the native quality checker with its defaults.
+Frozen hybrid A+C never bootstraps a missing mixed forest. GBDT and selector
+append a native mixed checkpoint only after 20 causally admitted observations.
+
+Pure C has no original-A model: initial forests are prepared separately per
+worker and native workload store from admitted feedback. Existing store state
+survives when another store becomes ready. Offline hybrid/selector retain the
+native model's per-worker pools. Cold-start construction contributes to update
+time, while initial A/B fitting contributes to preparation time. Native
+configuration and aggregate diagnostics accompany each learned result; local
+artifact paths are removed from public evidence.
+
+The campaign publishes scenarios only in a complete, checksummed v3 artifact
+alongside the exact summary and details. Partial `--configuration` runs remain
+smoke evidence and cannot qualify for Pages. Historical paged-C protocols are
+not accepted as strict-C results.

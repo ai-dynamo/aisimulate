@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Rust Replay API
 
-`aisimulate_core::replay` exposes native deterministic token replay. The native
+`aisim_core::replay` exposes native deterministic token replay. The native
 `ReplaySpec` describes topology, engine/provider descriptors, requests and
 report controls; it differs from Python Sweeper's `ReplaySpec`. The crate root
 also re-exports common replay types.
@@ -29,9 +29,35 @@ composition. Construction validates the spec and composition. Running consumes
 the Replayer so ownership, virtual time and caches remain within one execution.
 `ReplayEngineFactory::default()` uses engine timing from the descriptor;
 `with_timing_model` or `with_optional_role_timing_models` supplies explicit
-`Arc<dyn TimingModel>` providers. `TimingModel::predict_vision_ms(&[VisionShape])`
+`Arc<dyn TimingModel>` providers. Schedulers price each prefill batch with
+`TimingModel::predict_prefill_totals_ms(batch_size, new_tokens, prefix_tokens)`:
+the tokens the batch computes and the cached or earlier-chunk KV its requests
+read. The default reduces these totals to the integer per-request means of
+`predict_prefill_ms`; providers indexed by iteration totals override it.
+A vLLM or TensorRT-LLM pass that computes prefill and decode steps together
+is priced with `TimingModel::predict_mixed_pass_ms(prefill, batch_size, ...)`,
+which takes the pass's `PrefillTotals` and otherwise the arguments of
+`predict_decode_ms`. A provider that prices such a pass as one forward returns
+`MixedPassMs`: the prefill latency and the latency the decode steps add, which
+sum to its estimate of the pass. The default `None` prices the prefill with
+`predict_prefill_totals_ms` and a separate decode pass with
+`predict_decode_ms`. The built-in `ais` provider returns the pass only for
+whole-model FPM interpolation, corrected as one mixed iteration when the model
+is tuned. Any other timing it serves, including operation-level timing,
+measured SD-round profiles and MTP drafts, returns `None`.
+`TimingModel::predict_iteration_ms(&[RankWork])` comes first: it prices one
+attention-DP group pass from every rank's `RankWork`, in DP-rank order with
+idle ranks included, and returns `IterationMs`, the shared duration every rank
+takes from its compute start under the prefill speedup. Schedulers ask only
+while `decode_speedup_ratio` is 1 and some rank computes model work; otherwise,
+and when the provider returns the default `None`, each rank prices its own
+work with the phase methods above. The `ais` provider answers through the
+canonical multi-rank `ForwardPassMetrics` query, so the phase methods serve
+only the passes it declines; see
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
+`TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
-image work then rejects it rather than treating the encoder as free. The AIC
+image work then rejects it rather than treating the encoder as free. The `ais`
 provider answers from the `EngineSpec` `vision` section compiled under
 `encoder_parallel`.
 
@@ -64,6 +90,18 @@ aggregated/decode rank; `prefill_dp_rank` is P/D-only. `WorkerPoolSpec` defines
 initial worker count and startup delay. Millisecond clocks, bandwidth-derived
 handoff times and callback timestamps use simulated time, never host wall time.
 
+A request may author `kv_hints: {"source_worker": W, "source_dp_rank": R}`, the
+worker and attention-DP rank that hold a prefix of its prompt, as when a client
+attaches a `kv.fetch` hint. It is omitted when absent. When replay starts, an
+`R` outside the `dp_size` of the pool that places the request (aggregated, or
+prefill in P/D) fails with `ReplayError::InvalidSpec`. The built-in round-robin
+placement ignores a hint whose source worker is unknown, not yet ready, draining
+or removed, and the P/D decode pool ignores every hint. Only a pool that
+configures `kvcr` acts on hints ([KV cache](../engine/kv-cache.md#kvcr-peer-fetch));
+elsewhere they change nothing. Engines receive the resolved source as
+`engine::Request::kv_hint` (`KvHintSource { worker_id, dp_rank }`), which never
+names the receiving rank.
+
 `ReplayEngineConfig` has the aggregated rank/DP/TP/PCP descriptor and optional
 prefill/decode `ReplayRoleConfig` objects. Engine and topology validators enforce
 feature combinations beyond the generic spec validator. Grouped-cache, G2/G3,
@@ -95,6 +133,16 @@ them. Latency metrics keep the arrival time, and each per-request record gains
 rejected. See
 [request tokenization](../engine/README.md#tokenization).
 
+`with_detokenization(workers, base_ms, per_output_ms)` detokenizes each pass's
+outputs before the client receives them. Each worker that emits tokens has
+`workers` servers, shared by its attention-DP ranks, and each request belongs
+to one of them. A server takes the outputs of a pass that belong to it as one
+job of `base_ms + per_output_ms × outputs`, after its earlier jobs. Token
+times, latency metrics and request completion use the client's receive time.
+Both costs zero, the default, keep every output at its pass end. Scaling and
+agentic profiles are rejected. See
+[response detokenization](../engine/README.md#detokenization).
+
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
 determinism. Canonical comparison uses the exported schema version, seed and
 exclusion definitions rather than arbitrary JSON key order. The default
@@ -107,8 +155,17 @@ and neutral observation contracts.
 interval and returns `ReplayResult<Self>`. The observer receives a baseline,
 settled interval samples, and a final tail when needed. A sample coinciding
 with a scaling tick observes settled pre-scaling state. Grouped cache byte
-occupancy is available here even though the Python JSON runner does not expose
-this observer API. Telemetry neither extends the time cap nor prevents deadlock.
+occupancy is available here. Telemetry neither extends the time cap nor prevents deadlock.
+
+`with_telemetry_capture(interval_ms)` retains native telemetry in
+`ReplayReport.telemetry`, including preparation and profiling requests, periodic
+samples, and agentic lifecycle events. It enables internal request capture while
+preserving the caller's original `record_per_request` choice for
+`ReplayReport.per_request`. Capture uses absolute virtual milliseconds and does
+not move profiling/scaling boundaries. The capture and observer APIs are mutually
+exclusive. See the [telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
+Downstream `ReplayReport` struct literals must include `telemetry: None` when
+capture is absent, or preserve the field when rebuilding a captured report.
 
 ## Errors and stability
 

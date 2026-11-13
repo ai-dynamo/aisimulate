@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Replay-owned values that cross workload, placement, reporting, and engine
 //! adapter boundaries.
@@ -9,6 +12,19 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::engine::ImageSpec;
+
+pub const AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1: &str =
+    "aisimulate.agentic.conversation-lineage.v1";
+
+/// Conversation ancestry derived from the full source graph, including history
+/// before a replay snapshot. These are conversation IDs, never request IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgenticConversationLineage {
+    pub schema: String,
+    pub root_conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_conversation_id: Option<String>,
+}
 
 /// Stable Agentic correlation data carried across replay-owned boundaries.
 ///
@@ -28,6 +44,11 @@ pub struct AgenticRuntimeIdentity {
     pub parent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_id: Option<String>,
+    /// Absent for legacy inputs or graphs with ambiguous conversation ancestry.
+    /// Consumers requiring parent affinity must reject missing/unknown schemas.
+    /// Existing `root_id` and `parent_id` continue to identify requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AgenticConversationLineage>,
 }
 
 /// Where the prompt token identities carried by a lowered request came from.
@@ -78,11 +99,26 @@ impl ReplayRequestContext {
     }
 }
 
+/// Authored `kv.fetch` hint naming the rank that holds a prefix of a request's
+/// prompt, as when a client attaches a hint directly.
+///
+/// The source is named by its logical worker and attention-DP rank. A
+/// placement policy resolves it to a scheduler id in its own topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthoredKvHints {
+    /// Logical worker that holds the prefix.
+    pub source_worker: usize,
+    /// Attention-DP rank of that worker.
+    pub source_dp_rank: u32,
+}
+
 /// One materialized replay request before it enters a generalized engine.
 #[doc(hidden)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectRequest {
     pub tokens: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     pub max_output_tokens: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
@@ -97,6 +133,9 @@ pub struct DirectRequest {
     /// fallback when this is absent, matching Dynamo's request-routing contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_prefill_dp_rank: Option<u32>,
+    /// Optional authored peer-fetch hint, as `ReplayRequest::kv_hints` describes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hints: Option<AuthoredKvHints>,
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub priority: i32,
@@ -178,7 +217,18 @@ impl DirectRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::DirectRequest;
+    use super::{AgenticRuntimeIdentity, DirectRequest};
+
+    #[test]
+    fn legacy_agentic_identity_preserves_request_parent_semantics() {
+        let old = serde_json::json!({
+            "request_id": "request-2", "play_id": "play", "conversation_id": "child",
+            "root_id": "request-0", "parent_id": "request-1"
+        });
+        let identity: AgenticRuntimeIdentity = serde_json::from_value(old.clone()).unwrap();
+        assert!(identity.lineage.is_none());
+        assert_eq!(serde_json::to_value(identity).unwrap(), old);
+    }
 
     #[test]
     fn output_plan_is_authoritative_when_limited() {

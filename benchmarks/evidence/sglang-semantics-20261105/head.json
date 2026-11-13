@@ -1,0 +1,957 @@
+{
+  "boundaries": [
+    {
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 10.0
+        },
+        "drained": true,
+        "end_ms": 10.0,
+        "evictable_tokens": 976,
+        "free_tokens": 32,
+        "outputs": {
+          "1": 0
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "prompt_tokens": 991
+    },
+    {
+      "outcome": {
+        "admissions": [],
+        "completion_ms": {
+          "1": 0.0
+        },
+        "drained": true,
+        "end_ms": 0.0,
+        "evictable_tokens": 0,
+        "free_tokens": 1008,
+        "outputs": {
+          "1": 0
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [
+          1
+        ],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "prompt_tokens": 992
+    },
+    {
+      "outcome": {
+        "admissions": [],
+        "completion_ms": {
+          "1": 0.0
+        },
+        "drained": true,
+        "end_ms": 0.0,
+        "evictable_tokens": 0,
+        "free_tokens": 1008,
+        "outputs": {
+          "1": 0
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [
+          1
+        ],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "prompt_tokens": 1001
+    }
+  ],
+  "completions": [
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 20.0
+        },
+        "drained": true,
+        "end_ms": 20.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 10.0
+        },
+        "drained": true,
+        "end_ms": 10.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": false,
+      "prompt_tokens": 127,
+      "requested_outputs": 1,
+      "speculative": false
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 74.0
+        },
+        "drained": true,
+        "end_ms": 74.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 64.0
+        },
+        "drained": true,
+        "end_ms": 64.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 28
+        },
+        "passes": 28,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": false,
+      "prompt_tokens": 100,
+      "requested_outputs": 28,
+      "speculative": false
+    },
+    {
+      "cached_tokens": 128,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 128
+          }
+        ],
+        "completion_ms": {
+          "2": 76.0
+        },
+        "drained": true,
+        "end_ms": 76.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 66.0
+        },
+        "drained": true,
+        "end_ms": 66.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "1": 29
+        },
+        "passes": 29,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": false,
+      "prompt_tokens": 100,
+      "requested_outputs": 29,
+      "speculative": false
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 20.0
+        },
+        "drained": true,
+        "end_ms": 20.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 10.0
+        },
+        "drained": true,
+        "end_ms": 10.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": false,
+      "prompt_tokens": 127,
+      "requested_outputs": 1,
+      "speculative": true
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 38.0
+        },
+        "drained": true,
+        "end_ms": 38.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 28.0
+        },
+        "drained": true,
+        "end_ms": 28.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 28
+        },
+        "passes": 10,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": false,
+      "prompt_tokens": 100,
+      "requested_outputs": 28,
+      "speculative": true
+    },
+    {
+      "cached_tokens": 128,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 128
+          }
+        ],
+        "completion_ms": {
+          "2": 40.0
+        },
+        "drained": true,
+        "end_ms": 40.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 1,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 30.0
+        },
+        "drained": true,
+        "end_ms": 30.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "1": 29
+        },
+        "passes": 11,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": false,
+      "prompt_tokens": 100,
+      "requested_outputs": 29,
+      "speculative": true
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 20.0
+        },
+        "drained": true,
+        "end_ms": 20.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 2,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 10.0
+        },
+        "drained": true,
+        "end_ms": 10.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 1
+        },
+        "passes": 2,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": true,
+      "prompt_tokens": 127,
+      "requested_outputs": 1,
+      "speculative": false
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 74.0
+        },
+        "drained": true,
+        "end_ms": 74.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 2,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 64.0
+        },
+        "drained": true,
+        "end_ms": 64.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 28
+        },
+        "passes": 29,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": true,
+      "prompt_tokens": 100,
+      "requested_outputs": 28,
+      "speculative": false
+    },
+    {
+      "cached_tokens": 128,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 128
+          }
+        ],
+        "completion_ms": {
+          "2": 76.0
+        },
+        "drained": true,
+        "end_ms": 76.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 2,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 66.0
+        },
+        "drained": true,
+        "end_ms": 66.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "1": 29
+        },
+        "passes": 30,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": true,
+      "prompt_tokens": 100,
+      "requested_outputs": 29,
+      "speculative": false
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 22.0
+        },
+        "drained": true,
+        "end_ms": 24.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 3,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 10.0
+        },
+        "drained": true,
+        "end_ms": 12.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 1
+        },
+        "passes": 3,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": true,
+      "prompt_tokens": 127,
+      "requested_outputs": 1,
+      "speculative": true
+    },
+    {
+      "cached_tokens": 112,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 112
+          }
+        ],
+        "completion_ms": {
+          "2": 40.0
+        },
+        "drained": true,
+        "end_ms": 42.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 3,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 28.0
+        },
+        "drained": true,
+        "end_ms": 30.0,
+        "evictable_tokens": 112,
+        "free_tokens": 912,
+        "outputs": {
+          "1": 28
+        },
+        "passes": 12,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": true,
+      "prompt_tokens": 100,
+      "requested_outputs": 28,
+      "speculative": true
+    },
+    {
+      "cached_tokens": 128,
+      "follower": {
+        "admissions": [
+          {
+            "id": 2,
+            "reused_tokens": 128
+          }
+        ],
+        "completion_ms": {
+          "2": 42.0
+        },
+        "drained": true,
+        "end_ms": 44.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "2": 1
+        },
+        "passes": 3,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          2
+        ],
+        "terminals": {
+          "2": 1
+        }
+      },
+      "outcome": {
+        "admissions": [
+          {
+            "id": 1,
+            "reused_tokens": 0
+          }
+        ],
+        "completion_ms": {
+          "1": 30.0
+        },
+        "drained": true,
+        "end_ms": 32.0,
+        "evictable_tokens": 128,
+        "free_tokens": 896,
+        "outputs": {
+          "1": 29
+        },
+        "passes": 13,
+        "pressure_events": 0,
+        "ratio": 0.7,
+        "rejected": [],
+        "terminal_order": [
+          1
+        ],
+        "terminals": {
+          "1": 1
+        }
+      },
+      "overlap": true,
+      "prompt_tokens": 100,
+      "requested_outputs": 29,
+      "speculative": true
+    }
+  ],
+  "default_decode_cache": {
+    "cached_tokens": 0,
+    "outcome": {
+      "admissions": [
+        {
+          "id": 1,
+          "reused_tokens": 0
+        }
+      ],
+      "completion_ms": {
+        "1": 2.0
+      },
+      "drained": true,
+      "end_ms": 2.0,
+      "evictable_tokens": 0,
+      "free_tokens": 2048,
+      "outputs": {
+        "1": 1
+      },
+      "passes": 1,
+      "pressure_events": 0,
+      "ratio": 0.7,
+      "rejected": [],
+      "terminal_order": [
+        1
+      ],
+      "terminals": {
+        "1": 1
+      }
+    }
+  },
+  "generation_clip": {
+    "admissions": [
+      {
+        "id": 1,
+        "reused_tokens": 0
+      }
+    ],
+    "completion_ms": {
+      "1": 166.0
+    },
+    "drained": true,
+    "end_ms": 166.0,
+    "evictable_tokens": 976,
+    "free_tokens": 32,
+    "outputs": {
+      "1": 79
+    },
+    "passes": 79,
+    "pressure_events": 0,
+    "ratio": 0.7,
+    "rejected": [],
+    "terminal_order": [
+      1
+    ],
+    "terminals": {
+      "1": 1
+    }
+  },
+  "pd_admission": {
+    "free_tokens": 2096,
+    "reserved": [
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "queue_order": {
+    "admissions": [
+      {
+        "id": 3,
+        "reused_tokens": 28
+      }
+    ],
+    "completion_ms": {
+      "2": 70.0,
+      "3": 80.0
+    },
+    "drained": true,
+    "end_ms": 80.0,
+    "evictable_tokens": 56,
+    "free_tokens": 200,
+    "outputs": {
+      "2": 1,
+      "3": 1
+    },
+    "passes": 3,
+    "pressure_events": 0,
+    "ratio": 0.7,
+    "rejected": [],
+    "terminal_order": [
+      2,
+      3
+    ],
+    "terminals": {
+      "2": 1,
+      "3": 1
+    }
+  },
+  "ratio_lifecycle": {
+    "blocked": [
+      0.3,
+      0.3,
+      0.3
+    ],
+    "drained": 0.7
+  }
+}

@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
 import pytest
 import yaml
 
-from aisimulate.config.common import ResourceConfig
-from aisimulate.resources import GB, MIB
-from aisimulate.supervision import run_process
+from aisim.config.common import ResourceConfig
+from aisim.resources import GB, MIB
+from aisim.supervision import run_process
 
 
 def _policy(extra_mib=64, **kwargs):
@@ -125,7 +126,7 @@ def test_invalid_cli_input_preserves_outputs_and_stack_error_order(tmp_path, fai
     command = [
         sys.executable,
         "-m",
-        "aisimulate",
+        "aisim",
         "predict",
         "--config",
         str(config),
@@ -183,7 +184,7 @@ def test_recommend_output_validation_preserves_outputs(tmp_path, name, section, 
     metadata.mkdir()
     (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: test-config-adapter\nVersion: 1.0\n")
     (metadata / "entry_points.txt").write_text(
-        "[aisimulate.config_adapters]\nengine.placement = nonexistent_adapter:factory\n"
+        "[aisim.config_adapters]\nengine.placement = nonexistent_adapter:factory\n"
     )
     output = tmp_path / "output"
     (output / "recommendations").mkdir(parents=True)
@@ -202,7 +203,7 @@ def test_recommend_output_validation_preserves_outputs(tmp_path, name, section, 
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "recommend",
             "--config",
             str(config),
@@ -228,11 +229,74 @@ def _cli_arguments(tmp_path):
     return ["predict", "--config", str(config), "--output-dir", str(tmp_path / "output")]
 
 
+@pytest.mark.parametrize(
+    "extra,backend,message",
+    [
+        (["--telemetry-sample-interval-ms", "0"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "-1"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "nan"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "inf"], "vllm", "finite and positive"),
+        (["--online"], "vllm", "telemetry capture requires offline --stack engine"),
+        (["--stack", "legacy"], "vllm", "telemetry capture requires offline --stack engine"),
+        ([], "trtllm", "telemetry capture requires offline native vLLM/SGLang"),
+    ],
+)
+@pytest.mark.parametrize("capture_flag", ["--capture-telemetry", "--export-html"])
+def test_supervisor_rejects_invalid_telemetry_before_overwrite(
+    tmp_path, monkeypatch, capsys, extra, backend, message, capture_flag
+):
+    from aisim import cli_args, supervision
+
+    prior = {
+        name: f"prior {name}\n"
+        for name in (
+            "prediction.json",
+            "report.html",
+            "telemetry-requests.jsonl",
+            "telemetry-samples.jsonl",
+            "keep.txt",
+        )
+    }
+    for name, contents in prior.items():
+        (tmp_path / name).write_text(contents)
+    raw = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": backend,
+            "workers": {"aggregated": {}},
+        }
+    }
+    monkeypatch.setattr(cli_args, "_load_mapping", lambda _: raw)
+    monkeypatch.setattr(supervision, "_installed_names", lambda _: ["legacy"])
+
+    def forbidden_run(*args, **kwargs):
+        pytest.fail("invalid telemetry options reached execution")
+
+    monkeypatch.setattr(supervision, "run_process", forbidden_run)
+    with pytest.raises(SystemExit) as exc:
+        supervision.main(
+            [
+                "predict",
+                "-c",
+                "unused.yaml",
+                capture_flag,
+                "--output-dir",
+                str(tmp_path),
+                "--overwrite",
+                *extra,
+            ]
+        )
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert {path.name: path.read_text() for path in tmp_path.iterdir()} == prior
+
+
 @pytest.mark.parametrize("probe", ["discover_host", "resolve_budget"])
 @pytest.mark.parametrize("detailed_plan", [False, True])
 def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monkeypatch, probe, detailed_plan):
-    from aisimulate import supervision
-    from aisimulate.resources import HostResources, ResourceLimitError
+    from aisim import supervision
+    from aisim.resources import HostResources, ResourceLimitError
 
     details = {"budget": {"memory_limit_bytes": 100}, "peak_observed_rss_bytes": 90} if detailed_plan else {}
 
@@ -273,7 +337,7 @@ def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monk
 
 @pytest.mark.parametrize("child_code,expected", [(-9, 1), (-15, 1), (2, 2)])
 def test_cli_normalizes_signal_exit_but_retains_raw_diagnostics(tmp_path, monkeypatch, child_code, expected):
-    from aisimulate import supervision
+    from aisim import supervision
 
     monkeypatch.setattr(
         supervision,
@@ -313,7 +377,7 @@ def test_overwrite_clears_stale_results_before_early_resource_refusal(tmp_path):
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "recommend",
             "--config",
             str(config),
@@ -369,7 +433,7 @@ def test_public_cli_runs_small_native_prediction_with_resource_evidence(tmp_path
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "predict",
             "--config",
             str(config),
@@ -440,7 +504,7 @@ def test_public_cli_profile_uses_unqualified_supervised_resource_plan(tmp_path, 
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "predict",
             "--config",
             str(config),
@@ -469,9 +533,9 @@ def test_public_cli_profile_uses_unqualified_supervised_resource_plan(tmp_path, 
 
 
 def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
-    from aisimulate.config import CoreRecommendationConfig
-    from aisimulate.recommend import run_recommendation
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim.config import CoreRecommendationConfig
+    from aisim.recommend import run_recommendation
+    from aisim.runner import EngineReplayRunnerFactory
 
     raw = yaml.safe_load(
         Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml").read_text()
@@ -492,11 +556,79 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     assert result.execution_resources["peak_observed_rss_bytes"] > 0
 
 
+@contextmanager
+def _child_with_grandchild():
+    """Yield a child and its detached grandchild's PID; the child exits when its stdin closes."""
+    import subprocess
+
+    source = """import subprocess, sys
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+print(child.pid, flush=True)
+sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", source], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True
+    )
+    grandchild = None
+    try:
+        grandchild = int(process.stdout.readline())
+        yield process, grandchild
+    finally:
+        if grandchild is not None and psutil.pid_exists(grandchild):
+            psutil.Process(grandchild).kill()
+        process.kill()
+        process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
+@pytest.mark.parametrize("proc_children", [True, False])
+def test_owned_tree_close_stops_an_observed_descendant_after_its_parent_exits(monkeypatch, proc_children):
+    from aisim import resources
+    from aisim.supervision import OwnedTree
+
+    if proc_children and not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    monkeypatch.setattr(resources, "_PROC_CHILDREN", proc_children)
+    # The grandchild leaves the session and outlives its parent, so neither the
+    # process group nor a later discovery reaches it; only its observed identity does.
+    with _child_with_grandchild() as (process, grandchild):
+        tree = OwnedTree(process)
+        tree.sample()
+        process.stdin.close()
+        process.wait(timeout=5)
+        tree.sample()
+        assert grandchild in {pid for pid, _ in tree.known}
+        tree.close()
+        assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+
+
+def test_descendants_fall_back_instead_of_dropping_an_unreadable_subtree(monkeypatch):
+    import errno
+
+    from aisim import resources
+
+    if not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    iterdir = Path.iterdir
+    with _child_with_grandchild() as (process, grandchild):
+        unreadable = Path(f"/proc/{process.pid}/task")
+
+        def fail(path):
+            if path == unreadable:
+                raise OSError(errno.EMFILE, "Too many open files")
+            return iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail)
+        # A live child whose threads cannot be listed must not hide its subtree.
+        assert grandchild in {child.pid for child in resources.descendants_of(psutil.Process())}
+
+
 def test_pool_termination_reaps_before_shutdown_returns():
     import multiprocessing
     import time
 
-    from aisimulate.supervision import terminate_pool
+    from aisim.supervision import terminate_pool
 
     worker = multiprocessing.get_context("spawn").Process(target=time.sleep, args=(30,))
     worker.start()
@@ -524,7 +656,7 @@ def test_completed_events_survive_interruption(tmp_path):
     script.write_text("""
 import json, os, time
 from pathlib import Path
-budget = json.loads(os.environ["_AISIMULATE_SUPERVISED_BUDGET"])
+budget = json.loads(os.environ["_AISIM_SUPERVISED_BUDGET"])
 Path(budget["ready_path"]).touch()
 Path(budget["events_path"]).write_text('{"event":"candidate_completed","value":{"score":1}}\\n' + '{"event":')
 time.sleep(30)
@@ -539,7 +671,7 @@ time.sleep(30)
 def test_cancellation_cleans_only_the_owned_process_tree(tmp_path, monkeypatch):
     import subprocess
 
-    import aisimulate.supervision as supervision
+    import aisim.supervision as supervision
 
     unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     original = supervision.discover_host
@@ -573,9 +705,9 @@ time.sleep(30)
 
 
 def test_sdk_completes_real_recommendation_and_preserves_resource_evidence():
-    from aisimulate.config import CoreRecommendationConfig
-    from aisimulate.recommend import run_recommendation
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim.config import CoreRecommendationConfig
+    from aisim.recommend import run_recommendation
+    from aisim.runner import EngineReplayRunnerFactory
 
     path = Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml")
     raw = yaml.safe_load(path.read_text())
@@ -596,7 +728,7 @@ def test_sdk_completes_real_recommendation_and_preserves_resource_evidence():
 def test_shrinking_host_headroom_stops_new_work(tmp_path, monkeypatch):
     import dataclasses
 
-    import aisimulate.supervision as supervision
+    import aisim.supervision as supervision
 
     original = supervision.discover_host
     calls = 0
@@ -621,7 +753,7 @@ def test_shutdown_deadline_stops_a_hung_finalizer(tmp_path):
         """
 import json, os, time
 from pathlib import Path
-budget = json.loads(os.environ["_AISIMULATE_SUPERVISED_BUDGET"])
+budget = json.loads(os.environ["_AISIM_SUPERVISED_BUDGET"])
 Path(budget["ready_path"]).write_text("shutdown")
 time.sleep(30)
 """,
@@ -640,9 +772,9 @@ def test_sdk_accepts_a_factory_defined_in_a_guarded_script(tmp_path):
 import json
 from pathlib import Path
 import yaml
-from aisimulate.config import CoreRecommendationConfig
-from aisimulate.recommend import run_recommendation
-from aisimulate.runner import EngineReplayRunnerFactory
+from aisim.config import CoreRecommendationConfig
+from aisim.recommend import run_recommendation
+from aisim.runner import EngineReplayRunnerFactory
 
 class ScriptFactory(EngineReplayRunnerFactory):
     pass
@@ -660,6 +792,112 @@ if __name__ == "__main__":
     assert json.loads(result.stdout) == {"feasible": 1, "status": "completed"}
 
 
+def test_supervised_recommendation_joins_publisher_before_final_writer(tmp_path):
+    import subprocess
+
+    events = tmp_path / "lifecycle-events.txt"
+    output = tmp_path / "output"
+    script = tmp_path / "lifecycle.py"
+    script.write_text("""
+import sys
+import threading
+from pathlib import Path
+
+import yaml
+
+from aisim.config import CoreRecommendationConfig
+from aisim.output_adapter import (
+    OUTPUT_ADAPTER_API_VERSION,
+    RecommendationOutputCallbacks,
+    write_output_adapters,
+)
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.supervision import supervised_recommendation
+
+
+class LifecycleProbeAdapter:
+    name = "lifecycle-probe"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    @staticmethod
+    def append(path, event):
+        with Path(path).open("a", encoding="utf-8") as target:
+            target.write(event + "\\n")
+
+    def subscribe(self, config):
+        events = config["events"]
+        stop = threading.Event()
+        publisher = threading.Thread(target=stop.wait, args=(10,), daemon=False)
+        publisher.start()
+        self.append(events, "publisher_started")
+
+        def finish(event):
+            self.append(events, event)
+            stop.set()
+            publisher.join(timeout=2)
+            if publisher.is_alive():
+                raise RuntimeError("publisher did not stop")
+            self.append(events, "publisher_joined")
+
+        return RecommendationOutputCallbacks(
+            on_complete=lambda: finish("complete"),
+            on_failure=lambda error: finish("failure"),
+        )
+
+    def write(self, config, *, result, output_dir):
+        del result
+        events = Path(config["events"])
+        if events.read_text(encoding="utf-8").splitlines()[-1] != "publisher_joined":
+            raise RuntimeError("final writer ran before publisher shutdown")
+        self.append(events, "final_write")
+        artifact = Path("lifecycle-probe.txt")
+        (output_dir / artifact).write_text("complete\\n", encoding="utf-8")
+        return [artifact]
+
+
+if __name__ == "__main__":
+    events = Path(sys.argv[1])
+    output = Path(sys.argv[2])
+    output.mkdir()
+    path = Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml")
+    raw = yaml.safe_load(path.read_text())
+    raw["optimizer"].update(max_trials=1, parallelism=1)
+    config = CoreRecommendationConfig.model_validate(raw)
+    output_configs = {"lifecycle-probe": {"events": str(events)}}
+    result = supervised_recommendation(
+        config,
+        {
+            "stack": "engine",
+            "runner_factory": EngineReplayRunnerFactory(),
+            "output_configs": output_configs,
+            "output_adapters": {"lifecycle-probe": LifecycleProbeAdapter()},
+            "show_progress": False,
+        },
+    )
+    write_output_adapters(
+        {"lifecycle-probe": LifecycleProbeAdapter()},
+        output_configs,
+        result=result,
+        output_dir=output,
+    )
+""")
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(events), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        "publisher_started",
+        "complete",
+        "publisher_joined",
+        "final_write",
+    ]
+
+
 def test_supervisor_argument_and_output_setup_do_not_import_runtime():
     import subprocess
 
@@ -669,14 +907,14 @@ def test_supervisor_argument_and_output_setup_do_not_import_runtime():
             "-c",
             """
 import sys
-import aisimulate.supervision, aisimulate.cli_args, aisimulate.output
-aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine')
+import aisim.supervision, aisim.cli_args, aisim.output
+aisim.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine')
 
-runtime = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas')
+runtime = ('aisim._runtime', 'aisim.sweeper', 'numpy', 'pandas')
 assert not any(name == root or name.startswith(root + '.') for name in sys.modules for root in runtime)
 # Profile validation needs only lightweight metadata before resource admission.
-allowed_core = {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}
-loaded_core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+allowed_core = {'aisim_core', 'aisim_core.fpm_profile', 'aisim_core.quantization'}
+loaded_core = {name for name in sys.modules if name == 'aisim_core' or name.startswith('aisim_core.')}
 assert loaded_core <= allowed_core, loaded_core - allowed_core
 """,
         ],
@@ -735,7 +973,7 @@ def test_invalid_rerun_with_overwrite_keeps_previous_results_byte_identical(tmp_
 
     config = _small_cli_config(tmp_path, command)
     output = tmp_path / "output"
-    base = [sys.executable, "-m", "aisimulate", command, "--config", str(config), "--output-dir", str(output)]
+    base = [sys.executable, "-m", "aisim", command, "--config", str(config), "--output-dir", str(output)]
     first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
     assert first.returncode == 0, first.stderr
     (output / "notes.txt").write_text("unrelated file")
@@ -757,7 +995,7 @@ def test_invalid_predict_rerun_with_recommendation_section_keeps_previous_result
 
     config = _small_cli_config(tmp_path, "predict")
     output = tmp_path / "output"
-    base = [sys.executable, "-m", "aisimulate", "predict", "--config", str(config), "--output-dir", str(output)]
+    base = [sys.executable, "-m", "aisim", "predict", "--config", str(config), "--output-dir", str(output)]
     first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
     assert first.returncode == 0, first.stderr
     before = _output_bytes(output)
@@ -794,7 +1032,7 @@ def test_unavailable_output_adapter_with_overwrite_keeps_previous_results(tmp_pa
         [
             sys.executable,
             "-m",
-            "aisimulate",
+            "aisim",
             "recommend",
             "--config",
             str(config),
@@ -814,9 +1052,9 @@ def test_unavailable_output_adapter_with_overwrite_keeps_previous_results(tmp_pa
 
 
 def test_supervisor_entry_point_groups_match_their_resolvers():
-    from aisimulate import supervision
-    from aisimulate.output_adapter import OUTPUT_ADAPTER_ENTRY_POINT_GROUP
-    from aisimulate.stack import RUNNER_FACTORY_ENTRY_POINT_GROUP, resolve_runner_factory
+    from aisim import supervision
+    from aisim.output_adapter import OUTPUT_ADAPTER_ENTRY_POINT_GROUP
+    from aisim.stack import RUNNER_FACTORY_ENTRY_POINT_GROUP, resolve_runner_factory
 
     assert supervision._STACK_GROUP == RUNNER_FACTORY_ENTRY_POINT_GROUP
     assert supervision._OUTPUT_ADAPTER_GROUP == OUTPUT_ADAPTER_ENTRY_POINT_GROUP

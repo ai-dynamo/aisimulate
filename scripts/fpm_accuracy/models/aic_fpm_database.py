@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,6 +26,7 @@ class FpmArtifactSource(Protocol):
     local_path: Path
     local_metadata_path: Path
     sha256: str
+    metadata_sha256: str
 
 
 @dataclass(slots=True)
@@ -42,7 +45,11 @@ def prepare_aic_fpm_database(
     engine_config: Mapping[str, Any],
     artifact: FpmArtifactSource,
 ) -> PreparedAicFpmDatabase:
-    """Overlay the exact HF parquet pair without rebuilding it from measurements."""
+    """Stage the pinned table, completing only verified reconstructed declarations.
+
+    Original files remain immutable. Native validation still owns whether the
+    staged table supports the requested estimator and workload.
+    """
 
     parquet_path = Path(artifact.local_path).resolve()
     metadata_path = Path(artifact.local_metadata_path).resolve()
@@ -52,12 +59,26 @@ def prepare_aic_fpm_database(
     if metadata.get("schema_version") == 7:
         raise DependencyError("FPM schema v7 execution identity is not yet supported by the Gym worker adapter.")
 
+    metadata, recovered = _recover_reconstructed_metadata(metadata, artifact)
+    recovery = None
+    if recovered:
+        metadata_text = json.dumps(metadata, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        recovery = {
+            "policy": "schema6_reconstructed_row_contract_v1",
+            "source_metadata_sha256": artifact.metadata_sha256,
+            "staged_metadata_sha256": hashlib.sha256(metadata_text.encode()).hexdigest(),
+            "recovered_fields": recovered,
+        }
     temporary = TemporaryDirectory(prefix="aisim-fpm-")
     systems_root = Path(temporary.name)
     try:
         target_dir = _prepare_system_overlay(systems_root, engine_config)
         (target_dir / "fpm_forward_perf.parquet").symlink_to(parquet_path)
-        (target_dir / "fpm_forward_perf.metadata.json").symlink_to(metadata_path)
+        staged_metadata = target_dir / "fpm_forward_perf.metadata.json"
+        if recovery is not None:
+            staged_metadata.write_text(metadata_text, encoding="utf-8")
+        else:
+            staged_metadata.symlink_to(metadata_path)
     except Exception:
         temporary.cleanup()
         raise
@@ -67,9 +88,122 @@ def prepare_aic_fpm_database(
             "fpm_artifact_id": artifact.artifact_id,
             "fpm_parquet_sha256": artifact.sha256,
             "fpm_row_count": metadata.get("row_count"),
+            **({"fpm_metadata_recovery": recovery} if recovery is not None else {}),
         },
         _temporary_directory=temporary,
     )
+
+
+def _recover_reconstructed_metadata(
+    metadata: dict[str, Any], artifact: FpmArtifactSource
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Complete historical schema-6 sidecars using explicit, verified row facts.
+
+    The schema-6 collector's row writer and sidecar publisher declare balanced
+    iteration coordinates and the single-sample policy (collector/fpm_forward/
+    database.py at e8828036e3d32d8361e2abb819e0ee60e569f518). This compatibility
+    boundary accepts only that contract, not inferred producer history. It keeps
+    provenance, unknown revisions and every existing declaration unchanged.
+    Work is one digest pass and a bounded scan of contract/selector columns at
+    preparation time; no measured latencies are loaded or rewritten here.
+    """
+    if metadata.get("schema_version") != 6 or metadata.get("metadata_provenance") != "reconstructed_from_parquet":
+        return metadata, {}
+    declarations = (
+        "coordinate_system",
+        "measurement_policy",
+        "system",
+        "backend",
+        "backend_version",
+    )
+    if all(name in metadata for name in declarations):
+        # Complete sidecars need no reconstruction proof. The native loader
+        # validates their declared contract. Legacy single-sample tables may
+        # omit per-row policy/repeat columns and sidecar repeat counts.
+        return metadata, {}
+    if type(metadata["schema_version"]) is not int or metadata.get("schema_name") != "aic_fpm_forward_perf":
+        raise ConfigurationError("Reconstructed FPM sidecar requires the explicit schema-6 contract")
+    parquet_path = Path(artifact.local_path)
+    if (
+        _file_sha256(parquet_path) != artifact.sha256
+        or metadata.get("parquet_sha256") != artifact.sha256
+        or _file_sha256(Path(artifact.local_metadata_path)) != artifact.metadata_sha256
+    ):
+        raise ConfigurationError("Reconstructed FPM sources differ from their pinned hashes")
+    selector = metadata.get("configuration_selector")
+    identity_fields = ("model_path", "system", "backend", "backend_version")
+    if not isinstance(selector, dict) or not set(identity_fields) <= selector.keys():
+        raise ConfigurationError("Reconstructed FPM sidecar requires an explicit configuration selector")
+    row_count = metadata.get("row_count")
+    if type(row_count) is not int or row_count <= 0:
+        raise ConfigurationError("Reconstructed FPM sidecar requires a positive integer row_count")
+    coordinate_fields = ("batch_size", "total_prefill_tokens", "total_kv_read_tokens")
+    columns = list(
+        dict.fromkeys(
+            (
+                *selector,
+                *coordinate_fields,
+                "partition_policy",
+                "measurement_policy",
+                "measurement_repeats",
+                "warmup_repeats",
+            )
+        )
+    )
+    import pyarrow.parquet as pq
+
+    try:
+        parquet = pq.ParquetFile(parquet_path)
+        if parquet.metadata.num_rows != row_count:
+            raise ConfigurationError("Reconstructed FPM sidecar row_count differs from parquet")
+        if not set(columns) <= set(parquet.schema_arrow.names):
+            raise ConfigurationError("Reconstructed FPM sidecar requires explicit schema-6 row contract columns")
+        for batch in parquet.iter_batches(batch_size=4096, columns=columns):
+            for row in batch.to_pylist():
+                for name, expected in selector.items():
+                    if type(row[name]) is not type(expected) or row[name] != expected:
+                        raise ConfigurationError(f"Reconstructed FPM sidecar selector conflicts with row {name}")
+                if any(not isinstance(row[name], str) or not row[name] for name in identity_fields):
+                    raise ConfigurationError("Reconstructed FPM rows require explicit nonempty deployment identity")
+                if row["partition_policy"] != "balanced_v1":
+                    raise ConfigurationError("Reconstructed FPM rows require balanced_v1 partition_policy")
+                if (
+                    any(type(row[name]) is not int or row[name] < 0 for name in coordinate_fields)
+                    or row["batch_size"] == 0
+                ):
+                    raise ConfigurationError("Reconstructed FPM rows have invalid iteration-total coordinates")
+                if (
+                    row["measurement_policy"] != "dynamo_native_single_sample_v1"
+                    or type(row["measurement_repeats"]) is not int
+                    or row["measurement_repeats"] != 1
+                    or type(row["warmup_repeats"]) is not int
+                    or row["warmup_repeats"] != 0
+                ):
+                    raise ConfigurationError("Reconstructed FPM rows require the explicit single-sample policy")
+    except ConfigurationError:
+        raise
+    except Exception as exc:
+        raise ConfigurationError("Cannot validate reconstructed FPM row contracts") from exc
+    facts = {
+        "coordinate_system": "iteration_totals_balanced_v1",
+        "measurement_policy": "dynamo_native_single_sample_v1",
+        "measurement_repeats": 1,
+        "warmup_repeats": 0,
+        **{name: selector[name] for name in identity_fields[1:]},
+    }
+    for name, value in {**selector, **facts}.items():
+        if name in metadata and (type(metadata[name]) is not type(value) or metadata[name] != value):
+            raise ConfigurationError(f"Reconstructed FPM sidecar conflicts with row-derived {name}")
+    recovered = {name: value for name, value in facts.items() if name not in metadata}
+    return {**metadata, **recovered}, recovered
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _read_metadata(path: Path) -> dict[str, Any]:
@@ -84,10 +218,10 @@ def _read_metadata(path: Path) -> dict[str, Any]:
 
 def _prepare_system_overlay(systems_root: Path, engine_config: Mapping[str, Any]) -> Path:
     try:
-        from aisimulate_core.sdk import perf_database
+        from aisim_core.sdk import perf_database
     except ImportError as exc:
         raise DependencyError(
-            "AISim FPM prediction requires aisimulate; install the AISim checkout in this environment"
+            "AISim FPM prediction requires aisim; install the AISim checkout in this environment"
         ) from exc
 
     system_name = str(engine_config["system_name"])

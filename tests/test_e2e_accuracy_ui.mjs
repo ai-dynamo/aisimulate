@@ -25,7 +25,7 @@ const catalog = { schema_version: 1, default_branch: "main", branches: [
 ] };
 const response = (data, status = 200) => ({ ok: status === 200, status, json: async () => structuredClone(data) });
 
-function harness(fetch = async () => response(historical), url = "https://example.com/aisimulate/e2e-accuracy/") {
+function harness(fetch = async () => response(historical), url = "https://example.com/aisim/e2e-accuracy/") {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
@@ -47,7 +47,7 @@ function harness(fetch = async () => response(historical), url = "https://exampl
     document: { getElementById: element, querySelectorAll: () => [], documentElement: { dataset: {} } },
     localStorage: { setItem() {} }, location,
     history: { replaceState(_state, _title, next) { location.href = String(next); } },
-    fetch, URL, Intl, console,
+    fetch, URL, Intl, console, structuredClone,
   });
   vm.runInContext(source.replace(bootstrap, ""), context);
   return { element, context, location, run: (code) => vm.runInContext(code, context),
@@ -66,7 +66,7 @@ function withEvaluation() {
   const data = structuredClone(historical);
   data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.aic_commit_sha = "d".repeat(40);
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisim", ...data.snapshot.evaluated_revision };
   return data;
 }
 
@@ -82,9 +82,9 @@ function withTopology() {
   for (const item of [data.totals, model, workload, gpu]) {
     item.rows = 3;
     item.aic.points = 3;
-    item.aisimulate.points = 2;
-    item.aisimulate.coverage_pct = 200 / 3;
-    item.aisimulate.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
+    item.aisim.points = 2;
+    item.aisim.coverage_pct = 200 / 3;
+    item.aisim.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
     item.precisions = ["fp8"];
     if ("gpu_skus" in item) item.gpu_skus = [gpu.gpu];
   }
@@ -92,7 +92,7 @@ function withTopology() {
     concurrency, status: success ? "success" : "failed",
     measured: { ttft_relative: concurrency, tpot_relative: concurrency },
     aic: { ttft_relative: concurrency * 1.2, tpot_relative: concurrency * 1.1, ttft_error_pct: 20, tpot_error_pct: 10 },
-    aisimulate: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
+    aisim: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
       ttft_error_pct: success ? 10 : null, tpot_error_pct: success ? 0 : null },
   });
   gpu.topologies = [{ ...structuredClone(gpu),
@@ -224,7 +224,7 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   await app.run('loadBranch("main")');
   assert.match(app.element("provenance-content").innerHTML, /actions\/runs\/123/);
   assert.match(app.element("provenance-content").innerHTML, /Qualified e2e-accuracy-web artifact/);
-  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisimulate\/blob\//);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisim\/blob\//);
   assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
@@ -276,10 +276,16 @@ test("branch switching keeps multi-node scope in provenance", async () => {
 test("bundled AIC (legacy CLI) provenance links to AISim and rejects another repository or revision", async () => {
   const data = withEvaluation();
   const app = setup(async () => response(data));
+  for (const repository of ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]) {
+    const retained = structuredClone(data);
+    retained.snapshot.aic_source.repository = repository;
+    app.set("retained", retained);
+    app.run("validateSummary(retained)");
+  }
   app.set("revisionFixture", data.snapshot.evaluated_revision);
   app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
   await app.run('loadBranch("main")');
-  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisimulate\/commit\/d{40}/);
+  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisim\/commit\/d{40}/);
   assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
   for (const change of [
     { repository: "https://github.com/ai-dynamo/aiconfigurator" },
@@ -370,8 +376,8 @@ test("topology curves retain missing-point gaps and expose normalized numeric de
   assert.match(html, /Operating points \(3\)/);
   assert.match(html, /1\.200×/);
   assert.match(html, /<td>failed \/ success<\/td>/);
-  assert.equal((html.match(/<line class="curve aisimulate"/g) ?? []).length, 0);
-  assert.equal((html.match(/<circle class="point aisimulate"/g) ?? []).length, 4);
+  assert.equal((html.match(/<line class="curve aisim"/g) ?? []).length, 0);
+  assert.equal((html.match(/<circle class="point aisim"/g) ?? []).length, 4);
 });
 
 test("changing topology updates the rendered points and shared selection in both directions", async () => {
@@ -386,8 +392,8 @@ test("changing topology updates the rendered points and shared selection in both
   for (const item of [data.totals, model, workload, gpu]) {
     item.rows *= 2;
     item.aic.points *= 2;
-    item.aisimulate.points *= 2;
-    for (const status of Object.keys(item.aisimulate.status_counts)) item.aisimulate.status_counts[status] *= 2;
+    item.aisim.points *= 2;
+    for (const status of Object.keys(item.aisim.status_counts)) item.aisim.status_counts[status] *= 2;
   }
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
@@ -480,7 +486,7 @@ for (const [level, depth] of [["model", 1], ["workload", 2], ["GPU", 3], ["topol
     // Keep each aggregate and all ancestors internally consistent; only this child coverage is short.
     for (const parent of [invalid.totals, model, workload, gpu].slice(0, depth)) {
       parent.rows += 1;
-      parent.aisimulate.status_counts.unknown += 1;
+      parent.aisim.status_counts.unknown += 1;
     }
     const app = setup(); app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
@@ -495,9 +501,9 @@ test("summary validates the metadata, dimensions, and types required by renderin
       data.snapshot.measurement_source_url = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/123";
     }],
     ["release URL", (data) => { data.snapshot.measurement_source_url += "-other"; }],
-    ["packages", (data) => { data.snapshot.aisimulate_packages = []; }],
+    ["packages", (data) => { data.snapshot.aisim_packages = []; }],
     ["measurement date", (data) => { data.snapshot.measurement_date_through = 123; }],
-    ["completion date", (data) => { data.snapshot.aisimulate_completed_at = {}; }],
+    ["completion date", (data) => { data.snapshot.aisim_completed_at = {}; }],
     ["scope", (data) => { data.scope = []; }],
     ["multinode scope", (data) => { data.scope.multinode = "unknown"; }],
     ["excluded rows", (data) => { data.scope.excluded_multinode_rows = -1; }],
@@ -512,7 +518,7 @@ test("summary validates the metadata, dimensions, and types required by renderin
     ["GPU precisions", (data) => { data.models[0].workloads[0].gpus[0].precisions = []; }],
     ["topology ID", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].id = 1234567890123456; }],
     ["topology parallelism", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].parallelism = []; }],
-    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisimulate.status_counts.extra = 0; }],
+    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisim.status_counts.extra = 0; }],
   ]) {
     const invalid = withTopology(); corrupt(invalid);
     app.set("invalid", invalid);
@@ -556,9 +562,9 @@ test("aggregate replay counts must match rows and successful points at every lev
     (data) => data.models[0].workloads[0].gpus[0].topologies[0],
   ]) {
     for (const corrupt of [
-      (item) => { item.aisimulate.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
-      (item) => { item.aisimulate.points = item.aisimulate.status_counts.success + 1; },
-      (item) => { item.aisimulate.status_counts.failed += 1; },
+      (item) => { item.aisim.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
+      (item) => { item.aisim.points = item.aisim.status_counts.success + 1; },
+      (item) => { item.aisim.status_counts.failed += 1; },
     ]) {
       const data = withTopology();
       corrupt(select(data));
@@ -572,8 +578,8 @@ test("topology point statuses must match otherwise consistent aggregate counts",
   const data = withTopology();
   const topology = data.models[0].workloads[0].gpus[0].topologies[0];
   // Keep points, successes, and rows consistent, but misclassify the failed point.
-  topology.aisimulate.status_counts.failed = 0;
-  topology.aisimulate.status_counts.unsupported = 1;
+  topology.aisim.status_counts.failed = 0;
+  topology.aisim.status_counts.unsupported = 1;
   const app = setup(async () => response(data));
   app.set("invalid", data);
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
@@ -780,7 +786,7 @@ test("evaluated snapshots require matching legacy CLI provenance", () => {
 });
 
 test("baseline entry point is validated and displayed for both layouts", async () => {
-  for (const entry of ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"]) {
+  for (const entry of ["aiconfigurator.main:main", "aisim.legacy_cli.entrypoint:main"]) {
     const data = withEvaluation();
     data.snapshot.aic_source.cli_entry_point = entry;
     const app = setup(async () => response(data));
@@ -839,7 +845,7 @@ test(`configuration assumptions stay labeled and count mismatches fail (${policy
   const revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.evaluated_revision = revision;
   data.snapshot.aic_commit_sha = revision.commit_sha;
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...revision };
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisim", ...revision };
   const counts = {};
   for (const model of data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
     for (const topology of gpu.topologies) for (const [index, point] of topology.points.entries()) {
@@ -883,13 +889,13 @@ test("tabs preserve selected topology and shareable exclusion settings", async (
 test("outlier filtering is per predictor and metric and keeps points visible", () => {
   const app = harness();
   const t = withTopology().models[0].workloads[0].gpus[0].topologies[0];
-  t.points[0].aisimulate.ttft_error_pct = 150;
-  t.points[0].aisimulate.tpot_error_pct = 100;
+  t.points[0].aisim.ttft_error_pct = 150;
+  t.points[0].aisim.tpot_error_pct = 100;
   app.set("topologyFixture", t);
   app.run('state.excludeOutliers = true');
   const stats = app.run('aggregateTopologies([topologyFixture])');
-  assert.equal(stats.aisimulate.ttft_mape_pct, t.points[2].aisimulate.ttft_error_pct);
-  assert.equal(stats.aisimulate.tpot_mape_pct, (100 + t.points[2].aisimulate.tpot_error_pct) / 2);
+  assert.equal(stats.aisim.ttft_mape_pct, t.points[2].aisim.ttft_error_pct);
+  assert.equal(stats.aisim.tpot_mape_pct, (100 + t.points[2].aisim.tpot_error_pct) / 2);
   assert.equal(stats.aic.points, 3);
   const chart = app.run('metricChart(topologyFixture, "ttft")');
   assert.match(chart, /#ec4899/);
@@ -923,8 +929,8 @@ test("hardware MAPE weights individual points across models and respects exclusi
   second.model = "Another model";
   const topology = second.workloads[0].gpus[0].topologies[0];
   topology.points = [topology.points[0]];
-  topology.points[0].aisimulate.tpot_error_pct = 60;
-  topology.points[0].aisimulate.ttft_error_pct = 160;
+  topology.points[0].aisim.tpot_error_pct = 60;
+  topology.points[0].aisim.ttft_error_pct = 160;
   topology.is_multinode = true;
   data.models.push(second);
   const app = harness();
@@ -946,8 +952,8 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   const hidden = structuredClone(data.models[0]);
   hidden.model = "hidden/model";
   hidden.hf_model_paths = [hidden.model];
-  hidden.aisimulate.points = 0;
-  hidden.aisimulate.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
+  hidden.aisim.points = 0;
+  hidden.aisim.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
   data.models.unshift(hidden);
   const app = harness();
   app.set("fixture", data);
@@ -959,7 +965,7 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   assert.match(app.element("details-view").innerHTML, /Operating points \(3\)/);
   assert.match(app.element("details-view").innerHTML, /failed \/ success/);
   assert.equal(app.run("state.data.models.length"), 2);
-  app.run("state.data.models.forEach(model => { model.aisimulate.points = 0; model.aisimulate.status_counts.success = 0; }); renderMatrix(); renderView()");
+  app.run("state.data.models.forEach(model => { model.aisim.points = 0; model.aisim.status_counts.success = 0; }); renderMatrix(); renderView()");
   assert.match(app.element("matrix-body").innerHTML, /No models with successful AISim predictions/);
   assert.equal(app.element("detail-filters").innerHTML, "");
 });
@@ -1027,17 +1033,17 @@ test("models with only outlier predictions stay selectable and charted", async (
   const data = withTopology();
   for (const p of data.models[0].workloads[0].gpus[0].topologies[0].points) {
     if (p.status === "success") {
-      p.aisimulate.ttft_error_pct = 150;
-      p.aisimulate.tpot_error_pct = 150;
+      p.aisim.ttft_error_pct = 150;
+      p.aisim.tpot_error_pct = 150;
     }
   }
   const app = setup(async () => response(data));
   await app.run('loadBranch("main")');
   app.run('state.excludeOutliers = true; state.data = filterSnapshot(state.rawData); state.tab = "details"; renderView()');
-  assert.equal(app.run("state.data.models[0].aisimulate.points"), 0);
+  assert.equal(app.run("state.data.models[0].aisim.points"), 0);
   assert.equal(app.run("visibleModels().length"), 1);
   assert.ok(app.run("selectedGpu()"));
-  assert.match(app.element("details-view").innerHTML, /point aisimulate/);
+  assert.match(app.element("details-view").innerHTML, /point aisim/);
   assert.match(app.element("details-view").innerHTML, /role="group"/);
 });
 
@@ -1048,7 +1054,7 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   const mtp = structuredClone(gpu.topologies[0]);
   mtp.id = "fedcba9876543210";
   mtp.spec_method = "mtp";
-  for (const point of mtp.points) if (point.status === "success") point.aisimulate.tpot_error_pct = 25;
+  for (const point of mtp.points) if (point.status === "success") point.aisim.tpot_error_pct = 25;
   gpu.topologies.push(mtp);
   const app = harness();
   app.set("fixture", data);
@@ -1056,17 +1062,17 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   app.run('restoreView(new URL("https://example.com/?spec=mtp").searchParams)');
   app.run("state.data = filterSnapshot(state.rawData)");
   assert.equal(app.run("state.data.totals.rows"), 3);
-  assert.equal(app.run("state.data.totals.aisimulate.points"), 2);
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 25);
+  assert.equal(app.run("state.data.totals.aisim.points"), 2);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 25);
   assert.equal(app.run("state.data.models[0].workloads[0].gpus[0].topologies.length"), 1);
   assert.match(app.run("topologyLabel(state.data.models[0].workloads[0].gpus[0].topologies[0])"), /MTP/);
   app.run("updateLocation()");
   assert.equal(new URL(app.location.href).searchParams.get("spec"), "mtp");
   app.element("decoding-select").events.change({target: {value: "none"}});
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 0);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 0);
   app.element("decoding-select").events.change({target: {value: "all"}});
   assert.equal(app.run("state.data.totals.rows"), 6);
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 12.5);
 });
 
 for (const policy of ["hf-current-view-config-v1", "hf-current-view-config-v2"]) {
@@ -1102,3 +1108,251 @@ test(`HF campaigns show pinned provenance and source-resolved settings (${policy
 });
 
 }
+
+test("AgentX pools requests directly and averages run errors equally", () => {
+  const context = vm.createContext({window: {addEventListener() {}}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const run = (point, sum, count, silicon, prediction) => ({
+    point_errors: {ttft_ms:point,tpot_ms:point,output_tokens_s:point},
+    silicon: {ttft_ms:silicon,tpot_ms:silicon,output_tokens_s:silicon},
+    prediction: {ttft_ms:prediction,tpot_ms:prediction,output_tokens_s:prediction},
+    request_errors: {ttft_ms:{sum_ape:sum,count},tpot_ms:{sum_ape:sum,count}},
+    coverage:{measured:count,matched:count},
+  });
+  context.input = [run(100,100,1,100,200),run(0,0,3,900,900),run(null,0,0,5000,null)];
+  const result = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(result.point_errors.ttft_ms,50);
+  assert.equal(result.point_counts.ttft_ms,2);
+  for (const metric of ["ttft_ms", "tpot_ms", "output_tokens_s"]) {
+    assert.equal(result.silicon[metric],500);
+    assert.equal(result.prediction[metric],550);
+  }
+  assert.equal(result.request_errors.ttft_ms.mape,25);
+  assert.equal(result.request_errors.ttft_ms.count,4);
+  assert.equal(result.request_errors.ttft_ms.silicon,null);
+  const pair = (silicon, prediction, error) => ({
+    silicon_ttft_ms:silicon, predicted_ttft_ms:prediction, ttft_ms_ape:error,
+    silicon_tpot_ms:silicon, predicted_tpot_ms:prediction, tpot_ms_ape:error,
+  });
+  context.input[0].pairs=[pair(100,200,100)];
+  context.input[1].pairs=[pair(900,900,0),pair(900,900,0),pair(900,900,0)];
+  context.input[2].pairs=[pair(0,42,null)];
+  const pooled = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(pooled.request_errors.ttft_ms.silicon,700);
+  assert.equal(pooled.request_errors.ttft_ms.prediction,725);
+  assert.equal(pooled.request_errors.ttft_ms.mape,25);
+  context.input[1].pairs[0].tpot_ms_ape=null;
+  context.input[1].request_errors.tpot_ms.count=2;
+  const perMetric = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(perMetric.request_errors.tpot_ms.count,3);
+  assert.equal(perMetric.request_errors.tpot_ms.silicon,1900/3);
+  assert.equal(perMetric.request_errors.tpot_ms.prediction,2000/3);
+  assert.equal(perMetric.request_errors.ttft_ms.silicon,700);
+  context.input[1].request_errors.tpot_ms.count=3;
+  assert.throws(()=>vm.runInContext("window.AgentX.aggregate(input)",context),/do not reconcile/);
+  context.input = [run(null,0,0,0,null)];
+  context.input[0].pairs=[pair(0,42,null)];
+  const unavailable = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(unavailable.silicon.ttft_ms,null);
+  assert.equal(unavailable.prediction.ttft_ms,null);
+  assert.equal(unavailable.point_errors.ttft_ms,null);
+  assert.equal(unavailable.request_errors.ttft_ms.silicon,null);
+  assert.equal(unavailable.request_errors.ttft_ms.prediction,null);
+});
+
+function featureCell(html,id,source) {
+  return html.split(`data-feature="${id}">`)[1].split("</tr>")[0].split(`<td data-source="${source}">`)[1].split("</td>")[0];
+}
+
+test("AgentX checklist separates silicon evidence from AISim settings", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
+  const missing = checklist(point);
+  assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
+  assert.match(featureCell(missing,"cache.g1_prefix","aisimulate"),/Legacy missing evidence/);
+  assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
+  assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unrecorded means|Support has not been assessed/);
+  assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
+    "Prefix caching", "Sub-block prefix reuse", "Host offload (G2)", "Storage offload (G3)",
+    "Hybrid KV/state cache", "Speculative decoding", "Dynamo - KVCR", "Dynamo - KV-aware routing",
+  ]);
+  const feature = (id,state,observed={state:"unknown",count:null}) => ({id,state,observed,parameters:[]});
+  point.feature_metadata = {
+    schema:"aisimulate.benchmark.features.v1", benchmark_id:"example",
+    features:[
+      feature("cache.g1_prefix","enabled"), feature("speculation","disabled"), feature("cache.g2","not_applicable"),
+      feature("agentx.weka","enabled",{state:"not_observed",count:0}),
+      feature("events.cache_reuse","unknown",{state:"exercised",count:7}),
+      {...feature("topology.tensor_parallel","enabled"),parameters:[{name:"size",value:"<unsafe>"}]},
+      feature("routing.planner","enabled"), feature("unrecognized","enabled"),
+    ],
+  };
+  const saved = checklist(point);
+  for(const [id,status] of [["cache.g1_prefix","on"],["speculation","off"],["cache.g2","na"],["kv-aware-routing","unknown"],["sub-block-prefix","unknown"]]) {
+    assert.ok(featureCell(saved,id,"silicon").includes(`class="agentx-feature-status ${status}"`));
+  }
+  assert.doesNotMatch(saved,/More features|Weka|Observed ·|Not observed|topology|Planner|<unsafe>|unrecognized/);
+  assert.equal((saved.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,5);
+  point.feature_metadata.features.find(f=>f.id==="routing.planner").state="disabled";
+  assert.equal(checklist(point),saved);
+  point.feature_metadata.benchmark_id="another-run";
+  assert.equal(checklist(point),missing);
+  point.feature_metadata.benchmark_id="example";
+  point.feature_metadata.schema="future-schema";
+  assert.equal(checklist(point),missing);
+});
+
+test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const features=["cache.g2","cache.g3","cache.hybrid_state","speculation"].map(id=>({id,state:"enabled",parameters:[]}));
+  const point={id:"example",config_summary:[{name:"Speculative tokens",value:3}],
+    feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features}};
+  const html=checklist(point);
+  assert.equal((html.match(/Scope: Unrecorded/g)||[]).length,2);
+  assert.match(html,/State-cache type: Unrecorded/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: Unrecorded.*Draft length: Unrecorded/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Legacy missing evidence/);
+  for(const source of ["silicon"]) {
+    assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
+    assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
+  }
+  assert.doesNotMatch(html,/Combination support|data-combination/);
+  // Historical parameters do not define draft length, scope, or state-cache type.
+  for(const feature of features) feature.parameters=[{name:"size",value:7},{name:"mode",value:"all_turns_prefix"}];
+  assert.equal(checklist(point),html);
+  features.find(f=>f.id==="speculation").state="disabled";
+  assert.doesNotMatch(featureCell(checklist(point),"speculation","silicon"),/Draft length:/);
+  assert.match(featureCell(checklist(point),"speculation","aisimulate"),/Legacy missing evidence/);
+});
+
+test("AISim features use structured effective settings and preserve role differences", () => {
+  const context=vm.createContext({window:{}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js",import.meta.url),"utf8"),context);
+  const checklist=context.window.AgentX.featureChecklist;
+  const feature=(id,state,parameters={})=>({id,state,parameters,observed:{state:"unknown",count:null}});
+  const point={id:"example",config_summary:[{name:"Prefix caching",value:false},{name:"Speculative tokens",value:99}],simulation_features:{
+    schema:"aisimulate.agentx.simulation-features.v1",benchmark_id:"example",evaluated_revision:"a".repeat(40),dataset_revision:"b".repeat(40),roles:[{role:"prefill",features:[feature("cache.g1_prefix","disabled")]},{role:"decode",features:[
+      feature("cache.g1_prefix","enabled"),feature("cache.g2","enabled",{scope:"cluster_shared"}),
+      feature("routing.kv_aware","not_applicable"),feature("speculation","enabled",{method:"dspark",draft_length:7,verify_width:8}),
+    ]}],speculation_comparison:[]}};
+  let html=checklist(point);
+  assert.match(featureCell(html,"cache.g1_prefix","aisimulate"),/prefill.*status off.*decode.*status on/);
+  assert.match(featureCell(html,"cache.g2","aisimulate"),/Scope: cluster_shared/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
+  assert.match(featureCell(html,"kv-aware-routing","aisimulate"),/status na/);
+  assert.doesNotMatch(html,/Draft length: 99/);
+  assert.doesNotMatch(html,/Observed use: unknown/);
+  point.simulation_features.roles[1].features[0].observed={state:"exercised",count:3};
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisimulate"),/Observed use: exercised/);
+  point.simulation_features.roles[1].features[0].observed={state:"not_observed",count:0};
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisimulate"),/Observed use: not observed/);
+  point.simulation_features.speculation_comparison=[{role:"decode",status:"unsupported",actual_draft_length:7,aisim_max:5}];
+  html=checklist(point);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Unsupported \(actual: 7, AISim max: 5\)/);
+  point.simulation_features.roles[1].features[3].state="failed_to_record";
+  point.simulation_features.speculation_comparison=[];
+  assert.match(featureCell(checklist(point),"speculation","aisimulate"),/Recording failed/);
+  point.snapshot={commit_sha:"c".repeat(40),dataset_revision:"b".repeat(40)};
+  assert.throws(()=>checklist(point),/identity mismatch/);
+});
+
+test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const validate = context.window.AgentX.validateFeatureEvidence;
+  const summary={snapshot:{dataset_revision:"a".repeat(40)},runs:[{id:"run-one"},{id:"run-two"}]};
+  const original=structuredClone(summary);
+  const evidence={schema:"aisimulate.agentx.features.v1",measurement_dataset_revision:"a".repeat(40),feature_dataset_revision:"b".repeat(40),records:summary.runs.map(r=>({
+    benchmark_id:r.id,feature_artifact_sha256:"c".repeat(64),feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:r.id,features:[]},
+  }))};
+  assert.equal(validate(evidence,summary),evidence);
+  assert.deepEqual(summary,original);
+  for(const invalid of [
+    {...evidence,measurement_dataset_revision:"d".repeat(40)},
+    {...evidence,records:[evidence.records[0]]},
+    {...evidence,records:[evidence.records[0],evidence.records[0]]},
+    {...evidence,records:[{...evidence.records[0],benchmark_id:"wrong"},evidence.records[1]]},
+    {...evidence,records:[{...evidence.records[0],feature_artifact_sha256:"bad"},evidence.records[1]]},
+  ]) assert.throws(()=>validate(invalid,summary),/Feature evidence|feature evidence/);
+});
+
+test("curated silicon features expose recorded scopes, cache types and actual draft length", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const record=(id,parameters)=>({id,state:"enabled",parameters:Object.entries(parameters).map(([name,value])=>({name,value}))});
+  const point={id:"example",config_summary:[],feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features:[
+    record("cache.sub_block_prefix_reuse",{match_granularity_tokens:16}),
+    record("cache.g2",{scope:"shared"}),record("cache.hybrid_state",{cache_types:["recurrent_state"]}),
+    record("routing.kv_aware",{}),record("speculation",{method:"dspark",draft_length:7}),
+  ]}};
+  const html=context.window.AgentX.featureChecklist(point);
+  assert.match(featureCell(html,"sub-block-prefix","silicon"),/Match granularity: 16 tokens/);
+  assert.match(featureCell(html,"cache.g2","silicon"),/Scope: shared/);
+  assert.match(featureCell(html,"cache.hybrid_state","silicon"),/State-cache type: recurrent_state/);
+  assert.match(featureCell(html,"kv-aware-routing","silicon"),/agentx-feature-status on/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: DSPARK.*Draft length: 7/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/agentx-feature-status unknown/);
+});
+
+
+test("AgentX performance-model labels use recorded estimator and prediction database", () => {
+  const context=vm.createContext({window:{}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js",import.meta.url),"utf8"),context);
+  const label=runs=>{context.runs=runs;return vm.runInContext("window.AgentX.performanceModel(runs)",context);};
+  const run={backend:"vllm",measured_backend_version:"0.30.0",prediction_backend_version:"0.31.0",config_summary:[{name:"Estimation",value:"op_level"}]};
+  assert.equal(label([run,run]),"Op-based perf model (vllm 0.31.0)");
+  assert.equal(vm.runInContext("window.AgentX.performanceModel(runs,true)",context),"Op-based (vllm 0.31.0)");
+  assert.equal(label([{...run,config_summary:[]}]),"Unrecorded perf model (vllm 0.31.0)");
+  assert.equal(label([{...run,prediction_backend_version:null}]),"Op-based perf model (vllm version unrecorded)");
+  const regression={...run,config_summary:[{name:"Estimation",value:"fpm_regression"}]};
+  assert.equal(label([regression]),"FPM regression perf model (vllm 0.31.0)");
+  const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};
+  assert.equal(label([run,fpm]),"Op-based perf model (vllm 0.31.0); FPM interpolation perf model (vllm 0.31.0)");
+});
+
+
+function legacyPublicSummary(data) {
+  let text = JSON.stringify(data).replaceAll('"aisim":{', '"aisimulate":{');
+  for (const suffix of ["completed_at", "method", "packages", "sot_sha256"]) {
+    text = text.replaceAll(`"aisim_${suffix}":`, `"aisimulate_${suffix}":`);
+  }
+  const result = JSON.parse(text);
+  result.schema_version = 1;
+  return result;
+}
+
+test("v1 and v2 accuracy summaries normalize without changing evidence or source", async () => {
+  const current = withTopology();
+  for (const data of [current, legacyPublicSummary(current)]) {
+    const original = structuredClone(data);
+    const app = harness(async () => response(data));
+    app.set("input", data);
+    const result = JSON.parse(app.run("JSON.stringify(validateSummary(input))"));
+    assert.deepEqual(result, current);
+    assert.deepEqual(data, original);
+    assert.deepEqual(result.snapshot.aisim_packages, current.snapshot.aisim_packages);
+  }
+});
+
+test("summary version readers reject unknown and mixed field contracts", () => {
+  const app = harness();
+  for (const version of [null, 0, 3, true, "2"]) {
+    const input = withTopology();
+    input.schema_version = version;
+    app.set("input", input);
+    assert.throws(() => app.run("validateSummary(input)"), /unsupported accuracy summary schema/);
+  }
+  for (const legacy of [false, true]) for (const location of ["totals", "snapshot", "point"]) {
+    const input = legacy ? legacyPublicSummary(withTopology()) : withTopology();
+    const wrong = legacy ? "aisim" : "aisimulate";
+    if (location === "snapshot") input.snapshot[`${wrong}_packages`] = {};
+    else if (location === "totals") input.totals[wrong] = {};
+    else input.models[0].workloads[0].gpus[0].topologies[0].points[0][wrong] = {};
+    app.set("input", input);
+    assert.throws(() => app.run("validateSummary(input)"), /unexpected field/);
+  }
+});

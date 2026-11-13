@@ -22,7 +22,7 @@ declared in [scripts/pyproject.toml](../../scripts/pyproject.toml).
 
 The executable definitions live in the root
 [`.github/workflows/`](../../.github/workflows). Imported workflow copies under
-`python/aisimulate/.github/` are migration history and do not run for this repo.
+`python/aisim/.github/` are migration history and do not run for this repo.
 
 ### Validation and review
 
@@ -176,7 +176,7 @@ Fast CI has three substantive jobs, followed by an aggregate result:
 | Job | Checks |
 | --- | --- |
 | Repository Policy | Copyright and packaged legal files; CODEOWNERS policy tests, ownership coverage, and generated artifacts; workflow/selection and qualification contract tests |
-| Python Static Checks | Ruff lint and formatting on the configured AISimulate/test paths, Python syntax compilation, and changed-line whitespace |
+| Python Static Checks | Ruff lint and formatting on the configured AISim/test paths, Python syntax compilation, and changed-line whitespace |
 | Rust Format | `cargo fmt --all -- --check` |
 | Fast CI Success | Requires the three jobs to succeed for every PR, branch push, or manual run |
 
@@ -241,7 +241,7 @@ marked it N/A.
 | Python compatibility | Cross-package contracts and dependency checks on Python 3.11 and 3.13; application shards use Python 3.12 |
 | Engine Golden Regression | Engine-step and compiled-engine parity suites, plus frozen native numerical checks |
 | Platform Wheels | Build, repair, install, and exercise Linux x86-64/ARM64 and macOS ARM64 wheels |
-| Collector Data | Collector V3 invariants, backend-facts registry, and changed-operation manifest; cross-backend sanity scan is informational |
+| Collector Data | Data-tree invariants (`check_collector_data.py` R1-R7) and the backend-facts registry; the cross-backend sanity scan is informational |
 | Prediction Regression | Collect old/new static, scheduling, and silicon-reference snapshots; fail when a previously working case stops working |
 | Release Artifact Contract | Build the wheel and crate; verify installed versions, allowed distributions, compatibility imports, dependencies, and CLI entry points on both architectures |
 
@@ -256,7 +256,7 @@ records a full baseline commit that must resolve in the checkout. Fast CI and
 the numerical-check job explicitly fetch that SHA from `origin` if missing;
 full branch history alone can omit a baseline from a squashed PR. Fetch or
 commit-validation failures remain errors. Fetch-only mode does not load the
-AISimulate runtime; the subsequent checks validate the complete manifest.
+AISim runtime; the subsequent checks validate the complete manifest.
 Fetching an exact SHA verifies availability now; it does not retain a PR-only
 commit after a squash merge.
 To prepare a checkout locally, run:
@@ -304,8 +304,8 @@ tests for context limits; they do not measure E2E gym MAPE or incorporate the
 separate TRT-LLM data collection in PR #264.
 
 The decode Q/K-normalization correction selectively updates the eight decode
-expectations from the combined model at
-`d6722c4a9bec8101946f4a63cc1de94b72283067`; all eight prefill values, query
+expectations from the corrected model, the merge commit recorded as the
+manifest's `baseline_source_sha`; all eight prefill values, query
 inputs, and tolerances remain unchanged. The
 [Q/K evidence audit](../../benchmarks/evidence/accuracy/qk-norm/README.md#regression-checks)
 derives each delta from the repeated-intercept removal and batch-scaled traffic
@@ -330,13 +330,18 @@ The canonical SHA cannot be recorded until that commit exists. Until the
 follow-up is validated, post-squash baseline availability remains pending;
 successful pre-merge fetching does not close that dependency.
 
-The broader [prediction comparison](../../python/aisimulate/tools/prediction_regression_gate/report.py)
+The broader [prediction comparison](../../python/aisim/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
 previously working cases becoming broken. If the comparison base predates the
 harness, the report explicitly contains new-side statistics only. Frozen
 goldens establish numerical stability; hardware accuracy is supported by the
 specific measured configurations in the
 [accuracy evidence](../../README.md#accuracy-evidence).
+
+The macOS platform-wheel and daily README jobs use the ARM64 `macos-15` runner.
+This replaces `macos-14`, which GitHub is
+[retiring on November 2, 2026](https://github.com/actions/runner-images/issues/13518).
+The wheel deployment target remains macOS 11.0.
 
 Each platform-wheel job verifies installed package/native-extension identity,
 then runs `recommend` and feeds the generated YAML to `predict` from an unrelated
@@ -348,7 +353,7 @@ round trips, with wheel hashes and request counts in `installed-cli-*` artifacts
 ## Application test inventory and exceptions
 
 Full CI uses **12 application jobs per architecture, 24 total**. Paths in this
-table are relative to `python/aisimulate/` unless marked repository-root.
+table are relative to `python/aisim/` unless marked repository-root.
 
 | Shard | Test selection | Parallelism per architecture |
 | --- | --- | --- |
@@ -358,6 +363,16 @@ table are relative to `python/aisimulate/` unless marked repository-root.
 | `cli-build` | Build-marked `tests/e2e/cli/`; recommendation E2E runs separately within group 1 | Four disjoint groups, four workers each; recommendation runs serially |
 | `support-matrix` | Build-marked `tests/e2e/support_matrix/` | One job, pytest automatic worker count |
 | `tools-build` | Build-marked `tests/e2e/tools/`; installed FPM verification reuses the wheel | One job, pytest automatic worker count |
+
+The `support-matrix` shard includes the required native FPE probes from
+`.github/fpe-required-probes.json`. Resolved identities must be unique under the
+nightly qualifier's identity fields. Each identity must exist in the live matrix
+inventory and have a topology passing prefill, decode start, decode end, and
+mixed probes through the same qualifier used by nightly. These tests reuse the
+application wheel and keep all topologies for the small sentinel set; the full
+model/system/backend matrix remains in nightly. The tests resolve each selector
+through the installed wheel's current version policy using nightly's discovery
+helper, so version-policy changes are exercised before release.
 
 Unit and CLI groups use pytest-split's `least_duration` partitioning. Every
 group is scheduled when application tests are selected. Integration coverage
@@ -385,13 +400,13 @@ that a test executed or passed.
 
 Nightly does not automatically execute the manual suites or fill optional
 dependency gaps. Downstream Dynamo runtime qualification also needs separate
-evidence; the AISimulate wheel remains standalone.
+evidence; the AISim wheel remains standalone.
 
 After installing and activating the [development environment](../../DEVELOPMENT.md),
 run this from the repository root for extended CLI coverage:
 
 ```bash
-cd python/aisimulate
+cd python/aisim
 python -m pytest tests/e2e/cli -m 'not build'
 ```
 
@@ -416,7 +431,7 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Useful retained evidence includes `application-test-inventory-<arch>`,
 `native-prediction-numerics`, `installed-cli-*`,
-`prediction-regression-gate-report`, `changed-ops`, and the
+`prediction-regression-gate-report`, and the
 `fpe-support-matrix-web` artifact containing `fpe-qualification.json`.
 
 
@@ -428,8 +443,8 @@ access. For local setup and focused tests, use [DEVELOPMENT.md](../../DEVELOPMEN
 Inspect runs and the job results inside a run:
 
 ```bash
-gh run list --repo ai-dynamo/aisimulate --workflow ci.yml --branch main --limit 10
-gh run view --repo ai-dynamo/aisimulate
+gh run list --repo ai-dynamo/aisim --workflow ci.yml --branch main --limit 10
+gh run view --repo ai-dynamo/aisim
 ```
 
 For a maintainer-admitted manual Full CI run, first ensure the checked-out
@@ -440,9 +455,9 @@ commit. Full CI waits for the Fast result:
 ```bash
 ci_branch="$(git branch --show-current)"
 ci_sha="$(git rev-parse HEAD)"
-gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
+gh workflow run fast-ci.yml --repo ai-dynamo/aisim \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
-gh workflow run ci.yml --repo ai-dynamo/aisimulate \
+gh workflow run ci.yml --repo ai-dynamo/aisim \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
 
@@ -455,8 +470,8 @@ Fast and Full CI runs:
 
 ```bash
 ci_pr=123  # Replace with the reviewed PR to validate.
-ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
-gh pr comment "${ci_pr}" --repo ai-dynamo/aisimulate \
+ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisim --json headRefOid --jq .headRefOid)"
+gh pr comment "${ci_pr}" --repo ai-dynamo/aisim \
   --body "/ok to test ${ci_sha}"
 ```
 
@@ -496,8 +511,8 @@ To qualify FPE independently at the current `main`, without waiting for a
 nightly run:
 
 ```bash
-ci_sha="$(gh api repos/ai-dynamo/aisimulate/commits/main --jq .sha)"
-gh workflow run fpe-support-matrix.yml --repo ai-dynamo/aisimulate \
+ci_sha="$(gh api repos/ai-dynamo/aisim/commits/main --jq .sha)"
+gh workflow run fpe-support-matrix.yml --repo ai-dynamo/aisim \
   --ref main -f expected_sha="${ci_sha}"
 ```
 
@@ -596,3 +611,82 @@ a `review_pic` **User ID** variable inserted as a mention in the channel
 message, and must be republished after template changes. Missing or invalid
 rotation configuration stops delivery. See the
 [setup and configuration guide](../../DEVELOPMENT.md#slack-review-digest-and-weekly-pic).
+
+### AgentX accuracy extension
+
+The daily E2E branch matrix also evaluates the reviewed AgentX catalog. Each branch
+uses its exact wheel and the same single resolved HF revision as InfX. Two bounded
+CPU shards run one replay at a time; no new GPU measurements are collected.
+Native request/sample/lifecycle telemetry is required. The reviewed catalog config
+pins prediction database versions separately from measured framework versions;
+there is no automatic substitution with the current database slot. Each result
+records selected op-data checksums from its wheel. Older wheels retain explicit
+unsupported or failed outcomes rather than inheriting main's predictions.
+
+Private outputs use the existing encrypted-artifact helper and seven-day retention.
+The separate `e2e-agentx-web-<branch-key>` artifact contains qualified numerical
+summaries, lazy detail payloads, and provenance; preview artifacts use
+`e2e-agentx-preview-<branch-key>` and cannot enter production Pages. Qualification
+requires the complete catalog cohort and matching evaluated wheel, driver, and HF
+revisions. The Pages publisher independently validates the trusted producer and
+public field allowlist, including comparison series, scores and opaque request
+pairs. Curve scores are reconciled against their published numerical series.
+Historical AgentX payloads retain their original driver digest closure. Numerical
+accuracy remains advisory.
+
+AgentX contract tests share the E2E forward-pass-engine, replay, infra, and
+maintainer ownership in `.github/codeowners/areas.yaml`.
+
+The private dataset worker imports silicon into `data/e2e/agentx/` and opens an HF
+candidate. A reviewed catalog update is required to enroll later measurements.
+Deploy the dashboard/CI changes after promoting the initial dataset candidate;
+until that catalog exists, AgentX input fetching fails explicitly while the
+independent InfX jobs retain their existing behavior. See the
+[AgentX dashboard contract](../../pages/e2e-accuracy/README.md#agentx-beta).
+
+
+## Repository rename to AISim
+
+The repository's canonical name is `ai-dynamo/aisim`, the product name is AISim, and the project Pages URL is `https://ai-dynamo.org/aisim/`. The Python project lives under `python/aisim/`; canonical application and estimator imports are `aisim` and `aisim_core`, backed by `aisim._runtime`. The distribution and Rust crate are `aisim` and `aisim-core`, and the Rust library is `aisim_core`. New CLI examples use `aisim`. The `aisimulate` executable and Python packages remain forwarding compatibility aliases; both import paths share classes, module state, native bindings, and bundled resources. Existing plugin registrations under `aisimulate.*` are discovered alongside `aisim.*`. The `python/aisimulate` symlink preserves the former checkout path.
+
+Serialized schema identifiers and v1 field names, historical measurements and release distribution identities, immutable upstream source citations, Hugging Face dataset identifiers, and Artifactory repository names remain compatibility/provenance contracts. This source rename does not migrate those external assets. Retained accuracy snapshots may record either GitHub repository URL. Dedicated runner selectors retain the deployed `prod-aisimulate-default-amd64-v1` and `prod-aisimulate-default-arm64-v1` labels so this PR can validate before the infrastructure cutover. Coordinate any later runner-label migration with [Velonix #882](https://github.com/ai-dynamo/velonix/pull/882) and update workflow selectors only when matching pools are registered.
+
+### Approved hash namespace change
+
+The team approved renaming the Weka corpus, Weka semantics, lifecycle, and synthetic token-generation hash domain tags from `aisimulate` to `aisim`. The pinned expectations were independently recalculated before testing. This intentionally changes source and lifecycle fingerprints and the generated token stream; the token generator records version 2 so saved manifests distinguish the new stream. The canonical graph-content digest remains unchanged for the pinned Weka fixture because its lowered graph contents are unchanged.
+
+Historical artifacts and measurement records retain their original identities. Regenerate derived artifacts and token manifests with the matching implementation when comparing the new namespace; changing test expectations does not migrate existing saved identities. The `aisimulate` Python imports and CLI compatibility aliases remain available.
+
+### Replacement GitHub teams
+
+Create replacement teams rather than renaming the original teams. The replacements have been created and verified against the old teams for direct membership, member/maintainer roles, parent hierarchy, visibility, notifications, and effective repository permissions. The replacement parent remains under `access-nvidian`; its corresponding child teams remain under the replacement parent. Existing teams remain intact.
+
+| Existing team | Replacement team |
+|---|---|
+| `team-aisimulate` | `team-aisim` |
+| `access-aisimulate-maintain` | `access-aisim-maintain` |
+| `aisimulate-forward-pass-engine-codeowners` | `aisim-forward-pass-engine-codeowners` |
+| `aisimulate-infra-codeowners` | `aisim-infra-codeowners` |
+| `aisimulate-mocker-codeowners` | `aisim-mocker-codeowners` |
+| `aisimulate-replay-codeowners` | `aisim-replay-codeowners` |
+| `aisimulate-sweeper-codeowners` | `aisim-sweeper-codeowners` |
+
+After #796 merges, verify generated CODEOWNERS review routing and repository access through the replacement teams. Audit other consumers before deleting the vestigial original teams as a separate post-merge cleanup. Do not rename or delete the original teams during preparation or cutover. The detailed runner drain, rename, merge, canary, and rollback sequence is maintained in [Velonix #882](https://github.com/ai-dynamo/velonix/pull/882).
+
+
+### Prepare the cutover
+
+1. Confirm that `ai-dynamo/aisim` is available and record the repository ID, existing Pages settings, and current runner registration. Prepare the AISim rename PR and the [companion Velonix runner PR](https://github.com/ai-dynamo/velonix/pull/882) together. Keep both as drafts until the cutover is scheduled; the new repository guards and runner registration targets are intended for the new name.
+2. Review the Velonix changes to both dedicated ARC scale sets' `githubConfigUrl` and `velonix.nvidia.com/approved-repository`, the shared organization runner's repository allowlist, and the job hook's `HOME` path. Retain the deployed `prod-aisimulate-default-amd64-v1` and `prod-aisimulate-default-arm64-v1` runner labels when retargeting the dedicated scale sets. If a later change renames those labels, register matching pools and update workflow selectors in the same coordinated window. Preserve service accounts, IAM trust, node-pool identities, shared-pool names, and capacity. Re-dispatch queued old-label jobs from the updated workflow revision. No Terraform change is required for a repository target change with those identities preserved. Drain running jobs and avoid dispatching new jobs during the transition; do not depend on redirects for ARC registration or admission checks.
+3. Inventory external consumers: workflows calling reusable workflows or actions through `uses: ai-dynamo/aisim/...`, Dynamo dependency/source URLs, GitHub Apps including ARC and copy-pr-bot, repository-specific webhook filters, organization rulesets, runner-group access, cloud OIDC trust subjects, PyPI trusted publishers, and GitLab/security handoffs. Update configured repository names where present. Secrets, environments, and branch rules belong to the same repository, but external name-based matches need verification. Historical release branches retain their committed workflows; audit and backport repository guards, provenance checks, URLs, and workspace fixes needed by active release automation.
+4. Arrange the old Pages path redirect with the owner of the organization site or HTTP edge. The Pages API currently reports workflow publication with no repository-specific custom domain; the `ai-dynamo.org` domain is inherited from the organization site. A custom organization domain does not preserve a renamed project path.
+
+### Rename and validate
+
+1. In the repository's **Settings → General → Repository name**, enter `aisim` and choose **Rename**. Rename the existing repository rather than making a replacement repository. Run #796's required checks against its approved head using the deployed `prod-aisimulate-*` runner labels before merging. Coordinate the repository rename with Velonix #882 and verify Flux reconciliation and runner registration under those same labels before resuming dispatch; adapt the infrastructure PR if it still proposes new labels. Coordinate any controller-specific scale-set recreation through the runner operator if retargeting an existing set cannot complete in place; do not delete active runners during jobs.
+2. Change the GitHub repository website field to `https://ai-dynamo.org/aisim/`. Keep **Settings → Pages → Build and deployment → Source** set to **GitHub Actions**, verify the `github-pages` environment rules, and run the Pages workflow from updated `main`. Verify its deployment URL, all dashboard sections, assets, branch switching, query parameters, and links to source and workflow runs. A PR preview build alone does not prove a deployed site works.
+3. Configure an HTTP 301 or 308 redirect from `/aisimulate` and `/aisimulate/<path>` to `/aisim/` and `/aisim/<path>`, preserving the suffix and query string. Browser fragments never reach the server, so check representative anchored links as well. GitHub Pages supplies no automatic redirect for renamed project sites and cannot implement server redirects using a repository `_redirects` file. If no HTTP edge is available, the organization site can publish client-side landing and 404 redirects for the old prefix, but those are not HTTP redirects and need separate testing. Do not create a replacement `ai-dynamo/aisimulate` repository to host redirects: reusing the name breaks GitHub's repository redirects.
+4. Update local clones with `git remote set-url origin git@github.com:ai-dynamo/aisim.git`. GitHub redirects ordinary repository web and Git traffic, including existing issue/PR/commit links, but action references in workflow `uses:` entries must be updated explicitly. Do not reuse the old repository name.
+5. Run one containerized canary on each dedicated architecture and a shared-runner canary. Verify checkout, writable `HOME`, `/scratch`, and accepted canonical push/manual events; verify direct public pull-request events and unapproved repositories remain rejected by admission. Check copy-pr-bot and required checks on a harmless approved PR, Pages deployment, and the next applicable nightly/release pipeline. Record exact workflow SHAs and results before resuming normal dispatch.
+
+See GitHub's [repository rename behavior](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository) for the Git redirect, Pages, and action-reference exceptions. The source PRs prepare this cutover; opening or merging the AISim PR does not itself rename the GitHub repository or configure the organization site's redirects.

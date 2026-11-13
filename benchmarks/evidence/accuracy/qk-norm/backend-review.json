@@ -89,7 +89,7 @@
     }
   ],
   "existing_profile": {
-    "path": "python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet",
+    "path": "python/aisim/src/aisim_core/systems/data/h200_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet",
     "sha256": "ea1b6f802bb7b0792a6eaa9b533d5728c2b230749b9673f6553743ddb78837b9",
     "rows": 63500,
     "provenance": "legacy",

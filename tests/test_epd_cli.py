@@ -11,14 +11,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.epd import _language_execution, encoder_prediction_fields, validate_epd_prediction_mapping
-from aisimulate.main import main
-from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper import SmartSearchConfig, Sweeper, SweepResult
-from aisimulate.sweeper.result import CandidateStatus
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.epd import _language_execution, encoder_prediction_fields, validate_epd_prediction_mapping
+from aisim.main import main
+from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper import SmartSearchConfig, Sweeper, SweepResult
+from aisim.sweeper.result import CandidateStatus
+from aisim_core.sdk.perf_database import get_version_slots
 
 
 def _prediction(mode="aggregated"):
@@ -43,7 +44,7 @@ def _prediction(mode="aggregated"):
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "hardware": "h200_sxm",
             "backend": "sglang",
-            "backend_version": "0.5.14",
+            "backend_version": get_version_slots("h200_sxm", "sglang")["current"],
             "context_length": 4096,
             "mode": mode,
             "workers": {
@@ -87,7 +88,7 @@ def _recommendation(mode="aggregated"):
 
 @pytest.mark.parametrize(("mode", "changed_role"), [("aggregated", 0), ("disaggregated", 0), ("disaggregated", 1)])
 def test_epd_language_policy_normalizes_only_equivalent_default(mode, changed_role):
-    from aisimulate.config.epd import _language_execution
+    from aisim.config.epd import _language_execution
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(mode)))
     expected = _language_execution(spec)
@@ -171,7 +172,7 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_epd_language_execution_omitted_version_uses_current(mode):
-    from aisimulate_core.sdk import perf_database
+    from aisim_core.sdk import perf_database
 
     raw = _prediction(mode)
     raw["engine"]["backend_version"] = None
@@ -205,7 +206,7 @@ def test_epd_language_workers_keep_native_host_offload(mode):
 
 @pytest.mark.parametrize("root_field", ["systems_paths", "systems_path"])
 def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_field):
-    from aisimulate_core.sdk import perf_database
+    from aisim_core.sdk import perf_database
 
     bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
     system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
@@ -241,7 +242,7 @@ def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_fiel
 
 
 def test_epd_language_execution_without_a_database_fails(monkeypatch):
-    from aisimulate_core.sdk import perf_database
+    from aisim_core.sdk import perf_database
 
     raw = _prediction()
     raw["engine"]["backend_version"] = None
@@ -512,8 +513,8 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
 @pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
 @pytest.mark.parametrize("absence", ["database", "version"])
 def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends, absence):
-    from aisimulate.sweeper import kv_estimate
-    from aisimulate_core.sdk import perf_database
+    from aisim.sweeper import kv_estimate
+    from aisim_core.sdk import perf_database
 
     original_database = perf_database.get_database_view
     original_version = kv_estimate.get_latest_database_version
@@ -567,16 +568,12 @@ def test_cli_examples_parse():
 def test_public_cli_rejects_afd_encoder_composition(tmp_path, capsys, command, combined_with_pd):
     raw = _prediction() if command == "predict" else _recommendation()
     encoder = raw["engine"]["workers"]["encoder"]
-    raw["engine"]["mode"] = "afd"
-    raw["engine"]["afd"] = {
-        "phase": "decode" if combined_with_pd else "both",
-        "combined_with_pd": combined_with_pd,
-    }
+    role = "decode" if combined_with_pd else "aggregated"
+    raw["engine"]["mode"] = "disaggregated" if combined_with_pd else "aggregated"
+    afd = {"a_batch_size": 8}
     if command == "predict":
-        raw["engine"]["afd"].update(n_a_nodes=1, n_f_nodes=1, tp_a=8, a_batch_size=8)
-    else:
-        raw["engine"]["afd"]["a_batch_size"] = {"choices": [8]}
-    raw["engine"]["workers"] = {"encoder": encoder}
+        afd.update(n_a_nodes=1, n_f_nodes=1, tp_a=1)
+    raw["engine"]["workers"] = {"encoder": encoder, role: {"type": "afd", "afd": afd}}
     if combined_with_pd:
         raw["engine"]["workers"]["prefill"] = {}
     path = tmp_path / "hybrid.yaml"

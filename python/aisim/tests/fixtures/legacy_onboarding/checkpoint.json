@@ -1,0 +1,234 @@
+{
+  "schema_version": "aisimulate-onboarding-checkpoint/v1",
+  "revision": 3,
+  "inputs": {
+    "model": "example/checkpoint-test"
+  },
+  "validation_inputs": {},
+  "research": {
+    "source_commit": "4d961bab6164b18c0752d7b5f67ceb2ac8e3e933"
+  },
+  "decisions": {},
+  "pending_questions": [],
+  "progress": {
+    "stage": 1,
+    "status": "in_progress",
+    "blockers": [],
+    "next_action": null
+  },
+  "artifacts": {},
+  "configurations": {
+    "v1": {
+      "inputs": {},
+      "validation_inputs": {},
+      "draft_request": {
+        "schema_version": "aisimulate-support-request/v1",
+        "identity": {
+          "model": "example/checkpoint-test",
+          "model_revision": "revision-123",
+          "model_kind": "dense",
+          "framework": "vllm",
+          "framework_version": "0.27.0",
+          "gpu": "h200_sxm",
+          "interconnect": "nvswitch"
+        },
+        "workload": {
+          "input_tokens": 1024,
+          "output_tokens": 128,
+          "concurrency": 1,
+          "request_count": 4,
+          "slo": {
+            "ttft_ms": 1000.0,
+            "tpot_ms": 100.0
+          }
+        },
+        "search": {
+          "tensor_parallel": 1,
+          "context_length": 16384,
+          "objective": "throughput",
+          "seed": 42
+        },
+        "collection": {
+          "prefill_cudagraph_policy": "runtime"
+        },
+        "fpm_profile": {
+          "schema_version": 1,
+          "model": "example/checkpoint-test",
+          "model_revision": "revision-123",
+          "architecture": "SyntheticDecoder",
+          "context_length": 16384,
+          "num_experts": 0,
+          "provenance": "Synthetic checkpoint test",
+          "deployments": [
+            {
+              "system": "h200_sxm",
+              "backend": "vllm",
+              "backend_version": "0.27.0",
+              "tp": 1,
+              "pp": 1,
+              "dp": 1,
+              "moe_tp": 1,
+              "moe_ep": 1,
+              "cp": 1,
+              "gemm_quant_mode": "bfloat16",
+              "moe_quant_mode": "bfloat16",
+              "fmha_quant_mode": "bfloat16",
+              "comm_quant_mode": "half",
+              "kv_cache_dtype": "bfloat16",
+              "moe_backend": "auto",
+              "attention_backend": "auto",
+              "enable_wideep": false,
+              "enable_eplb": false,
+              "resources": {
+                "weights_bytes": 1000,
+                "activations_bytes": 100,
+                "runtime_overhead_bytes": 100,
+                "comm_overhead_bytes": 0,
+                "kv_bytes_per_token": 128,
+                "cache_layout": "linear",
+                "max_num_tokens": 8192,
+                "max_batch_size": 256,
+                "provenance": "Synthetic declared bounds"
+              }
+            }
+          ]
+        }
+      },
+      "progress": {
+        "stage": 3,
+        "status": "in_progress",
+        "blockers": [],
+        "next_action": null
+      },
+      "artifacts": {
+        "request": {
+          "path": "request-v1.json",
+          "kind": "request",
+          "scope": "input",
+          "archived": false,
+          "sha256": "fe1f0e7d7a5ed5be8913d8f2f1ba134e629718319a694f31869895509ceb25ae",
+          "context_sha256": null
+        },
+        "collection": {
+          "path": "collection.json",
+          "kind": "file",
+          "scope": "collection",
+          "archived": false,
+          "sha256": "729cd4435656683931ea719191f6786bbca51754bd7e573f413a655d71fdde49",
+          "context_sha256": "47e0a943dd24cc55c92758b933fd9b76a4640d84a861d9cbdd6514cbd386dcc0"
+        }
+      },
+      "acceptance": {
+        "sha256": "75daa4684937fed3149fb26a1f4bdf03d3e1c789383b2e99107dace30f9bd9d2",
+        "revision": 3
+      },
+      "history": []
+    },
+    "v2": {
+      "inputs": {},
+      "validation_inputs": {},
+      "draft_request": {
+        "schema_version": "aisimulate-support-request/v2",
+        "identity": {
+          "model": "example/checkpoint-test",
+          "model_revision": "revision-123",
+          "model_kind": "dense",
+          "framework": "vllm",
+          "framework_version": "0.27.0",
+          "gpu": "h200_sxm",
+          "interconnect": "nvswitch"
+        },
+        "workload": {
+          "input_tokens": 1024,
+          "output_tokens": 128,
+          "concurrency": 1,
+          "request_count": 4,
+          "slo": {
+            "ttft_ms": 1000.0,
+            "tpot_ms": 100.0
+          }
+        },
+        "search": {
+          "tensor_parallel": 1,
+          "context_length": 16384,
+          "objective": "throughput",
+          "seed": 42
+        },
+        "collection": {
+          "prefill_cudagraph_policy": "runtime"
+        },
+        "fpm_profile": {
+          "schema_version": 1,
+          "model": "example/checkpoint-test",
+          "model_revision": "revision-123",
+          "architecture": "SyntheticDecoder",
+          "context_length": 16384,
+          "num_experts": 0,
+          "provenance": "Synthetic checkpoint test",
+          "deployments": [
+            {
+              "system": "h200_sxm",
+              "backend": "vllm",
+              "backend_version": "0.27.0",
+              "tp": 1,
+              "pp": 1,
+              "dp": 1,
+              "moe_tp": 1,
+              "moe_ep": 1,
+              "cp": 1,
+              "gemm_quant_mode": "bfloat16",
+              "moe_quant_mode": "bfloat16",
+              "fmha_quant_mode": "bfloat16",
+              "comm_quant_mode": "half",
+              "kv_cache_dtype": "bfloat16",
+              "moe_backend": "auto",
+              "attention_backend": "auto",
+              "enable_wideep": false,
+              "enable_eplb": false,
+              "resources": {
+                "weights_bytes": 1000,
+                "activations_bytes": 100,
+                "runtime_overhead_bytes": 100,
+                "comm_overhead_bytes": 0,
+                "kv_bytes_per_token": 128,
+                "cache_layout": "linear",
+                "max_num_tokens": 8192,
+                "max_batch_size": 256,
+                "provenance": "Synthetic declared bounds"
+              }
+            }
+          ]
+        }
+      },
+      "progress": {
+        "stage": 3,
+        "status": "in_progress",
+        "blockers": [],
+        "next_action": null
+      },
+      "artifacts": {
+        "request": {
+          "path": "request-v2.json",
+          "kind": "request",
+          "scope": "input",
+          "archived": false,
+          "sha256": "51b3efde9aeb36597f373266b08be27f5ca6fbbd87d2dd912ef3700661b3336c",
+          "context_sha256": null
+        },
+        "collection": {
+          "path": "collection.json",
+          "kind": "file",
+          "scope": "collection",
+          "archived": false,
+          "sha256": "729cd4435656683931ea719191f6786bbca51754bd7e573f413a655d71fdde49",
+          "context_sha256": "a52cf4d0e980b4a8078e5e65cc9a92b296527b2776b6110a09eac49ba690253b"
+        }
+      },
+      "acceptance": {
+        "sha256": "a3c6875886274e185d78f5ebd0368107fc201c3735ef312eba3f32b64d74c765",
+        "revision": 3
+      },
+      "history": []
+    }
+  }
+}

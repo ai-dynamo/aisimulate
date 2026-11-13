@@ -3,7 +3,7 @@
 
 //! Backend, database-mode, quant-mode, model-family, and perf-data-filename
 //! enums plus the `QuantMapping` payload shared by the quant-mode enums.
-//! Mirrors the enum surface of `src/aisimulate/sdk/common.py`.
+//! Mirrors the enum surface of `src/aisim/sdk/common.py`.
 //!
 //! HF-architecture-to-family routing lives in `models/registry.rs`, not
 //! here, because it carries AIC-specific lookup tables that depend on
@@ -641,8 +641,6 @@ pub enum PerfDataFilename {
     Dsv4CsaGenerationModule,
     Dsv4HcaGenerationModule,
     Dsv4PagedMqaLogitsModule,
-    Dsv4HcaAttnModule,
-    Dsv4CsaAttnModule,
     Dsv4CsaTopkCalib,
     Dsv4MegamoeModule,
     MoeA2a,
@@ -682,8 +680,6 @@ impl PerfDataFilename {
             Self::Dsv4CsaGenerationModule => "dsv4_csa_generation_module_perf.parquet",
             Self::Dsv4HcaGenerationModule => "dsv4_hca_generation_module_perf.parquet",
             Self::Dsv4PagedMqaLogitsModule => "dsv4_paged_mqa_logits_module_perf.parquet",
-            Self::Dsv4HcaAttnModule => "dsv4_hca_attn_module_perf.parquet",
-            Self::Dsv4CsaAttnModule => "dsv4_csa_attn_module_perf.parquet",
             Self::Dsv4CsaTopkCalib => "dsv4_csa_topk_calib_perf.parquet",
             Self::Dsv4MegamoeModule => "dsv4_megamoe_module_perf.parquet",
             Self::MoeA2a => "moe_a2a_perf.parquet",

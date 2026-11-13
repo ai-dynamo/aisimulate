@@ -1,0 +1,680 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""vLLM dense attention collector for XPU devices.
+
+This mirrors the CUDA vLLM attention collector but routes tensor allocation,
+backend setup, and perf logging through XPU-capable helper paths. It benchmarks
+isolated context/generation attention kernels with synthetic KV-cache state.
+"""
+
+__compat__ = "vllm==0.28.0"
+
+import math
+import os
+
+import torch
+import vllm
+
+try:
+    from vllm.attention.backends.registry import AttentionBackendEnum
+except ImportError:
+    try:
+        from vllm.v1.attention.backends.registry import AttentionBackendEnum
+    except ImportError:
+        AttentionBackendEnum = None  # type: ignore
+try:
+    from vllm.platforms import _Backend as LegacyBackendEnum  # type: ignore
+except Exception:
+    LegacyBackendEnum = None  # type: ignore
+from vllm.platforms import current_platform
+
+try:
+    from vllm.utils import is_torch_equal_or_newer
+except ImportError:
+    from vllm.utils.torch_utils import is_torch_equal_or_newer
+
+from vllm.v1.attention.backends.utils import set_kv_cache_layout
+from vllm.version import __version__ as vllm_version
+
+try:
+    from vllm.utils import resolve_obj_by_qualname
+except ImportError:
+    from vllm.utils.import_utils import resolve_obj_by_qualname  # type: ignore
+
+from collector.case_generator import (
+    get_attention_context_shape_sweeps,
+    get_attention_generation_shape_sweeps,
+    get_attention_head_configs,
+)
+from collector.helper import benchmark_with_power, get_device_module, log_perf, xpu_graph_measure_enabled
+from collector.vllm.utils_xpu import (
+    BatchSpec,
+    create_and_prepopulate_kv_cache,
+    create_common_attn_metadata,
+    create_standard_kv_cache_spec,
+    create_vllm_config,
+    get_attention_backend,
+    with_exit_stack,
+)
+from vllm.config import set_current_vllm_config
+
+
+class MockAttentionLayer:
+    """A mock attention layer for testing."""
+
+    def __init__(self, device: torch.device):
+        self._q_scale = torch.tensor(1.0, device=device)
+        self._k_scale = torch.tensor(1.0, device=device)
+        self._v_scale = torch.tensor(1.0, device=device)
+        # Add float versions for flashinfer
+        self._q_scale_float = 1.0
+        self._k_scale_float = 1.0
+        self._v_scale_float = 1.0
+
+
+def _apply_kv_cache_stride_order(kv_cache: torch.Tensor, stride_order: tuple[int, ...]) -> torch.Tensor:
+    if stride_order != tuple(range(kv_cache.ndim)):
+        inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
+        return kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
+    return kv_cache.contiguous()
+
+
+def _pack_v1_fa_kv_cache(kv_cache: torch.Tensor, stride_order: tuple[int, ...]) -> torch.Tensor:
+    logical_cache = torch.cat([kv_cache[0], kv_cache[1]], dim=-1).transpose(1, 2)
+    return _apply_kv_cache_stride_order(logical_cache, stride_order)
+
+
+def _get_backend_kv_cache_stride_order(backend_cls, ndim: int) -> tuple[int, ...]:
+    get_stride_order = getattr(backend_cls, "get_kv_cache_stride_order", None)
+    if get_stride_order is None:
+        return tuple(range(ndim))
+    return tuple(get_stride_order())
+
+
+# KV footprint above which the ~38us graph-replay launch is <~5% -> pack_n=1.
+_LAUNCH_AMORTIZE_BYTES = 340_000_000
+
+
+def _forward_with_optional_kv_cache_update(
+    backend_cls, impl, layer, query, key, value, kv_cache, attn_metadata, output
+):
+    if not getattr(backend_cls, "forward_includes_kv_cache_update", False):
+        impl.do_kv_cache_update(layer, key, value, kv_cache, attn_metadata.slot_mapping)
+    return impl.forward(layer, query, key, value, kv_cache, attn_metadata, output=output)
+
+
+# https://github.com/vllm-project/vllm/tree/main/vllm/v1/attention/backends
+# support MHA GQA MQA bfloat16 tensor and bfloat16/fp8 kv cache
+
+
+@with_exit_stack
+def run_attention_torch(
+    exit_stack,
+    batch_size,
+    input_len,
+    num_heads,
+    num_kv_heads,  # keep same as num_heads for MHA
+    head_dim,
+    use_fp8_kv_cache,
+    is_context_phase,
+    window_size=0,
+    has_sink=False,
+    *,
+    perf_filename,
+    device="xpu:0",
+):
+    get_device_module().set_device(device)
+    # The plan does not depend on the device: refuse a KV pool it cannot hold before allocating it.
+    reason = _kv_pool_does_not_fit(
+        num_kv_heads, head_dim, get_device_module().get_device_properties(device).total_memory
+    )
+    if reason is not None:
+        raise RuntimeError(reason)
+
+    # Reclaim prior case's memory (gc drops old graph refs so their pools free).
+    import gc
+
+    gc.collect()
+    get_device_module().empty_cache()
+
+    dtype = torch.bfloat16
+    model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
+    block_size = 64
+
+    # Let vLLM choose the backend. Handle multiple historical signatures:
+    # newest: (... use_mm_prefix=..., use_v1=True/False defaulted to True)
+    # mid:    (... use_mm_prefix omitted)
+    # old:    (... use_v1 required, no use_mm_prefix)
+    try:
+        backend = current_platform.get_attn_backend_cls(
+            None,
+            head_dim,
+            dtype,
+            kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
+            block_size=block_size,
+            use_mla=False,
+            has_sink=has_sink,
+            use_sparse=False,
+            use_mm_prefix=False,
+        )
+    except TypeError:
+        try:
+            backend = current_platform.get_attn_backend_cls(
+                None,
+                head_dim,
+                dtype,
+                kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
+                block_size=block_size,
+                use_mla=False,
+                has_sink=has_sink,
+                use_sparse=False,
+            )
+        except TypeError:
+            try:
+                backend = current_platform.get_attn_backend_cls(
+                    None,
+                    head_dim,
+                    dtype,
+                    kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
+                    block_size=block_size,
+                    use_mla=False,
+                    has_sink=has_sink,
+                    use_sparse=False,
+                    use_v1=True,
+                )
+            except TypeError:
+                try:
+                    from vllm.v1.attention.selector import AttentionSelectorConfig
+
+                    attn_selector_config = AttentionSelectorConfig(
+                        head_size=head_dim,
+                        dtype=dtype,
+                        kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
+                        block_size=block_size,
+                        use_mla=False,
+                        has_sink=has_sink,
+                        use_sparse=False,
+                    )
+                    backend = current_platform.get_attn_backend_cls(None, attn_selector_config)
+                except Exception:
+                    backend = current_platform.get_attn_backend_cls(
+                        None,
+                        head_dim,
+                        dtype,
+                        kv_cache_dtype="fp8" if use_fp8_kv_cache else None,
+                        block_size=block_size,
+                        use_mla=False,
+                        has_sink=has_sink,
+                        use_v1=True,
+                    )
+
+    backend_cls = resolve_obj_by_qualname(backend)
+    backend_name_str = backend_cls.get_name()
+    if AttentionBackendEnum is not None:
+        backend_name = AttentionBackendEnum[backend_name_str]
+    elif LegacyBackendEnum is not None:
+        backend_name = LegacyBackendEnum[backend_name_str]
+    else:
+        backend_name = backend_name_str
+
+    if is_context_phase:
+        batch_spec = BatchSpec(
+            seq_lens=[input_len] * batch_size,
+            query_lens=[input_len] * batch_size,
+        )
+    else:
+        batch_spec = BatchSpec(
+            seq_lens=[input_len] * batch_size,
+            query_lens=[1] * batch_size,
+        )
+
+    try:
+        vllm.utils.torch_utils.set_random_seed(42)
+    except AttributeError:
+        current_platform.seed_everything(42)
+
+    hf_override = {"sliding_window": window_size} if window_size > 0 else None
+    vllm_config = create_vllm_config(
+        model_name=model,
+        max_model_len=max(batch_spec.seq_lens),
+        block_size=block_size,
+        num_gpu_blocks=8192,
+        max_num_seqs=batch_size,
+        use_fp8_kv_cache=use_fp8_kv_cache,
+        hf_config_override=hf_override,
+    )
+
+    kv_cache_spec = create_standard_kv_cache_spec(vllm_config, use_fp8_kv_cache)
+
+    # Ensure the KV cache has enough blocks for all sequences.
+    required_blocks = 1 + sum((s_len + block_size - 1) // block_size for s_len in batch_spec.seq_lens)
+    num_blocks = vllm_config.cache_config.num_gpu_blocks or required_blocks
+    num_blocks = max(num_blocks, required_blocks)
+
+    # Generate data and compute SDPA reference output
+    all_q_vllm, all_k_vllm, all_v_vllm = [], [], []
+    k_contexts, v_contexts = [], []
+
+    for i in range(batch_size):
+        s_len = batch_spec.seq_lens[i]
+        q_len = batch_spec.query_lens[i]
+        context_len = s_len - q_len
+
+        # Generate Q, K, V for the whole sequence
+        q = torch.randn(q_len, num_heads, head_dim, dtype=dtype, device=device)
+        k_full = torch.randn(s_len, num_kv_heads, head_dim, dtype=dtype, device=device)
+        v_full = torch.randn(s_len, num_kv_heads, head_dim, dtype=dtype, device=device)
+
+        # Inputs for vLLM backends are just the new tokens
+        all_q_vllm.append(q)
+        all_k_vllm.append(k_full[context_len:])
+        all_v_vllm.append(v_full[context_len:])
+
+        # Contextual K/V data used to populate the paged cache
+        k_contexts.append(k_full[:context_len])
+        v_contexts.append(v_full[:context_len])
+
+    query_vllm = torch.cat(all_q_vllm, dim=0)
+    key_vllm = torch.cat(all_k_vllm, dim=0)
+    value_vllm = torch.cat(all_v_vllm, dim=0)
+
+    common_attn_metadata = create_common_attn_metadata(batch_spec, vllm_config.cache_config.block_size, device)
+
+    # 3. Simulate Paged KV Cache and a realistic slot_mapping
+    kv_cache = create_and_prepopulate_kv_cache(
+        k_contexts=k_contexts,
+        v_contexts=v_contexts,
+        block_size=block_size,
+        num_kv_heads=num_kv_heads,
+        head_size=head_dim,
+        dtype=current_platform.fp8_dtype() if use_fp8_kv_cache else dtype,
+        device=device,
+        num_blocks=num_blocks,
+        common_attn_metadata=common_attn_metadata,
+        randomize_blocks=True,
+    )
+
+    exit_stack.enter_context(set_current_vllm_config(vllm_config))
+
+    # Fix backend-specific kv cache layout.
+    backend_name_str = backend_name if isinstance(backend_name, str) else backend_name.name
+
+    if backend_name_str in {"FLASH_ATTN", "FLASHINFER", "TRITON_ATTN"}:
+        # The collector helper populates cache as [2, num_blocks, ...] because
+        # that layout makes K/V insertion simple. vLLM V1 FA-style backends
+        # consume packed K/V as [num_blocks, num_kv_heads, block_size,
+        # 2 * head_size]. The XPU FA wrapper then transposes and splits this
+        # packed logical view into kernel inputs shaped [num_blocks,
+        # block_size, num_kv_heads, head_size]. Keep vLLM's backend-selected
+        # physical stride order so those kernel views match serving.
+        get_required_layout = getattr(backend_cls, "get_required_kv_cache_layout", None)
+        if get_required_layout is not None:
+            set_kv_cache_layout(get_required_layout())
+            exit_stack.callback(set_kv_cache_layout, None)
+        elif backend_name_str == "FLASHINFER":
+            set_kv_cache_layout("HND")
+            exit_stack.callback(set_kv_cache_layout, None)
+        stride_order = _get_backend_kv_cache_stride_order(backend_cls, 4)
+        kv_cache = _pack_v1_fa_kv_cache(kv_cache, stride_order)
+
+    # Handle special case for FLEX_ATTENTION_SLOW
+    actual_backend = backend_name
+    use_direct_block_mask = is_torch_equal_or_newer("2.9.0.dev0")
+    if backend_name_str == "FLEX_ATTENTION_SLOW":
+        if AttentionBackendEnum is not None:
+            actual_backend = AttentionBackendEnum.FLEX_ATTENTION
+        elif LegacyBackendEnum is not None:
+            actual_backend = LegacyBackendEnum.FLEX_ATTENTION
+        else:
+            actual_backend = backend_name
+        use_direct_block_mask = False
+
+    builder_cls, impl_cls = get_attention_backend(actual_backend)
+    layer_names = ["placeholder"]
+
+    # Mock flashinfer's get_per_layer_parameters if needed
+    if backend_name_str == "FLASHINFER":
+        import unittest.mock
+
+        from vllm.v1.attention.backends.utils import PerLayerParameters
+
+        def mock_get_per_layer_parameters(vllm_config, layer_names, impl_cls):
+            # Return mock parameters for a single layer
+            return {
+                layer_name: PerLayerParameters(
+                    window_left=window_size - 1 if window_size > 0 else -1,
+                    logits_soft_cap=0.0,  # No soft cap
+                    sm_scale=1.0 / (head_dim**0.5),  # Standard scale
+                )
+                for layer_name in layer_names
+            }
+
+        with unittest.mock.patch(
+            "vllm.v1.attention.backends.flashinfer.get_per_layer_parameters", mock_get_per_layer_parameters
+        ):
+            builder = builder_cls(kv_cache_spec, layer_names, vllm_config, device)
+            attn_metadata = builder.build(
+                common_prefix_len=0,
+                common_attn_metadata=common_attn_metadata,
+            )
+    else:
+        # Build metadata
+        builder = builder_cls(kv_cache_spec, layer_names, vllm_config, device)
+        if backend_name_str == "FLEX_ATTENTION":
+            builder.direct_build = use_direct_block_mask
+        attn_metadata = builder.build(
+            common_prefix_len=0,
+            common_attn_metadata=common_attn_metadata,
+        )
+
+    # Instantiate implementation
+    sliding_window = vllm_config.model_config.get_sliding_window()
+    scale = 1.0 / (head_dim**0.5)
+    # Serving hands a per-head learned sink bias to Attention: gpt_oss.py:111 (param),
+    # :168 (sinks=self.sinks) @ vllm-openai-xpu:v0.28.0. A non-None sinks selects the
+    # with-sink SWA kernel (XPU AOT-compiles only that decode variant). Shape [num_heads]
+    # mirrors serving's num_attention_heads//tp_size; values arbitrary -- the sink is a
+    # softmax-denominator bias, so magnitude is latency-invariant and only presence matters.
+    sinks = torch.randn(num_heads, dtype=dtype, device=device) if has_sink else None
+    impl = impl_cls(
+        num_heads=num_heads,
+        head_size=head_dim,
+        scale=scale,
+        num_kv_heads=num_kv_heads,
+        alibi_slopes=None,
+        sliding_window=sliding_window,
+        kv_cache_dtype="fp8" if use_fp8_kv_cache else "auto",
+        sinks=sinks,
+    )
+
+    # Create mock layer and output buffer
+    mock_layer = MockAttentionLayer(device)
+    output = torch.empty_like(query_vllm)
+
+    # Run forward pass
+
+    test_ite = int(os.getenv("AIC_ATTN_NUM_RUNS", "6"))
+    warm_up = int(os.getenv("AIC_ATTN_WARMUP", "3"))
+
+    # XPU's FlashAttention implementation currently expects Query and Output
+    # to be bfloat16 even if the KV Cache is FP8.
+    # TODO: Remove the code if FP8 support will not be in the roadmap.
+    if "xpu" not in str(device) and use_fp8_kv_cache and backend_name_str in ("FLASH_ATTN", "FLASHINFER"):
+        query_vllm = query_vllm.to(current_platform.fp8_dtype())
+        output = output.to(torch.bfloat16)
+
+    def _one():
+        _forward_with_optional_kv_cache_update(
+            backend_cls, impl, mock_layer, query_vllm, key_vllm, value_vllm, kv_cache, attn_metadata, output
+        )
+
+    # Generation attention -> graph (matches decode serving); context/prefill -> eager
+    # (varlen path does a host copy, illegal under graph capture).
+    use_graph = xpu_graph_measure_enabled() and not is_context_phase
+
+    # XPU graph replay launch (~38us) exceeds a tiny decode kernel, so a
+    # 1-op-per-graph measurement times CPU-launch idle gaps between replays
+    # (inflated + ~15% noisy). Pack N forwards per graph so one replay runs them
+    # back-to-back and the launch is amortized (same idea as the gemm collector).
+    # Repeating the forward is safe: do_kv_cache_update rewrites the same slots
+    # with the same K/V. N adapts to op size so big kernels (launch already
+    # negligible) stay at N=1. Graph/generation only.
+    # Dense-pack N forwards/graph to amortize XPU's ~38us replay launch on small
+    # decode kernels. Deterministic from shape (KV-bandwidth-bound) so pack_n is
+    # identical run-to-run; big kernels -> pack_n=1. Power-of-two.
+    pack_n = 1
+    if use_graph:
+        kv_bytes = batch_size * input_len * num_kv_heads * head_dim * 2
+        raw = min(64.0, max(1.0, _LAUNCH_AMORTIZE_BYTES / max(kv_bytes, 1)))
+        pack_n = min(64, max(1, 1 << round(math.log2(raw))))
+
+    def run():
+        for _ in range(pack_n):
+            _one()
+
+    with benchmark_with_power(
+        device=device,
+        kernel_func=run,
+        num_warmups=warm_up,
+        num_runs=test_ite,
+        repeat_n=1,
+        use_cuda_graph=use_graph,
+    ) as results:
+        pass
+
+    latency = results["latency_ms"] / pack_n
+    print(f"attn latency: {latency}")
+
+    if is_context_phase:
+        isl = input_len
+        step = 0
+        op_name = "context_attention"
+    else:
+        isl = 1
+        step = input_len
+        op_name = "generation_attention"
+
+    kv_cache_dtype_str = "bfloat16" if not use_fp8_kv_cache else "fp8"
+    dtype_str = "bfloat16"
+    kernel_source = f"vllm_{backend_name_str}".lower()
+
+    device_name = get_device_module().get_device_name(device)
+
+    log_perf(
+        item_list=[
+            {
+                "batch_size": batch_size,
+                "isl": isl,
+                "num_heads": num_heads,
+                "num_key_value_heads": num_kv_heads,
+                "head_dim": head_dim,
+                "beam_width": 1,
+                "attn_dtype": dtype_str,
+                "kv_cache_dtype": kv_cache_dtype_str,
+                "window_size": window_size,
+                "step": step,
+                "latency": latency,
+                "used_cuda_graph": results["used_cuda_graph"],
+            }
+        ],
+        framework="VLLM",
+        version=vllm_version,
+        device_name=device_name,
+        op_name=op_name,
+        kernel_source=kernel_source,
+        perf_filename=perf_filename,
+        power_stats=None,
+    )
+
+
+# The KV pool run_attention_torch allocates: num_gpu_blocks*block_size*num_kv_heads*
+# head_dim*bytes*2(K+V). The hardcoded 8192 blocks make high-kv-head hd128 configs
+# exceed a 24GB card, so the run refuses those cases before allocating.
+_KV_POOL_BLOCKS = 8192
+_KV_BLOCK_SIZE = 64
+_KV_POOL_MEM_FRACTION = 0.45
+
+
+def _kv_pool_does_not_fit(num_kv_heads, head_dim, total_memory) -> str | None:
+    """Why the case's KV pool cannot fit the device, or None when it can."""
+    # KV pool is allocated bf16-sized (2B) even when kv_cache_dtype is fp8.
+    pool = _KV_POOL_BLOCKS * _KV_BLOCK_SIZE * num_kv_heads * head_dim * 2 * 2
+    allowed = int(total_memory * _KV_POOL_MEM_FRACTION)
+    if pool <= allowed:
+        return None
+    return (
+        f"FIXME(kernel-limit): does not fit: the KV pool needs {pool / 2**30:.1f} GiB, "
+        f"the device allows {allowed / 2**30:.1f} GiB ({_KV_POOL_MEM_FRACTION:g} of its memory)"
+    )
+
+
+def get_context_attention_test_cases(if_unit_test=False):
+    test_cases = []
+
+    if if_unit_test:
+        shape_sweeps = [
+            {
+                "batch_sizes": [1],
+                "sequence_lengths": [64],
+                "query_head_counts": [4],
+                "kv_head_options": [0],
+                "head_dims": [128, 64],
+                "window_sizes": [0, 128],
+                "max_tokens_self_attention": 65536,
+                "max_tokens_grouped_query_attention": 131072,
+                "max_kv_elements": 2147483647,
+            }
+        ]
+    else:
+        shape_sweeps = get_attention_context_shape_sweeps("vllm_xpu")
+
+    # kv cache dtype fp8 to be supported
+    kv_cache_dtype_list = [False, True]
+
+    # XPU paged flash attention kernel supports GQA ratio up to 16
+    max_gqa_ratio = 16
+
+    for shape_sweep in shape_sweeps:
+        batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
+        sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
+        supported_head_dims = {int(value) for value in shape_sweep["head_dims"]}
+        supported_window_sizes = {int(value) for value in shape_sweep["window_sizes"]}
+        max_tokens_self_attention = int(shape_sweep["max_tokens_self_attention"])
+        max_tokens_grouped_query_attention = int(shape_sweep["max_tokens_grouped_query_attention"])
+        max_kv_elements = int(shape_sweep["max_kv_elements"])
+
+        for head_config in get_attention_head_configs(shape_sweep, phase="context"):
+            n = head_config.num_heads
+            num_kv_heads = head_config.num_kv_heads
+            head_dim = head_config.head_dim
+            window_size = head_config.window_size
+            if head_dim not in supported_head_dims or window_size not in supported_window_sizes:
+                continue
+            # XPU paged flash attention only supports GQA ratio <= 16.
+            if n // num_kv_heads > max_gqa_ratio:
+                continue
+            # Keep the backend limitation from the previous enumerator.
+            if window_size > 0 and head_dim == 128:
+                continue
+            for s in sorted(sequence_lengths, reverse=True):
+                for b in sorted(batch_sizes, reverse=True):
+                    if num_kv_heads == n:
+                        if b * s > max_tokens_self_attention or b > 128:
+                            continue
+                    elif b * s > max_tokens_grouped_query_attention:
+                        continue
+                    if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
+                        continue
+                    for is_fp8_kv_cache in kv_cache_dtype_list:
+                        test_cases.append(
+                            [
+                                b,
+                                s,
+                                n,
+                                num_kv_heads,
+                                head_dim,
+                                is_fp8_kv_cache,
+                                True,
+                                window_size,
+                                head_config.has_attention_sink,
+                            ]
+                        )
+
+    return test_cases
+
+
+def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, max_tokens, shape_sweep):
+    b_s_dict = {}
+    s_b_dict = {}
+    for s in sequence_lengths:
+        max_b = max_tokens // s // num_heads
+        for b in batch_sizes:
+            if b > max_b:
+                break
+            if s not in s_b_dict:
+                s_b_dict[s] = {b}
+            else:
+                s_b_dict[s].add(b)
+    for s, b_set in s_b_dict.items():
+        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
+            continue
+        for b in b_set:
+            if b not in b_s_dict:
+                b_s_dict[b] = {s - 1}
+            b_s_dict[b].add(s - 1)
+    return b_s_dict
+
+
+def get_generation_attention_test_cases():
+    test_cases = []
+
+    # kv cache dtype fp8 to be supported
+    kv_cache_dtype_list = [False, True]
+    # XPU paged flash attention kernel supports GQA ratio up to 16
+    max_gqa_ratio = 16
+
+    for shape_sweep in get_attention_generation_shape_sweeps("vllm_xpu"):
+        batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
+        sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
+        supported_head_dims = {int(value) for value in shape_sweep["head_dims"]}
+        supported_window_sizes = {int(value) for value in shape_sweep["window_sizes"]}
+        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
+
+        for head_config in get_attention_head_configs(shape_sweep, phase="generation"):
+            n = head_config.num_heads
+            n_kv = head_config.num_kv_heads
+            head_dim = head_config.head_dim
+            window_size = head_config.window_size
+            if head_dim not in supported_head_dims or window_size not in supported_window_sizes:
+                continue
+            # XPU paged flash attention only supports GQA ratio <= 16.
+            if n // n_kv > max_gqa_ratio:
+                continue
+            # Keep the backend limitation from the previous enumerator.
+            if window_size > 0 and head_dim == 128:
+                continue
+            max_tokens_key = "max_mha_tokens_per_step" if n == n_kv else "max_xqa_tokens_per_step"
+            b_s_dict = _generation_target_sequence_lengths(
+                batch_sizes,
+                sequence_lengths,
+                n,
+                int(shape_sweep[max_tokens_key]),
+                shape_sweep,
+            )
+            for b, s_list_limited in b_s_dict.items():
+                target_s_list = sorted(s_list_limited)
+                if b >= min_drop_batch:
+                    target_s_list = target_s_list[:-1]
+                for s in target_s_list:
+                    for is_fp8_kv_cache in kv_cache_dtype_list:
+                        test_cases.append(
+                            [
+                                b,
+                                s,
+                                n,
+                                n_kv,
+                                head_dim,
+                                is_fp8_kv_cache,
+                                False,
+                                window_size,
+                                head_config.has_attention_sink,
+                            ]
+                        )
+    return test_cases
+
+
+if __name__ == "__main__":
+    from collector.registry_types import PerfFile
+
+    test_cases = get_context_attention_test_cases()
+    test_cases = test_cases[:10]
+    for test_case in test_cases:
+        print(f"Running context attention test case: {test_case}")
+        run_attention_torch(*test_case, perf_filename=PerfFile.CONTEXT_ATTENTION)
+
+    test_cases = get_generation_attention_test_cases()
+    test_cases = test_cases[:10]
+    for test_case in test_cases:
+        print(f"Running generation attention test case: {test_case}")
+        run_attention_torch(*test_case, perf_filename=PerfFile.GENERATION_ATTENTION)

@@ -11,7 +11,7 @@
 //   path hisim/src/hisim/time_predictor/aiconfigurator.py,
 //   https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/hisim/src/hisim/time_predictor/aiconfigurator.py,
 //   copyright Alibaba Group, Apache-2.0.
-// Modified: names, ordering and formulas adapted to AISimulate FPM fields.
+// Modified: names, ordering and formulas adapted to AISim FPM fields.
 // See THIRD_PARTY_NOTICES.md.
 
 //! Learned forward-pass model: an offline-trained tree ensemble over
@@ -21,7 +21,7 @@
 //! deployment (Dynamo `DYN_FPM_TRACE`), so the model learns the deployed
 //! engine's actual step time as a function of the scheduled batch. The
 //! artifact is a plain JSON file written by
-//! `aisimulate_core.sdk.fpm_learned` (Python, scikit-learn); this module
+//! `aisim_core.sdk.fpm_learned` (Python, scikit-learn); this module
 //! is the pure-Rust inference half so the simulation hot path never re-enters
 //! Python.
 //!
@@ -94,6 +94,16 @@ pub const AGGREGATE_FEATURE_NAMES: [&str; 21] = [
     "log1p_prefill_attention_pairs",
     "log1p_sum_decode_kv_squared",
 ];
+
+/// Number of `fpm5` features (`fpm_learned.FEATURE_PRESETS["fpm5"]`).
+pub(crate) const FPM5_FEATURE_COUNT: usize = 17;
+
+/// Positions of the `fpm5` preset in [`AGGREGATE_FEATURE_NAMES`], in preset
+/// order: every aggregate computable from the five FPM v1 counts and sums,
+/// dropping `var_prefill_length`, `var_decode_kv_tokens` and the decode sum of
+/// squares that is recovered from a variance (and its `log1p`).
+pub(crate) const FPM5_AGGREGATE_INDICES: [usize; FPM5_FEATURE_COUNT] =
+    [0, 1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19];
 
 /// Per-request features over the iteration's `(extend, past)` list (all ranks
 /// concatenated). These are the 18 features of the SGLang simulator
@@ -232,6 +242,66 @@ fn invalid(message: impl Into<String>) -> AicError {
 }
 
 impl LearnedForwardPassModel {
+    pub(crate) fn artifact(&self) -> LearnedArtifact {
+        LearnedArtifact {
+            schema: LEARNED_SCHEMA_NAME.to_owned(),
+            schema_version: LEARNED_SCHEMA_VERSION,
+            worker_type: self.worker_type,
+            target: self.target.clone(),
+            features: self.feature_names.clone(),
+            stores: self.stores.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Result<String, AicError> {
+        serde_json::to_string(&self.artifact()).map_err(|e| invalid(e.to_string()))
+    }
+
+    pub(crate) fn target(&self) -> LearnedTarget {
+        self.target.clone()
+    }
+
+    pub(crate) fn store(&self, kind: ForwardPassRegressionWorkloadKind) -> Option<&LearnedStore> {
+        self.stores.get(&kind)
+    }
+
+    pub(crate) fn replace_store(
+        &mut self,
+        kind: ForwardPassRegressionWorkloadKind,
+        store: LearnedStore,
+    ) {
+        self.stores.insert(kind, store);
+    }
+
+    /// Install a validated, previously absent online store without copying the
+    /// existing forests. The caller owns compatibility and duplicate checks.
+    pub(crate) fn append_store_from(
+        &mut self,
+        mut seed: Self,
+        kind: ForwardPassRegressionWorkloadKind,
+        rows: usize,
+    ) {
+        self.stores.insert(
+            kind,
+            seed.stores.remove(&kind).expect("validated appended store"),
+        );
+        let name = serde_json::to_value(kind).expect("store kind serializes");
+        if self.metadata.is_object() {
+            if !self.metadata["train_rows"].is_object() {
+                self.metadata["train_rows"] = serde_json::json!({});
+            }
+            self.metadata["train_rows"][name.as_str().expect("store kind string")] = rows.into();
+        }
+    }
+
+    pub(crate) fn selected_features(&self, features: &IterationFeatureVector) -> Vec<f64> {
+        self.feature_indices
+            .iter()
+            .map(|&i| features.values[i])
+            .collect()
+    }
+
     pub(crate) fn from_path(path: &Path) -> Result<Self, AicError> {
         let text = std::fs::read_to_string(path).map_err(|source| AicError::Io {
             path: path.to_path_buf(),
@@ -349,17 +419,27 @@ impl LearnedForwardPassModel {
         kind: ForwardPassRegressionWorkloadKind,
         features: &IterationFeatureVector,
     ) -> Result<Option<f64>, AicError> {
-        let Some(store) = self.stores.get(&kind) else {
-            return Ok(None);
-        };
         let mut buf = [f64::NAN; FEATURE_COUNT];
         for (slot, &index) in self.feature_indices.iter().enumerate() {
             buf[slot] = features.values[index];
         }
-        let x = &buf[..self.feature_indices.len()];
+        self.predict_selected_ms(kind, &buf[..self.feature_indices.len()])
+    }
+
+    /// Prediction from this artifact's already-projected feature ABI. Combined
+    /// feedback shares this projection between both experts and the retained row.
+    pub(crate) fn predict_selected_ms(
+        &self,
+        kind: ForwardPassRegressionWorkloadKind,
+        x: &[f64],
+    ) -> Result<Option<f64>, AicError> {
+        debug_assert_eq!(x.len(), self.feature_indices.len());
+        let Some(store) = self.stores.get(&kind) else {
+            return Ok(None);
+        };
         let mut raw = store.baseline;
         for tree in &store.trees {
-            raw += tree_leaf_value(tree, &x);
+            raw += tree_leaf_value(tree, x);
         }
         let ms = match self.target {
             LearnedTarget::LogMs => raw.exp(),
@@ -380,7 +460,7 @@ fn allowed_workload_kinds(
     super::model::workload_kinds_for(worker_type)
 }
 
-fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
+pub(super) fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
     let n = tree.value.len();
     if n == 0 {
         return Err("empty tree".to_string());
@@ -422,7 +502,7 @@ fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn tree_leaf_value(tree: &LearnedTree, x: &[f64]) -> f64 {
+pub(super) fn tree_leaf_value(tree: &LearnedTree, x: &[f64]) -> f64 {
     let mut node = 0usize;
     loop {
         let left = tree.left[node];
@@ -442,6 +522,109 @@ fn tree_leaf_value(tree: &LearnedTree, x: &[f64]) -> f64 {
             right as usize
         };
     }
+}
+
+/// Cross-rank aggregate features of one iteration, in
+/// [`AGGREGATE_FEATURE_NAMES`] order. Callers validate the metrics first;
+/// ranks with no scheduled work are skipped.
+pub(crate) fn aggregate_features(
+    metrics_by_rank: &[ForwardPassMetrics],
+) -> [f64; AGGREGATE_FEATURE_NAMES.len()] {
+    let mut num_active_ranks = 0.0_f64;
+    let mut num_prefill = 0.0_f64;
+    let mut sum_ptok = 0.0_f64;
+    let mut sum_pkv = 0.0_f64;
+    let mut var_plen = 0.0_f64;
+    let mut num_decode = 0.0_f64;
+    let mut sum_dkv = 0.0_f64;
+    let mut var_dkv = 0.0_f64;
+    let mut max_rank_ptok = 0.0_f64;
+    let mut max_rank_dkv = 0.0_f64;
+    let mut max_rank_nd = 0.0_f64;
+    let mut attention_pairs = 0.0_f64;
+    let mut sum_dkv_sq = 0.0_f64;
+
+    for metrics in metrics_by_rank {
+        let s = &metrics.scheduled_requests;
+        let np = f64::from(s.num_prefill_requests);
+        let ptok = f64::from(s.sum_prefill_tokens);
+        let pkv = f64::from(s.sum_prefill_kv_tokens);
+        let nd = f64::from(s.num_decode_requests);
+        let dkv = f64::from(s.sum_decode_kv_tokens);
+        let has_prefill = ptok > 0.0;
+        let has_decode = nd > 0.0;
+        if !has_prefill && !has_decode {
+            continue;
+        }
+        num_active_ranks += 1.0;
+        num_prefill += np;
+        sum_ptok += ptok;
+        sum_pkv += pkv;
+        var_plen = var_plen.max(s.var_prefill_length.max(0.0));
+        num_decode += nd;
+        sum_dkv += dkv;
+        var_dkv = var_dkv.max(s.var_decode_kv_tokens.max(0.0));
+        max_rank_ptok = max_rank_ptok.max(ptok);
+        max_rank_dkv = max_rank_dkv.max(dkv);
+        max_rank_nd = max_rank_nd.max(nd);
+        if has_prefill && np > 0.0 {
+            // Balanced-partition attention proxy: sum over requests of
+            // e * (p + (e + 1) / 2) with e = ptok / np and p = pkv / np.
+            attention_pairs += pkv * ptok / np + ptok * ptok / (2.0 * np) + ptok / 2.0;
+        }
+        if has_decode {
+            // Recover sum(kv_i^2) from the population variance:
+            // n * var + n * mean^2.
+            let mean = dkv / nd;
+            sum_dkv_sq += nd * s.var_decode_kv_tokens.max(0.0) + nd * mean * mean;
+        }
+    }
+
+    let mean_prefill_chunk = if num_prefill > 0.0 {
+        sum_ptok / num_prefill
+    } else {
+        0.0
+    };
+    let mean_prefill_kv = if num_prefill > 0.0 {
+        sum_pkv / num_prefill
+    } else {
+        0.0
+    };
+    let mean_decode_kv = if num_decode > 0.0 {
+        sum_dkv / num_decode
+    } else {
+        0.0
+    };
+
+    [
+        num_active_ranks,
+        num_prefill,
+        sum_ptok,
+        sum_pkv,
+        var_plen,
+        num_decode,
+        sum_dkv,
+        var_dkv,
+        max_rank_ptok,
+        max_rank_dkv,
+        max_rank_nd,
+        mean_prefill_chunk,
+        mean_prefill_kv,
+        attention_pairs,
+        mean_decode_kv,
+        sum_dkv_sq,
+        sum_ptok.ln_1p(),
+        sum_pkv.ln_1p(),
+        sum_dkv.ln_1p(),
+        attention_pairs.ln_1p(),
+        sum_dkv_sq.ln_1p(),
+    ]
+}
+
+/// The `fpm5` subset of [`aggregate_features`], in preset order.
+pub(crate) fn fpm5_features(metrics_by_rank: &[ForwardPassMetrics]) -> [f64; FPM5_FEATURE_COUNT] {
+    let aggregate = aggregate_features(metrics_by_rank);
+    FPM5_AGGREGATE_INDICES.map(|index| aggregate[index])
 }
 
 /// Named feature values for one iteration, indexed like [`feature_names`].
@@ -475,56 +658,21 @@ impl IterationFeatureVector {
         metrics_by_rank: &[ForwardPassMetrics],
         fill_slots: bool,
     ) -> Self {
-        let mut num_active_ranks = 0.0_f64;
-        let mut num_prefill = 0.0_f64;
-        let mut sum_ptok = 0.0_f64;
-        let mut sum_pkv = 0.0_f64;
-        let mut var_plen = 0.0_f64;
-        let mut num_decode = 0.0_f64;
-        let mut sum_dkv = 0.0_f64;
-        let mut var_dkv = 0.0_f64;
-        let mut max_rank_ptok = 0.0_f64;
-        let mut max_rank_dkv = 0.0_f64;
-        let mut max_rank_nd = 0.0_f64;
-        let mut attention_pairs = 0.0_f64;
-        let mut sum_dkv_sq = 0.0_f64;
+        let mut values = Vec::with_capacity(FEATURE_COUNT);
+        values.extend_from_slice(&aggregate_features(metrics_by_rank));
         // Per-request pairs over all active ranks; `None` when any active rank
         // lacks the lists (mixed producers make per-request features unreliable).
         let mut pairs: Option<Vec<(f64, f64)>> = Some(Vec::new());
 
         for metrics in metrics_by_rank {
             let s = &metrics.scheduled_requests;
-            let np = f64::from(s.num_prefill_requests);
             let ptok = f64::from(s.sum_prefill_tokens);
             let pkv = f64::from(s.sum_prefill_kv_tokens);
             let nd = f64::from(s.num_decode_requests);
             let dkv = f64::from(s.sum_decode_kv_tokens);
-            let has_prefill = ptok > 0.0;
-            let has_decode = nd > 0.0;
-            if !has_prefill && !has_decode {
+            // Same active-rank rule as `aggregate_features`.
+            if ptok <= 0.0 && nd <= 0.0 {
                 continue;
-            }
-            num_active_ranks += 1.0;
-            num_prefill += np;
-            sum_ptok += ptok;
-            sum_pkv += pkv;
-            var_plen = var_plen.max(s.var_prefill_length.max(0.0));
-            num_decode += nd;
-            sum_dkv += dkv;
-            var_dkv = var_dkv.max(s.var_decode_kv_tokens.max(0.0));
-            max_rank_ptok = max_rank_ptok.max(ptok);
-            max_rank_dkv = max_rank_dkv.max(dkv);
-            max_rank_nd = max_rank_nd.max(nd);
-            if has_prefill && np > 0.0 {
-                // Balanced-partition attention proxy: sum over requests of
-                // e * (p + (e + 1) / 2) with e = ptok / np and p = pkv / np.
-                attention_pairs += pkv * ptok / np + ptok * ptok / (2.0 * np) + ptok / 2.0;
-            }
-            if has_decode {
-                // Recover sum(kv_i^2) from the population variance:
-                // n * var + n * mean^2.
-                let mean = dkv / nd;
-                sum_dkv_sq += nd * s.var_decode_kv_tokens.max(0.0) + nd * mean * mean;
             }
             // Sanity check on the past-KV total: prefix-cache hits and earlier
             // chunks can only be as large as the aggregates describe. Slack:
@@ -549,46 +697,6 @@ impl IterationFeatureVector {
             }
         }
 
-        let mean_prefill_chunk = if num_prefill > 0.0 {
-            sum_ptok / num_prefill
-        } else {
-            0.0
-        };
-        let mean_prefill_kv = if num_prefill > 0.0 {
-            sum_pkv / num_prefill
-        } else {
-            0.0
-        };
-        let mean_decode_kv = if num_decode > 0.0 {
-            sum_dkv / num_decode
-        } else {
-            0.0
-        };
-
-        let mut values = Vec::with_capacity(FEATURE_COUNT);
-        values.extend_from_slice(&[
-            num_active_ranks,
-            num_prefill,
-            sum_ptok,
-            sum_pkv,
-            var_plen,
-            num_decode,
-            sum_dkv,
-            var_dkv,
-            max_rank_ptok,
-            max_rank_dkv,
-            max_rank_nd,
-            mean_prefill_chunk,
-            mean_prefill_kv,
-            attention_pairs,
-            mean_decode_kv,
-            sum_dkv_sq,
-            sum_ptok.ln_1p(),
-            sum_pkv.ln_1p(),
-            sum_dkv.ln_1p(),
-            attention_pairs.ln_1p(),
-            sum_dkv_sq.ln_1p(),
-        ]);
         let request_lists = matches!(&pairs, Some(list) if !list.is_empty());
         match pairs {
             Some(mut list) if !list.is_empty() => {

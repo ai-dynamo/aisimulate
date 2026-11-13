@@ -14,25 +14,26 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready, settle_internal_work,
+    ReplayStepOutcome, dispatch_failure, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_worker_completions, push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
-    ReplaySchedulerIntervalMetrics, ReplayTelemetryObserver, ReplayTelemetryRuntime,
-    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+    ReplaySchedulerIntervalMetrics, ReplayTelemetryCaptureSink, ReplayTelemetryHostCache,
+    ReplayTelemetryObserver, ReplayTelemetryRuntime, ReplayTelemetrySampleKind,
+    ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };
 use super::{
     components::{
-        AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode, ReplayAdmissionMetadata,
-        ReplayEngineObservation, ReplayReadyArrival, TokenizationLatency, TokenizationStage,
-        TrafficAccumulators,
+        AdmissionEvent, AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects,
+        EnginePassMode, PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation,
+        ReplayReadyArrival, TokenizationLatency, TokenizationStage, TrafficAccumulators,
     },
     state::AggRequestState,
 };
-use crate::engine::{Command, CommandResult, LifecycleEvent};
+use crate::engine::{Command, CommandResult, KvHintSource, LifecycleEvent};
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::loadgen::{AgenticPreparationTransition, ReplayRequestPayload};
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
@@ -55,6 +56,9 @@ pub(crate) struct AggRuntimeStats {
     semantic_drain_count: usize,
 }
 
+/// A placed request waiting for tokenization: request, id, worker and resolved KV hint.
+type TokenizingDispatch = (DirectRequest, Uuid, usize, Option<KvHintSource>);
+
 pub(crate) struct AggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
 where
     Observation: ReplayEngineObservation,
@@ -76,7 +80,9 @@ where
     events: BinaryHeap<SimulationEvent<Observation::Batch>>,
     placement: PlacementPolicyImpl,
     /// Optional per-worker tokenization between placement and the engine.
-    tokenization: Option<TokenizationStage<(DirectRequest, Uuid, usize)>>,
+    tokenization: Option<TokenizationStage<TokenizingDispatch>>,
+    /// Optional detokenization after the engine.
+    detokenization: Option<DetokenizationStage>,
     progress: ReplayProgress,
     stats: AggRuntimeStats,
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
@@ -91,6 +97,7 @@ where
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
     telemetry: Option<ReplayTelemetryRuntime>,
+    telemetry_capture: Option<ReplayTelemetryCaptureSink>,
     /// Whether to retain the latest FPM snapshot per worker/rank. Only the planner
     /// consumes them, so the plain `run()` path leaves this `false`.
     collect_fpm: bool,
@@ -165,6 +172,7 @@ where
             events: BinaryHeap::new(),
             placement,
             tokenization: None,
+            detokenization: None,
             progress,
             stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
@@ -172,6 +180,7 @@ where
             max_sim_time_ms: None,
             scaling_policy: None,
             telemetry: None,
+            telemetry_capture: None,
             collect_fpm: false,
             step_tokens: Vec::new(),
             step_terminals: Vec::new(),
@@ -252,6 +261,15 @@ where
         self
     }
 
+    /// Detokenize outputs for the client and hold finished requests until the client receives them.
+    pub(crate) fn with_detokenization(
+        mut self,
+        detokenization: Option<DetokenizationStage>,
+    ) -> Self {
+        self.detokenization = detokenization;
+        self
+    }
+
     /// Attach a scaling policy and enable tick-scoped FPM collection.
     pub(crate) fn with_scaling_policy(mut self, policy: Box<dyn ReplayScalingPolicy>) -> Self {
         self.collect_fpm = true;
@@ -261,6 +279,18 @@ where
         }
         self.scaling_policy = Some(policy);
         self
+    }
+
+    pub(crate) fn with_telemetry_capture(
+        self,
+        interval_ms: f64,
+        sink: ReplayTelemetryCaptureSink,
+    ) -> Self {
+        sink.set_preparing(self.admission.is_agentic_preparing());
+        let mut runtime = self.with_telemetry_observer(interval_ms, Box::new(sink.clone()));
+        runtime.telemetry_capture = Some(sink);
+        runtime.collector.set_capture_per_request(true);
+        runtime
     }
 
     pub(crate) fn with_telemetry_observer(
@@ -281,6 +311,10 @@ where
             + self.placement.pending_count()
             + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
             + self.tokenization.as_ref().map_or(0, TokenizationStage::len)
+            + self
+                .detokenization
+                .as_ref()
+                .map_or(0, DetokenizationStage::len)
     }
 
     /// Preserve the live `(worker_id, dp_rank)` identity when forwarding a
@@ -305,6 +339,7 @@ where
         request: DirectRequest,
         uuid: Uuid,
         worker_idx: usize,
+        kv_hint: Option<KvHintSource>,
     ) -> anyhow::Result<()> {
         if let Some(tokenization) = &mut self.tokenization {
             let (logical_worker_id, _) =
@@ -319,10 +354,10 @@ where
                 logical_worker_id,
                 input_tokens,
                 uuid,
-                (request, uuid, worker_idx),
+                (request, uuid, worker_idx, kv_hint),
             )?;
         } else {
-            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx, kv_hint)?;
         }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
@@ -330,6 +365,21 @@ where
         // signaling "no separate prefill pool".
         self.collector.on_decode_assigned(uuid, worker_idx);
         Ok(())
+    }
+
+    fn submit_to_engine(
+        &mut self,
+        request: DirectRequest,
+        uuid: Uuid,
+        worker_idx: usize,
+        kv_hint: Option<KvHintSource>,
+    ) -> anyhow::Result<()> {
+        self.engine
+            .dispatch(worker_idx, request, kv_hint, self.now_ms)
+            .and_then(|()| self.placement.dispatch_committed(uuid, self.now_ms))
+            .map_err(|error| {
+                dispatch_failure(error, self.placement.dispatch_aborted(uuid, self.now_ms))
+            })
     }
 
     fn record_placement(&mut self, placement: Placement) {
@@ -353,6 +403,7 @@ where
                         placement.scheduler_id
                     )
                 })?;
+            let kv_hint = self.engine.kv_hint_source(&placement)?;
             self.collector.on_route_released(
                 uuid,
                 ReplayRequestPool::Agg,
@@ -371,7 +422,7 @@ where
                     anyhow::anyhow!("offline replay missing queued request state for {uuid}")
                 })?
                 .take_queued_request(uuid, placement.scheduler_id)?;
-            self.dispatch_to_worker(request, uuid, placement.scheduler_id)?;
+            self.dispatch_to_worker(request, uuid, placement.scheduler_id, kv_hint)?;
         }
         Ok(())
     }
@@ -425,6 +476,7 @@ where
                             placement.scheduler_id
                         )
                     })?;
+                let kv_hint = self.engine.kv_hint_source(&placement)?;
                 self.collector.on_route_immediate(
                     uuid,
                     ReplayRequestPool::Agg,
@@ -447,6 +499,7 @@ where
                     request.into_direct_request(),
                     uuid,
                     placement.scheduler_id,
+                    kv_hint,
                 )?;
             }
             PlacementDecision::Queued => {
@@ -525,12 +578,17 @@ where
                 });
         let next_arrival_ms = choose_next_timestamp(
             choose_next_timestamp(
-                CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-                profile_deadline,
+                choose_next_timestamp(
+                    CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+                    profile_deadline,
+                ),
+                self.tokenization
+                    .as_ref()
+                    .and_then(TokenizationStage::next_release_ms),
             ),
-            self.tokenization
+            self.detokenization
                 .as_ref()
-                .and_then(TokenizationStage::next_release_ms),
+                .and_then(DetokenizationStage::next_release_ms),
         );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -576,7 +634,12 @@ where
     }
 
     /// Consume one output signal, updating router state, collector state, and completion counts.
-    fn process_output_signal(&mut self, signal: OutputSignal) -> anyhow::Result<()> {
+    /// The client receives the signal's output at `received_ms`.
+    fn process_output_signal(
+        &mut self,
+        signal: OutputSignal,
+        received_ms: f64,
+    ) -> anyhow::Result<()> {
         if !self.admission.is_agentic_preparing()
             && self.admission.knows_preparation_request(signal.uuid)
         {
@@ -586,7 +649,15 @@ where
         }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
-            self.collector.on_token(signal.uuid, self.now_ms);
+            if self.detokenization.is_some() {
+                self.collector
+                    .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
+            } else {
+                self.collector.on_token(signal.uuid, received_ms);
+            }
+            if let Some(telemetry) = &mut self.telemetry {
+                telemetry.on_output_token(self.now_ms, received_ms);
+            }
             if self.defer_drive {
                 self.step_tokens.push((signal.uuid, token_id));
             }
@@ -597,7 +668,16 @@ where
             } else {
                 ReplayTerminalStatus::Completed
             };
-            self.collector.on_terminal(signal.uuid, self.now_ms, status);
+            // The client records and acts on a response when it receives its
+            // end. A rejection carries no output: the client learns of it when
+            // the engine rejects the request.
+            let via_detokenization = self.detokenization.is_some() && !signal.rejected;
+            match &mut self.detokenization {
+                Some(detokenization) if via_detokenization => {
+                    detokenization.defer_terminal(received_ms, signal.uuid, status)
+                }
+                _ => self.collector.on_terminal(signal.uuid, self.now_ms, status),
+            }
             if self.defer_drive {
                 self.step_freed_slot = true;
                 self.step_terminals.push((signal.uuid, status));
@@ -627,8 +707,10 @@ where
                     latencies,
                 );
             }
-            self.admission
-                .defer_terminal(signal.uuid, self.now_ms, status)?;
+            if !via_detokenization {
+                self.admission
+                    .defer_terminal(signal.uuid, self.now_ms, status)?;
+            }
             if !self.admission.knows_preparation_request(signal.uuid) {
                 self.progress.inc_completed();
             }
@@ -662,7 +744,7 @@ where
     /// Apply one completed pass: free request slots, publish KV events, and handle outputs.
     fn process_completed_pass(
         &mut self,
-        _worker_idx: usize,
+        rank_id: usize,
         _completed_requests: usize,
         output_signals: Vec<OutputSignal>,
         engine_events: Observation::Batch,
@@ -672,10 +754,54 @@ where
         self.apply_engine_observations(engine_events, KvIngestBoundary::PassEnd)?;
         self.traffic
             .on_accept_length_sample(accept_length_output_tokens, accept_length_decode_forwards);
+        let receipt = self.receive_pass(rank_id, &output_signals)?;
         for signal in output_signals {
-            self.process_output_signal(signal)?;
+            let received_ms = receipt.received_ms(signal.uuid);
+            self.process_output_signal(signal, received_ms)?;
         }
         Ok(())
+    }
+
+    /// When the client receives the outputs of the pass that rank `rank_id`
+    /// finished now: at the pass end without detokenization. Rejections carry
+    /// no output and take no server time.
+    fn receive_pass(
+        &mut self,
+        rank_id: usize,
+        signals: &[OutputSignal],
+    ) -> anyhow::Result<PassReceipt> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return Ok(PassReceipt::Together(self.now_ms));
+        };
+        // The detokenizer servers belong to the worker, shared by its attention-DP ranks.
+        let worker_id = self
+            .engine
+            .rank_identity(rank_id)
+            .map(|(worker_id, _)| worker_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("offline replay output references unknown rank scheduler {rank_id}")
+            })?;
+        // A request's consecutive signals in one pass are one output.
+        let outputs = signals
+            .chunk_by(|left, right| left.uuid == right.uuid)
+            .filter(|output| !output.iter().any(|signal| signal.rejected))
+            .map(|output| output[0].uuid);
+        detokenization.receive_pass(worker_id, self.now_ms, outputs)
+    }
+
+    /// Record every response the client has received by now and hand its
+    /// request back to the workload.
+    fn release_received_terminals(&mut self) -> anyhow::Result<bool> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return Ok(false);
+        };
+        let released = detokenization.release_due(self.now_ms);
+        let changed = !released.is_empty();
+        for (at_ms, uuid, status) in released {
+            self.collector.on_terminal(uuid, at_ms, status);
+            self.admission.defer_terminal(uuid, self.now_ms, status)?;
+        }
+        Ok(changed)
     }
 
     /// Drain all worker-completion events scheduled for the current logical timestamp.
@@ -706,6 +832,9 @@ where
         if let Some(fpm) = &payload.fpm {
             self.collector
                 .on_completed_prefill_work(fpm.sum_prefill_tokens);
+            if let Some(telemetry) = &mut self.telemetry {
+                telemetry.on_prefill_work(fpm.sum_prefill_tokens);
+            }
         }
         if let Some(sink) = &self.artifact_sink {
             sink.record_pass_completion_kv_events(
@@ -876,8 +1005,9 @@ where
         };
         let released = tokenization.release_due(self.now_ms);
         let changed = !released.is_empty();
-        for (tokenized_ms, (request, uuid, worker_idx)) in released {
-            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+        for (tokenized_ms, (request, uuid, worker_idx, kv_hint)) in released {
+            let kv_hint = self.engine.live_kv_hint(kv_hint);
+            self.submit_to_engine(request, uuid, worker_idx, kv_hint)?;
             self.collector.on_tokenized(uuid, tokenized_ms);
         }
         Ok(changed)
@@ -923,6 +1053,27 @@ where
         })
     }
 
+    /// Tell the placement policy about a request's first admission. Later
+    /// admissions re-run a preempted request; its prefill already started.
+    fn notify_prefill_started(&mut self, admission: &AdmissionEvent) -> anyhow::Result<()> {
+        let Some(state) = self.requests.get_mut(&admission.uuid) else {
+            bail!(
+                "offline replay missing request state for {}",
+                admission.uuid
+            );
+        };
+        if state.prefill_started {
+            return Ok(());
+        }
+        state.prefill_started = true;
+        let placements = self.placement.prefill_started(
+            admission.uuid,
+            admission.reused_input_tokens,
+            self.now_ms,
+        )?;
+        self.dispatch_placements(placements)
+    }
+
     fn handle_engine_effects(
         &mut self,
         effects: EngineEffects<Observation::Batch>,
@@ -931,7 +1082,17 @@ where
         // generalized-engine boundary as pass-start effects. Preserve the old
         // scheduler contract by making them visible to Replay's collector at
         // the same virtual timestamp before any completion is processed.
-        for admission in effects.admissions {
+        for admission in &effects.admissions {
+            if let (Some(telemetry), Some(input)) = (
+                &mut self.telemetry,
+                self.collector.first_admission_input(admission.uuid),
+            ) {
+                telemetry.on_first_admission(
+                    input,
+                    admission.reused_input_tokens,
+                    admission.cache_tier_attribution,
+                );
+            }
             let attribution = admission.cache_tier_attribution;
             self.collector.on_admit_with_tier_attribution(
                 admission.uuid,
@@ -962,6 +1123,9 @@ where
             sink.record_pass_start_kv_events(pass_start.at_ms, &pass_start.kv_events)?;
         }
         self.apply_engine_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
+        for admission in &effects.admissions {
+            self.notify_prefill_started(admission)?;
+        }
         for payload in effects.immediate_completions {
             self.process_worker_completion_payload(payload)?;
         }
@@ -1032,12 +1196,16 @@ where
             // Settle idle deadlines first: a completion below may release a
             // queued placement and submit it to that same idle worker.
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let released = self.placement.advance_clock(self.now_ms)?;
+            changed |= !released.is_empty();
+            self.dispatch_placements(released)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
                 // Pass completion can expose another deadline at this timestamp.
                 changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             }
+            changed |= self.release_received_terminals()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.finish_agentic_preparation()?;
@@ -1069,6 +1237,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        router_hint: self.engine.accepts_kv_hints(),
                     },
                     self.now_ms,
                 )?;
@@ -1139,7 +1308,17 @@ where
                 (gauges, interval, self.traffic.drain_telemetry(self.now_ms))
             }
         };
+        let host_caches = self
+            .engine
+            .host_cache_snapshots(true)
+            .into_iter()
+            .map(|metrics| ReplayTelemetryHostCache {
+                role: (metrics.scope != crate::engine::G2Scope::ClusterShared).then_some("agg"),
+                metrics,
+            })
+            .collect();
         let snapshot = ReplayTelemetrySnapshot {
+            host_caches,
             sample_ordinal,
             kind,
             interval_start_ms,
@@ -1174,7 +1353,9 @@ where
     /// Start observational/planner clocks only once the saved suffix can run.
     fn start_profile_observers(&mut self) -> anyhow::Result<()> {
         if !self.profile_observers_started {
-            self.seed_first_telemetry_tick()?;
+            if !self.telemetry.as_ref().is_some_and(|t| t.started()) {
+                self.seed_first_telemetry_tick()?;
+            }
             self.seed_first_scaling_tick()?;
             self.profile_observers_started = true;
         }
@@ -1253,11 +1434,12 @@ where
         if !self.admission.is_agentic_preparing() || !self.engine.is_drained() {
             return Ok(false);
         }
-        let Some(transition) =
-            self.admission
-                .finish_agentic_preparation(self.now_ms, &self.collector, || {
-                    self.engine.reset_timing_evidence()
-                })?
+        let Some(transition) = self.admission.finish_agentic_preparation(
+            self.now_ms,
+            &self.collector,
+            self.telemetry_capture.as_ref(),
+            || self.engine.reset_timing_evidence(),
+        )?
         else {
             return Ok(false);
         };
@@ -1269,7 +1451,25 @@ where
         let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
-        self.collector.take_report(self.now_ms);
+        if self.telemetry_capture.is_some() {
+            if !self.telemetry.as_ref().is_some_and(|t| t.started()) {
+                self.seed_first_telemetry_tick()?;
+            }
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Final)?;
+        }
+        let preparation_report = self.collector.take_report(self.now_ms);
+        if let Some(sink) = &self.telemetry_capture {
+            sink.record_preparation(
+                preparation_report,
+                &self
+                    .admission
+                    .agentic_phase_evidence()
+                    .expect("preparation evidence"),
+            );
+        }
+        if let Some(telemetry) = &mut self.telemetry {
+            telemetry.reset_counters();
+        }
         self.collector
             .set_g3_profile_baseline(self.engine.g3_stats());
         self.collector.set_agentic_phases(
@@ -1297,6 +1497,9 @@ where
                 );
             }
             self.start_profile_observers()?;
+            if self.telemetry_capture.is_some() {
+                self.publish_telemetry_sample(ReplayTelemetrySampleKind::Baseline)?;
+            }
         }
         Ok(true)
     }
@@ -1335,13 +1538,14 @@ where
     }
 
     fn publish_final_telemetry_sample(&mut self) -> anyhow::Result<()> {
-        if !self.profile_observers_started {
+        if !self.profile_observers_started && self.telemetry_capture.is_none() {
             return Ok(());
         }
         let Some(telemetry) = self.telemetry.as_ref() else {
             return Ok(());
         };
         if self.now_ms > telemetry.interval_start_ms()
+            || telemetry.has_observations()
             || self.traffic.telemetry_has_observations()
             || self.engine.telemetry_has_interval_observations()
         {
@@ -1512,6 +1716,7 @@ where
             let topology = self.engine.worker_topology(id).unwrap_or(WorkerTopology {
                 worker_id: id,
                 scheduler_ids: Vec::new(),
+                router_hint: self.engine.accepts_kv_hints(),
             });
             let placements = self.placement.worker_draining(topology, self.now_ms)?;
             released.extend(placements.iter().map(|placement| placement.request_id));
@@ -1526,6 +1731,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.engine.accepts_kv_hints(),
                 },
                 self.now_ms,
             )?;
@@ -1650,6 +1856,10 @@ where
         if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with an encoder pool");
         }
+        // Profile cancellation does not know about responses still on their way to the client.
+        if self.detokenization.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with detokenization");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -1658,6 +1868,10 @@ where
         self.drain_current_timestamp()?;
         if self.admission.agentic_phase_evidence().is_none() {
             self.start_profile_observers()?;
+        } else if self.telemetry_capture.is_some()
+            && !self.telemetry.as_ref().is_some_and(|t| t.started())
+        {
+            self.seed_first_telemetry_tick()?;
         }
         // Keep the baseline before the first scaling decision, but settle any
         // tick seeded at this instant before exposing a settled step boundary.
@@ -1709,6 +1923,9 @@ where
                 && !self.admission.is_agentic_preparing()
                 && canonical_timestamp_ms > cap_ms
             {
+                if let Some(capture) = &self.telemetry_capture {
+                    capture.mark_time_limited();
+                }
                 return Ok(ReplayStepOutcome::TimeLimitReached {
                     now_ms: self.now_ms,
                 });
@@ -1760,6 +1977,7 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.g3_offload = self.engine.g3_stats();
+        self.collector.kvcr = self.engine.kvcr_stats();
         self.collector.g2_domains = self.engine.g2_domains();
         if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
             self.collector.set_agentic_snapshots(snapshots);
@@ -2522,6 +2740,307 @@ mod agentic_warmup_tests {
     }
 
     #[test]
+    fn full_telemetry_preserves_preparation_and_profile_measurements() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for interval in [7.0, 10.0, 1000.0] {
+                let baseline = runtime(backend, 64, 10.0).run().unwrap().0.finish();
+                let sink = ReplayTelemetryCaptureSink::new(interval);
+                let replay =
+                    runtime(backend, 64, 10.0).with_telemetry_capture(interval, sink.clone());
+                assert!(
+                    !replay.collect_fpm,
+                    "counts must not require policy FPM capture"
+                );
+                let mut report = replay.run().unwrap().0.finish();
+                let expected = serde_json::to_value(&baseline).unwrap();
+                let actual = serde_json::to_value(&report).unwrap();
+                for (key, value) in expected.as_object().unwrap() {
+                    if let (Some(expected), Some(observed)) = (value.as_f64(), actual[key].as_f64())
+                    {
+                        assert!(
+                            (expected - observed).abs() <= 1e-12 * expected.abs().max(1.0),
+                            "summary field {key}, backend {backend:?}, interval {interval}: {expected} vs {observed}"
+                        );
+                    } else {
+                        assert_eq!(
+                            value, &actual[key],
+                            "summary field {key}, backend {backend:?}, interval {interval}"
+                        );
+                    }
+                }
+                let capture = sink.finish(&mut report, true);
+                let origin = report
+                    .agentic_phases
+                    .as_ref()
+                    .unwrap()
+                    .profile_start_ms
+                    .unwrap();
+                assert_eq!(capture.profile_start_ms, Some(origin));
+                assert_eq!(capture.requests.len(), 12);
+                assert_eq!(
+                    capture
+                        .requests
+                        .iter()
+                        .filter(|r| r.phase == AgenticReplayPhase::Primer)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    capture
+                        .requests
+                        .iter()
+                        .filter(|r| r.phase == AgenticReplayPhase::Warmup)
+                        .count(),
+                    10
+                );
+                let profile = capture
+                    .requests
+                    .iter()
+                    .find(|r| r.phase == AgenticReplayPhase::Profile)
+                    .unwrap();
+                assert_eq!(
+                    profile.request.arrival_time_ms,
+                    report.per_request[0].arrival_time_ms + origin
+                );
+                assert_eq!(
+                    profile.request.first_token_ms,
+                    report.per_request[0].first_token_ms.map(|t| t + origin)
+                );
+                assert!(capture.samples.iter().any(|s| s.phase == "preparation"));
+                assert!(
+                    capture
+                        .samples
+                        .iter()
+                        .any(|s| s.phase == "profile" && s.sample.sampled_at_ms == origin)
+                );
+                assert_eq!(
+                    capture
+                        .samples
+                        .iter()
+                        .map(|s| s.sample.traffic.delivered_output_tokens)
+                        .sum::<u64>(),
+                    12
+                );
+                assert_eq!(
+                    capture
+                        .samples
+                        .iter()
+                        .map(|s| s.sample.traffic.first_admission.requests)
+                        .sum::<u64>(),
+                    12
+                );
+                assert_eq!(
+                    capture
+                        .samples
+                        .iter()
+                        .filter(|s| s.phase == "profile")
+                        .map(|s| s.sample.traffic.committed_prefill_tokens)
+                        .sum::<u64>(),
+                    report.committed_prefill_tokens
+                );
+                assert!(
+                    capture
+                        .samples
+                        .iter()
+                        .filter(|s| s.phase == "preparation")
+                        .all(|s| s.sample.sampled_at_ms <= origin)
+                );
+                assert!(
+                    capture
+                        .samples
+                        .iter()
+                        .filter(|s| s.phase == "profile")
+                        .all(|s| s.sample.interval_start_ms >= origin)
+                );
+                assert!(
+                    capture
+                        .lifecycle
+                        .iter()
+                        .any(|e| e.phase == AgenticReplayPhase::Primer)
+                );
+                assert!(
+                    capture
+                        .lifecycle
+                        .iter()
+                        .any(|e| e.phase == AgenticReplayPhase::Warmup)
+                );
+                assert!(
+                    capture
+                        .lifecycle
+                        .iter()
+                        .any(|e| e.phase == AgenticReplayPhase::Profile)
+                );
+                assert!(
+                    capture
+                        .samples
+                        .windows(2)
+                        .all(|w| w[0].sample.sample_ordinal < w[1].sample.sample_ordinal)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_telemetry_counts_speculative_delivery_and_suppresses_canceled_bursts() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for canceled in [false, true] {
+                let make_runtime = || {
+                    let graph = ValidatedAgenticGraph::from_agentic_mooncake_rows(
+                        AgenticMooncakeHeader {
+                            schema: AGENTIC_MOONCAKE_SCHEMA.into(),
+                            version: AGENTIC_MOONCAKE_VERSION,
+                            block_size: 4,
+                            hash_id_scope: AgenticHashIdScope::Local,
+                            source: AgenticSourceProvenance {
+                                format: "self-authored".into(),
+                                digest: "telemetry-speculative-cancellation".into(),
+                            },
+                        },
+                        vec![AgenticMooncakeRow {
+                            request_id: "request".into(),
+                            play_id: "play".into(),
+                            session_id: "session".into(),
+                            model: "model".into(),
+                            input_length: Some(8),
+                            output_length: Some(if canceled { 20 } else { 6 }),
+                            hash_ids: Some(vec![10, 20]),
+                            recorded_api_time_ms: Some(40.0),
+                            ..Default::default()
+                        }],
+                    )
+                    .unwrap();
+                    let prepared = graph
+                        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
+                        .unwrap();
+                    let play = prepared.context().prepare_play_from_start(0, 0).unwrap();
+                    let driver = WorkloadDriver::new_agentic_snapshots(
+                        PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
+                        4,
+                        true,
+                        1.0,
+                    )
+                    .unwrap();
+                    let config = ReplayEngineConfig {
+                        rank: EngineConfig {
+                            block_size: 4,
+                            num_gpu_blocks: 64,
+                            aic_nextn: Some(3),
+                            aic_nextn_accept_rates: Some("1,1,1".into()),
+                            timing_model: TimingModelConfig::Fixed {
+                                prefill_ms: 5.0,
+                                decode_ms: 10.0,
+                            },
+                            ..EngineConfig::for_backend(backend)
+                        },
+                        ..Default::default()
+                    };
+                    let factory = ReplayEngineFactory::new()
+                        .role_factory(&config, WorkerStage::Aggregated, false)
+                        .unwrap();
+                    let mut replay = Runtime::new_composed(
+                        factory,
+                        AdmissionQueue::new_workload(driver, ReplayMode::Trace),
+                        1,
+                        None,
+                        |dp, topology| Ok(AggregatedRoundRobinPlacement::new(dp, topology)),
+                    )
+                    .unwrap()
+                    .with_per_request_records(true);
+                    if canceled {
+                        replay
+                            .admission
+                            .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                                duration_seconds: 0.02,
+                                response_grace_seconds: 0.0,
+                                cancel_drain_seconds: 0.0,
+                                ..Default::default()
+                            })
+                            .unwrap();
+                    }
+                    replay
+                };
+                let baseline = make_runtime().run().unwrap().0.finish();
+                let sink = ReplayTelemetryCaptureSink::new(7.0);
+                let mut report = make_runtime()
+                    .with_telemetry_capture(7.0, sink.clone())
+                    .run()
+                    .unwrap()
+                    .0
+                    .finish();
+                assert_eq!(
+                    serde_json::to_value(&baseline.per_request).unwrap(),
+                    serde_json::to_value(&report.per_request).unwrap()
+                );
+                let capture = sink.finish(&mut report, true);
+                assert_eq!(capture.requests.len(), 1);
+                let request = &capture.requests[0].request;
+                let tokens: u64 = capture
+                    .samples
+                    .iter()
+                    .map(|sample| sample.sample.traffic.delivered_output_tokens)
+                    .sum();
+                assert_eq!(tokens as usize, request.output_length);
+                assert!(
+                    capture.samples.iter().any(|sample| sample
+                        .sample
+                        .traffic
+                        .delivered_output_tokens
+                        > 1),
+                    "{backend:?}: speculative burst was not observed"
+                );
+                assert_eq!(
+                    capture
+                        .samples
+                        .iter()
+                        .map(|sample| sample.sample.traffic.committed_prefill_tokens)
+                        .sum::<u64>(),
+                    report.committed_prefill_tokens
+                );
+                if canceled {
+                    assert_eq!(request.terminal_status, ReplayTerminalStatus::Canceled);
+                    assert_eq!(
+                        tokens, 5,
+                        "only prefill's token and the first four-token burst were delivered"
+                    );
+                    assert!(request.output_length < request.requested_output_length);
+                } else {
+                    assert_eq!(request.terminal_status, ReplayTerminalStatus::Completed);
+                    assert_eq!(
+                        tokens, 6,
+                        "the final speculative burst must obey the output limit"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_telemetry_keeps_failed_preparation_without_a_profile() {
+        let sink = ReplayTelemetryCaptureSink::new(7.0);
+        let mut report = runtime(Backend::Vllm, 1, 10.0)
+            .with_telemetry_capture(7.0, sink.clone())
+            .run()
+            .unwrap()
+            .0
+            .finish();
+        let capture = sink.finish(&mut report, true);
+        assert_eq!(capture.profile_start_ms, None);
+        assert_eq!(capture.requests.len(), 1);
+        assert_eq!(
+            capture.requests[0].request.terminal_status,
+            ReplayTerminalStatus::Rejected
+        );
+        assert!(capture.samples.iter().all(|s| s.phase == "preparation"));
+        assert!(
+            capture
+                .lifecycle
+                .iter()
+                .all(|s| s.phase != AgenticReplayPhase::Profile)
+        );
+        assert_eq!(report.request_counts.num_requests, 0);
+    }
+
+    #[test]
     fn rejected_preparation_returns_invalid_evidence_without_profile_measurements() {
         {
             let backend = Backend::Vllm;
@@ -2566,29 +3085,37 @@ mod agentic_warmup_tests {
             let phases = replay.admission.agentic_phase_evidence().unwrap();
             let uuid = phases.requests[0].uuid;
             for completed in [false, true] {
+                let now_ms = replay.now_ms;
                 replay
-                    .process_output_signal(OutputSignal {
-                        uuid,
-                        token_id: Some(999),
-                        completed,
-                        rejected: false,
-                        handoff_delay_ms: None,
-                        cached_tokens: None,
-                    })
+                    .process_output_signal(
+                        OutputSignal {
+                            uuid,
+                            token_id: Some(999),
+                            completed,
+                            rejected: false,
+                            handoff_delay_ms: None,
+                            cached_tokens: None,
+                        },
+                        now_ms,
+                    )
                     .unwrap();
             }
             // Only known preparation identities are ignored; arbitrary native
             // callbacks still expose a runtime bookkeeping error.
+            let now_ms = replay.now_ms;
             assert!(
                 replay
-                    .process_output_signal(OutputSignal {
-                        uuid: Uuid::from_u128(99_999),
-                        token_id: None,
-                        completed: true,
-                        rejected: false,
-                        handoff_delay_ms: None,
-                        cached_tokens: None,
-                    })
+                    .process_output_signal(
+                        OutputSignal {
+                            uuid: Uuid::from_u128(99_999),
+                            token_id: None,
+                            completed: true,
+                            rejected: false,
+                            handoff_delay_ms: None,
+                            cached_tokens: None,
+                        },
+                        now_ms,
+                    )
                     .is_err()
             );
             assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), phases);
@@ -2779,6 +3306,7 @@ mod host_offload_tests {
                     scheduler_id,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    kv_hints: None,
                     placement_replica_id: None,
                 }),
                 released: Vec::new(),
@@ -2819,6 +3347,7 @@ mod host_offload_tests {
                     scheduler_id: 1,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    kv_hints: None,
                     placement_replica_id: None,
                 })
                 .collect())
@@ -3174,8 +3703,8 @@ where
     }
 
     /// Drain the accumulated measurements into a report stamped with `wall_ms`,
-    /// leaving this runtime's collector empty. G3 counters remain cumulative
-    /// over the reusable runtime, like its retained cache contents.
+    /// leaving this runtime's collector empty. G3 and KVCR counters remain
+    /// cumulative over the reusable runtime, like its retained cache contents.
     pub(crate) fn take_report_dynamic(
         &mut self,
         wall_ms: f64,
@@ -3189,6 +3718,7 @@ where
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
         self.collector.g3_offload = self.engine.g3_stats();
+        self.collector.kvcr = self.engine.kvcr_stats();
         self.collector.g2_domains = self.engine.g2_domains();
         if let Some(phases) = self.admission.agentic_phase_evidence() {
             self.collector.set_agentic_phases(phases);

@@ -5,15 +5,16 @@
 
 import json
 from dataclasses import asdict, replace
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import aisimulate.sweeper.search as search_mod
-from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError
-from aisimulate.sdk.sweep import _overlay_encoder_stage
-from aisimulate.sweeper import (
+import aisim.sweeper.search as search_mod
+from aisim.runner import EngineReplayRunnerFactory, InvalidRunnerError
+from aisim.sdk.sweep import _overlay_encoder_stage
+from aisim.sweeper import (
     BackendDeploymentSpec,
     EncoderPoolSpec,
     EncoderSearch,
@@ -25,12 +26,13 @@ from aisimulate.sweeper import (
     Sweeper,
     SweepResult,
 )
-from aisimulate.sweeper.epd import apply_encoder_overlay, resolve_encoder_catalog
-from aisimulate.sweeper.kv_estimate import NoPerfDatabase
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.sampler import Suggestion
-from aisimulate.sweeper.search_space import BranchSpace
-from aisimulate_core.sdk.errors import NoFeasibleConfigError
+from aisim.sweeper.epd import apply_encoder_overlay, language_replay_key, resolve_encoder_catalog
+from aisim.sweeper.kv_estimate import NoPerfDatabase
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.result import CandidateStatus, ReasonCategory
+from aisim.sweeper.sampler import Suggestion
+from aisim.sweeper.search_space import BranchSpace
+from aisim_core.sdk.errors import NoFeasibleConfigError
 
 
 def _config(**kwargs):
@@ -243,7 +245,7 @@ def test_epd_runner_rejects_legacy_request_rate_before_execution(monkeypatch):
     def unexpected_execution(*args, **kwargs):
         pytest.fail("unsupported EPD traffic reached the language engine")
 
-    monkeypatch.setattr("aisimulate.runner._materialize_engine_execution_spec", unexpected_execution)
+    monkeypatch.setattr("aisim.runner._materialize_engine_execution_spec", unexpected_execution)
     spec = _spec()
     with pytest.raises(ValueError, match="fixed.*concurrency"):
         EngineReplayRunnerFactory().create(0).run(
@@ -273,7 +275,7 @@ def test_runner_and_export_guards():
     ):
         with pytest.raises(InvalidRunnerError, match="per-request"):
             EngineReplayRunnerFactory().create(0).run(_spec(), output_requirements=outputs)
-    from aisimulate.generator.request.sweeper import (
+    from aisim.generator.request.sweeper import (
         SweeperCandidateError,
         from_sweeper_candidate,
     )
@@ -389,6 +391,234 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, f
         assert all("prediction-ready" in candidate.reason for candidate in invalid.candidates)
 
 
+_POOL_PARALLEL = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+
+
+def _pool_selection(key, **updates):
+    selection = dict(
+        deployment_mode="agg",
+        backend="sglang",
+        agg_max_num_batched_tokens=8192,
+        agg_max_num_seqs=256,
+        encoder_candidate=key,
+    )
+    return selection | updates
+
+
+def _stub_pool_search(monkeypatch):
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(_POOL_PARALLEL,),
+        supported_backends={_POOL_PARALLEL: frozenset({"sglang"})},
+        knob_choices={"backend": ["sglang"]},
+    )
+    monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
+    monkeypatch.setattr(
+        search_mod, "resolve_encoder_catalog", lambda c: {"one": _encoder(), "two": _encoder(workers=2)}
+    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
+
+
+class _PoolSampler:
+    """Suggest every encoder pool once, all on one language deployment."""
+
+    def __init__(self, branch, **kwargs):
+        self.keys = iter(branch.knob_choices["encoder_candidate"])
+
+    def suggest(self, count):
+        return [
+            Suggestion(selection=_pool_selection(key), parallel_config=_POOL_PARALLEL, handle=key)
+            for key in islice(self.keys, count)
+        ]
+
+    def observe(self, *args):
+        pass
+
+    def observe_infeasible(self, *args):
+        pass
+
+
+class _LanguageRunnerFactory:
+    """Replay one language report: ``failed`` raises, ``incomplete`` completes no request,
+    and ``overlaid`` applies the overlay even when asked to defer it."""
+
+    def __init__(self, *, deferred=True, outcome="replayed"):
+        self.deferred = deferred
+        self.outcome = outcome
+        self.replays = 0
+
+    def capabilities(self):
+        return RunnerCapabilities(
+            supported_backend_topologies=(("sglang", "agg"),),
+            supports_analytical_epd=True,
+            supports_deferred_encoder_overlay=self.deferred,
+        )
+
+    def create(self, worker_id):
+        return self
+
+    def run(self, spec, output_requirements=None):
+        self.replays += 1
+        if self.outcome == "failed":
+            raise RuntimeError("language replay failed")
+        report = _report()
+        if self.outcome == "incomplete":
+            report = ReplayReport(report.metrics | {"completed_requests": 0.0}, report.metadata)
+        deferred = output_requirements is not None and output_requirements.defer_encoder_overlay
+        return report if deferred and self.outcome != "overlaid" else apply_encoder_overlay(report, spec)
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("outcome", ["replayed", "failed", "incomplete"])
+@pytest.mark.parametrize("per_round", [1, 2])
+def test_encoder_pools_share_one_language_replay(monkeypatch, per_round, outcome):
+    _stub_pool_search(monkeypatch)
+    config = _config(sweep=_config().sweep.model_dump() | {"candidates_per_round": per_round, "max_rounds": 2})
+    candidates = {}
+    for deferred in (False, True):
+        factory = _LanguageRunnerFactory(deferred=deferred, outcome=outcome)
+        result = Sweeper(runner_factory=factory, sampler_factory=_PoolSampler, show_progress=False).run(config)
+        # A replay that completes serves later rounds; a failed one only its own batch.
+        shared = outcome != "failed" or per_round == 2
+        assert factory.replays == (1 if deferred and shared else 2)
+        candidates[deferred] = [candidate.model_dump() for candidate in result.candidates]
+    assert [candidate["config"]["encoder_candidate"] for candidate in candidates[True]] == ["one", "two"]
+    assert candidates[True] == candidates[False]
+
+
+@pytest.mark.parametrize("outcome", ["replayed", "timed_out"])
+@pytest.mark.parametrize("path", ["pool", "resource_aware"])
+def test_worker_paths_share_one_language_replay(monkeypatch, path, outcome):
+    from aisim.resource_scheduler import InterruptedEvaluation
+
+    _stub_pool_search(monkeypatch)
+    monkeypatch.setattr(search_mod, "_WORKER_CTX", {})
+    timed_out = outcome == "timed_out"
+    submitted = []
+
+    def run_in_worker(evaluate, spec):
+        submitted.append(spec)
+        return None if timed_out else evaluate(spec)
+
+    if path == "pool":
+        factory = _LanguageRunnerFactory()
+
+        class Future:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeProcessPool:
+            def __init__(self, *, initializer, initargs, **kwargs):
+                self._processes = {}
+                initializer(*initargs)
+
+            def submit(self, function, spec):
+                return Future(run_in_worker(function, spec))
+
+            def shutdown(self, *, wait, cancel_futures):
+                pass
+
+        monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
+        monkeypatch.setattr(
+            search_mod, "wait", lambda pending, **kwargs: (set(), set(pending)) if timed_out else (set(pending), set())
+        )
+    else:
+
+        class AdmittingFactory(_LanguageRunnerFactory):
+            def admit_wave(self, specs):
+                raise AssertionError("scheduler boundary is replaced below")
+
+        factory = AdmittingFactory()
+
+        def waves(specs, *, factory, initializer, evaluate, **kwargs):
+            initializer(factory)
+            for index, spec in enumerate(specs):
+                result = run_in_worker(evaluate, spec)
+                yield index, InterruptedEvaluation("exceed runtime: replay > 10s", False, {}) if timed_out else result
+
+        monkeypatch.setattr("aisim.resource_scheduler.evaluate_waves", waves)
+
+    config = _config(
+        sweep=_config().sweep.model_dump() | {"parallel_evals": 2, "max_eval_seconds": 10.0, "candidates_per_round": 2}
+    )
+    result = Sweeper(runner_factory=factory, sampler_factory=_PoolSampler, show_progress=False).run(config)
+    assert len(submitted) == 1
+    if timed_out:
+        assert [candidate.status for candidate in result.candidates] == [CandidateStatus.TIMED_OUT] * 2
+        return
+    # Each pool takes its own overlay of the one language replay.
+    assert [candidate.status for candidate in result.candidates] == [CandidateStatus.FEASIBLE] * 2
+    assert [candidate.metrics["encoder_gpus"] for candidate in result.candidates] == [1.0, 2.0]
+
+
+def test_runner_defers_only_the_encoder_overlay(monkeypatch):
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
+    config = _config()
+    catalog = {
+        "one": _encoder(),
+        # Differs from "one" in every field only the overlay reads.
+        "two": _encoder(
+            tp=2,
+            batch_size=4,
+            workers=2,
+            latency_ms=9.0,
+            throughput_rps=7.0,
+            memory_gib=3.0,
+            power_w=300.0,
+            power_coverage=1.0,
+        ),
+    }
+
+    def spec(key, **updates):
+        prepared, failure = search_mod._materialize_one(
+            _pool_selection(key, **updates),
+            _POOL_PARALLEL,
+            config=config,
+            goal=config.goal,
+            providers={},
+            provider_plans={},
+            runner_factory=EngineReplayRunnerFactory(),
+            encoder_catalog=catalog,
+        )
+        assert failure is None
+        return prepared.replay_spec
+
+    one, two = spec("one"), spec("two")
+    assert language_replay_key(one) == language_replay_key(two)
+    assert language_replay_key(spec("one", agg_max_num_seqs=128)) != language_replay_key(one)
+
+    payloads = []
+    runtime = SimpleNamespace(run_replay_json=lambda payload: payloads.append(payload) or json.dumps(_report().metrics))
+    factory = EngineReplayRunnerFactory(runtime=runtime)
+    assert factory.capabilities().supports_deferred_encoder_overlay
+    runner = factory.create(0)
+    deferred = ReplayOutputRequirements(defer_encoder_overlay=True)
+    reports = [runner.run(pool, output_requirements=deferred) for pool in (one, two)]
+    assert payloads[0] == payloads[1]
+    assert reports[0] == reports[1]
+    assert "metric_semantics" not in reports[0].metadata
+    for pool, report in zip((one, two), reports, strict=True):
+        assert runner.run(pool) == apply_encoder_overlay(report, pool)
+    with pytest.raises(InvalidRunnerError, match="memory diagnostics"):
+        runner.run(one, output_requirements=replace(deferred, capture_memory_diagnostics=True))
+
+
+def test_overlaid_deferred_report_is_a_contract_failure(monkeypatch):
+    _stub_pool_search(monkeypatch)
+    factory = _LanguageRunnerFactory(outcome="overlaid")
+    result = Sweeper(runner_factory=factory, sampler_factory=_PoolSampler, show_progress=False).run(_config())
+    assert factory.replays == 1
+    assert [candidate.status for candidate in result.candidates] == [CandidateStatus.FAILED] * 2
+    for candidate in result.candidates:
+        assert candidate.reason_category is ReasonCategory.RUNNER_CONTRACT
+        assert "already carries the encoder overlay" in candidate.reason
+
+
 def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total():
     suggestion = Suggestion(
         selection={"deployment_mode": "agg", "encoder_candidate": "one"}, parallel_config=None, handle=None
@@ -402,14 +632,14 @@ def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total(
 
 
 def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
-    import aisimulate.sdk.sweep as aic_sweep
-    from aisimulate_core.sdk import perf_database
+    import aisim.sdk.sweep as aic_sweep
+    from aisim_core.sdk import perf_database
 
     calls = []
     monkeypatch.setattr(
         perf_database, "get_database_view", lambda *a, **kw: calls.append(a) or SimpleNamespace(version="resolved")
     )
-    monkeypatch.setattr("aisimulate.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
+    monkeypatch.setattr("aisim.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
     monkeypatch.setattr(
         aic_sweep,
         "_get_encoder_worker_candidates",
@@ -448,8 +678,8 @@ def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
 def test_encoder_catalog_preserves_version_precedence(
     monkeypatch, encoder_hardware, language_version, encoder_version, implicit
 ):
-    from aisimulate.sweeper import kv_estimate
-    from aisimulate_core.sdk import perf_database
+    from aisim.sweeper import kv_estimate
+    from aisim_core.sdk import perf_database
 
     original_version = kv_estimate.get_latest_database_version
     original_database = perf_database.get_database_view
@@ -485,9 +715,9 @@ def test_encoder_catalog_preserves_version_precedence(
     + [(stage, NoPerfDatabase) for stage in ("database", "estimator")],
 )
 def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
-    import aisimulate.sdk.sweep as aic_sweep
-    from aisimulate.sweeper import kv_estimate
-    from aisimulate_core.sdk import perf_database
+    import aisim.sdk.sweep as aic_sweep
+    from aisim.sweeper import kv_estimate
+    from aisim_core.sdk import perf_database
 
     error = error_type(f"unexpected {stage} failure")
 
@@ -516,16 +746,16 @@ def test_native_encoder_pools_require_synthetic_text_lengths():
     "error", [NoFeasibleConfigError("tp must divide the ViT geometry"), ValueError("invalid batch latency")]
 )
 def test_native_catalog_names_rejected_tps_and_propagates_invalid_data(monkeypatch, caplog, error):
-    import aisimulate.sdk.sweep as aic_sweep
-    from aisimulate.vl import table
-    from aisimulate_core.sdk import perf_database
+    import aisim.sdk.sweep as aic_sweep
+    from aisim.vl import table
+    from aisim_core.sdk import perf_database
 
     def reject(**kwargs):
         raise error
 
     frontend = SimpleNamespace(stages=[SimpleNamespace(service_ms=3.0)])
     monkeypatch.setattr(perf_database, "get_database_view", lambda *a, **kw: SimpleNamespace(version="resolved"))
-    monkeypatch.setattr("aisimulate.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
+    monkeypatch.setattr("aisim.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
     monkeypatch.setattr(table, "resolve_frontend", lambda *a, **kw: (frontend, "digest"))
     monkeypatch.setattr(aic_sweep, "_get_encoder_worker_candidates", reject)
     config = _config(search_space=_config().search_space.model_dump() | {"encoder": _native_encoder(tp=[1, 2])})
@@ -541,9 +771,9 @@ def test_native_catalog_names_rejected_tps_and_propagates_invalid_data(monkeypat
 
 @pytest.mark.parametrize("count,workers,images_per_part", [(1, [1], [1]), (5, [1, 8], [5, 1]), (1, [8], [1])])
 def test_native_catalog_prechecks_memory_on_the_processor_geometry(monkeypatch, count, workers, images_per_part):
-    import aisimulate.sdk.sweep as aic_sweep
-    from aisimulate.vl import table
-    from aisimulate_core.sdk import perf_database
+    import aisim.sdk.sweep as aic_sweep
+    from aisim.vl import table
+    from aisim_core.sdk import perf_database
 
     recorded = []
 
@@ -553,7 +783,7 @@ def test_native_catalog_prechecks_memory_on_the_processor_geometry(monkeypatch, 
 
     frontend = SimpleNamespace(stages=[SimpleNamespace(service_ms=3.0)])
     monkeypatch.setattr(perf_database, "get_database_view", lambda *a, **kw: SimpleNamespace(version="resolved"))
-    monkeypatch.setattr("aisimulate.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
+    monkeypatch.setattr("aisim.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
     monkeypatch.setattr(table, "resolve_frontend", lambda *a, **kw: (frontend, "digest"))
     monkeypatch.setattr(aic_sweep, "_get_encoder_worker_candidates", record)
     workload = dict(isl=128, osl=32, concurrency=8, num_request_ratio=2)
@@ -579,7 +809,7 @@ def test_native_catalog_refuses_other_vision_families_before_the_host_table(tmp_
 
 @pytest.mark.parametrize("modes", [["agg", "disagg"], ["disagg", "agg"], ["agg"]])
 def test_epd_native_search_preserves_available_modes(monkeypatch, caplog, modes):
-    from aisimulate_core.sdk import perf_database
+    from aisim_core.sdk import perf_database
 
     class LimitedFactory:
         def capabilities(self):
@@ -639,7 +869,7 @@ def test_invalid_metrics_do_not_become_epd_results(bad):
 def test_runner_adds_visual_context_exactly_once(monkeypatch, mode, timing_scope):
     captured = []
     monkeypatch.setattr(
-        "aisimulate.runner._materialize_engine_execution_spec",
+        "aisim.runner._materialize_engine_execution_spec",
         lambda spec, **kwargs: captured.append(spec.workload) or {},
     )
     runtime = SimpleNamespace(run_replay_json=lambda _: json.dumps(_report().metrics))
@@ -719,7 +949,7 @@ def test_encoder_identity_and_power_validation(kwargs):
 @pytest.mark.parametrize("mode,total_gpus", [("agg", 2), ("disagg", 3)])
 def test_native_epd_search_smoke(mode, total_gpus):
     """Exercise packaged encoder data and the real language replay in both layouts."""
-    pytest.importorskip("aisimulate._runtime")
+    pytest.importorskip("aisim._runtime")
     parallel = {"tp": 1, "replicas": 1}
     if mode == "disagg":
         parallel = {"prefill": parallel.copy(), "decode": parallel.copy()}
@@ -744,30 +974,33 @@ def test_native_epd_search_smoke(mode, total_gpus):
     assert candidate.config["encoder"]["image_count"] == 1
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("mode", ["afd"])
 def test_epd_rejects_afd_search_before_materialization(mode):
     payload = _config().model_dump(mode="json")
     payload["search_space"].update(
-        deployment_mode=[mode],
-        afd_batch_size_candidates=[16],
+        deployment_mode=["agg"],
+        afd_roles={"aggregated": {"type": "afd", "afd": {"a_batch_size": 16}}},
     )
-    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="AFD roles require.*reject encoder"):
         SmartSearchConfig.model_validate(payload)
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
-def test_epd_rejects_afd_direct_deployment_and_replay(mode):
-    from aisimulate.sweeper.deploy import build_backend_deployment
+@pytest.mark.parametrize(("mode", "role"), [("agg", "aggregated"), ("disagg", "decode")])
+def test_epd_rejects_afd_direct_deployment_and_replay(mode, role):
+    from aisim.sweeper.deploy import build_backend_deployment
 
     encoder = _encoder()
-    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
-        build_backend_deployment({"deployment_mode": mode}, backend_version="test", encoder=encoder)
+    with pytest.raises(ValueError, match="AFD roles reject encoder pools"):
+        build_backend_deployment(
+            {"deployment_mode": mode, "afd_roles": {role: {}}}, backend_version="test", encoder=encoder
+        )
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
             deployment_mode=mode,
             backend="sglang",
             backend_version="test",
             encoder=encoder,
+            **{"agg_engine_args" if role == "aggregated" else f"{role}_engine_args": {"afd": {}}},
         ),
         workload=_config().workload.model_dump(mode="json"),
         goal={},
@@ -775,6 +1008,7 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
     capabilities = RunnerCapabilities(
         supported_backend_topologies=(("*", "*"),),
         supports_analytical_epd=True,
+        supported_worker_types=("monolithic", "afd"),
     )
     with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         capabilities.require_compatible(spec)
@@ -783,10 +1017,14 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
 @pytest.mark.parametrize("mode", ["afd", "afd+pd"])
 def test_hosted_vision_rejects_afd_search_and_replay(mode):
     role = "agg" if mode == "afd" else "prefill"
+    public_role = "aggregated" if mode == "afd" else "prefill"
     payload = _config().model_dump(mode="json")
+    # Switching away from EPD must not copy its serialized legacy selectors.
+    for role_name in ("agg", "prefill", "decode"):
+        payload["search_space"].pop(f"{role_name}_forward_model", None)
     payload["search_space"].update(
-        deployment_mode=[mode],
-        afd_batch_size_candidates=[16],
+        deployment_mode=["agg" if mode == "afd" else "disagg"],
+        afd_roles={public_role: {"type": "afd", "afd": {"a_batch_size": 16}}},
         encoder=None,
         **{f"{role}_vision": {"cache_mib": 100, "encoder_parallel": "tp"}},
     )
@@ -794,10 +1032,10 @@ def test_hosted_vision_rejects_afd_search_and_replay(mode):
         SmartSearchConfig.model_validate(payload)
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
-            deployment_mode=mode,
+            deployment_mode="agg" if mode == "afd" else "disagg",
             backend="sglang",
             backend_version="0.5.14",
-            **{f"{role}_engine_args": {"vision": True, "sglang": {"vlm_cache_bytes": 100 << 20}}},
+            **{f"{role}_engine_args": {"afd": {}, "vision": True, "sglang": {"vlm_cache_bytes": 100 << 20}}},
         ),
         workload=_config().workload.model_dump(mode="json") | {"source_type": "synthetic"},
         goal={},
@@ -808,18 +1046,19 @@ def test_hosted_vision_rejects_afd_search_and_replay(mode):
 
 @pytest.mark.parametrize("encoder_present", [False, True])
 def test_afd_qualification_rejects_image_or_encoder_composition(encoder_present):
-    from aisimulate.afd_artifacts import AFDQualificationError, build_afd_qualification
+    from aisim.afd_artifacts import AFDQualificationError, build_afd_qualification
 
     spec = _spec()
     spec = replace(
         spec,
         backend_deployment=replace(
             spec.backend_deployment,
-            deployment_mode="afd",
+            deployment_mode="agg",
+            agg_engine_args={"afd": {}},
             encoder=spec.backend_deployment.encoder if encoder_present else None,
         ),
     )
-    with pytest.raises(AFDQualificationError, match="AFD qualification does not support analytical EPD"):
+    with pytest.raises(AFDQualificationError, match="AFD qualification rejects encoder"):
         build_afd_qualification(spec)
 
 

@@ -6,7 +6,7 @@
 //! Whole-model `fpm_forward` perf tables (Python `forward_model="fpm"`).
 //!
 //! Rust port of the loader half of
-//! `python/aisimulate/src/aisimulate_core/sdk/operations/fpm_forward.py`: the formal
+//! `python/aisim/src/aisim_core/sdk/operations/fpm_forward.py`: the formal
 //! collector pair
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! /data/reviewed-fpm.metadata.json
 //! ```
 //!
-//! The parquet may be supplied outside the AISimulate repository and is
+//! The parquet may be supplied outside the AISim repository and is
 //! validated (sidecar schema/sha256/row_count, per-row workload checks,
 //! duplicate physical row keys), healed of
 //! `kv_seed_regime == "fake_fallback"` values (fabricated-KV measurements
@@ -63,6 +63,7 @@ pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
 pub const FPM_NATIVE_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_fpm_model_step_cuda_v1";
+pub const FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_ar_model_step_cuda_v1";
 const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
 const FPM_FULL_GRID_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_full_grid_median_v1";
 
@@ -80,6 +81,9 @@ enum MeasurementPolicy {
     /// A genuine native CUDA observation, optionally selected as an actual
     /// upper-median source sample with that sample's own workload coordinates.
     NativeCudaActualSample,
+    /// Full text autoregressive execution: the complete native vLLM model
+    /// step CUDA time, including sampling, with the same sample selection.
+    NativeArCudaActualSample,
 }
 
 impl MeasurementPolicy {
@@ -91,6 +95,7 @@ impl MeasurementPolicy {
             Self::VllmNativeFpmMedian => "vllm_native_fpm_prefix_seed_median_v1",
             Self::SglangNativeFpmMedian => "sglang_native_fpm_radix_seed_median_v1",
             Self::NativeCudaActualSample => FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+            Self::NativeArCudaActualSample => FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
         }
     }
 
@@ -101,7 +106,8 @@ impl MeasurementPolicy {
             Self::SingleSample
             | Self::VllmNativeFpmMedian
             | Self::SglangNativeFpmMedian
-            | Self::NativeCudaActualSample => None,
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
         }
     }
 
@@ -110,7 +116,8 @@ impl MeasurementPolicy {
             Self::SingleSample
             | Self::PerRow
             | Self::PerRowFullGrid
-            | Self::NativeCudaActualSample => None,
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
             Self::VllmNativeFpmMedian => Some("glm53flash_prefix_cache_real_seed_v1"),
             Self::SglangNativeFpmMedian => Some("glm53flash_sglang_radix_real_seed_v1"),
         }
@@ -121,7 +128,8 @@ impl MeasurementPolicy {
             Self::SingleSample
             | Self::PerRow
             | Self::PerRowFullGrid
-            | Self::NativeCudaActualSample => None,
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
             Self::VllmNativeFpmMedian => Some("dynamo_vllm_instrumented_scheduler_fpm_wall_time"),
             Self::SglangNativeFpmMedian => Some("sglang_native_fpm_rank0_device_timer_wall_time"),
         }
@@ -229,6 +237,8 @@ pub struct FpmForwardCell {
     /// do not inherit the fabricated rows' extrapolated KV ceilings.
     pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
     pub direct_decode_rungs: Vec<u32>,
+    /// Loaded under the autoregressive native CUDA policy: no speculative timing.
+    pub native_ar_only: bool,
     /// Diagnostic state only; no change to table identity, values, or schema.
     warned_fmha_model_modes: Mutex<BTreeSet<String>>,
 }
@@ -261,6 +271,32 @@ impl FpmForwardCell {
     }
 }
 
+/// One marked source row and the effective target used by the canonical loader.
+/// The row index always addresses the unchanged source Parquet, not a sorted cell.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FpmSeedTargetRow {
+    pub row_index: usize,
+    pub workload_kind: String,
+    pub batch_size: u32,
+    pub total_prefill_tokens: u32,
+    pub total_kv_read_tokens: u32,
+    pub raw_latency_ms: f64,
+    pub effective_latency_ms: f64,
+    pub replaced: bool,
+}
+
+/// Preparation-only audit of fake-KV target normalization for one complete
+/// loaded profile. Genuine rows are unchanged and are not duplicated here.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FpmSeedTargetNormalization {
+    pub policy: &'static str,
+    pub row_count: usize,
+    pub replacement_enabled: bool,
+    pub replaced_count: u64,
+    pub kept_count: u64,
+    pub rows: Vec<FpmSeedTargetRow>,
+}
+
 /// One loaded parquet/sidecar pair: the grouped cells plus the
 /// fake-fallback healing tallies (the crate has no logging facade, so the
 /// counters ARE the warning surface, exposed via table accessors).
@@ -275,6 +311,7 @@ struct LoadedPair {
     /// finite/positive) — the proposal's keep-and-warn case, or every fake
     /// row when the raw escape hatch is on.
     kept_fake_fallback: u64,
+    seed_target_normalization: FpmSeedTargetNormalization,
 }
 
 pub struct FpmForwardTable {
@@ -418,6 +455,12 @@ impl FpmForwardTable {
     /// load reports should print it.
     pub fn kept_fake_fallback_rows(&self) -> Result<u64, AicError> {
         Ok(self.loaded()?.kept_fake_fallback)
+    }
+
+    /// Effective fake-KV targets from the same validated load and correction
+    /// pass used for interpolation. No interpolation or SOL query is performed.
+    pub fn seed_target_normalization(&self) -> Result<&FpmSeedTargetNormalization, AicError> {
+        Ok(&self.loaded()?.seed_target_normalization)
     }
 
     /// Exact base identity, recorded DCP and model-path matching, followed by
@@ -580,13 +623,24 @@ fn validate_sidecar(
         (Some("sglang_native_fpm_radix_seed_median_v1"), Some(7), "sglang") => {
             MeasurementPolicy::SglangNativeFpmMedian
         }
-        (Some(FPM_NATIVE_CUDA_MEASUREMENT_POLICY), Some(7), "vllm") => {
+        (
+            Some(
+                policy @ (FPM_NATIVE_CUDA_MEASUREMENT_POLICY
+                | FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY),
+            ),
+            Some(7),
+            "vllm",
+        ) => {
             if metadata.get("timing_scope").and_then(|v| v.as_str()) != Some("model_step_cuda") {
                 return Err(structural(
                     "native CUDA FPM sidecar requires timing_scope=model_step_cuda".into(),
                 ));
             }
-            MeasurementPolicy::NativeCudaActualSample
+            if policy == FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY {
+                MeasurementPolicy::NativeArCudaActualSample
+            } else {
+                MeasurementPolicy::NativeCudaActualSample
+            }
         }
         _ => {
             return Err(structural(format!(
@@ -790,7 +844,10 @@ fn load_pair(
     } else {
         None
     };
-    let native_cuda_columns = if measurement_policy == MeasurementPolicy::NativeCudaActualSample {
+    let native_cuda_columns = if matches!(
+        measurement_policy,
+        MeasurementPolicy::NativeCudaActualSample | MeasurementPolicy::NativeArCudaActualSample
+    ) {
         Some([
             reader.col("timing_scope")?,
             reader.col("measurement_reduction")?,
@@ -1003,6 +1060,15 @@ fn load_pair(
             .collect::<Result<_, _>>()?;
         let speculative = crate::FpmExecutionBinding::parse_selector(&match_identity[16])
             .map_err(|error| structural(format!("FPM row {index}: {error}")))?;
+        let legacy_execution = match_identity[15..FPM_CELL_MATCH_COLUMNS.len()]
+            .iter()
+            .map(String::as_str)
+            .eq(LEGACY_EXECUTION_IDENTITY);
+        if measurement_policy == MeasurementPolicy::NativeArCudaActualSample && !legacy_execution {
+            return Err(structural(format!(
+                "FPM row {index}: AR native CUDA policy requires full text autoregressive execution"
+            )));
+        }
         if speculative.is_some()
             != (measurement_policy == MeasurementPolicy::NativeCudaActualSample)
         {
@@ -1108,10 +1174,7 @@ fn load_pair(
         // their latency value is healed by the replacement pass below, after
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
-        if !match_identity[15..FPM_CELL_MATCH_COLUMNS.len()]
-            .iter()
-            .map(String::as_str)
-            .eq(LEGACY_EXECUTION_IDENTITY)
+        if (measurement_policy == MeasurementPolicy::NativeArCudaActualSample || !legacy_execution)
             && (workload_kind == "decode" || total_kv_read_tokens > 0)
             && kv_seed_regime != FPM_KV_SEED_REAL_KV
         {
@@ -1195,9 +1258,24 @@ fn load_pair(
     // all measured shapes.
     let mut replaced_fake_fallback: u64 = 0;
     let mut kept_fake_fallback: u64 = 0;
+    let mut normalized_rows: Vec<FpmSeedTargetRow> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.fake_fallback)
+        .map(|(row_index, row)| FpmSeedTargetRow {
+            row_index,
+            workload_kind: row.workload_kind.clone(),
+            batch_size: row.batch_size,
+            total_prefill_tokens: row.total_prefill_tokens,
+            total_kv_read_tokens: row.total_kv_read_tokens,
+            raw_latency_ms: row.latency_ms,
+            effective_latency_ms: row.latency_ms,
+            replaced: false,
+        })
+        .collect();
     if !replace_fake_fallback {
-        kept_fake_fallback = rows.iter().filter(|r| r.fake_fallback).count() as u64;
-    } else if rows.iter().any(|r| r.fake_fallback) {
+        kept_fake_fallback = normalized_rows.len() as u64;
+    } else if !normalized_rows.is_empty() {
         // (cell key, batch rung) -> real_kv anchors as (kv, latency).
         let mut anchors: BTreeMap<(Vec<String>, u32), Vec<(u32, f64)>> = BTreeMap::new();
         for row in &rows {
@@ -1213,10 +1291,11 @@ fn load_pair(
             // already rejected same-(cell, phase, batch, kv) row pairs.
             list.sort_unstable_by_key(|&(kv, _)| kv);
         }
-        for row in &mut rows {
-            if !row.fake_fallback {
-                continue;
-            }
+        for (row, normalized) in rows
+            .iter_mut()
+            .filter(|row| row.fake_fallback)
+            .zip(&mut normalized_rows)
+        {
             let mut healed = None;
             if row.workload_kind == "decode" {
                 if let Some(list) = anchors.get(&(row.cell_key(), row.batch_size)) {
@@ -1239,6 +1318,8 @@ fn load_pair(
             match healed {
                 Some(value) => {
                     row.latency_ms = value;
+                    normalized.effective_latency_ms = value;
+                    normalized.replaced = true;
                     replaced_fake_fallback += 1;
                 }
                 None => kept_fake_fallback += 1,
@@ -1271,6 +1352,7 @@ fn load_pair(
                 direct_prefill_by_tokens: OnceLock::new(),
                 direct_decode: BTreeMap::new(),
                 direct_decode_rungs: Vec::new(),
+                native_ar_only: measurement_policy == MeasurementPolicy::NativeArCudaActualSample,
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
@@ -1360,6 +1442,14 @@ fn load_pair(
         cells,
         replaced_fake_fallback,
         kept_fake_fallback,
+        seed_target_normalization: FpmSeedTargetNormalization {
+            policy: "same_cell_batch_real_kv_extrapolation_v1",
+            row_count: rows.len(),
+            replacement_enabled: replace_fake_fallback,
+            replaced_count: replaced_fake_fallback,
+            kept_count: kept_fake_fallback,
+            rows: normalized_rows,
+        },
     }))
 }
 
@@ -1558,6 +1648,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) struct NativeCudaSampleSpec {
+        pub policy: &'static str,
         pub scope: &'static str,
         pub reduction: &'static str,
         pub source_sample_count: u32,
@@ -1961,12 +2052,7 @@ pub(crate) mod tests {
             for field in 0..3 {
                 let values = str_col(&|r| {
                     let sample = r.native_cuda.as_ref().unwrap();
-                    [
-                        FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
-                        sample.scope,
-                        sample.reduction,
-                    ][field]
-                        .to_owned()
+                    [sample.policy, sample.scope, sample.reduction][field].to_owned()
                 });
                 let mut col = rg.next_column().unwrap().unwrap();
                 col.typed::<ByteArrayType>()
@@ -2019,7 +2105,7 @@ pub(crate) mod tests {
         if has_native_cuda {
             sidecar.insert(
                 "measurement_policy".into(),
-                FPM_NATIVE_CUDA_MEASUREMENT_POLICY.into(),
+                rows[0].native_cuda.as_ref().unwrap().policy.into(),
             );
             sidecar.insert("timing_scope".into(), "model_step_cuda".into());
         }
@@ -2054,6 +2140,7 @@ pub(crate) mod tests {
                 row.execution = Some(["", selector, "none", "text"]);
                 row.kv_seed_regime = Some("real_kv");
                 row.native_cuda = Some(NativeCudaSampleSpec {
+                    policy: FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                     scope: "model_step_cuda",
                     reduction: "actual_upper_median",
                     source_sample_count: 20,
@@ -2061,6 +2148,60 @@ pub(crate) mod tests {
                 row
             })
             .collect()
+    }
+
+    #[test]
+    fn autoregressive_native_cuda_policy_preserves_samples_and_rejects_relabeling() {
+        for mutation in [
+            "none",
+            "single_sample",
+            "speculation",
+            "fake_kv",
+            "phase",
+            "modality",
+            "row_clock",
+            "sidecar_clock",
+            "zero_count",
+            "bad_reduction",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = speculative_rows();
+            for row in &mut rows {
+                let speculative_execution = row.execution.unwrap();
+                row.execution = Some(LEGACY_EXECUTION_IDENTITY);
+                let sample = row.native_cuda.as_mut().unwrap();
+                sample.policy = FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY;
+                match mutation {
+                    "single_sample" => {
+                        sample.reduction = "single_sample";
+                        sample.source_sample_count = 1;
+                    }
+                    "speculation" => row.execution = Some(speculative_execution),
+                    "fake_kv" => row.kv_seed_regime = Some("fake_fallback"),
+                    "phase" => row.execution.as_mut().unwrap()[1] = "decoder_bounded",
+                    "modality" => row.execution.as_mut().unwrap()[3] = "image",
+                    "row_clock" => sample.scope = "scheduler_wall_time",
+                    "zero_count" => sample.source_sample_count = 0,
+                    "bad_reduction" => sample.reduction = "mean",
+                    _ => {}
+                }
+            }
+            write_pair_with(tmp.path(), &rows, |metadata| {
+                if mutation == "sidecar_clock" {
+                    metadata.insert("timing_scope".into(), "scheduler_wall_time".into());
+                }
+            });
+            let table = loaded_table(tmp.path());
+            if matches!(mutation, "none" | "single_sample") {
+                let cell = table
+                    .select_cell(&default_identity(4), "org/model-a", None)
+                    .unwrap();
+                // The fixture records 7 ms at B8/KV4096, including for an actual median sample.
+                assert_eq!(cell.direct_decode[&8][&4096], 7.0);
+            } else {
+                assert!(table.cells().is_err(), "accepted {mutation}");
+            }
+        }
     }
 
     #[test]
@@ -2100,6 +2241,7 @@ pub(crate) mod tests {
         let mut rows = speculative_rows();
         for row in &mut rows {
             row.native_cuda = Some(NativeCudaSampleSpec {
+                policy: FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                 scope: "model_step_cuda",
                 reduction: "single_sample",
                 source_sample_count: 1,
@@ -2986,6 +3128,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&32768], 39.0);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 0);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 0);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, healed);
+        assert!(row.replaced);
     }
 
     /// The R17 wrong-row regression case (tp2, b=128, kv=131200, same-node
@@ -3063,6 +3216,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&258018], 33.235794);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 0);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 0);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(!normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, row.raw_latency_ms);
+        assert!(!row.replaced);
     }
 
     /// A station with fewer than two `real_kv` anchors keeps its original
@@ -3098,6 +3262,22 @@ pub(crate) mod tests {
         assert_eq!(curves[&64][&16384], healed);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 5);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 2);
+        let kept = &normalization.rows[0];
+        assert_eq!(kept.row_index, 1);
+        assert_eq!(kept.raw_latency_ms, 5.0);
+        assert_eq!(kept.effective_latency_ms, kept.raw_latency_ms);
+        assert!(!kept.replaced);
+        let replaced = &normalization.rows[1];
+        assert_eq!(replaced.row_index, 4);
+        assert_eq!(replaced.raw_latency_ms, 9.0);
+        assert_eq!(replaced.effective_latency_ms, healed);
+        assert!(replaced.replaced);
     }
 
     /// A fake rung that is NOT its station's kv top anchors on the two

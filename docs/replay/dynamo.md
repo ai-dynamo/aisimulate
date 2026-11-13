@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 # Dynamo integration
 
 Select `--stack dynamo` to use Dynamo-owned Router/Planner behavior. Install the
-integration in the same environment as AISimulate and select the same stack when
+integration in the same environment as AISim and select the same stack when
 replaying a saved recommendation. The YAML does not embed stack selection.
 The engine stack remains sufficient for reading native Dynamo trace files.
 
@@ -21,7 +21,7 @@ installed Dynamo integration, independently of Engine-stack acceptance.
 
 ## Planner installation check
 
-This example runs the public AISimulate CLI with Planner enabled. It uses
+This example runs the public AISim CLI with Planner enabled. It uses
 synthetic traffic, local model metadata, fixed timing, and fixed KV capacity;
 no model weights, GPU, or Kubernetes cluster are needed. Its timings are
 synthetic and do not measure model performance or qualify scaling accuracy.
@@ -29,14 +29,14 @@ synthetic and do not measure model performance or qualify scaling accuracy.
 ### Install matching dependencies
 
 Use Linux with Python 3.12, matching the release validation environment. From
-the AISimulate repository root, place the compatible AISimulate, `ai-dynamo`,
+the AISim repository root, place the compatible AISim, `ai-dynamo`,
 and `ai-dynamo-runtime` wheel artifacts in `./wheels/` (one of each):
 
 ```bash
 python3 -m venv .venv-planner
 source .venv-planner/bin/activate
 python3 -m pip install \
-  ./wheels/aisimulate-*.whl \
+  ./wheels/aisim-*.whl \
   ./wheels/ai_dynamo-*.whl \
   ./wheels/ai_dynamo_runtime-*.whl
 ```
@@ -59,7 +59,7 @@ python3 -m pip check
 
 The `grpcio-tools` cap matches RC9's
 [common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
-AISimulate's `google-vizier` dependency can install a newer `grpcio-tools`
+AISim's `google-vizier` dependency can install a newer `grpcio-tools`
 that requires a different protobuf version. Include the cap in the same pip
 invocation as the Planner requirements so the resolver can select compatible
 versions together, including when repairing an existing environment. When
@@ -73,11 +73,11 @@ image from the same Dynamo release you intend to validate.
 
 ### Run a Planner-enabled prediction
 
-From the AISimulate repository root, using the environment above:
+From the AISim repository root, using the environment above:
 
 ```bash
 cd examples/cli/dynamo-planner
-python3 -m aisimulate predict \
+python3 -m aisim predict \
   --stack dynamo \
   --config prediction.yaml \
   --output-dir ./planner-output \
@@ -106,7 +106,7 @@ verify that Planner loads.
 
 ## Router configuration
 
-Router is not part of the AISimulate core schema. The `dynamo.router` config adapter owns this
+Router is not part of the AISim core schema. The `dynamo.router` config adapter owns this
 section's concrete model, defaults, recommendation domains, validation, and runtime lowering. The
 section is accepted only when the selected stack provides that adapter; omitting it keeps an
 engine-only configuration engine-only.
@@ -124,11 +124,106 @@ engine-only configuration engine-only.
 1 contract. Replacing the legacy `aic` load-model name with an implementation-neutral public name is
 deferred until the Router exposes that name.
 
+`optimization.target: min_gpus` accepts a `router` section. The Router adds no GPUs and keeps the
+worker pool static, so recommendations still rank qualifying candidates by provisioned GPU count.
+Set `router.policy: kv_router` to size a KV-routed deployment; see
+[minimum GPUs](../sweeper/optimization-goals.md#minimum-gpus). KV routing trades prefix-cache hits
+against load balance, and the search sees both only when requests reuse prefixes, so size it with a
+trace that has the deployment's prefix structure. On this stack, later turns of a
+`synthetic-session` do not yet include the earlier turns, so synthetic sessions reuse only their
+`session.shared_prefix_ratio` group prefixes, and independent synthetic requests reuse none.
+
+## Simulate KVCR peer reuse
+
+Use this example to compare private G2 host offload with and without
+[KVCR peer fetch](engine/kv-cache.md#kvcr-peer-fetch). It models two vLLM workers
+serving Qwen3-32B-FP8 on B200, with KV-aware routing and a Mooncake trace.
+The simulation runs on the CPU; no GPU or model weights are required. The first
+run may download model metadata from Hugging Face.
+
+### Check the Dynamo version
+
+Use Linux with Python 3.12 and a compatible AISim/Dynamo environment
+following the [installation guide](../getting-started/installation.md#optional-dynamo-integration).
+The Dynamo Python adapter **and native runtime** must include
+[Dynamo #17856](https://github.com/ai-dynamo/dynamo/pull/17856), which supplies
+router fetch hints. The older validated pair in the installation guide predates
+this change. Installing that pair is not enough for this example.
+
+Validation used Dynamo source commit
+`147b78a8aa6ffc8d11baa06c1f589bbfa46b7523` with its pinned
+`aisim==0.13.0.dev202610290000000087`. Use matching artifacts containing
+the change, or build Dynamo's Python package and runtime from that revision
+using its [source-build guide](https://github.com/ai-dynamo/dynamo/blob/147b78a8aa6ffc8d11baa06c1f589bbfa46b7523/docs/fern/pages/developer-guide/advanced-customizations/building-from-source.md).
+Include the `ais-forward-pass` feature when building the native Python bindings
+(for example, `maturin develop --uv --features ais-forward-pass` from
+`lib/bindings/python` after preparing the build dependencies).
+Keep this environment separate from a current AISim source installation, and
+run `python -m pip check` before continuing. The tested November 3 public
+nightly completed requests but produced no peer pulls; a successful exit alone
+does not verify KVCR.
+
+### Download the trace and run
+
+From the AISim repository root, download the 1,000-request fixture from a pinned
+Dynamo revision. The download is about 183 KiB; the existing 16-request tiny
+fixture does not trigger peer pulls with this configuration.
+
+```bash
+curl --fail --location --output mooncake_trace_1000.jsonl \
+  https://raw.githubusercontent.com/ai-dynamo/dynamo/280df2a1e4166917a293f3c50d28e54b3ab348ab/lib/bench/testdata/mooncake_trace_1000.jsonl
+
+aisim predict --stack dynamo \
+  --config examples/cli/dynamo-kvcr-predict.yaml --output-dir kvcr-on
+
+aisim predict --stack dynamo \
+  --config examples/cli/dynamo-kvcr-predict.yaml --output-dir kvcr-off \
+  --set engine.workers.aggregated.kv_cache.kvcr=null
+```
+
+Keep this working directory: the trace path in the
+[complete YAML](../../examples/cli/dynamo-kvcr-predict.yaml) is relative to it.
+For reruns, choose new output directories or pass `--overwrite`.
+The off run retains G2 and the same routing settings; it disables only KVCR.
+
+Each worker has private G2 (`host_offload.scope: dp_rank_local`). With
+`router.policy: kv_router` and positive `overlap_score_credit`, the Dynamo
+adapter can provide a fetch hint when another worker holds a reusable prefix.
+`--stack dynamo` is required: the engine-only CLI does not generate these hints.
+The capacity and transfer settings are explicit modeling assumptions, not
+measured hardware parameters.
+
+### Verify peer pulls
+
+Inspect the summaries with `jq`:
+
+```bash
+jq '.summary | {completed_requests, kvcr, mean_ttft_ms}' kvcr-on/prediction.json
+jq '.summary | {completed_requests, kvcr, mean_ttft_ms}' kvcr-off/prediction.json
+
+jq -e '.summary | .completed_requests == 1000 and
+  (((.kvcr.pulls.success // 0) + (.kvcr.pulls.partial // 0)) > 0) and
+  (.kvcr.loaded_blocks > 0)' kvcr-on/prediction.json
+```
+
+Both runs should complete 1,000 requests. The enabled run should report landed
+peer pulls and loaded blocks; the disabled run may omit `kvcr` entirely.
+Exact counts can change with routing or engine versions. See the
+[validation record](../../benchmarks/evidence/kvcr-quickstart-20261104.md)
+for the tested versions and results. This is a functional example, not a
+GPU-validated performance claim.
+
+If all counters are zero, first check that both Dynamo packages contain the
+router-hint change and that the command selects `--stack dynamo`. Then check
+the trace and the YAML's worker count, private G2, and router settings. Repeated
+prefixes alone do not guarantee a peer pull: the router must select a destination
+that can reuse blocks held by another worker.
+
 <a id="planner-dynamo-adapter"></a>
 
 ## Planner configuration
 
-Planner is not part of the AISimulate core schema. The `dynamo.planner` config adapter owns this
+Planner is not part of the AISim core schema. The `dynamo.planner` config adapter owns this
 section's presets, recommendation domains, and runtime lowering. Concrete enabled settings use
 Dynamo's production `PlannerConfig` for defaults, validation, and target normalization. The section
 is accepted only when the selected stack provides that adapter.
@@ -194,8 +289,10 @@ interval, and the winning predictor mapping is materialized into the candidate.
 are not covered by a preset. `predict` may set a concrete target and otherwise uses `throughput`. In
 `recommend`, target is derived: throughput targets map to `throughput`, `ttft` and `e2e_latency`
 map to `latency`, and goodput targets map to `sla`. Pareto uses `sla` when it includes a goodput
-objective and otherwise uses `throughput`. Thus `planner: {policy: enabled}` is a valid minimal
-prediction configuration: the production Planner normalizes the default target to load-only scaling.
+objective and otherwise uses `throughput`. `min_gpus` has no Planner target: it rejects a `planner`
+section because autoscaling makes the provisioned GPU count time-varying. Thus
+`planner: {policy: enabled}` is a valid minimal prediction configuration: the production Planner
+normalizes the default target to load-only scaling.
 
 Throughput-based Planner scaling is legal only for the `sla` target with concrete
 `evaluation.sla.ttft_ms` and `evaluation.sla.itl_ms`. For `throughput`, `latency`, or `load` Planner
@@ -287,7 +384,7 @@ evaluation:
 Run it with the Dynamo integration installed:
 
 ```bash
-aisimulate predict --stack dynamo --config dynamo-prediction.yaml --output-dir ./dynamo-full-prediction
+aisim predict --stack dynamo --config dynamo-prediction.yaml --output-dir ./dynamo-full-prediction
 ```
 
 The result is a metrics summary and `dynamo-full-prediction/prediction.json`.
@@ -355,7 +452,7 @@ optimizer:
 Run the search:
 
 ```bash
-aisimulate recommend --stack dynamo --config dynamo-recommendation.yaml --output-dir ./dynamo-full-recommendation
+aisim recommend --stack dynamo --config dynamo-recommendation.yaml --output-dir ./dynamo-full-recommendation
 ```
 
 The result contains `recommendation.json` and any selected prediction YAML files under

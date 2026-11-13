@@ -1,0 +1,827 @@
+schema_version: 1
+runtime:
+  framework: vllm
+  version: 0.31.0
+  image: vllm/vllm-openai
+  image_digest: sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971
+  image_arch: arm64
+tables:
+  glm53_attention_module_perf:
+    status: complete
+    rows: 1389
+    data_sha256: 3ca1ae74a5c494b0196b41b6696792389d523fc857522e9661f2de2da67b523e
+    collector: collector.vllm.glm53flash_attention_runner
+    measurement: one real sparse-MLA layer (3); output all-reduce excluded; GPU kernel
+      time only
+    timing_method:
+      context:
+      - cupti_gpu_busy_union_framework_breakable_module_graph_replay
+      generation:
+      - cupti_gpu_busy_union_captured_module_graph_replay
+    notes:
+    - 'IndexPool alignment: every prefill chunk starts on a multiple of 4 (the stock
+      vLLM 0.31.0 defect''s trigger); decode rows keep their true sequence length
+      L (prompt L-1, whose last seeding chunk may end off the pool grid and completes
+      in the tail as in serving).'
+    - Regular rows are collected at the serving context limit 131079; long-context
+      rows (prefill prefix >= 262144, decode x >= 262144, B=1) at the model limit
+      1048576 are table-extrapolation coverage. Each attempt's limit is its max_model_len.
+    kv_cache_dtype: fp8
+    input_tokens:
+      source: seeded_random_tokens
+      count: 1179743
+      generator: sha256_counter_rejection
+      generator_version: 1
+      seed: 53
+      tokenizer_json_sha256: 19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d
+      vocab_high_exclusive: 154820
+      vocab_low: 0
+      vocab_source: pinned tokenizer.json ordinary BPE vocabulary; added/special tokens
+        excluded
+    execution_mode:
+      fp8-tp4-context: cuda_graph
+      fp8-tp4-generation: cuda_graph
+      nvfp4-tp2-context: cuda_graph
+      nvfp4-tp2-generation: cuda_graph
+      nvfp4-tp4-context: cuda_graph
+      nvfp4-tp4-generation: cuda_graph
+    attempts:
+    - attempt: full-gb200-vllm-fp8-tp4-dec-97efc7406b60-1013152521
+      manifest_sha256: 6369bb3887dae5a2dc9bc7d2d9b6743de4b12ad9a5e783ab9b15103a93d56306
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b2
+      - decode-b3
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-gb200-vllm-fp8-tp4-decr-97efc7406b60-1013152521
+      manifest_sha256: 1b1f674717c407699519861f4fa2bdf008830d44cf5f32c78a40f36d47fdb477
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-gb200-vllm-fp8-tp4-long-97efc7406b60-1013152521
+      manifest_sha256: 061983e4863d39de70a2080d9e89ca3d62d8521cdfa919bd03cb9b79c5929eec
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 1048576
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-gb200-vllm-fp8-tp4-pb32-97efc7406b60-1013152521
+      manifest_sha256: 71f8e79ce4f2a22eff2cb3597da2d6d9b14c511a5e2bf0ad9e04c48b83150dee
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-gb200-vllm-fp8-tp4-pfc1-97efc7406b60-1013173909
+      manifest_sha256: 9bb6e4213d37c567a2b52657bf8270a0b41b54da09c64da83288a5bf89deed4f
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-gb200-vllm-nvfp4-tp2-dec-97efc7406b60-1013152522
+      manifest_sha256: 37077f8bdfb2dce35101d5f5bb10fc62d672d84f7409906cf4c37905707ac688
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b2
+      - decode-b3
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-gb200-vllm-nvfp4-tp2-decr-97efc7406b60-1013152522
+      manifest_sha256: 186d462d6afebd7d1a0422def1b74975e819baabb4a48340e0fef751f11db977
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-gb200-vllm-nvfp4-tp2-long-97efc7406b60-1013152522
+      manifest_sha256: d413b15284cc306e1f239c4d8ba2a6b5fc9c02112ca2d60490ea3f11050b3366
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 1048576
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-gb200-vllm-nvfp4-tp2-pb32-97efc7406b60-1013152522
+      manifest_sha256: e1307a8d53489aaedb49d13b7d456322138b35e77f13e3e7405368ec1acafedc
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-gb200-vllm-nvfp4-tp2-pfc1-97efc7406b60-1013173909
+      manifest_sha256: 15c09bccadd7f98518b2274b2007833a0bb6a6dcf02e4ce19913c13275d136e8
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-gb200-vllm-nvfp4-tp4-dec-97efc7406b60-1013152523
+      manifest_sha256: bd56c0254378cd84fe1748f8366e554e7693da1162966aac488f9a7d84a9fe86
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b2
+      - decode-b3
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-gb200-vllm-nvfp4-tp4-decr-97efc7406b60-1013152523
+      manifest_sha256: b03f3cc2479e9940084e7ab2eb093b63ebf13b2e4f67f91d12232a3c373a7b18
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-gb200-vllm-nvfp4-tp4-long-97efc7406b60-1013152523
+      manifest_sha256: 049572c38014c7d2c15379c7211b293c24fc65751279bb431bd80a6963e3e3c7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 1048576
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-gb200-vllm-nvfp4-tp4-pb32-97efc7406b60-1013152522
+      manifest_sha256: 4e8c6631bed3fdb4945f003a9ee995ff78deebfe77f26a3440e70a5a5a139aaa
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-gb200-vllm-nvfp4-tp4-pfc1-97efc7406b60-1013173910
+      manifest_sha256: 6a495e40c634efc179a4c4162f48fc44d91a240ac031ae0bbb0bfe599ab30f39
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-gb200-vllm-fp8-tp4-pf-97efc7406b60-1013152521
+      manifest_sha256: a3c9e14f745041d8debaf95716f90a3a0cf950fcc4161e93194f6e33b3627061
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+      partial:
+        admitted_sets:
+        - prefill-b1-q16-c0
+        - prefill-b1-q64-c0
+        - prefill-b1-q256-c0
+        - prefill-b1-q256-c1
+        - prefill-b1-q1024-c0
+        - prefill-b1-q1024-c1
+        - prefill-b1-q2048-c0
+        - prefill-b1-q2048-c1
+        - prefill-b1-q2048-c2
+        - prefill-b1-q2052-c0
+        - prefill-b1-q2052-c1
+        - prefill-b1-q2052-c2
+        - prefill-b1-q2052-c3
+        - prefill-b1-q4096-c0
+        - prefill-b1-q4096-c1
+        - prefill-b1-q4096-c2
+        - prefill-b1-q4096-c3
+        - prefill-b1-q8192-c0
+        - prefill-b1-q8192-c1
+        - prefill-b1-q8192-c2
+        - prefill-b1-q8192-c3
+        - prefill-b1-q8192-c4
+        - prefill-b2-q16-c0
+        - prefill-b2-q64-c0
+        - prefill-b2-q256-c0
+        - prefill-b2-q256-c1
+        - prefill-b2-q1024-c0
+        - prefill-b2-q1024-c1
+        - prefill-b2-q2048-c0
+        - prefill-b2-q2048-c1
+        - prefill-b2-q2048-c2
+        - prefill-b2-q2052-c0
+        - prefill-b2-q2052-c1
+        - prefill-b2-q2052-c2
+        - prefill-b2-q2052-c3
+        - prefill-b2-q4096-c0
+        - prefill-b2-q4096-c1
+        - prefill-b2-q4096-c2
+        - prefill-b2-q4096-c3
+        - prefill-b4-q16-c0
+        - prefill-b4-q64-c0
+        - prefill-b4-q256-c0
+        - prefill-b4-q256-c1
+        - prefill-b4-q512-c0
+        - prefill-b4-q512-c1
+        - prefill-b4-q1024-c0
+        - prefill-b4-q1024-c1
+        - prefill-b4-q2048-c0
+        - prefill-b4-q2048-c1
+        - prefill-b4-q2048-c2
+        - prefill-b8-q16-c0
+        - prefill-b8-q64-c0
+        - prefill-b8-q256-c0
+        - prefill-b8-q256-c1
+        - prefill-b8-q512-c0
+        - prefill-b8-q512-c1
+        - prefill-b8-q1024-c0
+        - prefill-b8-q1024-c1
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        - prefill-b16-q256-c0
+        - prefill-b16-q256-c1
+        - prefill-b16-q512-c0
+        - prefill-b16-q512-c1
+        - prefill-b32-q8-c0:3/10
+        failed_sets:
+        - prefill-b32-q8-c0
+        superseded_by_complete_attempts: 3
+    - attempt: full-gb200-vllm-nvfp4-tp2-pf-97efc7406b60-1013152522
+      manifest_sha256: d2f74df4dd42e598212ed04d5213bcc3bb30e5c607218b698fe2fffbfdef9056
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+      partial:
+        admitted_sets:
+        - prefill-b1-q16-c0
+        - prefill-b1-q64-c0
+        - prefill-b1-q256-c0
+        - prefill-b1-q256-c1
+        - prefill-b1-q1024-c0
+        - prefill-b1-q1024-c1
+        - prefill-b1-q2048-c0
+        - prefill-b1-q2048-c1
+        - prefill-b1-q2048-c2
+        - prefill-b1-q2052-c0
+        - prefill-b1-q2052-c1
+        - prefill-b1-q2052-c2
+        - prefill-b1-q2052-c3
+        - prefill-b1-q4096-c0
+        - prefill-b1-q4096-c1
+        - prefill-b1-q4096-c2
+        - prefill-b1-q4096-c3
+        - prefill-b1-q8192-c0
+        - prefill-b1-q8192-c1
+        - prefill-b1-q8192-c2
+        - prefill-b1-q8192-c3
+        - prefill-b1-q8192-c4
+        - prefill-b2-q16-c0
+        - prefill-b2-q64-c0
+        - prefill-b2-q256-c0
+        - prefill-b2-q256-c1
+        - prefill-b2-q1024-c0
+        - prefill-b2-q1024-c1
+        - prefill-b2-q2048-c0
+        - prefill-b2-q2048-c1
+        - prefill-b2-q2048-c2
+        - prefill-b2-q2052-c0
+        - prefill-b2-q2052-c1
+        - prefill-b2-q2052-c2
+        - prefill-b2-q2052-c3
+        - prefill-b2-q4096-c0
+        - prefill-b2-q4096-c1
+        - prefill-b2-q4096-c2
+        - prefill-b2-q4096-c3
+        - prefill-b4-q16-c0
+        - prefill-b4-q64-c0
+        - prefill-b4-q256-c0
+        - prefill-b4-q256-c1
+        - prefill-b4-q512-c0
+        - prefill-b4-q512-c1
+        - prefill-b4-q1024-c0
+        - prefill-b4-q1024-c1
+        - prefill-b4-q2048-c0
+        - prefill-b4-q2048-c1
+        - prefill-b4-q2048-c2
+        - prefill-b8-q16-c0
+        - prefill-b8-q64-c0
+        - prefill-b8-q256-c0
+        - prefill-b8-q256-c1
+        - prefill-b8-q512-c0
+        - prefill-b8-q512-c1
+        - prefill-b8-q1024-c0
+        - prefill-b8-q1024-c1
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        failed_sets:
+        - prefill-b16-q256-c0
+        superseded_by_complete_attempts: 0
+    - attempt: full-gb200-vllm-nvfp4-tp4-pf-97efc7406b60-1013152522
+      manifest_sha256: a329540074f9abbaaa3623ca337125679daba94ac2c5775076b7d7632cf6d8f1
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      max_model_len: 131079
+      system: gb200
+      runtime_arch: arm64
+      gpus_per_node: 4
+      serving_env:
+        NCCL_CUMEM_ENABLE: '1'
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_P2P_LEVEL: NVL
+        VLLM_USE_NCCL_SYMM_MEM: '1'
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+      partial:
+        admitted_sets:
+        - prefill-b1-q16-c0
+        - prefill-b1-q64-c0
+        - prefill-b1-q256-c0
+        - prefill-b1-q256-c1
+        - prefill-b1-q1024-c0
+        - prefill-b1-q1024-c1
+        - prefill-b1-q2048-c0
+        - prefill-b1-q2048-c1
+        - prefill-b1-q2048-c2
+        - prefill-b1-q2052-c0
+        - prefill-b1-q2052-c1
+        - prefill-b1-q2052-c2
+        - prefill-b1-q2052-c3
+        - prefill-b1-q4096-c0
+        - prefill-b1-q4096-c1
+        - prefill-b1-q4096-c2
+        - prefill-b1-q4096-c3
+        - prefill-b1-q8192-c0
+        - prefill-b1-q8192-c1
+        - prefill-b1-q8192-c2
+        - prefill-b1-q8192-c3
+        - prefill-b1-q8192-c4
+        - prefill-b2-q16-c0
+        - prefill-b2-q64-c0
+        - prefill-b2-q256-c0
+        - prefill-b2-q256-c1
+        - prefill-b2-q1024-c0
+        - prefill-b2-q1024-c1
+        - prefill-b2-q2048-c0
+        - prefill-b2-q2048-c1
+        - prefill-b2-q2048-c2
+        - prefill-b2-q2052-c0
+        - prefill-b2-q2052-c1
+        - prefill-b2-q2052-c2
+        - prefill-b2-q2052-c3
+        - prefill-b2-q4096-c0
+        - prefill-b2-q4096-c1
+        - prefill-b2-q4096-c2
+        - prefill-b2-q4096-c3
+        - prefill-b4-q16-c0
+        - prefill-b4-q64-c0
+        - prefill-b4-q256-c0
+        - prefill-b4-q256-c1
+        - prefill-b4-q512-c0
+        - prefill-b4-q512-c1
+        - prefill-b4-q1024-c0
+        - prefill-b4-q1024-c1
+        - prefill-b4-q2048-c0
+        - prefill-b4-q2048-c1
+        - prefill-b4-q2048-c2
+        - prefill-b8-q16-c0
+        - prefill-b8-q64-c0
+        - prefill-b8-q256-c0
+        - prefill-b8-q256-c1
+        - prefill-b8-q512-c0
+        - prefill-b8-q512-c1
+        - prefill-b8-q1024-c0
+        - prefill-b8-q1024-c1
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        - prefill-b16-q256-c0
+        - prefill-b16-q256-c1
+        - prefill-b16-q512-c0
+        - prefill-b16-q512-c1
+        - prefill-b32-q8-c0:3/10
+        failed_sets:
+        - prefill-b32-q8-c0
+        superseded_by_complete_attempts: 3

@@ -3,29 +3,30 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+from concurrent.futures import Future
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-import aisimulate.sweeper.search as search_mod
-from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
-from aisimulate.sweeper.kv_load import KVLoadResolution
-from aisimulate.sweeper.parallel_enum import (
+import aisim.sweeper.search as search_mod
+from aisim.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
+from aisim.sweeper.kv_load import KVLoadResolution
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.replay import (
+from aisim.sweeper.replay import (
     BackendDeploymentSpec,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
 )
-from aisimulate.sweeper.result import CandidateRecord, CandidateStatus
-from aisimulate.sweeper.sampler import Suggestion
-from aisimulate.sweeper.search import Sweeper
-from aisimulate.sweeper.search_space import BranchSpace
+from aisim.sweeper.result import CandidateRecord, CandidateStatus
+from aisim.sweeper.sampler import Suggestion
+from aisim.sweeper.search import Sweeper
+from aisim.sweeper.search_space import BranchSpace
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 
@@ -433,6 +434,109 @@ def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
     assert pools[0].shutdown_wait is False
 
 
+def test_parallel_results_are_recorded_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    submitted = []
+    sampler_seen = {}
+
+    class FakeProcessPool:
+        def __init__(self, *, initializer, initargs, **kwargs):
+            self._processes = {}
+            initializer(*initargs)
+
+        def submit(self, function, *args):
+            future = Future()
+            future.set_result(function(*args))
+            submitted.append(future)
+            return future
+
+        def shutdown(self, *, wait, cancel_futures):
+            pass
+
+    def last_submitted_first(pending, *, timeout, return_when):
+        latest = max(pending, key=submitted.index)
+        return {latest}, set(pending) - {latest}
+
+    def factory(branch, study_id, objectives=None):
+        sampler_seen["sampler"] = _FakeSampler(branch, study_id, objectives)
+        return sampler_seen["sampler"]
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
+    monkeypatch.setattr(search_mod, "wait", last_submitted_first)
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(), sampler_factory=factory, show_progress=False).run(
+        _config(parallel_evals=3, max_eval_seconds=10), top_n=None
+    )
+
+    assert [(record.candidate_id, record.score) for record in result.candidates] == [
+        ("candidate-000001", 256.0),
+        ("candidate-000002", 512.0),
+        ("candidate-000003", 768.0),
+    ]
+    assert sampler_seen["sampler"].scored == [{"objective": 256.0}, {"objective": 512.0}, {"objective": 768.0}]
+
+
+def test_suggestion_order_releases_each_result_once_earlier_ones_finish():
+    todo = [(object(), None) for _ in range(4)]
+    events = []
+
+    def finish(order):
+        for index in order:
+            events.append(("finished", index))
+            yield todo[index][0], index
+
+    for _, index in search_mod._in_suggestion_order(todo, finish([1, 3, 0, 2])):
+        events.append(("recorded", index))
+
+    assert events == [
+        ("finished", 1),
+        ("finished", 3),
+        ("finished", 0),
+        ("recorded", 0),
+        ("recorded", 1),
+        ("finished", 2),
+        ("recorded", 2),
+        ("recorded", 3),
+    ]
+    with pytest.raises(RuntimeError, match="did not report every suggestion"):
+        list(search_mod._in_suggestion_order(todo, finish([1, 0])))
+
+
+def test_resource_aware_candidates_are_checkpointed_then_reported_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    events = []
+
+    class ResourceFactory(_FakeRunnerFactory):
+        def admit_wave(self, specs):
+            raise AssertionError("scheduler boundary is replaced below")
+
+    def last_spec_first(specs, *, factory, **kwargs):
+        runner = factory.create(0)
+        for index in reversed(range(len(specs))):
+            yield index, search_mod._run_replay_detailed(specs[index], runner)
+
+    monkeypatch.setattr("aisim.resource_scheduler.evaluate_waves", last_spec_first)
+    monkeypatch.setattr("aisim.supervision.checkpoint", lambda event, value: events.append((event, value["score"])))
+
+    Sweeper(runner_factory=ResourceFactory(), sampler_factory=_FakeSampler, show_progress=False).run(
+        _config(parallel_evals=3),
+        top_n=None,
+        on_candidate=lambda record: events.append(("on_candidate", record.score)),
+    )
+
+    # The evidence for each candidate is written before any adapter code runs.
+    assert events == [
+        ("candidate_completed", 256.0),
+        ("on_candidate", 256.0),
+        ("candidate_completed", 512.0),
+        ("on_candidate", 512.0),
+        ("candidate_completed", 768.0),
+        ("on_candidate", 768.0),
+    ]
+
+
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     branch = _branch(_pc())
     _stub(monkeypatch, branch)
@@ -573,7 +677,7 @@ def test_direct_sweeper_reaps_term_resistant_workers_before_replacement(monkeypa
 
     import psutil
 
-    from aisimulate import supervision
+    from aisim import supervision
 
     _stub(monkeypatch, _branch(_pc()))
     monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
@@ -617,7 +721,7 @@ def test_direct_sweeper_bounds_shutdown_and_preserves_completed_results(monkeypa
 
     import psutil
 
-    from aisimulate import supervision
+    from aisim import supervision
 
     _stub(monkeypatch, _branch(_pc()))
     monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
@@ -902,12 +1006,12 @@ def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     class IncompatibleFactory(_FakeRunnerFactory):
         def capabilities(self):
             return RunnerCapabilities(
-                replay_spec_api_version=2,
+                replay_spec_api_version=3,
                 supported_backend_topologies=(("*", "*"),),
             )
 
     factory = IncompatibleFactory()
-    with pytest.raises(ValueError, match="runner version 2"):
+    with pytest.raises(ValueError, match="runner version 3"):
         _run_sweep(
             _config(),
             runner_factory=factory,
@@ -1240,18 +1344,18 @@ def test_pareto_sweep_preserves_kv_load_and_returns_front(monkeypatch):
 def _isolate_estimator_data_for_orchestration(monkeypatch):
     # These tests use synthetic models/runners. Native construction is exercised
     # by the estimator contract tests and CLI round trips.
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
 
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeypatch, fail):
-    from aisimulate.sweeper.forward_pass_estimator import (
+    from aisim.sweeper.forward_pass_estimator import (
         ForwardPassEstimatorResolutionError,
         ForwardPassEstimatorResolver,
     )
-    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+    from aisim.sweeper.replay import ForwardPassEstimatorSpec
 
     config = _config()
     config.search_space.agg_num_gpu_blocks = 128
@@ -1311,7 +1415,7 @@ def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeyp
         }
 
 
-def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkeypatch):
+def test_on_candidate_fires_once_per_feasible_outcome_in_suggestion_order(monkeypatch):
     branch = _branch(_pc())  # 8 GPUs
     _stub(monkeypatch, branch)
     factory = _FakeRunnerFactory()
@@ -1324,7 +1428,7 @@ def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkey
     ).run(_config(), top_n=None, on_candidate=seen.append)
 
     assert [record.status for record in seen] == [CandidateStatus.FEASIBLE] * 3
-    # Evaluation order (increasing max_num_seqs), not the best-first ranked order.
+    # Suggestion order (increasing max_num_seqs), not the best-first ranked order.
     assert [record.score for record in seen] == [256.0, 512.0, 768.0]
 
     # on_candidate must receive a detached copy: mutating it must not reach the
@@ -1359,7 +1463,7 @@ def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
 def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys, transient):
     from dataclasses import replace
 
-    from aisimulate.sweeper.result import ReasonCategory
+    from aisim.sweeper.result import ReasonCategory
 
     _stub(monkeypatch, _branch(_pc()))
     runner = _FakeRunner()
@@ -1404,8 +1508,8 @@ def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys
 def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
     from dataclasses import replace
 
-    from aisimulate.sweeper.result import ReasonCategory
-    from aisimulate.sweeper.sampler import make_branch_sampler
+    from aisim.sweeper.result import ReasonCategory
+    from aisim.sweeper.sampler import make_branch_sampler
 
     branch = _branch(_pc())
     branch.knob_choices.update(agg_max_num_batched_tokens=[8192], agg_max_num_seqs=[256])
@@ -1436,3 +1540,173 @@ def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
     assert result.counts.resource_limited == result.counts.feasible == 1
     assert result.counts.cache_hits == 0
     assert len(result.selected_candidates) == 1
+
+
+@pytest.mark.parametrize("strict, expected", [(False, [768.0, 512.0, 256.0]), (True, [512.0, 256.0])])
+def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict, expected):
+    _stub(monkeypatch, _branch(_pc()))
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        seen["sampler"] = sampler
+        return sampler
+
+    class MetricRunner(_FakeRunner):
+        def run(self, spec):
+            report = super().run(spec)
+            seqs = report.metrics["output_throughput_tok_s"]
+            return ReplayReport(metrics={**report.metrics, "num_e2e_latency_samples": 2.0, "p99_e2e_latency_ms": seqs})
+
+    base = _config()
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload=base.workload,
+        sweep=base.sweep,
+        goal={
+            "target": "throughput",
+            "strict_sla": strict,
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
+        },
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(MetricRunner()), sampler_factory=sampler_factory, show_progress=False
+    ).run(config, top_n=None)
+    assert [candidate.score for candidate in result.selected_candidates] == expected
+    rejected = [item for item in seen["sampler"].scored if isinstance(item, tuple)]
+    assert len(rejected) == int(strict)
+    if strict:
+        assert "request_latency.p99" in rejected[0][1]
+    restored = type(result).model_validate_json(result.model_dump_json())
+    assert [candidate.score for candidate in restored.selected_candidates] == expected
+
+
+def test_strict_constraint_failure_wins_over_missing_objective_samples(monkeypatch):
+    from aisim.sweeper.result import ReasonCategory
+
+    _stub(monkeypatch, _branch(_pc()))
+    base = _config()
+    # The fake report has no latency samples: the objective and the constraint both lack them.
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload=base.workload,
+        sweep=base.sweep,
+        goal={
+            "target": "request_latency.p99",
+            "strict_sla": True,
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
+        },
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(_FakeRunner()), sampler_factory=_FakeSampler, show_progress=False
+    ).run(config, top_n=None)
+    assert result.candidates
+    assert {candidate.reason_category for candidate in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        {"target": "request_latency.p99"},
+        {"target": "pareto", "pareto_objectives": ["throughput", "request_latency.p99"]},
+    ],
+)
+@pytest.mark.parametrize(
+    "metrics, outcome, category",
+    [
+        ({}, "infeasible", "no_samples"),
+        ({"num_e2e_latency_samples": 2.0}, "failed", "invalid_metrics"),
+        ({"num_e2e_latency_samples": 2.0, "p99_e2e_latency_ms": -1.0}, "failed", "invalid_metrics"),
+    ],
+)
+def test_aiperf_objective_separates_missing_samples_from_invalid_values(monkeypatch, goal, metrics, outcome, category):
+    _stub(monkeypatch, _branch(_pc()))
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        seen["sampler"] = _FakeSampler(branch, study_id, objectives)
+        return seen["sampler"]
+
+    class MetricRunner(_FakeRunner):
+        def run(self, spec):
+            return ReplayReport(metrics={**super().run(spec).metrics, **metrics})
+
+    base = _config()
+    config = SmartSearchConfig(search_space=base.search_space, workload=base.workload, sweep=base.sweep, goal=goal)
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(MetricRunner()), sampler_factory=sampler_factory, show_progress=False
+    ).run(config, top_n=None)
+    assert {(c.status.value, c.reason_category.value) for c in result.candidates} == {(outcome, category)}
+    # Neither case is ranked: the optimizer only receives infeasible feedback.
+    assert all(isinstance(item, tuple) and item[0] == "infeasible" for item in seen["sampler"].scored)
+    # Rejected candidates keep every reported value, including the invalid one.
+    for candidate in result.candidates:
+        assert candidate.metrics["gpu_hours"] == 1.0
+        assert {key: candidate.metrics.get(key) for key in metrics} == metrics
+        assert ("p99_e2e_latency_ms" in candidate.metrics) == ("p99_e2e_latency_ms" in metrics)
+    if category == "invalid_metrics":
+        assert all(
+            c.reason.startswith("runner contract violation:") and "is invalid" in c.reason for c in result.candidates
+        )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_min_gpus_applies_aiperf_constraints_only_when_strict(monkeypatch, strict):
+    shapes = tuple(_pc(tp=gpus, replicas=1) for gpus in (4, 1, 2))
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=shapes,
+        supported_backends={shape: frozenset({"trtllm"}) for shape in shapes},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    _stub(monkeypatch, branch)
+    seen = {}
+
+    class Sampler(_FakeSampler):
+        def __init__(self, branch, study_id, objectives=None, **kwargs):
+            super().__init__(branch, study_id, objectives)
+            seen["sampler"] = self
+
+        def suggest(self, count):
+            return [
+                Suggestion(selection=_selection(256), parallel_config=shape, handle=None) for shape in shapes[:count]
+            ]
+
+    class Runner(_FakeRunner):
+        def run(self, spec):
+            # The mean SLA and goodput floor pass; the user TPS p50 constraint fails.
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 10.0,
+                    "num_e2e_latency_samples": 10.0,
+                    "mean_e2e_latency_ms": 50.0,
+                    "goodput_request_throughput_rps": 5.0,
+                    "num_tpot_samples": 10.0,
+                    "median_output_token_throughput_per_user": 10.0,
+                }
+            )
+
+    config = SmartSearchConfig(
+        search_space=_config().search_space,
+        workload={"isl": 1024, "osl": 128, "request_rate": 10, "num_request_ratio": 2},
+        sweep={"max_trials": 3, "parallel_evals": 1, "candidates_per_round": 3, "max_eval_seconds": None},
+        goal={
+            "target": "min_gpus",
+            "sla": {"e2e_ms": 100},
+            "min_goodput_rps": 5,
+            "strict_sla": strict,
+            "metric_constraints": [
+                {"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 50}
+            ],
+        },
+    )
+    result = Sweeper(runner_factory=_FakeRunnerFactory(Runner()), sampler_factory=Sampler, show_progress=False).run(
+        config, top_n=1
+    )
+    rejected = [item for item in seen["sampler"].scored if isinstance(item, tuple)]
+    if strict:
+        assert not result.selected_candidates
+        assert len(rejected) == 3 and all("output_token_throughput_per_user.p50" in item[1] for item in rejected)
+    else:
+        assert [candidate.used_gpus for candidate in result.selected_candidates] == [1]
+        assert not rejected

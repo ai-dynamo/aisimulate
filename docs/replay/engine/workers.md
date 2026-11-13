@@ -10,6 +10,14 @@ identical workers. This page covers the role's shape and scheduler. KV cache,
 timing and P/D transfer have their own pages; see the
 [engine overview](README.md#read-by-block).
 
+<a id="worker-types"></a>
+
+`workers.aggregated`, `workers.prefill`, and `workers.decode` default to
+`type: monolithic`; existing ordinary worker configurations need no changes.
+`type: afd` uses a separate A/F configuration and supports the four combinations
+in [AFD](analytical.md#deployment-combinations). Its public phase is determined
+by the role, not a second configuration field.
+
 Merge this fragment into an existing `engine` block from the [engine overview](README.md):
 
 ```yaml
@@ -30,13 +38,15 @@ engine:
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `workers.<role>.hardware` | `engine.hardware` | fixed | `prefill` and `decode` in disaggregated mode only. One concrete system identifier; `auto` is rejected. |
-| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode`; aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
+| `workers.<role>.type` | `monolithic` | fixed | `monolithic` uses the ordinary fields below; `afd` requires a role-local `afd` block described in [AFD](analytical.md#afd). |
+| `workers.<role>.afd` | Required for `type: afd` | Topology domain | An independent A/F pool pair. Common hardware, parallelism, scheduler, KV cache and timing inputs use the [AFD normalization rules and supported subset](analytical.md#afd); conflicts and unsupported explicit values are rejected. |
+| `workers.<role>.hardware` | `engine.hardware` | fixed | Ordinary workers: `prefill` and `decode` in disaggregated mode only. AFD: fallback for both A/F pools in any role, overridden by explicit pool hardware. One concrete system identifier; `auto` is rejected for ordinary role overrides. |
+| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode` and for every AFD role; ordinary aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
 | `workers.<role>.startup_seconds` | `0` | fixed | Nonnegative. Delay before a worker added during the run becomes ready. Initial workers are ready at time zero. |
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
 | `workers.<role>.parallelism.tensor` | `1` | Searched | Attention tensor parallelism. |
-| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. |
+| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. Engine replay requires `1`, including the [AFD+PD companion](analytical.md#afd). |
 | `workers.<role>.parallelism.attention_data` | `1` | Searched | Attention data-parallel ranks per worker. |
 | `workers.<role>.parallelism.moe_tensor` | `1` | Searched | MoE tensor parallelism. Repartitions the worker's GPUs and does not add GPUs. |
 | `workers.<role>.parallelism.moe_expert` | `1` | Searched | MoE expert parallelism. Repartitions the worker's GPUs and does not add GPUs. |
@@ -46,12 +56,19 @@ engine:
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
+| `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts or MTP + G2 | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts or MTP + G2. See [vLLM async scheduling](#vllm-async-scheduling). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
-| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
-| `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Non-negative MiB; `0` disables the embedding cache. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. |
+| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisim.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. Unavailable on a monolithic prefill companion of an AFD role. |
+| `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Non-negative MiB; `0` disables the embedding cache. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. AFD deployments reject `vision`, including on an ordinary companion. |
 | `workers.{aggregated,prefill}.vision.encoder_parallel` | `tp` | fixed | `tp` shards the vision tower over the tensor-parallel group; `dp` (`--mm-enable-dp-encoder`) replicates it and splits the images. Sets encoder timing, collectives and per-rank tower weights. Adds no ranks; see the four parallelism knobs under [Compatibility and scope](sglang-vl-host-loop.md#compatibility-and-scope). |
 | `engine.enable_chunked_prefill` | Backend default (on) | fixed | Boolean. Applies to aggregated and prefill roles; `false` is rejected for SGLang and for AFD. |
+
+In mixed AFD/monolithic prediction, the ordinary prefill companion can use
+`host_loop` and explicit `frontend` stages. A frontend's `measured_for` must match
+the actual workload; an image measurement cannot price text-only traffic.
+`vision` and `host_profile` are rejected on the companion because AFD deployments
+do not support image workloads. AFD workers themselves do not accept these fields.
 
 A backend-specific scheduler field set to a non-default value on another
 backend fails validation.
@@ -59,8 +76,9 @@ backend fails validation.
 ## Context limits
 
 Each worker's `context_length` overrides `engine.context_length` for that role.
-Prediction supports the override on aggregated, prefill and decode workers;
-aggregated recommendations must use the shared engine field.
+Prediction supports the override on aggregated, prefill and decode workers.
+Ordinary aggregated recommendations use the shared engine field; AFD
+recommendations accept a local limit on every role.
 Saved candidate YAML keeps inherited limits unset on the worker, so editing
 `engine.context_length` still updates every worker without an explicit override.
 
@@ -72,9 +90,18 @@ Trace traffic is checked by runtime admission, not this fixed-length validator.
 Sweeper uses the role limit, then the shared limit, then the model's maximum
 context for KV-feasibility filtering. Generated worker payloads use the role
 or shared limit; if both are unset, `max_model_len` remains unset. The model
-fallback used for filtering is not copied into that payload. AFD companion
-workers follow the same rule for their role. These are serving limits, not
+fallback used for filtering is not copied into that payload. Ordinary roles
+paired with AFD follow the same rule for their role. These are serving limits, not
 measured performance data.
+
+Native SGLang admission follows v0.5.22. For context limit `C`, KV token
+capacity `K`, page size `B`, and prompt length `P`, its request limit is
+`R = min(C - 1, K - 1)` (with unset `C` bounded by `K`). Prompts at or above
+`R - 5`, or whose prompt plus one page cannot fit strictly below `K`, are
+rejected. Requested outputs are clamped to the nonnegative minimum of the
+requested count, `R - P - 1`, and `K - ceil(P / B) * B - B - 1`.
+This can shorten generation even when the configured context is larger than
+the prompt plus the requested outputs.
 
 ## Parallelism
 
@@ -91,11 +118,16 @@ differently and do not add more. A deployment's GPU count is the sum over its
 roles. In `recommend`, `optimization.constraints` bounds this sum.
 
 Engine replay reports each role's GPUs per worker as
-`tensor × attention_data × prefill_context` (pipeline parallelism is not supported
-by engine replay). GPU-hours sum each role's worker-seconds times this count,
-divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
-`decode_worker_seconds` report fields. Neither DCP nor MoE EP adds another
-multiplier.
+`tensor × attention_data × prefill_context`. Engine replay rejects pipeline
+parallelism greater than one before capacity estimation. GPU-hours sum each
+role's worker-seconds times this count, divided by 3600. Aggregated workers use
+the `decode_gpus_per_worker` and `decode_worker_seconds` report fields. Neither
+DCP nor MoE EP adds another multiplier.
+
+[AFD+PD](analytical.md#afd) replays its ordinary companion through the same
+native engine, so the companion also requires `pipeline: 1` and uses the
+ordinary worker GPU count above. AFD pool GPU counts follow their role-local
+topology.
 
 `prefill_context` and `decode_context` are modeled only for some model and
 backend combinations, and an aggregated worker may set at most one of them above
@@ -114,6 +146,14 @@ batch, and the worker's pass ends when the slowest rank finishes. Tokens, KV
 cache changes and timing become visible at that point. A rank with no work
 still waits for the others, so a request that arrives mid-pass cannot start
 early.
+
+The default timing prices the whole pass at once: every rank's batch, idle
+ranks included, goes to the performance model as one multi-rank
+`ForwardPassMetrics` query, and each rank's forward takes that shared time from
+its compute start. Fixed and polynomial timing, and the exceptions under
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing),
+keep pricing each rank's own prefill and decode, so the pass ends with the
+slowest rank's own time.
 
 On the `engine` stack, requests are placed round-robin across workers and then
 across the ranks of each worker. A trace request that names a `dp_rank` keeps
@@ -143,6 +183,78 @@ With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a
 prompt larger than `max_batched_tokens` can never be scheduled and the run
 fails. Keep `max_batched_tokens` at least as large as the longest prompt.
+
+SGLang checks the whole remaining prompt before admitting its first chunk.
+The check protects the matched prefix from eviction and reserves one page
+plus the remaining output budget (clipped at 4096 tokens by default).
+Each admitted chunk charges page-rounded input and one page of overhead;
+only the final chunk also reserves outputs. Thus, a small chunk size cannot
+make an otherwise unfit request admissible. An in-flight chunk runs before
+new requests, including with LPM, and may use a partial-page compute budget
+to make progress.
+
+Running requests reserve their remaining output budget at `new_token_ratio`.
+Its initial value is `min(0.7 * schedule_conservativeness, 1)`, its floor is
+14% of that initial value, and each non-retracting running-batch update
+decays it by one six-hundredth of the initial-to-floor distance. Retraction
+re-estimates it from the survivors. Fully idle workers reset it; queued or
+transfer-held work does not. A skipped decode waiting for an in-flight
+completion neither retracts requests nor decays the ratio.
+
+### SGLang computed KV at completion
+
+Sampling an output token does not compute that token's KV. Prefill commits
+the prompt, and a later decode forward consumes the sampled token. For a
+prompt of `P` tokens and `N` outputs, serial decoding and aggregated overlap
+length stops commit `P + N - 1` tokens. PD overlap can run the final token
+through another forward before observing completion, committing `P + N`.
+Cached prefixes are rounded down to whole pages.
+
+Speculative decoding commits accepted drafts but leaves the sampled bonus
+token uncomputed. A length stop at the bonus commits `P + N - 1`; a stop
+inside an accepted draft run commits `P + N`. An already-finished speculative
+row does not commit more KV while awaiting result observation. These are
+computed-token boundaries using existing token-page keys; EAGLE bigram
+identity and EOS-based stops are separate from this model.
+
+These boundaries apply to the simulator's emitted token stream. The existing
+P/D replay regenerates the first output on the decode worker instead of carrying
+the prefill worker's sampled token, so speculative burst alignment can differ
+from SGLang's transferred-token path. Speculative decode radix caching and decode
+overlap are not supported by the public configuration.
+
+### SGLang disaggregated capacity
+
+SGLang decode preallocation reserves **512 tokens per active request** by
+default, including requests in transfer and transferred requests waiting to
+run. It also protects enough space for one running request to finish. A
+candidate's matched prefix is pinned before checking the budget; only its
+missing, page-rounded prompt needs new KV pages. Admission stops at the first
+request that cannot fit. A prompt whose footprint plus the configured reserve
+exceeds the whole pool is rejected at the destination command boundary.
+
+The native Rust/JSON `engine.sglang` controls are:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `num_reserved_decode_tokens` | `512` | Decode headroom per preallocated request. A smaller value supports intentionally small synthetic KV pools; zero still retains the completion guard. |
+| `disaggregation_decode_extra_slots` | unset | Extra decode request rows for transfers. Unset uses twice the explicit per-rank sequence limit when it is at most 32, otherwise zero. |
+
+These controls apply to PD decode and are not YAML scheduler fields.
+The effective running-request limit is capped at half the KV token capacity.
+With native `max_num_seqs: null`, it is derived from KV capacity and context
+length, bounded to 2,048–4,096 before that cap. An omitted `max_num_seqs` keeps
+AISim's explicit default of 256. Decode has that many running
+slots, the configured extra transfer rows, and twice the running limit in
+transfer metadata slots. Transfer completion releases metadata; request rows
+remain occupied until completion, cancellation, or retraction.
+
+Retracted decodes restore private KV before new transfers are admitted or
+transferred requests enter the running batch. They do not re-match the radix
+cache or run a new prefill. The simulator models allocation and restoration
+ordering, without a separate host-copy latency for these backups. On prefill
+workers, completed sources retain their request row and KV until transfer
+release, so waiting sources may be blocked even when no prefill is running.
 
 <a id="vllm-prefill-schedule-interval"></a>
 
@@ -178,6 +290,56 @@ vLLM checks for a drained group every 32 steps and may run extra dummy steps;
 Replay resets immediately, so the phase can differ for requests that arrive in
 that window. Behavior follows vLLM at commit
 [`e2fa285`](https://github.com/vllm-project/vllm/tree/e2fa28594f7baad142a426b0b6a2cfe2c79201c7).
+
+<a id="vllm-async-scheduling"></a>
+
+### vLLM async scheduling
+
+`async_scheduling` mirrors vLLM's `--async-scheduling` and
+`--no-async-scheduling`. Unset, replay turns it on, except with ngram drafts
+or [MTP with G2 host offload](speculation.md#registered-schemes), which turn it
+off and reject an explicit `true`. vLLM v0.28.0 resolves the same default for the
+configurations replay models; it also turns async scheduling off for pooling
+models, some speculative and executor settings and ROCm DeepEP DBO, so set it
+explicitly to match such a deployment.
+
+With async scheduling, a busy vLLM engine keeps two batches committed: one
+running and the next queued behind it. When the running batch finishes, vLLM
+processes its outputs, reads the requests that have arrived, and commits
+another batch. Replay assumes that this happens before a client can react to
+those outputs; it does not model when outputs reach the client. The earliest
+batch a request may join is therefore the first one committed after it
+arrives, and sequence limits, the token budget or KV capacity can delay it
+further:
+
+- A request that arrives while a pass runs skips the pass already queued and
+  joins the one after it.
+- A request that arrives as a pass ends counts as a reaction to that pass's
+  outputs, such as a closed-loop client's next request, and also skips the
+  pass committed at that boundary. An open-loop arrival that lands exactly on
+  a pass end is therefore admitted one pass late.
+- An idle engine admits an arrival at the next pass. So does an engine whose
+  queued pass has no other work, because vLLM runs that empty batch at once.
+
+Requests submitted to a disaggregated prefill role follow the same rule. A
+decode role admits received KV handoffs as before.
+
+```yaml
+engine:
+  backend: vllm
+  workers:
+    aggregated:
+      scheduler: {async_scheduling: false}
+```
+
+With `async_scheduling: false`, an arrival joins the next pass. Behavior
+follows `EngineCore.step_with_batch_queue` and `VllmConfig.max_concurrent_batches`
+in vLLM
+[v0.28.0](https://github.com/vllm-project/vllm/tree/2cf0a6915ce544dc493a0990f2ea38d81601128a).
+Pipeline parallelism deepens vLLM's batch queue, but engine replay does not
+model it. Replay also reserves no capacity for the queued batch, so under KV
+pressure its admission and preemption can differ from vLLM's. AFD companion
+workers do not model async scheduling and reject `true`.
 
 <a id="sglang-prefilldecode-interval"></a>
 
@@ -251,8 +413,8 @@ engine:
 ```
 
 ```bash
-python -m aisimulate.vl.collect --config prediction.yaml --sglang-python <serving venv python>
-aisimulate predict --stack engine --config prediction.yaml
+python -m aisim.vl.collect --config prediction.yaml --sglang-python <serving venv python>
+aisim predict --stack engine --config prediction.yaml
 ```
 
 `collect` times the real SGLang frontend objects on the serving host (no GPU
@@ -268,10 +430,10 @@ and per-request milestones are listed in the
 [CLI reference](../../reference/cli.md#standard-output); mechanics and
 approximations are on [SGLang VL host loop](sglang-vl-host-loop.md).
 
-`collect` runs from an interpreter with aisimulate installed (Python 3.11 to
+`collect` runs from an interpreter with aisim installed (Python 3.11 to
 3.13) and launches the measurement in the serving venv named by
 `--sglang-python`; the two are separate environments whenever the serving
-venv's Python is older than aisimulate supports. `engine.backend_version`
+venv's Python is older than aisim supports. `engine.backend_version`
 selects the packaged GPU performance data, while the table is measured with the
 serving host's sglang 0.5.19, on which the frontend stages are defined; the two
 pins are independent.

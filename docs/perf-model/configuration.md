@@ -21,7 +21,7 @@ decode KV cache across the existing TP ranks and adds no GPUs). Both default to
 one and stay out of the serialized identity when unset.
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -46,7 +46,87 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Per-iteration queries
+
+`estimate_forward_pass_time_ms(metrics_by_rank)` prices one iteration from its
+per-attention-DP-rank `ForwardPassMetrics` list. Every estimator handles that
+list itself: native models price each rank and take the maximum, correction
+uses the heaviest rank, and regression and learned models use joint cross-rank
+features. A rank is prefill work only when it schedules fresh prefill tokens
+(`sum_prefill_tokens > 0`) and decode work when it schedules decode requests.
+
+`estimate_forward_pass_detailed(metrics_by_rank)` returns the same latency with
+its composition. Native estimators record one `ranks` entry per input rank, with
+its uncorrected `latency_ms` (an iteration that schedules no work on any rank
+returns no entries); `max_rank`, `native_latency_ms` and
+`correction_factor` explain the reduction. Whole-model FPM ranks carry their
+direct lookups in `queries` (see [Direct FPM query evidence](api/python.md#direct-fpm-query-evidence)).
+Operation-graph ranks (op-level models and DeepSeek-V4.1 stage graphs) carry
+`operations` instead: name-folded entries with `name`, `latency_ms`,
+`energy_wms`, `source` and `details` (SOL comparison or its unavailable reason,
+and executed measurement substitutions), the same type as
+[static phase diagnostics](api/python.md#static-phase-diagnostics). A
+prefill-only or decode-only rank reports the operations of that phase at the
+rank's shape. A mixed rank folds every operation that its composition prices:
+the combined non-attention pass, context attention at the prefill shape and
+decode attention at the decode shape. A stage-graph rank reports the stage
+children that it prices. Each rank's entries sum to its latency, before online
+correction; reporting them does not change any estimate. The field is additive,
+omitted when empty, and absent for whole-model FPM. Learned and regression
+estimators have no rank entries.
+
 ### Engine identity controls
+
+Canonical JSON/YAML requires string values for text fields. Numeric-looking YAML
+identities must be quoted to preserve their exact spelling:
+
+| Field | Default | Input requirement |
+| --- | --- | --- |
+| `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
+| `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+| `system`, `backend_version`, `tp`, `pp`, `attention_dp`, `moe_tp_size`, `moe_ep_size`, `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, `attention_backend` | As above | With `estimation_mode` `fpm_regression` or `fpm_learned`, each may be the literal `"unknown"` for a fact the saver did not know. Every other mode, a `fallback_policy` other than `deny` and an `fpm_profile` reject it. The integer fields accept only the string spelling. |
+| `deployment_limits` | absent | Optional mapping of the calibrated deployment's `num_gpus` (GPUs of one worker, `tp * pp * attention_dp`), `max_num_batched_tokens`, `max_num_seqs`, `max_kv_tokens` (KV capacity of one attention-DP rank, in tokens) and `context_length`. Each is a positive integer or `"unknown"`; an omitted entry is `"unknown"`. Absent, it is omitted from the serialized configuration. Accepted in every mode. |
+
+This is an intentional compatibility change for direct Rust YAML parsing:
+earlier parsing accepted numeric scalars for string fields, while canonical
+normalization now rejects them. Quote numeric, Boolean, or null-like values
+when they represent text. An actual `backend_version: null` still means unset.
+
+Regression and learned models read no performance data, so their identity only
+records the deployment they were calibrated on. A producer such as the Dynamo
+planner, which may not know that deployment's hardware, versions, parallelism or
+precision, records `"unknown"` instead of a guess. In memory an unknown integer
+holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisim_core::UNKNOWN_SIZE`), which
+serializes back to `"unknown"`, so the configuration round-trips exactly;
+`unknown_identity_facts()` lists them. Unknown widths are not checked against
+each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
+unknown `tp`, `pp` or `attention_dp` neither conflicts with nor derives an
+engine launch's `tensor_parallel_size` and `dp_size`, and replay takes the
+engine's own topology for it. `deployment_limits` is identity too: estimates
+never read it and snapshot restoration compares it exactly. Replay and
+`predict` read only a known `max_kv_tokens`, as the KV capacity of a regression
+or learned role without explicit capacity (see
+[engine replay timing](#engine-replay-timing)); they do not check the worker's
+shape or scheduler limits against the other limits. Recommendation of such a
+snapshot role also requires its GPUs per replica to equal a known `num_gpus`
+and caps its `max_batched_tokens` and `max_sequences` domains at
+`max_num_batched_tokens` and `max_num_seqs` (see
+[snapshot roles](#recommending-with-a-calibrated-snapshot)). Nothing reads
+`context_length`.
+
+The canonical configuration carries the following AFD identity fields. Ordinary
+agg configurations omit them; AFD derives pool identities through the same
+`best_available` construction interface.
+
+| Field | Default | Behavior |
+|---|---|---|
+| `afd_routing_location` | absent | AFD passes `a` to both pools. An explicit `f` fails before estimator/data preparation. |
+| `afd_pool_role` | absent | `a` emits attention, shared and dense computation; `f` emits routed computation. Used for selective pool compilation and retained in canonical/cache identity. |
+
+Selective pool compilation requires SGLang, PP1/CP1/DCP1 and op-level estimation.
+Every AFD pool carries its role and a typed source layer plan. See
+[AFD execution plans](../sweeper/afd-topology.md#performance-model) for ownership
+and [AFD configuration](../replay/engine/analytical.md#afd) for public YAML.
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
@@ -56,9 +136,13 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
 
-An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any non-AFD timing phase with no compatible fused MoE operator. In AFD, the A pool retains the selector in its canonical configuration but emits no routed MoE operation; the F pool applies it to routed MoE operations. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
-AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+Ordinary prefill/decode companions of AFD roles use the canonical timing provider
+and preserve exact-source requests under the same eligibility rules. Fixed or
+polynomial timing and whole-forward FPM reject incompatible source selectors.
+These controls describe standalone AISim behavior, not downstream Dynamo
+planner integration.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
 simulator workload assumption, supplied separately by the unified CLI as
@@ -68,15 +152,30 @@ simulator workload assumption, supplied separately by the unified CLI as
 
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
 Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
-including when fallback is denied. For an explicit mode, deny permits only
-that estimator; allow tries the requested estimator first, then the remaining
-estimators in the same global priority order. Each native mode tries the
-ordered `systems_paths` before moving to another estimator. Omitted roots preserve
-configured SDK discovery (or the systems-path environment override when the SDK
-uses its packaged default); an explicit `default` entry selects the packaged root.
+including when fallback is denied. For an explicit choice of one of those three
+modes, deny permits only that estimator; allow tries the requested estimator
+first, then the remaining estimators in the same global priority order. Each
+native mode tries the ordered `systems_paths` before moving to another estimator.
+Omitted roots preserve configured SDK discovery (or the systems-path environment
+override when the SDK uses its packaged default); an explicit `default` entry
+selects the packaged root.
 The resolved paths are shared by preflight, construction and capacity estimation.
 Selection occurs
 at construction; queries do not silently switch estimators on a data-domain error.
+
+`fpm_learned` requires explicit selection and `fallback_policy: deny`; it is
+never an automatic or fallback candidate. Supply exactly one of
+`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Online
+adaptation is the default; set `adaptation: frozen` explicitly for a fixed forest.
+Frozen adaptation accepts either source, online adaptation requires a training or
+runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
+Learned models support the standalone canonical API with complete per-iteration
+`ForwardPassMetrics` for prediction and feedback. Engine replay, engine CLI
+prediction and recommendation, and Sweeper timing price every pass of a learned
+role with one iteration query, adding the per-request lengths an artifact
+reads (see [engine replay timing](#engine-replay-timing)). See
+[learned configuration](fpm_ml/configuration.md#selection-and-supported-execution)
+for source identity checks, adaptation controls and correction requirements.
 
 Invalid caller configuration does not trigger fallback. A constructed regression
 may be unready: nonempty queries return `None` until their selected workload
@@ -88,6 +187,27 @@ The returned provenance records the requested and selected modes, failed
 selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
+
+### Diagnostic source values
+
+`model.diagnostics()["source"]` identifies the selected model and its current
+calibration state. The Rust API serializes the same values that the Python SDK
+returns:
+
+| Value | Meaning |
+| --- | --- |
+| `aic` | Native op-level or FPM interpolation model with no ready correction store. |
+| `aic_with_correction` | Native model with at least one ready correction store. |
+| `fallback_regression` | Regression model, including an explicitly selected `fpm_regression`; the name does not imply that fallback occurred or that the model is ready. |
+| `learned` | Frozen learned forest with correction disabled or no ready correction store. |
+| `learned_with_correction` | Frozen learned forest with correction enabled and at least one ready correction store. |
+| `learned_online` | Standalone online learned forest, including before its first update. |
+| `learned_causal_selector` | Combined causal selector, regardless of which expert serves a query. |
+
+These values describe the model, not coverage or correction availability for
+every query. Consult `readiness` and the store diagnostics for those details.
+Use `learned_selector_diagnostics()` to inspect per-key expert selection;
+switching experts does not change the combined model's `source`.
 
 ### Speculative decoding configuration
 
@@ -115,7 +235,7 @@ Rust callers now construct the public struct instead of the former
 `ForwardPassSpeculationConfig::Ngram` enum variant:
 
 ```rust
-use aisimulate_core::{
+use aisim_core::{
     BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModel,
     ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, ForwardPassWorkerType,
 };
@@ -149,21 +269,54 @@ KV length `s`, use `num_decode_requests = B*v` and
 `sum_decode_kv_tokens = B*v*s`. Their ratio remains `s`; the query does not apply
 the width again. `predict_decode_latency_total()` wraps the same counters.
 `static_phase_latency()` instead takes the real request batch and applies the
-configured verification width internally. This OP telemetry convention is
-distinct from the proposed speculative FPM mapping, which remains unsupported.
+configured verification width internally. Here `s` is the attention length
+including the current token: static decode evaluates one step at
+`input_tokens + 1`, so `static_phase_latency(batch_size=B, input_tokens=s-1,
+output_tokens=2, prefill=False)` prices the same step as the packed counters.
+This OP telemetry convention is distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
+that per-query `draft_length` option takes logical decode request counts and
+total past KV, widens the former and preserves the latter.
 
 The canonical constructor currently supports explicit speculative schemes with
 OP/SOL timing. FPM interpolation and regression are unsupported candidates for
 these schemes. An explicit FPM request with `fallback_policy="deny"` fails;
 `auto` or an explicit mode with `fallback_policy="allow"` can select a supported
 OP candidate while preserving the complete speculative identity. They do not
-drop speculation to obtain an autoregressive estimate. FPM profiles remain
-autoregressive-only. Lower-level FPM hybrid code does not imply support through
-the canonical ForwardPassMetrics query API.
+drop speculation to obtain an autoregressive estimate. Separately, an ordinary
+STP FPM can estimate pure speculative decode via the query-only `draft_length`
+option without setting `speculation` or `nextn`. Explicit measured
+[speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
+have their own identity contract.
+
+The two FPM speculative paths keep separate query rules:
+
+- **Path 1** scales an ordinary STP FPM estimate by the empirical
+  `draft_length` formula and accepts decode-only ranks. As in every rank
+  dispatch, a rank is prefill work only when it schedules fresh prefill tokens
+  (`sum_prefill_tokens > 0`). A fully prefix-cached prefill record is therefore
+  decode-only.
+- **Path 2**, a measured end-to-end SD-round profile, rejects `draft_length`
+  because its measurements already include speculative decoding: "a measured
+  speculative-round profile already includes speculative decoding; omit
+  draft_length". Without the option it prices one attention-DP rank. A mixed
+  rank costs its measured prefill plus a full measured decode round, not a
+  marginal decode share, because the measured rounds have no pass baseline.
+
+The legacy hybrid route, `forward_model="fpm"` with materialized OP draft
+operations, is deprecated and emits a construction warning. Existing hybrid
+calculations remain available during migration, and pure OP speculative decoding
+remains supported. The [migration guidance](methods/whole-forward.md#hybrid-fpmop-deprecation-and-migration)
+describes Option 1 (an ordinary non-SD FPM queried with `draft_length`) and
+Option 2 (a measured complete SD-round profile). Transitional behavior preserves
+applicable OP draft estimates; Option 1 is currently an explicit query fallback,
+not an automatic conversion by `best_available` or Replay. Lower-level hybrid
+support does not imply support through the canonical ForwardPassMetrics API.
+Removal depends on replacement readiness for affected callers and workloads;
+there is no fixed removal date.
 
 Acceptance assumptions and scheduler seeds belong to the prediction/Replay
 layer, not this cost configuration. The returned model continues to estimate
-iteration latency; its constructor and query signatures are unchanged. For
+iteration latency; the existing calls remain supported. For
 prediction and AgentX, the [registered-scheme Replay input](../replay/engine/speculation.md#registered-schemes)
 adds acceptance and a seed while retaining this cost identity. That path uses
 the existing linear 1–5-token executor and requires fixed KV capacity; broader
@@ -171,10 +324,15 @@ cost-model support does not imply broader scheduler support.
 
 ### Estimator controls
 
-`estimator_config` is passed intact through the Python facade, CLI, Sweeper,
-and Replay, then parsed and validated in Rust. Unknown fields report their
-nested paths. The supported namespaces are:
+For supported execution paths, `estimator_config` is passed intact through the
+Python facade, CLI, Sweeper, and Replay, then parsed and validated in Rust.
+Learned mode remains limited to the standalone API described above. Unknown
+fields report their nested paths. The supported namespaces are:
 
+- `op_level.execution_profile`: optional pinned external operation graph, with
+  an absolute `path` and lowercase `sha256`. See
+  [external execution profiles](methods/op-level.md#external-execution-profiles)
+  for admission, data isolation and query limits.
 - `features`: `attention_kv_weight`, `prefill_attention_pair_weight`, and
   `ffn_token_weight`, each defaulting to 1.0. These currently affect regression
   only; positive finite values are required when regression is constructed.
@@ -182,13 +340,23 @@ nested paths. The supported namespaces are:
   The default fit kind is `standardized_nnls` (also accepted as `linear`),
   with a free intercept and nonnegative slopes. `spline` selects an additive
   piecewise-linear fit with learned knots and nonnegative segment slopes.
-  Optional `fit.linear` controls fitted axes, signed slopes, and lazy updates;
+  Optional `fit.linear` controls fitted axes, signed slopes, and lazy updates,
+  or opts into the `fpm5` aggregate feature set described below;
   omission preserves the existing linear behavior and serialized defaults.
   `singular_ridge_scale` defaults to `1e-9` and applies to the shared linear
-  fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
+  fit only when retrying a singular equation; the `fpm5` fit always applies it
+  to its slopes. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
   rebuilding after that many retained-sample mutations.
-- `correction`: `enabled` (true), `mode` (`auto`), independent `sampling`, `min_observations`
+- `fpm_learned`: explicit forest or checkpoint source, adaptation mode, and
+  online fitting controls for standalone learned models. See the
+  [learned configuration field tables](fpm_ml/configuration.md).
+- `selector`: expert selection controls for learned
+  `adaptation: causal_selector`, documented on the same learned configuration page.
+- `state_snapshot`: restores a model saved by `save_state_snapshot`,
+  including its tuned state. See [state snapshots](#state-snapshots).
+- `correction`: `enabled` (false for standalone online learned mode, true otherwise),
+  `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) fixed-policy ranges.
 - `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
@@ -200,6 +368,46 @@ nested paths. The supported namespaces are:
   evidence from actual direct-FPM lookups, as described below. It requires
   explicit `estimation_mode: fpm_interpolation`, resolved `method: direct`, and
   `fallback_policy: deny`. It is omitted from normalized serialization when false.
+- `temporary_mixed_composition`: absent by default. An explicit learned-model
+  policy for original self-benchmark A/A+C workloads. It pins missing mixed
+  classes to the configured FPM interpolation method and optionally independent hybrid correction;
+  it does not change automatic estimator selection. See the
+  [mixed policy configuration](fpm_ml/configuration.md#temporary-mixed-composition-for-self-benchmark-seeds).
+
+| Temporary mixed policy field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.temporary_mixed_composition` | Absent | Opt-in original-A fallback eligibility for aggregated GBDT A/A+C, frozen hybrid A+C, and selector A+C. Requires `scenario`, `mode` and `original_a.manifest_path`. A+C GBDT can require a continuous quality check before selecting ordinary predictions. Frozen hybrid calibrates interpolation for missing mixed stores. For eligible selector classes, calibrated interpolation replaces the frozen/calibrated expert and competes causally with online GBDT after its C bootstrap. |
+| `estimator_config.temporary_mixed_composition.original_a.source_sha256` | `null` | Pins the original-A manifest; normalization verifies or fills its digest. C updates cannot change its capability decisions. |
+| `estimator_config.temporary_mixed_composition.calibration` | Hybrid; `[4, 4]` bins, 64 slots per policy/class, 5 observations, factors `[0.5, 2.0]` | Independent attention/MoE correction for missing mixed classes in A+C. Its fixed score bounds come from original A and do not reuse ordinary correction geometry. |
+
+The optional `temporary_mixed_composition.quality_gate` checks eligible A+C
+mixed classes on standalone online GBDT. Selector retains its existing causal
+gate; frozen hybrid retains calibrated interpolation. Configuring this quality
+gate on either of those adaptations is an error.
+
+| Mixed quality gate field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.temporary_mixed_composition.quality_gate` | Absent | Preserve existing availability-first GBDT and causal selector behavior. An object enables the check for A+C only. |
+| `estimator_config.temporary_mixed_composition.quality_gate.alpha` | `0.05` | EWMA weight in `(0, 1]` for paired, unbounded fractional absolute percentage errors. The first pair initializes each mean. |
+| `estimator_config.temporary_mixed_composition.quality_gate.min_comparisons` | `5` | Positive number of future paired admitted observations required before GBDT may qualify. Bootstrap training rows do not contribute. |
+
+For each forest store and critical-rank query type, interpolation stays selected
+until GBDT is ready and its EWMA error is less than or equal to interpolation's.
+The check continues after selection and returns to interpolation when its error
+is lower. Set `min_comparisons: 1` to qualify on the first subsequent paired label.
+Predictions for each comparison precede both expert updates; the resulting choice
+applies to future queries. The fallback prediction includes its current independent
+calibration. Both experts continue learning even while unselected. This checks
+past performance and cannot guarantee lower error on future labels. A typed
+interpolation coverage miss can use ready GBDT without advancing paired evidence;
+route metadata marks this coverage exception. Hard prior errors remain errors.
+C-only has no original-A interpolation table and is unaffected.
+
+`append_mixed_learned_checkpoint` supports online GBDT and selector, preserving
+calibration and quality evidence as a missing class becomes ready. Mixed snapshots
+include the quality gate and reject mismatched or incomplete saved state. They
+must be restored together with the matching ordinary learner and admission cursor;
+a mixed snapshot alone is not a full model checkpoint.
 
 The top-level `fpm_profile` contains the complete profile dictionary: pinned
 model revision, architecture, context length, expert count, deployment precision
@@ -274,8 +482,37 @@ one-dimensional prefill grid uses the product of the two axis counts. Its coordi
 transform and bounds depend on the policy below. Balanced retention evicts the oldest
 sample from the most populated cell when the store exceeds its budget.
 
+| Regression linear fit field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.fpm_regression.fit.linear` | Absent | Absent keeps the existing attention/MoE fit with nonnegative slopes and eager updates. Rejected with `fit.kind: spline`. |
+| `estimator_config.fpm_regression.fit.linear.feature_axes` | `[attention, moe]` | One to six distinct fitted coordinates, independent of `sampling.axes`. |
+| `estimator_config.fpm_regression.fit.linear.non_negative` | `true` | `false` permits signed slopes; the intercept is always free. |
+| `estimator_config.fpm_regression.fit.linear.update_policy` | `{kind: always}` | `error_threshold` defers coefficient publication until recent prediction errors exceed its tolerances. |
+| `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18` and a positive `fit.singular_ridge_scale`. Omitted from serialization when absent. |
+| `estimator_config.fpm_regression.fit.linear.max_kv_splits` | Absent | KV splits the decode-attention kernel gives a request that runs alone: the GPU's SM count over the kernel's CTAs per request. Positive, and required when `feature_axes` or `sampling.axes` selects `longest_split`. Omitted from serialization when absent. See [engine-constant axes](methods/online-regression.md#engine-constant-axes). |
+| `estimator_config.fpm_regression.fit.linear.max_cudagraph_capture_size` | Absent | The most scheduled tokens a rank runs in a CUDA graph, as vLLM's knob of this name. Positive, and required when `feature_axes` or `sampling.axes` selects `eager`. Omitted from serialization when absent. |
+
+`feature_set: fpm5` fits the same named aggregates as the learned
+`--features fpm5` preset: active-rank, request and token counts and sums,
+per-rank maxima, means, the balanced-partition prefill attention proxy, and
+their `log1p` forms. It needs only the scalar scheduled counters, not request
+lists. Each fit refits the retained rows of its store with nonnegative least
+squares (or signed least squares) on standardized features, always adding
+`singular_ridge_scale` to the slopes. Constant features and exact duplicates,
+such as `max_rank_*` with one attention-DP rank, are inactive. A store becomes
+ready only with at least `max(min_observations, active features + 1)` retained
+observations; until then the readiness report gives `insufficient_data` below
+`min_observations` and `no_usable_fit` above it. Once ready, a store keeps
+serving its last fit when a refit cannot produce a usable one, for example when
+multi-rank traffic first activates more aggregates than it has retained rows.
+`sampling.axes` still selects
+retention coordinates, and `update_policy` and `non_negative` keep their
+meaning. `rebuild_interval` must stay `null` because every fit already uses the
+exact retained rows. See [online regression](methods/online-regression.md#fpm5-aggregate-features).
+
 | Correction field | Default | Behavior |
 | --- | --- | --- |
+| `estimator_config.correction.enabled` | `false` for standalone online learned mode; `true` otherwise | Standalone online learned mode requires disabled correction; the combined selector requires enabled correction. Explicit values override the default and are validated for the selected mode. |
 | `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects `hybrid` for learned forests. `hybrid` uses the fixed grid inside its configured limits and dynamic local correction outside. `fixed` and `dynamic_local` explicitly select a single policy. |
 | `estimator_config.correction.sampling.max_observations` | `64` | Sample-slot budget per workload kind and policy. Hybrid retains independent fixed and dynamic budgets, up to `2 * M` slots per kind (128 by default). Dynamic and hybrid updates take `O(M log M)` time and `O(M)` temporary storage; measure update cost before increasing capacity. |
 
@@ -313,6 +550,346 @@ computation are owned by Rust.
 For fit configuration see [Online regression](methods/online-regression.md).
 For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md).
 
+### State snapshots
+
+Configuration describes a cold model. To keep what a model has learned from
+`tune_with_fpms()`, save it with `model.save_state_snapshot(path)` (Rust:
+`ForwardPassPerfModel::save_state_snapshot(path, &StateSnapshotOptions)`).
+Saving atomically writes a new directory and returns the pinned canonical
+configuration, which is also written to `path/config.json`. Restore through
+the same constructor: `RustForwardPassPerfModel.best_available(state_snapshot=path)`
+reads that file with `state_snapshot.path` naming `path`, wherever the
+directory now is, and passing the returned configuration is equivalent while
+the snapshot stays where it was saved. There is no separate loader;
+`best_available` restores whenever `estimator_config.state_snapshot` is present.
+
+```python
+config = model.save_state_snapshot("/tmp/decode-snapshot")
+frozen = RustForwardPassPerfModel.best_available(state_snapshot="/tmp/decode-snapshot")
+config["estimator_config"]["state_snapshot"]["on_tune"] = "continue"
+resumed = RustForwardPassPerfModel.best_available(config)
+```
+
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`, at its save location or wherever it was copied or moved. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept. The inputs the snapshot owns are read from this directory (see [relocation](#relocating-a-snapshot)). |
+| `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
+| `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
+
+A snapshot covers every estimator kind. The returned configuration is the
+model's resolved provenance configuration plus `state_snapshot`; files the
+snapshot owns are redirected into it:
+
+| Saved model | Snapshot contents |
+| --- | --- |
+| Native `op_level` or `fpm_interpolation` | Correction stores (fixed, dynamic local or hybrid). The engine is recompiled from the configuration; the manifest records the compiled engine-specification digest from construction and a performance-data fingerprint. A configured `op_level.execution_profile` file is copied. |
+| `fpm_regression` | Every workload store: retained samples, fits, incremental statistics, lazy-update and spline search clocks. |
+| `fpm_learned`, `frozen` | The forest (an artifact's exact bytes, or the checkpoint's forest exported unchanged) and correction stores. |
+| `fpm_learned`, `online` | An online runtime checkpoint with the current forest, retained and pending rows and fitting state. |
+| `fpm_learned`, `causal_selector` | The frozen expert, the adaptive expert's runtime checkpoint, every calibration store and all twelve selector evidence keys. |
+| `from_learned` model | The forest, its constructor options and correction stores. |
+
+Models with `estimator_config.temporary_mixed_composition` reject portable
+snapshot saving and restoration because this format does not package their
+interpolation prior and additional source/state dependencies. See the
+[mixed-policy persistence contract](fpm_ml/mixed-workload-fallback.md#diagnostics-persistence-and-compatibility)
+for online checkpoint and partial mixed-state alternatives.
+
+Saving does not fit pending online rows or change the model. Every staged
+file and directory is synced to disk before the staging directory is renamed
+into place, and the parent directory after. A restored model
+predicts bit-identically, reports the same readiness, store and correction
+diagnostics, and after the same later feedback holds byte-identical state,
+including in another process. Readiness follows the restored state: a cold
+regression saved before it fit is restored cold. The restored provenance
+describes the snapshot construction, so it records the explicit mode, no
+selection failures and no fallback warning; a not-ready regression that was
+originally selected by fallback therefore reports `insufficient_data`
+instead of `unsupported_config`. Direct-FPM query coverage counters and two
+online learner diagnostics are not model state: the coverage counters restart
+empty, `training_state_bytes` reflects the restored allocation, and
+`history_grouping_ms` is the time this process spent grouping history rows.
+
+Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
+and fails, without selecting another estimator, when:
+
+- the manifest digest, a pinned file's size or digest, or the snapshot format
+  differs: snapshots load only in the same `aisim-core` version with the
+  same state layout and engine-specification schema;
+- the configuration, compared field by field after normalization, differs
+  from the saved identity (the error names the first differing field);
+- a native engine compiles to a different specification, its performance
+  data no longer matches the fingerprint (checked before any of it is loaded),
+  or this process loaded that data before it changed;
+- saved state is truncated, corrupt or internally inconsistent, for example a
+  sample stored under the wrong bucket, a dynamic correction row outside its
+  bounds, spline knots that do not fit the basis, or store kinds that do not
+  match the worker role; or
+- the restored diagnostics differ from those recorded when saving.
+
+Native snapshots reference performance data by content fingerprint: every
+file directly under the systems root, the system's `data_dir` resolved as the
+loader resolves it (every directory and file below it, or its absence when an
+external parquet needs no operation tables), and an external
+`fpm_parquet_path` with its `.metadata.json` sidecar. Source resolution
+depends on which files and directories exist, not only on those read so far,
+so additions, removals and new empty version directories invalidate the
+fingerprint too. Like the resolvers, the fingerprint follows symbolic links,
+records an unresolvable link without reading it, and skips dot-prefixed and
+non-UTF-8 names. A native model fingerprints its data when the process first
+loads that systems root; later constructions reuse that result. Performance
+tables that another engine in the process parsed before then are not shared
+with the model, so it reads the fingerprinted data; restoration does the same
+after its check. Only tables an earlier restoration in the process loaded from
+the same data stay shared, and only while no fingerprinted file or directory
+has been written since, even back to its original bytes, and no symbolic link
+followed on the way to the data, including links inside link targets, has been
+retargeted: tables parse on first query, so they could otherwise hold rows from
+data changed in between.
+`save_state_snapshot` fingerprints the data again and fails if it changed
+since it was loaded; restart the process to save a model of the current data. Pass
+`include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
+to copy exactly the fingerprinted entries into the snapshot, pointing
+`systems_paths` (and `fpm_parquet_path`) at the copy. The hardware YAML is
+copied unchanged, so packing requires its `data_dir` to be a relative path of
+plain directory names; a `data_dir` with `..` components, an absolute path or
+one outside the systems root can be referenced but not packed. A packed snapshot holds a
+copy of the system's whole data directory, so its size follows that data.
+Learned forests and online checkpoints are always copied. The model
+configuration is not: native restoration reads `model` again, from a
+configuration bundled with the package, a local directory or Hugging Face, so
+a packed native snapshot still needs it, and restoration fails if it compiles
+a different engine specification from the saved one.
+
+#### Relocating a snapshot
+
+A snapshot directory can be copied or moved, for example to another host or
+mount point, and restored after the original is deleted. The manifest names
+the inputs a snapshot owns (packed performance data under `perf_db/`, a
+copied execution profile, learned artifacts and online checkpoints) by their
+fixed paths inside the snapshot, and construction reads them from the
+directory that `state_snapshot.path` names, whatever paths the rest of the
+configuration gives for them. Restore a moved snapshot with
+`best_available(state_snapshot=new_path)`, or set
+`estimator_config.state_snapshot.path` in a saved configuration;
+`config.json` and the returned configuration record the absolute paths at the
+save location. The manifest pins the content of every owned input, so a copy
+is verified exactly like the original.
+
+Where external performance data is found is not identity. A snapshot saved
+without `include_perf_db` reads its data through `systems_paths` (and
+`fpm_parquet_path`), which may name any root with the same content: the
+fingerprint decides. `best_available(state_snapshot=path)` keeps the roots
+recorded at save time, so on another host either save with
+`include_perf_db=True` or pass a configuration with `systems_paths` replaced.
+Regression and learned estimators read no performance data, so their
+`systems_paths` are not compared. Every other field, such as the model,
+hardware, backend version, parallelism, `kv_block_size`, quantization and the
+estimator controls, must still equal the saved identity. A snapshot is
+self-contained only when saved with `include_perf_db=True`: re-saving a model
+restored from a packed snapshot without it references that snapshot's packed
+data as external data.
+
+The manifest schema version is 2. Version 1 manifests, written before
+snapshots were relocatable (for example by nightly
+`0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
+the save location. A snapshot restores only in the aisim-core version
+that wrote it, so a version 1 snapshot from a published nightly cannot be
+relocated: restore it in place with the build that wrote it, or tune and save
+a new snapshot with a current build, which rejects the old one with an error
+naming the writer's version and manifest schema version. A current build still
+reads a version 1 manifest that carries its own version string, such as one
+from an unstamped local `0.13.0` build, and relocates it by recovering the save
+location from the owned inputs' fixed relative paths. Newer schema versions
+are rejected with the versions this build reads.
+
+#### Errors, replay and inspection
+
+Snapshot I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
+a missing snapshot or a missing learned artifact or checkpoint inside it)
+through both `state_snapshot=` and a configuration, never the skippable
+`PerfDataNotAvailableError`. A manifest from another release
+reports its versions even when it has fields this release does not know.
+Online learner state, including the causal selector's adaptive expert, is
+always saved in full, so its size grows with the forest and its retained
+training history. Native restoration recompiles through Python like any
+native construction. A `from_learned`
+model has no deployment identity: its snapshot configuration carries the
+placeholder identity `model: from_learned`, `system: from_learned`,
+`backend: vllm`, restoration checks only its estimator controls and files, and
+`deployment_topology()` returns `None`.
+
+Engine replay restores a snapshot named by its AIC timing configuration like
+any other `best_available` call. Its saved online correction applies through
+[engine replay timing](#engine-replay-timing) as in any other estimate, the
+same with and without `capture_performance_diagnostics`. Operation evidence
+and its energy scale with the correction, so reported power is unchanged.
+
+Gates for replaying a saved model read the snapshot without loading it.
+`RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
+kind, versions, pinned identity, deployment topology and the readiness report
+recorded at save time. `model.readiness_report()` lists, for every logical
+workload store of the worker role, whether an estimator route is available
+and why not (`insufficient_data`, `no_usable_fit` or `untrained_forest_store`),
+plus every correction store's readiness; native estimators are always ready.
+Eligible mixed interpolation routes count as ready even when their learned
+forest store is absent, consistently with `regression_store_diagnostics()`.
+Readiness does not guarantee coverage for every query: an interpolation route
+can still return no estimate outside its support. Portable snapshots reject
+the temporary mixed policy, so snapshot inspection does not report mixed
+fallback readiness.
+`model.deployment_topology()` reports the identity's worker role, parallelism,
+speculation, KV block size and fixed correction limits.
+`RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, state_snapshot=path)`
+and `model.engine_launch_mismatches(engine_args)` apply the engine launch rules
+(for example `dp_size` against `attention_dp`) to the canonical launch arguments
+with the snapshot as the timing model and return every rule that fails; an
+empty list means the launch accepts the combination. Launch arguments that are
+invalid on their own, such as `dp_size: 0` or `gpu_memory_utilization: 2.0`,
+raise with the launch's own message instead. The Rust equivalent is
+`EngineLaunchConfig::timing_config_mismatches`.
+
+### Engine replay timing
+
+Engine replay prices each forward pass of a worker with one
+`estimate_forward_pass_time_ms()` query, or `estimate_forward_pass_detailed()`
+when it needs rank evidence, holding one `ForwardPassMetrics` per attention-DP
+rank, idle ranks included. Every rank of the worker ends at the shared time
+from its own compute start. An online correction applies as in any other
+estimate: the correction of the heaviest rank's workload multiplies the
+slowest rank's native time. A one-rank pass that computes only prefill or only
+decode takes that phase's correction; a vLLM or TensorRT-LLM rank that computes
+both runs as one forward and takes the correction of that mixed iteration.
+
+Replay prices a pass this way only while `decode_speedup_ratio` is 1, its
+default and the only value MTP (`nextn > 0`) accepts: the shared time then
+takes `speedup_ratio` whatever work it holds. With another decode speedup,
+each rank prices its own phases, prefill at `speedup_ratio` and decode at
+`speedup_ratio * decode_speedup_ratio`, and the pass ends with the slowest
+rank, exactly as before the canonical query. A pass on which no rank computes
+model work is never sent to the model and its forward takes no time, so a
+scheduler round without model work, such as an SGLang prefill-decode interval
+round, keeps its zero duration.
+
+Replay fills each rank's metrics in the selected estimator's convention.
+Prefill always passes the scheduled totals. Whole-model FPM reads decode past
+KV, excluding each request's current token and clamped to the scheduler's KV
+bound. Operation-level timing reads packed decode counters: `B*v` requests at
+`s` tokens each, where `s` is the mean context including the current token and
+`v` the configured verification width. A tuned operation-level model therefore
+looks up a decode pass's online correction at `(B*v, B*v*s)`, where per-rank
+phase timing looked it up at `B` requests and their past KV tokens.
+
+Against the former per-rank phase timing, the canonical query changes these
+results: an operation-level vLLM or TensorRT-LLM pass that computes prefill and
+decode is the model's mix step instead of a prefill pass followed by a separate
+decode pass; operation-level prefill reads the per-request means `new / B` and
+`prefix / B` instead of `(new + prefix) / B - prefix / B`; a tuned
+operation-level model corrects decode at the packed coordinates above; with
+attention DP, the correction comes from the heaviest rank and applies to the
+slowest rank's time; and a worker's pass ends at the latest rank compute start
+plus the shared time. A one-rank pure prefill or pure decode pass whose prefix
+tokens divide evenly across its requests keeps its previous latency and
+evidence on whole-model FPM, and on an operation-level model without online
+corrections.
+
+A measured SD-round profile prices exactly one rank. A rank that computes
+prefill and decode costs the measured prefill plus a full decode round. Without
+online corrections that is the total of the former separate prefill and decode
+passes; a tuned model applies the correction of that mixed iteration to the
+whole forward, where the separate passes each took their own phase's
+correction.
+
+Operation-level power evidence comes from the same detailed estimate: the
+`operations` of every rank with work, stretched by the pass's correction like
+its latency, so a pass's energy sums over its ranks as it did when each rank
+priced its own phases. A rank's evidence is the work that the query priced, so
+a mixed rank reports its mix step's operations rather than separate static
+prefill and decode phases. A rank with one kind of work is recorded with that
+phase. A mixed rank is attributed by mix-step pass: context-attention
+operations are prefill, decode-attention operations decode, and each operation
+of the shared non-attention pass splits by the rank's token share,
+`ctx_tokens / (ctx_tokens + gen_tokens)` prefill, with `ctx_tokens` the
+scheduled prefill tokens and `gen_tokens` the packed decode requests. When name
+folding would merge operations of different passes, as for GLM-5.3 attention,
+or the graph composes a mixed rank otherwise, as DeepSeek-V4.1 stages do, the
+whole rank splits by that token share. A split scales an operation's latency,
+energy and SOL alike, so its power and the rank's totals are unchanged.
+Operation details such as SOL are kept only while
+`capture_performance_diagnostics` is set, as for phase evidence.
+
+Captured whole-model FPM evidence records the estimate of every rank with
+work, at its own queries and native latency under the pass's correction, as
+each rank recorded its own estimate under per-rank phase timing; a rank that
+computes prefill and decode is reported with decode.
+
+A native estimator keeps per-rank phase timing, each rank pricing its own
+phases and the pass ending with the slowest rank, for a `decode_speedup_ratio`
+other than 1, bounded decoder replay, v1 execution profiles, hybrid speculative
+FPM (operation-level draft tails, or `nextn > 0` without a measured SD-round
+profile), a measured SD-round profile with attention DP above one, a scheduler
+whose speculative depth differs from the model's, an operation graph whose
+measured scopes cannot compose a mix step when a rank computes prefill and
+decode, and totals beyond the query's 32-bit counters. Lookup coverage
+collection counts every pass, so replay does not reuse a priced iteration while
+it is enabled.
+
+Regression and learned estimators (`fpm_regression`, and `fpm_learned` with
+any adaptation) have no native engine. Replay prices every pass of their role
+with the iteration query and never asks them for a separate phase, so totals
+beyond the 32-bit counters are an error. Each rank's metrics follow the
+`ForwardPassMetrics` telemetry such models are fitted to, which Dynamo's vLLM
+worker reports: prefill passes its scheduled totals, and decode KV is the
+requests' past KV, the sum of their computed tokens excluding each request's
+current token. That is the whole-model FPM convention, the context lengths
+minus one token per decode request, but without the scheduler's KV clamp. When
+the model reads per-request detail (a regression request feature axis, or a
+learned `req_*`, `slot*` or length-variance feature), each rank also carries
+`extend_lengths` and `past_kv_lengths` (each prefill request's new tokens and
+prefix, each decode request's verification width and past KV) and the population
+variances of the prefill requests' full prompt lengths, as the telemetry
+reports them whatever chunk of a prompt the pass computes, and of the decode
+requests' past KV; those passes are not reused from the iteration cache. Each
+rank's metrics carry its position in the group as `dp_rank`.
+
+A vLLM regression fitted at `nextn > 0` gives a valid estimate only when its
+training timings cover complete MTP rounds, drafting and verification, as a
+measured speculative-round profile's do; `nextn` records the depth, not how
+the timings were obtained. Replay times such a role only at that depth:
+the snapshot pins `nextn`, and the engine's `aic_nextn` must equal it. Each
+decode request counts once in the totals with its past KV, as in the
+telemetry; only its `extend_lengths` entry carries the tokens it verifies: one
+plus the drafts the scheduler gave it, fewer than `nextn` when the token budget
+or the context limit cuts the round short. No `draft_length` scaling applies.
+
+Construction checks that the role's workload stores are ready: pure prefill
+for a prefill worker, pure decode for a decode worker, and pure prefill and
+pure decode for an aggregated worker. An aggregated vLLM or TensorRT-LLM worker
+also needs locally mixed, since its scheduler computes chunked prefill beside
+decode in one rank pass; an SGLang rank runs a prefill batch alone (mixed chunk
+is not modeled), so it does not. Every aggregated worker whose engine runs
+attention DP above one also needs cross-rank aggregated. A regression store is
+ready with a usable fit and a learned store when the forest has it. It rejects
+a rank hosting the vision encoder, a speculation scheme, `nextn > 0` for a
+learned model or a non-vLLM regression (SGLang's telemetry reports an MTP
+decode request's extend as 1), bounded decoder replay, and an automatic selection that
+would fall back to an untrained regression. Replay also rejects such a role
+whose engine sets a `decode_speedup_ratio` other than 1: replay then prices
+each rank's phases, which these estimators never do. A pass on which no rank
+computes model work takes no time without a query, as for every estimator; so
+does an SGLang decode step whose page reservation failed, which a native
+estimator is still asked to price at no charge. These estimators are
+latency-only: they record no operation evidence, so replay reports
+`power_w: null` as for other latency-only timing.
+
+Without explicit KV capacity, a regression or learned role takes
+`deployment_limits.max_kv_tokens` in whole scheduler blocks. Without a
+recorded capacity the AIC memory estimate needs the complete identity, so an
+identity with unknown facts must then set `num_gpu_blocks`. A `tp` or
+`attention_dp` recorded as `"unknown"` takes the engine's, and a `pp` recorded
+so takes the engine's single pipeline stage, including for `kv_cache.kvcr`.
+Replay reads no other `deployment_limits` entry.
+
 ## Unified CLI timing fields
 
 The `engine` block of `predict` and `recommend` YAML is documented in
@@ -323,18 +900,153 @@ concrete-only.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
+| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned`. Regression and learned roles are priced per iteration (see [engine replay timing](#engine-replay-timing)). |
+| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same five modes; omission inherits the global selection. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
-| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and ordinary prefill/decode companions of AFD roles. |
+| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
 
-The canonical `estimation_mode`, `fallback_policy`, `estimator_config`, and
+AFD replay prices every decode pass at its actual batch, context length and
+MTP verification width. The former `estimator_config.afd.frozen_decode_identity`
+control and saved pricing identity have been removed. Configurations and saved
+ReplaySpecs containing them are rejected for every value, including `false` and
+`null`; regenerate them with the current compiler. Static forward queries remain
+available for configuration-sized estimates.
+
+The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
+The generated configuration schemas advertise the five modes above; a learned
+source is read when the canonical model is constructed, not during configuration
+validation.
 A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.
 The mode does not fall back to op-level on a missing measured cell.
+
+### Recommending with a calibrated snapshot
+
+A `recommend` role can be timed by a model calibrated online, such as a
+Dynamo planner's, by naming only its [state snapshot](#state-snapshots). Native
+`op_level` and `fpm_interpolation` snapshots follow the rules below;
+[regression and learned snapshots](#regression-and-learned-snapshots) add
+their own:
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode:
+      timing:
+        estimator_config:
+          state_snapshot:
+            path: /mnt/planner/decode-snapshot  # sha256 optional
+```
+
+A snapshot restores exactly one engine identity, so the role is pinned to it.
+Before the search starts, the backend and backend version, the role's tensor,
+pipeline, attention-data and MoE parallelism, its KV block size, the
+engine-wide quantization and model controls and the MTP depth (`nextn`) are
+taken from the snapshot; omit them, or give values that include the saved
+ones. A conflicting explicit value fails configuration validation and names
+the snapshot's value; an explicit default such as `enable_eplb: false` or
+`moe_backend: default` conflicts with a snapshot saved with EPLB or another
+MoE backend. Replicas, scheduler limits (`max_batched_tokens`,
+`max_sequences`), KV memory, prefix caching and the other roles are still
+searched. Scheduler limits are not capped at the snapshot's correction grid:
+outside the observed region a fixed correction applies factor 1.0 and a
+dynamic or hybrid correction a constant recent ratio. The engine-wide values
+also apply to roles without a snapshot, and two snapshot roles must agree on
+them. A snapshot with `nextn > 0` needs `engine.nextn` set to the saved depth
+and `engine.nextn_accepted`, which a snapshot does not record.
+
+The role takes every estimator control from the snapshot, so `timing` may
+name only the snapshot, plus `estimation_mode` equal to the saved mode,
+`fallback_policy: deny` and, for a snapshot saved without `include_perf_db`,
+`systems_paths` naming one root that holds the referenced data. A packed
+snapshot also serves as the role's systems root for enumeration and capacity.
+Each candidate restores the snapshot through `best_available`, which compares
+its complete engine identity with the saved one and rejects any difference;
+the sweeper restores each role's snapshot once per run, and replay once per
+candidate. The recommended deployment's prediction YAML keeps the restored
+configuration, so `predict` replays the same calibrated model. For a role whose
+timing names a snapshot, `predict` takes `decoder_replay`,
+`enable_shared_layer`, `strict_provenance` and `fpm_fmha_quant_mode` from the
+snapshot unless the engine sets them, and reads packed data from the snapshot
+wherever `systems_paths` points.
+
+Configuration validation rejects snapshots replay cannot use: a `from_learned`
+model, which records no identity; a native snapshot without an enabled, ready
+correction store for the iterations replay prices for the role (prefill, decode,
+or any of prefill, decode and mixed for an aggregated worker); a snapshot
+without `kv_block_size`; one saved for another worker role, model or hardware;
+and snapshots with an FPM profile, speculation, pipeline parallelism (engine
+replay runs only `pipeline: 1`) or context parallelism.
+`engine.estimator_config.state_snapshot` is rejected: a snapshot belongs to one
+role.
+
+#### Regression and learned snapshots
+
+A Dynamo planner without an `ais_perf_model` role configuration saves an
+`fpm_regression` snapshot, and learned (`fpm_learned`) snapshots work the same
+way. Replay prices every pass of such a role with the saved model (see
+[engine replay timing](#engine-replay-timing)), so the snapshot needs a ready
+workload store for each kind of iteration the role computes: pure prefill for a
+prefill worker, pure decode for a decode worker, and pure prefill and pure
+decode for an aggregated worker, plus locally mixed for an aggregated vLLM or
+TensorRT-LLM worker and cross-rank aggregated when the role runs attention DP
+above one. Its identity facts may be
+[`"unknown"`](#engine-identity-controls); the planner should record what it
+does not know that way rather than defaults such as `system: unprofiled` or
+`tp: 1`:
+
+```yaml
+# Saved identity (excerpt)
+estimation_mode: fpm_regression
+system: unknown
+backend_version: unknown
+tp: unknown
+pp: unknown
+attention_dp: unknown
+kv_block_size: 16
+deployment_limits:
+  num_gpus: 1
+  max_num_batched_tokens: 8192
+  max_num_seqs: 256
+  max_kv_tokens: 16384
+  context_length: unknown
+```
+
+Known identity facts are pinned exactly as for a native snapshot, and a
+conflicting value names the saved one. Facts the snapshot does not know are
+handled as follows:
+
+| Saved identity | Recommendation |
+| --- | --- |
+| `system: unknown` | The role runs on `engine.hardware` (or its own `hardware`) without a conflict. |
+| `backend_version`, a quantization mode or `attention_backend` `unknown` | Not pinned engine-wide; the caller's value applies to the other roles and the role's estimator identity stays `"unknown"`. |
+| `tp`, `pp`, `attention_dp`, `moe_tp_size` or `moe_ep_size` `unknown` | The role needs one explicit value for each unknown width, such as `parallelism: {preset: false, tensor: 1, pipeline: 1, attention_data: 1}`; known widths are still pinned. `tp * pp * attention_dp` must equal `deployment_limits.num_gpus` when known. |
+| `deployment_limits.max_kv_tokens` | Required. The role's KV capacity is fixed to that many tokens in whole `kv_block_size` blocks and KV memory is not searched; a different fixed capacity or a `memory_fraction` search is a conflict. |
+| `deployment_limits.max_num_batched_tokens`, `max_num_seqs` | Required. The role's `max_batched_tokens` and `max_sequences` domains keep only values at most the recorded limit; an empty domain is an error. |
+| `nextn > 0` | For a vLLM regression, pinned as for a native snapshot: `engine.nextn` takes the saved depth, and `engine.nextn_accepted` is required. Rejected for other backends. |
+
+A snapshot whose `backend_version` is unset (`null`) is rejected: save the
+deployed version or `"unknown"`. `deployment_limits.num_gpus` and
+`context_length` may stay unknown, and `context_length` is not read. A native
+snapshot keeps the rules above this section and does not apply its
+`deployment_limits`. The exported prediction YAML names the snapshot with the
+role's explicit shape and fixed KV capacity, but no systems root, since these
+models read no performance data, and no quantization mode the snapshot records
+as unknown. `predict` spells the unknown facts as the snapshot does, so it
+replays the same model. A `backend_version` alias such as `current` resolves
+from the roles that know their version, or on the role's hardware when none
+does. Candidate provenance reports the hardware the role ran on when its
+identity's `system` is unknown.
 
 ## Flat engine precision and execution controls
 
@@ -342,15 +1054,30 @@ These additional public YAML fields are concrete controls:
 
 | Field | Meaning |
 | --- | --- |
-| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. AFD resolves GEMM/MoE execution independently against each pool hardware while preserving requested overrides. |
 | `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
-| `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
+| `engine.attention_backend` | Attention kernel selector, including AFD per-pool construction; subject to canonical model/backend validation. |
+| `engine.moe_kernel_source` | Exact collected fused-MoE compute source, including AFD per-pool construction; unsupported with a large-EP MoE graph. |
+| `engine.moe_backend` | Runtime graph/backend selector, subject to canonical validation; nondefault overrides remain unsupported for AFD. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |
+| `engine.enable_shared_layer` | Optional shared-data reuse override; explicit `false` disables reuse. Preserved by both AFD pools and their memory preflight. |
+| `engine.strict_provenance` | Fail-closed performance-data provenance validation; defaults to `false` in the canonical model. Preserved by both AFD pools and memory preflight. |
 
-These controls require default timing on language roles. AFD and encoder-pool
-configurations of either mode reject the unsupported controls. Use `--stack engine`
+For AFD, the original GEMM/MoE precision request is preserved in saved
+configuration. Each pool applies the supported hardware execution mapping:
+`nvfp4` uses weight-only `nvfp4_wo` with BF16 compute below Blackwell and native
+FP4 compute on Blackwell. An explicit `nvfp4_wo` remains weight-only. Unknown or
+unsupported hardware execution combinations fail construction; missing measured
+data follows the existing data policy without silently changing precision.
+Timing and memory/KV sizing share this resolution. Pool provenance reports both
+requested overrides and the execution modes present in the compiled graph.
+
+These controls require default timing on ordinary language roles. AFD supports
+explicit precision, kernel selectors and MTP; EPLB, redundant slots and nondefault
+`moe_backend` remain unsupported in both public YAML and SDK searches. Encoder-pool
+configurations reject unsupported controls. Use `--stack engine`
 and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)
@@ -364,7 +1091,7 @@ FPM also checks the preserved GEMM/MoE identity before selecting a timing cell,
 including profiles without an original op-level graph.
 Missing hardware metadata still follows the system-spec/data diagnostics.
 Serving runtimes may execute FP8 checkpoints through weight-only kernels such as
-Marlin on these GPUs; AISimulate does not model that path.
+Marlin on these GPUs; AISim does not model that path.
 
 ### KV precision and token capacity
 
@@ -381,12 +1108,13 @@ recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 | KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
 | Other supported configurations | BF16 |
 
-These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+These are AISim policies, not serving-engine defaults. `torch_dtype: bfloat16`
 does not prevent FP8 KV inference. For regular language roles using default timing,
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;
 this does not make an `int8` checkpoint KV declaration valid.
-Fixed/polynomial timing, EPD, and AFD currently reject this engine override.
+Fixed/polynomial timing and EPD currently reject this engine override. AFD passes
+explicit KV precision through canonical per-pool construction.
 
 Ordinary `predict` output shows each known role's effective KV dtype and source.
 JSON stdout and `prediction.json` summaries expose `kv_cache_precision.<role>`
@@ -398,6 +1126,16 @@ at compile time and do not report the resolved precision through this path.
 
 FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
 FP8 KV holds twice as many tokens. This does not imply twice the throughput.
+
+AFD preserves supported controls, including explicit `attention_backend` and
+`moe_kernel_source`, through prediction, recommendation, saved replay specifications,
+canonical pool construction and memory preflight. Attention uses A; routed MoE
+uses F. The A pool retains `moe_kernel_source` in its canonical configuration but
+does not apply it to attention, shared, or dense operations. The F pool applies
+it to routed MoE operations. Omission preserves pool defaults;
+explicit selectors retain the canonical eligibility, data-source and SOL rules
+above without changing communication. EPLB, redundant slots and nondefault
+`moe_backend` overrides remain unsupported for AFD.
 
 ## Migrating saved configuration
 

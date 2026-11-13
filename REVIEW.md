@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate review contract
+# AISim review contract
 
 Review for behavior and evidence, not just whether the diff looks reasonable.
 Start at the changed input, follow the real consumer to the externally visible
@@ -44,7 +44,10 @@ CODEOWNERS integrity, lint, syntax compilation, whitespace, and Rust formatting.
 Full CI contains the expensive multi-architecture dependency, Rust, Python,
 public-API, feature-mode, engine-golden, platform-wheel, collector-data,
 prediction-regression, build, and release-artifact tests. The FPE support
-matrix remains a scheduled/manual product-support audit rather than a PR gate.
+matrix remains a scheduled/manual product-support audit. Full CI's support-matrix
+shard also exercises the required nightly FPE sentinels against its prebuilt wheel,
+including all four phases and the release qualifier, to catch stale baselines and
+native probe regressions before merge.
 `Full CI Success` is required for every admitted PR, but trusted
 `pull-request/*` copies select only the components affected by the pull
 request's complete changed-file set. Renames classify both the old and new
@@ -131,12 +134,12 @@ has no assignment.
 - Binary parquet changes require a machine-readable summary of keys, shapes,
   units, row counts, coverage, and anomalies plus proof that a real consumer
   reaches the new data. A clean binary diff is not evidence.
-- AISimulate is standalone. Dynamo is a downstream compatibility target, not a
-  required runtime dependency. The release surface remains one `aisimulate`
-  wheel and one `aisimulate-core` crate unless the artifact contract is changed
+- AISim is standalone. Dynamo is a downstream compatibility target, not a
+  required runtime dependency. The release surface remains one `aisim`
+  wheel and one `aisim-core` crate unless the artifact contract is changed
   deliberately.
 - Only workflows under the repository-root `.github/workflows/` run for this
-  repository. Imported workflows below `python/aisimulate/` are provenance, not
+  repository. Imported workflows below `python/aisim/` are provenance, not
   hosted-CI evidence.
 
 ## High-value review paths

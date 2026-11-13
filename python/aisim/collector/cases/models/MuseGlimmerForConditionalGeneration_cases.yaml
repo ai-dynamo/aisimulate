@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: MuseGlimmerForConditionalGeneration
+model_path: meta-models/Muse-Glimmer-30B
+model_paths:
+  - meta-models/Muse-Glimmer-30B
+include_base: true
+base_ops:
+  - gemm
+framework_specific_base_ops:
+  sglang:
+    - attention_context
+    - attention_generation
+  trtllm:
+    - attention_context
+    - attention_generation
+  vllm:
+    - attention_context
+    - attention_generation
+description: >
+  Muse Glimmer 30B dense hybrid SWA/global attention collection plan:
+  uniform GQA 32/2/128, sliding window 2048 (window 0 collected alongside
+  as the full-attention anchor, mirroring the GPT-OSS pattern).
+
+model_case_values:
+  attention:
+    - id: muse_glimmer_global_attention
+      model_path: meta-models/Muse-Glimmer-30B
+      num_attention_heads: 32
+      num_key_value_heads: 2
+      head_dim: 128
+      window_size: 0
+      tensor_parallel_sizes: [1, 2, 4, 8]
+    - id: muse_glimmer_swa_attention
+      model_path: meta-models/Muse-Glimmer-30B
+      num_attention_heads: 32
+      num_key_value_heads: 2
+      head_dim: 128
+      window_size: 2048
+      # SGLang runs the 2048-token window as runtime window 2047.
+      sglang_runtime_window_size: 2047
+      tensor_parallel_sizes: [1, 2, 4, 8]
