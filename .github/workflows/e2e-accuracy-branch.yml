@@ -26,7 +26,7 @@ permissions:
 jobs:
   wheel:
     name: Prepare exact accuracy wheel
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 120
     permissions:
       contents: read
@@ -112,7 +112,7 @@ jobs:
   campaign:
     name: Qualify E2E accuracy (${{ inputs.artifact_key }})
     needs: wheel
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 360
     container:
       # PostgreSQL 18 client reads the upstream custom dump without a server.
