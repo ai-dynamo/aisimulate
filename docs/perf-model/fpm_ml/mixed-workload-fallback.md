@@ -348,4 +348,4 @@ benchmark evidence and the PR summary, rather than being product guarantees.
 | Standalone paired-error checker | `crates/core/src/perfmodel/fpm/quality_gate.rs` |
 | Mixed selector integration and existing selection | `crates/core/src/perfmodel/fpm/{combined,selector}.rs` |
 | Atomic mixed forest append and online continuation | `crates/core/src/perfmodel/fpm/learned_online/checkpoint.rs` |
-| Original-A exporter and Python API | `python/aisimulate/src/aisimulate_core/sdk/{fpm_learned,rust_engine_step}.py` |
+| Original-A exporter and Python API | `python/aisim/src/aisim_core/sdk/{fpm_learned,rust_engine_step}.py` |

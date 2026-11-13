@@ -58,7 +58,7 @@ def main():
     if args.output.exists() and any(args.output.iterdir()):
         raise ValueError("output must be empty")
     # Fail the campaign for a broken installation, rather than publishing all-error rows.
-    if not hasattr(importlib.import_module("aisimulate_core.sdk"), "RustForwardPassPerfModel"):
+    if not hasattr(importlib.import_module("aisim_core.sdk"), "RustForwardPassPerfModel"):
         raise RuntimeError("AISim native forward-pass SDK is unavailable")
     distribution = installed_distribution()
     direct = json.loads(distribution.read_text("direct_url.json") or "{}")

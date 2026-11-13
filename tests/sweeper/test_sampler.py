@@ -8,18 +8,18 @@ import uuid
 
 import pytest
 
-from aisimulate.sweeper.parallel_enum import (
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.parallel_projection import (
+from aisim.sweeper.parallel_projection import (
     AGG_ATTENTION_MODE,
     AGG_FFN_MODE,
     AGG_GPUS_PER_ENGINE,
     USED_GPU_RATIO,
 )
-from aisimulate.sweeper.sampler import (
+from aisim.sweeper.sampler import (
     InvalidSuggestionError,
     SeededBayesianBranchSampler,
     Suggestion,
@@ -28,7 +28,7 @@ from aisimulate.sweeper.sampler import (
     _vizier_algorithm,
     make_branch_sampler,
 )
-from aisimulate.sweeper.search_space import BranchSpace, ConditionalDimensionSpace
+from aisim.sweeper.search_space import BranchSpace, ConditionalDimensionSpace
 
 pytestmark = [
     pytest.mark.timeout(300),
@@ -478,7 +478,7 @@ def test_pareto_study_sweeps_kv_load_and_returns_front(monkeypatch):
 
 
 def test_random_covers_topologies_and_exhausts_complete_configurations():
-    from aisimulate.sweeper.sampler import RandomBranchSampler
+    from aisim.sweeper.sampler import RandomBranchSampler
 
     branch = _branch()
     sampler = RandomBranchSampler(branch, seed=11)
@@ -494,7 +494,7 @@ def test_random_covers_topologies_and_exhausts_complete_configurations():
 def test_random_large_log_domain_is_lazy_and_honors_gpu_budget():
     from dataclasses import replace
 
-    from aisimulate.sweeper.sampler import RandomBranchSampler
+    from aisim.sweeper.sampler import RandomBranchSampler
 
     branch = replace(
         _branch(),
@@ -532,7 +532,7 @@ def test_conditional_random_skips_exhausted_arms():
 def test_continuous_random_batch_services_pending_retries_fifo():
     from dataclasses import replace
 
-    from aisimulate.sweeper.sampler import RandomBranchSampler
+    from aisim.sweeper.sampler import RandomBranchSampler
 
     sampler = RandomBranchSampler(replace(_branch(), float_ranges={"kv_load_ratio": (0.1, 0.9)}), seed=7)
     failed = sampler.suggest(2)
@@ -554,7 +554,7 @@ def test_continuous_random_batch_services_pending_retries_fifo():
 def test_single_slot_random_asks_allow_retries_and_new_configurations():
     from dataclasses import replace
 
-    from aisimulate.sweeper.sampler import RandomBranchSampler
+    from aisim.sweeper.sampler import RandomBranchSampler
 
     sampler = RandomBranchSampler(replace(_branch(), float_ranges={"kv_load_ratio": (0.1, 0.9)}), seed=7)
     failed = sampler.suggest(1)[0]

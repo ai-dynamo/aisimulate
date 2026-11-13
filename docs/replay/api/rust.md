@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Rust Replay API
 
-`aisimulate_core::replay` exposes native deterministic token replay. The native
+`aisim_core::replay` exposes native deterministic token replay. The native
 `ReplaySpec` describes topology, engine/provider descriptors, requests and
 report controls; it differs from Python Sweeper's `ReplaySpec`. The crate root
 also re-exports common replay types.
