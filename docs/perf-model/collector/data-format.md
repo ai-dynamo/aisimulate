@@ -29,7 +29,7 @@ outcomes, not reasons to remove intended coverage before collection.
 ## Table layout and runtime pins
 
 ```text
-python/aisimulate/src/aisimulate_core/systems/data/
+python/aisim/src/aisim_core/systems/data/
   <system>/<family>/<backend>/<version>/
     <table>_perf.parquet
     collection_meta.yaml
@@ -87,6 +87,18 @@ event uses schema 1. Schema 2 retains `collections` histories for tables assembl
 from several events; each event needs its own attestation, with optional explicit
 runtime override and source-campaign subset information.
 
+For a schema-2 collection event assembled from a measured campaign:
+
+| Field | Meaning |
+|---|---|
+| `rows` | Rows from this event retained in the shipped table. |
+| `source_campaign_rows` | Optional original campaign row count; must be at least `rows`. |
+| `source_campaign_status` | Optional original campaign status, `complete` or `partial`. |
+
+Retaining a subset does not rewrite the original collector ref or plan hash.
+Keep the original measurement artifact and document the selection or replacement
+alongside the derived table's evidence.
+
 The case-plan hash attests the attempted set, not the universe of possible shapes.
 A completed filtered campaign is distinguishable from a full plan. Module failure
 or no produced rows marks partial collection; classified individual failures can
@@ -94,9 +106,15 @@ remain valid observed outcomes. Never infer complete model coverage from a
 `complete` table status. A table without corresponding provenance is a coverage
 failure. Legacy provenance remains explicitly legacy, not newly measured.
 
-Changed-operation manifests identify which family/system evidence a collector or
-runtime change requires. CI checks that evidence separately from per-directory
-execution status. See [CI](../../ci/README.md) for the repository gates.
+Context-attention timing scope follows retained row identity. TRT-LLM
+`1.3.0rc20` and `1.3.0rc29` rows labeled `torch_flow` include RoPE and both
+KV-cache writes; a collector measuring a different boundary must use a distinct
+kernel identity. Unknown identities retain legacy accounting. A prepared
+context slice cannot mix retained rows with incompatible timing boundaries.
+Ignored duplicate coordinates still follow first-wins source precedence.
+See [op-level timing](../methods/op-level.md#context-attention-measurement-boundaries).
+
+See [CI](../../ci/README.md) for the repository gates.
 
 ## Reuse and source priority
 
@@ -114,7 +132,20 @@ not relabel the donor's runtime as a new measurement. Some operation loaders
 have pinned overwrite semantics; preserve their source order and parity tests
 instead of assuming every raw loader uses the same merge algorithm.
 
+## Deviations
+
+When a table measures a different path than serving runs, for example an
+unfused kernel where serving fuses, the collector code that measures it says
+so in a comment, the deviation note. The note gives what differs and on which
+systems, the effect on predicted latency (over, under or unknown), the
+framework source or evidence behind it, and, when known, how the deviation
+could be retired. Data comments and docs point to that code instead of
+restating it. Cases a collection leaves out are not deviations: they are
+entries in `python/aisim/collector/skips.py`, with the reason as a
+comment. Moving a pin means re-checking the notes of the bumped families,
+keeping each that still holds and deleting the rest.
+
 The authoritative implementations are
-[`collector`](../../../python/aisimulate/collector/),
-[`perf_database.py`](../../../python/aisimulate/src/aisimulate_core/sdk/perf_database.py),
+[`collector`](../../../python/aisim/collector/),
+[`perf_database.py`](../../../python/aisim/src/aisim_core/sdk/perf_database.py),
 and the [native table loaders](../../../crates/core/src/perfmodel/perf_database/).

@@ -8,7 +8,11 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.release.package_identity import wheels as artifact_wheels
 
 
 def sha256(path: Path) -> str:
@@ -24,13 +28,13 @@ def record(directory: Path, side: str, revision: str, source: Path) -> None:
     actual = command("git", "-C", str(source), "rev-parse", "HEAD")
     if actual != revision:
         raise ValueError(f"build source is {actual}, expected {revision}")
-    wheels = list(directory.glob("aisimulate-*.whl"))
+    wheels = artifact_wheels(directory)
     if len(wheels) != 1:
-        raise ValueError("expected exactly one AISimulate wheel")
+        raise ValueError("expected exactly one AISim wheel")
     manifest = {
         "side": side,
         "source_sha": revision,
-        "model_data_tree": command("git", "-C", str(source), "rev-parse", "HEAD:python/aisimulate/src/aisimulate_core"),
+        "model_data_tree": command("git", "-C", str(source), "rev-parse", "HEAD:python/aisim/src/aisim_core"),
         "files": {p.name: sha256(p) for p in [wheels[0], directory / "requirements.txt"]},
         "build": {
             "container": os.environ["BUILD_CONTAINER"],
@@ -52,11 +56,11 @@ def verify(directory: Path, side: str, revision: str) -> dict:
     manifest = json.loads((directory / "provenance.json").read_text())
     if manifest["side"] != side or manifest["source_sha"] != revision:
         raise ValueError(f"{side}: artifact revision or role mismatch")
-    wheels = list(directory.glob("aisimulate-*.whl"))
+    wheels = artifact_wheels(directory)
     runtime = list(directory.glob("ai_dynamo_runtime-*.whl"))
     adapter = list(directory.glob("ai_dynamo-*.whl"))
     if len(wheels) != 1 or len(runtime) != 1 or len(adapter) != 1:
-        raise ValueError(f"{side}: expected AISimulate, Dynamo runtime and adapter wheels")
+        raise ValueError(f"{side}: expected AISim, Dynamo runtime and adapter wheels")
     expected_wheels = {wheels[0].name, runtime[0].name, adapter[0].name}
     if {path.name for path in directory.glob("*.whl")} != expected_wheels:
         raise ValueError(f"{side}: unexpected wheel in artifact")
@@ -69,7 +73,7 @@ def verify(directory: Path, side: str, revision: str) -> dict:
         "dynamo-Cargo.lock",
     }
     if set(manifest["files"]) != expected or manifest["dynamo"]["aisimulate_sha"] != revision:
-        raise ValueError(f"{side}: incomplete artifact or wrong embedded AISimulate revision")
+        raise ValueError(f"{side}: incomplete artifact or wrong embedded AISim revision")
     for name, checksum in manifest["files"].items():
         if sha256(directory / name) != checksum:
             raise ValueError(f"{side}: checksum mismatch for {name}")

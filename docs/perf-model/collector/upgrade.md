@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Upgrade a collector runtime
 
-Run the package-relative commands below from `python/aisimulate/`.
+Run the package-relative commands below from `python/aisim/`.
 
 Use this playbook to move one AIC collector to one exact framework release and
 validate it on one GPU platform. Keep framework upgrades separate: finish and
@@ -13,7 +13,7 @@ review SGLang, TensorRT-LLM, or vLLM independently instead of combining all
 three in one change.
 
 The tracked agent workflow is
-[`aic-auto-collect`](../../../python/aisimulate/.claude/skills/aic-auto-collect/SKILL.md). This
+[`aic-auto-collect`](../../../python/aisim/.claude/skills/aic-auto-collect/SKILL.md). This
 document is the project source of truth; the skill turns it into an executable
 workflow.
 
@@ -34,7 +34,7 @@ Record these decisions before changing code:
 `collector/framework_manifest.yaml` is the source of truth for the stock
 framework pin and image. Each collector module pins exactly the release the
 manifest resolves for its op (the "Version contract" in
-`python/aisimulate/.claude/rules/collector/layer_permissions.md`). Treat stock and WideEP/special images
+`python/aisim/.claude/rules/collector/layer_permissions.md`). Treat stock and WideEP/special images
 as separate runtimes with separate evidence.
 
 Do not silently broaden the work to another framework, XPU, WideEP, host
@@ -112,12 +112,16 @@ python3 collector/collect.py \
 ```
 
 It does not mean the raw backend-registry Cartesian run with no model-case
-flags. Preserve the pruning invariants documented in
-[`collector-v2-population-design.md`](data-format.md).
+flags. Preserve the identity and deduplication invariants in
+[the data format](data-format.md).
+
+For GEMM, the `plans` block of that output gives the retained count per dtype
+and each region left out with its reason.
 
 For each operation, record raw and retained task counts, physical-key counts,
-model/artifact coverage, dtype counts, and SM exception counts. Quant-sensitive
-artifacts remain separate when the checkpoint changes the executed kernel.
+model/artifact coverage, dtype counts, and the regions `--plan-only` lists under
+`removed` and `removed_runs`. Quant-sensitive artifacts remain separate when the
+checkpoint changes the executed kernel.
 Verify that every required model emits at least one executable case; a
 successful empty plan is a failure.
 
@@ -143,6 +147,12 @@ framework would repack its weights into Marlin merely because the timed module
 itself has a BF16 key.
 
 ## 5. Progress from smoke to full collection
+
+Collect only the families whose kernels changed under the new pin, and declare
+reuse (`reuse.yaml` with `approved_by`) for the rest. Re-check every deviation note (a comment at the
+collector code that deviates) that covers a bumped family, by a source check or
+a targeted run of its cases: keep it when it still holds, delete it when it
+does not.
 
 For each operation, use deterministic smoke coverage rather than relying only
 on a few random cases. Cover representative and boundary combinations of:
@@ -172,6 +182,16 @@ log. Use one output/checkpoint namespace per framework, version, platform, and
 operation. Resume only when the current plan still contains the completed task
 IDs. If enumeration changes, prove which completed IDs remain valid and keep a
 hash-verified checkpoint backup before migration.
+
+Each campaign YAML shard may select its checkpoint and optional long-context coverage:
+
+| Shard field | Default | Behavior |
+|---|---|---|
+| `model_path` | omitted | Pass `--model-path` before case planning and deduplication; omitted selects the full model plan. |
+| `include_long_context` | `false` | Pass `--include-long-context` for that shard; requires a YAML boolean. |
+
+Use these declared fields instead of an `AISIM_MODEL_FILTER` environment
+variable. The exact collector arguments are retained in `campaign.jsonl`.
 
 ## 6. Classify failures before changing code
 
@@ -236,7 +256,7 @@ For data delivery:
 2. finalize staging files to parquet only after checkpoint failures are
    resolved or explicitly accepted by the delivery contract;
 3. place data under
-   `src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`,
+   `src/aisim_core/systems/data/<system>/<family>/<backend>/<version>/`,
    where `<family>` comes from `collector/op_backend_catalog.yaml`;
 4. regenerate kernel-source metadata when sources change;
 5. run parquet diff/review tools and loader tests;

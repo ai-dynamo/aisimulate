@@ -3,21 +3,21 @@
 
 # Local execution resources
 
-`aisimulate predict`, `aisimulate recommend`, and the public
+`aisim predict`, `aisim recommend`, and the public
 `run_recommendation` Python API check host resources before preparing a run.
 
-**No manual resource configuration is required.** AISimulate automatically
+**No manual resource configuration is required.** AISim automatically
 detects the local machine's available RAM and CPU capacity, reserves host
 headroom, and limits parallel simulations to fit the estimated resource budget.
 You can omit the entire `execution.resources` section. Set explicit limits only
 when you want to override the automatic budget.
 
 Normal package installation includes the required `psutil` and `ijson`
-dependencies. Downstream images that install an AISimulate wheel with
+dependencies. Downstream images that install an AISim wheel with
 `--no-deps` must explicitly install both dependencies before adopting a release
 containing these controls.
 
-These controls describe the machine running AISimulate. Simulated GPU counts,
+These controls describe the machine running AISim. Simulated GPU counts,
 KV-cache memory fractions, traffic concurrency, and request counts retain their
 original meaning.
 
@@ -43,7 +43,9 @@ reserve. The default memory budget is max(0, min(0.9 A, A - 1 GB)); the separate
 and that fraction of effective physical RAM.
 
 Linux cgroup v1/v2 memory limits, current usage, ancestor limits, affinity and CPU
-quotas constrain the host snapshot. Swap does not increase the budget. Automatic
+quotas constrain the host snapshot. Cgroup usage excludes inactive file cache
+(`inactive_file` in `memory.stat`, `total_inactive_file` on v1), which the kernel
+reclaims on demand. Swap does not increase the budget. Automatic
 CPU selection leaves one CPU free when more than one whole CPU is available.
 CPU capacity caps the number of parallel simulations; it does not estimate CPU
 speed or simulation duration. An explicit positive `memory_limit_gb` or integer
@@ -58,7 +60,7 @@ preserves the suggestion batch size, trial budget and requested traffic.
 Admission checks each concrete candidate and the combined memory estimate of
 its batch against fresh host headroom before starting workers. A large load in
 the search domain does not block smaller candidates. If a batch cannot fit,
-AISimulate reduces its parallelism; a candidate that cannot fit alone is recorded
+AISim reduces its parallelism; a candidate that cannot fit alone is recorded
 as `resource_limited`, with no simulated metrics or score. It consumes a trial
 and completes it as an optimizer rejection without a fabricated measurement.
 Completed candidates remain available. Resource-limited candidates are counted
@@ -112,7 +114,7 @@ configurable above; the optimizer's candidate timeout remains independent.
 ## Runner estimate contract and limitations
 
 An optional factory method `estimate_host_resources(workload, *, concurrency)`
-returns `aisimulate.resources.ResourceEstimate` with `api_version=1`:
+returns `aisim.resources.ResourceEstimate` with `api_version=1`:
 
 - `allocation_model`: versioned implementation name;
 - `request_count`: concrete count, or null when unresolved;
@@ -131,7 +133,7 @@ For synthetic workloads, the built-in native-engine planning model accounts for
 eager session/hash metadata, planned output tokens and active prompts. The Dynamo
 compatibility model accounts for the older eager u32 input vectors and additional
 runtime and output storage. A verified newer adapter can supply its own estimate;
-AISimulate does not import Dynamo or assume that installing a core lazy-source
+AISim does not import Dynamo or assume that installing a core lazy-source
 API automatically changes the adapter's allocation behavior. Ordinary finite
 Agentic Mooncake, Weka, and agentic-Dynamo replay use the shared workload driver
 with deferred prompts on both stacks; they do not use the synthetic eager-prompt
@@ -191,7 +193,7 @@ and warmup. Continuous profiles use only its lower bound. These replay paths
 load one compact trace: hashes are retained as IDs and prompts are expanded only
 for active requests. `agentic_lanes` controls active plays within that trace; it
 does not create a copy of the trace per lane. A snapshot reuses the loaded graph
-and adds one play's request records per lane. AISimulate does not model the
+and adds one play's request records per lane. AISim does not model the
 remaining native allocations statically, because they change with the replay
 implementation. Instead it records an unavoidable lower bound before execution
 and measures the peak from completed replays.
@@ -258,7 +260,7 @@ peak and runs alone under the supervisor.
 
 ### Allocation-model provenance
 
-The byte terms in [resources.py](../../python/aisimulate/src/aisimulate/resources.py)
+The byte terms in [resources.py](../../python/aisim/src/aisim/resources.py)
 are versioned admission policies. They do not change simulated operation latency,
 energy, or GPU capacity. Their provenance and qualification are:
 

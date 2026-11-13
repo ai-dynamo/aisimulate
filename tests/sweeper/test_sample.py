@@ -5,13 +5,13 @@
 
 import pytest
 
-from aisimulate.sweeper.config import SearchSpace
-from aisimulate.sweeper.parallel_enum import (
+from aisim.sweeper.config import SearchSpace
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.sample import unroll_sample
+from aisim.sweeper.sample import unroll_sample
 
 
 def _space(**overrides) -> SearchSpace:

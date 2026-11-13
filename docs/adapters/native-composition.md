@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Native Replay composition
 
 `ReplayComposition` composes placement and optional scaling into
-`Replayer<C>` without importing a serving framework into AISimulate core.
+`Replayer<C>` without importing a serving framework into AISim core.
 The built-in `RoundRobinComposition` has fixed workers. Dynamo constructs its
 own Router/Planner policies against the same neutral contracts.
 These are Rust crate interfaces, not a stable dynamically loaded binary ABI.
@@ -62,6 +62,18 @@ For custom Rust composition, use `RoundRobinComposition::default()` or set its
   `prefill_completed(request_id, now_ms)`, returning newly releasable placements.
   Terminal notifications discard all request state, including tentative state
   when cancellation precedes dispatch.
+- `prefill_started(request_id, reused_input_tokens, now_ms)` (default no-op)
+  reports the first admission of a request into a forward pass on the engine
+  that prefills it: the aggregated worker, or the prefill-pool worker in P/D
+  mode. A router can use it to track in-flight prefill work between dispatch
+  and `prefill_completed`. It fires at most once per request, like
+  `prefill_completed`, and not again on readmission after a preemption or
+  retraction. `now_ms` and `reused_input_tokens` match the request's
+  `first_admit_ms` and `first_admission_reused_input_tokens` in
+  `per_request`. It precedes `prefill_completed`; a request that ends first,
+  or an aggregated request whose first output ends it, gets
+  `request_terminal` without `prefill_completed`. Replay dispatches the
+  placements it returns like those from `prefill_completed`.
 - `dispatch_committed(request_id, now_ms)` confirms engine acceptance:
   aggregated/prefill submission after tokenization, or P/D decode destination
   reservation. `dispatch_aborted` discards tentative state on rejection or failed
@@ -141,9 +153,25 @@ Replay's responsibility during worker drain and removal.
 
 ## Observations and telemetry
 
+SGLang requests and stored KV events expose an optional `cache_salt`. Pass it
+from the request into `Request`/`ReplayRequest`, and preserve it when forwarding
+`StoredBlocks` or reconstructing event identities from token IDs. Hash-only
+consumers can retain the published salted block and sequence hashes unchanged;
+the absence of a separate salt field does not make those hashes unsalted.
+Use `ReplayRequestHashes::from_tokens_with_cache_salt` when computing routing
+identities from a salted prompt.
+
+Serialized requests and events default missing salts to `None`. Rust consumers
+upgrading the crate must also update exhaustive `Request` and `StoredBlocks`
+struct literals: use `cache_salt: None` for unsalted data, or the originating
+request's salt. The pinned Dynamo compatibility builder remains text-only and
+unsalted; it inserts `None` rather than exposing salted routing through the
+older adapter. Supporting salted requests in a downstream adapter requires
+carrying the salt through its request and event conversions together.
+
 Compositions consume neutral engine observations only when needed. Round-robin
 can skip KV event capture; Dynamo performs Router-specific conversion outside
-AISimulate core. Offline P/D decode routing is overlap-blind and does not require
+AISim core. Offline P/D decode routing is overlap-blind and does not require
 its own KV event stream. A requested deterministic selector uses
 `ReplayDeterminism::selector_seed`, not an independently chosen seed.
 

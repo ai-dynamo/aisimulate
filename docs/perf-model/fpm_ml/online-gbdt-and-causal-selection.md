@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 This document defines the online update equations and hyperparameter semantics
 for checkpoint-backed learned forward-pass models and the causal selector
 that combines online GBDT with PR 493 hybrid calibration. The original learned-model
-design and evaluation for [PR 280](https://github.com/ai-dynamo/aisimulate/pull/280)
+design and evaluation for [PR 280](https://github.com/ai-dynamo/aisim/pull/280)
 remain in [design.md](design.md).
 
 Construct the model through `RustForwardPassPerfModel.best_available(config)`
@@ -537,7 +537,7 @@ update either expert or the selector.
 The online updater is inspired by Lin, Chung, Lao and Zhao,
 [Online Gradient Boosting Decision Tree: In-Place Updates for Efficient Adding/Deleting Data](https://arxiv.org/abs/2502.01634v1).
 The Rust implementation and independent reference tests were written for
-AISimulate; no implementation code from the paper's repository was imported.
+AISim; no implementation code from the paper's repository was imported.
 
 The fixed seed bins, baseline and tree capacity, weighted historical/recent
 populations, scalar squared loss, transactional publication and periodic eager

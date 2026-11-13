@@ -25,16 +25,57 @@ adaptation and correction requirements are documented in
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
 Explicit invalid configuration is not converted into a fallback estimator.
 
+For learned-model cold start and native mixed fallback, see the
+[online GBDT tutorial](fpm-self-service/online-gbdt.md). The application owns
+initial fitting and observation admission. Native Replay consumes a prepared
+model; an application fallback wrapper does not run inside it. Complete portable
+state snapshots do not support `temporary_mixed_composition`; see the
+[persistence options](fpm-self-service/online-gbdt.md#6-save-resume-and-hand-the-model-to-replay).
+
 Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
-use the NemotronH text model. AISimulate reads the nested `llm_config` and
-accepts `linear_attention` and `full_attention` layer names. Inferred
-`W4A16_NVFP4` MoE precision selects the vLLM `nvfp4` execution lane.
-Explicit precision overrides retain their values. This recognition does not
-add vision modeling or measured timing coverage.
+use the NemotronH text model. AISim reads the nested `llm_config` and
+accepts `linear_attention` and `full_attention` layer names. The bundled
+`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` export stores routed
+and shared experts as NVFP4 with 4-bit activations. In its 88 decoder
+layers, the Mamba and attention projections are static per-tensor FP8, and
+so is the LM head. Its latent projections and router stay BF16, as do the
+attention projections of its one multi-token prediction (MTP) layer, and
+its KV cache is FP8. AISim infers `nvfp4` for the routed experts. It
+prices the Mamba, attention, shared-expert and latent projections as
+`fp8_static`, and the router and LM-head GEMMs in BF16. For the shared
+experts, the latent projections and the LM head, these lanes differ from
+the stored precision and are approximations. An inferred `W4A16_NVFP4` MoE
+label, which this export does not use, selects the vLLM `nvfp4` execution
+lane. Explicit precision overrides retain their values. AISim does
+not build the MTP layer as its own attention and MoE block. With `nextn`
+above zero, it scales every decode operation, the Mamba operations
+included, by `(nextn + L) / L` for `L` decoder layers. That factor is an
+approximation: it spreads the cost of the attention-plus-MoE MTP block
+evenly over the hybrid graph. Accepted-token progress is applied
+separately by the upper prediction layer, and the MTP weights and KV
+cache are not counted. This support adds no vision modeling and no
+measured timing data. The text path compiles, but the published matrix
+marks every row of this checkpoint `FAIL` with `ENCODER_UNSUPPORTED`,
+because the export declares a vision encoder that AISim does not
+model; the SDK tests cover the text path.
+
+The bundled `nvidia/Qwen3.5-397B-A17B-NVFP4-V2` export has the same text
+configuration as `nvidia/Qwen3.5-397B-A17B-NVFP4` and a different
+quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)
+`in_proj_qkv`, `in_proj_z` and `out_proj` projections, its full-attention
+projections and its shared-expert projections are static per-tensor FP8, and
+its KV cache is FP8. AISim prices those projections as `fp8_static`, the
+routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
+GEMMs in BF16, as the export stores them. Two lanes are approximations. The
+export keeps the GDN `in_proj_a` and `in_proj_b` projections in BF16, but
+AISim prices them with the other GDN projections as `fp8_static`. The
+export also keeps its multi-token prediction (MTP) layer in BF16. With
+`nextn` above zero, AISim scales the decode graph by `(nextn + L) / L`
+for `L` decoder layers, so it prices that layer with the decoder-layer lanes.
 
 ## Published FPE matrix
 
-The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+The [FPE Support Matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/)
 is a **strict-native op-level** probe of `EngineHandle.compile` and representative
 forward queries. It does not call `best_available`, enable regression fallback,
 or rescue missing data with HYBRID. It is not a matrix of all estimator paths.
@@ -50,7 +91,7 @@ and query failures remain distinct.
 
 GLM-5.3-Flash build-time rejections of unsupported parallelism, non-native
 checkpoint precision, or backends outside vLLM/SGLang are `SDK_UNREPRESENTABLE`.
-The backend rejection describes AISimulate's modeling coverage; it does not
+The backend rejection describes AISim's modeling coverage; it does not
 establish that the backend itself cannot run the model.
 These rows retain their diagnostics and phases,
 with no latency or `PASS` status. Only recognized build-time diagnostics
@@ -74,9 +115,9 @@ Pages publication belong to [CI accuracy](../ci/accuracy.md).
 ## Versions the CLI accepts
 
 The matrix probes every backend version that has bundled performance data.
-`aisimulate predict` and `aisimulate recommend` accept only the queryable
+`aisim predict` and `aisim recommend` accept only the queryable
 versions of each GPU and backend, defined in
-[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+[`query_versions.yaml`](../../python/aisim/src/aisim_core/systems/query_versions.yaml):
 `current` (the newest completed full collection), `previous` (the full
 collection it replaced, when configured) and `next` (the in-development
 version: the highest version newer than `current` with any measurements
@@ -97,7 +138,7 @@ have replacement coverage. Primary measurements still take precedence.
 
 ## Accuracy and replay
 
-The [accuracy dashboards](https://ai-dynamo.org/aisimulate/) publish separate
+The [accuracy dashboards](https://ai-dynamo.org/aisim/) publish separate
 FPM and end-to-end comparisons. Interpret each result with its measured runtime,
 workload, source revision, and timing boundary. Separate passing prefill and
 decode engine probes do not establish disaggregated rate matching or queueing.

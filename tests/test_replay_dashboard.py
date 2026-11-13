@@ -12,15 +12,15 @@ from uuid import UUID
 
 import pytest
 
-from aisimulate.output import write_prediction_report, write_telemetry
-from aisimulate.replay.dashboard import (
+from aisim.output import write_prediction_report, write_telemetry
+from aisim.replay.dashboard import (
     _script_json,
     build_replay_dashboard_data,
     render_replay_dashboard,
     write_replay_dashboard,
 )
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper import BackendDeploymentSpec, ReplayOutputRequirements, ReplaySpec
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper import BackendDeploymentSpec, ReplayOutputRequirements, ReplaySpec
 
 
 @pytest.fixture
@@ -302,12 +302,23 @@ def test_writer_is_standalone_safe_and_atomic(tmp_path, capture):
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_writer_embeds_utf8_assets_under_non_utf8_locale(tmp_path, capture, monkeypatch):
+    original = Path.read_text
+
+    def locale_read(path, encoding=None, errors=None):
+        return original(path, encoding=encoding or "ascii", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", locale_read)
+    path = write_replay_dashboard(tmp_path, {}, capture)
+    assert "aisimulate.replay.dashboard.v1" in path.read_text(encoding="utf-8")
+
+
 def test_writer_streams_requests_in_chunks(tmp_path, capture, monkeypatch):
     row = capture["requests"][0]
     capture["requests"] = [
         {**row, "uuid": f"request-{index}", "request_id": f"</script>\u2028{index}"} for index in range(5)
     ]
-    monkeypatch.setattr("aisimulate.replay.dashboard._REQUEST_CHUNK", 2)
+    monkeypatch.setattr("aisim.replay.dashboard._REQUEST_CHUNK", 2)
     path = write_replay_dashboard(tmp_path, {}, capture)
     document = path.read_text(encoding="utf-8")
     payload = document.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
@@ -331,7 +342,7 @@ def test_writer_honors_output_file_umask(tmp_path, capture, umask):
             "-c",
             "import json, sys\n"
             "from pathlib import Path\n"
-            "from aisimulate.replay.dashboard import write_replay_dashboard\n"
+            "from aisim.replay.dashboard import write_replay_dashboard\n"
             "write_replay_dashboard(Path(sys.argv[1]), {}, json.load(sys.stdin))\n",
             str(tmp_path),
         ],
@@ -364,7 +375,7 @@ def test_writer_leaves_existing_temporary_file_on_name_collision(tmp_path, captu
     identifier = UUID(int=0)
     temporary = tmp_path / f".report-{identifier.hex}.tmp"
     temporary.write_text("another writer", encoding="utf-8")
-    monkeypatch.setattr("aisimulate.replay.dashboard.uuid4", lambda: identifier)
+    monkeypatch.setattr("aisim.replay.dashboard.uuid4", lambda: identifier)
     with pytest.raises(FileExistsError):
         write_replay_dashboard(tmp_path, {}, capture)
     assert temporary.read_text(encoding="utf-8") == "another writer"
@@ -402,6 +413,8 @@ def test_native_source_fixture_all_phase_dashboard(backend, mode, warmup):
         "aic_attention_dp_size": 2,
         "block_size": 4,
         "num_gpu_blocks": 64,
+        # These toy pools cannot hold SGLang's default 512-token decode reserve.
+        **({"sglang": {"num_reserved_decode_tokens": 0}} if backend == "sglang" else {}),
         "enable_prefix_caching": True,
         "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
     }

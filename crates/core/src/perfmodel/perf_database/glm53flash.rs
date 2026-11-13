@@ -30,15 +30,21 @@
 //! interpolates utilization (`SOL / latency`) hierarchically over batch,
 //! prefix and work (`x`), holding the boundary utilization outside the
 //! measured range, and returns `SOL(query) / util`.
+//!
+//! The `geometry` string is the file format only. Loading validates it and
+//! indexes rows by its typed form (`GeometryKey`); queries build that key
+//! from the op's fields instead of serializing the op.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use rustc_hash::FxHashMap;
 use serde_json::Value;
 
 use super::SourceResolver;
+use crate::common::enums::{GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
 use crate::operators::glm53flash::Glm53AttentionOp;
 
@@ -47,10 +53,88 @@ pub const BASENAME: &str = "glm53_attention_module_perf.parquet";
 type Curve = BTreeMap<u32, f64>;
 type PrefixCurves = BTreeMap<u32, Curve>;
 type BatchCurves = BTreeMap<u32, PrefixCurves>;
+type Grids = FxHashMap<GeometryKey, BatchCurves>;
 
 pub struct Glm53AttentionTable {
     path: Option<PathBuf>,
-    grids: OnceLock<Result<BTreeMap<String, BatchCurves>, String>>,
+    grids: OnceLock<Result<Grids, String>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Backend {
+    Vllm,
+    Sglang,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CheckpointFormat {
+    Fp8,
+    Nvfp4,
+}
+
+/// Typed form of the canonical `geometry` column: every serialized body field
+/// except `name` and `measured`. Two ops have equal keys exactly when their
+/// canonical geometry strings are equal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GeometryKey {
+    is_context: bool,
+    backend: Backend,
+    checkpoint_format: CheckpointFormat,
+    hidden_size: u32,
+    tp_size: u32,
+    num_heads: u32,
+    head_dim: u32,
+    q_lora_rank: u32,
+    kv_lora_rank: u32,
+    value_head_dim: u32,
+    index_n_heads: u32,
+    index_head_dim: u32,
+    index_topk: u32,
+    index_pool: u32,
+    conv_kernel: u32,
+    /// Bits: finite values match exactly when their JSON spellings do; a
+    /// non-finite value (`null` in JSON) matches no row.
+    gate_lower_bound: u64,
+    projection_quant_mode: GemmQuantMode,
+    kv_cache_dtype: KvCacheQuantMode,
+}
+
+/// `None` for an op no validated row can describe: rows are `sparse_mla`
+/// modules of a vllm/sglang backend and an fp8/nvfp4 checkpoint.
+fn geometry_key(op: &Glm53AttentionOp) -> Option<GeometryKey> {
+    if op.layer_kind != "sparse_mla" {
+        return None;
+    }
+    let backend = match op.backend.as_str() {
+        "vllm" => Backend::Vllm,
+        "sglang" => Backend::Sglang,
+        _ => return None,
+    };
+    let checkpoint_format = match op.checkpoint_format.as_str() {
+        "fp8" => CheckpointFormat::Fp8,
+        "nvfp4" => CheckpointFormat::Nvfp4,
+        _ => return None,
+    };
+    Some(GeometryKey {
+        is_context: op.is_context,
+        backend,
+        checkpoint_format,
+        hidden_size: op.hidden_size,
+        tp_size: op.tp_size,
+        num_heads: op.num_heads,
+        head_dim: op.head_dim,
+        q_lora_rank: op.q_lora_rank,
+        kv_lora_rank: op.kv_lora_rank,
+        value_head_dim: op.value_head_dim,
+        index_n_heads: op.index_n_heads,
+        index_head_dim: op.index_head_dim,
+        index_topk: op.index_topk,
+        index_pool: op.index_pool,
+        conv_kernel: op.conv_kernel,
+        gate_lower_bound: op.gate_lower_bound.to_bits(),
+        projection_quant_mode: op.projection_quant_mode,
+        kv_cache_dtype: op.kv_cache_dtype,
+    })
 }
 
 fn invalid(message: impl Into<String>) -> AicError {
@@ -77,26 +161,23 @@ pub fn geometry(op: &Glm53AttentionOp) -> Result<String, AicError> {
     serde_json::to_string(&sorted).map_err(|e| invalid(e.to_string()))
 }
 
-fn validate_geometry(encoded: &str) -> Result<(), AicError> {
-    let value: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
-    let mut named = value.clone();
+fn validate_geometry(encoded: &str) -> Result<GeometryKey, AicError> {
+    let mut named: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
     named
         .as_object_mut()
         .ok_or_else(|| invalid("GLM attention geometry must be an object"))?
         .insert("name".into(), Value::String(String::new()));
     let op: Glm53AttentionOp = serde_json::from_value(named).map_err(|e| invalid(e.to_string()))?;
     op.validate()?;
-    if op.layer_kind != "sparse_mla" || !op.measured.is_empty() {
-        return Err(invalid(
-            "GLM attention table rows describe sparse_mla modules only",
-        ));
-    }
+    let key = geometry_key(&op)
+        .filter(|_| op.measured.is_empty())
+        .ok_or_else(|| invalid("GLM attention table rows describe sparse_mla modules only"))?;
     if geometry(&op)? != encoded {
         return Err(invalid(
             "GLM attention geometry has unknown or noncanonical fields",
         ));
     }
-    Ok(())
+    Ok(key)
 }
 
 impl Glm53AttentionTable {
@@ -147,21 +228,28 @@ impl Glm53AttentionTable {
     }
 
     /// Loaded and validated geometry grids; a missing file is empty.
-    fn grids(&self) -> Result<&BTreeMap<String, BatchCurves>, AicError> {
+    fn grids(&self) -> Result<&Grids, AicError> {
         self.grids
             .get_or_init(|| match &self.path {
                 Some(path) => load(path).map_err(|e| format!("{}: {e}", path.display())),
-                None => Ok(BTreeMap::new()),
+                None => Ok(Grids::default()),
             })
             .as_ref()
             .map_err(|e| invalid(e.clone()))
+    }
+
+    /// Rows for this op's exact geometry. Load or validation failures are
+    /// errors and take precedence over a coverage gap.
+    fn batches(&self, op: &Glm53AttentionOp) -> Result<Option<&BatchCurves>, AicError> {
+        let grids = self.grids()?;
+        Ok(geometry_key(op).and_then(|key| grids.get(&key)))
     }
 
     /// Whether the validated table holds rows for this op's exact geometry
     /// (TP/heads, checkpoint, backend and phase). Load or validation
     /// failures are errors, not a coverage gap.
     pub fn covers(&self, op: &Glm53AttentionOp) -> Result<bool, AicError> {
-        Ok(self.grids()?.contains_key(&geometry(op)?))
+        Ok(self.batches(op)?.is_some())
     }
 
     /// `sol(batch, prefix, x)` is the operator's analytical latency; it anchors
@@ -175,7 +263,7 @@ impl Glm53AttentionTable {
         x: u32,
         sol: &dyn Fn(f64, f64, f64) -> Result<f64, AicError>,
     ) -> Result<Option<f64>, AicError> {
-        let Some(batches) = self.grids()?.get(&geometry(op)?) else {
+        let Some(batches) = self.batches(op)? else {
             return Ok(None);
         };
         if batch == 0 || x == 0 {
@@ -238,9 +326,9 @@ fn interpolate<T>(map: &BTreeMap<u32, T>, at: f64, value: impl Fn(f64, &T) -> f6
     }
 }
 
-fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
+fn load(path: &Path) -> Result<Grids, AicError> {
     if !path.try_exists().map_err(|e| invalid(e.to_string()))? {
-        return Ok(BTreeMap::new());
+        return Ok(Grids::default());
     }
     use super::parquet_loader::PerfReader;
     let reader = PerfReader::open(path)?;
@@ -265,37 +353,33 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
     // (checkpoint, TP, phase), because serving runs prefill eagerly and decode
     // under full CUDA graphs.
     let mut runtime_identity: Option<(String, String)> = None;
-    let mut configs: BTreeMap<String, String> = BTreeMap::new();
-    let mut graphs: BTreeMap<String, bool> = BTreeMap::new();
-    let mut validated: BTreeMap<String, (bool, String)> = BTreeMap::new();
+    let mut configs: FxHashMap<CheckpointFormat, String> = FxHashMap::default();
+    let mut graphs: FxHashMap<GeometryKey, bool> = FxHashMap::default();
+    let mut validated: BTreeMap<String, GeometryKey> = BTreeMap::new();
     // One latent KV dtype per file: FP8- and BF16-KV deployments are distinct
     // identities collected by distinct runs and never share a table.
-    let mut kv_cache_dtype: Option<String> = None;
-    let mut grids: BTreeMap<String, BatchCurves> = BTreeMap::new();
+    let mut kv_cache_dtype: Option<KvCacheQuantMode> = None;
+    let mut grids = Grids::default();
     for row in reader.rows()? {
         let row = row?;
         if row.str(component)? != "attention" {
             return Err(invalid("GLM attention table component must be attention"));
         }
         let encoded = row.str(geometry_col)?;
-        if !validated.contains_key(encoded) {
-            validate_geometry(encoded)?;
-            let body =
-                serde_json::from_str::<Value>(encoded).map_err(|e| invalid(e.to_string()))?;
-            let is_context = body["is_context"].as_bool().unwrap_or(false);
-            let checkpoint = body["checkpoint_format"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let kv = body["kv_cache_dtype"].as_str().unwrap_or_default();
-            if kv_cache_dtype.get_or_insert_with(|| kv.to_owned()) != kv {
-                return Err(invalid(
-                    "GLM attention table mixes FP8 and BF16 latent KV identities",
-                ));
+        let key = match validated.get(encoded) {
+            Some(&key) => key,
+            None => {
+                let key = validate_geometry(encoded)?;
+                if *kv_cache_dtype.get_or_insert(key.kv_cache_dtype) != key.kv_cache_dtype {
+                    return Err(invalid(
+                        "GLM attention table mixes FP8 and BF16 latent KV identities",
+                    ));
+                }
+                validated.insert(encoded.to_owned(), key);
+                key
             }
-            validated.insert(encoded.to_owned(), (is_context, checkpoint));
-        }
-        let (is_context, checkpoint) = validated[encoded].clone();
+        };
+        let is_context = key.is_context;
         let (batch, prefix, x) = (row.u32(batch_size)?, row.u32(prefix_col)?, row.u32(x_col)?);
         let latency = row.f64(latency_col)?;
         if batch == 0
@@ -344,8 +428,11 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
             ));
         }
         if runtime_identity.get_or_insert_with(|| runtime.clone()) != &runtime
-            || configs.entry(checkpoint).or_insert_with(|| config.clone()) != &config
-            || *graphs.entry(encoded.to_owned()).or_insert(graph) != graph
+            || configs
+                .entry(key.checkpoint_format)
+                .or_insert_with(|| config.clone())
+                != &config
+            || *graphs.entry(key).or_insert(graph) != graph
         {
             return Err(invalid(
                 "GLM attention table mixes runtime/source identities, a checkpoint's config, \
@@ -353,7 +440,7 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
             ));
         }
         if grids
-            .entry(encoded.to_owned())
+            .entry(key)
             .or_default()
             .entry(batch)
             .or_default()
@@ -431,6 +518,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn typed_key_changes_exactly_when_canonical_geometry_does() {
+        use crate::operators::op::Op;
+        let op = attention("sparse_mla");
+        let original = serde_json::to_value(&op).unwrap();
+        let reference = geometry(&op).unwrap();
+        let key = geometry_key(&op).unwrap();
+        for (field, value) in original.as_object().unwrap() {
+            let mut changed = original.clone();
+            changed[field] = match (field.as_str(), value) {
+                ("measured", _) => {
+                    serde_json::to_value(vec![Op::Glm53Attention(attention("kda"))]).unwrap()
+                }
+                ("gate_lower_bound", _) => serde_json::json!(-4.0),
+                (_, Value::Bool(v)) => Value::Bool(!v),
+                (_, Value::Number(v)) => serde_json::json!(v.as_u64().unwrap() + 1),
+                (_, Value::String(_)) => serde_json::json!(match field.as_str() {
+                    "name" => "attention_43",
+                    "layer_kind" => "kda",
+                    "backend" => "sglang",
+                    "checkpoint_format" => "fp8",
+                    "projection_quant_mode" => "fp8_block",
+                    "kv_cache_dtype" => "bfloat16",
+                    _ => panic!("uncovered string field {field}"),
+                }),
+                _ => panic!("uncovered field {field}"),
+            };
+            let altered: Glm53AttentionOp = serde_json::from_value(changed).unwrap();
+            let excluded = matches!(field.as_str(), "name" | "measured");
+            assert_eq!(
+                geometry(&altered).unwrap() == reference,
+                excluded,
+                "{field}"
+            );
+            assert_eq!(geometry_key(&altered) == Some(key), excluded, "{field}");
+        }
+    }
+
+    #[test]
     fn exact_hits_interpolate_and_hold_utilization() {
         let op = attention("sparse_mla");
         let (_root, table) = table(&rows(
@@ -458,6 +583,10 @@ pub(crate) mod tests {
         let mut other = op.clone();
         other.backend = "sglang".into();
         assert!(table.query(&other, 1, 0, 10, &sol).unwrap().is_none());
+        // A non-finite gate (canonical `null`) matches no row.
+        let mut nan = op.clone();
+        nan.gate_lower_bound = f64::NAN;
+        assert!(table.query(&nan, 1, 0, 10, &sol).unwrap().is_none());
     }
 
     fn with_provenance(mut columns: Vec<Col>, config: &'static str, graph: bool) -> Vec<Col> {

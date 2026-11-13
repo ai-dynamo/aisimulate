@@ -4,6 +4,7 @@
 //! Acceptance cases for the manual G1 token/state capacity model.
 
 use super::*;
+use crate::engine::config::SlidingWindowStateConfig;
 
 fn manager(
     capacity: usize,
@@ -1253,4 +1254,117 @@ fn kda_alignment_does_not_rotate_state_when_prefix_caching_is_disabled() {
     }
     manager.finish_lease(owner, lease);
     clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn sliding_window_retains_vllm_v0_32_boundaries() {
+    // (retention, MTP, prompt, computed) -> boundaries; the docs example last.
+    for (retention, mtp, prompt, after, expected) in [
+        // Without MTP the configured lookahead does not delay a boundary.
+        (None, false, 1100, 1024, vec![256, 512, 768, 1024]),
+        (None, true, 1000, 800, vec![256, 512]),
+        (Some(0), true, 1024, 1100, vec![512, 768]),
+        (Some(32768), false, 40000, 40064, vec![32768, 39936]),
+        (Some(32768), true, 40000, 40064, vec![32768, 39680]),
+    ] {
+        let mut manager = StateCacheManager::new(1, mtp);
+        manager.sliding_window = Some(SlidingWindowStateConfig {
+            retention_interval: retention,
+            lookahead_tokens: 64,
+        });
+        let kept: Vec<_> = manager
+            .sliding_window_boundaries(256, prompt, 0, after)
+            .collect();
+        assert_eq!(kept, expected, "{retention:?} mtp={mtp} prompt={prompt}");
+    }
+}
+
+#[test]
+fn sliding_window_turn_resumes_at_prompt_boundary_after_decode_crosses_a_block() {
+    // DeepSeek V4 + MTP, scaled down: block 4, MTP lookahead 1, and a
+    // three-block state, one grouped copy unless a Belady pool keeps blocks.
+    // Every retention keeps the prompt's replay boundary 4; only dense and
+    // interval 12 keep 12.
+    for (retention, after_decode, belady) in [
+        (None, 12, false),
+        (Some(12), 12, false),
+        (Some(0), 4, false),
+        (None, 12, true),
+    ] {
+        let mut manager = manager(64, 4, 1, true);
+        if belady {
+            manager
+                .pool
+                .set_belady_oracle(crate::engine::belady::BeladyOracle::new(Vec::new()).unwrap());
+        }
+        manager.enable_state_cache(3, true);
+        manager.state_cache.as_mut().unwrap().sliding_window = Some(SlidingWindowStateConfig {
+            retention_interval: retention,
+            lookahead_tokens: 1,
+        });
+        let owner = Uuid::from_u128(1);
+        let (mut sequence, mut lease) = request(owner, 10, 4, true, 6);
+        for (before, after) in [(0, 8), (8, 10)] {
+            manager.begin_step();
+            allocated(manager.allocate_lease(owner, &mut lease, after, 0));
+            manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, after);
+        }
+        // Decode to 16 as one MTP burst: no token is the burst's last.
+        manager.begin_step();
+        for before in 10..16 {
+            if sequence.generate_token().1 {
+                lease.append_partial();
+            }
+            allocated(manager.allocate_lease(owner, &mut lease, before + 1, 0));
+            manager.finalize_computed_prefix(
+                owner,
+                &mut sequence,
+                &mut lease,
+                before,
+                before + 1,
+                false,
+            );
+        }
+        manager.finish_lease(owner, lease);
+        manager.begin_step();
+        // A next turn without the sampled tokens 10..16 matches two blocks and
+        // drops one for MTP; one with them reaches the window decode completed.
+        for (turn, tokens, cached) in [
+            (2, (0..10).chain(100..103).collect::<Vec<_>>(), 4),
+            (3, (0..16).chain(100..103).collect(), after_decode),
+        ] {
+            let next = Uuid::from_u128(turn);
+            let (query, identities) = RequestSequence::new(
+                next,
+                tokens,
+                4,
+                4,
+                4,
+                true,
+                true,
+                false,
+                Some((200..204).collect()),
+            );
+            let mut lease = BlockRequestLease::new(next, identities);
+            assert_eq!(
+                manager.get_lease_prefill_cost(&query, &lease).cached_tokens,
+                cached
+            );
+            // Restoring pins the whole copy and returns it to the LRU intact.
+            let source = CacheKey::State {
+                prefix: lease.state_hash(cached, 4).unwrap(),
+                slot: 0,
+            };
+            manager.begin_step();
+            allocated(manager.allocate_lease(next, &mut lease, cached, cached / 4));
+            assert_eq!(manager.pool.key_blocks(source), if belady { 1 } else { 3 });
+            assert!(
+                manager
+                    .pool
+                    .key_hit(source)
+                    .is_some_and(|hit| !hit.is_active)
+            );
+            manager.finish_lease(next, lease);
+        }
+    }
 }

@@ -8,21 +8,21 @@ from typing import ClassVar
 
 import pytest
 
-import aisimulate.sweeper.search as search_module
-from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.parallel_enum import (
+import aisim.sweeper.search as search_module
+from aisim.sweeper.config import SmartSearchConfig
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
-from aisimulate.sweeper.sampler import (
+from aisim.sweeper.replay import ReplayReport, RunnerCapabilities
+from aisim.sweeper.sampler import (
     InvalidSuggestionError,
     RandomBranchSampler,
     SeededBayesianBranchSampler,
     Suggestion,
 )
-from aisimulate.sweeper.search_space import BranchSpace
+from aisim.sweeper.search_space import BranchSpace
 
 
 class _Runner:
@@ -367,7 +367,7 @@ def test_sampler_failure_recovery_is_narrow_and_preserves_best_results(
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
     monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
     monkeypatch.setattr(
-        "aisimulate.supervision.checkpoint",
+        "aisim.supervision.checkpoint",
         lambda event, value: events.append((event, value)),
     )
     _Runner.runs = 0
@@ -510,7 +510,7 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch, capsys) -> 
 def _isolate_estimator_data_for_orchestration(monkeypatch):
     # These tests use synthetic models/runners. Native construction is exercised
     # by the estimator contract tests and CLI round trips.
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
 
@@ -518,7 +518,7 @@ def _isolate_estimator_data_for_orchestration(monkeypatch):
 def test_minimum_gpu_random_search_starts_with_smallest_legal_topology(monkeypatch):
     from dataclasses import replace
 
-    from aisimulate.sweeper.sampler import make_branch_sampler
+    from aisim.sweeper.sampler import make_branch_sampler
 
     branch = _branches()[0]
     small = branch.parallel_configs[0]
@@ -563,7 +563,7 @@ def test_minimum_gpu_random_search_starts_with_smallest_legal_topology(monkeypat
 
 
 def test_exhausted_random_branch_releases_unused_global_budget(monkeypatch):
-    from aisimulate.sweeper.sampler import make_branch_sampler
+    from aisim.sweeper.sampler import make_branch_sampler
 
     branches = _branches()
     branches[1].knob_choices["decode_max_num_seqs"] = [256, 512, 1024]

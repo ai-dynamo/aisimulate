@@ -168,6 +168,7 @@ pub(crate) fn modeled_duration(raw_ms: f64, speedup_ratio: f64) -> anyhow::Resul
     let modeled_ms = modeled_duration_ms(raw_ms, speedup_ratio)?;
     Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
 }
+pub(crate) mod afd;
 
 /// Rank-local scheduler and native-G1 occupancy metrics.
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -340,20 +341,25 @@ impl EngineCore {
     pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
         match self {
             Self::Vllm(core) => core.prepare_group_pass(wave_step, dp_size),
-            Self::Sglang(core) => core.prepare_group_pass(),
+            Self::Sglang(core) => core.prepare_group_pass(wave_step),
         }
     }
 
     pub(crate) fn prefill_in_pass(&self) -> bool {
-        matches!(self, Self::Sglang(core) if core.prefill_in_pass())
+        match self {
+            Self::Sglang(core) => core.prefill_in_pass(),
+            Self::Vllm(_) => false,
+        }
     }
 
     pub(crate) fn model_work_in_pass(&self) -> bool {
-        matches!(self, Self::Sglang(core) if core.model_work_in_pass())
+        match self {
+            Self::Sglang(core) => core.model_work_in_pass(),
+            Self::Vllm(_) => false,
+        }
     }
 
-    /// Device time of the forward the last pass launched, when the SGLang host
-    /// loop separates it from the pass end.
+    /// Duration of the last resolved SGLang forward, excluding preselection waits.
     pub(crate) fn last_forward_ms(&self) -> Option<f64> {
         match self {
             Self::Sglang(core) => core.last_forward_ms(),
@@ -362,8 +368,9 @@ impl EngineCore {
     }
 
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
-        if let Self::Sglang(core) = self {
-            core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
+        match self {
+            Self::Sglang(core) => core.finish_group_pass(any_rank_prefilled, any_rank_ran_model),
+            Self::Vllm(_) => {}
         }
     }
 
@@ -372,8 +379,9 @@ impl EngineCore {
         registry: crate::engine::g3_offload::SharedG3Tier,
         node: usize,
     ) {
-        if let Self::Vllm(core) = self {
-            core.set_g3_offload(registry, node);
+        match self {
+            Self::Vllm(core) => core.set_g3_offload(registry, node),
+            Self::Sglang(_) => {}
         }
     }
 
@@ -390,8 +398,9 @@ impl EngineCore {
     }
 
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        if let Self::Vllm(core) = self {
-            core.set_host_offload_observer(observer);
+        match self {
+            Self::Vllm(core) => core.set_host_offload_observer(observer),
+            Self::Sglang(core) => core.set_host_offload_observer(observer),
         }
     }
 
@@ -440,8 +449,9 @@ impl EngineCore {
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
-        if let Self::Vllm(core) = self {
-            core.complete_engine_boundary(now_ms);
+        match self {
+            Self::Vllm(core) => core.complete_engine_boundary(now_ms),
+            Self::Sglang(core) => core.complete_engine_boundary(now_ms),
         }
     }
 
@@ -556,7 +566,7 @@ impl EngineCore {
 mod tests {
     use super::*;
     use crate::engine::HandoffId;
-    use crate::engine::common::protocols::{EngineType, MockEngineArgs, WorkerType};
+    use crate::engine::common::protocols::{EngineType, MockEngineArgs, SglangArgs, WorkerType};
 
     fn core(engine_type: EngineType, worker_type: WorkerType, blocks: usize) -> EngineCore {
         let args = MockEngineArgs::builder()
@@ -567,6 +577,10 @@ mod tests {
             .max_num_seqs(Some(1))
             .enable_prefix_caching(true)
             .worker_type(worker_type)
+            .sglang(Some(SglangArgs {
+                num_reserved_decode_tokens: Some(0),
+                ..Default::default()
+            }))
             .speedup_ratio(0.0)
             .build()
             .unwrap();
@@ -639,7 +653,8 @@ mod tests {
             assert_eq!(core.num_requests(), 0);
 
             let running_id = Uuid::from_u128(20_100 + case as u128);
-            let mut running_request = request(running_id, (100..108).collect());
+            // A partial last prompt page stays request-owned, even when complete pages are cached.
+            let mut running_request = request(running_id, (100..109).collect());
             running_request.max_output_tokens = 32;
             core.receive(running_request);
             core.execute_hidden_pass(0.0);

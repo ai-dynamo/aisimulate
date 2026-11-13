@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: Gemma4ForConditionalGeneration
+model_path: google/gemma-4-26B-A4B
+model_paths:
+  - google/gemma-4-26B-A4B
+  - nvidia/Gemma-4-26B-A4B-NVFP4
+  - nvidia/Gemma-4-31B-IT-NVFP4
+include_base: true
+base_ops:
+  - gemm
+framework_specific_base_ops:
+  # Model runs leave vLLM's attention out: vLLM's Gemma 4 path adds
+  # multimodal-prefix semantics the generic attention rows cannot express.
+  # Full collections still time the text (causal) shapes on vLLM.
+  sglang:
+    - attention_context
+    - attention_generation
+  trtllm:
+    - attention_context
+    - attention_generation
+description: >
+  Gemma 4 hybrid SWA/global attention plus routed-MoE collection plan.
+
+model_case_values:
+  attention:
+    # sglang_backends: SGLang's Gemma 4 overrides
+    # (arg_groups/model_overrides/gemma4.py:_gemma4_overrides) force triton on
+    # every SM except SM100/103 (trtllm_mha); a missing SM key would fall
+    # through to the generic table (flashinfer on SM89/120), which serving
+    # never runs for Gemma 4.
+    # TRT-LLM serves Gemma 4 on its default TRTLLM attention backend
+    # (Gemma4ForCausalLM.get_model_defaults, models/modeling_gemma4.py), so
+    # these rows run there like every other model's.
+    - id: gemma4_swa_attention
+      model_path: google/gemma-4-26B-A4B
+      model_aliases:
+        - nvidia/Gemma-4-26B-A4B-NVFP4
+      num_attention_heads: 16
+      num_key_value_heads: 8
+      head_dim: 256
+      window_size: 1024
+      sglang_runtime_window_size: 1023
+      sglang_scaling: 1.0
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+    - id: gemma4_global_attention
+      model_path: google/gemma-4-26B-A4B
+      model_aliases:
+        - nvidia/Gemma-4-26B-A4B-NVFP4
+      num_attention_heads: 16
+      num_key_value_heads: 2
+      head_dim: 512
+      window_size: 0
+      sglang_scaling: 1.0
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+    - id: gemma4_31b_swa_attention
+      model_path: nvidia/Gemma-4-31B-IT-NVFP4
+      num_attention_heads: 32
+      num_key_value_heads: 16
+      head_dim: 256
+      window_size: 1024
+      sglang_runtime_window_size: 1023
+      sglang_scaling: 1.0
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
+    - id: gemma4_31b_global_attention
+      model_path: nvidia/Gemma-4-31B-IT-NVFP4
+      num_attention_heads: 32
+      num_key_value_heads: 4
+      head_dim: 512
+      window_size: 0
+      sglang_scaling: 1.0
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
+  moe:
+    - model_path: google/gemma-4-26B-A4B
+      hidden_size: 2816
+      inter_size: 704
+      topk: 8
+      num_experts: 128
+      sglang_moe_activation: gelu
+    - model_path: nvidia/Gemma-4-26B-A4B-NVFP4
+      hidden_size: 2816
+      inter_size: 704
+      topk: 8
+      num_experts: 128
+      sglang_moe_activation: gelu
+      quantization_modes: [bfloat16]
+
+all_frameworks_op_cases:
+  moe:
+    cases: all

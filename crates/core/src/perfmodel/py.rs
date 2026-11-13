@@ -18,7 +18,7 @@
 //!   so the Rust compute runs without holding the GIL.
 //! * **Rust → Python → Rust (embedded path).** [`AicEngineBuilder`] is the
 //!   Rust entry point. It crosses into Python once to run
-//!   `aisimulate_core.sdk.engine.compile_engine`, then build an [`Engine`]
+//!   `aisim_core.sdk.engine.compile_engine`, then build an [`Engine`]
 //!   from the returned bincode bytes. After that the `predict_*` hot path is
 //!   pure Rust with no GIL.
 //!
@@ -31,7 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::PyType;
@@ -51,11 +51,91 @@ fn _build_smoke() -> u32 {
     ENGINE_CONFIG_SCHEMA_VERSION
 }
 
+/// Shared hardware precision normalization used by compilation and memory.
+#[pyfunction]
+#[pyo3(signature = (system_spec_json, gemm=None, moe=None))]
+fn resolve_execution_quantization(
+    system_spec_json: &str,
+    gemm: Option<&str>,
+    moe: Option<&str>,
+) -> PyResult<(Option<String>, Option<String>)> {
+    let spec: crate::common::system_spec::SystemSpec = serde_json::from_str(system_spec_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid GPU system spec: {e}")))?;
+    let parse = |s: &str| serde_json::Value::String(s.to_owned());
+    let gemm = gemm
+        .map(|s| serde_json::from_value(parse(s)))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("invalid GEMM precision: {e}")))?;
+    let moe = moe
+        .map(|s| serde_json::from_value(parse(s)))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("invalid MoE precision: {e}")))?;
+    let (gemm, moe) =
+        crate::common::system_spec::execution_quantization(&spec, gemm, moe).map_err(aic_to_py)?;
+    Ok((
+        gemm.map(|q| q.name().to_owned()),
+        moe.map(|q| q.name().to_owned()),
+    ))
+}
+
+/// Shared AFD execution preflight, without constructing a model or loading data.
+#[pyfunction]
+fn validate_afd_routing_location(location: &str) -> PyResult<()> {
+    let location: crate::AfdRoutingLocation = serde_json::from_value(location.into())
+        .map_err(|error| PyValueError::new_err(format!("invalid routing_location: {error}")))?;
+    location.ensure_supported().map_err(aic_to_py)
+}
+
+#[pyfunction]
+fn validate_afd_attention_tp(a_tp_size: u32) -> PyResult<()> {
+    crate::perfmodel::afd::validate_afd_attention_tp(a_tp_size).map_err(aic_to_py)
+}
+
+#[pyfunction]
+#[pyo3(signature = (a_tp_size, n_a_nodes, n_f_nodes, gpus_per_node, f_moe_ep_size=None, num_experts=None, *, f_gpus_per_node=None))]
+fn resolve_afd_parallelism(
+    a_tp_size: u32,
+    n_a_nodes: u32,
+    n_f_nodes: u32,
+    gpus_per_node: u32,
+    f_moe_ep_size: Option<u32>,
+    num_experts: Option<u32>,
+    f_gpus_per_node: Option<u32>,
+) -> PyResult<String> {
+    let resolved = crate::perfmodel::afd::resolve_afd_parallelism(
+        a_tp_size,
+        n_a_nodes,
+        n_f_nodes,
+        gpus_per_node,
+        f_moe_ep_size,
+        num_experts,
+        f_gpus_per_node,
+    )
+    .map_err(aic_to_py)?;
+    serde_json::to_string(&resolved).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn validate_afd_model_shape(
+    num_layers: u32,
+    num_experts: u32,
+    topk: u32,
+    num_shared_experts: u32,
+    num_moe_layers: u32,
+) -> PyResult<()> {
+    crate::perfmodel::afd::AfdModelShape {
+        num_shared_experts,
+        num_moe_layers,
+    }
+    .validate(num_layers, num_experts, topk)
+    .map_err(aic_to_py)
+}
+
 /// Cached handles to the canonical SDK exception classes
-/// (`aisimulate_core.sdk.errors` — the CORE namespace: the standalone
-/// compatibility namespace bundled in the `aisimulate` wheel). Filled lazily
+/// (`aisim_core.sdk.errors` — the CORE namespace: the standalone
+/// compatibility namespace bundled in the `aisim` wheel). Filled lazily
 /// on first use so importing the
-/// extension never imports the sdk (the sdk imports aisimulate_core — an
+/// extension never imports the sdk (the sdk imports aisim_core — an
 /// eager import here would be a cycle), and left empty in pure-Rust contexts
 /// where the sdk is not installed (fallback to `PyValueError`).
 static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
@@ -72,7 +152,7 @@ fn sdk_error_type(
 ) -> Option<Py<PyType>> {
     cell.get_or_try_init(py, || -> PyResult<Py<PyType>> {
         Ok(py
-            .import("aisimulate_core.sdk.errors")?
+            .import("aisim_core.sdk.errors")?
             .getattr(name)?
             .downcast_into::<PyType>()?
             .unbind())
@@ -87,17 +167,17 @@ fn sdk_error_type(
 /// Typed mapping so Python-side classifiers keep working across the FFI:
 /// * missing-perf-data errors (`AicError::PerfDatabase` / `Io` — the
 ///   `is_missing_perf_data` set) raise the canonical
-///   `aisimulate_core.sdk.errors.PerfDataNotAvailableError`, so
+///   `aisim_core.sdk.errors.PerfDataNotAvailableError`, so
 ///   `perf_database.has_perf_data_not_available_cause` recognizes rust-path
 ///   data misses;
 /// * `AicError::EmpiricalNotImplemented` raises
-///   `aisimulate_core.sdk.errors.EmpiricalNotImplementedError` (the typed
+///   `aisim_core.sdk.errors.EmpiricalNotImplementedError` (the typed
 ///   HYBRID/EMPIRICAL coverage miss);
 /// * `AicError::MissingSystemFlops` raises
-///   `aisimulate_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
+///   `aisim_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
 ///   `*_tc_flops` resolution — a `ValueError` subclass on the Python side);
 /// * `AicError::SolNotImplemented` raises
-///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
+///   `aisim_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
 /// * `AicError::StateSnapshotIo` raises the built-in `OSError` subclass for
 ///   its I/O kind (`FileNotFoundError`, `PermissionError`,
@@ -121,6 +201,9 @@ pub(crate) fn aic_to_py(e: AicError) -> PyErr {
             }
             _ => pyo3::exceptions::PyOSError::new_err(message),
         };
+    }
+    if let AicError::NotImplemented(message) = e {
+        return PyNotImplementedError::new_err(message);
     }
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
@@ -168,7 +251,7 @@ pub(crate) fn parse_mode(mode: &str) -> PyResult<StaticMode> {
 /// Discover the ordered roots using the same SDK/environment policy as the Python facade.
 pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicError> {
     Python::with_gil(|py| {
-        py.import("aisimulate_core.sdk.rust_engine_step")?
+        py.import("aisim_core.sdk.rust_engine_step")?
             .getattr("_resolve_forward_pass_systems_paths")?
             .call1((Vec::<String>::new(),))?
             .extract::<Vec<PathBuf>>()
@@ -189,7 +272,7 @@ pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicEr
 /// configs) runs in Python, so the Rust side only loads the perf database.
 /// Precedence: explicit `systems_path` arg → `AICONFIGURATOR_SYSTEMS_PATH` env
 /// → the installed core wheel's SDK resource path → repo-relative
-/// `python/aisimulate/src/aisimulate_core/systems`.
+/// `python/aisim/src/aisim_core/systems`.
 pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = systems_path {
         return Ok(PathBuf::from(p));
@@ -198,7 +281,7 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
         return Ok(PathBuf::from(p));
     }
     let installed_root = Python::with_gil(|py| -> PyResult<Option<PathBuf>> {
-        let Ok(perf_database) = py.import("aisimulate_core.sdk.perf_database") else {
+        let Ok(perf_database) = py.import("aisim_core.sdk.perf_database") else {
             return Ok(None);
         };
         let paths: Vec<String> = perf_database.call_method0("get_systems_paths")?.extract()?;
@@ -207,10 +290,10 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
     if let Some(p) = installed_root {
         return Ok(p);
     }
-    crate::repo_relative("python/aisimulate/src/aisimulate_core/systems").ok_or_else(|| {
+    crate::repo_relative("python/aisim/src/aisim_core/systems").ok_or_else(|| {
         PyValueError::new_err(
             "could not resolve systems path: pass systems_path, set \
-             AICONFIGURATOR_SYSTEMS_PATH, install aisimulate, or run \
+             AICONFIGURATOR_SYSTEMS_PATH, install aisim, or run \
              from an AIC checkout",
         )
     })
@@ -1086,6 +1169,7 @@ fn glm53_cache_bytes(spec_json: &str, seq_len: u32) -> PyResult<f64> {
 /// config API.
 #[derive(Clone, Debug)]
 struct EngineBuildRequest {
+    afd_pool_role: Option<crate::AfdPoolRole>,
     model_path: String,
     system: String,
     backend: String,
@@ -1149,6 +1233,7 @@ impl AicEngineBuilder {
     ) -> Self {
         Self {
             request: EngineBuildRequest {
+                afd_pool_role: None,
                 model_path: model_path.into(),
                 system: system.into(),
                 backend: backend.as_str().to_owned(),
@@ -1549,9 +1634,18 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         ))
     })?;
     let spec_bytes: Vec<u8> = Python::with_gil(|py| -> PyResult<Vec<u8>> {
-        let engine_mod = py.import("aisimulate_core.sdk.engine")?;
+        let engine_mod = py.import("aisim_core.sdk.engine")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("backend_version", request.backend_version.as_deref())?;
+        if let Some(role) = request.afd_pool_role {
+            kwargs.set_item(
+                "afd_pool_role",
+                match role {
+                    crate::AfdPoolRole::A => "a",
+                    crate::AfdPoolRole::F => "f",
+                },
+            )?;
+        }
         kwargs.set_item("tp_size", request.tp_size)?;
         kwargs.set_item("pp_size", request.pp_size)?;
         kwargs.set_item("attention_dp_size", request.attention_dp_size)?;
@@ -1622,7 +1716,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     // is NOT fallback-safe) so they surface instead of silently degrading.
     .map_err(|error| {
         let invalid = Python::with_gil(|py| {
-            py.import("aisimulate_core.sdk.engine")
+            py.import("aisim_core.sdk.engine")
                 .and_then(|module| module.getattr("InvalidEngineConfigurationError"))
                 .is_ok_and(|kind| error.is_instance(py, &kind))
         });
@@ -1666,7 +1760,7 @@ pub(crate) fn resolve_speculation_identity(
         let encoded = serde_json::to_string(config)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let fields = json.call_method1("loads", (encoded,))?;
-        let module = PyModule::import(py, "aisimulate_core.sdk.speculation.base")?;
+        let module = PyModule::import(py, "aisim_core.sdk.speculation.base")?;
         let spec = module
             .getattr("SpeculationConfig")?
             .call((), Some(fields.downcast()?))?;
@@ -1677,7 +1771,7 @@ pub(crate) fn resolve_speculation_identity(
     })
     .map_err(|error| {
         let checkpoint_unavailable = Python::with_gil(|py| {
-            py.import("aisimulate_core.sdk.utils")
+            py.import("aisim_core.sdk.utils")
                 .and_then(|module| module.getattr("HuggingFaceDownloadError"))
                 .is_ok_and(|kind| error.is_instance(py, &kind))
         });
@@ -1699,7 +1793,7 @@ pub(crate) fn speculation_replay_depth(
         let encoded = serde_json::to_string(config)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let fields = PyModule::import(py, "json")?.call_method1("loads", (encoded,))?;
-        PyModule::import(py, "aisimulate_core.sdk.speculation")?
+        PyModule::import(py, "aisim_core.sdk.speculation")?
             .getattr("SpeculationConfig")?
             .call((), Some(fields.downcast()?))?
             .call_method0("replay_depth")?
@@ -1727,7 +1821,7 @@ pub(crate) fn validate_forward_pass_profile(
     let json = serde_json::to_string(config)
         .map_err(|error| AicError::InvalidEngineConfig(error.to_string()))?;
     let facts = Python::with_gil(|py| -> PyResult<String> {
-        py.import("aisimulate_core.sdk.fpm_profile")?
+        py.import("aisim_core.sdk.fpm_profile")?
             .call_method1("_validate_forward_pass_profile", (json,))?
             .extract()
     })
@@ -1747,6 +1841,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         )
     })?;
     compile_engine_from_request(EngineBuildRequest {
+        afd_pool_role: config.afd_pool_role,
         model_path: config.model.clone(),
         system: config.system.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -1894,7 +1989,7 @@ pub(crate) fn fpm_profile_quantization(
 ) -> PyResult<std::collections::BTreeMap<String, String>> {
     let config_json = serde_json::to_string(config)
         .map_err(|e| PyValueError::new_err(format!("invalid engine config: {e}")))?;
-    py.import("aisimulate_core.sdk.fpm_profile")?
+    py.import("aisim_core.sdk.fpm_profile")?
         .call_method1("_quantization_from_engine_config", (config_json,))?
         .extract()
 }
@@ -1909,6 +2004,12 @@ fn engine_build_request(
         .and_then(|s| s.nextn)
         .unwrap_or(0);
     Ok(EngineBuildRequest {
+        afd_pool_role: config
+            .extra
+            .get("afd_pool_role")
+            .map(|role| serde_json::from_value(serde_json::Value::String(role.clone())))
+            .transpose()
+            .map_err(|e| AicError::InvalidEngineConfig(format!("invalid AFD pool role: {e}")))?,
         model_path: config.model_name.clone(),
         system: config.system_name.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -2239,6 +2340,8 @@ impl PyForwardPassPerfModel {
             }
         };
         let config = crate::ForwardPassPerfModelConfig {
+            afd_routing_location: None,
+            afd_pool_role: request.afd_pool_role,
             model: request.model_path,
             system: request.system,
             backend: legacy.backend,
@@ -2609,6 +2712,15 @@ impl PyForwardPassPerfModel {
             .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
     }
 
+    /// Preparation-only normalization of marked targets in the native FPM profile.
+    fn fpm_seed_target_normalization(&self, py: Python<'_>) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| self.inner.fpm_seed_target_normalization())
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result)
+            .map_err(|error| PyValueError::new_err(format!("FPM seed targets serialize: {error}")))
+    }
+
     fn predict_prefill_latency_total(
         &self,
         py: Python<'_>,
@@ -2669,13 +2781,22 @@ impl PyForwardPassPerfModel {
 }
 
 /// Register the AIConfigurator compatibility surface on the unified
-/// `aisimulate._runtime` extension. Python's
-/// `aisimulate_core._native` module is a pure-Python shim that
+/// `aisim._runtime` extension. Python's
+/// `aisim_core._native` module is a pure-Python shim that
 /// re-exports these objects from that canonical extension.
 ///
 /// The removed `build_aic_engine` flat adapter is intentionally not exposed;
 /// embedded callers use `AicEngineBuilder`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "AFD_DEFAULT_ROUTING_LOCATION",
+        crate::AfdRoutingLocation::default().as_str(),
+    )?;
+    m.add_function(wrap_pyfunction!(validate_afd_routing_location, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_afd_attention_tp, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_afd_parallelism, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_execution_quantization, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_afd_model_shape, m)?)?;
     m.add_function(wrap_pyfunction!(_build_smoke, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_bincode_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_json_from_bincode, m)?)?;
@@ -2707,8 +2828,7 @@ mod tests {
     use crate::{BackendKind, ParallelMapping, QuantizationConfig};
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
     }
 
     /// `cargo test` runs without an embedding host, so the interpreter must
@@ -3114,7 +3234,7 @@ mod tests {
     fn aic_to_py_maps_typed_errors_to_sdk_classes() {
         py_init();
         Python::with_gil(|py| {
-            let sdk_available = py.import("aisimulate_core.sdk.errors").is_ok();
+            let sdk_available = py.import("aisim_core.sdk.errors").is_ok();
 
             let check = |err: AicError, sdk_name: &str| {
                 let pyerr = aic_to_py(err);
@@ -3167,6 +3287,10 @@ mod tests {
                 assert_eq!(error.get_type(py).name().unwrap().to_string(), name);
                 assert!(error.value(py).to_string().contains("/snapshot"));
             }
+
+            let unsupported = aic_to_py(AicError::NotImplemented("AFD unsupported surface".into()));
+            assert!(unsupported.is_instance_of::<PyNotImplementedError>(py));
+            assert_eq!(unsupported.value(py).to_string(), "AFD unsupported surface");
 
             // The message survives the mapping.
             let msg_err = aic_to_py(AicError::PerfDatabase("missing table xyz".to_string()));

@@ -1488,7 +1488,7 @@ mod tests {
     fn b200_sxm_spec() -> SystemSpec {
         let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
+            .join("python/aisim/src/aisim_core/systems/b200_sxm.yaml");
         SystemSpec::load(&systems_yaml).expect("b200_sxm.yaml must parse")
     }
 
@@ -1611,6 +1611,52 @@ mod tests {
     /// A synthetic 2 ms measured reuse anchor beyond top-k must stay 2 ms
     /// when only sequence length is extrapolated: the executed operations
     /// and bytes no longer grow with history. Full anchors still do grow.
+    #[test]
+    fn serving_padded_batch_52_row_keeps_the_real_request_coordinate() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Independent fixture values: B52 contains its measured padded-graph
+        // cost (2 ms); B56's four additional real histories cost 3 ms.
+        write_parquet(
+            &tmp.path().join("dsa_generation_module_perf.parquet"),
+            &[
+                Col::Str("architecture", vec!["GlmMoeDsaForCausalLM"; 2]),
+                Col::Str("mla_dtype", vec!["bfloat16"; 2]),
+                Col::Str("kv_cache_dtype", vec!["fp8"; 2]),
+                Col::Str("gemm_type", vec!["bfloat16"; 2]),
+                Col::I64("num_heads", vec![8, 8]),
+                Col::I64("batch_size", vec![52, 56]),
+                Col::I64("isl", vec![1, 1]),
+                Col::I64("step", vec![4096, 4096]),
+                Col::Str("op_name", vec!["dsa_generation_module"; 2]),
+                Col::Str("kernel_source", vec!["sglang_dsa_indexer_trtllm"; 2]),
+                Col::F64("latency", vec![2.0, 3.0]),
+            ],
+        );
+        let table = DsaTable::new(tmp.path().to_path_buf()).with_backend("sglang");
+        let spec = b200_sxm_spec();
+        let query = |batch| {
+            table
+                .query_generation(
+                    &spec,
+                    batch,
+                    4097,
+                    8,
+                    KvCacheQuantMode::Fp8,
+                    FmhaQuantMode::Bfloat16,
+                    GemmQuantMode::Bfloat16,
+                    "GlmMoeDsaForCausalLM",
+                    "trtllm",
+                    false,
+                )
+                .unwrap()
+                .latency
+        };
+        assert_eq!(query(52), 2.0);
+        assert_eq!(query(56), 3.0);
+    }
+
     #[test]
     fn reuse_decode_extrapolation_does_not_charge_full_indexer_growth() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1886,7 +1932,7 @@ mod tests {
     /// PYTHONPATH=src python3 -c "
     /// import tempfile, os, types
     /// import pandas as pd
-    /// from aisimulate.sdk.operations.dsa import ContextDSAModule
+    /// from aisim.sdk.operations.dsa import ContextDSAModule
     /// tmp = tempfile.mkdtemp()
     /// data_dir = os.path.join(tmp, 'data', 'vllm', '1.0'); os.makedirs(data_dir)
     /// pd.DataFrame([
@@ -2040,8 +2086,8 @@ mod tests {
     /// ```text
     /// PYTHONPATH=src python3 -c "
     /// import pandas as pd, tempfile, os
-    /// from aisimulate.sdk.operations.dsa import load_context_dsa_module_data, _select_dsa_backend
-    /// from aisimulate.sdk import common
+    /// from aisim.sdk.operations.dsa import load_context_dsa_module_data, _select_dsa_backend
+    /// from aisim.sdk import common
     /// tmp = tempfile.mkdtemp(); f = os.path.join(tmp, 'dsa_context_module_perf.parquet')
     /// base = dict(architecture='DeepseekV32ForCausalLM', mla_dtype='bfloat16',
     ///             kv_cache_dtype='bfloat16', gemm_type='bfloat16',
@@ -2417,8 +2463,8 @@ mod tests {
     /// ```text
     /// PYTHONPATH=src python3 -c "
     /// import pandas as pd, tempfile, os
-    /// from aisimulate.sdk.operations.dsa import load_generation_dsa_module_data
-    /// from aisimulate.sdk import common
+    /// from aisim.sdk.operations.dsa import load_generation_dsa_module_data
+    /// from aisim.sdk import common
     /// tmp = tempfile.mkdtemp(); f = os.path.join(tmp, 'dsa_generation_module_perf.parquet')
     /// base = dict(architecture='DeepseekV32ForCausalLM', mla_dtype='bfloat16',
     ///             kv_cache_dtype='bfloat16', gemm_type='bfloat16', num_heads=128,

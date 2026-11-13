@@ -13,6 +13,8 @@ mod steppable;
 mod trace;
 mod types;
 mod weka;
+#[cfg(any(feature = "python", test))]
+mod weka_lengths;
 
 use rand::Rng;
 use rand::rngs::StdRng;
@@ -53,10 +55,12 @@ pub use types::{
 #[cfg(feature = "python")]
 pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
-    WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
-    WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
-    load_weka_agentic_rows, stream_weka_agentic_rows,
+    WekaChatTemplate, WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter,
+    WekaNestedTimestampBasis, WekaResolvedTimestampBasis, load_weka_agentic_graph,
+    load_weka_agentic_graph_with_options, load_weka_agentic_rows, stream_weka_agentic_rows,
 };
+#[cfg(feature = "python")]
+pub(crate) use weka_lengths::scan_weka_requests;
 
 pub(super) const SYNTHETIC_OUTPUT_SEED: u64 = 0xD37A_0A7E_5EED;
 

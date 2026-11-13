@@ -1,0 +1,12 @@
+{
+  "model": "YOUR_MODEL_ID",
+  "system": "YOUR_PACKAGED_SYSTEM",
+  "backend": "vllm",
+  "backend_version": "YOUR_ENGINE_VERSION",
+  "worker_type": "aggregated",
+  "tp": 4,
+  "pp": 1,
+  "attention_dp": 1,
+  "moe_tp_size": 1,
+  "moe_ep_size": 4
+}

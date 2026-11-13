@@ -433,17 +433,25 @@ class LearnedScenarioPredictor(ForwardPassTimePredictor):
                 # A missing mixed store still calibrates its prior. Once ready,
                 # native feedback updates both experts using pre-update losses.
                 error = None
+                prior_unavailable = False
                 try:
                     scope.model.tune_with_fpms([rows])
                     scope.feedback_observations += 1
                 except Exception as exc:
+                    from aisim_core.sdk.errors import PerfDataNotAvailableError
+
                     error = exc
+                    prior_unavailable = isinstance(exc, PerfDataNotAvailableError)
                 if (
-                    error is None
+                    (error is None or prior_unavailable)
                     and self._adaptation != "frozen"
                     and kind in scope.eligible_mixed
                     and kind not in scope.stores
                 ):
+                    # Native validation precedes the prior lookup. A missing
+                    # prior cannot invalidate that measured label or prevent
+                    # its absent ordinary store from bootstrapping. Preserve
+                    # the prior error below; never retry the label as feedback.
                     self._bootstrap(scope, rows, kind, append=True)
                 if error is not None:
                     raise error
@@ -517,6 +525,7 @@ class LearnedScenarioPredictor(ForwardPassTimePredictor):
             "model_scope": "case_worker_and_native_workload_store",
             "adaptation": self._adaptation,
             "recipe": self._recipe,
+            **({"original_a": _bounded_native_diagnostics(self._mixed.provenance)} if self._mixed else {}),
             "scopes": scopes,
         }
 
