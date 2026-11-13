@@ -56,7 +56,7 @@ jobs:
   collect:
     name: Collect prediction snapshot (${{ matrix.side }})
     needs: refs
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 45
     strategy:
       fail-fast: false
