@@ -28,10 +28,6 @@ jobs:
             runner: prod-aisim-default-arm64-v1
             machine: aarch64
             scratch: true
-          - pool: shared
-            runner: dynamo-cpu-4gi-amd64
-            machine: x86_64
-            scratch: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     container:
@@ -62,3 +58,23 @@ jobs:
             rm "${probe}"
           fi
           printf 'Verified source %s on %s (%s) with writable HOME=%s\n' "${GITHUB_SHA}" "${RUNNER_NAME}" "${EXPECTED_MACHINE}" "${HOME}"
+
+  shared:
+    if: github.repository == 'ai-dynamo/aisim'
+    name: Runner canary (shared)
+    runs-on: dynamo-cpu-4gi-amd64
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify shared runner admission, source and writable workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = ai-dynamo/aisim
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(pwd -P)" = "$(realpath "${GITHUB_WORKSPACE}")"
+          test "$(uname -m)" = x86_64
+          test -w "${HOME}"
+          probe=$(mktemp .runner-canary.XXXXXX)
+          rm "${probe}"
+          printf 'Verified source %s on shared runner %s\n' "${GITHUB_SHA}" "${RUNNER_NAME}"
