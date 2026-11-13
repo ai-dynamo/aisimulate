@@ -14,7 +14,9 @@ import yaml
 
 from aisim._legacy import plugin_entry_points
 
+from . import __version__
 from .detail import parse_detail_sections
+from .package_identity import DISTRIBUTION, program_name
 from .support.cli import add_support_parser
 
 
@@ -38,9 +40,10 @@ def _positive_finite_float(value: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="aisim",
+        prog=program_name(),
         description="Predict or recommend an LLM serving configuration.",
     )
+    parser.add_argument("--version", action="version", version=f"{DISTRIBUTION} {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("predict", "recommend"):
         child = subparsers.add_parser(command)
