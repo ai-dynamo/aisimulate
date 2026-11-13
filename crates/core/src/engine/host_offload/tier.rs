@@ -736,17 +736,25 @@ impl HostTier {
         if self.meta_retained() && !victims.is_empty() {
             // A block without router identity (a state row) published no
             // `Stored` event, so it publishes no `Removed` one either.
-            let publishes = self.clients.values().any(|client| client.events.is_some());
-            let mut removed = Vec::new();
+            let subscribers = self.clients.values().filter(|c| c.events.is_some());
+            let mut left = subscribers.count();
+            let mut removed = Vec::with_capacity(if left > 0 { victims.len() } else { 0 });
             for victim in victims {
-                if self.meta.remove(victim).is_some() && publishes {
+                if self.meta.remove(victim).is_some() && left > 0 {
                     removed.push(victim.sequence_hash());
                 }
             }
             if !removed.is_empty() {
-                self.publish(|| KvEventData::Removed {
-                    block_hashes: removed.clone(),
-                });
+                // One list per subscriber: the last one takes this one.
+                for events in self.clients.values_mut().filter_map(|c| c.events.as_mut()) {
+                    left -= 1;
+                    let block_hashes = if left == 0 {
+                        std::mem::take(&mut removed)
+                    } else {
+                        removed.clone()
+                    };
+                    events.push(KvEventData::Removed { block_hashes });
+                }
             }
         }
     }
@@ -2795,12 +2803,12 @@ pub(crate) mod tests {
             Some(&[meta(Some(2), 9, 2)]),
             2.0,
         );
-        assert_eq!(
-            tier.take_events(B),
-            [KvEventData::Removed {
-                block_hashes: vec![1]
-            }]
-        );
+        // Each subscriber gets the whole list.
+        let removed = [KvEventData::Removed {
+            block_hashes: vec![1],
+        }];
+        assert_eq!(tier.take_events(B), removed);
+        assert_eq!(tier.take_events(A), removed);
     }
 
     #[test]
