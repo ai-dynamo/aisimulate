@@ -45,7 +45,7 @@ permissions:
 jobs:
   wheel:
     name: Prepare exact accuracy wheel
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 120
     permissions:
       contents: read
@@ -134,11 +134,11 @@ jobs:
   measurements:
     name: Prepare shared E2E measurements
     timeout-minutes: 120
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -188,13 +188,13 @@ jobs:
       max-parallel: 4
       matrix:
         shard: [0, 1, 2, 3]
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 360
     container:
       # The runner executes as non-root; use its sudo-enabled CI image.
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
@@ -312,11 +312,11 @@ jobs:
     name: Qualify E2E accuracy (${{ inputs.artifact_key }})
     needs: [wheel, shards]
     timeout-minutes: 30
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -396,12 +396,12 @@ jobs:
       max-parallel: 2
       matrix:
         shard: [0, 1]
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 360
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
@@ -484,12 +484,12 @@ jobs:
   qualify-agentx:
     name: Qualify AgentX accuracy (${{ inputs.artifact_key }})
     needs: agentx
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 30
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
