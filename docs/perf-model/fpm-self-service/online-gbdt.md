@@ -45,7 +45,7 @@ Online prediction and supported updates run through the Rust model. Inspect your
 installed trainer before preparing inputs:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_learned train --help
+python -m aisim_core.sdk.fpm_learned train --help
 ```
 
 Keep one model instance per worker/deployment identity when workers need
@@ -62,7 +62,7 @@ and native capture checks; preserve measured resource capacity separately.
 | A+C | A-trained stores and the qualified mixed prior can predict while missing mixed forests are being trained | Buffer each missing mixed class, fit and append its checkpoint, and deliver subsequent feedback. |
 | B / B+C | The accepted B-trained model, subject to its store coverage | Follow the E2E guide; the A-specific fallback does not add a prior to these scenarios. |
 
-AISimulate predicts pass durations, updates the constructed model and applies
+AISim predicts pass durations, updates the constructed model and applies
 the configured mixed routing rule. Your application collects observations and
 fits the initial model. It also decides which observations to admit, prevents
 duplicates and handles recovery from a partially completed update.
@@ -190,7 +190,7 @@ import math
 from copy import deepcopy
 from pathlib import Path
 
-from aisimulate_core.sdk import RustForwardPassPerfModel, fpm_learned
+from aisim_core.sdk import RustForwardPassPerfModel, fpm_learned
 
 identity = json.loads(Path("decode.identity.json").read_text())
 if identity["worker_type"] != "decode" or identity["attention_dp"] != 1:
@@ -374,7 +374,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from aisimulate_core.sdk import RustForwardPassPerfModel, fpm_learned
+from aisim_core.sdk import RustForwardPassPerfModel, fpm_learned
 
 identity = json.loads(Path("aggregated.identity.json").read_text())
 if identity["worker_type"] != "aggregated":

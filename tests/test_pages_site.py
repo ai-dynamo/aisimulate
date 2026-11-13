@@ -35,7 +35,7 @@ FPE_SPEC.loader.exec_module(FPE)
 
 NEW_SHA = "a" * 40
 OLD_SHA = "b" * 40
-REPOSITORY = "ai-dynamo/aisimulate"
+REPOSITORY = "ai-dynamo/aisim"
 LEGACY_FPE_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 
 
@@ -478,7 +478,7 @@ class FpePagesTest(unittest.TestCase):
                 )
 
     def test_probe_status_contract_matches_the_qualifier(self):
-        path = ROOT / "python/aisimulate/tools/support_matrix/qualify_fpe_support_matrix.py"
+        path = ROOT / "python/aisim/tools/support_matrix/qualify_fpe_support_matrix.py"
         spec = importlib.util.spec_from_file_location("qualify_fpe", path)
         qualifier = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(qualifier)
@@ -873,7 +873,7 @@ class LegacySnapshotTest(unittest.TestCase):
             dataset.mkdir(parents=True)
             (dataset / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"]}))
             (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
-        replay = Path("python/aisimulate/src/aisimulate/replay")
+        replay = Path("python/aisim/src/aisim/replay")
         (self.repository / replay).mkdir(parents=True, exist_ok=True)
         for name in ("dashboard.html", "dashboard-body.html", "dashboard.js", "dashboard.css", "plotly-js-LICENSE.txt"):
             shutil.copyfile(ROOT / replay / name, self.repository / replay / name)
@@ -1018,7 +1018,7 @@ class PagesSiteTest(unittest.TestCase):
                     continue
                 text = (output_dir / path).read_text()
                 self.assertNotIn("raw.githubusercontent.com", text)
-                self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", text)
+                self.assertNotIn("api.github.com/repos/ai-dynamo/aisim", text)
 
     def test_deployed_matrices_use_packaged_public_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1033,7 +1033,7 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn("../data/fpe-support-matrix", fpe_page)
             self.assertIn('href="../"', fpe_page)
             self.assertNotIn("raw.githubusercontent.com", fpe_page)
-            self.assertNotIn("api.github.com/repos/ai-dynamo/aisimulate", fpe_page)
+            self.assertNotIn("api.github.com/repos/ai-dynamo/aisim", fpe_page)
 
     def test_public_artifact_rejects_symlinked_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1052,7 +1052,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("release_schema", [1, 2])
+def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path, release_schema: int) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -1072,11 +1073,14 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     release_summary["snapshot"]["evaluated_revision"] = {"branch": "release/0.12.0", "commit_sha": "a" * 40}
     release_summary["snapshot"]["aic_commit_sha"] = "a" * 40
     release_summary["snapshot"]["aic_source"] = {
-        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "repository": "https://github.com/ai-dynamo/aisim",
         **release_summary["snapshot"]["evaluated_revision"],
     }
-    source.write_text(json.dumps(release_summary))
-    legacy_source = repo / "python/aisimulate/docs/e2e-accuracy/summary.json"
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    saved_release = normalize_summary(release_summary, target_version=release_schema)
+    source.write_text(json.dumps(saved_release))
+    legacy_source = repo / "python/aisim/docs/e2e-accuracy/summary.json"
     legacy_source.parent.mkdir(parents=True)
     source.rename(legacy_source)
     (source.parent / "app.js").write_text("untrusted release javascript")
@@ -1102,18 +1106,65 @@ def test_accuracy_catalog_packages_main_and_release_data_only(tmp_path: Path) ->
     assert entries["release/0.13.0"]["summary_path"] is None
     assert entries["release/0.13.0"]["status"] == "unavailable"
     assert entries["release/0.12.0"]["published_from_commit"] == release_sha
-    assert entries["release/0.12.0"]["published_source_path"] == "python/aisimulate/docs/e2e-accuracy/summary.json"
+    assert entries["release/0.12.0"]["published_source_path"] == "python/aisim/docs/e2e-accuracy/summary.json"
     assert entries["main"]["published_source_path"] == "pages/e2e-accuracy/summary.json"
     assert not list(output.rglob("*.js"))
     assert len({entry["summary_path"] for entry in entries.values() if entry["summary_path"]}) == 3
     published = json.loads((output / "e2e-accuracy" / entries["release/0.12.0"]["summary_path"]).read_text())
     assert published == release_summary
+    assert json.loads(git("show", f"{release_sha}:python/aisim/docs/e2e-accuracy/summary.json")) == saved_release
     # A deleted release disappears on the next catalog build.
     git("update-ref", "-d", "refs/remotes/origin/release/0.12.0")
     PAGES._build_accuracy_catalog(repo, output, True)
     assert "release/0.12.0" not in [
         entry["branch"] for entry in json.loads((output / "e2e-accuracy/branches.json").read_text())["branches"]
     ]
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+@pytest.mark.parametrize(
+    ("packages", "accepted"),
+    [
+        pytest.param({}, False, id="empty"),
+        pytest.param({"numpy": "2.1.0"}, False, id="unrelated-only"),
+        pytest.param({"aisimulate": "0.14.0", "aisim": "0.14.0"}, False, id="ambiguous"),
+        pytest.param({"aisimulate": "0.14.0"}, True, id="legacy-application"),
+        pytest.param({"aisim": "0.14.0"}, True, id="renamed-application"),
+        pytest.param({"aisimulate": "0.14.0", "numpy": "2.1.0"}, True, id="legacy-with-dependency"),
+        pytest.param({"aisim": "0.14.0", "numpy": "2.1.0"}, True, id="renamed-with-dependency"),
+    ],
+)
+def test_accuracy_catalog_preserves_one_application_identity(
+    tmp_path: Path, schema_version: int, packages: dict, accepted: bool
+) -> None:
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    relative = PAGES.PAGES_ROOT / "e2e-accuracy/summary.json"
+    summary = normalize_summary(json.loads((ROOT / relative).read_text()), target_version=schema_version)
+    package_field = "aisimulate_packages" if schema_version == 1 else "aisim_packages"
+    summary["snapshot"][package_field] = packages
+    source = tmp_path / "repo" / relative
+    source.parent.mkdir(parents=True)
+    content = json.dumps(summary)
+    source.write_text(content)
+    output = tmp_path / "site"
+
+    if not accepted:
+        with pytest.raises(PAGES.PagesBuildError, match="AISim package identity"):
+            PAGES._build_accuracy_catalog(tmp_path / "repo", output, False)
+        assert not list(output.rglob("summary.json"))
+        assert not (output / "e2e-accuracy/branches.json").exists()
+    else:
+        PAGES._build_accuracy_catalog(tmp_path / "repo", output, False)
+        catalog = json.loads((output / "e2e-accuracy/branches.json").read_text())
+        main = catalog["branches"][0]
+        assert main["branch"] == "main"
+        root_summary = json.loads((output / "e2e-accuracy/summary.json").read_text())
+        branch_summary = json.loads((output / "e2e-accuracy" / main["summary_path"]).read_text())
+        assert root_summary == branch_summary == normalize_summary(summary, target_version=2)
+        assert root_summary["schema_version"] == 2
+        assert root_summary["snapshot"]["aisim_packages"] == packages
+    assert source.read_text() == content
 
 
 def test_missing_local_accuracy_summary_raises_pages_build_error(tmp_path: Path) -> None:
@@ -1170,7 +1221,7 @@ def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
     del missing_metric["models"][0]["workloads"][0]["gpus"][0]["aic"]["ttft_mape_pct"]
     invalid_cases.append(missing_metric)
     broken_coverage = deepcopy(valid)
-    broken_coverage["totals"]["aisimulate"]["status_counts"]["success"] += 1
+    broken_coverage["totals"]["aisim"]["status_counts"]["success"] += 1
     invalid_cases.append(broken_coverage)
     bad_topology = deepcopy(valid)
     bad_topology["models"][0]["workloads"][0]["gpus"][0]["topologies"] = [{"id": "missing-points"}]
@@ -1191,14 +1242,17 @@ def test_generated_topology_summary_satisfies_publication_contract() -> None:
         PAGES._accuracy_summary(json.dumps(summary))
 
 
-def test_publication_rejects_invalid_legacy_cli_provenance() -> None:
+@pytest.mark.parametrize(
+    "repository", ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]
+)
+def test_publication_rejects_invalid_legacy_cli_provenance(repository: str) -> None:
     from copy import deepcopy
 
     summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
     summary["snapshot"].update(
         evaluated_revision={"branch": "main", "commit_sha": "d" * 40},
         aic_commit_sha="d" * 40,
-        aic_source={"repository": "https://github.com/ai-dynamo/aisimulate", "branch": "main", "commit_sha": "d" * 40},
+        aic_source={"repository": repository, "branch": "main", "commit_sha": "d" * 40},
     )
     assert PAGES._accuracy_summary(json.dumps(summary)) == summary
     for change in (
@@ -1490,3 +1544,26 @@ def test_feature_matrix_omits_invalid_release_data_but_rejects_invalid_main(tmp_
     (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
     with pytest.raises(PAGES.PagesBuildError, match="invalid feature support matrix"):
         PAGES._build_feature_matrix(repo, tmp_path / "site-broken-main", True)
+
+
+@pytest.mark.parametrize("version", [0, 3, True, None, "2"])
+def test_accuracy_reader_rejects_unknown_summary_versions(version):
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["schema_version"] = version
+    with pytest.raises(PAGES.PagesBuildError, match="unsupported accuracy summary schema"):
+        PAGES._accuracy_summary(json.dumps(summary))
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("location", ["totals", "snapshot"])
+def test_accuracy_reader_rejects_mixed_summary_fields(version, location):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    summary = normalize_summary(
+        json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text()), target_version=version
+    )
+    source, other = ("aisimulate", "aisim") if version == 1 else ("aisim", "aisimulate")
+    suffix = "_packages" if location == "snapshot" else ""
+    summary[location][other + suffix] = summary[location][source + suffix]
+    with pytest.raises(PAGES.PagesBuildError, match="unexpected field"):
+        PAGES._accuracy_summary(json.dumps(summary))

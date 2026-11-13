@@ -166,7 +166,7 @@ for unsalted requests. It models the namespace behavior of
 without reproducing SGLang's SHA256 event encoding. Placement adapters hashing
 a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
 
-This is a simulator contract pinned to SGLang v0.5.22. AISimulate does not check
+This is a simulator contract pinned to SGLang v0.5.22. AISim does not check
 the installed serving runtime's support for `cache_salt` or the decode radix
 flag; verify both capabilities when deploying an older SGLang version.
 
@@ -258,7 +258,7 @@ traffic:
 ```
 
 ```bash
-aisimulate predict --stack engine --config host-offload-prediction.yaml --capture-per-request
+aisim predict --stack engine --config host-offload-prediction.yaml --capture-per-request
 ```
 
 | Knob (under `host_offload`) | Default | Rules |
@@ -378,8 +378,9 @@ state cache it resumes one block short of the G2 hit and recomputes that
 block, as vLLM's drafter KV group loads a connector hit without its last
 block; replay loads the block before recomputing it, so such a restore moves
 one block more than vLLM. Accepted drafts that take a G1 block a store still
-reads make the rank's next pass wait for that copy, and so does preempting a
-request whose store is in flight. The capacity guard above does not cover these
+reads make the forward that writes it wait for that copy, and so does
+preempting a request whose store is in flight; a store prepared in that same
+pass delays the rank's next pass. The capacity guard above does not cover these
 workers: when G1 holds fewer than about two requests, a replay can end with a
 stall error or not terminate, with or without G2. Size G1 for several
 concurrent requests.
@@ -539,7 +540,7 @@ Hints come from the placement policy (see
 from `kv_hints` on native ReplaySpec requests (see
 [Rust API](../api/rust.md#serializable-spec)). Replay ignores a hint that names
 the receiving rank. CLI traffic carries no hints, so
-`aisimulate predict --stack engine` runs KVCR idle: apart from the `kvcr`
+`aisim predict --stack engine` runs KVCR idle: apart from the `kvcr`
 section, the results equal G2 alone.
 
 For a complete CLI example with router-generated hints, follow
@@ -584,7 +585,7 @@ For example, TP8 with FP8 KV and `block_size: 128` resolves to 1536-token blocks
 of 13824 bytes per token. The same estimate is available in the SDK:
 
 ```python
-from aisimulate_core.sdk import estimate_state_cache
+from aisim_core.sdk import estimate_state_cache
 
 state = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8, kvcache_quant_mode="fp8", block_size=128)
 ```
@@ -736,9 +737,9 @@ traffic carries no router hint. Results are qualified `functional_only`.
 Two small offline fixtures use fixed timing and need no GPU:
 
 ```bash
-aisimulate predict --stack engine --config examples/cli/agentx-g2-local.yaml \
+aisim predict --stack engine --config examples/cli/agentx-g2-local.yaml \
   --capture-per-request --output-dir ./agentx-g2-local --format json
-aisimulate predict --stack engine --config examples/cli/agentx-g2-shared-pd.yaml \
+aisim predict --stack engine --config examples/cli/agentx-g2-shared-pd.yaml \
   --capture-per-request --output-dir ./agentx-g2-shared --format json
 ```
 

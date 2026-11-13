@@ -34,10 +34,10 @@ import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
-from aisimulate_core.sdk.common import MoEQuantMode
-from aisimulate_core.sdk.engine import _evaluate_single_op
-from aisimulate_core.sdk.operations.moe_comm import MoEExpertCompute
-from aisimulate_core.sdk.perf_database import get_database
+from aisim_core.sdk.common import MoEQuantMode
+from aisim_core.sdk.engine import _evaluate_single_op
+from aisim_core.sdk.operations.moe_comm import MoEExpertCompute
+from aisim_core.sdk.perf_database import get_database
 
 OUT_PATH = os.path.join(
     os.path.dirname(__file__), "..", "src", "perf_database", "testdata", "moe_expert_compute_oracle.json"

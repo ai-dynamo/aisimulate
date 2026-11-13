@@ -10,11 +10,11 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
-from aisimulate import capacity, compiler, runner
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.engine import KvCachePredictionConfig, StateCacheConfig, WorkerPredictionConfig
-from aisimulate.runner import EngineReplayRunnerFactory, _materialize_engine_role
+from aisim import capacity, compiler, runner
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.engine import KvCachePredictionConfig, StateCacheConfig, WorkerPredictionConfig
+from aisim.runner import EngineReplayRunnerFactory, _materialize_engine_role
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
@@ -331,7 +331,7 @@ def test_manual_state_reports_unavailable_memory_without_estimating(forbid_estim
 @pytest.mark.parametrize("role", ["agg_engine_args", "prefill_engine_args", "decode_engine_args"])
 @pytest.mark.parametrize("nested", [False, True])
 def test_state_cache_requires_runner_capability(role, nested):
-    from aisimulate.sweeper.replay import RunnerCapabilities
+    from aisim.sweeper.replay import RunnerCapabilities
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public()))
     args = {"rank": dict(RANK)} if nested else dict(RANK)
@@ -360,8 +360,8 @@ def test_native_engine_advertises_state_cache_support():
 def test_cli_rejects_state_cache_before_creating_unsupported_runner(tmp_path, monkeypatch, capsys):
     import yaml
 
-    import aisimulate.main as cli
-    from aisimulate.sweeper.replay import RunnerCapabilities
+    import aisim.main as cli
+    from aisim.sweeper.replay import RunnerCapabilities
 
     class UnsupportedFactory:
         def capabilities(self):
@@ -506,7 +506,7 @@ def test_prefix_match_unit_requires_state_and_old_alignment_field_is_rejected():
     ],
 )
 def test_k3_state_estimator_resolves_attention_geometry(controls, block_size, token_bytes, state_bytes):
-    from aisimulate_core.sdk import estimate_state_cache
+    from aisim_core.sdk import estimate_state_cache
 
     result = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8, **controls)
     assert result["block_size"] == block_size
@@ -526,7 +526,7 @@ def test_k3_state_estimator_resolves_attention_geometry(controls, block_size, to
     ],
 )
 def test_dsv4_state_estimator_follows_vllm_pool_rows(model, controls, row, token_bytes, state_bytes, raw_state_bytes):
-    from aisimulate_core.sdk import estimate_state_cache
+    from aisim_core.sdk import estimate_state_cache
 
     result = estimate_state_cache(model, **controls)
     # Each request holds one 256-token row per block plus 26 sliding-window rows:
@@ -544,7 +544,7 @@ def test_dsv4_state_estimator_follows_vllm_pool_rows(model, controls, row, token
 
 
 def test_dsv4_draft_tokens_widen_sliding_windows():
-    from aisimulate_core.sdk import estimate_state_cache
+    from aisim_core.sdk import estimate_state_cache
 
     # vLLM with one MTP draft token keeps 4 + 4 + 4 + 18 sliding-window rows,
     # one more per group (63 rows at 8,255 tokens on B200 = 33 token rows + 30).
@@ -568,7 +568,7 @@ def test_dsv4_draft_tokens_widen_sliding_windows():
     ],
 )
 def test_dsv4_state_estimator_rejects_unsupported_controls(model, controls, error):
-    from aisimulate_core.sdk import estimate_state_cache
+    from aisim_core.sdk import estimate_state_cache
 
     with pytest.raises(ValueError, match=error):
         estimate_state_cache(model, **controls)

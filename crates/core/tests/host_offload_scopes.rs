@@ -7,12 +7,12 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
-use aisimulate_core::engine::{
+use aisim_core::engine::generalized::{EngineIdentity, SchedulerCommand};
+use aisim_core::engine::{
     Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
     SharedG2Pool, TimingModel,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
     ReplaySpec, Replayer,
 };
@@ -168,10 +168,10 @@ fn attention_dp_ranks_share_g2_only_in_cluster_scope() {
 #[test]
 fn token_only_prefill_and_decode_join_one_cluster_pool() {
     for (prefill_scope, decode_scope, reuse) in [
-        ("dp_rank_local", "dp_rank_local", [0, 0]),
-        ("cluster_shared", "cluster_shared", [0, 8]),
+        ("dp_rank_local", "dp_rank_local", [0, 0, 0, 0]),
+        ("cluster_shared", "cluster_shared", [0, 8, 8, 8]),
         // Roles choose scopes independently; the shared prefill pool still reuses.
-        ("cluster_shared", "dp_rank_local", [0, 8]),
+        ("cluster_shared", "dp_rank_local", [0, 8, 8, 8]),
     ] {
         // MTP keeps the restored prefix on these workers too.
         for mtp in [false, true] {
@@ -188,9 +188,9 @@ fn token_only_prefill_and_decode_join_one_cluster_pool() {
                 "prefill": role(prefill_scope),
                 "decode": role(decode_scope),
             });
-            let requests = requests(2, "prefill_dp_rank");
+            let requests = requests(4, "prefill_dp_rank");
             let report = run_with(&timed_factory(), disaggregated(2), engine, requests).unwrap();
-            assert_eq!(report.request_counts.completed_requests, 2);
+            assert_eq!(report.request_counts.completed_requests, 4);
             let case = format!("{prefill_scope}/{decode_scope} mtp={mtp}");
             assert_eq!(host_reuse(&report), reuse.map(Some), "{case}");
         }
@@ -412,10 +412,10 @@ fn concurrent_state_restores_wait_their_turn_and_keep_their_checkpoints() {
 fn mtp_growth_waits_for_a_store_that_still_reads_its_block() {
     // A local store copies one block per second and does not hold its G1
     // source. Accepted drafts of `grower` take a block that the store of
-    // `stored` still reads, so the decode rank's next pass waits for that
+    // `stored` still reads, so the forward that writes it waits for that
     // copy, as vLLM flushes a reallocated block's store. A store starts at
     // the end of the pass that prepares it, stores queue behind one another,
-    // and `grower` then needs one more 1 ms pass.
+    // and one prepared in the pass that grows delays the next pass.
     let slow_store = || json!({"num_host_blocks": 16, "d2h_bandwidth_gbps": 0.001});
     let mtp_rank = |host: Value, depth: usize| {
         let mut rank = rank(host);
@@ -425,13 +425,15 @@ fn mtp_growth_waits_for_a_store_that_still_reads_its_block() {
         canonical_mtp(&mut rank, depth);
         rank
     };
-    let in_flight = trace(&[("stored", 0.0, 101, 8, 1), ("grower", 10.0, 1, 4, 9)]);
+    let in_flight = trace(&[("stored", 0.0, 101, 8, 1), ("grower", 10.0, 1, 4, 6)]);
     let same_pass = trace(&[("grower", 0.0, 101, 4, 6), ("stored", 0.0, 1, 8, 1)]);
     for (depth, requests, done_ms) in [
-        // The two-block copy runs from 2 ms to 2,002 ms.
+        // The two-block copy runs from 2 ms to 2,002 ms, and the burst that
+        // takes its block is `grower`'s last: that 1 ms forward waits for it.
         (2, in_flight, 2_003.0),
         // Both arrive together, so the store is prepared in the pass that
         // grows and submitted at its boundary: three blocks, 2 ms to 3,002 ms.
+        // `grower` then needs one more 1 ms pass.
         (3, same_pass, 3_003.0),
     ] {
         let engine = json!({

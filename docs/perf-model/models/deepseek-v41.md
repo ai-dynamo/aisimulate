@@ -114,7 +114,7 @@ BF16 GEMM, MoE, and collective data with **SOL** contributions for CSA2, Engram,
 single-pass mHC, and 32x32-block FP8 shared-expert projections; those new components are uncalibrated. SILICON fails for missing
 V4.1 data and never substitutes V4 attention or mHC tables. EMPIRICAL similarly
 requires a V4.1 anchor. The packaged
-[GB300 SILICON operator databases](../../../python/aisimulate/src/aisimulate_core/systems/profiles/dsv41/README.md)
+[GB300 SILICON operator databases](../../../python/aisim/src/aisim_core/systems/profiles/dsv41/README.md)
 provide separate `full` and `decoder_bounded` systems roots for the measured
 SGLang runtime. Select the root matching `decoder_replay`; the flag does not
 automatically select a table.

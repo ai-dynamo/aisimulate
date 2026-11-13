@@ -3,14 +3,14 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Migrate from AIC to AISimulate
+# Migrate from AIC to AISim
 
 This guide maps existing AIConfigurator commands and Python/Rust APIs to implemented
-AISimulate interfaces. A mapping does not imply identical estimation or search
+AISim interfaces. A mapping does not imply identical estimation or search
 semantics. Workflows without a unified replacement use the bundled compatibility
 CLI or SDK.
 
-The guide describes AISimulate 0.13.0. Published AIC and AISimulate 0.12.0 artifacts
+The guide describes AISim 0.13.0. Published AIC and AISim 0.12.0 artifacts
 retain their original behavior. For upstream source provenance and synchronization, see
 [AIC synchronization](../ci/aic-sync.md).
 
@@ -30,22 +30,22 @@ retain their original behavior. For upstream source provenance and synchronizati
 ## Installation and package mapping
 
 Remove the standalone `aiconfigurator` and `aiconfigurator-core` distributions
-before installing the `aisimulate` wheel. Both console commands, `aisimulate` and
+before installing the `aisim` wheel. Both console commands, `aisim` and
 `aiconfigurator`, come from that wheel. There is no separate core wheel.
 See the [installation guide](../getting-started/installation.md).
 
-| AIConfigurator 0.12.0 surface | AISimulate 0.13.0 surface | Compatibility |
+| AIConfigurator 0.12.0 surface | AISim 0.13.0 surface | Compatibility |
 | --- | --- | --- |
-| Python distribution `aiconfigurator` | `aisimulate` | The `aiconfigurator` command remains; the Python import namespace is removed in 0.13.0 |
-| CLI `aiconfigurator ...` | `aisimulate predict` / `aisimulate recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See [command mapping](#command-mapping); this is not a flag-compatible rename |
-| Python distribution `aiconfigurator-core` | included in `aisimulate` | No separate core distribution is installed |
-| `aiconfigurator_core` | `aisimulate_core` from the `aisimulate` wheel | Update Python imports for 0.13.0 |
-| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` in the same wheel | The old import path is removed in 0.13.0 |
-| Rust package/import `aiconfigurator-core` / `aiconfigurator_core` | `aisimulate-core` / `aisimulate_core` | Cargo consumers may temporarily alias the new package under the old dependency key |
+| Python distribution `aiconfigurator` | `aisim` | The `aiconfigurator` command remains; the Python import namespace is removed in 0.13.0 |
+| CLI `aiconfigurator ...` | `aisim predict` / `aisim recommend` for new simulation workflows; `aiconfigurator ...` for compatibility-only workflows | See [command mapping](#command-mapping); this is not a flag-compatible rename |
+| Python distribution `aiconfigurator-core` | included in `aisim` | No separate core distribution is installed |
+| `aiconfigurator_core` | `aisim_core` from the `aisim` wheel | Update Python imports for 0.13.0 |
+| `aiconfigurator_core.sdk` | `aisim_core.sdk` in the same wheel | The old import path is removed in 0.13.0 |
+| Rust package/import `aiconfigurator-core` / `aiconfigurator_core` | `aisim-core` / `aisim_core` | Cargo consumers may temporarily alias the new package under the old dependency key |
 
-Rust consumers may alias the package `aisimulate-core` under the old dependency
+Rust consumers may alias the package `aisim-core` under the old dependency
 key `aiconfigurator-core`. The former compiled-engine module moves to
-`aisimulate_core::perfmodel::engine`; `aisimulate_core::engine` is Replay's
+`aisim_core::perfmodel::engine`; `aisim_core::engine` is Replay's
 scheduler. New code should use the canonical `perfmodel` namespace.
 `AicEngineBuilder` and `AicEngine` require the `python` feature; standalone
 embedded binaries also require `embed-python` and an importable matching wheel.
@@ -53,21 +53,21 @@ Pure Rust performance-model types do not require Python.
 
 ## Command mapping
 
-All six `aiconfigurator cli` commands remain in the AISimulate wheel. Keep their
+All six `aiconfigurator cli` commands remain in the AISim wheel. Keep their
 original arguments when using compatibility workflows. There is no automatic
 converter for AIC experiment files or a flag-compatible CLI rename.
 
 | AIC command | Implemented destination | Difference / boundary |
 | --- | --- | --- |
 | `generate` | Bundled `aiconfigurator cli generate` | No unified `generate` command. Deployment files remain a compatibility/generator SDK workflow. |
-| `estimate` | `aisimulate predict` | Serving simulation uses arrivals and scheduler-formed batches. Static fixed-batch diagnostics remain in AIC. |
+| `estimate` | `aisim predict` | Serving simulation uses arrivals and scheduler-formed batches. Static fixed-batch diagnostics remain in AIC. |
 | `support` | Bundled `aiconfigurator cli support` | No unified support-query command. |
-| `recommend` | `aisimulate recommend` with `optimization.target: min_gpus` | Smallest qualifying candidate evaluated; not AIC's analytical replica sizing or proof of a global minimum. |
-| `default` | `aisimulate recommend` | Choose workload, GPU ceiling, objective, and search budget explicitly. |
+| `recommend` | `aisim recommend` with `optimization.target: min_gpus` | Smallest qualifying candidate evaluated; not AIC's analytical replica sizing or proof of a global minimum. |
+| `default` | `aisim recommend` | Choose workload, GPU ceiling, objective, and search budget explicitly. |
 | `exp` | Bundled `aiconfigurator cli exp` | Translate individual experiments to `predict` or `recommend`; no equivalent named-file orchestration. |
 
 See the [legacy command reference](cli.md) for compatibility
-arguments. `aisimulate onboard` is an additional FPM onboarding workflow, not an
+arguments. `aisim onboard` is an additional FPM onboarding workflow, not an
 AIC command replacement; see the [onboarding guide](../perf-model/fpm-self-service/implementation.md).
 
 ## Verified serving examples
@@ -102,7 +102,7 @@ engine:
 ```
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml --output-dir ./prediction-output
+aisim predict --stack engine --config prediction.yaml --output-dir ./prediction-output
 ```
 
 Inspect `prediction-output/prediction.json` for 100 completed requests, TTFT,
@@ -138,8 +138,8 @@ optimizer: {algorithm: random, max_trials: 8, parallelism: 1, seed: 11}
 ```
 
 ```bash
-aisimulate recommend --stack engine --config budget-search.yaml --output-dir ./budget-search
-aisimulate predict --stack engine --config ./budget-search/recommendations/0001.yaml \
+aisim recommend --stack engine --config budget-search.yaml --output-dir ./budget-search
+aisim predict --stack engine --config ./budget-search/recommendations/0001.yaml \
   --output-dir ./budget-selected
 ```
 
@@ -162,7 +162,7 @@ before replaying a selected candidate.
 
 Use these mappings when translating a workflow; choose traffic and search objectives explicitly.
 
-| AIC input | AISimulate input | Translation note |
+| AIC input | AISim input | Translation note |
 |---|---|---|
 | `--model-path`, `--system`, `--backend` | `engine.model`, `engine.hardware`, `engine.backend` | Concrete model, hardware, and backend; optional `engine.backend_version` pins the version. |
 | `--isl`, `--osl` | `traffic.source.input_tokens`, `traffic.source.output_tokens` | Synthetic request lengths. |
@@ -173,7 +173,7 @@ Use these mappings when translating a workflow; choose traffic and search object
 | `--request-latency` | `evaluation.sla.e2e_ms` | Use instead of TTFT/ITL bounds. |
 | `--strict-sla` | `optimization.strict_sla: true` | Reject aggregate-mean latency violations before ranking. |
 
-See the [AISimulate input reference](../reference/configuration.md#configuration-model) for full schemas and
+See the [AISim input reference](../reference/configuration.md#configuration-model) for full schemas and
 [result reference](../reference/cli.md#outputs) for files and metric units. Analytical EPD uses
 aggregate-only SLA semantics, described in its feature guide.
 
@@ -258,8 +258,8 @@ that mode first, then the other modes in global priority order. Invalid inputs
 do not trigger fallback. An untrained regression is not ready for offline
 simulation, and queries do not switch estimators after construction.
 
-Engine-wide data policies require regular aggregated/disaggregated language
-workers with default timing in every role. AFD, analytical encoders, and
+Engine-wide data policies apply to regular aggregated/disaggregated language
+workers with default timing and to native AFD pools. Analytical encoders and
 fixed/polynomial timing retain their separate paths. Saved recommendation YAML
 preserves resolved role data roots, versions, policies, and estimator settings.
 External FPM profiles require a matching parquet/metadata pair; see the
@@ -293,7 +293,7 @@ prefill load model. Heterogeneous deployment generation is unsupported.
 
 ### Prediction details and power
 
-`aisimulate predict` supports `--detail summary,memory,time,energy,source`;
+`aisim predict` supports `--detail summary,memory,time,energy,source`;
 `all` requests all five. Run prediction on saved recommendation YAML to inspect
 a selected candidate. AIC's `--detail` belongs to `estimate`, not `default`.
 
@@ -311,7 +311,7 @@ providers can omit memory details. Analytical EPD reports available language
 memory without claiming a complete encoder breakdown.
 
 Whole-forward FPM and latency-only providers do not expose per-operation
-timing/source evidence. EPD/AFD overlays and the external Dynamo Python adapter
+timing/source evidence. Analytical EPD overlays and the external Dynamo Python adapter
 do not export a qualified combined operation report. Missing SOL evidence keeps
 the measured timing and an explicit reason.
 
@@ -355,14 +355,16 @@ selection and fallback policy.
 | GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
 
 `enable_wideep` is obsolete: topology now determines the MoE execution regime.
-The new model controls require default timing on every language role. AFD and
-analytical encoder configurations reject them. Backend/model compatibility is
+The model controls require default timing on ordinary language roles. Native
+AFD supports precision overrides, kernel selectors and MTP; EPLB, redundant
+slots and nondefault MoE backends remain unsupported. Analytical encoder
+configurations reject unsupported controls. Backend/model compatibility is
 validated by the canonical constructor before simulation. Use `--stack engine`
 for these controls and exact synthetic shared prefixes. Older Dynamo adapters
 do not support them and fail capability validation before replay. Explicit MTP
 expected acceptance also requires an opt-in runner capability; legacy acceptance-rate
-payloads retain their existing compatibility. AFD and
-AFD+PD reject positive `cached_prefix_tokens`.
+payloads retain their existing compatibility. Native AFD supports positive
+`cached_prefix_tokens` and prices the actual uncached prefill suffix.
 
 Save this bounded recommendation as `controls.yaml` to preserve a shared prefix
 and KV quantization while using the existing capacity field:
@@ -401,7 +403,7 @@ optimizer: {algorithm: random, max_trials: 2, parallelism: 1, seed: 11}
 ```
 
 ```bash
-aisimulate recommend --stack engine --config controls.yaml --output-dir ./controls-search
+aisim recommend --stack engine --config controls.yaml --output-dir ./controls-search
 ```
 
 For MTP-capable models, specify both `engine.nextn` and
@@ -414,19 +416,39 @@ engine cache block size can produce zero hits.
 
 ### AFD translation
 
-The legacy compatibility CLI no longer supports `--estimate-mode afd` or
-`--serving-mode afd`; `--serving-mode all` now includes only agg and disagg.
-Use the unified `aisimulate recommend` and `aisimulate predict` commands for AFD.
-The former AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
-`phase: decode` and `combined_with_pd: true` select decode-side AFD with a regular
-prefill companion. The total GPU budget includes attention, FFN, and companion
-pools. This is analytical fixed-length synthetic traffic, not event-level AFD.
+Use unified `aisim recommend` and `aisim predict` with SGLang.
+The legacy CLI rejects `--estimate-mode afd` and `--serving-mode afd`;
+`--serving-mode all` selects agg and disagg.
 
-This walkthrough pins a 2,048-token context to bound KV memory and uses an
-illustrative 300 ms ITL limit. It constrains the prefill companion to TP16 and the
-AFD attention side to TP8 so this small smoke search has a qualifying topology.
-Expand the topology and scheduler domains for an optimization run. Choose limits
-appropriate to your workload.
+| Previous input | Current input | Saved-artifact action |
+| --- | --- | --- |
+| `engine.mode: afd`, top-level `engine.afd`, `phase: both` | `mode: aggregated`, `workers.aggregated.type: afd`, role-local `afd` | Recompile the deployment and regenerate qualification. |
+| `combined_with_pd: true`, `phase: prefill` or `decode` | `mode: disaggregated`; put AFD on that role and configure the opposite role explicitly | Recompile; dual-sided AFD needs an independent block per role. |
+| `boundary_on_attn`, even `true` | Remove from YAML, topology and native rank/timing inputs; boundary work stays on A | Regenerate saved deployments. Legacy Task `afd_boundary_on_attn` is still discarded for old agg/disagg experiments. |
+| Timing provider `aic-afd` | `afd`; the input boundary normalizes the old name | New metadata uses `afd`; ordinary provider `aic` is unchanged. |
+| `estimator_config.afd.frozen_decode_identity` or saved `frozen_decode_identity` | Per-pass replay batch/context pricing | Regenerate for every old value, including `false` and `null`; static forward queries remain available. |
+| Development ReplaySpec API 2, obsolete AFD topology or qualification | ReplaySpec API 1; AFD topology and qualification schema 2 | Regenerate; development intermediate formats are unsupported. |
+| AFD EngineSpec without a source layer plan | Compile through the canonical constructor | Recompile; ordinary EngineSpecs may still omit a plan. |
+
+Set `afd.a_batch_size` explicitly. Omitted F EP resolves to F GPU count;
+explicit saved EP1 is preserved and rejected on multi-GPU F pools. Standalone
+shape-name aliases are normalized and revalidated; internal mappings use canonical
+names. See [topology identity](../sweeper/afd-topology.md#topology-identity).
+
+Legacy native timing copies of rank topology/backend/MTP/context are removed
+when consistent and rejected when conflicting, before model loading.
+Top-level timing `comm_quant_mode` migrates to `quant.comm_quant_mode` with the
+same conflict check. Legacy timing `max_seq_len` migrates to optional rank
+`max_model_len`; an unset memory window removes a matching derived `isl + osl`
+scheduler cap. A differing independent legacy cap is rejected because one
+declaration cannot represent it. Reload derives an absent scheduler limit again.
+
+Source-ordered timing replaces uniform-layer approximations. With a dense prefix,
+embedding executes once at full replica batch; otherwise it executes per
+microbatch. Logits remain per microbatch. Historical numerical goldens describe
+their recorded versions, not current serving accuracy. For current configuration,
+limits and timing see [AFD](../replay/engine/analytical.md#afd).
+
 Save as `afd-recommendation.yaml`:
 
 <!-- afd-migration-contract-start -->
@@ -442,32 +464,30 @@ traffic:
   stop:
     requests_per_load_unit: 10
 engine:
-  mode: afd
-  model: Qwen/Qwen3-32B
+  mode: disaggregated
+  model: Qwen/Qwen3-30B-A3B
   context_length: 2048
   hardware: h200_sxm
-  backend: trtllm
-  backend_version: 1.3.0rc20
-  afd:
-    phase: decode
-    combined_with_pd: true
-    a_batch_size: 128
-    tp_a: 8
-    num_microbatches: 3
-    pipeline_model: optimistic
+  backend: sglang
   workers:
     prefill:
       parallelism:
         preset:
         - attention_data: 1
           moe_expert: 1
-          moe_tensor: 1
+          moe_tensor: 16
           pipeline: 1
           replicas: 1
           tensor: 16
       scheduler:
         max_batched_tokens: 8192
         max_sequences: 16
+    decode:
+      type: afd
+      afd:
+        a_batch_size: 128
+        tp_a: 1
+        num_microbatches: 3
 evaluation:
   sla:
     ttft_ms: 800
@@ -486,15 +506,15 @@ optimizer:
 <!-- afd-migration-contract-end -->
 
 ```bash
-aisimulate recommend --stack engine --config afd-recommendation.yaml --output-dir ./afd-search
-aisimulate predict --stack engine --config ./afd-search/recommendations/0001.yaml \
+aisim recommend --stack engine --config afd-recommendation.yaml --output-dir ./afd-search
+aisim predict --stack engine --config ./afd-search/recommendations/0001.yaml \
   --output-dir ./afd-selected
 ```
 
 Inspect `afd-selected/afd-replay-spec.json` and `afd-qualification.json` for
 analytical inputs and GPU accounting. AIC's capped/truncated topology search and
 this fixed attention-batch search do not enumerate identical operating points.
-See [AFD topology and limits](../replay/engine/analytical.md#afd).
+See [AFD topology and limits](../sweeper/afd-topology.md).
 
 ## Compatibility-only workflows
 
@@ -513,7 +533,7 @@ See [AFD topology and limits](../replay/engine/analytical.md#afd).
 
 See the [generator SDK](../sweeper/deployment-generation.md),
 [legacy tuning reference](cli.md#advanced-tuning), and
-[speculation limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md).
+[speculation limits](../../python/aisim/src/aisim_core/sdk/speculation/README.md).
 
 Recommendation performs search and replay, whereas AIC sizing uses different
 analytical semantics. Choose algorithm, trial budget, and concurrency explicitly;
@@ -525,38 +545,38 @@ faster search can reduce recommendation quality. Search budgets should be chosen
 
 The `aiconfigurator` and `aiconfigurator_core` import namespaces are removed in
 0.13.0. The `aiconfigurator` executable remains, implemented by
-`aisimulate.legacy_cli.entrypoint`. There is no legacy import hook. Convert old
+`aisim.legacy_cli.entrypoint`. There is no legacy import hook. Convert old
 pickles that encode removed module paths in the old environment before upgrading.
 
 | Removed import | Replacement |
 |---|---|
-| `aiconfigurator_core` | `aisimulate_core` |
-| `aiconfigurator_core.sdk` | `aisimulate_core.sdk` |
-| `aiconfigurator.sdk.task_v2` | `aisimulate.sdk.task_v2` |
-| `aiconfigurator.sdk.config_adapter` | `aisimulate.sdk.config_adapter` |
-| `aiconfigurator.sdk.<core module>` | `aisimulate_core.sdk.<core module>` |
-| `aiconfigurator.generator` | `aisimulate.generator` |
-| `aiconfigurator.cli` | `aisimulate.legacy_cli` (legacy workflow internals) |
+| `aiconfigurator_core` | `aisim_core` |
+| `aiconfigurator_core.sdk` | `aisim_core.sdk` |
+| `aiconfigurator.sdk.task_v2` | `aisim.sdk.task_v2` |
+| `aiconfigurator.sdk.config_adapter` | `aisim.sdk.config_adapter` |
+| `aiconfigurator.sdk.<core module>` | `aisim_core.sdk.<core module>` |
+| `aiconfigurator.generator` | `aisim.generator` |
+| `aiconfigurator.cli` | `aisim.legacy_cli` (legacy workflow internals) |
 
 For new estimator integrations, prefer the supported
 [core SDK facade](../perf-model/api/python.md):
 
 ```python
-from aisimulate_core.sdk import EngineHandle, estimate_kv_cache
-from aisimulate.sdk.task_v2 import Task
+from aisim_core.sdk import EngineHandle, estimate_kv_cache
+from aisim.sdk.task_v2 import Task
 ```
 
-Resource lookup must use `importlib.resources.files("aisimulate_core")` for
+Resource lookup must use `importlib.resources.files("aisim_core")` for
 `model_configs/` and `systems/`. The old `aic-core/` source symlinks are removed.
 Do not infer resource locations from the legacy CLI package.
 
-The `aisimulate` package owns orchestration, configuration adapters, Replay,
-Sweeper, the generator, legacy CLI, and `_runtime`. `aisimulate_core` owns the
+The `aisim` package owns orchestration, configuration adapters, Replay,
+Sweeper, the generator, legacy CLI, and `_runtime`. `aisim_core` owns the
 estimator SDK, model/performance data, and `_native` facade. Application SDK
 aliases delegate to canonical core modules to preserve registry, exception, and
 cache identity. Core code does not import application orchestration.
 
-`aisimulate_core.fpm_profile` and `aisimulate_core.quantization` own lightweight
+`aisim_core.fpm_profile` and `aisim_core.quantization` own lightweight
 metadata types; application exports refer to those same types. Importing
 metadata does not load the native extension.
 
@@ -564,9 +584,9 @@ metadata does not load the native extension.
 
 | Previous interface | Current interface | Required caller change |
 | --- | --- | --- |
-| Legacy `sweep_agg`, `sweep_disagg` | `aisimulate.sweeper.Sweeper(...).run(config)` | Both remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
-| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `engine.afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
-| Flat Rust `build_aic_engine` adapter | `aisimulate_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
+| Legacy `sweep_agg`, `sweep_disagg` | `aisim.sweeper.Sweeper(...).run(config)` | Both remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `workers.<role>.type: afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
+| Flat Rust `build_aic_engine` adapter | `aisim_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
 | Positional worker/options and separate estimator constructors | `RustForwardPassPerfModel.best_available(config)` / Rust `ForwardPassPerfModel::best_available(config)` | Pass one complete `ForwardPassPerfModelConfig`; use its Rust constructor or Python SDK config class. |
 | Flat `EngineConfig` plus `ForwardPassPerfOptions` | Canonical `ForwardPassPerfModelConfig` | Convert saved legacy values with the explicit migration helper below. |
 
@@ -626,7 +646,7 @@ explains the retained workload routing and feature mathematics.
 ### Rust AgentX snapshot options
 
 The snapshot-import extension changes the public Rust
-`aisimulate_core::replay::loadgen::AgenticSnapshotOptions` source API. Replace
+`aisim_core::replay::loadgen::AgenticSnapshotOptions` source API. Replace
 seed-only literals such as `AgenticSnapshotOptions { seed }` with
 `AgenticSnapshotOptions::seeded(seed)`; the constructor leaves imported
 selections and the corpus cursor unset. Code importing exact selections must
@@ -640,7 +660,7 @@ generic bounds accordingly. These changes break Rust source compatibility, not
 legacy seed-only JSON:
 `{"seed": 42}` still deserializes and serializes without optional fields.
 
-Before the next stable `aisimulate-core` publication, the release owner must
+Before the next stable `aisim-core` publication, the release owner must
 record this source API break in the release notes, select a compatible release
 version, and coordinate downstream caller migration and exact-artifact tests.
 This migration note neither changes package versions nor certifies downstream
@@ -653,6 +673,13 @@ Wheel and crate versions must match. Namespace changes do not preserve removed
 constructor signatures. Exact-wheel qualification of Dynamo Router, Planner,
 Mocker, and deployment adapters remains separate from this documentation's
 example checks; see the [release gates](../../.github/release-gates.json).
+
+Role-based AFD keeps ReplaySpec API 1 for both ordinary and native AFD deployments.
+Its topology and qualification schema 2 are independent of that public runner
+contract. Ordinary API-1 consumers do not need an AFD migration; runners that do
+not advertise AFD support reject it during capability preflight. Development
+API-2 saved specs must be regenerated, not automatically downgraded. See the
+[runner contract](../adapters/runner-abi.md#capabilities).
 
 Existing `aic_*` replay transport fields, native `AicEngine` names, and FPM
 resource labels remain distinct downstream contracts. Do not rename them as
