@@ -7,10 +7,10 @@ import json
 
 import pytest
 
-from aisimulate.capacity import estimate_kv_bytes_per_token
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig
-from aisimulate.runner import EngineReplayRunnerFactory
+from aisim.capacity import estimate_kv_bytes_per_token
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig
+from aisim.runner import EngineReplayRunnerFactory
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
@@ -108,8 +108,8 @@ def test_unaligned_token_budget_chunks_whole_pages():
 
 
 def test_deepseek_v4_transfer_bytes_follow_its_compressed_cache():
-    from aisimulate_core.sdk.memory.deepseek_v4 import deepseek_v4_state_cache
-    from aisimulate_core.sdk.models import _get_model_info
+    from aisim_core.sdk.memory.deepseek_v4 import deepseek_v4_state_cache
+    from aisim_core.sdk.models import _get_model_info
 
     expected = deepseek_v4_state_cache(_get_model_info(FLASH)["extra_params"], indexer_cache_dtype="auto")
     bytes_per_token = estimate_kv_bytes_per_token(FLASH, tp_size=1, pp_size=4)
@@ -121,7 +121,7 @@ def test_deepseek_v4_transfer_bytes_follow_its_compressed_cache():
 
 
 def test_malformed_architectures_fail_loudly():
-    from aisimulate_core.sdk.memory.kv_cache import NaiveKVCacheEstimator
+    from aisim_core.sdk.memory.kv_cache import NaiveKVCacheEstimator
 
     with pytest.raises(ValueError, match="architectures must be a list of strings"):
         NaiveKVCacheEstimator.from_hf_config({"architectures": "DeepseekV4ForCausalLM"}, tp_size=1, pp_size=1)

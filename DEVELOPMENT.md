@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Development setup and validation
 
-This guide will help you get started with developing the unified `aisimulate`
+This guide will help you get started with developing the unified `aisim`
 wheel and its AIConfigurator compatibility surface. We welcome contributions
 from the community!
 
@@ -14,8 +14,8 @@ from the community!
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/ai-dynamo/aisimulate
-cd aisimulate
+git clone https://github.com/ai-dynamo/aisim
+cd aisim
 ```
 
 Current performance profiles are checked-in Parquet files. Git LFS is only
@@ -30,10 +30,10 @@ linker first. Maturin builds the native extension during sync; see the
 [platform and source-build requirements](docs/getting-started/installation.md#use-current-source).
 
 ```bash
-uv sync --project python/aisimulate --extra dev
+uv sync --project python/aisim --extra dev
 ```
 
-This creates `python/aisimulate/.venv`, builds the unified native extension,
+This creates `python/aisim/.venv`, builds the unified native extension,
 and installs the sole Python distribution together with its development tools.
 
 The development dependencies constrain pytest to `<9.2`: pytest 9.2's
@@ -44,27 +44,27 @@ passes with a newer pytest release.
 To activate the environment:
 
 ```bash
-source python/aisimulate/.venv/bin/activate
+source python/aisim/.venv/bin/activate
 ```
 
 ### 3. Install Pre-Commit Hooks
 
 ```bash
-pre-commit install --config python/aisimulate/.pre-commit-config.yaml
+pre-commit install --config python/aisim/.pre-commit-config.yaml
 ```
 
 The development environment includes:
-- The `aisimulate` package and its `aiconfigurator`, `aisimulate_core`, and
-  `aisimulate_core` compatibility namespaces in editable mode
+- The `aisim` package and its `aiconfigurator`, `aisim_core`, and
+  `aisim_core` compatibility namespaces in editable mode
 - All runtime dependencies
 - Development tools: `ruff`, `pre-commit`, `pytest` and related plugins
 
 ## AIConfigurator mirror boundaries
 
 Keep upstream AIC Python code/data in
-`python/aisimulate/src/aisimulate/` and
-`python/aisimulate/src/aisimulate_core/`. AISimulate-specific compatibility
-glue belongs in `python/aisimulate/src/aisimulate_core/`, not in those mirrors.
+`python/aisim/src/aisim/` and
+`python/aisim/src/aisim_core/`. AISim-specific compatibility
+glue belongs in `python/aisim/src/aisim_core/`, not in those mirrors.
 The corresponding Rust mirror is `crates/core/src/perfmodel/`. See the
 repository's [AIC synchronization guide](docs/ci/aic-sync.md) before applying an
 upstream AIC commit; packaging and CI changes are adapted manually rather than
@@ -84,20 +84,20 @@ This project uses [Ruff](https://github.com/astral-sh/ruff) for linting and form
 
 ```bash
 # Check for linting issues
-ruff check --config python/aisimulate/pyproject.toml python/aisimulate tests
+ruff check --config python/aisim/pyproject.toml python/aisim tests
 
 # Auto-fix linting issues
-ruff check --fix --config python/aisimulate/pyproject.toml python/aisimulate tests
+ruff check --fix --config python/aisim/pyproject.toml python/aisim tests
 ```
 
 #### Run Formatting
 
 ```bash
 # Check formatting
-ruff format --check --config python/aisimulate/pyproject.toml python/aisimulate tests
+ruff format --check --config python/aisim/pyproject.toml python/aisim tests
 
 # Apply formatting
-ruff format --config python/aisimulate/pyproject.toml python/aisimulate tests
+ruff format --config python/aisim/pyproject.toml python/aisim tests
 ```
 
 ### Pre-commit Hooks
@@ -107,7 +107,7 @@ Pre-commit hooks automatically run checks before each commit.
 #### Run Pre-commit Manually
 
 ```bash
-pre-commit run --all-files --config python/aisimulate/.pre-commit-config.yaml
+pre-commit run --all-files --config python/aisim/.pre-commit-config.yaml
 ```
 
 ### Running Tests
@@ -124,7 +124,7 @@ python scripts/ci/check_documentation_links.py
 
 It checks inline/image links and reference definitions in the root README,
 development/contribution guides, `docs/`, the application README, and
-`python/aisimulate/docs/`. It uses Markdown parsing to ignore code examples and HTML
+`python/aisim/docs/`. It uses Markdown parsing to ignore code examples and HTML
 comments. Diagnostics point to the containing Markdown block. Remote URLs,
 heading anchors, and HTML links require separate review. Run the actual
 documented commands when their behavior changes; link checks do not validate
@@ -135,11 +135,11 @@ examples or establish GPU benchmark accuracy.
 python -m pytest -c pytest.ini tests
 
 # Run Python package tests
-python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests
+python -m pytest -c python/aisim/pytest.ini python/aisim/tests
 
 # Quick local subset (Full CI also runs unmarked and integration tests)
-python -m pytest -c python/aisimulate/pytest.ini \
-  python/aisimulate/tests -m "unit or build"
+python -m pytest -c python/aisim/pytest.ini \
+  python/aisim/tests -m "unit or build"
 ```
 
 The [CI guide](docs/ci/README.md) explains the Fast/Full/Nightly workflows, code review,
@@ -151,7 +151,7 @@ local marker subset above does not reproduce all Full CI validation.
 Data collection is typically not required for development. The repository includes pre-collected performance databases for supported systems.
 
 If you need to collect new data for a new GPU type or framework version, refer
-to the [Collector README](python/aisimulate/collector/README.md).
+to the [Collector README](python/aisim/collector/README.md).
 
 ## Contributing
 
@@ -167,15 +167,15 @@ Refer to [How to Add a New Model](docs/perf-model/extending.md).
 
 ### Running Automation Scripts
 
-Explore the automation helpers under `python/aisimulate/tools/automation/`.
+Explore the automation helpers under `python/aisim/tools/automation/`.
 
 ## Getting Help
 
 - **Documentation**: Check the root `docs/` directory and
-  `python/aisimulate/docs/`
+  `python/aisim/docs/`
 - **Issues**: Open an issue on
-  [GitHub](https://github.com/ai-dynamo/aisimulate/issues)
-- **Examples**: Explore `python/aisimulate/tools/simple_sdk_demo/` for SDK usage
+  [GitHub](https://github.com/ai-dynamo/aisim/issues)
+- **Examples**: Explore `python/aisim/tools/simple_sdk_demo/` for SDK usage
   examples
 
 ## License
@@ -292,7 +292,7 @@ in `scripts/pyproject.toml`.
 
 ```bash
 # Read the editable configuration without printing it.
-export SLACK_REVIEW_ROTATION="$(gh variable get SLACK_REVIEW_ROTATION --repo ai-dynamo/aisimulate)"
+export SLACK_REVIEW_ROTATION="$(gh variable get SLACK_REVIEW_ROTATION --repo ai-dynamo/aisim)"
 GH_TOKEN="$(gh auth token)" python3 scripts/notifications/slack_review_digest.py --dry-run
 ```
 

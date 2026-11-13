@@ -71,7 +71,7 @@ fn py_enum_member<'py>(
     enum_name: &str,
     token: &str,
 ) -> PyResult<Bound<'py, PyAny>> {
-    py.import("aisimulate_core.sdk.common")?
+    py.import("aisim_core.sdk.common")?
         .getattr(enum_name)?
         .get_item(token)
 }
@@ -191,7 +191,7 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
 // ---------------------------------------------------------------------------
 
 /// Base class of every engine-backed op: owns the typed [`Op`] value.
-#[pyclass(subclass, name = "Operation", module = "aisimulate_core._native")]
+#[pyclass(subclass, name = "Operation", module = "aisim_core._native")]
 pub struct PyOperation {
     pub(crate) inner: Op,
 }
@@ -371,7 +371,7 @@ impl PyOperation {
 // ---------------------------------------------------------------------------
 
 /// GEMM: dense matmul `M=x, N=n, K=k`.
-#[pyclass(extends = PyOperation, subclass, name = "GEMM", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "GEMM", module = "aisim_core._native")]
 pub struct PyGemm;
 
 #[pymethods]
@@ -494,7 +494,7 @@ impl PyGemm {
 /// Embedding lookup. `empirical_bw_scaling_factor` is accepted for calling-
 /// shape compatibility and dropped (its math retired with the Python query
 /// stack); the engine types the quant as bfloat16 (memory-only op).
-#[pyclass(extends = PyOperation, subclass, name = "Embedding", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "Embedding", module = "aisim_core._native")]
 pub struct PyEmbedding;
 
 #[pymethods]
@@ -571,7 +571,7 @@ impl PyEmbedding {
 /// `bytes_per_token = 2 * (dim_in + dim_out)` (bf16 in + out), exactly the
 /// retired `_to_opspec` derivation; `empirical_bw_scaling_factor` is
 /// accepted and dropped.
-#[pyclass(extends = PyOperation, subclass, name = "ElementWise", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "ElementWise", module = "aisim_core._native")]
 pub struct PyElementWise;
 
 #[pymethods]
@@ -657,7 +657,7 @@ impl PyElementWise {
 // ---------------------------------------------------------------------------
 
 /// TP custom all-reduce (`quant` pinned to half, the Python parity value).
-#[pyclass(extends = PyOperation, subclass, name = "CustomAllReduce", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "CustomAllReduce", module = "aisim_core._native")]
 pub struct PyCustomAllReduce;
 
 #[pymethods]
@@ -725,7 +725,7 @@ impl PyCustomAllReduce {
 
 /// NCCL collective (`nccl_op` = all_gather / all_reduce / ...;
 /// `num_elements_per_token` may be fractional — KV bytes / comm bytes).
-#[pyclass(extends = PyOperation, subclass, name = "NCCL", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "NCCL", module = "aisim_core._native")]
 pub struct PyNCCL;
 
 #[pymethods]
@@ -818,7 +818,7 @@ impl PyNCCL {
 }
 
 /// Pipeline-parallel P2P transfer.
-#[pyclass(extends = PyOperation, subclass, name = "P2P", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "P2P", module = "aisim_core._native")]
 pub struct PyP2P;
 
 #[pymethods]
@@ -896,7 +896,7 @@ impl PyP2P {
 /// DeepSeek-V4 mHC (multi-head compression) module. `architecture` is a new
 /// REQUIRED keyword: the retired serializer injected it from
 /// `model.architecture` at compile time; construction owns it now.
-#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MHCModule", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MHCModule", module = "aisim_core._native")]
 pub struct PyDeepSeekV4MHCModule;
 
 #[pymethods]
@@ -1014,7 +1014,7 @@ impl PyDeepSeekV4MHCModule {
 // ---------------------------------------------------------------------------
 
 /// Prefill GQA/MHA attention (FMHA).
-#[pyclass(extends = PyOperation, subclass, name = "ContextAttention", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "ContextAttention", module = "aisim_core._native")]
 pub struct PyContextAttention;
 
 #[pymethods]
@@ -1191,7 +1191,7 @@ impl PyContextAttention {
 }
 
 /// Decode GQA/MHA attention.
-#[pyclass(extends = PyOperation, subclass, name = "GenerationAttention", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "GenerationAttention", module = "aisim_core._native")]
 pub struct PyGenerationAttention;
 
 #[pymethods]
@@ -1360,7 +1360,7 @@ impl PyGenerationAttention {
 }
 
 /// Vision-encoder bidirectional attention.
-#[pyclass(extends = PyOperation, subclass, name = "EncoderAttention", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "EncoderAttention", module = "aisim_core._native")]
 pub struct PyEncoderAttention;
 
 #[pymethods]
@@ -1456,7 +1456,7 @@ impl PyEncoderAttention {
 // ---------------------------------------------------------------------------
 
 /// Prefill MLA (DeepSeek-style latent attention).
-#[pyclass(extends = PyOperation, subclass, name = "ContextMLA", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "ContextMLA", module = "aisim_core._native")]
 pub struct PyContextMLA;
 
 #[pymethods]
@@ -1574,7 +1574,7 @@ impl PyContextMLA {
 }
 
 /// Decode MLA.
-#[pyclass(extends = PyOperation, subclass, name = "GenerationMLA", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "GenerationMLA", module = "aisim_core._native")]
 pub struct PyGenerationMLA;
 
 #[pymethods]
@@ -1663,7 +1663,7 @@ impl PyGenerationMLA {
 /// Fused MLA module (one class, two engine variants by phase). Setting
 /// `_is_context` swaps the variant — the retired Python class stored the
 /// phase as an instance flag and the serializer picked the wire tag.
-#[pyclass(extends = PyOperation, subclass, name = "MLAModule", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "MLAModule", module = "aisim_core._native")]
 pub struct PyMLAModule;
 
 #[pymethods]
@@ -1807,7 +1807,7 @@ impl PyMLAModule {
 }
 
 /// MLA pre/post BMM.
-#[pyclass(extends = PyOperation, subclass, name = "MLABmm", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "MLABmm", module = "aisim_core._native")]
 pub struct PyMLABmm;
 
 #[pymethods]
@@ -1880,7 +1880,7 @@ impl PyMLABmm {
 // ---------------------------------------------------------------------------
 
 /// Fused MoE FFN.
-#[pyclass(extends = PyOperation, subclass, name = "MoE", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "MoE", module = "aisim_core._native")]
 pub struct PyMoE;
 
 #[pymethods]
@@ -2056,7 +2056,7 @@ impl PyMoE {
 /// `moe_backend="deepep_moe"` maps to the RetiredDeepEp tombstone flavor —
 /// construction stays legal (Python builders still emit it), spec assembly
 /// and evaluation refuse it, mirroring the retired conversion error.
-#[pyclass(extends = PyOperation, subclass, name = "MoEDispatch", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "MoEDispatch", module = "aisim_core._native")]
 pub struct PyMoEDispatch;
 
 impl PyOperation {
@@ -2306,7 +2306,7 @@ impl PyMoEDispatch {
 /// Unified large-EP all-to-all comm phase. Backend/phase feasibility
 /// validation stays Python-side (the shell's `__init__` consults the
 /// `MOE_A2A_BACKENDS` registry — single source in `operations/moe_comm.py`).
-#[pyclass(extends = PyOperation, subclass, name = "MoEAllToAll", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "MoEAllToAll", module = "aisim_core._native")]
 pub struct PyMoEAllToAll;
 
 impl PyOperation {
@@ -2452,7 +2452,7 @@ impl PyMoEAllToAll {
 /// Unified large-EP expert compute. `num_slots=None` collapses to
 /// `num_experts` at construction (the retired ctor's resolution); phase
 /// validation stays Python-side in the shell.
-#[pyclass(extends = PyOperation, subclass, name = "MoEExpertCompute", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "MoEExpertCompute", module = "aisim_core._native")]
 pub struct PyMoEExpertCompute;
 
 impl PyOperation {
@@ -2610,7 +2610,7 @@ impl PyMoEExpertCompute {
 /// SGLang DeepSeek-V4 MegaMoE routed module (one class, both phases via
 /// `is_context`). `workload_distribution` normalizes `uniform -> balanced`
 /// at construction, the retired ctor's rule.
-#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MegaMoEModule", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MegaMoEModule", module = "aisim_core._native")]
 pub struct PyDeepSeekV4MegaMoEModule;
 
 impl PyOperation {
@@ -2800,7 +2800,7 @@ inner_accessor!(kda, kda_mut, Kda, crate::operators::KdaOp, "KDAKernel");
 
 /// Single Mamba2 kernel (conv1d or SSM). `seq_split` is accepted for
 /// calling-shape compatibility but gated: the family never opted into CP.
-#[pyclass(extends = PyOperation, subclass, name = "Mamba2Kernel", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "Mamba2Kernel", module = "aisim_core._native")]
 pub struct PyMamba2Kernel;
 
 #[pymethods]
@@ -2922,7 +2922,7 @@ impl PyMamba2Kernel {
 }
 
 /// Single Gated DeltaNet kernel (Qwen3.5 linear attention).
-#[pyclass(extends = PyOperation, subclass, name = "GDNKernel", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "GDNKernel", module = "aisim_core._native")]
 pub struct PyGDNKernel;
 
 #[pymethods]
@@ -3048,7 +3048,7 @@ impl PyGDNKernel {
 /// `draft_tokens`. A distinct engine variant, NOT a Python subclass of
 /// GDNKernel any more (the classes are construction handles; the kernels'
 /// tables are separate).
-#[pyclass(extends = PyOperation, subclass, name = "KDAKernel", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "KDAKernel", module = "aisim_core._native")]
 pub struct PyKDAKernel;
 
 #[pymethods]
@@ -3192,7 +3192,7 @@ inner_accessor!(
 /// WideEP prefill MLA. The op takes `tp_size`; the engine table axis is the
 /// per-rank head count `128 // tp_size` (DeepSeek's 128 total heads), the
 /// retired serializer's derivation, now applied at construction.
-#[pyclass(extends = PyOperation, subclass, name = "WideEPContextMLA", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "WideEPContextMLA", module = "aisim_core._native")]
 pub struct PyWideEPContextMLA;
 
 #[pymethods]
@@ -3296,7 +3296,7 @@ impl PyWideEPContextMLA {
 }
 
 /// WideEP decode MLA.
-#[pyclass(extends = PyOperation, subclass, name = "WideEPGenerationMLA", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "WideEPGenerationMLA", module = "aisim_core._native")]
 pub struct PyWideEPGenerationMLA;
 
 #[pymethods]
@@ -3427,7 +3427,7 @@ impl PyOperation {
 macro_rules! msa_class {
     ($cls:ident, $py_name:literal, $variant:ident, $is_context:literal) => {
         #[doc = concat!("MiniMax MSA ", $py_name, " module.")]
-        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aisimulate_core._native")]
+        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aisim_core._native")]
         pub struct $cls;
 
         #[pymethods]
@@ -3700,7 +3700,7 @@ fn dsa_projection_dict<'py>(
 }
 
 /// GLM-5 / DeepSeek-V3.2 sparse-attention context module.
-#[pyclass(extends = PyOperation, subclass, name = "ContextDSAModule", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "ContextDSAModule", module = "aisim_core._native")]
 pub struct PyContextDSAModule;
 
 #[pymethods]
@@ -3873,7 +3873,7 @@ impl PyContextDSAModule {
 
 /// GLM-5 / DeepSeek-V3.2 sparse-attention generation module. The retired
 /// class had no separate FMHA mode; the wire carries bfloat16 for it.
-#[pyclass(extends = PyOperation, subclass, name = "GenerationDSAModule", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "GenerationDSAModule", module = "aisim_core._native")]
 pub struct PyGenerationDSAModule;
 
 #[pymethods]
@@ -4038,7 +4038,7 @@ impl PyOperation {
 macro_rules! dsv4_class {
     ($cls:ident, $py_name:literal, $variant:ident, $is_context:literal) => {
         #[doc = concat!("DeepSeek-V4 ", $py_name, ". `attn_kind` derives from `compress_ratio` (4 -> Csa, else Hca), the retired serializer's rule; `architecture` is a new REQUIRED keyword (the serializer injected `model.architecture` at compile time).")]
-        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aisimulate_core._native")]
+        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aisim_core._native")]
         pub struct $cls;
 
         #[pymethods]
@@ -4332,7 +4332,7 @@ fn wrap_ops<'py>(py: Python<'py>, ops: &[Op]) -> PyResult<Vec<Py<PyAny>>> {
 }
 
 /// Two op groups whose latency overlaps (max); weights sum.
-#[pyclass(extends = PyOperation, subclass, name = "OverlapOp", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "OverlapOp", module = "aisim_core._native")]
 pub struct PyOverlapOp;
 
 #[pymethods]
@@ -4390,7 +4390,7 @@ impl PyOverlapOp {
 }
 
 /// Primary op with a fallback chain on perf-data misses.
-#[pyclass(extends = PyOperation, subclass, name = "FallbackOp", module = "aisimulate_core._native")]
+#[pyclass(extends = PyOperation, subclass, name = "FallbackOp", module = "aisim_core._native")]
 pub struct PyFallbackOp;
 
 #[pymethods]

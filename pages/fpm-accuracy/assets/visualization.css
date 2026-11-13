@@ -33,6 +33,6 @@
 
 #gym-visualization .gv-content{margin:0 auto;width:min(2100px,calc(100% - 48px))}
 @media(max-width:480px){#gym-visualization .gv-content{width:calc(100% - 32px)}}
-/* Modified for AISimulate's shared light/dark theme. See ../README.md. */
+/* Modified for AISim's shared light/dark theme. See ../README.md. */
 #gym-visualization { color-scheme:inherit; --gym-ink:var(--text); --gym-muted:var(--muted); --gym-green:var(--accent); --gym-line:var(--border); background:var(--bg); }
 #gym-visualization .gv-control-panel, #gym-visualization .gv-pane, #gym-visualization select { background:var(--panel); color:var(--text); border-color:var(--border); }

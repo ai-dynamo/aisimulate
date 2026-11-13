@@ -10,9 +10,9 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.common import split_config_sections
-from aisimulate.config.engine import (
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.common import split_config_sections
+from aisim.config.engine import (
     EngineRecommendationConfig,
     EstimatorPolicyConfig,
     HostWorkerPredictionConfig,
@@ -20,12 +20,12 @@ from aisimulate.config.engine import (
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
-from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import ReplaySpec
-from aisimulate.sweeper.sample import unroll_sample
+from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import ReplaySpec
+from aisim.sweeper.sample import unroll_sample
 
 
 def _engine() -> dict:
@@ -569,7 +569,7 @@ def test_parallel_preset_entries_round_trip_with_context_knobs() -> None:
     # (decode CP lives on the prediction config only); recommend must accept the
     # knobs (unset or at 1) so a config can be re-validated from model_dump,
     # while unrelated keys stay rejected.
-    from aisimulate.config.engine import ParallelismRecommendationConfig
+    from aisim.config.engine import ParallelismRecommendationConfig
 
     entry = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 1, "moe_tensor": 1, "moe_expert": 1}
     parallelism = ParallelismRecommendationConfig.model_validate({"preset": [entry]})
@@ -796,8 +796,8 @@ def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
 @pytest.mark.parametrize("gpu_budget", [2, 3])
 @pytest.mark.model("Qwen/Qwen3-32B-FP8")
 def test_disagg_mixed_parallel_presets_preserve_each_role_semantics(pinned_role, independent_role, gpu_budget) -> None:
-    from aisimulate.sweeper.model_hw import NoViableParallelConfig
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.sweeper.model_hw import NoViableParallelConfig
+    from aisim.sweeper.search_space import enumerate_branches
 
     mapping = {
         "replicas": 1,
@@ -1089,6 +1089,41 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
             }
         )
 
+    template = {
+        "request_tokens": 16,
+        "user_tokens": 5,
+        "assistant_tokens": 8,
+        "tail_tokens": 8,
+        "append_tail_tokens": 1,
+    }
+    templated_weka = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka", "chat_template": template},
+                "load": {"type": "trace_timestamps"},
+            },
+            "engine": _engine(),
+        }
+    )
+    assert weka.traffic.source.chat_template is None
+    assert templated_weka.traffic.source.chat_template.model_dump() == template
+    for source, message in (
+        ({"paths": ["trace.jsonl"], "format": "mooncake", "chat_template": template}, "only valid for trace format"),
+        ({"paths": ["weka-corpus"], "format": "weka", "chat_template": {**template, "user_tokens": -1}}, "user_tokens"),
+        ({"paths": ["weka-corpus"], "format": "weka", "chat_template": {"request_tokens": 16}}, "user_tokens"),
+        (
+            {"paths": ["weka-corpus"], "format": "weka", "chat_template": {**template, "append_tail_tokens": 9}},
+            "append_tail_tokens <= tail_tokens",
+        ),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            CorePredictionConfig.model_validate(
+                {
+                    "traffic": {"source": {"type": "trace", **source}, "load": {"type": "trace_timestamps"}},
+                    "engine": _engine(),
+                }
+            )
+
 
 @pytest.mark.parametrize(
     "traffic",
@@ -1303,9 +1338,9 @@ def test_recommendation_lowers_forward_model_per_role() -> None:
 def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, resolved, canonical) -> None:
     from dataclasses import replace
 
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
-    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.replay import ForwardPassEstimatorSpec
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     worker = raw["engine"]["workers"].pop("aggregated")
@@ -1384,9 +1419,9 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
 
 @pytest.mark.parametrize("policy", [None, []])
 def test_candidate_preserves_default_vs_disabled_transfers_and_pinned_capacity(policy):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
-    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.sweeper.replay import ForwardPassEstimatorSpec
+    from aisim_core.sdk import ForwardPassPerfModelConfig
 
     config = _fpm_recommendation()
     smart = recommendation_to_sweeper(config)
@@ -1423,8 +1458,8 @@ def test_candidate_preserves_default_vs_disabled_transfers_and_pinned_capacity(p
 
 
 def test_public_estimator_config_rejects_sol_full():
-    from aisimulate.config.engine import TimingConfig
-    from aisimulate.sweeper.config import SearchSpace
+    from aisim.config.engine import TimingConfig
+    from aisim.sweeper.config import SearchSpace
 
     for make in (
         lambda: CorePredictionConfig.model_validate({"engine": {**_engine(), "database_mode": "SOL_FULL"}}),
@@ -1529,8 +1564,8 @@ def test_worker_hardware_rejects_non_pd_modes(recommend, mode, role):
 def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expected, role_context):
     import yaml
 
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.sweeper.parallel_enum import DisaggParallelConfig
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.sweeper.parallel_enum import DisaggParallelConfig
 
     raw = _pd_hardware_config(recommend=True, **overrides)
     for role, limit in (("prefill", 64_000), ("decode", 128_000)):
@@ -1593,7 +1628,7 @@ def test_pd_hardware_mixed_modes_and_auto_fallback():
 
 @pytest.mark.parametrize("same_version", [False, True])
 def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_version):
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     calls = []
 
@@ -1601,7 +1636,7 @@ def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_v
         calls.append((hardware, backend))
         return "0.24.0" if same_version or hardware == "h200_sxm" else "0.23.0"
 
-    monkeypatch.setattr("aisimulate.compiler.resolve_backend_version", resolve)
+    monkeypatch.setattr("aisim.compiler.resolve_backend_version", resolve)
     raw = _pd_hardware_config(decode="gb200")
     del raw["engine"]["backend_version"]
     config = CorePredictionConfig.model_validate(raw)
@@ -1619,7 +1654,7 @@ def test_pd_predict_requires_shared_implicit_backend_version(monkeypatch, same_v
 @pytest.mark.parametrize("role", ["prefill", "decode"])
 @pytest.mark.parametrize("backend_version", [None, "0.24.0"])
 def test_pd_predict_rejects_unknown_worker_hardware_before_runtime(role, backend_version):
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     raw = _pd_hardware_config(**{role: "nonexistent_worker_sku"})
     raw["engine"]["backend_version"] = backend_version
@@ -1632,8 +1667,8 @@ def test_pd_predict_rejects_unknown_worker_hardware_before_runtime(role, backend
 def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeypatch, tmp_path, role):
     import yaml
 
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate_core.sdk import perf_database
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim_core.sdk import perf_database
 
     system_paths = perf_database.get_systems_paths()
     spec = perf_database.load_system_spec("gb200")
@@ -1647,13 +1682,13 @@ def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeyp
 
 @pytest.mark.parametrize("override", [False, True])
 def test_pd_predict_keeps_legacy_version_defaults_without_hardware_override(monkeypatch, override):
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     def resolve(hardware, backend, **kwargs):
         assert hardware == "gb200"
         return "0.24.0"
 
-    monkeypatch.setattr("aisimulate.compiler.resolve_backend_version", resolve)
+    monkeypatch.setattr("aisim.compiler.resolve_backend_version", resolve)
     raw = _pd_hardware_config(**({"prefill": "gb200", "decode": "gb200"} if override else {}))
     del raw["engine"]["backend_version"]
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
@@ -1662,8 +1697,8 @@ def test_pd_predict_keeps_legacy_version_defaults_without_hardware_override(monk
 
 @pytest.mark.parametrize("router_hardware", ["h200_sxm", "gb200", None])
 def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hardware):
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.sweeper.provider import AdapterReplaySpec, RuntimeHookSpec
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.sweeper.provider import AdapterReplaySpec, RuntimeHookSpec
 
     config = CorePredictionConfig.model_validate(_pd_hardware_config(prefill="gb200", decode="gb200"))
     spec = AdapterReplaySpec(
@@ -1705,7 +1740,7 @@ def test_prediction_rejects_nonpositive_context_parallel(field: str) -> None:
 
 
 def test_aggregated_deployment_rejects_prefill_and_decode_cp_together() -> None:
-    from aisimulate.compiler import _deployment
+    from aisim.compiler import _deployment
 
     config = CorePredictionConfig.model_validate(
         {
@@ -1721,7 +1756,7 @@ def test_aggregated_deployment_rejects_prefill_and_decode_cp_together() -> None:
 
 
 def test_aggregated_deployment_accepts_one_context_parallel_knob() -> None:
-    from aisimulate.compiler import _deployment
+    from aisim.compiler import _deployment
 
     config = CorePredictionConfig.model_validate(
         {
@@ -1751,7 +1786,7 @@ def test_afd_companion_rejects_context_parallelism(knob: str) -> None:
     # a CP knob would price a wider worker than the topology reports.
     from pathlib import Path
 
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     tiny_model = Path(__file__).resolve().parents[1] / "tests/e2e/configs/unified_cli/fixtures/tiny-model"
     config = CorePredictionConfig.model_validate(
@@ -1774,7 +1809,7 @@ def test_afd_companion_rejects_context_parallelism(knob: str) -> None:
 
 
 def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() -> None:
-    from aisimulate.compiler import _deployment
+    from aisim.compiler import _deployment
 
     config = CorePredictionConfig.model_validate(
         {
@@ -1813,7 +1848,7 @@ def _disaggregated_engine(backend: str, decode: dict, prefill: dict | None = Non
 
 
 def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -> None:
-    from aisimulate.compiler import _deployment
+    from aisim.compiler import _deployment
 
     def decode_engine_args(decode: dict) -> dict:
         config = CorePredictionConfig.model_validate({"engine": _disaggregated_engine("sglang", decode)})
@@ -1829,7 +1864,7 @@ def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -
 
 
 def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture(tmp_path) -> None:
-    from aisimulate.compiler import _deployment, _swa_prefix_tails
+    from aisim.compiler import _deployment, _swa_prefix_tails
 
     def engine(model="deepseek-ai/DeepSeek-V4-Flash", backend="sglang", **kv_cache):
         prefill = {"kv_cache": kv_cache, "scheduler": {"max_sequences": 8}}
@@ -1984,7 +2019,7 @@ def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper(ena
     ],
 )
 def test_disaggregated_context_parallel_layout_rules(backend: str, prefill: dict, decode: dict, needle: str) -> None:
-    from aisimulate.compiler import _deployment
+    from aisim.compiler import _deployment
 
     config = CorePredictionConfig.model_validate(
         {
@@ -2001,7 +2036,7 @@ def test_disaggregated_context_parallel_layout_rules(backend: str, prefill: dict
 
 
 def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dcp() -> None:
-    from aisimulate.compiler import _deployment
+    from aisim.compiler import _deployment
 
     config = CorePredictionConfig.model_validate(
         {
@@ -2028,10 +2063,10 @@ def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dc
 def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(
     seed: int, warmup: bool, imported: bool
 ) -> None:
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.recommend import _recommendation_workload
-    from aisimulate.sweeper.config import Workload
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.recommend import _recommendation_workload
+    from aisim.sweeper.config import Workload
 
     snapshot = {"seed": seed}
     if imported:
@@ -2071,7 +2106,7 @@ def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(
     [{}, {"seed": True}, {"seed": -1}, {"seed": 2**64}, {"seed": 1.0}, {"seed": "42"}, {"seed": 42, "fraction": 0.5}],
 )
 def test_agentic_snapshot_rejects_invalid_seed_options(snapshot: dict) -> None:
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
 
     traffic = {
         "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
@@ -2098,14 +2133,14 @@ def test_agentic_snapshot_rejects_invalid_seed_options(snapshot: dict) -> None:
     ],
 )
 def test_agentic_snapshot_requires_explicit_agentic_lanes_and_trace_timestamps(load: dict, source: dict) -> None:
-    from aisimulate.config import TrafficPredictionConfig
+    from aisim.config import TrafficPredictionConfig
 
     with pytest.raises(ValidationError):
         TrafficPredictionConfig.model_validate({"source": source, "load": load | {"agentic_snapshot": {"seed": 1}}})
 
 
 def test_agentic_snapshot_is_opt_in() -> None:
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     config = CorePredictionConfig.model_validate(
         {
@@ -2125,7 +2160,7 @@ def test_agentic_snapshot_is_opt_in() -> None:
 
 
 def test_imported_agentic_snapshot_round_trips_without_changing_legacy_serialization():
-    from aisimulate.config.traffic import AgenticSnapshotOptions, TrafficPredictionConfig
+    from aisim.config.traffic import AgenticSnapshotOptions, TrafficPredictionConfig
 
     snapshot = {
         "seed": 42,
@@ -2160,7 +2195,7 @@ def test_imported_agentic_snapshot_round_trips_without_changing_legacy_serializa
     ],
 )
 def test_imported_agentic_snapshot_rejects_invalid_metadata(snapshot):
-    from aisimulate.config.traffic import AgenticSnapshotOptions
+    from aisim.config.traffic import AgenticSnapshotOptions
 
     with pytest.raises(ValidationError):
         AgenticSnapshotOptions.model_validate(snapshot)
@@ -2168,8 +2203,8 @@ def test_imported_agentic_snapshot_rejects_invalid_metadata(snapshot):
 
 @pytest.mark.parametrize("selection_count", [1, 3])
 def test_imported_agentic_snapshot_requires_one_selection_per_lane(selection_count: int) -> None:
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.sweeper.config import Workload
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.sweeper.config import Workload
 
     snapshot = {
         "seed": 42,
@@ -2198,10 +2233,10 @@ def test_imported_agentic_snapshot_requires_one_selection_per_lane(selection_cou
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("profile", [{}, {"duration_seconds": 2.0, "response_grace_seconds": 0.0}])
 def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, profile: dict) -> None:
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config import AgenticProfileOptions, TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.recommend import _recommendation_workload
-    from aisimulate.sweeper.config import Workload
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import AgenticProfileOptions, TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.recommend import _recommendation_workload
+    from aisim.sweeper.config import Workload
 
     traffic = {
         "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
@@ -2229,9 +2264,9 @@ def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, 
 
 @pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
 def test_agentic_warmup_policy_compiles_for_prediction_and_recommendation(policy: str) -> None:
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.recommend import _recommendation_workload
-    from aisimulate.sweeper.config import Workload
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.recommend import _recommendation_workload
+    from aisim.sweeper.config import Workload
 
     load = {
         "type": "trace_timestamps",
@@ -2268,7 +2303,7 @@ def test_agentic_warmup_policy_compiles_for_prediction_and_recommendation(policy
     ],
 )
 def test_agentic_profile_rejects_invalid_controls(profile: dict) -> None:
-    from aisimulate.config import AgenticProfileOptions
+    from aisim.config import AgenticProfileOptions
 
     with pytest.raises(ValidationError):
         AgenticProfileOptions.model_validate(profile)
@@ -2276,8 +2311,8 @@ def test_agentic_profile_rejects_invalid_controls(profile: dict) -> None:
 
 @pytest.mark.parametrize("missing", ["agentic_snapshot", "agentic_lanes"])
 def test_agentic_profile_requires_seeded_lanes(missing: str) -> None:
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.sweeper.config import Workload
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.sweeper.config import Workload
 
     load = {
         "type": "trace_timestamps",
@@ -2302,9 +2337,9 @@ def test_agentic_profile_requires_seeded_lanes(missing: str) -> None:
 
 
 def test_agentic_profile_rejects_legacy_time_stop() -> None:
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.recommend import _recommendation_workload
-    from aisimulate.sweeper.config import Workload
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.recommend import _recommendation_workload
+    from aisim.sweeper.config import Workload
 
     traffic = {
         "source": {"type": "trace", "format": "dynamo", "paths": ["corpus"]},
@@ -2325,8 +2360,8 @@ def test_agentic_profile_rejects_legacy_time_stop() -> None:
 
 @pytest.mark.parametrize("warmup", [None, 0, 1, "true", {}])
 def test_agentic_warmup_requires_a_strict_boolean(warmup) -> None:
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.sweeper.config import Workload
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.sweeper.config import Workload
 
     traffic = {
         "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
@@ -2346,8 +2381,8 @@ def test_agentic_warmup_requires_a_strict_boolean(warmup) -> None:
 
 @pytest.mark.parametrize("missing", ["agentic_snapshot", "agentic_lanes"])
 def test_agentic_warmup_requires_snapshot_and_lanes(missing: str) -> None:
-    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
-    from aisimulate.sweeper.config import Workload
+    from aisim.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisim.sweeper.config import Workload
 
     load = {
         "type": "trace_timestamps",
@@ -2373,7 +2408,7 @@ def test_agentic_warmup_requires_snapshot_and_lanes(missing: str) -> None:
 
 @pytest.mark.parametrize("mode", [None, "auto", "op_level", "fpm_interpolation", "fpm_regression"])
 def test_estimation_selection_survives_serialization_and_compilation(mode):
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     engine = {
         **_engine(),
@@ -2399,10 +2434,10 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
     from importlib.resources import files
     from pathlib import Path
 
-    from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.sweeper.search_space import enumerate_branches
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.sweeper.search_space import enumerate_branches
 
-    packaged = Path(str(files("aisimulate_core") / "systems"))
+    packaged = Path(str(files("aisim_core") / "systems"))
     roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
     workers = {}
     for role in roles:
@@ -2452,7 +2487,7 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
 
 
 def test_prediction_dcp_identity_roundtrip_and_explicit_capacity():
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     raw = {
         "engine": {
@@ -2514,7 +2549,7 @@ def test_prediction_rejects_identity_that_custom_timing_would_ignore(timing):
 
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 def test_recommendation_rejects_unsupported_timing_identity(role):
-    from aisimulate.config.engine import WorkersRecommendationConfig
+    from aisim.config.engine import WorkersRecommendationConfig
 
     with pytest.raises(ValidationError, match="identity is prediction-only"):
         WorkersRecommendationConfig.model_validate(
@@ -2532,7 +2567,7 @@ def test_recommendation_rejects_unsupported_timing_identity(role):
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_prediction_fp8_kv_transfer_uses_cache_precision(mode):
-    from aisimulate.compiler import prediction_to_replay_spec
+    from aisim.compiler import prediction_to_replay_spec
 
     roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
     engine = {
@@ -2618,8 +2653,8 @@ def test_execution_options_reject_mixed_worker_timing(custom_role):
 
 @pytest.mark.parametrize("context_length", ["max", 4096])
 def test_recommendation_declares_default_context_budget(monkeypatch, caplog, context_length):
-    from aisimulate.recommend import _run_recommendation
-    from aisimulate.sweeper.search import Sweeper
+    from aisim.recommend import _run_recommendation
+    from aisim.sweeper.search import Sweeper
 
     config = CoreRecommendationConfig.model_validate(
         {
@@ -2640,7 +2675,7 @@ def test_recommendation_declares_default_context_budget(monkeypatch, caplog, con
         }
     )
     monkeypatch.setattr(Sweeper, "run", lambda self, smart, **kwargs: smart)
-    caplog.set_level("WARNING", logger="aisimulate.recommend")
+    caplog.set_level("WARNING", logger="aisim.recommend")
 
     smart = _run_recommendation(config, stack="engine", runner_factory=None, show_progress=False)
 

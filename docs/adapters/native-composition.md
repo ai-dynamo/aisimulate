@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Native Replay composition
 
 `ReplayComposition` composes placement and optional scaling into
-`Replayer<C>` without importing a serving framework into AISimulate core.
+`Replayer<C>` without importing a serving framework into AISim core.
 The built-in `RoundRobinComposition` has fixed workers. Dynamo constructs its
 own Router/Planner policies against the same neutral contracts.
 These are Rust crate interfaces, not a stable dynamically loaded binary ABI.
@@ -174,7 +174,7 @@ carrying the salt through its request and event conversions together.
 
 Compositions consume neutral engine observations only when needed. Round-robin
 can skip KV event capture; Dynamo performs Router-specific conversion outside
-AISimulate core. Offline P/D decode routing is overlap-blind and does not require
+AISim core. Offline P/D decode routing is overlap-blind and does not require
 its own KV event stream. A requested deterministic selector uses
 `ReplayDeterminism::selector_seed`, not an independently chosen seed.
 

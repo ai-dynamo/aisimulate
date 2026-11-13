@@ -1208,6 +1208,11 @@ pub struct DecodeWork {
     pub kv_bound_tokens: usize,
     /// Per-request context lengths, in no particular order.
     pub lengths: Vec<usize>,
+    /// Tokens each request of `lengths` verifies in this forward, in the same
+    /// order: one plus the drafts the scheduler gave it, which the token
+    /// budget, the context limit or drafts not yet ready can make fewer than
+    /// `verify_width`.
+    pub widths: Vec<usize>,
     /// Tokens each request verifies in this forward: one plus the configured
     /// speculative (MTP) depth, or one without speculation.
     pub verify_width: usize,
@@ -1300,7 +1305,7 @@ fn deserialize_timing_provider<'de, D: serde::Deserializer<'de>>(
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
-/// provider without adding that dependency to `aisimulate-core`.
+/// provider without adding that dependency to `aisim-core`.
 pub trait TimingModel: Send + Sync {
     /// Validate actual (new tokens, cached prefix) pairs before a scheduler
     /// reduces them to means. Providers with nonlinear per-request execution
@@ -1713,6 +1718,7 @@ pub(crate) mod tests {
                 mean_context_length: 9,
                 kv_bound_tokens: 1024,
                 lengths: vec![9, 9],
+                widths: vec![1, 1],
                 verify_width: 1,
             }),
         }

@@ -82,7 +82,8 @@ worker timing selection schemas. Replay prices every pass of a regression or
 learned role with one `ForwardPassMetrics` query over the worker's
 attention-DP ranks, adding the per-request lengths a learned artifact reads,
 and rejects such a role when its model lacks a workload store the role needs,
-hosts the vision encoder or uses speculative decoding; see
+hosts the vision encoder or uses speculative decoding other than the MTP depth
+a vLLM regression was fitted at; see
 [engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
 These roles are latency-only, so their replay reports no power.
 
@@ -246,7 +247,7 @@ frontend and the host CPU. The values above are only an illustration.
 ## Backend versions
 
 The accepted versions are the populated slots defined by
-[`query_versions.yaml`](../../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+[`query_versions.yaml`](../../../python/aisim/src/aisim_core/systems/query_versions.yaml):
 
 - `current` is the newest completed full collection for the backend, a
   systematic campaign over the whole case plan on the fleet;
@@ -308,7 +309,7 @@ engine:
 This deployment uses `2 × 2 + 1 × 4 = 8` GPUs. Run it with:
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml --output-dir ./pd-prediction
+aisim predict --stack engine --config prediction.yaml --output-dir ./pd-prediction
 ```
 
 ## Where engine options are validated

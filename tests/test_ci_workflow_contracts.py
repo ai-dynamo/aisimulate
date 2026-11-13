@@ -125,7 +125,7 @@ def test_forward_perf_selects_before_allocating_the_benchmark_runner():
     }
     checkout = next(step for step in compare["steps"] if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ needs.select.outputs.head_sha }}"
-    assert "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py" in _run_commands(compare)
+    assert "${BASE_SRC}/python/aisim/tools/forward_perf_gate/run.py" in _run_commands(compare)
 
 
 def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_comparison():
@@ -144,8 +144,8 @@ def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_com
         assert f'python -m maturin build --release --locked --out "{destination}"' in build["run"]
     expected = base["run"].replace('"${BASE_VENV}/bin/python"', '"${HEAD_VENV}/bin/python"', 1)
     expected = expected.replace(
-        "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
-        "${HEAD_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
+        "${BASE_SRC}/python/aisim/tools/forward_perf_gate/run.py",
+        "${HEAD_SRC}/python/aisim/tools/forward_perf_gate/run.py",
     )
     expected = expected.replace('--output-dir "${RESULTS_DIR}"', '--output-dir "${RESULTS_DIR}/head-controller"')
     assert head["run"] == expected
@@ -158,10 +158,10 @@ def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_com
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        ("python/aisimulate/tools/forward_perf_gate/cases.py", True),
-        ("python/aisimulate/tools/forward_perf_gate/measurement.py", True),
-        ("python/aisimulate/tools/prediction_regression_gate/grid.py", True),
-        ("python/aisimulate/tools/forward_perf_gate/README.md", False),
+        ("python/aisim/tools/forward_perf_gate/cases.py", True),
+        ("python/aisim/tools/forward_perf_gate/measurement.py", True),
+        ("python/aisim/tools/prediction_regression_gate/grid.py", True),
+        ("python/aisim/tools/forward_perf_gate/README.md", False),
     ],
 )
 def test_forward_perf_controller_change_detection(tmp_path, path, expected):
@@ -180,7 +180,7 @@ def test_forward_perf_controller_change_detection(tmp_path, path, expected):
             **os.environ,
             "base_sha": base,
             "PR_HEAD_SHA": head,
-            "gate_path": "python/aisimulate/tools/forward_perf_gate",
+            "gate_path": "python/aisim/tools/forward_perf_gate",
             "GITHUB_OUTPUT": str(output),
         },
         check=True,
@@ -195,7 +195,7 @@ def test_forward_perf_skips_incompatible_data_policies(tmp_path, base_protocol):
     revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
     protocol_check = revisions.split('if [[ -z "${skip_reason}" ]]; then', 1)[1]
     protocol_check = 'if [[ -z "${skip_reason}" ]]; then' + protocol_check.split("controller_changes=", 1)[0]
-    gate_path = "python/aisimulate/tools/forward_perf_gate"
+    gate_path = "python/aisim/tools/forward_perf_gate"
     _git(tmp_path, "init", "--quiet")
     (tmp_path / gate_path).mkdir(parents=True)
     base = _commit_file(tmp_path, f"{gate_path}/__init__.py", f"PROTOCOL_VERSION = {base_protocol}\n")
@@ -248,7 +248,7 @@ def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
     [
         ([[{"filename": "crates/core/src/python.rs"}]], None, "true"),
         ([[{"filename": "docs/ci.md"}]], None, "false"),
-        ([[{"filename": "python/aisimulate/tools/forward_perf_gate/README.md"}]], None, "false"),
+        ([[{"filename": "python/aisim/tools/forward_perf_gate/README.md"}]], None, "false"),
         # Full PR files still include the code change after a later docs-only push.
         (
             [[{"filename": "docs/ci.md"}], [{"filename": "crates/core/src/python.rs"}]],
@@ -260,7 +260,7 @@ def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
                 [
                     {
                         "filename": "archive/old.py",
-                        "previous_filename": "python/aisimulate/src/aisimulate_core/foo.py",
+                        "previous_filename": "python/aisim/src/aisim_core/foo.py",
                     }
                 ]
             ],
@@ -291,11 +291,11 @@ def test_forward_perf_uses_complete_pr_files(pages, count, expected):
         ("Cargo.toml.bak", False),
         ("crates/core/src/engine/nested/predict.rs", True),
         ("crates/core/src/engine-other/predict.rs", False),
-        ("python/aisimulate/src/aisimulate_core/example.py", True),
-        ("python/aisimulate/src/aisimulate_core/unrelated/example.py", False),
-        ("python/aisimulate/src/aisimulate_core/systems/h100_sxm.yaml", True),
+        ("python/aisim/src/aisim_core/example.py", True),
+        ("python/aisim/src/aisim_core/unrelated/example.py", False),
+        ("python/aisim/src/aisim_core/systems/h100_sxm.yaml", True),
         (
-            "python/aisimulate/src/aisimulate_core/systems/unrelated/nested.yaml",
+            "python/aisim/src/aisim_core/systems/unrelated/nested.yaml",
             False,
         ),
     ],
@@ -375,12 +375,12 @@ def _fast_run(**overrides):
         "path": ".github/workflows/fast-ci.yml",
         "head_sha": "a" * 40,
         "head_branch": "main",
-        "head_repository": {"full_name": "ai-dynamo/aisimulate"},
+        "head_repository": {"full_name": "ai-dynamo/aisim"},
         "event": "push",
         "status": "completed",
         "conclusion": "success",
         "run_attempt": 1,
-        "html_url": "https://github.com/ai-dynamo/aisimulate/actions/runs/10",
+        "html_url": "https://github.com/ai-dynamo/aisim/actions/runs/10",
         **overrides,
     }
 
@@ -393,7 +393,7 @@ def _fast_jobs():
 
 
 def _require_fast(api, **kwargs):
-    return require_fast_ci("ai-dynamo/aisimulate", "a" * 40, "refs/heads/main", "push", api=api, **kwargs)
+    return require_fast_ci("ai-dynamo/aisim", "a" * 40, "refs/heads/main", "push", api=api, **kwargs)
 
 
 def test_fast_prerequisite_accepts_all_jobs_from_the_latest_attempt_across_pages():
@@ -418,7 +418,7 @@ def test_fast_prerequisite_accepts_all_jobs_from_the_latest_attempt_across_pages
     [
         {"head_sha": "b" * 40},
         {"head_branch": "release/old"},
-        {"head_repository": {"full_name": "someone/aisimulate"}},
+        {"head_repository": {"full_name": "someone/aisim"}},
         {"path": ".github/workflows/ci.yml"},
         {"event": "pull_request"},
         {"event": "workflow_dispatch"},
@@ -432,9 +432,7 @@ def test_fast_prerequisite_rejects_wrong_commit_branch_origin_workflow_and_event
 def test_manual_full_ci_can_reuse_a_same_branch_push_or_manual_fast_run():
     for event in ("push", "workflow_dispatch"):
         run = _fast_run(event=event)
-        assert (
-            latest_run([{"workflow_runs": [run]}], "a" * 40, "main", "workflow_dispatch", "ai-dynamo/aisimulate") == run
-        )
+        assert latest_run([{"workflow_runs": [run]}], "a" * 40, "main", "workflow_dispatch", "ai-dynamo/aisim") == run
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "neutral", "timed_out", None])
@@ -527,7 +525,7 @@ def _run_fast_prerequisite_cli(tmp_path, *, overrides=False, failure=None):
     env = {
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-        "GITHUB_REPOSITORY": "ai-dynamo/aisimulate",
+        "GITHUB_REPOSITORY": "ai-dynamo/aisim",
         "GITHUB_SHA": "a" * 40,
         "GITHUB_REF": "refs/heads/codex/manual",
         "GITHUB_EVENT_NAME": "workflow_dispatch",
@@ -555,13 +553,13 @@ def test_fast_prerequisite_cli_verifies_manual_run_and_appends_summary(tmp_path,
     result, summary = _run_fast_prerequisite_cli(tmp_path, overrides=overrides)
     assert result.returncode == 0, result.stdout + result.stderr
     assert summary.read_text().startswith("Existing evidence\n### Standalone Fast CI verified")
-    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisimulate/actions/runs/10", "attempt 1"):
+    for evidence in ("a" * 40, "https://github.com/ai-dynamo/aisim/actions/runs/10", "attempt 1"):
         assert evidence in result.stdout
         assert evidence in summary.read_text()
     calls = (tmp_path / "calls").read_text().splitlines()
     assert calls[0] == calls[2]
-    assert calls[0].startswith("repos/ai-dynamo/aisimulate/actions/workflows/fast-ci.yml/runs?")
-    assert calls[1] == "repos/ai-dynamo/aisimulate/actions/runs/10/attempts/1/jobs?per_page=100"
+    assert calls[0].startswith("repos/ai-dynamo/aisim/actions/workflows/fast-ci.yml/runs?")
+    assert calls[1] == "repos/ai-dynamo/aisim/actions/runs/10/attempts/1/jobs?per_page=100"
 
 
 @pytest.mark.parametrize("failure", ["api", "wrong-job-sha"])
@@ -705,8 +703,8 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     }
     application_commands = _run_commands(jobs["application-tests"])
     compatibility_commands = _run_commands(jobs["python-compatibility"])
-    assert "python/aisimulate/tests/cross_package" in application_commands
-    assert "python/aisimulate/tests/cross_package" in compatibility_commands
+    assert "python/aisim/tests/cross_package" in application_commands
+    assert "python/aisim/tests/cross_package" in compatibility_commands
     assert "tests/unit tests/golden" in application_commands
     integration_steps = [
         step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'integration'"
@@ -715,7 +713,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "tests/integration" in integration_steps[0]["run"]
     assert "--ignore" not in integration_steps[0]["run"]
     assert "-m" not in shlex.split(integration_steps[0]["run"])[3:]
-    assert integration_steps[0]["working-directory"] == "python/aisimulate"
+    assert integration_steps[0]["working-directory"] == "python/aisim"
     assert "scripts/ci/check_application_test_inventory.py" in application_commands
     assert "tests/e2e/cli" in application_commands
     assert "tests/e2e/support_matrix" in application_commands
@@ -727,7 +725,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'contracts'"
     ]
     assert len(contract_steps) == 1
-    assert 'echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"' in application_commands
+    assert 'echo "AISIM_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"' in application_commands
     contract_command = contract_steps[0]["run"]
     assert "--group scripts/pyproject.toml:e2e-accuracy" in contract_command
     assert "--ignore=tests/fpm_accuracy" not in contract_command
@@ -742,8 +740,8 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert f"--ignore={recommendation_path}" in recommendation_steps[1]["run"]
 
     build_marker_files = {
-        path.relative_to(REPOSITORY_ROOT / "python" / "aisimulate").as_posix()
-        for path in (REPOSITORY_ROOT / "python" / "aisimulate" / "tests").rglob("test_*.py")
+        path.relative_to(REPOSITORY_ROOT / "python" / "aisim").as_posix()
+        for path in (REPOSITORY_ROOT / "python" / "aisim" / "tests").rglob("test_*.py")
         if "pytest.mark.build" in path.read_text(encoding="utf-8")
     }
     assert build_marker_files
@@ -757,7 +755,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert regression["name"] == "Engine Golden Regression"
     assert "test_engine_step_parity.py" in regression_commands
     assert "test_compile_engine_parity.py" in regression_commands
-    assert regression_commands.count("-c python/aisimulate/pytest.ini") == 2
+    assert regression_commands.count("-c python/aisim/pytest.ini") == 2
     assert regression_commands.index("check_prediction_numerics.py --fetch-baseline-only") < regression_commands.index(
         "check_prediction_numerics.py --output"
     )
@@ -938,16 +936,16 @@ def test_exact_target_checks_bind_expressions_through_step_environments() -> Non
 
 
 def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
-    dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
-    release_verifier = (REPOSITORY_ROOT / "python" / "aisimulate" / "tools" / "verify_release_wheels.py").read_text()
+    dockerfile = (REPOSITORY_ROOT / "python" / "aisim" / "docker" / "Dockerfile").read_text()
+    release_verifier = (REPOSITORY_ROOT / "python" / "aisim" / "tools" / "verify_release_wheels.py").read_text()
     installed_verifier = (
-        REPOSITORY_ROOT / "python" / "aisimulate" / "tools" / "verify_installed_package_layers.py"
+        REPOSITORY_ROOT / "python" / "aisim" / "tools" / "verify_installed_package_layers.py"
     ).read_text()
 
-    assert "COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/" in dockerfile
+    assert "COPY python/aisim/collector/ /workspace/python/aisim/collector/" in dockerfile
     assert "ln -s ../src" not in dockerfile
-    assert "test -d /workspace/python/aisimulate/src/aisimulate_core/model_configs" in dockerfile
-    assert "test -d /workspace/python/aisimulate/src/aisimulate_core/systems" in dockerfile
+    assert "test -d /workspace/python/aisim/src/aisim_core/model_configs" in dockerfile
+    assert "test -d /workspace/python/aisim/src/aisim_core/systems" in dockerfile
     assert '"cases/**/*.yaml"' in release_verifier
     assert '"fpm_forward/**/*.py"' in release_verifier
     assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
@@ -981,7 +979,7 @@ def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
     assert 'sys.platform.startswith("linux")' in release_builder
     assert '"scripts/release/build_manylinux_wheel.py"' in release_builder
 
-    dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
+    dockerfile = (REPOSITORY_ROOT / "python" / "aisim" / "docker" / "Dockerfile").read_text()
     assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
     assert "auditwheel repair" in dockerfile
     assert "auditwheel show /workspace/dist/*.whl" in dockerfile
@@ -1020,13 +1018,13 @@ def _manylinux_build_case(
         if command[:3] == (sys.executable, "-m", "maturin"):
             raw_output = Path(command[command.index("--out") + 1])
             for index in range(raw_count):
-                (raw_output / f"aisimulate-0.12.{index}-cp311-abi3-linux_{machine}.whl").touch()
+                (raw_output / f"aisim-0.12.{index}-cp311-abi3-linux_{machine}.whl").touch()
         elif command[:2] == ("auditwheel", "repair"):
             if fail_repair:
                 raise subprocess.CalledProcessError(1, command)
             tag = repaired_tag or f"manylinux_2_28_{machine}"
             for index in range(repaired_count):
-                (output / f"aisimulate-0.12.{index}-cp311-abi3-{tag}.whl").touch()
+                (output / f"aisim-0.12.{index}-cp311-abi3-{tag}.whl").touch()
         else:
             assert command[:2] == ("auditwheel", "show")
 
@@ -1039,8 +1037,8 @@ def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, mo
     output, calls = _manylinux_build_case(tmp_path, monkeypatch, machine=machine)
     repaired = manylinux_builder.build(output)
     raw_output = calls[0][0][-1]
-    raw_wheel = str(Path(raw_output) / f"aisimulate-0.12.0-cp311-abi3-linux_{machine}.whl")
-    assert repaired == output / f"aisimulate-0.12.0-cp311-abi3-manylinux_2_28_{machine}.whl"
+    raw_wheel = str(Path(raw_output) / f"aisim-0.12.0-cp311-abi3-linux_{machine}.whl")
+    assert repaired == output / f"aisim-0.12.0-cp311-abi3-manylinux_2_28_{machine}.whl"
     assert list(output.iterdir()) == [repaired]
     assert calls == [
         (
@@ -1135,7 +1133,7 @@ def _run_comparison_base(
     assert step["env"]["PR_BASE_SHA"] == "${{ steps.pr-target.outputs.base }}"
     gh = tmp_path / "gh"
     gh.write_text(
-        '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisimulate/commits/main --jq .sha" ]] || exit 9\n'
+        '#!/bin/bash\n[[ "$*" == "api -X GET repos/ai-dynamo/aisim/commits/main --jq .sha" ]] || exit 9\n'
         'touch "${GH_CALLED}"\nprintf "%s\\n" "${TEST_API_SHA}"\nexit "${TEST_API_STATUS}"\n'
     )
     gh.chmod(0o755)
@@ -1149,7 +1147,7 @@ def _run_comparison_base(
             "GITHUB_REF": ref,
             "BEFORE_SHA": before,
             "PR_BASE_SHA": pr_base,
-            "REPOSITORY": "ai-dynamo/aisimulate",
+            "REPOSITORY": "ai-dynamo/aisim",
             "GITHUB_OUTPUT": str(output_path),
             "GH_CALLED": str(tmp_path / "gh-called"),
             "TEST_API_SHA": api_sha,
@@ -1257,7 +1255,7 @@ def _run_pr_target(
             "GITHUB_EVENT_NAME": "push",
             "GITHUB_REF": "refs/heads/pull-request/121",
             "RUN_SHA": "a" * 40,
-            "REPOSITORY": "ai-dynamo/aisimulate",
+            "REPOSITORY": "ai-dynamo/aisim",
             "GITHUB_OUTPUT": str(output_path),
             "GH_CALLED": str(calls_path),
             "TEST_PR_HEAD": head,
@@ -1266,7 +1264,7 @@ def _run_pr_target(
         },
     )
     assert calls_path.read_text().splitlines() == [
-        "api -X GET repos/ai-dynamo/aisimulate/pulls/121 --jq [.head.sha, .base.sha] | @tsv"
+        "api -X GET repos/ai-dynamo/aisim/pulls/121 --jq [.head.sha, .base.sha] | @tsv"
     ]
     output = dict(line.split("=", 1) for line in output_path.read_text().splitlines()) if output_path.exists() else {}
     return result, output
@@ -1362,7 +1360,7 @@ def _run_whitespace_step(
             "TARGET_SHA": target,
             "GH_TOKEN": "ci-contract-dummy-token",
             "PATH": f"{repository}{os.pathsep}{os.environ['PATH']}",
-            "REPOSITORY": "ai-dynamo/aisimulate",
+            "REPOSITORY": "ai-dynamo/aisim",
             "TEST_PR_BASE": base,
         },
         capture_output=True,
@@ -1501,7 +1499,7 @@ def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
             "-C",
             str(REPOSITORY_ROOT),
             "ls-files",
-            "python/aisimulate/src/aisimulate_core/systems/**/*.txt",
+            "python/aisim/src/aisim_core/systems/**/*.txt",
         ],
         text=True,
     ).splitlines()
@@ -1619,14 +1617,14 @@ def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
         action = yaml.load(handle, Loader=yaml.BaseLoader)
 
     commands = _run_commands(action["runs"])
-    assert 'uv venv --seed --python 3.13 "${RUNNER_TEMP}/aisimulate-wheel-venv"' in commands
+    assert 'uv venv --seed --python 3.13 "${RUNNER_TEMP}/aisim-wheel-venv"' in commands
     assert "python -m pip install --quiet wheelhouse/*.whl" in commands
 
 
 def test_omitted_wheel_base_preserves_dockerfile_default() -> None:
     with (ACTION_ROOT / "build-platform-wheel" / "action.yml").open(encoding="utf-8") as handle:
         action = yaml.load(handle, Loader=yaml.BaseLoader)
-    dockerfile = (REPOSITORY_ROOT / "python/aisimulate/docker/Dockerfile").read_text()
+    dockerfile = (REPOSITORY_ROOT / "python/aisim/docker/Dockerfile").read_text()
     docker_default = re.search(r"^ARG WHEEL_BUILD_BASE=(.+)$", dockerfile, re.MULTILINE).group(1)
     wheel_base = action["inputs"]["wheel_base"]
     assert wheel_base["required"] == "false"
@@ -1651,7 +1649,7 @@ def test_containerized_workflows_do_not_require_git_lfs_during_checkout() -> Non
 
 def test_active_workflows_do_not_call_nested_inert_github_assets() -> None:
     for path in WORKFLOW_ROOT.glob("*.yml"):
-        assert "./python/aisimulate/.github/" not in path.read_text(encoding="utf-8")
+        assert "./python/aisim/.github/" not in path.read_text(encoding="utf-8")
 
 
 def _run_full_ci_aggregate(
@@ -1756,7 +1754,7 @@ def test_full_ci_scope_resolver_handles_copy_manual_and_race_cases(
         "GITHUB_SHA": target_sha,
         "GITHUB_OUTPUT": str(output),
         "RUNNER_TEMP": str(tmp_path),
-        "REPOSITORY": "ai-dynamo/aisimulate",
+        "REPOSITORY": "ai-dynamo/aisim",
         "FAKE_PR_HEAD": target_sha,
         "FAKE_FILES": "\n".join(
             base64.b64encode(path.encode()).decode() for path in ("README.md", "crates/core/src/replay/event.rs")
@@ -1897,7 +1895,7 @@ def test_full_ci_selector_skips_heavy_jobs_for_documentation() -> None:
 
 
 def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
-    python_plan = select_components(["python/aisimulate/src/aisimulate/traffic.py"])
+    python_plan = select_components(["python/aisim/src/aisim/traffic.py"])
     assert {component for component, selected in python_plan["components"].items() if selected} == {
         "readme_commands",
         "platform_wheels",
@@ -1913,7 +1911,7 @@ def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     assert rust_plan["components"]["collector_data"] is True
     assert rust_plan["components"]["cargo_deny"] is False
 
-    data_plan = select_components(["python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet"])
+    data_plan = select_components(["python/aisim/src/aisim_core/systems/data/b200/op.parquet"])
     assert data_plan["components"]["collector_data"] is True
     assert data_plan["components"]["prediction_regression"] is True
     assert data_plan["components"]["engine_golden_regression"] is True
@@ -1987,9 +1985,9 @@ def test_full_ci_selector_cli_decodes_paths_and_writes_outputs(tmp_path: Path) -
 
 def test_python_dependency_changes_run_the_complete_matrix() -> None:
     for path in (
-        "python/aisimulate/pyproject.toml",
-        "python/aisimulate/uv.lock",
-        "python/aisimulate/pytest.ini",
+        "python/aisim/pyproject.toml",
+        "python/aisim/uv.lock",
+        "python/aisim/pytest.ini",
     ):
         plan = select_components([path])
 
@@ -2146,7 +2144,7 @@ def test_release_qualification_pins_source_and_tooling_across_all_jobs():
     assert "maturin build --release --locked" in prepare
     assert "run_release_fpe.py record-wheel" in prepare
     assert "run_release_fpe.py discover" in prepare
-    assert "uv sync --project release-source/python/aisimulate --locked --no-install-project --no-dev" in prepare
+    assert "uv sync --project release-source/python/aisim --locked --no-install-project --no-dev" in prepare
     generate = _run_commands(jobs["generate"])
     assert "run_release_fpe.py probe" in generate
     assert "--max-workers 8" in generate
@@ -2230,12 +2228,12 @@ def test_main_fpe_preserves_discovered_probe_plan_when_packaging(tmp_path):
 def test_release_smoke_checks_manifest_version(tmp_path, monkeypatch, manifest_version, installed_matches):
     import importlib.metadata
 
-    manifest = tmp_path / "python/aisimulate/pyproject.toml"
+    manifest = tmp_path / "python/aisim/pyproject.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(f'[project]\nversion = "{manifest_version}"\n')
     monkeypatch.chdir(tmp_path)
     installed_version = manifest_version if installed_matches else "0.12.0"
-    for name in ("aisimulate", "aisimulate_core"):
+    for name in ("aisim", "aisim_core"):
         monkeypatch.setitem(sys.modules, name, SimpleNamespace(__version__=installed_version))
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed_version)
     monkeypatch.setattr(importlib.metadata, "distributions", lambda: [])
@@ -2402,7 +2400,7 @@ def test_manual_nightly_checks_selected_source_with_current_license_tooling():
         {"ref": "${{ github.sha }}", "persist-credentials": "false"},
         {"ref": target, "path": "source", "persist-credentials": "false"},
     ]
-    assert "--pyproject source/python/aisimulate/pyproject.toml" in _run_commands(compliance)
+    assert "--pyproject source/python/aisim/pyproject.toml" in _run_commands(compliance)
     build = jobs["build-artifacts"]
     checkout = next(s for s in build["steps"] if "actions/checkout@" in s.get("uses", ""))
     assert checkout["with"]["ref"] == target
@@ -2703,7 +2701,7 @@ python() {
     assert result.returncode == 0, result.stderr
 
 
-def test_bundled_config_gates_run_before_wheel_publication_or_installation():
+def test_bundled_config_gates_run_before_wheel_publication_or_installation(tmp_path):
     policy = _workflow("fast-ci.yml")["jobs"]["policy"]
     assert "scripts/ci/check_bundled_configs.py" in _run_commands(policy)
     assert "tests/test_bundled_configs.py" in _run_commands(policy)
@@ -2731,16 +2729,25 @@ def test_bundled_config_gates_run_before_wheel_publication_or_installation():
     assert check < stage
     assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
-    for collection in (application, action["runs"]["steps"], steps):
+    for kind, collection in zip(
+        ("application", "platform", "nightly"), (application, action["runs"]["steps"], steps), strict=True
+    ):
         upload_report = next(
             step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
         )
-        paths = upload_report["with"]["path"].splitlines()
-        assert {path.rsplit("/", 1)[-1] for path in paths} == {
-            "bundled-deps.csv",
-            "bundled-provenance.json",
-            "extracted-files.json",
-        }
+        pattern = upload_report["with"]["path"]
+        assert len(pattern.splitlines()) == 1
+        assert pattern.startswith("${{ runner.temp }}/")
+        root = tmp_path / f"bundled-configs-{kind}"
+        payload = root / "files/model_configs"
+        payload.mkdir(parents=True)
+        reports = {"bundled-deps.csv", "bundled-provenance.json", "extracted-files.json"}
+        for name in reports:
+            (root / name).touch()
+        for name in ("nested.csv", "nested.json"):
+            (payload / name).touch()
+        # Check the upload path's intended file selection against a fixture tree.
+        assert set(tmp_path.glob(pattern.removeprefix("${{ runner.temp }}/"))) == {root / name for name in reports}
     tooling = next(step for step in steps if step.get("with", {}).get("path") == "release-tooling")
     for file in ["check_bundled_configs.py", "bundled_configs.json", "bundled_config_legacy.json"]:
         assert "/scripts/ci/" + file in tooling["with"]["sparse-checkout"]
@@ -2854,7 +2861,7 @@ def test_python_license_gate_checks_target_environment_before_export(
     tmp_path, monkeypatch, capsys, license_result, manifest_selection
 ):
     manifest = tmp_path / "pyproject.toml"
-    manifest.write_text('[project]\ndependencies = ["prettytable>=3", "wcwidth", "aisimulate-core==1.0"]\n')
+    manifest.write_text('[project]\ndependencies = ["prettytable>=3", "wcwidth", "aisim-core==1.0"]\n')
     # A historical source needs only its manifest; the policy/tool lives in
     # the workflow checkout. A missing default detects accidental fallback.
     monkeypatch.setattr(
@@ -2961,7 +2968,7 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
     wheel = directory / f"{package}-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
     wheel.write_bytes(b"fixture wheel")
     (directory / f"{package}-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
-    manifest = tmp_path / "python/aisimulate/pyproject.toml"
+    manifest = tmp_path / "python/aisim/pyproject.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('[project]\nversion = "0.12.0.dev20260917"\n')
     python = tmp_path / "tools/venv-build/bin/python"
@@ -2980,8 +2987,8 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
         "MATRIX_ARCH": "amd64",
         "MATRIX_RUNNER": "fixture",
         "CONTAINER_IMAGE": "fixture@sha256:" + "b" * 64,
-        "GH_REPOSITORY": "ai-dynamo/aisimulate",
-        "GH_WORKFLOW_REF": "ai-dynamo/aisimulate/.github/workflows/nightly-ci.yml@refs/heads/main",
+        "GH_REPOSITORY": "ai-dynamo/aisim",
+        "GH_WORKFLOW_REF": "ai-dynamo/aisim/.github/workflows/nightly-ci.yml@refs/heads/main",
         "GH_REF": source_ref,
         "GH_SHA": "a" * 40,
         "GH_RUN_ID": "123",
@@ -3158,7 +3165,7 @@ new AsyncFunction('github', 'context', 'core', process.argv[2])(github, context,
 
 
 def _current_product_version():
-    manifest = tomllib.loads((REPOSITORY_ROOT / "python/aisimulate/pyproject.toml").read_text())
+    manifest = tomllib.loads((REPOSITORY_ROOT / "python/aisim/pyproject.toml").read_text())
     return manifest["project"]["version"]
 
 
@@ -3192,7 +3199,7 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
 def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version, package):
     current_version = _current_product_version()
     base_version = base_version or current_version
-    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisim/pyproject.toml", "scripts/pyproject.toml"):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -3201,13 +3208,15 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
             .replace(f'version = "{current_version}"', f'version = "{base_version}"')
         )
     if package == "aisimulate":
-        for name in ("crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
+        for name in ("crates/core/Cargo.toml", "python/aisim/pyproject.toml"):
             target = tmp_path / name
             target.write_text(
                 target.read_text()
                 .replace('name = "aisim"', 'name = "aisimulate"')
                 .replace('name = "aisim-core"', 'name = "aisimulate-core"')
-                .replace('aisim = "aisimulate.supervision:main"\n', "")
+                .replace('aisim = "aisim.supervision:main"\n', "")
+                .replace("aisim.supervision", "aisimulate.supervision")
+                .replace("aisim.legacy_cli", "aisimulate.legacy_cli")
             )
     for args in (
         ["init", "-q"],
@@ -3232,7 +3241,7 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
         capture_output=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert f"{base_version}{suffix}" in (tmp_path / "python/aisimulate/pyproject.toml").read_text()
+    assert f"{base_version}{suffix}" in (tmp_path / "python/aisim/pyproject.toml").read_text()
     assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "crates/core/Cargo.toml").read_text()
 
 
@@ -3308,10 +3317,10 @@ def test_simulation_performance_rollout_and_revision_contract():
     assert "was not benchmarked" in commands
     commands = _run_commands(comparison)
     assert "repetitions=3" in commands
-    assert "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" in commands
-    assert "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" in commands
-    assert "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" in commands
-    assert "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" in commands
+    assert "${BASE_SRC}/python/aisim/tools/simulation_perf_gate/run.py" in commands
+    assert "${HEAD_SRC}/python/aisim/tools/simulation_perf_gate/run.py" in commands
+    assert "${BASE_SRC}/python/aisim/tools/simulation_perf_gate/worker.py" in commands
+    assert "${HEAD_SRC}/python/aisim/tools/simulation_perf_gate/worker.py" in commands
 
 
 @pytest.mark.parametrize(
@@ -3319,18 +3328,18 @@ def test_simulation_performance_rollout_and_revision_contract():
     [
         ("crates/core/src/replay/loadgen/weka.rs", True),
         ("crates/core/src/engine/scheduler/vllm/core.rs", True),
-        ("python/aisimulate/src/aisimulate/traffic.py", True),
-        ("python/aisimulate/src/aisimulate/compiler.py", True),
-        ("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
-        ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
+        ("python/aisim/src/aisim/traffic.py", True),
+        ("python/aisim/src/aisim/compiler.py", True),
+        ("python/aisim/src/aisim_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
+        ("python/aisim/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
         ("scripts/performance/build_simulation_dynamo.py", True),
         ("scripts/performance/check_dynamo_callback.py", True),
         ("scripts/performance/dynamo_callback_contract.rs", True),
         ("scripts/performance/simulation_dynamo_requirements.in", True),
         ("scripts/performance/simulation_dynamo_requirements.txt", True),
-        ("python/aisimulate/uv.lock", True),
-        ("python/aisimulate/tools/simulation_perf_gate/README.md", False),
-        ("python/aisimulate/tools/forward_perf_gate/run.py", False),
+        ("python/aisim/uv.lock", True),
+        ("python/aisim/tools/simulation_perf_gate/README.md", False),
+        ("python/aisim/tools/forward_perf_gate/run.py", False),
         ("docs/cli/user-guide.md", False),
     ],
 )
@@ -3367,7 +3376,7 @@ def test_simulation_perf_controller_change_detection(tmp_path, path, expected):
     steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
     revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
     detection = "controller_changes=" + revisions.split("controller_changes=", 1)[1].split('echo "base_sha=', 1)[0]
-    gate = "python/aisimulate/tools/simulation_perf_gate"
+    gate = "python/aisim/tools/simulation_perf_gate"
     _git(tmp_path, "init", "--quiet")
     base = _commit_file(tmp_path, "base", "base\n")
     # A runtime change selects the normal comparison; only benchmark code/input
@@ -3401,7 +3410,7 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
     steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
     script = next(step["run"] for step in steps if step.get("id") == "revisions")
     _git(tmp_path, "init", "--quiet")
-    gate = tmp_path / "python/aisimulate/tools/simulation_perf_gate"
+    gate = tmp_path / "python/aisim/tools/simulation_perf_gate"
     (gate / "fixtures").mkdir(parents=True)
     for name in ("cases.py", "compare.py", "contract.py", "run.py", "worker.py", "fixtures/agentx.jsonl"):
         (gate / name).write_text("fixture\n")
@@ -3485,9 +3494,9 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
     invocations = calls.read_text().splitlines()
     assert len(invocations) == count
     for attempt, invocation in enumerate(invocations, 1):
-        assert invocation.startswith("/base-src/python/aisimulate/tools/simulation_perf_gate/run.py ")
-        assert "--base-worker /base-src/python/aisimulate/tools/simulation_perf_gate/worker.py" in invocation
-        assert "--head-worker /head-src/python/aisimulate/tools/simulation_perf_gate/worker.py" in invocation
+        assert invocation.startswith("/base-src/python/aisim/tools/simulation_perf_gate/run.py ")
+        assert "--base-worker /base-src/python/aisim/tools/simulation_perf_gate/worker.py" in invocation
+        assert "--head-worker /head-src/python/aisim/tools/simulation_perf_gate/worker.py" in invocation
         assert ("--qualification" in invocation) == self_compare
         assert (
             f"--output-dir /results/qualification-{attempt}" in invocation
@@ -3558,7 +3567,7 @@ _PLACEMENT_LITERAL = (
     "        }\n"
     "    }\n"
 )
-_MARKER = "// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+_MARKER = "// Modified by AISim CI: Dynamo does not set these optional fields yet.\n"
 
 
 def _literal_fixture(tmp_path, monkeypatch, request_extra="", placement_extra="", request_literal=_REQUEST_LITERAL):
@@ -3664,7 +3673,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "            session_id: None,\n"
         "            cache_salt: None,\n"
         "            kv_hint: None,\n"
-        "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        "            // Modified by AISim CI: the pinned Dynamo request is text-only.\n"
         "            images: {\n"
         "                assert!(\n"
         "                    request.images.is_empty(),\n"
@@ -3677,7 +3686,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
     expected = expected.replace(
         "        Ok(match event {\n",
         "        Ok(match event {\n"
-        "            // Modified by AISimulate CI: host-loop/frontend events are unsupported.\n"
+        "            // Modified by AISim CI: host-loop/frontend events are unsupported.\n"
         "            LifecycleEvent::TtftMilestone { request_id, stage, at_ms } => {\n"
         "                return Err(anyhow!(\n"
         '                    "pinned Dynamo CI adapter does not support TTFT milestone {stage:?}'
@@ -3942,7 +3951,7 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
     site = site._replace(sha256=hashlib.sha256(_SYNTHETIC_TRACE_LITERAL.encode()).hexdigest())
     monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", (site,))
     if image_field not in ("", "pub images: Option<SyntheticImages>,") or drift:
-        with pytest.raises(ValueError, match="reviewed source|unreviewed AISimulate SyntheticTraceSpec"):
+        with pytest.raises(ValueError, match="reviewed source|unreviewed AISim SyntheticTraceSpec"):
             builder.patch_optional_literal_fields(core, dynamo)
         assert path.read_text() == original
     else:
@@ -3952,7 +3961,7 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
             original.replace(
                 "        arrival_seed,\n",
                 "        arrival_seed,\n"
-                "        // Modified by AISimulate CI: retain the pinned text-only replay configuration.\n"
+                "        // Modified by AISim CI: retain the pinned text-only replay configuration.\n"
                 "        images: None,\n",
             )
             if image_field
@@ -3962,8 +3971,9 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
         assert record["after_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("chat_template", [False, True])
 @pytest.mark.parametrize("client_type", [None, "WekaClient", "OtherClient"])
-def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type):
+def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type, chat_template):
     from scripts.performance import build_simulation_dynamo as builder
 
     site = next(site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "WekaImportOptions")
@@ -3972,6 +3982,8 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
     api.parent.mkdir(parents=True)
     adapter.parent.mkdir(parents=True)
     fields = f"pub client: {client_type}," if client_type else ""
+    if chat_template:
+        fields += " pub chat_template: Option<WekaChatTemplate>,"
     api.write_text(f"pub struct WekaImportOptions {{pub nested_timestamp_basis: WekaNestedTimestampBasis, {fields}}}")
     source = "fn parse_weka_import_options() {\n    WekaImportOptions {\n        nested_timestamp_basis,\n    }\n}\n"
     adapter.write_text(source)
@@ -3979,15 +3991,18 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
         builder, "OPTIONAL_FIELD_LITERALS", (site._replace(sha256=hashlib.sha256(source.encode()).hexdigest()),)
     )
     if client_type == "OtherClient":
-        with pytest.raises(ValueError, match="unreviewed AISimulate WekaImportOptions"):
+        with pytest.raises(ValueError, match="unreviewed AISim WekaImportOptions"):
             builder.patch_optional_literal_fields(core, dynamo)
         assert adapter.read_text() == source
     else:
         [record] = builder.patch_optional_literal_fields(core, dynamo)
-        assert record["inserted_fields"] == (["client"] if client_type else [])
+        inserted = (["client"] if client_type else []) + (["chat_template"] if chat_template else [])
+        assert record["inserted_fields"] == inserted
         if client_type:
             assert "client: WekaImportOptions::default().client," in adapter.read_text()
-        else:
+        if chat_template:
+            assert "chat_template: None," in adapter.read_text()
+        if not inserted:
             assert adapter.read_text() == source
 
 
@@ -4021,7 +4036,7 @@ def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monke
     adapter.write_text(source)
     monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
     if drift:
-        with pytest.raises(ValueError, match="unreviewed AISimulate SglangConfig"):
+        with pytest.raises(ValueError, match="unreviewed AISim SglangConfig"):
             builder.patch_replay_engine_config(core, dynamo)
         assert adapter.read_text() == source
     else:
@@ -4082,7 +4097,7 @@ def test_simulation_dynamo_lifecycle_rejects_unsupported_host_events(extra):
 
     api = "pub enum LifecycleEvent { SourceHeld {}, DestinationReserved {}, " + extra + "}"
     if "u64" in extra or "OtherEvent" in extra:
-        with pytest.raises(ValueError, match="unreviewed AISimulate lifecycle API"):
+        with pytest.raises(ValueError, match="unreviewed AISim lifecycle API"):
             builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
     else:
         patched, rejected = builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
@@ -4189,7 +4204,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     monkeypatch.setattr(builder, "patch_speculation_depth", patch_speculation_depth)
     monkeypatch.setattr(builder, "patch_replay_engine_config", patch_replay_engine_config)
     if wrong_core:
-        with pytest.raises(ValueError, match="different AISimulate core"):
+        with pytest.raises(ValueError, match="different AISim core"):
             builder.build(source, dynamo, output)
         assert not built
         assert not list(output.iterdir())
@@ -4225,7 +4240,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
 def test_simulation_perf_artifact_verification(tmp_path, fault):
     from scripts.performance.simulation_perf_artifact import sha256, verify
 
-    wheel = tmp_path / "aisimulate-test.whl"
+    wheel = tmp_path / "aisim-test.whl"
     wheel.write_bytes(b"built wheel")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("locked\n")
@@ -4257,7 +4272,7 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
     elif fault == "requirements":
         requirements.write_text("wrong dependencies\n")
     elif fault == "extra_wheel":
-        (tmp_path / "aisimulate-other.whl").write_bytes(b"another wheel")
+        (tmp_path / "aisim-other.whl").write_bytes(b"another wheel")
     elif fault == "unverified_wheel":
         (tmp_path / "unexpected_package-1.0-py3-none-any.whl").write_bytes(b"unverified wheel")
     elif fault == "embedded_core":
@@ -4318,15 +4333,15 @@ python() {
     assert result.stdout.strip() == layout
 
 
-@pytest.mark.parametrize("extra", ["other/pyproject.toml", "python/aisimulate/pyproject.toml"])
+@pytest.mark.parametrize("extra", ["other/pyproject.toml", "python/unknown/pyproject.toml"])
 def test_release_manifest_discovery_rejects_unknown_tool_only_manifests(tmp_path, monkeypatch, extra):
-    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
+    for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisim/pyproject.toml", "scripts/pyproject.toml"):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((REPOSITORY_ROOT / name).read_bytes())
     monkeypatch.setattr(release_artifacts, "ROOT", tmp_path)
     monkeypatch.setattr(
-        release_artifacts, "EXPECTED_PYTHON_PROJECTS", {tmp_path / "python/aisimulate/pyproject.toml": "aisim"}
+        release_artifacts, "EXPECTED_PYTHON_PROJECTS", {tmp_path / "python/aisim/pyproject.toml": "aisim"}
     )
     monkeypatch.setattr(release_artifacts, "EXPECTED_CRATE", tmp_path / "crates/core/Cargo.toml")
     release_artifacts.check_manifests()
@@ -4383,20 +4398,25 @@ def test_release_output_checks_embedded_identity_and_scripts(tmp_path, monkeypat
     (output / f"{package}-core-{version}.crate").write_bytes(b"crate fixture")
     for name in release_artifacts.LEGAL_FILES:
         (tmp_path / name).write_text(f"fixture legal text for {name}\n")
-    scripts = {"aiconfigurator": "aisimulate.legacy_cli.entrypoint:main", "aisimulate": "aisimulate.supervision:main"}
+    namespace = "aisim" if package == "aisim" else "aisimulate"
+    monkeypatch.setattr(release_artifacts, "PYTHON_NAMESPACE", namespace)
+    scripts = {
+        "aiconfigurator": f"{namespace}.legacy_cli.entrypoint:main",
+        "aisimulate": f"{namespace}.supervision:main",
+    }
     if alias:
-        scripts["aisim"] = "aisimulate.supervision:main"
+        scripts["aisim"] = f"{namespace}.supervision:main"
     if failure == "missing-command":
         del scripts["aisimulate"]
     elif failure == "alias":
         if alias:
             del scripts["aisim"]
         else:
-            scripts["aisim"] = "aisimulate.supervision:main"
+            scripts["aisim"] = f"{namespace}.supervision:main"
     elif failure == "wrong-target":
         scripts["aisimulate"] = "wrong.module:main"
     elif failure == "extra-script":
-        scripts["unexpected"] = "aisimulate.supervision:main"
+        scripts["unexpected"] = f"{namespace}.supervision:main"
     embedded_name = "other-product" if failure == "name" else package
     embedded_version = "0.0.1" if failure == "version" else version
     metadata = f"Metadata-Version: 2.1\nName: {embedded_name}\nVersion: {embedded_version}\n"

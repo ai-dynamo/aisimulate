@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{
+use aisim_core::engine::{
     Backend, EngineConfig, KvEvent, KvEventData, NativeHostOffloadConfig, TimingModelConfig,
 };
-use aisimulate_core::replay::loadgen::{SessionTrace, Trace, TurnTrace, WorkloadDriver};
-use aisimulate_core::replay::{
+use aisim_core::replay::loadgen::{SessionTrace, Trace, TurnTrace, WorkloadDriver};
+use aisim_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, LoadBalanceMethod, ProviderSpec, ReplayAdapters,
     ReplayArtifactHostOffloadEvent, ReplayArtifactHostOffloadEventData,
     ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayCaptureOptions, ReplayDeterminism,

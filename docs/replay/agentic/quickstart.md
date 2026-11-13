@@ -26,7 +26,7 @@ You need Python 3.11–3.13, `uv`, Rust/Cargo, and a C/C++ compiler and linker.
 See [source installation](../../getting-started/installation.md#use-current-source) for platform details.
 
 ```bash
-uv sync --project python/aisimulate --extra dev
+uv sync --project python/aisim --extra dev
 ```
 
 This installs the Python environment and builds the native simulator. The
@@ -61,7 +61,7 @@ requests, and occupies 1,198,197 bytes. Its SHA-256 is
 Verify the downloaded subset before running:
 
 ```bash
-python/aisimulate/.venv/bin/python - <<'PY'
+python/aisim/.venv/bin/python - <<'PY'
 import hashlib
 from pathlib import Path
 trace = Path("/tmp/agentx-quickstart/plays-0000-0001.jsonl")
@@ -165,7 +165,7 @@ transfer bandwidth is an example assumption, not a measured link speed.
 ## 4. Run the simulation
 
 ```bash
-python/aisimulate/.venv/bin/python -m aisimulate predict \
+python/aisim/.venv/bin/python -m aisim predict \
   --stack engine \
   --config /tmp/agentx-quickstart/disagg.yaml \
   --capture-per-request \
@@ -180,7 +180,7 @@ To change the admission window to 600 simulated seconds without editing the
 YAML, use a CLI override:
 
 ```bash
-python/aisimulate/.venv/bin/python -m aisimulate predict \
+python/aisim/.venv/bin/python -m aisim predict \
   --stack engine \
   --config /tmp/agentx-quickstart/disagg.yaml \
   --set traffic.load.agentic_profile.duration_seconds=600 \

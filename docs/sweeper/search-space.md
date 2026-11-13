@@ -337,16 +337,13 @@ search_space:
 A disaggregated entry contains `prefill` and `decode` shapes. Every pinned shape must be legal,
 KV-feasible, supported by at least one selected backend, and accepted by the configured Replay
 runner. If every selected backend/topology pair is runner-incompatible, preflight raises
-`aisimulate.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
+`aisim.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
 
 <a id="sampler-algorithm-override"></a>
 
 ## SDK: Sampler Algorithm Override
 
-The experimental `AISIMULATE_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier
-algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer.
-`SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
-AI Simulate variable takes precedence.
+The experimental `AISIM_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer. The legacy `AISIMULATE_SWEEPER_VIZIER_ALGO` remains a compatibility fallback, followed by the deprecated `SPICA_VIZIER_ALGO`; the canonical AISim variable takes precedence when multiple names are set.
 
 ## `kv_load_ratio` (candidate-relative concurrency)
 
