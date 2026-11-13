@@ -39,7 +39,13 @@ additional dependencies described in that guide.
 ## Migrate from the `aisimulate` distribution
 
 The distributions share their Python files and CLI, so uninstall `aisimulate`
-**before** installing or upgrading to `aisim`:
+**before** installing or upgrading to `aisim`.
+
+The commands below repair package files in an environment that already has
+AISim 0.14.0's dependencies. When upgrading from an older release, keep the
+uninstall step and replace the install step with
+`python3 -m pip install --force-reinstall aisim==0.14.0` so pip can install any
+new dependencies.
 
 ```bash
 python3 -m pip uninstall -y aisimulate
@@ -160,7 +166,9 @@ see the [Python source migration guide](https://github.com/ai-dynamo/aisim/blob/
 for replacement imports. The legacy executable remains available as described above.
 
 When upgrading from standalone AIConfigurator, remove the old distributions first
-so that AISim owns the installed files:
+so that AISim owns the installed files. The dependency prerequisites and alternate
+install command in [Migrate from the `aisimulate` distribution](#migrate-from-the-aisimulate-distribution)
+also apply here:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
