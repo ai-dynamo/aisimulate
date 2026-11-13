@@ -29,7 +29,7 @@ outcomes, not reasons to remove intended coverage before collection.
 ## Table layout and runtime pins
 
 ```text
-python/aisimulate/src/aisimulate_core/systems/data/
+python/aisim/src/aisim_core/systems/data/
   <system>/<family>/<backend>/<version>/
     <table>_perf.parquet
     collection_meta.yaml
@@ -115,6 +115,6 @@ have pinned overwrite semantics; preserve their source order and parity tests
 instead of assuming every raw loader uses the same merge algorithm.
 
 The authoritative implementations are
-[`collector`](../../../python/aisimulate/collector/),
-[`perf_database.py`](../../../python/aisimulate/src/aisimulate_core/sdk/perf_database.py),
+[`collector`](../../../python/aisim/collector/),
+[`perf_database.py`](../../../python/aisim/src/aisim_core/sdk/perf_database.py),
 and the [native table loaders](../../../crates/core/src/perfmodel/perf_database/).

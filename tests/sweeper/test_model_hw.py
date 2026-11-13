@@ -7,14 +7,14 @@ Uses models whose configs resolve without HF auth (DeepSeek-V3, Qwen3-32B)."""
 
 import pytest
 
-import aisimulate.sweeper.model_hw as mh_mod
-from aisimulate.sweeper.model_hw import (
+import aisim.sweeper.model_hw as mh_mod
+from aisim.sweeper.model_hw import (
     ModelHardware,
     NoViableParallelConfig,
     parallel_configs_for,
     resolve_model_hardware,
 )
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
@@ -293,7 +293,7 @@ def test_kv_path_tiny_budget_raises():
 @pytest.mark.model(MAVERICK)
 def test_tp_that_does_not_split_heads_is_skipped_not_fatal(caplog):
     # 40 heads rule out tp=16 but not tp=8; a 16-GPU budget enumerates both.
-    caplog.set_level("WARNING", logger="aisimulate.sweeper.kv_estimate")
+    caplog.set_level("WARNING", logger="aisim.sweeper.kv_estimate")
     cfgs = parallel_configs_for(
         MAVERICK,
         "h100_sxm",

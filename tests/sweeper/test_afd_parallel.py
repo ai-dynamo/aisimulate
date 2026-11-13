@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aisimulate.config import CoreRecommendationConfig
-from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.sdk.task_v2 import build_afd_parallel_lists
-from aisimulate.sweeper import (
+from aisim.config import CoreRecommendationConfig
+from aisim.recommend import recommendation_to_sweeper
+from aisim.sdk.task_v2 import build_afd_parallel_lists
+from aisim.sweeper import (
     AFDInfeasible,
     AFDReasonCategory,
     AFDSearchConfig,
@@ -156,7 +156,7 @@ def test_default_dense_domain_matches_legacy_candidate_order():
 
     assert actual == expected
     assert result.provenance["complete"] is True
-    assert result.provenance["source"] == "aisimulate.sdk.task_v2.build_afd_parallel_lists"
+    assert result.provenance["source"] == "aisim.sdk.task_v2.build_afd_parallel_lists"
 
 
 def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():

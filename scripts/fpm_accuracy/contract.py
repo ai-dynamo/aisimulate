@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from pathlib import PurePosixPath
 
-REPO = "ai-dynamo/aisimulate"
+REPO = "ai-dynamo/aisim"
 HF_REPO = "nvidia/aisimulate-fpm-dataset"
 # Evaluations before the learned method publish LEGACY_METHODS; both remain valid.
 LEGACY_METHODS = ("warmup", "nowarmup", "regression")

@@ -21,7 +21,7 @@ decode KV cache across the existing TP ranks and adds no GPUs). Both default to
 one and stay out of the serialized identity when unset.
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -96,7 +96,7 @@ Regression and learned models read no performance data, so their identity only
 records the deployment they were calibrated on. A producer such as the Dynamo
 planner, which may not know that deployment's hardware, versions, parallelism or
 precision, records `"unknown"` instead of a guess. In memory an unknown integer
-holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisimulate_core::UNKNOWN_SIZE`), which
+holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisim_core::UNKNOWN_SIZE`), which
 serializes back to `"unknown"`, so the configuration round-trips exactly;
 `unknown_identity_facts()` lists them. Unknown widths are not checked against
 each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
@@ -124,7 +124,7 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
-AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISim behavior, not downstream Dynamo planner integration.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
 simulator workload assumption, supplied separately by the unified CLI as
@@ -217,7 +217,7 @@ Rust callers now construct the public struct instead of the former
 `ForwardPassSpeculationConfig::Ngram` enum variant:
 
 ```rust
-use aisimulate_core::{
+use aisim_core::{
     BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModel,
     ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, ForwardPassWorkerType,
 };
@@ -594,7 +594,7 @@ Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
 and fails, without selecting another estimator, when:
 
 - the manifest digest, a pinned file's size or digest, or the snapshot format
-  differs: snapshots load only in the same `aisimulate-core` version with the
+  differs: snapshots load only in the same `aisim-core` version with the
   same state layout and engine-specification schema;
 - the configuration, compared field by field after normalization, differs
   from the saved identity (the error names the first differing field);
@@ -673,7 +673,7 @@ data as external data.
 The manifest schema version is 2. Version 1 manifests, written before
 snapshots were relocatable (for example by nightly
 `0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
-the save location. A snapshot restores only in the aisimulate-core version
+the save location. A snapshot restores only in the aisim-core version
 that wrote it, so a version 1 snapshot from a published nightly cannot be
 relocated: restore it in place with the build that wrote it, or tune and save
 a new snapshot with a current build, which rejects the old one with an error
@@ -1038,7 +1038,7 @@ FPM also checks the preserved GEMM/MoE identity before selecting a timing cell,
 including profiles without an original op-level graph.
 Missing hardware metadata still follows the system-spec/data diagnostics.
 Serving runtimes may execute FP8 checkpoints through weight-only kernels such as
-Marlin on these GPUs; AISimulate does not model that path.
+Marlin on these GPUs; AISim does not model that path.
 
 ### KV precision and token capacity
 
@@ -1055,7 +1055,7 @@ recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 | KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
 | Other supported configurations | BF16 |
 
-These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+These are AISim policies, not serving-engine defaults. `torch_dtype: bfloat16`
 does not prevent FP8 KV inference. For regular language roles using default timing,
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;

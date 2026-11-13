@@ -15,14 +15,14 @@ import pytest
 # Reuse the config-only, verified unregistered architecture and its guards.
 import test_fpm_profile_workflow as workflow
 
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.detail import build_prediction_details
-from aisimulate.recommend import run_recommendation
-from aisimulate.runner import EngineReplayRunnerFactory, _normalize_engine_replay_report
-from aisimulate.sweeper.replay import ReplayOutputRequirements
-from aisimulate.sweeper.result import SweepResult
-from aisimulate_core.sdk import RustForwardPassPerfModel
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.detail import build_prediction_details
+from aisim.recommend import run_recommendation
+from aisim.runner import EngineReplayRunnerFactory, _normalize_engine_replay_report
+from aisim.sweeper.replay import ReplayOutputRequirements
+from aisim.sweeper.result import SweepResult
+from aisim_core.sdk import RustForwardPassPerfModel
 
 pytestmark = pytest.mark.unit
 
@@ -437,8 +437,8 @@ def test_public_recommendation_retains_requested_evidence(profile, evidence_syst
     # Keep orchestration in this process so the analytical-graph guards remain
     # active; estimation, candidate scoring and replay use the real native API.
     if not supervised:
-        monkeypatch.setattr("aisimulate.supervision.in_supervised_process", lambda: True)
-        monkeypatch.setattr("aisimulate.resources.GuardedRunnerFactory.admit_wave", None)
+        monkeypatch.setattr("aisim.supervision.in_supervised_process", lambda: True)
+        monkeypatch.setattr("aisim.resources.GuardedRunnerFactory.admit_wave", None)
     raw = prediction(profile, evidence_systems)
     raw["engine"]["mode"] = "aggregated"
     raw["engine"]["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
@@ -505,7 +505,7 @@ def test_replay_prices_a_mixed_rank_as_one_canonical_iteration(profile, batching
 
 
 def test_prediction_cli_saves_direct_query_evidence(profile, evidence_systems, tmp_path, capsys):
-    import aisimulate.main as cli
+    import aisim.main as cli
 
     config = tmp_path / "prediction.json"
     config.write_text(json.dumps(prediction(profile, evidence_systems)))

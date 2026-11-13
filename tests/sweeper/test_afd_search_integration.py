@@ -6,22 +6,22 @@
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.afd_parallel import (
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper.afd_parallel import (
     AFDInfeasible,
     AFDParallelConfig,
     AFDReasonCategory,
 )
-from aisimulate.sweeper.afd_perfmodel import AFDLayerTimes
-from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.model_hw import ModelHardware, NoViableParallelConfig
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import ReplayReport, ReplaySpec, RunnerCapabilities
-from aisimulate.sweeper.sample import unroll_sample
-from aisimulate.sweeper.sampler import RandomBranchSampler
-from aisimulate.sweeper.search import Sweeper
-from aisimulate.sweeper.search_space import RunnerIncompatibleError, enumerate_branches
+from aisim.sweeper.afd_perfmodel import AFDLayerTimes
+from aisim.sweeper.config import SmartSearchConfig
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.model_hw import ModelHardware, NoViableParallelConfig
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import ReplayReport, ReplaySpec, RunnerCapabilities
+from aisim.sweeper.sample import unroll_sample
+from aisim.sweeper.sampler import RandomBranchSampler
+from aisim.sweeper.search import Sweeper
+from aisim.sweeper.search_space import RunnerIncompatibleError, enumerate_branches
 
 
 def _model_hardware() -> ModelHardware:
@@ -79,7 +79,7 @@ def _capabilities(mode: str) -> RunnerCapabilities:
 
 def test_pure_afd_uses_finite_generic_sampler_and_serializes_no_engine(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     config = _config(
@@ -118,7 +118,7 @@ def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch, context_le
         replicas=1,
     )
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     calls = []
@@ -128,7 +128,7 @@ def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch, context_le
         return [companion]
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         fake_parallel_configs,
     )
     config = _config(
@@ -168,7 +168,7 @@ def test_afd_runner_capability_gate_fails_closed(monkeypatch, mode, pinned):
         pytest.fail("runner-incompatible AFD must be rejected before model lookup")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         unexpected_model_lookup,
     )
 
@@ -184,9 +184,9 @@ def test_mixed_afd_runner_incompatibility_preserves_explicit_pin_scope(monkeypat
     def unexpected_model_lookup(*args, **kwargs):
         pytest.fail("runner-incompatible AFD must be rejected before model lookup")
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_model_hardware", unexpected_model_lookup)
+    monkeypatch.setattr("aisim.sweeper.search_space.resolve_model_hardware", unexpected_model_lookup)
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [
             ReplicaParallelConfig(shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
         ],
@@ -208,7 +208,7 @@ def test_mixed_afd_runner_incompatibility_preserves_explicit_pin_scope(monkeypat
 
 
 def test_mixed_afd_terminal_failure_defers_warning_and_preserves_runner_details(monkeypatch):
-    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: [])
+    monkeypatch.setattr("aisim.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: [])
     config = _config("afd", deployment_mode=["afd", "agg"], afd_pinned_topologies=[], afd_batch_size_candidates=[16])
 
     with pytest.raises(NoViableParallelConfig, match="runner-incompatible") as error:
@@ -219,7 +219,7 @@ def test_mixed_afd_terminal_failure_defers_warning_and_preserves_runner_details(
 
 def test_afd_rejects_kv_relative_load_until_capacity_is_exposed(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     config = SmartSearchConfig(
@@ -241,7 +241,7 @@ def test_afd_rejects_kv_relative_load_until_capacity_is_exposed(monkeypatch):
 
 def test_afd_complete_domain_limit_fails_instead_of_truncating(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     config = _config(
@@ -269,11 +269,11 @@ def test_afd_combined_product_limit_fails_during_generation(monkeypatch):
         for tp in (1, 2, 4)
     ]
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: companions,
     )
     config = _config("afd+pd", afd_max_candidates=2)
@@ -290,11 +290,11 @@ def test_afd_combined_product_limit_fails_during_generation(monkeypatch):
 
 def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     monkeypatch.setattr(
-        "aisimulate.sweeper.search.resolve_backend_version",
+        "aisim.sweeper.search.resolve_backend_version",
         lambda *args, **kwargs: "test",
     )
 
@@ -359,11 +359,11 @@ def test_sweeper_runs_afd_branch_through_an_explicitly_capable_runner(monkeypatc
 
 def test_sweeper_runs_pure_both_phase_afd_through_engine_runner(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.resolve_model_hardware",
+        "aisim.sweeper.search_space.resolve_model_hardware",
         lambda *args, **kwargs: _model_hardware(),
     )
     monkeypatch.setattr(
-        "aisimulate.sweeper.search.resolve_backend_version",
+        "aisim.sweeper.search.resolve_backend_version",
         lambda *args, **kwargs: "test",
     )
 

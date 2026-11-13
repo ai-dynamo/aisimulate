@@ -9,24 +9,24 @@ from pathlib import Path
 
 import pytest
 
-import aisimulate.sweeper.search as search_mod
-from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
-from aisimulate.sweeper.kv_load import KVLoadResolution
-from aisimulate.sweeper.parallel_enum import (
+import aisim.sweeper.search as search_mod
+from aisim.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
+from aisim.sweeper.kv_load import KVLoadResolution
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.replay import (
+from aisim.sweeper.replay import (
     BackendDeploymentSpec,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
 )
-from aisimulate.sweeper.result import CandidateRecord, CandidateStatus
-from aisimulate.sweeper.sampler import Suggestion
-from aisimulate.sweeper.search import Sweeper
-from aisimulate.sweeper.search_space import BranchSpace
+from aisim.sweeper.result import CandidateRecord, CandidateStatus
+from aisim.sweeper.sampler import Suggestion
+from aisim.sweeper.search import Sweeper
+from aisim.sweeper.search_space import BranchSpace
 
 TRACE = str(Path(__file__).parent / "data" / "mooncake_tiny.jsonl")
 
@@ -517,10 +517,8 @@ def test_resource_aware_candidates_are_checkpointed_then_reported_in_suggestion_
         for index in reversed(range(len(specs))):
             yield index, search_mod._run_replay_detailed(specs[index], runner)
 
-    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", last_spec_first)
-    monkeypatch.setattr(
-        "aisimulate.supervision.checkpoint", lambda event, value: events.append((event, value["score"]))
-    )
+    monkeypatch.setattr("aisim.resource_scheduler.evaluate_waves", last_spec_first)
+    monkeypatch.setattr("aisim.supervision.checkpoint", lambda event, value: events.append((event, value["score"])))
 
     Sweeper(runner_factory=ResourceFactory(), sampler_factory=_FakeSampler, show_progress=False).run(
         _config(parallel_evals=3),
@@ -679,7 +677,7 @@ def test_direct_sweeper_reaps_term_resistant_workers_before_replacement(monkeypa
 
     import psutil
 
-    from aisimulate import supervision
+    from aisim import supervision
 
     _stub(monkeypatch, _branch(_pc()))
     monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
@@ -723,7 +721,7 @@ def test_direct_sweeper_bounds_shutdown_and_preserves_completed_results(monkeypa
 
     import psutil
 
-    from aisimulate import supervision
+    from aisim import supervision
 
     _stub(monkeypatch, _branch(_pc()))
     monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
@@ -1346,18 +1344,18 @@ def test_pareto_sweep_preserves_kv_load_and_returns_front(monkeypatch):
 def _isolate_estimator_data_for_orchestration(monkeypatch):
     # These tests use synthetic models/runners. Native construction is exercised
     # by the estimator contract tests and CLI round trips.
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
 
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeypatch, fail):
-    from aisimulate.sweeper.forward_pass_estimator import (
+    from aisim.sweeper.forward_pass_estimator import (
         ForwardPassEstimatorResolutionError,
         ForwardPassEstimatorResolver,
     )
-    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+    from aisim.sweeper.replay import ForwardPassEstimatorSpec
 
     config = _config()
     config.search_space.agg_num_gpu_blocks = 128
@@ -1465,7 +1463,7 @@ def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
 def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys, transient):
     from dataclasses import replace
 
-    from aisimulate.sweeper.result import ReasonCategory
+    from aisim.sweeper.result import ReasonCategory
 
     _stub(monkeypatch, _branch(_pc()))
     runner = _FakeRunner()
@@ -1510,8 +1508,8 @@ def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys
 def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
     from dataclasses import replace
 
-    from aisimulate.sweeper.result import ReasonCategory
-    from aisimulate.sweeper.sampler import make_branch_sampler
+    from aisim.sweeper.result import ReasonCategory
+    from aisim.sweeper.sampler import make_branch_sampler
 
     branch = _branch(_pc())
     branch.knob_choices.update(agg_max_num_batched_tokens=[8192], agg_max_num_seqs=[256])

@@ -16,8 +16,8 @@ To generate a fresh report without replacing package data, run from the repo
 root in the development environment:
 
 ```bash
-python python/aisimulate/tools/perf_database/generate_perf_data_reuse_manifest.py \
-  --data-root python/aisimulate/src/aisimulate_core/systems/data \
+python python/aisim/tools/perf_database/generate_perf_data_reuse_manifest.py \
+  --data-root python/aisim/src/aisim_core/systems/data \
   --out-json /tmp/perf-data-reuse-analysis.json \
   --out-md benchmarks/reports/perf-data/perf-data-reuse-analysis.md
 ```

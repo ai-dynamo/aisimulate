@@ -438,7 +438,7 @@ class LearnedScenarioPredictor(ForwardPassTimePredictor):
                     scope.model.tune_with_fpms([rows])
                     scope.feedback_observations += 1
                 except Exception as exc:
-                    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+                    from aisim_core.sdk.errors import PerfDataNotAvailableError
 
                     error = exc
                     prior_unavailable = isinstance(exc, PerfDataNotAvailableError)

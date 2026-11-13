@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.release.package_identity import single_wheel
 
 ROOT = Path(__file__).resolve().parents[2]
-PYTHON_PROJECT = ROOT / "python" / "aisimulate"
+PYTHON_PROJECT = ROOT / "python" / "aisim"
 PLATFORM_BY_MACHINE = {
     "aarch64": "manylinux_2_28_aarch64",
     "arm64": "manylinux_2_28_aarch64",
@@ -60,7 +60,7 @@ def build(output: Path) -> Path:
     if any(output.iterdir()):
         raise SystemExit(f"output directory must be empty: {output}")
 
-    with tempfile.TemporaryDirectory(prefix="aisimulate-unrepaired-wheel-") as temp:
+    with tempfile.TemporaryDirectory(prefix="aisim-unrepaired-wheel-") as temp:
         raw_output = Path(temp)
         _run(
             sys.executable,
@@ -74,7 +74,7 @@ def build(output: Path) -> Path:
             str(raw_output),
             cwd=PYTHON_PROJECT,
         )
-        raw_wheel = _single_wheel(raw_output, "unrepaired AISimulate wheel")
+        raw_wheel = _single_wheel(raw_output, "unrepaired AISim wheel")
         _run(
             "auditwheel",
             "repair",
@@ -85,7 +85,7 @@ def build(output: Path) -> Path:
             str(raw_wheel),
         )
 
-    repaired_wheel = _single_wheel(output, "repaired AISimulate wheel")
+    repaired_wheel = _single_wheel(output, "repaired AISim wheel")
     if policy not in repaired_wheel.name:
         raise SystemExit(f"repaired wheel does not carry required tag {policy}: {repaired_wheel.name}")
     _run("auditwheel", "show", str(repaired_wheel))

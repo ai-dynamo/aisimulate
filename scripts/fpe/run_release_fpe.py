@@ -24,9 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.release.package_identity import installed_distribution, wheels
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKAGES = ("aisimulate/", "aisimulate_core/")
-PROBES = Path("python/aisimulate/tools/support_matrix")
-DATA = Path("python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix")
+PACKAGES = ("aisim/", "aisim_core/")
+PROBES = Path("python/aisim/tools/support_matrix")
+DATA = Path("python/aisim/src/aisim_core/systems/fpe_support_matrix")
 
 
 def list_releases(root: Path) -> list[dict]:
@@ -80,7 +80,7 @@ def verify_installed_wheel(wheel: Path, *, distribution=None) -> None:
                 and Path(dist.locate_file(name)).read_bytes() != archive.read(name)
             ):
                 raise ValueError(f"installed file differs from qualified release wheel: {name}")
-    for name in ("aisimulate", "aisimulate_core", "aisimulate._runtime"):
+    for name in ("aisim", "aisim_core", "aisim._runtime"):
         spec = importlib.util.find_spec(name)
         owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()}
         if spec is None or spec.origin is None or Path(spec.origin).resolve() not in owned:
@@ -181,7 +181,7 @@ def package_reports(
     # Keep copyable reproducers tied to the same release and tooling checkouts.
     import csv
 
-    prefix = "python python/aisimulate/tools/support_matrix/generate_fpe_support_matrix.py"
+    prefix = "python python/aisim/tools/support_matrix/generate_fpe_support_matrix.py"
     command = (
         " ".join(
             f"{name}={shlex.quote(value)}"
@@ -191,7 +191,7 @@ def package_reports(
                 ("FPE_BRANCH", expected["source_branch"]),
             ]
         )
-        + " release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py probe"
+        + " release-source/python/aisim/.venv/bin/python scripts/fpe/run_release_fpe.py probe"
     )
     for path in (destination / DATA).glob("*.csv"):
         with path.open(newline="") as handle:

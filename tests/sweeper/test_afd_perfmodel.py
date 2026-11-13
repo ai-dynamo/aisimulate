@@ -7,14 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from aisimulate.sweeper.afd_parallel import AFDInfeasible, AFDPhase, AFDReasonCategory, AFDTopology
-from aisimulate.sweeper.afd_perfmodel import (
+from aisim.sweeper.afd_parallel import AFDInfeasible, AFDPhase, AFDReasonCategory, AFDTopology
+from aisim.sweeper.afd_perfmodel import (
     AFDLayerTimes,
     AICAFDPerformanceModel,
     attach_afd_measurements,
     measurement_request_from_candidate,
 )
-from aisimulate.sweeper.replay import BackendDeploymentSpec
+from aisim.sweeper.replay import BackendDeploymentSpec
 
 
 def _topology(*, phase: str = "decode") -> AFDTopology:
@@ -43,7 +43,7 @@ def _sample(topology: AFDTopology) -> dict:
 
 
 def test_aic_provider_extracts_precise_layer_measurement_without_double_calibration(monkeypatch):
-    from aisimulate.sweeper import afd_measure
+    from aisim.sweeper import afd_measure
 
     captured = {}
 
@@ -112,7 +112,7 @@ def test_aic_provider_extracts_precise_layer_measurement_without_double_calibrat
 
 
 def test_aic_provider_measures_mtp_cost_side_without_projection(monkeypatch):
-    from aisimulate.sweeper import afd_measure
+    from aisim.sweeper import afd_measure
 
     captured = {}
 
@@ -169,7 +169,7 @@ def test_aic_provider_measures_mtp_cost_side_without_projection(monkeypatch):
 
 
 def test_aic_provider_wraps_unexpected_measurement_errors(monkeypatch):
-    from aisimulate.sweeper import afd_measure
+    from aisim.sweeper import afd_measure
 
     def boom(**kwargs):
         raise RuntimeError("database exploded")
@@ -186,7 +186,7 @@ def test_aic_provider_wraps_unexpected_measurement_errors(monkeypatch):
 
 @pytest.mark.parametrize("phase", ["prefill", "decode", "both"])
 def test_aic_provider_preserves_oom_category_provenance_and_context_guidance(monkeypatch, phase):
-    from aisimulate.sweeper import afd_measure
+    from aisim.sweeper import afd_measure
 
     class OOMSession:
         def __init__(self, **kwargs):
@@ -224,7 +224,7 @@ def test_aic_provider_preserves_oom_category_provenance_and_context_guidance(mon
 
 
 def test_aic_provider_rejects_gpus_per_node_mismatch_as_invalid_topology(monkeypatch):
-    from aisimulate.sweeper import afd_measure
+    from aisim.sweeper import afd_measure
 
     monkeypatch.setattr(
         afd_measure,

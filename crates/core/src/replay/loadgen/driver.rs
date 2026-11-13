@@ -45,7 +45,8 @@ use crate::replay::protocol::{
 };
 
 pub const AGENTIC_LIFECYCLE_SCHEMA_V1: &str = "aisimulate.agentic.lifecycle.v1";
-const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-agentic-lifecycle-v1\0";
+// AISim namespace: this intentionally changes the legacy transcript fingerprint.
+const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisim-agentic-lifecycle-v1\0";
 
 /// Output progress for one request inside a same-timestamp feedback batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4807,6 +4808,15 @@ mod tests {
         assert_eq!(identity.lane_id.as_deref(), Some("lane:0"));
         assert_eq!(identity.root_id.as_deref(), Some("root"));
         assert_eq!(identity.parent_id, None);
+    }
+
+    #[test]
+    fn empty_lifecycle_digest_is_pinned_to_the_aisim_namespace() {
+        // Independent BLAKE3 of the AISim domain tag and an empty JSONL stream.
+        assert_eq!(
+            AgenticLifecycleTranscript::default().digest().unwrap(),
+            "449fd6f4d2ab59a94dbc232f45d5dc6024fbf1ea9b88045a5944c38b7784d325"
+        );
     }
 
     #[test]

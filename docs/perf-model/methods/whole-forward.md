@@ -59,7 +59,7 @@ This is **Option 1**. Select an FPM explicitly so construction cannot choose an
 OP estimator, and leave `speculation` unset and `nextn` at zero:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 stp_config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-0.6B",
@@ -224,7 +224,7 @@ For a reviewed profile and table whose identity matches the values below:
 import json
 from pathlib import Path
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 sd_config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-8B",
@@ -307,7 +307,7 @@ Replay need finalized resource evidence.
 Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-0.6B",
@@ -461,7 +461,7 @@ is unchanged.
 For a Kimi K3 text profile, an explicit configuration can be:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="moonshotai/Kimi-K3", system="gb300", backend="vllm",
@@ -500,7 +500,7 @@ the canonical quant-mode fields and `attention_backend`, alongside estimator
 selection and controls. DCP FPM replay requires explicit fixed KV block capacity;
 automatic DCP/hybrid capacity sizing is not implemented. Host offload or P/D
 transfer also requires explicit KV bytes per token with DCP.
-`decode_context` is currently supported by AISimulate's `--stack engine` only.
+`decode_context` is currently supported by AISim's `--stack engine` only.
 Dynamo Replay and Planner do not yet support this field; their configuration
 propagation, cache identity, and dependency version need a downstream update.
 These timing precision/backend overrides are prediction-only; recommendation

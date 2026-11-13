@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Original implementation of the feature formulas documented in the AISimulate
-//! design at https://github.com/ai-dynamo/aisimulate/blob/6aa40ae50a75dcfd03f23d45b25a73b3a2b69b2b/python/aisimulate/docs/fpm_ml/design.md
+//! Original implementation of the feature formulas documented in the AISim
+//! design at https://github.com/ai-dynamo/aisim/blob/6aa40ae50a75dcfd03f23d45b25a73b3a2b69b2b/python/aisimulate/docs/fpm_ml/design.md
 //! No upstream implementation was copied. Canonical aggregate scores remain separate.
 
 use super::super::estimator::RegressionFeatureAxis;

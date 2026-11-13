@@ -11,7 +11,7 @@ deployment (see [Disaggregated prefill](#disaggregated-prefill)): requests
 cross the serving frontend, the scheduler receives and batches them at
 iteration boundaries, the vision encoder runs inside the prefill forward, and
 outputs become visible one scheduler iteration later. Configure it in an
-`aisimulate predict` configuration by pointing the host-aware worker's
+`aisim predict` configuration by pointing the host-aware worker's
 `host_profile` at a host cost table measured on the serving host, next to an
 image workload
 ([`examples/cli/vl-predict-aggregated.yaml`](../../../examples/cli/vl-predict-aggregated.yaml)):
@@ -41,23 +41,23 @@ engine:
 
 ```bash
 # Once per image workload, on the serving host; no GPU needed.
-python -m aisimulate.vl.collect --config prediction.yaml --sglang-python /path/to/serving/venv/bin/python
+python -m aisim.vl.collect --config prediction.yaml --sglang-python /path/to/serving/venv/bin/python
 # List the table's rows.
-python -m aisimulate.vl.collect --config prediction.yaml --show
+python -m aisim.vl.collect --config prediction.yaml --show
 # Predict the configured deployment.
-aisimulate predict --config prediction.yaml
+aisim predict --config prediction.yaml
 # Or search one and predict the best candidate.
-aisimulate recommend --config search.yaml --output-dir ./vl-recommend
-aisimulate predict --config ./vl-recommend/recommendations/0001.yaml
+aisim recommend --config search.yaml --output-dir ./vl-recommend
+aisim predict --config ./vl-recommend/recommendations/0001.yaml
 ```
 
 A saved recommendation carries the resolved frontend stages, so the last
 `predict` reads no host table.
 
-`collect` runs from an interpreter with aisimulate installed (Python 3.11 to
+`collect` runs from an interpreter with aisim installed (Python 3.11 to
 3.13) on the serving host and launches the measurement in the serving venv
 named by `--sglang-python`; the two are separate environments whenever the
-serving venv's Python is older than aisimulate supports. A relative
+serving venv's Python is older than aisim supports. A relative
 `host_profile.path` is resolved against the working directory `collect` and
 `predict` run in, so the examples assume one directory for both.
 
@@ -315,7 +315,7 @@ pools, not by the analytical overlay. On this path
 SGLang predictions keep their existing behavior. `recommend` accepts the same
 fields as fixed data; candidates search load, scheduling, tensor parallelism
 and replicas (not `mode`, which must be concrete), and their saved prediction
-YAML reproduces the scored metrics through `aisimulate predict`.
+YAML reproduces the scored metrics through `aisim predict`.
 
 Four fields read as parallelism and mean different things here.
 `parallelism.replicas` on the language worker counts independent workers, each
@@ -396,7 +396,7 @@ immutable revision `0bcd822377da7b5718e674eaf9c870d349424dd1`:
 
 No upstream source or tests are copied;
 [`THIRD_PARTY_NOTICES.md`](../../../THIRD_PARTY_NOTICES.md) records the
-attribution. The collector (`python -m aisimulate.vl.collect`) instantiates the
+attribution. The collector (`python -m aisim.vl.collect`) instantiates the
 pinned upstream frontend objects unmodified on the serving host and times them
 from the outside. Deterministic Rust tests cover the iteration structure,
 mid-iteration arrivals, ghost decode members and their KV slot, deferred
