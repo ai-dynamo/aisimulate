@@ -52,7 +52,7 @@ engine:
 | `workers.<role>.parallelism.moe_expert` | `1` | Searched | MoE expert parallelism. Repartitions the worker's GPUs and does not add GPUs. |
 | `workers.<role>.parallelism.prefill_context` | Unset (1) | predict only | Prefill context parallelism (vLLM `-pcp`, SGLang `--attn-cp-size`). Adds GPUs. |
 | `workers.<role>.parallelism.decode_context` | Unset (1) | predict only | Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`). Must divide `tensor`; adds no GPUs. |
-| `workers.<role>.scheduler.max_batched_tokens` | `8192` | Prefill and aggregated: `{choices: [8192, 16384, 32768]}`; decode: fixed | Positive. Token budget for one scheduler pass on one attention-DP rank. See [SGLang note](#batch-limits). |
+| `workers.<role>.scheduler.max_batched_tokens` | `8192` | Prefill and aggregated: `{choices: [8192, 16384, 32768]}`; decode: fixed | Positive. Token budget for one scheduler pass: per attention-DP rank on vLLM, the worker's launch value on SGLang. See [SGLang note](#batch-limits). |
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
@@ -60,7 +60,7 @@ engine:
 | `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts or MTP + G2 | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts or MTP + G2. See [vLLM async scheduling](#vllm-async-scheduling). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
-| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. Unavailable on a monolithic prefill companion of an AFD role. |
+| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisim.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. Unavailable on a monolithic prefill companion of an AFD role. |
 | `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Non-negative MiB; `0` disables the embedding cache. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. AFD deployments reject `vision`, including on an ordinary companion. |
 | `workers.{aggregated,prefill}.vision.encoder_parallel` | `tp` | fixed | `tp` shards the vision tower over the tensor-parallel group; `dp` (`--mm-enable-dp-encoder`) replicates it and splits the images. Sets encoder timing, collectives and per-rank tower weights. Adds no ranks; see the four parallelism knobs under [Compatibility and scope](sglang-vl-host-loop.md#compatibility-and-scope). |
 | `engine.enable_chunked_prefill` | Backend default (on) | fixed | Boolean. Applies to aggregated and prefill roles; `false` is rejected for SGLang and for AFD. |
@@ -170,16 +170,18 @@ worker counts with the Planner; `startup_seconds` then delays each added worker.
 
 ### Batch limits
 
-`max_batched_tokens` and `max_sequences` are per attention-DP rank, matching
-how vLLM and SGLang apply them inside each DP engine. A prefill role defaults
+`max_sequences` is per attention-DP rank on both backends. `max_batched_tokens`
+is per attention-DP rank on vLLM and the worker's launch value on SGLang (see
+the note below). A prefill role defaults
 to `max_sequences: 1`, so each prefill rank runs one request at a time unless
 you raise it.
 
 > **SGLang note.** On a disaggregated `prefill` or an `aggregated` worker,
 > `max_batched_tokens` is the worker's `chunked_prefill_size`
-> (`--chunked-prefill-size`), as SGLang launches it. With attention DP,
-> SGLang splits that launch value across the ranks, so each rank chunks at
-> `max_batched_tokens / attention_data`. A decode worker keeps SGLang's
+> (`--chunked-prefill-size`), as SGLang launches it, rounded down to a
+> multiple of `block_size` (at least one block). With attention DP, SGLang
+> splits that launch value across the ranks, so each rank chunks at the
+> rounded value divided by `attention_data`. A decode worker keeps SGLang's
 > 8192-token default.
 
 With chunked prefill (the default), a long prompt is split across passes that
@@ -416,8 +418,8 @@ engine:
 ```
 
 ```bash
-python -m aisimulate.vl.collect --config prediction.yaml --sglang-python <serving venv python>
-aisimulate predict --stack engine --config prediction.yaml
+python -m aisim.vl.collect --config prediction.yaml --sglang-python <serving venv python>
+aisim predict --stack engine --config prediction.yaml
 ```
 
 `collect` times the real SGLang frontend objects on the serving host (no GPU
@@ -433,10 +435,10 @@ and per-request milestones are listed in the
 [CLI reference](../../reference/cli.md#standard-output); mechanics and
 approximations are on [SGLang VL host loop](sglang-vl-host-loop.md).
 
-`collect` runs from an interpreter with aisimulate installed (Python 3.11 to
+`collect` runs from an interpreter with aisim installed (Python 3.11 to
 3.13) and launches the measurement in the serving venv named by
 `--sglang-python`; the two are separate environments whenever the serving
-venv's Python is older than aisimulate supports. `engine.backend_version`
+venv's Python is older than aisim supports. `engine.backend_version`
 selects the packaged GPU performance data, while the table is measured with the
 serving host's sglang 0.5.19, on which the frontend stages are defined; the two
 pins are independent.
