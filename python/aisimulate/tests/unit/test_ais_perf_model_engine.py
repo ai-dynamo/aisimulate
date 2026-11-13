@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import itertools
 import json
 import sys
 import types
 import warnings
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import BaseModel, ValidationError, model_validator
 
 from aisimulate.compiler import prediction_to_replay_spec
@@ -1016,6 +1019,14 @@ def test_recommend_entry_system_is_matched_against_the_hardware_of_its_worker():
             "state them (recommend chooses tp and similar values for each candidate). Drop these keys from the "
             "entry, or from the template file when 'from: <file>' brings them in.",
         ),
+        ({"nextn": True}, {"nextn": 1, "nextn_accepted": 1.0}, "nextn=true differs from engine.nextn=1"),
+        ({"nextn": False}, {}, "nextn=false differs from engine.nextn, which is not set (its default is 0)"),
+        ({"enable_eplb": 1}, {"enable_eplb": True}, "enable_eplb=1 differs from engine.enable_eplb=true"),
+        (
+            {"enable_eplb": 0},
+            {},
+            "enable_eplb=0 differs from engine.enable_eplb, which is not set (its default is false)",
+        ),
     ],
     ids=[
         "model differs",
@@ -1027,6 +1038,10 @@ def test_recommend_entry_system_is_matched_against_the_hardware_of_its_worker():
         "version differs",
         "snapshot and unset",
         "keys recommend chooses",
+        "true for the number 1",
+        "false for the default 0",
+        "1 for true",
+        "0 for the default false",
     ],
 )
 def test_recommend_entry_that_cannot_be_matched_is_an_error(keys, engine_fields, message):
@@ -1063,6 +1078,46 @@ def test_predict_entry_that_contradicts_the_engine_section_fails_when_compiled()
         "enable_eplb: entry has true, the engine section gives false. "
         "Fix the engine section or drop the key from the entry."
     )
+
+
+def test_predict_entry_that_writes_a_boolean_for_a_number_fails_when_compiled():
+    # Python reads True as 1 and False as 0. The perf model takes neither for the other.
+    mistyped = {"tp": True, "nextn": False, "enable_eplb": 0}
+    config = _predict(_engine("aggregated", ais_perf_model={**EST, **mistyped}))
+
+    with pytest.raises(AisPerfModelError) as failure:
+        prediction_to_replay_spec(config)
+
+    assert str(failure.value) == (
+        "engine.ais_perf_model entry for aggregated does not match the engine section: "
+        "tp: entry has true, the engine section gives 1; "
+        "nextn: entry has false, the engine section gives 0; "
+        "enable_eplb: entry has 0, the engine section gives false. "
+        "Fix the engine section or drop the key from the entry."
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "written", "compiled", "problem"),
+    [
+        ("pp", True, 1, "pp: entry has true, the engine section gives 1"),
+        ("decoder_replay", 1, True, "decoder_replay: entry has 1, the engine section gives true"),
+        (
+            "speculation",
+            {"accepted": [True, 2]},
+            {"accepted": [1, 2]},
+            'speculation: entry has {"accepted": [true, 2]}, the engine section gives {"accepted": [1, 2]}',
+        ),
+    ],
+    ids=["true for 1", "1 for true", "inside a mapping and a list"],
+)
+def test_identity_check_keeps_booleans_and_numbers_apart(key, written, compiled, problem):
+    with pytest.raises(AisPerfModelError) as failure:
+        rules.check_entry_identity(_entries(decode={key: written}), "decode", {key: compiled})
+
+    assert f"entry for decode does not match the engine section: {problem}. " in str(failure.value)
+    # The value of the same type restates it.
+    rules.check_entry_identity(_entries(decode={key: compiled}), "decode", {key: compiled})
 
 
 def test_identity_check_needs_an_entry_for_the_worker_type():
@@ -1325,6 +1380,223 @@ def test_repr_of_a_config_reads_as_it_did_before_the_key_existed(kind):
     assert "ais_perf_model" not in repr(old)
     assert "estimation_mode='op_level'" in repr(old.engine)
     assert repr(new) == repr(old)
+
+
+# --- A key written twice in the text of a config file -----------------------------------------
+
+REPEATED_KEYS = [
+    pytest.param(
+        "engine:\n"
+        "  model: a\n"
+        "  ais_perf_model:\n"
+        "    estimation_mode: op_level\n"
+        "    fallback_policy: allow\n"
+        "    estimation_mode: auto\n",
+        "the key 'estimation_mode' is written twice (lines 4 and 6)",
+        id="one config",
+    ),
+    pytest.param(
+        "engine:\n"
+        "  ais_perf_model:\n"
+        "    - worker_type: prefill\n"
+        "      estimation_mode: auto\n"
+        "    - worker_type: decode\n"
+        "      estimation_mode: op_level\n"
+        "      estimation_mode: auto\n",
+        "the key 'estimation_mode' is written twice (lines 6 and 7)",
+        id="an entry of a list",
+    ),
+    pytest.param(
+        "engine:\n"
+        "  ais_perf_model:\n"
+        "    estimator_config:\n"
+        "      correction:\n"
+        "        mode: fixed\n"
+        "        mode: learned\n",
+        "the key 'mode' is written twice (lines 5 and 6)",
+        id="a mapping inside estimator_config",
+    ),
+    pytest.param(
+        "engine:\n  ais_perf_model: {estimation_mode: op_level, estimation_mode: auto}\n",
+        "the key 'estimation_mode' is written twice (line 2)",
+        id="a mapping written on one line",
+    ),
+    pytest.param(
+        'engine:\n  ais_perf_model:\n    estimation_mode: op_level\n    "estimation_mode": auto\n',
+        "the key 'estimation_mode' is written twice (lines 3 and 4)",
+        id="a plain and a quoted spelling",
+    ),
+    pytest.param(
+        "engine:\n  ais_perf_model:\n    tp: 1\n    tp: 2\n    tp: 4\n",
+        "the key 'tp' is written twice (lines 3 and 4)",
+        id="three times",
+    ),
+    pytest.param(
+        "shared: &shared {fallback_policy: allow, fallback_policy: deny}\nengine:\n  ais_perf_model: *shared\n",
+        "the key 'fallback_policy' is written twice (line 1)",
+        id="a mapping named by an alias",
+    ),
+    pytest.param(
+        "shared: &shared\n"
+        "  fallback_policy: allow\n"
+        "  fallback_policy: deny\n"
+        "engine:\n"
+        "  ais_perf_model:\n"
+        "    <<: *shared\n"
+        "    estimation_mode: auto\n",
+        "the key 'fallback_policy' is written twice (lines 2 and 3)",
+        id="a mapping that is merged in",
+    ),
+    pytest.param(
+        "engine:\n"
+        "  ais_perf_model:\n"
+        "    estimation_mode: auto\n"
+        "    estimator_config:\n"
+        "      correction: {mode: fixed, mode: learned}\n"
+        "    estimation_mode: op_level\n",
+        "the key 'mode' is written twice (line 5)",
+        id="two keys: the first repeat in the file is named",
+    ),
+]
+
+
+@pytest.mark.parametrize(("text", "problem"), REPEATED_KEYS)
+def test_key_written_twice_inside_the_value_is_an_error(text, problem):
+    # The YAML reader takes the text and keeps the last value, so the mapping does not show the repeat.
+    assert isinstance(yaml.safe_load(text)["engine"]["ais_perf_model"], (dict, list))
+
+    with pytest.raises(AisPerfModelError) as failure:
+        rules.reject_repeated_keys(text, "predict", Path("configs") / "predict.yaml")
+
+    assert str(failure.value) == f"engine.ais_perf_model in configs/predict.yaml: {problem}; write it once"
+
+
+@pytest.mark.parametrize(
+    ("kind", "section"), [("predict", "engine"), ("recommend", "engine"), ("search", "search_space")]
+)
+def test_key_written_twice_is_looked_for_in_the_section_of_the_kind_of_config(kind, section):
+    text = f"{section}:\n  ais_perf_model:\n    estimation_mode: op_level\n    estimation_mode: auto\n"
+    other = "search" if section == "engine" else "predict"
+
+    with pytest.raises(AisPerfModelError, match=f"^{section}.ais_perf_model in search.yaml: the key 'estimation_mode'"):
+        rules.reject_repeated_keys(text, kind, "search.yaml")
+    rules.reject_repeated_keys(text, other, "search.yaml")
+    with pytest.raises(ValueError, match="unknown config kind 'replay'"):
+        rules.reject_repeated_keys(text, "replay", "search.yaml")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "# nothing but a comment\n",
+        "- engine\n- ais_perf_model\n",
+        "engine\n",
+        "traffic: {load: 1, load: 2}\n",
+        "engine:\n",
+        "engine: [ais_perf_model, ais_perf_model]\n",
+        "engine:\n  model: a\n  model: b\n",
+        "engine:\n  ais_perf_model:\n",
+        "engine:\n  ais_perf_model: perf-model.yaml\n",
+        "engine:\n  model: a\n  model: b\n  ais_perf_model: {estimation_mode: auto}\ntraffic: {load: 1, load: 2}\n",
+        "search_space:\n  ais_perf_model: {estimation_mode: op_level, estimation_mode: auto}\n",
+        "engine:\n  ais_perf_model:\n    - {worker_type: prefill, tp: 1}\n    - {worker_type: decode, tp: 1}\n",
+        "base: &base {estimation_mode: op_level, tp: 1}\n"
+        "engine:\n  ais_perf_model:\n    <<: *base\n    estimation_mode: auto\n",
+        "base: &base {estimation_mode: op_level}\n"
+        "engine:\n  ais_perf_model:\n"
+        "    - {worker_type: prefill, <<: *base}\n    - {worker_type: decode, <<: *base}\n",
+        "one: &one {tp: 1}\ntwo: &two {tp: 2}\nengine:\n  ais_perf_model:\n    <<: *one\n    <<: *two\n",
+        "engine:\n  ais_perf_model: &value\n    estimator_config: *value\n",
+        "engine:\n  ais_perf_model: {estimation_mode: op_level, estimation_mode: auto\n",
+        "engine: {}\n---\nengine:\n  ais_perf_model: {estimation_mode: op_level, estimation_mode: auto}\n",
+        "engine:\n  ais_perf_model: " + "[" * 100_000 + "\n",
+        "a0: &a0 {}\n" + "".join(f"a{i}: &a{i} {{<<: *a{i - 1}}}\n" for i in range(1, 3000)) + "engine: {<<: *a2999}\n",
+        # Followed along every path, the first mapping would be looked at 2 ** 40 times.
+        "a0: &a0 {}\n"
+        + "".join(f"a{i}: &a{i} {{<<: [*a{i - 1}, *a{i - 1}]}}\n" for i in range(1, 41))
+        + "engine: {<<: *a40}\n",
+    ],
+    ids=[
+        "an empty file",
+        "a comment",
+        "a list",
+        "a word",
+        "no section",
+        "a null section",
+        "a section that is a list",
+        "no key",
+        "a null key",
+        "a file name",
+        "repeats outside the value",
+        "the section of another kind of config",
+        "one key in two entries",
+        "a merged key and the same key written",
+        "one mapping merged into two entries",
+        "two merges",
+        "a value that holds itself",
+        "text that is not YAML",
+        "two documents",
+        "text nested too deep to read",
+        "a chain of merges too long to follow",
+        "one mapping merged along many paths",
+    ],
+)
+def test_text_without_a_repeat_inside_the_value_is_left_to_the_reader(text):
+    assert rules.reject_repeated_keys(text, "predict", "predict.yaml") is None
+
+
+REPEAT, ONCE = "{estimation_mode: op_level, estimation_mode: auto}", "{estimation_mode: op_level}"
+
+
+@pytest.mark.parametrize(
+    ("text", "repeated"),
+    [
+        (f"engine:\n  ais_perf_model: {REPEAT}\nengine:\n  ais_perf_model: {ONCE}\n", False),
+        (f"engine:\n  ais_perf_model: {ONCE}\nengine:\n  ais_perf_model: {REPEAT}\n", True),
+        (f"engine:\n  ais_perf_model: {REPEAT}\n  ais_perf_model: {ONCE}\n", False),
+        (f"engine:\n  ais_perf_model: {ONCE}\n  ais_perf_model: {REPEAT}\n", True),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n  model: a\n", True),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n  ais_perf_model: {ONCE}\n", False),
+        (f"base: &base\n  engine:\n    ais_perf_model: {REPEAT}\n<<: *base\n", True),
+        (f"a: &a\n  ais_perf_model: {REPEAT}\nb: &b\n  <<: *a\nengine:\n  <<: *b\n", True),
+        (f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: [*a, *b]\n", False),
+        (f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: [*b, *a]\n", True),
+        (
+            f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *b\n  <<: *a\n",
+            False,
+        ),
+        (
+            f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *a\n  <<: *b\n",
+            True,
+        ),
+    ],
+    ids=[
+        "the section twice, the repeat in the first",
+        "the section twice, the repeat in the last",
+        "the key itself twice, the repeat in the first",
+        "the key itself twice, the repeat in the last",
+        "the value merged into the section",
+        "a merged value and the key written",
+        "the section merged into the file",
+        "a merge inside a merge",
+        "a list of merges, the repeat in the second",
+        "a list of merges, the repeat in the first",
+        "two merges, the repeat in the first",
+        "two merges, the repeat in the last",
+    ],
+)
+def test_the_value_that_is_checked_is_the_one_the_yaml_reader_keeps(text, repeated):
+    # Outside the value a repeated key keeps its last value. Which value of ``ais_perf_model`` that leaves
+    # is shown here by the reader itself: the value written with a repeat reads as ``auto``.
+    kept = yaml.safe_load(text)["engine"]["ais_perf_model"]
+    assert kept == {"estimation_mode": "auto" if repeated else "op_level"}
+
+    if repeated:
+        with pytest.raises(AisPerfModelError, match="the key 'estimation_mode' is written twice"):
+            rules.reject_repeated_keys(text, "predict", "predict.yaml")
+    else:
+        rules.reject_repeated_keys(text, "predict", "predict.yaml")
 
 
 # --- Paths written in a config file -----------------------------------------------------------
@@ -1600,6 +1872,115 @@ def test_warn_old_keys_ends_with_the_fix_for_where_the_key_is_set(in_file, in_ru
     ]
 
 
+ONBOARD_HINT = "'aisimulate onboard' wrote this file and rejects it once it is changed, so leave it as it is"
+# Where onboarding records a replay config it wrote: the report, from the folder of the config, and the keys
+# that lead to the record. The first is replay validation, the second the matched workload of serving validation.
+ONBOARD_REPORTS = [
+    pytest.param("validation.json", ("prediction_config",), id="replay validation"),
+    pytest.param("../recipe.json", ("matched_workload", "prediction_config"), id="matched serving workload"),
+]
+
+
+def _replay_config(folder: Path) -> Path:
+    """A file that stands for a replay config. The warning reads the mapping it is given, not this text."""
+    folder.mkdir(parents=True)
+    config = folder / "predict.yaml"
+    config.write_text("engine: {estimation_mode: op_level}\n")
+    return config
+
+
+def _record(config: Path, report: str, keys: tuple[str, ...], **changes: Any) -> Path:
+    """Save the record onboarding keeps of ``config``: its path, its size and its SHA-256."""
+    content = config.read_bytes()
+    record: Any = {"path": str(config), "sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content)}
+    record.update(changes)
+    for key in reversed(keys):
+        record = {key: record}
+    path = config.parent / report
+    path.write_text(json.dumps(record))
+    return path
+
+
+def _hint(source: Any) -> str:
+    """The text in brackets that ends the warning for old fields read from ``source``."""
+    (warning,) = _warnings_from(lambda: rules.warn_old_keys({"engine": LEGACY}, "predict", source=source))
+    return str(warning.message).split("use engine.ais_perf_model (", 1)[1].removesuffix(")")
+
+
+@pytest.mark.parametrize(("report", "keys"), ONBOARD_REPORTS)
+def test_warn_old_keys_says_to_leave_a_replay_config_that_onboarding_wrote(tmp_path, monkeypatch, report, keys):
+    # Onboarding compares the file with its record later and rejects a converted file.
+    config = _replay_config(tmp_path / "run" / "output")
+    _record(config, report, keys)
+    (tmp_path / "link").symlink_to(config.parent, target_is_directory=True)
+    monkeypatch.chdir(config.parent)
+
+    assert _hint(config) == ONBOARD_HINT
+    assert _hint(str(config)) == ONBOARD_HINT
+    assert _hint("predict.yaml") == ONBOARD_HINT
+    assert _hint(tmp_path / "link" / "predict.yaml") == ONBOARD_HINT
+
+
+@pytest.mark.parametrize(("report", "keys"), ONBOARD_REPORTS)
+def test_warn_old_keys_names_migrate_for_a_file_that_onboarding_does_not_check(tmp_path, report, keys):
+    config = _replay_config(tmp_path / "run" / "output")
+    migrate = f"run 'aisimulate perf-model migrate {config}' to convert the file"
+    assert _hint(config) == migrate, "no report"
+
+    record = _record(config, report, keys)
+    assert _hint(config) == ONBOARD_HINT
+    config.write_text(config.read_text().replace("op_level", "OP_LEVEL"))
+    assert _hint(config) == migrate, "the file was changed and kept its size"
+    config.write_text(config.read_text() + "# edited\n")
+    assert _hint(config) == migrate, "the file was changed after it was recorded"
+
+    _record(config, report, keys, path=str(tmp_path / "elsewhere" / "predict.yaml"))
+    assert _hint(config) == migrate, "the record is about a file in another folder"
+    _record(config, report, keys, size_bytes=0)
+    assert _hint(config) == migrate, "the record gives another size"
+
+    for text in ("", "not JSON", "[]", "{}", json.dumps(dict.fromkeys(keys, "text")), "[" * 100_000):
+        record.write_text(text)
+        assert _hint(config) == migrate, f"a report that holds {text[:20]!r}"
+    _record(config, report, keys, path=3)
+    assert _hint(config) == migrate, "a record whose path is a number"
+    record.unlink()
+    record.mkdir()
+    assert _hint(config) == migrate, "a folder in place of the report"
+    assert _hint(tmp_path / "missing" / "predict.yaml").startswith("run 'aisimulate perf-model migrate ")
+
+
+def test_warn_old_keys_names_migrate_for_a_copy_of_a_replay_config_in_another_folder(tmp_path):
+    config = _replay_config(tmp_path / "run")
+    _record(config, "validation.json", ("prediction_config",))
+    copy_of_it = _replay_config(tmp_path / "copy")
+    (tmp_path / "copy" / "validation.json").write_text((tmp_path / "run" / "validation.json").read_text())
+
+    assert _hint(config) == ONBOARD_HINT
+    assert _hint(copy_of_it) == f"run 'aisimulate perf-model migrate {copy_of_it}' to convert the file"
+
+
+def test_warn_old_keys_keeps_the_other_fixes_for_a_replay_config_that_onboarding_wrote(tmp_path):
+    # The record only replaces the advice to convert the file.
+    config = _replay_config(tmp_path / "run")
+    _record(config, "validation.json", ("prediction_config",))
+    old, key, both = (
+        _engine("aggregated", **OLD_FIELD),
+        _engine("aggregated"),
+        _engine("aggregated", **KEY_AND_OLD_FIELD),
+    )
+
+    def ending(raw: dict[str, Any], file_raw: dict[str, Any]) -> str:
+        def warn() -> None:
+            rules.warn_old_keys({"engine": raw}, "predict", source=config, file_raw={"engine": file_raw})
+
+        return str(_warnings_from(warn)[0].message).rsplit("(", 1)[1]
+
+    assert ending(old, old) == f"{ONBOARD_HINT})"
+    assert ending(old, key) == "set engine.ais_perf_model.<key> with --set instead)"
+    assert ending(both, old) == "it is already set, so remove the old fields)"
+
+
 @pytest.mark.parametrize(
     "engine",
     [
@@ -1647,8 +2028,9 @@ def test_repr_of_a_search_space_reads_as_it_did_before_the_key_existed():
 
 
 def test_estimator_keys_are_the_ones_the_loader_names():
-    assert set(rules.ESTIMATOR_KEYS) == set(loader.ESTIMATOR_KEYS)
-    assert set(rules.ESTIMATOR_KEYS) - set(rules.ROLE_ESTIMATOR_KEYS) == {"fpm_profile"}
+    # One tuple, not a copy: a key the loader gains is an estimator key here at once.
+    assert rules.ESTIMATOR_KEYS is loader.ESTIMATOR_KEYS
+    assert tuple(key for key in loader.ESTIMATOR_KEYS if key != "fpm_profile") == rules.ROLE_ESTIMATOR_KEYS
     assert set(rules.WORKER_TYPE_ORDER) == set(loader.WORKER_TYPES)
 
 
@@ -1848,6 +2230,29 @@ def test_same_setting_reads_a_transfer_policy_the_way_a_run_reads_it(old, key, s
     # A list names kinds exactly: no preset and no change of letter case. Text goes through presets.
     assert rules.same_setting(TimingConfig, "transfer_policy", old, key) is same
     assert rules.same_setting(EnginePredictionConfig, "transfer_policy", key, old) is same
+
+
+def test_same_setting_does_not_hide_an_error_that_the_value_did_not_cause(monkeypatch):
+    import pydantic
+
+    class Broken:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise AttributeError("a fault in the comparison")
+
+    monkeypatch.setattr(pydantic, "TypeAdapter", Broken)
+
+    with pytest.raises(AttributeError, match="a fault in the comparison"):
+        rules.same_setting(EnginePredictionConfig, "estimation_mode", "auto", "auto")
+
+
+@pytest.mark.parametrize("kind", ["predict", "recommend"])
+def test_old_path_under_a_home_that_does_not_exist_still_says_something_else_than_the_key(kind):
+    # The field cannot read this path and says so with a RuntimeError, not a ValueError.
+    old = {"systems_paths": ["~no-such-user-for-this-test/data"]}
+    engine = _engine("aggregated", **old, ais_perf_model=DATA_ROOTS)
+
+    with pytest.raises(AisPerfModelError, match="say something else: engine.systems_paths. Remove the old fields."):
+        rules.lower_engine(engine, kind)
 
 
 def test_shared_errors_name_the_key_they_are_about():

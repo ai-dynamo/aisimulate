@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
 from ..aiperf_metrics import AIPerfMetric, MetricConstraint
-from ..config.ais_perf_model import anchor_paths, warn_old_keys
+from ..config.ais_perf_model import anchor_paths, reject_repeated_keys, warn_old_keys
 from ..config.cli import config_folder
 from ..config.common import (
     AFD_UNSUPPORTED_MODEL_CONTROLS,
@@ -1475,10 +1475,14 @@ class SmartSearchConfig(BaseModel):
         """Load + validate one YAML file into the nested config.
 
         Relative paths inside ``search_space.ais_perf_model`` start at the
-        folder of the file. Old estimator fields in the file give one
-        deprecation warning, raised only after the file validated.
+        folder of the file, and a key written twice inside it is an error.
+        Old estimator fields in the file give one deprecation warning, raised
+        only after the file validated.
         """
-        data = anchor_paths(yaml.safe_load(Path(path).read_text()), config_folder(path), "search")
+        text = Path(path).read_text()
+        data = yaml.safe_load(text)
+        reject_repeated_keys(text, "search", path)
+        data = anchor_paths(data, config_folder(path), "search")
         config = cls.model_validate(data)
         warn_old_keys(data, "search", source=path)
         return config

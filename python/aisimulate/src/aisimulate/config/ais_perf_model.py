@@ -21,22 +21,27 @@ One entry describes one worker type. Its keys are of three kinds:
 The first half of this module holds the rules both config families share. The
 second half is the engine side: ``lower_engine`` for the ``engine`` block, the
 identity check the compiler runs, and the helpers that work on a whole config
-mapping (``anchor_paths``, ``written_old_keys``, ``warn_old_keys``).
+file or mapping (``reject_repeated_keys``, ``anchor_paths``,
+``written_old_keys``, ``warn_old_keys``).
 
-This module imports only the standard library when it is imported. The engine
-models import it, and it sits on the import path of the command line parent,
-so the loader and the config models are imported inside the functions that
-need them.
+When it is imported, this module imports the standard library and the loader,
+which itself imports only the standard library. The engine models import this
+module, and it sits on the import path of the command line parent, so the
+config models, the perf model and the YAML reader are imported inside the
+functions that need them.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
+
+from aisimulate_core.ais_perf_model import ESTIMATOR_KEYS, AisPerfModelError, expand_template, load, warn_deprecated
 
 __all__ = [
     "ESTIMATOR_KEYS",
@@ -57,6 +62,7 @@ __all__ = [
     "normalize_entries",
     "old_fields_conflict",
     "plan_estimator_keys",
+    "reject_repeated_keys",
     "require_stated_value",
     "same_setting",
     "uncovered_config",
@@ -68,17 +74,9 @@ __all__ = [
 KEY = "ais_perf_model"
 # Entries, active worker types and messages always use this order.
 WORKER_TYPE_ORDER = ("aggregated", "prefill", "decode")
-# Estimator keys that each worker type may set on its own.
-ROLE_ESTIMATOR_KEYS = (
-    "estimation_mode",
-    "fallback_policy",
-    "estimator_config",
-    "systems_paths",
-    "database_mode",
-    "transfer_policy",
-)
-# ``fpm_profile`` describes the model, so a config has one value for all worker types.
-ESTIMATOR_KEYS = (*ROLE_ESTIMATOR_KEYS, "fpm_profile")
+# The estimator keys each worker type may set on its own: all the loader names but ``fpm_profile``,
+# which describes the model, so a config has one value of it for all worker types.
+ROLE_ESTIMATOR_KEYS = tuple(key for key in ESTIMATOR_KEYS if key != "fpm_profile")
 STRUCTURAL_KEYS = ("worker_type", "from")
 # The fields of the canonical perf model config, by name only. An entry key is checked where the
 # config is validated, and that code must not import the perf model, so the names are repeated
@@ -150,13 +148,6 @@ _RECOMMEND_HOMED_KEYS = ("model", "system", "backend")
 # --- Small helpers ---------------------------------------------------------------------------
 
 
-def _error(message: str) -> ValueError:
-    """Build the loader's error type. The loader is imported here, not when this module is imported."""
-    from aisimulate_core.ais_perf_model import AisPerfModelError
-
-    return AisPerfModelError(message)
-
-
 def _show(value: Any) -> str:
     """Render a value the way a config author writes it."""
     try:
@@ -188,6 +179,23 @@ def _same_value(key: str, left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
+def _same_identity(left: Any, right: Any) -> bool:
+    """Equality for an identity key and the value it restates, with booleans and numbers kept apart.
+
+    Python reads ``True == 1``. The perf model does not take a boolean for a
+    number or a number for a boolean, and the loader compares the same way, so
+    ``tp: true`` does not restate ``tp: 1``. This holds inside mappings and
+    lists too.
+    """
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_same_identity(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(_same_identity, left, right))
+    if isinstance(left, bool) != isinstance(right, bool):
+        return False
+    return bool(left == right)
+
+
 # --- Rules shared by engine and search configs -----------------------------------------------
 
 
@@ -203,19 +211,17 @@ def normalize_entries(value: Any, worker_types: Sequence[str], *, name: str) -> 
     one config that names its worker type, must have exactly the worker types
     the config runs.
     """
-    from aisimulate_core.ais_perf_model import expand_template, load
-
     if isinstance(value, str):
-        raise _error(f"{name} cannot be a string; write the mapping or 'from: <file>'")
+        raise AisPerfModelError(f"{name} cannot be a string; write the mapping or 'from: <file>'")
     if not isinstance(value, Mapping) and not _is_list(value):
-        raise _error(f"{name} must be a mapping or a list of mappings, got {_kind_of(value)}")
+        raise AisPerfModelError(f"{name} must be a mapping or a list of mappings, got {_kind_of(value)}")
     document = load(value)
     serves_all = document.bare and not document.worker_types
     if not serves_all:
         _require_same_worker_types(document.worker_types, worker_types, name)
     entries = [expand_template(document.select(worker_type)) for worker_type in worker_types]
     if serves_all and len(worker_types) > 1 and any(is_snapshot_entry(entry) for entry in entries):
-        raise _error(
+        raise AisPerfModelError(
             f"{name} names a state snapshot, and a state snapshot belongs to one worker type. "
             f"This config runs {', '.join(worker_types)}; write a list with one entry per worker_type"
         )
@@ -225,13 +231,15 @@ def normalize_entries(value: Any, worker_types: Sequence[str], *, name: str) -> 
 def _require_same_worker_types(present: Sequence[str], active: Sequence[str], name: str) -> None:
     for worker_type in present:
         if worker_type not in active:
-            raise _error(
+            raise AisPerfModelError(
                 f"{name} has an entry for worker type {worker_type}, which this config does not run; "
                 f"it runs: {', '.join(active)}"
             )
     missing = [worker_type for worker_type in active if worker_type not in present]
     if missing:
-        raise _error(f"{name} has no entry for worker type {', '.join(missing)}; it has: {', '.join(present)}")
+        raise AisPerfModelError(
+            f"{name} has no entry for worker type {', '.join(missing)}; it has: {', '.join(present)}"
+        )
 
 
 def is_snapshot_entry(entry: Mapping[str, Any]) -> bool:
@@ -261,12 +269,12 @@ def require_stated_value(who: str, key: str, value: Any, *, home: str, raw: Any,
     field does not state one value. ``one`` is what the error asks to state.
     """
     if not isinstance(stated, str):
-        raise _error(
+        raise AisPerfModelError(
             f"{who}: {key}={_show(value)} needs one stated value at {home} (found {_show(raw)}); "
             f"state {one} there or drop the key"
         )
-    if value != stated:
-        raise _error(f"{who}: {key}={_show(value)} differs from {home}={_show(stated)}")
+    if not _same_identity(value, stated):
+        raise AisPerfModelError(f"{who}: {key}={_show(value)} differs from {home}={_show(stated)}")
 
 
 def plan_estimator_keys(
@@ -318,7 +326,7 @@ def _estimator_values(entry: Mapping[str, Any], *, name: str, config_kinds: str)
     if not isinstance(source, Mapping):
         return values
     if "dataset" in source:
-        raise _error(
+        raise AisPerfModelError(
             f"dataset entries are not supported in {config_kinds} yet; "
             "use 'aisimulate perf-model check' or a Dynamo component"
         )
@@ -326,9 +334,11 @@ def _estimator_values(entry: Mapping[str, Any], *, name: str, config_kinds: str)
     who = f"{name} entry for {entry['worker_type']}"
     written = values.get("estimator_config", {})
     if not isinstance(written, Mapping):
-        raise _error(f"{who}: estimator_config must be a mapping next to from.state_snapshot, got {_kind_of(written)}")
+        raise AisPerfModelError(
+            f"{who}: estimator_config must be a mapping next to from.state_snapshot, got {_kind_of(written)}"
+        )
     if "state_snapshot" in written:
-        raise _error(
+        raise AisPerfModelError(
             f"{who}: the state snapshot is written twice, as from.state_snapshot and as "
             "estimator_config.state_snapshot; keep one"
         )
@@ -352,7 +362,7 @@ def _agreed_fpm_profile(values: Mapping[str, dict[str, Any]], name: str) -> Any:
                 f"the entry for {gives} gives it and the entry for {leaves_out} does not; "
                 "every entry must give the same value"
             )
-        raise _error(f"{name}: fpm_profile is one value for the whole config, but {problem}")
+        raise AisPerfModelError(f"{name}: fpm_profile is one value for the whole config, but {problem}")
     return profile
 
 
@@ -450,8 +460,9 @@ def _as_stored(model_cls: Any, name: str, value: Any) -> Any:
     try:
         adapter = TypeAdapter(model_cls.model_fields[name].rebuild_annotation())
         return adapter.dump_python(adapter.validate_python(value), mode="json")
-    except Exception:
-        # The model reports a value its field cannot read. Compare such a value as written.
+    except (ValueError, RuntimeError):
+        # The model reports a value its field cannot read. Compare such a value as written. The field
+        # says so with a ValueError, and with a RuntimeError for a path under a home that does not exist.
         return value
 
 
@@ -460,7 +471,7 @@ def old_fields_conflict(name: str, paths: Sequence[str]) -> ValueError:
 
     ``paths`` are the dotted paths of those fields.
     """
-    return _error(
+    return AisPerfModelError(
         f"{name} cannot be combined with old estimator fields that say something else: "
         f"{', '.join(paths)}. Remove the old fields."
     )
@@ -468,7 +479,7 @@ def old_fields_conflict(name: str, paths: Sequence[str]) -> ValueError:
 
 def uncovered_config(name: str, reason: str) -> ValueError:
     """Build the error for a config whose estimator settings ``name`` cannot describe yet."""
-    return _error(f"{name} cannot be used in this config: {reason}. Keep the existing estimator fields.")
+    return AisPerfModelError(f"{name} cannot be used in this config: {reason}. Keep the existing estimator fields.")
 
 
 # --- Engine block of predict and recommend configs -------------------------------------------
@@ -489,7 +500,7 @@ def _plain_mapping(value: Any, where: str) -> Mapping[str, Any]:
         return {}
     if isinstance(value, Mapping):
         return value
-    raise _error(f"{_ENGINE_KEY} needs {where} written as plain data (a mapping), got {_kind_of(value)}")
+    raise AisPerfModelError(f"{_ENGINE_KEY} needs {where} written as plain data (a mapping), got {_kind_of(value)}")
 
 
 def _worker(raw_engine: Mapping[str, Any], role: str) -> Mapping[str, Any]:
@@ -514,10 +525,10 @@ def _modes(raw_engine: Mapping[str, Any], kind: str) -> tuple[str, ...]:
         names = list(mode["choices"])
     else:
         shapes = "one mode name" if kind == "predict" else "one mode name or {choices: [<mode name>, ...]}"
-        raise _error(f"{_ENGINE_KEY} needs engine.mode written as {shapes}, got {_kind_of(mode)}")
+        raise AisPerfModelError(f"{_ENGINE_KEY} needs engine.mode written as {shapes}, got {_kind_of(mode)}")
     for name in names:
         if not isinstance(name, str) or name not in _WORKER_TYPES_BY_MODE:
-            raise _error(
+            raise AisPerfModelError(
                 f"{_ENGINE_KEY} cannot be used with engine.mode {_show(name)}; "
                 f"the modes are: {', '.join(_WORKER_TYPES_BY_MODE)}"
             )
@@ -700,7 +711,7 @@ def _check_recommend_identity(entry: Mapping[str, Any], raw_engine: Mapping[str,
     stated_once = (*ENGINE_MODEL_CONTROL_FIELDS, "backend_version", "nextn")
     unchecked = [key for key in keys if key not in _RECOMMEND_HOMED_KEYS and key not in stated_once]
     if unchecked:
-        raise _error(
+        raise AisPerfModelError(
             f"{who}: {', '.join(unchecked)} cannot be checked in a recommend config. "
             "The recommend engine section does not state them (recommend chooses tp and similar values "
             "for each candidate). Drop these keys from the entry, or from the template file when "
@@ -741,24 +752,24 @@ def _check_stated_once(key: str, value: Any, raw_engine: Mapping[str, Any], who:
         # One version per backend: read the version of the one backend the config names.
         backend = _single_name(raw_engine.get("backend"))
         if not isinstance(backend, str):
-            raise _error(
+            raise AisPerfModelError(
                 f"{who}: {key}={_show(value)} needs one stated value at engine.{key} (found {_show(raw)}); "
                 "state one backend at engine.backend or drop the key"
             )
         stated = raw.get(backend)
     if stated is not None:
-        if value != stated:
-            raise _error(f"{who}: {key}={_show(value)} differs from engine.{key}={_show(stated)}")
+        if not _same_identity(value, stated):
+            raise AisPerfModelError(f"{who}: {key}={_show(value)} differs from engine.{key}={_show(stated)}")
         return
     if snapshot:
-        raise _error(
+        raise AisPerfModelError(
             f"{who}: {key}={_show(value)} cannot be checked because engine.{key} is not set, and a worker "
             "timed by a state snapshot takes an unset value from the snapshot; set it in the engine section "
             "or drop the key"
         )
     default = _engine_class("recommend").model_fields[key].get_default(call_default_factory=True)
-    if value != default:
-        raise _error(
+    if not _same_identity(value, default):
+        raise AisPerfModelError(
             f"{who}: {key}={_show(value)} differs from engine.{key}, which is not set "
             f"(its default is {_show(default)}); set it in the engine section or drop the key"
         )
@@ -775,7 +786,7 @@ def _require_perf_model_fields(entry: Mapping[str, Any]) -> None:
     if not unknown:
         return
     problems = "; ".join(f"{key}: not a perf model field{_nearest_key_hint(key)}" for key in unknown)
-    raise _error(
+    raise AisPerfModelError(
         f"{_ENGINE_KEY} entry for {entry['worker_type']}: {problems}. "
         "Correct the key or drop it from the entry, or from the template file when 'from: <file>' brings it in."
     )
@@ -790,7 +801,7 @@ def _reject_afd_fields(entry: Mapping[str, Any]) -> None:
     """
     for key in _AFD_FIELD_NAMES:
         if key in entry:
-            raise _error(
+            raise AisPerfModelError(
                 f"{_ENGINE_KEY} entry for {entry['worker_type']}: {key} is set, and {KEY} does not cover AFD yet. "
                 "Drop the key from the entry, or from the template file when 'from: <file>' brings it in."
             )
@@ -829,12 +840,12 @@ def check_entry_identity(
             problems.append(f"{key}: not a perf model field")
             continue
         expected = timing_config[key] if key in timing_config else defaults[key]
-        if value == expected:
+        if _same_identity(value, expected):
             continue
         theirs = "does not set it" if expected is None else f"gives {_show(expected)}"
         problems.append(f"{key}: entry has {_show(value)}, the engine section {theirs}")
     if problems:
-        raise _error(
+        raise AisPerfModelError(
             f"{_ENGINE_KEY} entry for {role} does not match the engine section: {'; '.join(problems)}. "
             "Fix the engine section or drop the key from the entry."
         )
@@ -861,7 +872,10 @@ def _perf_model_defaults() -> dict[str, Any]:
     return defaults
 
 
-# --- Whole config mappings: paths and the deprecation warning --------------------------------
+# --- Whole config files and mappings: repeated keys, paths and the deprecation warning -------
+
+_YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+_YAML_TEXT_TAG = "tag:yaml.org,2002:str"
 
 
 def _section(kind: str) -> str:
@@ -870,6 +884,93 @@ def _section(kind: str) -> str:
     if kind not in sections:
         raise ValueError(f"unknown config kind {kind!r}; use predict, recommend or search")
     return sections[kind]
+
+
+def reject_repeated_keys(text: str, kind: str, source: str | os.PathLike[str]) -> None:
+    """Fail when the text of a config file writes a key twice inside ``ais_perf_model``.
+
+    ``text`` is the YAML text of a config file, ``kind`` is ``predict``,
+    ``recommend`` or ``search`` and ``source`` is the path of the file, named
+    in the error. Call this where the file is read: the YAML reader keeps the
+    last value of a repeated key, so the mapping it returns no longer shows
+    that there was another one.
+
+    Only the value of ``ais_perf_model`` is checked, at every depth, by the
+    rule of a perf-model file: a key counts as it is written, so a key that a
+    merge (``<<``) brings in does not repeat a key written next to it. A
+    repeated key anywhere else in the file keeps its last value, as before;
+    when that key is ``ais_perf_model`` itself, the value that is kept is the
+    one checked. Text without the key has nothing to check, and text the YAML
+    reader cannot parse is left to the code that reads the file. A repeated
+    key is an ``AisPerfModelError`` that names the key and its lines.
+    """
+    import yaml
+
+    section = _section(kind)
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+        value = _kept_node(_kept_node(root, section, set()), KEY, set())
+    except (yaml.YAMLError, RecursionError):
+        return
+    repeats = []
+    # An alias names a node again, and can name the node it is written in, so each node is read once.
+    pending, seen = [value], set()
+    while pending:
+        node = pending.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.SequenceNode):
+            pending.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            first_lines: dict[tuple[str, str], int] = {}
+            for key_node, value_node in node.value:
+                pending.append(value_node)
+                if not isinstance(key_node, yaml.ScalarNode) or key_node.tag == _YAML_MERGE_TAG:
+                    continue
+                key, line = (key_node.tag, key_node.value), key_node.start_mark.line + 1
+                if key in first_lines:
+                    repeats.append((line, first_lines[key], key_node.value))
+                first_lines.setdefault(key, line)
+    if repeats:
+        line, first_line, key = min(repeats)
+        lines = f"line {line}" if line == first_line else f"lines {first_line} and {line}"
+        raise AisPerfModelError(
+            f"{section}.{KEY} in {os.fsdecode(source)}: the key {key!r} is written twice ({lines}); write it once"
+        )
+
+
+def _kept_node(node: Any, name: str, searched: set[int]) -> Any:
+    """Return the YAML node that the reader keeps as the value of key ``name`` of a mapping node, or None.
+
+    The reader keeps the last value written for a key. It takes a key from a
+    merge (``<<``) only when the mapping does not write the key itself.
+    ``searched`` holds the mappings already looked at. A mapping can be merged
+    in more than one place, and can merge itself; it has no value to add the
+    second time.
+    """
+    import yaml
+
+    if not isinstance(node, yaml.MappingNode) or id(node) in searched:
+        return None
+    searched.add(id(node))
+    written, merged = None, []
+    for key_node, value_node in node.value:
+        if not isinstance(key_node, yaml.ScalarNode):
+            continue
+        if key_node.tag == _YAML_MERGE_TAG:
+            merged.append(value_node)
+        elif key_node.tag == _YAML_TEXT_TAG and key_node.value == name:
+            written = value_node
+    if written is not None:
+        return written
+    # Of two merges the reader lets the later one win; in one merge of a list of mappings, the earlier mapping.
+    for merge in reversed(merged):
+        for source in merge.value if isinstance(merge, yaml.SequenceNode) else [merge]:
+            found = _kept_node(source, name, searched)
+            if found is not None:
+                return found
+    return None
 
 
 def anchor_paths(raw: Any, base_dir: str | os.PathLike[str], kind: str) -> Any:
@@ -886,8 +987,6 @@ def anchor_paths(raw: Any, base_dir: str | os.PathLike[str], kind: str) -> Any:
     validation reports them the same way for every input. A value the loader
     rejects is an ``AisPerfModelError``.
     """
-    from aisimulate_core.ais_perf_model import load
-
     name = _section(kind)
     section = raw.get(name) if isinstance(raw, Mapping) else None
     value = section.get(KEY) if isinstance(section, Mapping) else None
@@ -904,8 +1003,6 @@ def written_old_keys(raw: Any, kind: str) -> list[str]:
     The result is empty for a config ``ais_perf_model`` cannot describe yet,
     and for a mapping that cannot be read: validation reports those.
     """
-    from aisimulate_core.ais_perf_model import AisPerfModelError
-
     section = raw.get(_section(kind)) if isinstance(raw, Mapping) else None
     if not isinstance(section, Mapping):
         return []
@@ -928,6 +1025,46 @@ def _sets_key(raw: Any, kind: str) -> bool:
     return isinstance(section, Mapping) and section.get(KEY) is not None
 
 
+# Where ``aisimulate onboard`` records a replay config it wrote: the report, as a path from the folder
+# of the config, and the keys that lead to the record in it.
+_ONBOARD_RECORDS = (
+    ("validation.json", ("prediction_config",)),
+    (os.path.join(os.pardir, "recipe.json"), ("matched_workload", "prediction_config")),
+)
+
+
+def _written_by_onboard(source: str | os.PathLike[str]) -> bool:
+    """Whether ``source`` is a replay config that ``aisimulate onboard`` wrote and that is still as written.
+
+    The file itself carries no mark. Onboarding records the path, the size and
+    the SHA-256 of each replay config it writes in a report near the file, and
+    later rejects the file when it differs from that record. The same
+    comparison is made here, so this holds exactly for a file that onboarding
+    accepts now and would reject once it is converted. A file or a report that
+    cannot be read gives False.
+    """
+    try:
+        path = os.path.realpath(source)
+    except (OSError, ValueError):
+        return False
+    for report, keys in _ONBOARD_RECORDS:
+        try:
+            with open(os.path.join(os.path.dirname(path), report), encoding="utf-8") as stream:
+                record = json.load(stream)
+            for key in keys:
+                record = record[key]
+            # The file is opened only when a report names it. Any other source may be a terminal or a pipe.
+            if os.path.realpath(record["path"]) != path:
+                continue
+            with open(path, "rb") as stream:
+                content = stream.read()
+            if record["sha256"] == hashlib.sha256(content).hexdigest() and record["size_bytes"] == len(content):
+                return True
+        except (OSError, ValueError, LookupError, TypeError, RecursionError):
+            continue
+    return False
+
+
 def warn_old_keys(
     raw: Any,
     kind: str,
@@ -944,15 +1081,14 @@ def warn_old_keys(
     in the file are fixed by converting the file; old fields that only an
     override added are fixed by overriding the new key. Old fields next to a
     key that is already set, in the run or in the file, are fixed by removing
-    them.
+    them. A replay config that ``aisimulate onboard`` wrote is left as it is:
+    onboarding rejects the converted file.
 
     Call this outside validation, and only where a person wrote the input: a
     model validator must never warn. ``stacklevel`` counts as it does for
     ``warnings.warn`` called in place of this function, so the default points
     at the caller of the function that calls ``warn_old_keys``.
     """
-    from aisimulate_core.ais_perf_model import warn_deprecated
-
     old = written_old_keys(raw, kind)
     if not old:
         return
@@ -965,6 +1101,8 @@ def warn_old_keys(
         # An override removed the key for this run only. migrate reads the file, and it does not convert a file
         # that sets the key.
         hint = "the file already sets it, so remove the old fields from the file"
+    elif in_file and source is not None and _written_by_onboard(source):
+        hint = "'aisimulate onboard' wrote this file and rejects it once it is changed, so leave it as it is"
     elif in_file:
         # Quoted for a shell, so that the command also works as written for a path with spaces.
         target = "<config file>" if source is None else shlex.quote(os.fspath(source))

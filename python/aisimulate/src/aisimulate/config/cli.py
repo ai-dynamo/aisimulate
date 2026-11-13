@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
-from .ais_perf_model import anchor_paths, warn_old_keys
+from .ais_perf_model import anchor_paths, reject_repeated_keys, warn_old_keys
 from .common import (
     Choices,
     EvaluationConfig,
@@ -20,7 +20,7 @@ from .common import (
     OptimizationConfig,
     OptimizerConfig,
     StrictModel,
-    load_yaml,
+    load_yaml_with_text,
 )
 from .engine import EnginePredictionConfig, EngineRecommendationConfig, has_afd, require_native_vl_parallelism
 from .traffic import (
@@ -47,10 +47,13 @@ def config_folder(path: str | os.PathLike[str]) -> str:
 def _read_config_file(path: str | os.PathLike[str], kind: str) -> dict[str, Any]:
     """Read a config file and make the relative paths in ``ais_perf_model`` absolute.
 
-    The file then loads the same way from any working directory. ``kind`` is
-    ``predict`` or ``recommend``.
+    The file then loads the same way from any working directory. A key written
+    twice inside ``ais_perf_model`` is an error. ``kind`` is ``predict`` or
+    ``recommend``.
     """
-    return anchor_paths(load_yaml(path), config_folder(path), kind)
+    raw, text = load_yaml_with_text(path)
+    reject_repeated_keys(text, kind, path)
+    return anchor_paths(raw, config_folder(path), kind)
 
 
 class CorePredictionConfig(StrictModel):
@@ -79,8 +82,9 @@ class CorePredictionConfig(StrictModel):
         """Load a prediction config file.
 
         Relative paths inside ``engine.ais_perf_model`` start at the folder of
-        the file. Old estimator fields in the file give one deprecation
-        warning, raised only after the file validated.
+        the file, and a key written twice inside it is an error. Old estimator
+        fields in the file give one deprecation warning, raised only after the
+        file validated.
         """
         raw = _read_config_file(path, "predict")
         config = cls.model_validate(raw)
@@ -153,8 +157,9 @@ class CoreRecommendationConfig(StrictModel):
         """Load a recommendation config file.
 
         Relative paths inside ``engine.ais_perf_model`` start at the folder of
-        the file. Old estimator fields in the file give one deprecation
-        warning, raised only after the file validated.
+        the file, and a key written twice inside it is an error. Old estimator
+        fields in the file give one deprecation warning, raised only after the
+        file validated.
         """
         raw = _read_config_file(path, "recommend")
         config = cls.model_validate(raw)

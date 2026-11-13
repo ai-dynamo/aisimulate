@@ -318,6 +318,38 @@ def test_old_fpm_profile_next_to_the_key_must_say_the_same():
     assert rules.written_old_keys({"search_space": space}, "search") == ["search_space.fpm_profile"]
 
 
+def test_old_fpm_profile_comparison_does_not_hide_an_error_that_the_value_did_not_cause(monkeypatch):
+    import aisimulate.fpm_profile as profiles
+
+    def broken(value: Any) -> Any:
+        raise AttributeError("a fault in the comparison")
+
+    monkeypatch.setattr(profiles, "load_fpm_profile", broken)
+    profile = {"schema_version": 1}
+
+    with pytest.raises(AttributeError, match="a fault in the comparison"):
+        lower_search_space(_space("agg", fpm_profile=profile, ais_perf_model={"fpm_profile": profile}))
+
+
+@pytest.mark.parametrize(
+    ("name", "old", "new"),
+    [
+        ("systems_paths", ["~no-such-user-for-this-test/data"], ["default"]),
+        ("fpm_profile", "not JSON", {"schema_version": 1}),
+        ("fpm_profile", "[" * 100_000, {"schema_version": 1}),
+    ],
+    ids=["a path under a home that does not exist", "a profile that is not JSON", "a profile nested too deep"],
+)
+def test_old_value_the_space_cannot_read_still_says_something_else_than_the_key(name, old, new):
+    # The space rejects each old value on its own, with an error that is not always a ValueError.
+    space = _space("agg", **{name: old}, ais_perf_model={name: new})
+
+    with pytest.raises(AisPerfModelError) as failure:
+        lower_search_space(space)
+
+    assert str(failure.value) == f"{CONFLICT}search_space.{name}. Remove the old fields."
+
+
 # --- State snapshots --------------------------------------------------------------------------
 
 
@@ -469,6 +501,12 @@ def test_entry_may_restate_what_the_space_states():
             'entry for aggregated: backend="vllm" needs one stated value at search_space.backend '
             "(found null); state one backend there or drop the key",
             id="backend left to the default",
+        ),
+        pytest.param(
+            {"system": True},
+            {},
+            f'entry for aggregated: system=true differs from search_space.hardware_sku="{SYSTEM}"',
+            id="a boolean",
         ),
         pytest.param(
             {"tp": 2, "kv_block_size": 16},
@@ -1195,6 +1233,66 @@ def test_from_yaml_reports_a_key_it_cannot_read(tmp_path):
     text = _write_config(tmp_path, _space("agg", ais_perf_model="estimator.yaml"))
     with pytest.raises(ValidationError, match="search_space.ais_perf_model cannot be a string"):
         SmartSearchConfig.from_yaml(text)
+
+
+def _config_text(*space_lines: str) -> str:
+    """The text of a search config file whose search space is written line by line."""
+    space = "".join(f"  {line}\n" for line in space_lines)
+    return f"search_space:\n{space}workload: {{isl: 128, osl: 16, request_rate: 2, num_request_ratio: 3}}\n"
+
+
+def test_from_yaml_rejects_a_key_written_twice_inside_the_key(tmp_path):
+    path = tmp_path / "search.yaml"
+    path.write_text(
+        _config_text(
+            f"model_name: {MODEL}",
+            f"hardware_sku: {SYSTEM}",
+            "backend: [vllm]",
+            "deployment_mode: [agg]",
+            "ais_perf_model:",
+            "  estimation_mode: op_level",
+            "  fallback_policy: allow",
+            "  estimation_mode: fpm_regression",
+        )
+    )
+    # The YAML reader keeps the last value, and the search would follow it without a word.
+    assert yaml.safe_load(path.read_text())["search_space"]["ais_perf_model"]["estimation_mode"] == "fpm_regression"
+
+    with pytest.raises(AisPerfModelError) as failure:
+        SmartSearchConfig.from_yaml(path)
+
+    assert str(failure.value) == (
+        f"search_space.ais_perf_model in {path}: the key 'estimation_mode' is written twice (lines 7 and 9); "
+        "write it once"
+    )
+
+
+def test_from_yaml_reads_a_repeat_outside_the_key_and_a_merge_inside_it_as_before(tmp_path):
+    path = tmp_path / "search.yaml"
+    path.write_text(
+        _config_text(
+            "model_name: another/model",
+            f"model_name: {MODEL}",
+            f"hardware_sku: {SYSTEM}",
+            "backend: [vllm]",
+            "deployment_mode: [disagg]",
+            "ais_perf_model:",
+            "  - &prefill",
+            "    worker_type: prefill",
+            "    estimation_mode: op_level",
+            "    fallback_policy: allow",
+            # The merge brings worker_type in, and the entry writes it once.
+            "  - <<: *prefill",
+            "    worker_type: decode",
+        )
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = SmartSearchConfig.from_yaml(path)
+
+    old_spelling = _space("disagg", estimation_mode="op_level", fallback_policy="allow")
+    assert _dump(config.search_space) == _dump(_validated(old_spelling))
 
 
 # --- Module boundary --------------------------------------------------------------------------

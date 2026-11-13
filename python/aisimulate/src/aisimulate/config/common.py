@@ -215,17 +215,26 @@ class OptimizerConfig(StrictModel):
     seed: NonNegativeStrictInt = 42
 
 
-def load_yaml(path: str | Path) -> dict[str, Any]:
+def load_yaml_with_text(path: str | Path) -> tuple[dict[str, Any], str]:
+    """Read a configuration file. Return the one YAML mapping it holds and the text that was read.
+
+    The text still shows what the mapping cannot, such as a key written twice.
+    """
     source = Path(path)
     try:
-        data = yaml.safe_load(source.read_text(encoding="utf-8"))
+        text = source.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
     except OSError as exc:
         raise ValueError(f"could not read configuration {source}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ValueError(f"malformed YAML in {source}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"configuration {source} must contain one YAML mapping")
-    return data
+    return data, text
+
+
+def load_yaml(path: str | Path) -> dict[str, Any]:
+    return load_yaml_with_text(path)[0]
 
 
 CONFIG_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.config_adapters"

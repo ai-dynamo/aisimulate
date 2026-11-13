@@ -119,7 +119,9 @@ def _add_migrate_parser(actions: Any) -> None:
             "The old fields start a relative path at the working directory and ais_perf_model starts it "
             "at the folder of the config file, so run this command from the directory the config is run "
             "from. A relative path is rewritten to start at the folder of FILE, or of CONFIG without "
-            "--output. "
+            "--output. When that file is a symbolic link to a file in another folder, or CONFIG is such a "
+            "link to FILE, a relative path is written as an absolute path, because it would start at a "
+            "different folder for each name of the file. "
             "Do not convert a replay config that 'aisimulate onboard' wrote: onboard compares that file "
             "with the workload it reviewed and rejects the converted file."
         ),
@@ -159,6 +161,7 @@ def _add_fetch_parser(actions: Any) -> None:
         description=(
             "Download the files of one FPM profile that a dataset manifest pins, verify them and print "
             "the local folder together with the systems_paths line for an ais_perf_model entry. "
+            "The folder is printed as an absolute path, so the line names it from an entry file in any folder. "
             "A profile that is already in the cache is not downloaded again. "
             "With --list, print the profiles of MANIFEST, or of every manifest shipped with this "
             "package when MANIFEST is left out; nothing is downloaded."
@@ -461,6 +464,31 @@ def _keep_permissions(target: str, temporary: str) -> None:
     os.chmod(temporary, mode)
 
 
+def _folders_with_a_name(path: str) -> list[str]:
+    """The folders in which a config file has a name, the folder of ``path`` first.
+
+    ``path`` can be a symbolic link to the file, or to another link to it. Each of them is a name
+    the file is read by, and ``ais_perf_model`` starts a relative path at the folder of that name.
+    """
+    from .config.cli import config_folder
+
+    folders: list[str] = []
+    seen: set[str] = set()
+    while True:
+        folder = config_folder(path)
+        path = os.path.join(folder, os.path.basename(path))
+        if path in seen:
+            # Links that name each other name no file; the write reports that.
+            break
+        seen.add(path)
+        if folder not in folders:
+            folders.append(folder)
+        if not os.path.islink(path):
+            break
+        path = os.path.join(folder, os.readlink(path))
+    return folders
+
+
 def _print_plan(report: Mapping[str, Any], key: str) -> None:
     print(f"config: {report['config']}")
     print(f"kind: {report['kind']}")
@@ -495,7 +523,6 @@ def _indented(text: str) -> str:
 
 def _run_migrate(args: argparse.Namespace) -> int:
     from .config.ais_perf_model_migrate import CannotConvert, MigrationCheckError, migrate_mapping
-    from .config.cli import config_folder
 
     raw = _load_config(args.config)
     _refuse_to_replace_another_file(args)
@@ -514,9 +541,14 @@ def _run_migrate(args: argparse.Namespace) -> int:
     }
     # ais_perf_model starts a relative path at the folder of the file it is read from: FILE once it is written.
     read_from = args.config if args.output is None else args.output
+    folders = _folders_with_a_name(read_from)
+    if args.output is not None and os.path.realpath(args.output) == os.path.realpath(args.config):
+        # CONFIG is one more name of FILE, and it can be a link in another folder.
+        folders += [folder for folder in _folders_with_a_name(args.config) if folder not in folders]
+    config_dir, *other_config_dirs = folders
     try:
         converted, removed, notes = migrate_mapping(
-            raw, kind, config_dir=config_folder(read_from), cwd=report["working_directory"]
+            raw, kind, config_dir=config_dir, cwd=report["working_directory"], other_config_dirs=other_config_dirs
         )
     except CannotConvert as exc:
         report.update(status="cannot_convert", problems=list(exc.problems))
@@ -605,7 +637,9 @@ def _run_fetch(args: argparse.Namespace) -> int:
         hint = _unqualified_hint(record, args.allow_unqualified)
         print(f"could not fetch profile {args.profile!r}: {exc}{hint}", file=sys.stderr)
         return 1
-    path = os.fspath(folder)
+    # The profile store returns the folder under the cache folder as that was given, which can be relative.
+    # An entry file starts a relative path at its own folder, so the folder is printed as the system reaches it.
+    path = os.path.realpath(folder)
     if args.format == "json":
         _print_json({"manifest": args.manifest, "profile": args.profile, "path": path, "systems_paths": [path]})
     else:

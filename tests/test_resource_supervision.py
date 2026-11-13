@@ -912,8 +912,10 @@ aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stac
 
 runtime = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas')
 assert not any(name == root or name.startswith(root + '.') for name in sys.modules for root in runtime)
-# Profile validation needs only lightweight metadata before resource admission.
-allowed_core = {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}
+# Profile validation needs only lightweight metadata before resource admission. The perf model
+# loader is the standard library only; the config rules take the estimator key names from it.
+allowed_core = {'aisimulate_core', 'aisimulate_core.ais_perf_model', 'aisimulate_core.fpm_profile',
+                'aisimulate_core.quantization'}
 loaded_core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
 assert loaded_core <= allowed_core, loaded_core - allowed_core
 """,

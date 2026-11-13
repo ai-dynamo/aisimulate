@@ -126,13 +126,18 @@ def build_parser() -> argparse.ArgumentParser:
 def _load_mapping(path: str) -> dict[str, Any]:
     source = Path(path)
     try:
-        value = yaml.safe_load(source.read_text(encoding="utf-8"))
+        text = source.read_text(encoding="utf-8")
+        value = yaml.safe_load(text)
     except OSError as exc:
         raise _CliConfigError(f"could not read configuration {source}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise _CliConfigError(f"malformed YAML in {source}: {exc}") from exc
     if not isinstance(value, dict):
         raise _CliConfigError(f"configuration {source} must contain one YAML mapping")
+    from .config.ais_perf_model import reject_repeated_keys
+
+    # A predict and a recommend config keep ais_perf_model in the same section, so one kind checks both.
+    reject_repeated_keys(text, "predict", source)
     return value
 
 

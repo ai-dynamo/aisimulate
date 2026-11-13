@@ -635,6 +635,189 @@ def test_values_the_loader_cannot_anchor_are_left_for_rust(tmp_path):
     assert load(config, base_dir=tmp_path).to_data() == config
 
 
+# --- Paths and links --------------------------------------------------------------------------
+
+
+def test_file_path_that_goes_up_from_a_link_opens_the_file_the_system_opens(tmp_path, monkeypatch):
+    # a/link names b/sub, so the system reads "a/link/.." as b. Read as text it would be a.
+    a, b = tmp_path / "a", tmp_path / "b"
+    _write(a / "x.yaml", "estimation_mode: op_level\n")
+    opened = _write(b / "x.yaml", "estimation_mode: fpm_interpolation\n")
+    (b / "sub").mkdir()
+    (a / "link").symlink_to(Path("..", "b", "sub"), target_is_directory=True)
+    path = a / "link" / ".." / "x.yaml"
+    assert path.read_text() == opened.read_text()
+
+    expected = {"estimation_mode": "fpm_interpolation"}
+    monkeypatch.chdir(a)
+    for document in (
+        load(path),
+        load(str(path)),
+        load("link/../x.yaml"),
+        load("link/../x.yaml", base_dir=a),
+        load("x.yaml", base_dir=a / "link" / ".."),
+    ):
+        assert document.source == str(opened)
+        assert document.to_data() == expected
+    # Every path of a config is walked the same way, and so is the folder the paths start at.
+    paths = [str(b / "data"), str(b)]
+    entry = load({"from": "link/../x.yaml", "systems_paths": ["link/../data", "link/.."]}, base_dir=a).entries[0]
+    assert entry == {"from": str(opened), "systems_paths": paths}
+    assert expand_template(entry) == {**expected, "systems_paths": paths}
+    assert resolve({"from": "link/../x.yaml", "systems_paths": ["link/../data", "link/.."]}) == {
+        **expected,
+        "systems_paths": paths,
+    }
+    assert load({"systems_paths": ["data", "."]}, base_dir=a / "link" / "..").to_data() == {"systems_paths": paths}
+
+
+def test_file_reached_through_a_linked_folder_starts_paths_at_the_real_folder(tmp_path):
+    real, cfg = tmp_path / "real", tmp_path / "cfg"
+    template = _write(real / "sub" / "t.yaml", "systems_paths: [../data, more]\n")
+    (cfg / "data").mkdir(parents=True)
+    (cfg / "linkdir").symlink_to(Path("..", "real", "sub"), target_is_directory=True)
+    # For the system cfg/linkdir/../data is real/data. cfg/data is another folder.
+    expected = {"systems_paths": [str(real / "data"), str(real / "sub" / "more")]}
+
+    document = load(cfg / "linkdir" / "t.yaml")
+    assert document.source == str(template)
+    assert document.to_data() == expected
+    assert document == load(template)
+    entry = load({"from": "linkdir/t.yaml", "worker_type": "decode"}, base_dir=cfg).entries[0]
+    assert entry == {"from": str(template), "worker_type": "decode"}
+    assert expand_template(entry) == {"worker_type": "decode", **expected}
+    assert resolve(entry) == {"worker_type": "decode", **expected}
+    # base_dir is a folder, so a link at its end is followed too.
+    paths = [*expected["systems_paths"], str(real / "sub")]
+    assert load({"systems_paths": ["../data", "more", "."]}, base_dir=cfg / "linkdir").to_data() == {
+        "systems_paths": paths
+    }
+
+
+def test_file_that_is_a_link_starts_paths_at_the_folder_of_the_link(tmp_path):
+    # The same rule as for a predict, recommend or search config file that is a link.
+    real, cfg = tmp_path / "real", tmp_path / "cfg"
+    _write(real / "sub" / "t.yaml", "systems_paths: [../data, more]\n")
+    link = cfg / "in" / "t.yaml"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(Path("..", "..", "real", "sub", "t.yaml"))
+    expected = {"systems_paths": [str(cfg / "data"), str(cfg / "in" / "more")]}
+
+    document = load(link)
+    assert document.source == str(link)
+    assert document.to_data() == expected
+    entry = load({"from": "in/t.yaml"}, base_dir=cfg).entries[0]
+    assert entry == {"from": str(link)}
+    assert expand_template(entry) == expected
+    assert resolve(entry) == expected
+
+
+def test_last_name_of_a_path_is_kept_when_it_is_a_link(tmp_path):
+    # Only the folders on the way are followed. A data folder or a snapshot that is a link keeps its name.
+    target = tmp_path / "store" / "v2"
+    target.mkdir(parents=True)
+    base = tmp_path / "base"
+    base.mkdir()
+    link = base / "current"
+    link.symlink_to(target, target_is_directory=True)
+    entry = load(
+        {
+            "systems_paths": ["current", "current/", "./current/.", "current/systems", "current/.."],
+            "from": {"dataset": {"root": "current/", "manifest": "manifest.json"}},
+            "estimator_config": {
+                "state_snapshot": {"path": "current"},
+                "fpm_learned": {"artifact_path": "current/model.bin"},
+            },
+        },
+        base_dir=base,
+    ).entries[0]
+    assert entry == {
+        # A path that ends with ".." has no last name: it is the parent of the folder the link names.
+        "systems_paths": [str(link), str(link), str(link), str(target / "systems"), str(target.parent)],
+        "from": {"dataset": {"root": str(link), "manifest": "manifest.json"}},
+        "estimator_config": {
+            "state_snapshot": {"path": str(link)},
+            "fpm_learned": {"artifact_path": str(target / "model.bin")},
+        },
+    }
+    # Loading the result again changes nothing.
+    assert load(entry, base_dir=tmp_path).entries == (entry,)
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "data",
+        "data/",
+        "./data/.",
+        "a//b",
+        "a/./b/",
+        "a/..",
+        "a/../b",
+        "missing/../b",
+        ".",
+        "./",
+        "..",
+        "../..",
+        "../up/",
+        "~",
+        "~/systems/",
+        "/abs//systems/.",
+        "//abs/systems",
+        "///abs/systems",
+        "/",
+    ],
+)
+def test_path_without_a_link_is_the_path_made_absolute_as_text(tmp_path, home, written):
+    # Callers compare the paths the loader returns. Only a link on the way may change one.
+    base = tmp_path / "base"
+    (base / "a").mkdir(parents=True)
+    expected = os.path.abspath(os.path.join(base, os.path.expanduser(written)))
+    for base_dir in (base, f"{base}{os.sep}", base / "a" / ".."):
+        assert load({"systems_paths": [written], "from": written}, base_dir=base_dir).to_data() == {
+            "systems_paths": [expected],
+            "from": expected,
+        }
+
+
+@pytest.mark.parametrize("problem", [OSError, RecursionError])
+def test_path_whose_links_cannot_be_followed_is_made_absolute_as_text(tmp_path, monkeypatch, problem):
+    file = _write(tmp_path / "conf" / "model.yaml", "systems_paths: [../data]\n")
+
+    def give_up(path, **options):
+        raise problem(f"cannot follow {path}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os.path, "realpath", give_up)
+        document = load("conf/./model.yaml", base_dir=tmp_path / "conf" / "..")
+        with pytest.raises(AisPerfModelError) as error:
+            load("conf/../missing.yaml", base_dir=tmp_path)
+    assert document.source == str(file)
+    assert document.to_data() == {"systems_paths": [str(tmp_path / "data")]}
+    # A path that cannot be read is still reported by the read.
+    assert str(error.value).startswith(f"cannot read {tmp_path / 'missing.yaml'}: ")
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        pytest.param('{"systems_paths": ["' + "a/" * 40_000 + '"]', "invalid JSON", id="inline JSON with a mistake"),
+        pytest.param("systems_paths:\n" + "- a/b\n" * 20_000, "cannot read ", id="YAML text given as the value"),
+    ],
+)
+def test_text_too_long_to_be_a_path_is_not_walked_folder_by_folder(tmp_path, monkeypatch, value, message):
+    # Walking such text asks the system about every folder in it, and each question reads the whole text.
+    follow = os.path.realpath
+
+    def refuse_long_text(path, **options):
+        assert len(os.fspath(path)) < 10_000, f"walked {len(os.fspath(path))} characters"
+        return follow(path, **options)
+
+    monkeypatch.setattr(os.path, "realpath", refuse_long_text)
+    with pytest.raises(AisPerfModelError, match=message):
+        load(value, base_dir=tmp_path)
+
+
 # --- Nulls ------------------------------------------------------------------------------------
 
 
@@ -1235,6 +1418,19 @@ def test_snapshot_saved_relative_paths_start_at_the_snapshot_folder(snapshot, tm
     assert resolve(_from_snapshot(snapshot, **same), fill=same) == config
 
 
+def test_snapshot_that_is_a_link_starts_saved_paths_at_the_real_folder(snapshot, tmp_path):
+    saved = _saved_snapshot_config()
+    saved["systems_paths"] = ["systems", "../shared"]
+    (snapshot / "config.json").write_text(json.dumps(saved))
+    link = tmp_path / "elsewhere" / "current"
+    link.parent.mkdir()
+    link.symlink_to(snapshot, target_is_directory=True)
+    config = resolve(_from_snapshot(link))
+    # The snapshot keeps the name it was given. "../shared" is next to the folder that holds config.json.
+    assert config["estimator_config"]["state_snapshot"]["path"] == str(link)
+    assert config["systems_paths"] == [str(snapshot / "systems"), str(tmp_path / "shared")]
+
+
 @pytest.mark.parametrize("source", ["base.yaml", {"state_snapshot": {"path": "other"}}], ids=["template", "snapshot"])
 def test_snapshot_saved_config_may_not_contain_from(snapshot, source):
     (snapshot / "config.json").write_text(json.dumps({**_saved_snapshot_config(), "from": source}))
@@ -1473,6 +1669,30 @@ def test_dataset_saved_config_is_read_like_a_config(raw_dataset, prepare_calls, 
     assert str(error.value) == (
         f"ais_perf_model entry: {prepared / 'config.json'} contains from; a saved config may not name another source"
     )
+    assert len(prepare_calls) == 1
+
+
+def test_dataset_root_and_workspace_that_go_up_from_a_link_are_the_folders_the_system_opens(
+    raw_dataset, prepare_calls, tmp_path
+):
+    # links/in names raw-dataset/metadata and links/out names deep/inner, so the system reads
+    # "links/in/.." as raw-dataset and "links/out/.." as deep. Read as text both would be links.
+    workspace = tmp_path / "deep" / "workspace"
+    (tmp_path / "deep" / "inner").mkdir(parents=True)
+    links = tmp_path / "links"
+    links.mkdir()
+    (links / "in").symlink_to(raw_dataset / "metadata", target_is_directory=True)
+    (links / "out").symlink_to(tmp_path / "deep" / "inner", target_is_directory=True)
+
+    config = resolve(_from_dataset(links / "in" / ".."), workspace=links / "out" / ".." / "workspace")
+
+    [prepared] = workspace.iterdir()
+    assert config["systems_paths"] == [str(prepared / "systems")]
+    assert not (links / "workspace").exists()
+    [(root, _, output_dir)] = prepare_calls
+    assert (root, output_dir.parent) == (raw_dataset, workspace)
+    # Another spelling of the same root is the same dataset: it is not prepared again.
+    assert resolve(_from_dataset(raw_dataset), workspace=workspace) == config
     assert len(prepare_calls) == 1
 
 

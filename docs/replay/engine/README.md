@@ -341,7 +341,15 @@ engine:
   from a state snapshot (`from: {state_snapshot: {path: ...}}`). A string as
   the whole value is an error; write `from: <file>` to reuse a file.
 - **Relative paths.** In a configuration file they start at that file's
-  folder. Given with `--set`, they start at the working directory.
+  folder. Given with `--set`, they start at the working directory. Symbolic
+  links are followed the way the system follows them; see
+  [Relative paths](../../perf-model/configuration.md#relative-paths).
+- **Repeated keys.** A key written twice inside `engine.ais_perf_model`, at
+  any depth, is an error in a configuration file:
+  `engine.ais_perf_model in predict.yaml: the key 'estimation_mode' is written twice (lines 9 and 11); write it once`.
+  `predict` and `recommend` exit with code `2` before they touch the output
+  directory. A value given with `--set` is not checked, and a key repeated
+  anywhere else in the file keeps its last value.
 
 In this release the key is another spelling of the estimator fields. Entries
 that agree are the engine-level spelling, entries that differ the per-worker
@@ -376,8 +384,10 @@ release removes them. Use `engine.ais_perf_model`.
 
 - A configuration file that writes one of them prints one deprecation warning
   that lists the fields. A field that only repeats its default does not count.
-- `aisimulate perf-model migrate prediction.yaml` shows the converted block;
-  see [perf-model tools](../../reference/cli.md#perf-model).
+- `aisimulate perf-model migrate prediction.yaml` shows the converted block
+  and writes nothing. Add `--output prediction.yaml` to convert the file in
+  place; comments and formatting of the file are not kept. See
+  [perf-model tools](../../reference/cli.md#perf-model).
 - An old field next to `engine.ais_perf_model` is an error, unless it holds
   the value the entries produce.
 - `timing.type`, `timing.prefill_ms` and `timing.decode_ms` are not

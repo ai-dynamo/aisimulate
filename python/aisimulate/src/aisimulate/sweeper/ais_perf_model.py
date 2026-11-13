@@ -259,8 +259,9 @@ def _stored_profile(value: Any) -> Any:
 
     try:
         return load_fpm_profile(value).model_dump(mode="json")
-    except Exception:
-        # The search space reports a profile it cannot read. Compare such a value as written.
+    except (ValueError, RecursionError):
+        # The search space reports a profile it cannot read. Compare such a value as written. The
+        # reader says so with a ValueError, and with a RecursionError for JSON text nested too deep.
         return value
 
 

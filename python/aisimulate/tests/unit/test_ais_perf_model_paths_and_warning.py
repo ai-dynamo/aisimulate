@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Relative paths and the deprecation warning where config files are read.
+"""Relative paths, repeated keys and the deprecation warning where config files are read.
 
 Three places read a prediction or recommendation config file: the parent
 CLI, the supervised child it starts, and the ``from_yaml`` loaders. Each one
 starts the relative paths inside ``engine.ais_perf_model`` at the folder of
-the file. The parent CLI and the loaders warn once when the config states old
-estimator fields; the child and plain validation never warn.
+the file, and rejects a key the file writes twice inside it. The parent CLI
+and the loaders warn once when the config states old estimator fields; the
+child and plain validation never warn.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import contextlib
 import copy
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import warnings
@@ -201,10 +203,10 @@ def _estimator(compiled) -> dict[str, Any]:
     return {key: config[key] for key in ("estimation_mode", "fallback_policy", "systems_paths")}
 
 
-def _child_error(capsys, config: Path, *overrides: str) -> str:
+def _child_error(capsys, config: Path, *overrides: str, command: str = "predict") -> str:
     """Run the child on a config it must reject and return what it wrote to stderr."""
     with pytest.raises(SystemExit) as stopped:
-        cli.main(_argv("predict", config, config.parent / "never-created", overrides))
+        cli.main(_argv(command, config, config.parent / "never-created", overrides))
     assert stopped.value.code == 2
     assert not (config.parent / "never-created").exists()
     return capsys.readouterr().err
@@ -461,6 +463,31 @@ def test_config_path_that_goes_up_from_a_link_starts_paths_at_the_folder_that_ho
     assert _estimator(child(path)) == expected
 
 
+def test_path_in_the_value_that_goes_up_from_a_link_names_the_folder_the_system_opens(config_dir, child):
+    # "hop" names far/deep, so for the system "hop/.." is "far". Read as text it would be the folder of
+    # the config file, which has a "perf-data" folder of its own and no "perf.yaml".
+    far = config_dir / "far"
+    (far / "deep").mkdir(parents=True)
+    (far / "perf-data").mkdir()
+    (far / "perf.yaml").write_text(yaml.safe_dump(OLD_FIELDS))
+    (config_dir / "hop").symlink_to(Path("far", "deep"), target_is_directory=True)
+    entry = {"from": "hop/../perf.yaml", "systems_paths": ["hop/../perf-data"]}
+    new = _write(config_dir / "new.yaml", {"ais_perf_model": entry})
+    # The old field names the same folder with the same text, as an absolute path.
+    old_fields = {**OLD_FIELDS, "systems_paths": [str(config_dir / "hop" / ".." / "perf-data")]}
+    old = _write(config_dir / "old.yaml", old_fields)
+    expected = {**OLD_FIELDS, "systems_paths": [str(far / "perf-data")]}
+
+    with _deprecations() as found:
+        loaded = CorePredictionConfig.from_yaml(new)
+        compiled = child(new)
+
+    assert found == []
+    assert {key: getattr(loaded.engine, key) for key in expected} == expected
+    assert _estimator(compiled) == expected
+    assert compiled == child(old)
+
+
 # --- ais_perf_model and --set ----------------------------------------------------------------
 
 
@@ -654,6 +681,88 @@ def test_command_line_reports_a_bad_entry_without_a_traceback(config_dir, tmp_pa
     assert not output.exists()
 
 
+# --- A key the config file writes twice ------------------------------------------------------
+
+REPEATED_KEY = "the key 'estimation_mode' is written twice (lines 10 and 12); write it once"
+
+
+def _write_text(path: Path, command: str, *engine_lines: str) -> Path:
+    """Write a config file with extra lines in its engine section. A dump cannot write a key twice."""
+    rest = {name: value for name, value in _mapping(command, {}).items() if name != "engine"}
+    engine = yaml.safe_dump({"engine": ENGINE}) + "".join(f"  {line}\n" for line in engine_lines)
+    path.write_text(engine + yaml.safe_dump(rest))
+    return path
+
+
+def _write_repeated_key(path: Path, command: str = "predict") -> Path:
+    """Write a config whose ``engine.ais_perf_model`` gives ``estimation_mode`` twice, on lines 10 and 12."""
+    lines = ("ais_perf_model:", "  estimation_mode: op_level", "  fallback_policy: allow", "  estimation_mode: auto")
+    _write_text(path, command, *lines)
+    # The YAML reader keeps the last value, and the run would follow it without a word.
+    assert yaml.safe_load(path.read_text())["engine"]["ais_perf_model"] == {
+        "estimation_mode": "auto",
+        "fallback_policy": "allow",
+    }
+    return path
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_from_yaml_rejects_a_key_written_twice_inside_the_key(config_dir, command):
+    path = _write_repeated_key(config_dir / "twice.yaml", command)
+
+    with _deprecations() as found, pytest.raises(AisPerfModelError) as failure:
+        LOADERS[command].from_yaml(path)
+
+    assert str(failure.value) == f"engine.ais_perf_model in {path}: {REPEATED_KEY}"
+    assert found == []
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_key_written_twice_inside_the_key_is_reported_by_the_child(config_dir, parent, capsys, command):
+    path = _write_repeated_key(config_dir / "twice.yaml", command)
+
+    # The parent treats the file like one it cannot read: it prepares nothing and lets the child report.
+    assert parent.run(command, path) == 0
+    assert len(parent.child_commands) == 1
+    assert not parent.output.exists()
+    error = _child_error(capsys, path, command=command)
+    assert f"error: {path}: engine.ais_perf_model in {path}: {REPEATED_KEY}" in error
+
+
+def test_command_line_reports_a_key_written_twice_without_a_traceback(config_dir, tmp_path):
+    path = _write_repeated_key(config_dir / "twice.yaml")
+    output = tmp_path / "output"
+
+    finished = subprocess.run(
+        [sys.executable, "-m", "aisimulate", *_argv("predict", path, output, ())],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert finished.returncode == 2
+    assert f"engine.ais_perf_model in {path}: {REPEATED_KEY}" in finished.stderr
+    assert "Traceback" not in finished.stderr
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_key_repeated_outside_the_key_keeps_its_last_value(config_dir, parent, command):
+    # The engine section already gives context_length. It is given again, next to a key that repeats nothing.
+    lines = ("ais_perf_model:", "  estimation_mode: op_level", "context_length: 512")
+    path = _write_text(config_dir / "outside.yaml", command, *lines)
+    assert path.read_text().count("  context_length: ") == 2
+
+    with _deprecations() as found:
+        loaded = LOADERS[command].from_yaml(path)
+        assert parent.run(command, path) == 0
+
+    assert found == []
+    assert (loaded.engine.estimation_mode, loaded.engine.context_length) == ("op_level", 512)
+    assert parent.prepared_output()
+
+
 # --- Configs that AISimulate writes itself ---------------------------------------------------
 
 
@@ -697,11 +806,28 @@ def test_onboarding_does_not_warn_about_the_replay_configs_it_writes(request, mo
     assert predictions[0] == str(replay_config)
     assert from_onboarding == []
 
-    # The same file still warns when a person gives it to the CLI or to from_yaml.
+    # The same files still warn when a person gives one to the CLI or to from_yaml. The warning does not
+    # send that person to migrate: onboarding compares each file with its record and rejects a converted one.
+    matched_config = Path(predictions[1])
+    assert matched_config.parent.name == "matched"
     with _deprecations() as from_person:
         assert parent_cli(_argv("predict", replay_config, tmp_path / "by-hand", ())) == 0
         CorePredictionConfig.from_yaml(replay_config)
-    assert len(from_person) == 2
+        CorePredictionConfig.from_yaml(matched_config)
+    assert len(from_person) == 3
     for warning in from_person:
         assert "engine.workers.aggregated.timing.estimation_mode" in str(warning.message)
-        assert _migrate_hint(replay_config) in str(warning.message)
+        assert "perf-model migrate" not in str(warning.message)
+        assert str(warning.message).endswith(
+            "use engine.ais_perf_model "
+            "('aisimulate onboard' wrote this file and rejects it once it is changed, so leave it as it is)"
+        )
+
+    # A copy in a folder of the person's own is a file onboarding does not look at, so it can be converted.
+    own_copy = tmp_path / "own" / "predict.yaml"
+    own_copy.parent.mkdir()
+    shutil.copy(replay_config, own_copy)
+    with _deprecations() as from_copy:
+        CorePredictionConfig.from_yaml(own_copy)
+    (warning,) = from_copy
+    assert str(warning.message).endswith(f"use engine.ais_perf_model ({_migrate_hint(own_copy)})")

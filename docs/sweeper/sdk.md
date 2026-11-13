@@ -162,7 +162,13 @@ search_space:
   estimator fields.
 - **Relative paths.** In a file read by `SmartSearchConfig.from_yaml` they
   start at that file's folder. In Python data passed to `model_validate` they
-  start at the working directory.
+  start at the working directory. Symbolic links are followed the way the
+  system follows them; see
+  [Relative paths](../perf-model/configuration.md#relative-paths).
+- **Repeated keys.** A key written twice inside `ais_perf_model`, at any
+  depth, is an error in a file read by `SmartSearchConfig.from_yaml`:
+  `search_space.ais_perf_model in search.yaml: the key 'estimation_mode' is written twice (lines 7 and 8); write it once`.
+  A key repeated anywhere else in the file keeps its last value.
 - **Not supported in this release.** A search with `afd_roles`, an `encoder`
   search, and a role with `<role>_timing_model` set reject the field and keep
   the estimator fields. A dataset entry (`from: {dataset: ...}`) is rejected
@@ -180,7 +186,9 @@ this release. The next release removes them.
 - `role_estimator_controls.<role>.transfer_policy` counts whenever the key is
   written, also as `null`. A `null` there is a setting: it replaces the
   top-level `transfer_policy` for that role with every transfer kind.
-- `aisimulate perf-model migrate search.yaml` shows the converted block; see
+- `aisimulate perf-model migrate search.yaml` shows the converted block and
+  writes nothing. Add `--output search.yaml` to convert the file in place;
+  comments and formatting of the file are not kept. See
   [perf-model tools](../reference/cli.md#perf-model).
 - An old field next to `ais_perf_model` is an error, unless it holds the value
   the entries produce. Such a field still gets the warning, which then says to
@@ -197,6 +205,93 @@ this release. The next release removes them.
   error, unless the entries produce every kind for that role in
   `role_estimator_controls`. An example is a `decode` entry with
   `transfer_policy: aggressive` next to a `prefill` entry with another value.
+
+<a id="replacing-the-per-role-fpm-fields"></a>
+
+`<role>_forward_model` and `<role>_fpm_parquet_path` have other names in an
+entry. Write them in the entry for the worker type of the role; the `agg`
+role is the `aggregated` worker type.
+
+| Old field | In the entry for that worker type |
+|---|---|
+| `<role>_forward_model: op_level` | `estimation_mode: op_level` |
+| `<role>_forward_model: fpm` | `estimation_mode: fpm_interpolation` |
+| `<role>_fpm_parquet_path: P` | `estimator_config.fpm_interpolation.fpm_parquet_path: P` |
+
+This search times prefill from an external FPM parquet and decode with the
+op-level model. With the old fields:
+
+```yaml
+search_space:
+  model_name: example/model
+  hardware_sku: h200_sxm
+  deployment_mode: [disagg]
+  prefill_forward_model: fpm
+  prefill_fpm_parquet_path: /data/prefill.parquet
+  decode_forward_model: op_level
+```
+
+The same search with `ais_perf_model`:
+
+```yaml
+search_space:
+  model_name: example/model
+  hardware_sku: h200_sxm
+  deployment_mode: [disagg]
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      estimator_config:
+        fpm_interpolation:
+          fpm_parquet_path: /data/prefill.parquet
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+A search file whose `search_space` is the first form gets the deprecation
+warning from `SmartSearchConfig.from_yaml`; with the second form it does not.
+`SearchSpace.model_validate` accepts the second `search_space` mapping, and
+the space then holds:
+
+```text
+role_estimator_controls = {'prefill': {'estimation_mode': 'fpm_interpolation', 'estimator_config': {'fpm_interpolation': {'fpm_parquet_path': '/data/prefill.parquet'}}}, 'decode': {'estimation_mode': 'op_level'}}
+prefill_forward_model = 'fpm'
+decode_forward_model = 'op_level'
+```
+
+`aisimulate perf-model migrate search.yaml` on the first form prints the same
+entries:
+
+```text
+new key search_space.ais_perf_model:
+  search_space:
+    ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      estimator_config:
+        fpm_interpolation:
+          fpm_parquet_path: /data/prefill.parquet
+    - worker_type: decode
+      estimation_mode: op_level
+
+removed fields:
+  search_space.prefill_forward_model
+  search_space.prefill_fpm_parquet_path
+  search_space.decode_forward_model
+
+notes:
+  search_space.prefill_forward_model: fpm written as estimation_mode: fpm_interpolation
+  search_space.prefill_fpm_parquet_path written as estimator_config.fpm_interpolation.fpm_parquet_path
+  search_space.decode_forward_model: op_level written as estimation_mode: op_level
+```
+
+An entry does not take the old names. `prefill_forward_model` or
+`prefill_fpm_parquet_path` inside the entry, and `role_estimator_controls`
+inside `ais_perf_model`, are errors:
+
+```text
+search_space.ais_perf_model entry for prefill: prefill_forward_model, prefill_fpm_parquet_path cannot be checked in a search config. The search space does not state them (the search chooses tp and similar values for each candidate). Drop these keys from the entry, or from the template file when 'from: <file>' brings them in.
+```
 
 The entry format and the full rules are in
 [Unified perf-model input](../perf-model/configuration.md#unified-perf-model-input).
@@ -223,7 +318,11 @@ external parquet for that role (`agg`, `prefill`, or `decode`); the adjacent sam
 `.metadata.json` sidecar is required. The path requires default timing with `forward_model: fpm`
 and is preserved in deployment metadata, runtime arguments, and candidate YAML.
 `<role>_forward_model` and `<role>_fpm_parquet_path` are deprecated; use
-[`ais_perf_model`](#ais-perf-model).
+[`ais_perf_model`](#ais-perf-model). In the entry for the role's worker type,
+`<role>_forward_model: fpm` is `estimation_mode: fpm_interpolation`,
+`op_level` is `estimation_mode: op_level`, and `<role>_fpm_parquet_path` is
+`estimator_config.fpm_interpolation.fpm_parquet_path`; see the
+[example for one role](#replacing-the-per-role-fpm-fields).
 A one-item list pins a searched field.
 
 `prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either

@@ -19,9 +19,9 @@ key is read back are the rules of ``aisimulate.config.ais_perf_model`` and
 ``aisimulate.sweeper.ais_perf_model``. This module adds where the two config
 families keep those fields and what the legacy spellings stand for.
 
-Importing this module imports the rules module and the standard library
-only. The config models and the loader are imported inside the functions that
-need them.
+Importing this module imports the rules module, with it the loader, and the
+standard library only. The config models are imported inside the functions
+that need them.
 """
 
 from __future__ import annotations
@@ -434,8 +434,8 @@ def _new_block(
 # --- Relative paths --------------------------------------------------------------------------
 
 
-def _rewrite_paths(block: Any, name: str, cwd: str, config_dir: str, notes: list[str]) -> Any:
-    """Return ``block`` with its relative paths rewritten to start at the config file's folder.
+def _rewrite_paths(block: Any, name: str, cwd: str, config_dirs: Sequence[str], notes: list[str]) -> Any:
+    """Return ``block`` with its relative paths rewritten for the folders the config file has a name in.
 
     The old fields start a relative path at the working directory;
     ``ais_perf_model`` starts it at the folder of the config file. The loader
@@ -452,33 +452,41 @@ def _rewrite_paths(block: Any, name: str, cwd: str, config_dir: str, notes: list
     except AisPerfModelError as exc:
         reason = str(exc).removeprefix(f"{KEY}: ")
         raise CannotConvert([f"cannot convert: {name} cannot hold a value of the old fields: {reason}"]) from exc
-    return _rewritten(block, anchored, cwd, config_dir, notes)
+    return _rewritten(block, anchored, cwd, config_dirs, notes)
 
 
-def _rewritten(written: Any, anchored: Any, cwd: str, config_dir: str, notes: list[str]) -> Any:
+def _rewritten(written: Any, anchored: Any, cwd: str, config_dirs: Sequence[str], notes: list[str]) -> Any:
     if isinstance(written, dict) and isinstance(anchored, dict):
         # The loader drops keys that say nothing (an empty list of paths); those stay as written.
         return {
-            key: _rewritten(value, anchored.get(key, value), cwd, config_dir, notes) for key, value in written.items()
+            key: _rewritten(value, anchored.get(key, value), cwd, config_dirs, notes) for key, value in written.items()
         }
     if isinstance(written, list) and isinstance(anchored, list) and len(written) == len(anchored):
         return [
-            _rewritten(value, other, cwd, config_dir, notes) for value, other in zip(written, anchored, strict=True)
+            _rewritten(value, other, cwd, config_dirs, notes) for value, other in zip(written, anchored, strict=True)
         ]
     if isinstance(written, str) and isinstance(anchored, str) and written != anchored and _is_relative(written):
-        return _relative_to_config(written, cwd, config_dir, notes)
+        return _for_config_file(written, cwd, config_dirs, notes)
     return written
 
 
-def _relative_to_config(path: str, cwd: str, config_dir: str, notes: list[str]) -> str:
-    rewritten = os.path.relpath(_real_path(path, cwd), config_dir)
-    if rewritten.lower() == "default":
-        # In systems_paths the bare word names the packaged data, not a folder next to the config file.
-        rewritten = os.path.join(os.curdir, rewritten)
-    note = (
-        f"path {path!r} (relative to the working directory) rewritten as {rewritten!r} "
-        f"(relative to the folder of the converted config, {config_dir})"
-    )
+def _for_config_file(path: str, cwd: str, config_dirs: Sequence[str], notes: list[str]) -> str:
+    """Return a relative path of the old fields as the converted config writes it, and note the change."""
+    rewritten_as = f"path {path!r} (relative to the working directory) rewritten as"
+    if len(config_dirs) > 1:
+        # A relative path starts at the folder of the name the config is read by, so none is right for every name.
+        rewritten = _real_path(path, cwd)
+        folders = f"{', '.join(config_dirs[:-1])} and {config_dirs[-1]}"
+        note = (
+            f"{rewritten_as} {rewritten!r} (an absolute path: the converted config has names in {folders}, "
+            "and a relative path would start at a different folder for each name)"
+        )
+    else:
+        rewritten = os.path.relpath(_real_path(path, cwd), config_dirs[0])
+        if rewritten.lower() == "default":
+            # In systems_paths the bare word names the packaged data, not a folder next to the config file.
+            rewritten = os.path.join(os.curdir, rewritten)
+        note = f"{rewritten_as} {rewritten!r} (relative to the folder of the converted config, {config_dirs[0]})"
     # A config-wide path is copied into every entry; it is reported once.
     if rewritten != path and note not in notes:
         notes.append(note)
@@ -600,6 +608,7 @@ def migrate_mapping(
     *,
     config_dir: str | os.PathLike[str],
     cwd: str | os.PathLike[str],
+    other_config_dirs: Sequence[str | os.PathLike[str]] = (),
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     """Move the old estimator fields of a config into ``ais_perf_model``.
 
@@ -611,6 +620,13 @@ def migrate_mapping(
     from. The old fields start a relative path at ``cwd`` and the new key
     starts it at ``config_dir``, so relative paths are rewritten, and a note
     names the folder each rewritten path starts at.
+
+    ``other_config_dirs`` are the other folders in which that file has a
+    name, as a file that is written through a symbolic link in another
+    folder has. The new key starts a relative path at the folder of the name
+    the file is read by, so no relative path is right for every name. Each
+    relative path is then written as an absolute path, and its note says so.
+    A folder that is ``config_dir`` itself changes nothing.
 
     Returns ``(new_raw, moved_paths, notes)``. ``new_raw`` is a copy of the
     config with the old fields removed and ``ais_perf_model`` added;
@@ -659,13 +675,17 @@ def migrate_mapping(
         )
 
     # The config file's folder is read the way the config loaders read it: with symbolic links resolved.
-    config_dir = os.path.realpath(config_dir)
-    block = _rewrite_paths(block, name, cwd, config_dir, report.notes)
+    config_dirs = list(dict.fromkeys(os.path.realpath(folder) for folder in (config_dir, *other_config_dirs)))
+    block = _rewrite_paths(block, name, cwd, config_dirs, report.notes)
     try:
         new_raw = _converted(raw, layout, old_keys, block)
-        anchored = anchor_paths(new_raw, config_dir, kind)[layout.section]
-        after = _settings_by_worker_type(layout, anchored, worker_types)
+        # The converted config is read from every folder it has a name in, and each reading is compared.
+        readings = [
+            _settings_by_worker_type(layout, anchor_paths(new_raw, folder, kind)[layout.section], worker_types)
+            for folder in config_dirs
+        ]
     except ValueError as exc:
         raise MigrationCheckError(f"the converted config is not valid: {exc}") from exc
-    _check_same_settings(before, after, cwd)
+    for after in readings:
+        _check_same_settings(before, after, cwd)
     return new_raw, [old.path for old in old_keys], report.notes

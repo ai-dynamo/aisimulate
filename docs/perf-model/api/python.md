@@ -57,6 +57,130 @@ for reference coverage, detailed evidence and calibration limits. The raw
 keyword-only option with JSON-string `fpm_json` input; their detailed result
 is a JSON string, while the SDK returns a dictionary.
 
+<a id="ais-perf-model-loader"></a>
+
+## `ais_perf_model` loader
+
+`aisimulate_core.ais_perf_model` reads the
+[unified perf-model input](../configuration.md#unified-perf-model-input) and
+returns the mapping that `RustForwardPassPerfModel.best_available` takes. The
+module is pure Python and imports only the standard library when it is
+imported. It checks the shape of the value, paths, `from`, merging and fill.
+It does not know the perf-model fields, their values or their defaults: the
+constructor validates those when the model is built.
+
+```python
+from aisimulate_core.ais_perf_model import load, resolve
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+document = load("./perf-model.yaml")
+print(document.worker_types)
+
+entry = document.select("decode")
+config = resolve(entry, worker_type="decode", defaults={"estimation_mode": "op_level"})
+print(config)
+
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+With these two files in the working directory:
+
+```yaml
+# perf-model.yaml
+- worker_type: prefill
+  model: Qwen/Qwen3-32B
+  system: h200_sxm
+  backend: vllm
+- worker_type: decode
+  from: ./base.yaml
+  tp: 2
+```
+
+```yaml
+# base.yaml
+model: Qwen/Qwen3-32B
+system: h200_sxm
+backend: vllm
+tp: 1
+```
+
+the script prints the worker types and the decode config, and then builds
+the model:
+
+```text
+('prefill', 'decode')
+{'model': 'Qwen/Qwen3-32B', 'system': 'h200_sxm', 'backend': 'vllm', 'tp': 2, 'worker_type': 'decode', 'estimation_mode': 'op_level'}
+```
+
+The entry's `tp: 2` wins over the template's `tp: 1`. `defaults` adds
+`estimation_mode` because neither file writes it.
+
+The public names are the ones in `__all__`:
+
+```python
+def load(
+    value: str | os.PathLike[str] | Mapping[str, Any] | Sequence[Any],
+    *,
+    base_dir: str | os.PathLike[str] | None = None,
+) -> AisPerfModelDocument: ...
+
+def expand_template(entry: Mapping[str, Any]) -> dict[str, Any]: ...
+
+def resolve(
+    entry: Mapping[str, Any],
+    *,
+    worker_type: str | None = None,
+    fill: Mapping[str, Any] | None = None,
+    defaults: Mapping[str, Any] | None = None,
+    workspace: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]: ...
+
+def warn_deprecated(old: str | Sequence[str], new: str, *, stacklevel: int = 2) -> None: ...
+
+@dataclass(frozen=True)
+class AisPerfModelDocument:
+    entries: tuple[dict[str, Any], ...]
+    bare: bool
+    source: str | None = None
+
+    @property
+    def worker_types(self) -> tuple[str, ...]: ...
+    def select(self, worker_type: str) -> dict[str, Any]: ...
+    def to_data(self) -> dict[str, Any] | list[dict[str, Any]]: ...
+
+class AisPerfModelError(ValueError): ...
+class AisPerfModelDeprecationWarning(FutureWarning): ...
+
+WORKER_TYPES = ("prefill", "decode", "aggregated")
+ESTIMATOR_KEYS = (
+    "estimation_mode", "fallback_policy", "estimator_config", "systems_paths",
+    "database_mode", "transfer_policy", "fpm_profile",
+)
+DEPRECATION_PREFIX = "ais-perf-model: "
+```
+
+| Name | Contract |
+| --- | --- |
+| `load` | Loads a value. A string that starts with `{` or `[` is inline JSON. Any other string, and a path object, is a file: `.json` is read as JSON, any other file as YAML. A mapping or a list is parsed data. Relative paths inside a file start at the file's folder. For inline JSON and parsed data they start at `base_dir`, which defaults to the working directory; a relative file path starts there too. Symbolic links are treated as [Relative paths](../configuration.md#relative-paths) says, and a link at the end of `base_dir` is followed. A key written twice in a file or in inline JSON is an error. |
+| `AisPerfModelDocument` | A loaded value. `entries` holds the configs as written: relative paths are absolute and `null` keys are dropped, but `from` is not followed. `bare` is true when the value was one config and not a list. `source` is the file path, or `None` for inline JSON and parsed data. |
+| `AisPerfModelDocument.worker_types` | The worker types the document names, in document order. |
+| `AisPerfModelDocument.select` | A deep copy of the entry for `worker_type`. One config without `worker_type` serves every worker type and gets `worker_type` set in the copy. For a worker type the document does not have, the error lists the ones it has. |
+| `AisPerfModelDocument.to_data` | The value in the shape it was written, with absolute paths. |
+| `expand_template` | Merges the template file named by `from: <file>` into the entry. Keys of the entry win, `estimator_config` is merged mapping by mapping, and lists and scalars are replaced. The result has no `from`. An entry without `from`, or with a dataset or state snapshot `from`, is returned unchanged. |
+| `resolve` | Returns the mapping for `best_available`: no `from`, no `null` keys at the top level, and only absolute paths. Pass the entry as written, from `select`, not a mapping that is already resolved. `worker_type` is set when the entry leaves it out and must match when the entry writes it. `fill` holds values the caller knows: a missing key is added, and a written key must be equal. `defaults` only add what is still missing. A dataset or a state snapshot is fixed: the result is its saved `config.json`, written keys and `fill` are only compared, and `defaults` are ignored. A dataset entry needs `workspace`, the folder in which the dataset is prepared once and reused after that. |
+| `AisPerfModelError` | The value is wrong. The message says what to fix. `load`, `select`, `expand_template` and `resolve` raise it. |
+| `warn_deprecated` | Emits one `AisPerfModelDeprecationWarning` that names the old field, or every old field of a sequence, and the replacement `new`. No other code emits this category. `stacklevel` counts as it does for `warnings.warn` called in place of this function. |
+| `AisPerfModelDeprecationWarning` | The category of the warning for an old perf-model field. Callers can filter on it. |
+| `WORKER_TYPES` | The worker types an entry can name. |
+| `ESTIMATOR_KEYS` | The keys of an entry that set the estimator. |
+| `DEPRECATION_PREFIX` | The text that every deprecation warning starts with. |
+
+`fill` and `defaults` match keys by their exact spelling, so use the
+perf-model field names, such as `tp`. A `null` inside `estimator_config` is a
+value: it is kept and compared, and it stops `defaults` from filling that key.
+The rules for entries, `from` and paths are in
+[Unified perf-model input](../configuration.md#unified-perf-model-input).
+
 ## Stable Python facade
 
 New Python code should import from the small facade:

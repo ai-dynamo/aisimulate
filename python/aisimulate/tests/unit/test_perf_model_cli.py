@@ -8,14 +8,16 @@ console script runs, and read what the command prints and what it leaves on
 disk. ``aisimulate.main.main`` has a second copy of the ``perf-model`` branch;
 a few tests run it once for each exit code. ``check`` builds real performance
 models from the data shipped with the package. ``fetch`` runs against a
-replaced profile store or a manifest written for the test, so nothing is
-downloaded.
+replaced profile store, a manifest written for the test or a profile whose
+files are served from memory, so nothing is downloaded.
 """
 
 from __future__ import annotations
 
 import datetime
 import errno
+import hashlib
+import io
 import json
 import os
 import stat
@@ -34,7 +36,7 @@ import aisimulate.main as cli
 from aisimulate import supervision
 from aisimulate.config import CorePredictionConfig
 from aisimulate.config import ais_perf_model_migrate as migrate_module
-from aisimulate_core.ais_perf_model import AisPerfModelDeprecationWarning
+from aisimulate_core.ais_perf_model import AisPerfModelDeprecationWarning, load
 from aisimulate_core.sdk import fpm_dataset
 
 from .sdk.test_dataset_contracts import dataset  # noqa: F401
@@ -172,6 +174,8 @@ def test_migrate_help_says_what_to_know_before_converting_a_file(capsys):
     assert "Without --output the plan is printed and nothing is written." in text
     assert "run this command from the directory the config is run from" in text
     assert "A relative path is rewritten to start at the folder of FILE, or of CONFIG without --output." in text
+    assert "is a symbolic link to a file in another folder, or CONFIG is such a link to FILE, a relative path" in text
+    assert "is written as an absolute path" in text
     assert "as JSON when FILE ends with .json, as YAML otherwise" in text
     assert "another file that exists is replaced only with --overwrite" in text
     assert "Comments and formatting of the original file are not kept." in text
@@ -1090,6 +1094,127 @@ def test_migrate_rewrites_a_relative_path_for_the_folder_of_the_output_file(tmp_
     assert converted.model_dump(mode="json") == original.model_dump(mode="json")
 
 
+def _run_folder_with_a_linked_config(tmp_path: Path) -> Path:
+    """A folder to run from: ``data``, a config in ``configs`` whose old field names ``data``, and links to files there.
+
+    ``link.yaml`` names the config. ``new.yaml`` names ``converted/new.yaml``, a file that does not exist yet.
+    """
+    run_folder = tmp_path / "run"
+    (run_folder / "data").mkdir(parents=True)
+    (run_folder / "converted").mkdir()
+    _write(run_folder / "configs" / "predict.yaml", _predict(systems_paths=["data"]))
+    (run_folder / "link.yaml").symlink_to(Path("configs", "predict.yaml"))
+    (run_folder / "new.yaml").symlink_to(Path("converted", "new.yaml"))
+    return run_folder
+
+
+@pytest.mark.parametrize(
+    ("config", "output", "link", "written"),
+    [
+        ("configs/predict.yaml", "link.yaml", "link.yaml", "configs/predict.yaml"),
+        ("link.yaml", "link.yaml", "link.yaml", "configs/predict.yaml"),
+        ("link.yaml", "configs/predict.yaml", "link.yaml", "configs/predict.yaml"),
+        ("configs/predict.yaml", "new.yaml", "new.yaml", "converted/new.yaml"),
+    ],
+    ids=[
+        "the file to its link",
+        "the link in place",
+        "the link to its file",
+        "a link to a file that does not exist yet",
+    ],
+)
+def test_migrate_through_a_link_in_another_folder_reads_the_same_folder_by_both_names(
+    config, output, link, written, tmp_path, monkeypatch, capsys
+):
+    run_folder = _run_folder_with_a_linked_config(tmp_path)
+    data = [str(run_folder / "data")]
+    monkeypatch.chdir(run_folder)
+    with pytest.warns(AisPerfModelDeprecationWarning):
+        originals = [CorePredictionConfig.from_yaml(name) for name in ("configs/predict.yaml", "link.yaml")]
+    assert [original.engine.systems_paths for original in originals] == [data, data]
+
+    assert _run("migrate", config, "--output", output) == 0
+    capsys.readouterr()
+
+    link, file = run_folder / link, run_folder / written
+    assert link.is_symlink()
+    assert not file.is_symlink()
+    # A relative path would start at the folder of the name the file is read by, so the path is written in full.
+    assert yaml.safe_load(file.read_text(encoding="utf-8"))["engine"]["ais_perf_model"] == {"systems_paths": data}
+    # Read by either name, from any working directory, the file names the folder the old field named.
+    monkeypatch.chdir(tmp_path)
+    for name in (link, file):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            converted = CorePredictionConfig.from_yaml(name)
+        assert converted.engine.systems_paths == data
+        assert converted.model_dump(mode="json") == originals[0].model_dump(mode="json")
+
+
+def test_migrate_through_a_link_in_another_folder_says_why_the_path_is_absolute(tmp_path, monkeypatch, capsys):
+    run_folder = _run_folder_with_a_linked_config(tmp_path)
+    data = str(run_folder / "data")
+    monkeypatch.chdir(run_folder)
+
+    # Without --output the plan is the one for the config itself, here the link.
+    assert _run("migrate", "link.yaml", "--format", "json") == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["ais_perf_model"] == {"systems_paths": [data]}
+    [note] = report["notes"]
+    assert f"path 'data' (relative to the working directory) rewritten as {data!r} (an absolute path: " in note
+    assert f"has names in {run_folder} and {run_folder / 'configs'}" in note
+    assert _run("migrate", "link.yaml") == 0
+    assert f"  {note}" in capsys.readouterr().out.splitlines()
+    # The command is given one name of the file here, so the plan keeps a relative path.
+    assert _run("migrate", "configs/predict.yaml", "--format", "json") == 0
+    assert json.loads(capsys.readouterr().out)["ais_perf_model"] == {"systems_paths": ["../data"]}
+
+
+def test_migrate_through_a_link_in_the_folder_of_its_file_keeps_relative_paths(tmp_path, monkeypatch, capsys):
+    run_folder = _run_folder_with_a_linked_config(tmp_path)
+    config = run_folder / "configs" / "predict.yaml"
+    link = run_folder / "configs" / "current.yaml"
+    link.symlink_to("predict.yaml")
+    monkeypatch.chdir(run_folder)
+
+    assert _run("migrate", "configs/predict.yaml", "--output", "configs/current.yaml") == 0
+    capsys.readouterr()
+
+    assert link.is_symlink()
+    assert not config.is_symlink()
+    written = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert written["engine"]["ais_perf_model"] == {"systems_paths": ["../data"]}
+    monkeypatch.chdir(tmp_path)
+    for name in (config, link):
+        assert CorePredictionConfig.from_yaml(name).engine.systems_paths == [str(run_folder / "data")]
+
+
+def test_migrate_through_links_counts_the_folder_of_a_link_between_the_first_link_and_the_file(
+    tmp_path, monkeypatch, capsys
+):
+    run_folder = tmp_path / "run"
+    (run_folder / "data").mkdir(parents=True)
+    config = _write(run_folder / "predict.yaml", _predict(systems_paths=["data"]))
+    # The first link and the file are in one folder; the link between them is in another.
+    between = tmp_path / "shared" / "predict.yaml"
+    between.parent.mkdir()
+    between.symlink_to(config)
+    first = run_folder / "link.yaml"
+    first.symlink_to(between)
+    monkeypatch.chdir(run_folder)
+
+    assert _run("migrate", "predict.yaml", "--output", "link.yaml") == 0
+    capsys.readouterr()
+
+    assert first.is_symlink()
+    assert between.is_symlink()
+    assert not config.is_symlink()
+    monkeypatch.chdir(tmp_path)
+    for name in (config, between, first):
+        assert CorePredictionConfig.from_yaml(name).engine.systems_paths == [str(run_folder / "data")]
+
+
 def test_migrate_of_a_config_that_cannot_be_read_is_a_usage_error(tmp_path, capsys):
     assert _run("migrate", tmp_path / "missing.yaml") == 2
     assert "could not read configuration" in capsys.readouterr().err
@@ -1236,6 +1361,90 @@ def test_fetch_passes_the_cache_folder_and_the_download_options_on(profile_store
     }
     options = {"cache_dir": str(cache), "local_files_only": True, "allow_unqualified": True}
     assert profile_store["fetched"] == [("example-manifest", "h200-tp2", options)]
+
+
+@pytest.fixture
+def published_profile(tmp_path, monkeypatch):
+    """A manifest file with one profile; the files of the profile are served from memory in place of the download."""
+    bodies = {
+        "system.yaml": b"data_dir: data\n",
+        "data/fpm_forward_perf.parquet": b"the bytes of a table",
+        "data/fpm_forward_perf.metadata.json": b'{"schema_version": 7}',
+    }
+    files = [
+        {"path": name, "target": name, "sha256": hashlib.sha256(body).hexdigest()} for name, body in bodies.items()
+    ]
+    profiles = {"admitted": {"admission": "serving", "files": files}}
+    manifest = {"format_version": 1, "repo_id": "example/fpm", "revision": "a" * 40, "profiles": profiles}
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def served(request, **options):
+        return io.BytesIO(bodies[request.full_url.partition(f"/resolve/{manifest['revision']}/")[2]])
+
+    monkeypatch.setattr(fpm_dataset, "urlopen", served)
+    # Without this the profile store adds the access token of the user to the request.
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("options", "environment", "cache"),
+    [(["--cache-dir", "cache"], {}, "cache"), ([], {"XDG_CACHE_HOME": "xdg"}, "xdg/aisimulate/fpm")],
+    ids=["--cache-dir", "XDG_CACHE_HOME"],
+)
+def test_fetch_with_a_relative_cache_folder_prints_an_absolute_folder(
+    options, environment, cache, published_profile, tmp_path, monkeypatch, capsys
+):
+    run_folder = tmp_path / "run"
+    run_folder.mkdir()
+    monkeypatch.chdir(run_folder)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    # The first command stores the profile and the second finds it in the cache. The profile store
+    # returns a folder that starts at the cache folder as it was given, so a relative one both times.
+    assert _run("fetch", published_profile, "admitted", *options) == 0
+    table = capsys.readouterr().out.splitlines()
+    assert _run("fetch", published_profile, "admitted", *options, "--local-files-only", "--format", "json") == 0
+    report = json.loads(capsys.readouterr().out)
+
+    [stored] = (run_folder / cache).iterdir()
+    assert (stored / "data" / "fpm_forward_perf.parquet").is_file()
+    assert report == {
+        "manifest": str(published_profile),
+        "profile": "admitted",
+        "path": str(stored),
+        "systems_paths": [str(stored)],
+    }
+    assert table == [
+        f"profile admitted is at {stored}",
+        "Name the folder in the ais_perf_model entry that uses the profile:",
+        f'  systems_paths: ["{stored}"]',
+    ]
+    # The printed line names the folder of the profile from an entry file in any folder.
+    entry = _write(tmp_path / "configs" / "perf-model.yaml", {"systems_paths": report["systems_paths"]})
+    monkeypatch.chdir(tmp_path)
+    assert load(entry).entries[0]["systems_paths"] == [str(stored)]
+
+
+def test_fetch_with_a_cache_folder_that_goes_up_from_a_linked_folder_prints_the_folder_the_system_reaches(
+    published_profile, tmp_path, monkeypatch, capsys
+):
+    run_folder = tmp_path / "run"
+    (run_folder / "elsewhere" / "deep").mkdir(parents=True)
+    (run_folder / "link").symlink_to(Path("elsewhere", "deep"), target_is_directory=True)
+    monkeypatch.chdir(run_folder)
+    assert _run("fetch", published_profile, "admitted", "--cache-dir", "elsewhere/cache") == 0
+    capsys.readouterr()
+    [stored] = (run_folder / "elsewhere" / "cache").iterdir()
+    # From the linked folder, ".." is the parent of the folder the link names. Dropped as text,
+    # "link/.." would leave "cache" in the working directory, which is not where the profile is.
+    again = ["--cache-dir", "link/../cache", "--local-files-only", "--format", "json"]
+
+    assert _run("fetch", published_profile, "admitted", *again) == 0
+
+    assert json.loads(capsys.readouterr().out)["systems_paths"] == [str(stored)]
 
 
 def test_fetch_of_a_profile_the_manifest_does_not_have_is_a_usage_error(profile_store, capsys):

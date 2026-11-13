@@ -78,6 +78,9 @@ _MAX_DEPTH = 64
 # A config holds far fewer values. The limit stops YAML aliases that expand to millions of copies.
 _MAX_VALUES = 1_000_000
 _BOM = "\ufeff"
+# No system takes a longer path. Longer text (inline JSON with a mistake, YAML given as the value)
+# is not a path, and following its folders one by one costs the square of its length.
+_LONGEST_PATH = 32_768
 
 
 class AisPerfModelError(ValueError):
@@ -170,6 +173,13 @@ def load(
     start at ``base_dir``, which defaults to the current directory. A relative
     file path also starts at ``base_dir``. A UTF-8 byte order mark at the
     start of a file or of inline JSON is ignored.
+
+    Symbolic links in the folders of a path are followed before ``..`` is
+    applied, as the system does when it opens the path. A file reached through
+    a linked folder therefore starts its relative paths at the real folder.
+    The last name of a path is kept as written, so a file that is itself a
+    link starts its relative paths at the folder of the link. ``base_dir`` is
+    a folder: a link at its end is followed too.
     """
     base = _directory(base_dir)
     if isinstance(value, str):
@@ -285,14 +295,42 @@ def resolve(
 # --- Reading and parsing ---------------------------------------------------------------------
 
 
+def _real(path: str) -> str:
+    """Make ``path`` absolute and follow its links the way the system does when it opens the path."""
+    plain = os.path.abspath(path)
+    if len(path) > _LONGEST_PATH:
+        return plain
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError, RecursionError):
+        # The system cannot take the path (a NUL character, text that cannot be encoded) or
+        # its links cannot be followed. Reading the path reports that.
+        return plain
+    # realpath drops one of two leading slashes. A path without a link stays as abspath writes it.
+    return plain if real.lstrip(os.sep) == plain.lstrip(os.sep) else real
+
+
 def _directory(value: str | os.PathLike[str] | None) -> str:
     if value is None:
         return os.getcwd()
-    return os.path.abspath(os.path.expanduser(os.fsdecode(value)))
+    return _real(os.path.expanduser(os.fsdecode(value)))
 
 
 def _absolute(path: str, base: str) -> str:
-    return os.path.abspath(os.path.join(base, os.path.expanduser(path)))
+    """Join ``path`` to ``base``. Links in its folders are followed; its last name stays as written.
+
+    So ``link/..`` is the parent of the folder the link names, as it is for the
+    system, and a file that is a link keeps the folder of the link.
+    """
+    joined = os.path.join(base, os.path.expanduser(path))
+    folder, name = os.path.split(joined)
+    while name in ("", os.curdir) and folder != joined:
+        # The path ends with a separator or ".": its last name is the one before.
+        joined = folder
+        folder, name = os.path.split(joined)
+    if name in ("", os.curdir, os.pardir):
+        return _real(joined)
+    return os.path.join(_real(folder), name)
 
 
 def _read_text(path: str) -> str:

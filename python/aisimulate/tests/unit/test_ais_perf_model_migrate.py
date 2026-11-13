@@ -103,8 +103,10 @@ def _space(mode: str, **fields: Any) -> dict[str, Any]:
     return {"search_space": space, "workload": WORKLOAD}
 
 
-def _migrate(raw: dict[str, Any], kind: str = "predict", *, config_dir: Any = os.curdir, cwd: Any = os.curdir):
-    return migrate_mapping(raw, kind, config_dir=config_dir, cwd=cwd)
+def _migrate(
+    raw: dict[str, Any], kind: str = "predict", *, config_dir: Any = os.curdir, cwd: Any = os.curdir, **options: Any
+):
+    return migrate_mapping(raw, kind, config_dir=config_dir, cwd=cwd, **options)
 
 
 def _validated(kind: str, raw: dict[str, Any], folder: Any = os.curdir) -> Any:
@@ -131,6 +133,16 @@ def _rewrite_note(old: str, new: str, folder: Any) -> str:
     return (
         f"path {old!r} (relative to the working directory) rewritten as {new!r} "
         f"(relative to the folder of the converted config, {os.path.realpath(folder)})"
+    )
+
+
+def _absolute_note(old: str, new: str, *folders: Any) -> str:
+    """The note for a relative path that was written in full for a config file with a name in each of ``folders``."""
+    *first, last = (os.path.realpath(folder) for folder in folders)
+    return (
+        f"path {old!r} (relative to the working directory) rewritten as {new!r} "
+        f"(an absolute path: the converted config has names in {', '.join(first)} and {last}, "
+        "and a relative path would start at a different folder for each name)"
     )
 
 
@@ -639,6 +651,129 @@ def test_rewrite_note_names_the_folder_that_really_holds_the_converted_config(tm
     assert notes == [_rewrite_note("data", FROM_REAL_FOLDER, real)]
 
 
+# --- A config file with a name in several folders ---------------------------------------------
+
+
+def _folders_of_a_linked_config(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A working directory with ``data``, the folder of a config file and the folder of a link to that file."""
+    cwd, folder, linked_from = tmp_path / "run", tmp_path / "configs", tmp_path / "links"
+    (cwd / "data" / "systems").mkdir(parents=True)
+    folder.mkdir()
+    linked_from.mkdir()
+    return cwd, folder, linked_from
+
+
+def test_relative_path_is_written_in_full_for_a_config_file_with_a_name_in_another_folder(tmp_path):
+    cwd, folder, linked_from = _folders_of_a_linked_config(tmp_path)
+    paths = ["data/systems", "default", str(tmp_path / "absolute"), "~/systems"]
+    raw = _config("predict", _engine("aggregated", systems_paths=paths))
+
+    converted, _, notes = _migrate(raw, config_dir=linked_from, cwd=cwd, other_config_dirs=[folder])
+
+    absolute = str(cwd / "data" / "systems")
+    # An absolute path, a home path and the word for the packaged data mean the same from any folder.
+    assert converted["engine"]["ais_perf_model"] == {"systems_paths": [absolute, *paths[1:]]}
+    assert notes == [_absolute_note("data/systems", absolute, linked_from, folder)]
+    # Read by either name, the config names the folder the old field named.
+    for read_from in (linked_from, folder):
+        assert _validated("predict", converted, read_from).engine.systems_paths[0] == absolute
+
+
+def test_relative_path_that_is_right_from_one_folder_of_the_config_is_written_in_full_too(tmp_path):
+    cwd, folder, _ = _folders_of_a_linked_config(tmp_path)
+    raw = _config("predict", _engine("aggregated", systems_paths=["data/systems"]))
+
+    # One name of the config is in the folder the config is run from, where the path as written is right.
+    converted, _, notes = _migrate(raw, config_dir=cwd, cwd=cwd, other_config_dirs=[folder])
+
+    absolute = str(cwd / "data" / "systems")
+    assert converted["engine"]["ais_perf_model"] == {"systems_paths": [absolute]}
+    assert notes == [_absolute_note("data/systems", absolute, cwd, folder)]
+
+
+def test_path_that_goes_up_from_a_linked_folder_is_written_in_full_as_the_system_reaches_it(tmp_path, monkeypatch):
+    cwd, folder, linked_from = _folders_of_a_linked_config(tmp_path)
+    (cwd / "elsewhere" / "deep").mkdir(parents=True)
+    (cwd / "elsewhere" / "data").mkdir()
+    (cwd / "link").symlink_to(cwd / "elsewhere" / "deep", target_is_directory=True)
+    # From the linked folder, ".." is the parent of the folder the link names, so this is elsewhere/data.
+    raw = _config("predict", _engine("aggregated", systems_paths=["link/../data"]))
+
+    converted, _, _ = _migrate(raw, config_dir=folder, cwd=cwd, other_config_dirs=[linked_from])
+
+    absolute = str(cwd / "elsewhere" / "data")
+    assert converted["engine"]["ais_perf_model"] == {"systems_paths": [absolute]}
+    monkeypatch.chdir(cwd)
+    assert _validated("predict", raw).engine.systems_paths == [absolute]
+
+
+def test_note_for_a_path_written_in_full_names_every_folder_the_config_has_a_name_in(tmp_path):
+    cwd, folder, linked_from = _folders_of_a_linked_config(tmp_path)
+    raw = _config("predict", _engine("aggregated", systems_paths=["data/systems"]))
+
+    _, _, notes = _migrate(raw, config_dir=linked_from, cwd=cwd, other_config_dirs=[folder, cwd, folder])
+
+    assert notes == [_absolute_note("data/systems", str(cwd / "data" / "systems"), linked_from, folder, cwd)]
+
+
+@pytest.mark.parametrize("spelling", ["the-folder-itself", "a-link-to-the-folder"])
+def test_other_name_in_the_folder_of_the_config_keeps_the_relative_path(spelling, tmp_path):
+    cwd, folder, linked_from = _folders_of_a_linked_config(tmp_path)
+    other = folder
+    if spelling == "a-link-to-the-folder":
+        other = linked_from / "configs"
+        other.symlink_to(folder, target_is_directory=True)
+    raw = _config("predict", _engine("aggregated", systems_paths=["data/systems"]))
+
+    converted, _, notes = _migrate(raw, config_dir=folder, cwd=cwd, other_config_dirs=[other])
+
+    rewritten = os.path.join(os.pardir, "run", "data", "systems")
+    assert converted["engine"]["ais_perf_model"] == {"systems_paths": [rewritten]}
+    assert notes == [_rewrite_note("data/systems", rewritten, folder)]
+
+
+def test_path_inside_estimator_config_is_written_in_full_and_reported_once(tmp_path):
+    cwd, folder, linked_from = _folders_of_a_linked_config(tmp_path)
+    estimator_config = {"fpm_interpolation": {"fpm_parquet_path": "data/fpm.parquet"}}
+    timing = {"decode": {"database_mode": "HYBRID"}}
+    raw = _config("predict", _engine("disaggregated", timing=timing, estimator_config=estimator_config))
+
+    converted, _, notes = _migrate(raw, config_dir=folder, cwd=cwd, other_config_dirs=[linked_from])
+
+    absolute = str(cwd / "data" / "fpm.parquet")
+    entries = converted["engine"]["ais_perf_model"]
+    assert [entry["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] for entry in entries] == [absolute] * 2
+    assert notes == [_absolute_note("data/fpm.parquet", absolute, folder, linked_from)]
+    for read_from in (folder, linked_from):
+        read_back = _validated("predict", converted, read_from).engine.estimator_config
+        assert read_back["fpm_interpolation"]["fpm_parquet_path"] == absolute
+
+
+def test_legacy_systems_path_named_default_is_written_in_full_as_the_directory(tmp_path, monkeypatch):
+    cwd, folder, _ = _folders_of_a_linked_config(tmp_path)
+    (cwd / "default").mkdir()
+    raw = _config("predict", _engine("aggregated", systems_path="default"))
+
+    converted, _, _ = _migrate(raw, config_dir=cwd, cwd=cwd, other_config_dirs=[folder])
+
+    assert converted["engine"]["ais_perf_model"] == {"systems_paths": [str(cwd / "default")]}
+    monkeypatch.chdir(cwd)
+    before = _validated("predict", raw).engine.systems_paths
+    for read_from in (cwd, folder):
+        assert _validated("predict", converted, read_from).engine.systems_paths == before
+
+
+def test_search_relative_path_is_written_in_full_for_a_config_file_with_a_name_in_another_folder(tmp_path):
+    cwd, folder, linked_from = _folders_of_a_linked_config(tmp_path)
+    raw = _space("agg", systems_paths=["data/systems"])
+
+    converted, _, notes = _migrate(raw, "search", config_dir=linked_from, cwd=cwd, other_config_dirs=[folder])
+
+    absolute = str(cwd / "data" / "systems")
+    assert converted["search_space"]["ais_perf_model"] == {"systems_paths": [absolute]}
+    assert notes == [_absolute_note("data/systems", absolute, linked_from, folder)]
+
+
 # --- Configs that cannot be converted ---------------------------------------------------------
 
 
@@ -1055,6 +1190,22 @@ def test_command_line_writes_nothing_when_the_converted_config_means_something_e
     assert "cannot convert" not in captured.out
     assert list(tmp_path.iterdir()) == [config]
     assert config.read_bytes() == before
+
+
+def test_converted_config_is_read_from_every_folder_it_has_a_name_in(tmp_path, monkeypatch):
+    cwd, folder, _ = _folders_of_a_linked_config(tmp_path)
+    # A path that stays as written is right from the working directory and wrong from any other folder.
+    monkeypatch.setattr(migrate_module, "_rewrite_paths", lambda block, *args: block)
+    raw = _config("predict", _engine("aggregated", systems_paths=["data/systems"]))
+    assert _migrate(raw, config_dir=cwd, cwd=cwd)[0]["engine"]["ais_perf_model"] == {"systems_paths": ["data/systems"]}
+
+    with pytest.raises(MigrationCheckError) as failure:
+        _migrate(raw, config_dir=cwd, cwd=cwd, other_config_dirs=[folder])
+
+    assert str(failure.value) == (
+        f'the converted config gives the aggregated worker systems_paths=["{folder}/data/systems"], '
+        f'but the original config gives ["{cwd}/data/systems"]'
+    )
 
 
 def test_unknown_kind_and_missing_section_name_what_is_expected():

@@ -27,7 +27,7 @@ from urllib.request import Request, urlopen
 import yaml
 
 from aisimulate.config import CorePredictionConfig
-from aisimulate.config.ais_perf_model import anchor_paths, lower_engine
+from aisimulate.config.ais_perf_model import anchor_paths, lower_engine, reject_repeated_keys
 from aisimulate.config.cli import config_folder
 
 AIPERF_REVISION = "7db2ba37a62aa80c882bc90eaf61cc8073e2387b"
@@ -162,8 +162,12 @@ def _read_prediction_config(path: Path) -> dict[str, Any]:
     Those paths start at the folder of the config file. The matched workload
     saves a copy of the config in another folder, where a relative path would
     name a different file. A config without the key is returned as it was read.
+    A key written twice inside ``engine.ais_perf_model`` is an error.
     """
-    return anchor_paths(yaml.safe_load(path.read_text(encoding="utf-8")), config_folder(path), "predict")
+    text = path.read_text(encoding="utf-8")
+    raw = yaml.safe_load(text)
+    reject_repeated_keys(text, "predict", path)
+    return anchor_paths(raw, config_folder(path), "predict")
 
 
 def _replayed_estimator(prediction: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Any, Any]:
@@ -174,6 +178,12 @@ def _replayed_estimator(prediction: dict[str, Any]) -> tuple[dict[str, Any], dic
     ``engine.ais_perf_model``. Replay rewrites that key into the engine and
     worker fields and then uses the worker's value when it has one, so the
     same is done here. A config without the key keeps its engine mapping.
+
+    Replay also reads the file that the worker's old ``timing.fpm_parquet_path``
+    names as ``estimator_config.fpm_interpolation.fpm_parquet_path``. The
+    returned estimator config names that file too, in a copy, so the mappings
+    of ``prediction`` stay as written. An estimator config that already has
+    another value there is the error replay raises.
     """
     engine = lower_engine(prediction["engine"], "predict")
     worker = engine["workers"]["aggregated"]
@@ -182,6 +192,15 @@ def _replayed_estimator(prediction: dict[str, Any]) -> tuple[dict[str, Any], dic
     estimator_config = (
         timing["estimator_config"] if timing.get("estimator_config") is not None else engine.get("estimator_config")
     )
+    parquet_path = timing.get("fpm_parquet_path")
+    if parquet_path is not None:
+        interpolation = (estimator_config or {}).get("fpm_interpolation") or {}
+        if interpolation.get("fpm_parquet_path", parquet_path) != parquet_path:
+            raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+        estimator_config = {
+            **(estimator_config or {}),
+            "fpm_interpolation": {**interpolation, "fpm_parquet_path": parquet_path},
+        }
     return engine, worker, systems_paths, estimator_config
 
 
@@ -496,6 +515,8 @@ def prepare_serving_validation(
         timing_paths.update((Path(external).resolve(), Path(external).with_suffix(".metadata.json").resolve()))
     if not timing_paths:
         issues.append("the prediction's collected FPM timing artifacts could not be located")
+    # A timing file that is missing stops here, before the output folder exists.
+    timing_artifacts = [_identity(path) for path in sorted(timing_paths)]
     output.mkdir(parents=True, exist_ok=False)
     observer_dir = output / "observer"
     observer_dir.mkdir()
@@ -524,7 +545,7 @@ def prepare_serving_validation(
         "endpoint": endpoint,
         "tokenizer": str(tokenizer),
         "tokenizer_files": tokenizer_files,
-        "timing_artifacts": [_identity(path) for path in sorted(timing_paths)],
+        "timing_artifacts": timing_artifacts,
         "expected_execution": expected_execution,
         "policy": {
             "latency_p95_relative_error": _threshold(latency_p95_error, "latency_p95_error"),

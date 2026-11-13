@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +19,10 @@ import pytest
 import yaml
 
 from aisimulate import main as cli
+from aisimulate.compiler import prediction_to_replay_spec
+from aisimulate.config import CorePredictionConfig
 from aisimulate.support import serving_validation as serving
+from aisimulate_core.ais_perf_model import AisPerfModelError
 
 from .test_support_validation import validation_case as _replay_validation_case  # noqa: F401
 
@@ -108,6 +113,206 @@ def test_serving_scope_reads_estimator_settings_from_the_worker_or_the_engine(
             serving._scope(prediction, trace)
         return
     assert serving._scope(prediction, trace)["qualification"] == "one_complete_single_stream_weka_play"
+
+
+OLD_PATH = "/data/collected.parquet"
+ANOTHER_PATH = "/data/another.parquet"
+OLD_PATH_ONLY = {"forward_model": "fpm", "fpm_parquet_path": OLD_PATH}
+
+
+def _strict_direct_fpm_naming(path):
+    """Strict direct-FPM settings whose ``estimator_config`` names a parquet file."""
+    return {
+        **STRICT_DIRECT_FPM,
+        "estimator_config": {"fpm_interpolation": {"method": "direct", "fpm_parquet_path": path}},
+    }
+
+
+def _qualified_prediction(tmp_path, engine_fields, timing):
+    """Return a config mapping that serving validation accepts, and its trace."""
+    trace = tmp_path / "trace.json"
+    trace.write_text("{}\n")
+    prediction = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            **copy.deepcopy(engine_fields),
+            "workers": {"aggregated": {"timing": copy.deepcopy(timing)}},
+        },
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        },
+    }
+    assert serving._scope(prediction, trace)["qualification"] == "one_complete_single_stream_weka_play"
+    return prediction, trace
+
+
+def _estimator_config_replay_compiles(prediction):
+    compiled = prediction_to_replay_spec(CorePredictionConfig.model_validate(copy.deepcopy(prediction)))
+    return compiled.backend_deployment.agg_engine_args["timing_model"]["config"]["estimator_config"]
+
+
+def _prepare_without_a_replay(tmp_path, config, trace):
+    tokenizer = tmp_path / "tokenizer"
+    tokenizer.mkdir()
+    (tokenizer / "tokenizer.json").write_text("{}")
+    return serving.prepare_serving_validation(
+        trace=trace,
+        prediction_config=config,
+        output=tmp_path / "serving",
+        endpoint="http://127.0.0.1:8000",
+        tokenizer=tokenizer,
+        expected_execution={},
+    )
+
+
+@pytest.mark.parametrize(
+    ("engine_fields", "timing", "path"),
+    [
+        pytest.param({}, {**STRICT_DIRECT_FPM, "fpm_parquet_path": OLD_PATH}, OLD_PATH, id="estimator on the worker"),
+        pytest.param(STRICT_DIRECT_FPM, OLD_PATH_ONLY, OLD_PATH, id="estimator on the engine"),
+        pytest.param(
+            {},
+            {**_strict_direct_fpm_naming(OLD_PATH), "fpm_parquet_path": OLD_PATH},
+            OLD_PATH,
+            id="the worker's estimator_config names the same file",
+        ),
+        pytest.param(
+            _strict_direct_fpm_naming(OLD_PATH),
+            OLD_PATH_ONLY,
+            OLD_PATH,
+            id="the engine's estimator_config names the same file",
+        ),
+        pytest.param(
+            _strict_direct_fpm_naming(ANOTHER_PATH),
+            {**STRICT_DIRECT_FPM, "fpm_parquet_path": OLD_PATH},
+            OLD_PATH,
+            id="the worker's estimator_config replaces one of the engine that names another file",
+        ),
+        pytest.param(
+            {},
+            {**STRICT_DIRECT_FPM, "fpm_parquet_path": "data/collected.parquet"},
+            "data/collected.parquet",
+            id="relative path",
+        ),
+        pytest.param(
+            {},
+            {
+                "estimation_mode": "fpm_interpolation",
+                "fallback_policy": "deny",
+                "estimator_config": {
+                    "fpm_interpolation": {"method": "direct", "collect_coverage": True},
+                    "correction": {"enabled": False},
+                },
+                "fpm_parquet_path": OLD_PATH,
+            },
+            OLD_PATH,
+            id="next to other estimator settings",
+        ),
+    ],
+)
+def test_estimator_config_names_the_file_of_the_old_fpm_parquet_path_as_replay_does(
+    tmp_path, engine_fields, timing, path
+):
+    prediction, _ = _qualified_prediction(tmp_path, engine_fields, timing)
+    as_written = copy.deepcopy(prediction)
+    *_, estimator_config = serving._replayed_estimator(prediction)
+    assert estimator_config["fpm_interpolation"]["fpm_parquet_path"] == path
+    assert estimator_config == _estimator_config_replay_compiles(prediction)
+    # The matched workload saves this mapping as its config, so it stays as written.
+    assert prediction == as_written
+
+
+@pytest.mark.parametrize(
+    ("engine_fields", "timing"),
+    [
+        pytest.param(
+            {},
+            {**_strict_direct_fpm_naming(ANOTHER_PATH), "fpm_parquet_path": OLD_PATH},
+            id="another file in the worker's estimator_config",
+        ),
+        pytest.param(
+            _strict_direct_fpm_naming(ANOTHER_PATH),
+            OLD_PATH_ONLY,
+            id="another file in the engine's estimator_config",
+        ),
+        pytest.param(
+            {},
+            {**_strict_direct_fpm_naming(None), "fpm_parquet_path": OLD_PATH},
+            id="null in the worker's estimator_config",
+        ),
+    ],
+)
+def test_old_fpm_parquet_path_that_conflicts_with_estimator_config_is_the_error_replay_raises(
+    tmp_path, engine_fields, timing
+):
+    prediction, trace = _qualified_prediction(tmp_path, engine_fields, timing)
+    with pytest.raises(ValueError) as from_replay:
+        _estimator_config_replay_compiles(prediction)
+    with pytest.raises(ValueError) as from_serving_validation:
+        serving._replayed_estimator(prediction)
+    assert type(from_serving_validation.value) is type(from_replay.value)
+    assert str(from_serving_validation.value) == str(from_replay.value)
+    assert (
+        str(from_replay.value) == "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path"
+    )
+
+    config = tmp_path / "predict.yaml"
+    config.write_text(yaml.safe_dump(prediction))
+    with pytest.raises(ValueError, match="^conflicting fpm_parquet_path and estimator_config"):
+        _prepare_without_a_replay(tmp_path, config, trace)
+    assert not (tmp_path / "serving").exists()
+
+
+@pytest.mark.parametrize("spelling", ["old fpm_parquet_path on the worker timing", "path in estimator_config"])
+def test_parquet_file_without_its_metadata_file_stops_preparation_for_either_spelling_of_the_path(tmp_path, spelling):
+    parquet = tmp_path / "forward.parquet"
+    parquet.write_bytes(b"PAR1")
+    timing = (
+        _strict_direct_fpm_naming(str(parquet))
+        if spelling == "path in estimator_config"
+        else {**STRICT_DIRECT_FPM, "fpm_parquet_path": str(parquet)}
+    )
+    prediction, trace = _qualified_prediction(tmp_path, {}, timing)
+    config = tmp_path / "predict.yaml"
+    config.write_text(yaml.safe_dump(prediction))
+    with pytest.raises(FileNotFoundError, match=re.escape(str(tmp_path / "forward.metadata.json"))):
+        _prepare_without_a_replay(tmp_path, config, trace)
+    # Nothing is left behind, so the same output folder can be used once the file is there.
+    assert not (tmp_path / "serving").exists()
+
+
+def test_key_written_twice_inside_ais_perf_model_stops_preparation(tmp_path):
+    trace = tmp_path / "trace.json"
+    trace.write_text("{}\n")
+    config = tmp_path / "predict.yaml"
+    # The YAML reader keeps the last value, which alone would be accepted.
+    config.write_text(
+        "engine:\n"
+        "  model: example/model\n"
+        "  hardware: h200_sxm\n"
+        "  backend: sglang\n"
+        "  ais_perf_model:\n"
+        "    estimation_mode: auto\n"
+        "    fallback_policy: deny\n"
+        "    estimation_mode: fpm_interpolation\n"
+        "    estimator_config: {fpm_interpolation: {method: direct}}\n"
+        "  workers: {aggregated: {}}\n"
+        "traffic:\n"
+        f"  source: {{type: trace, format: weka, paths: [{json.dumps(str(trace))}]}}\n"
+        "  load: {type: trace_timestamps, agentic_lanes: 1}\n"
+    )
+    assert serving._scope(yaml.safe_load(config.read_text()), trace)
+    written_twice = re.escape(
+        f"engine.ais_perf_model in {config}: the key 'estimation_mode' is written twice (lines 6 and 8); write it once"
+    )
+    with pytest.raises(AisPerfModelError, match=f"^{written_twice}$"):
+        serving._read_prediction_config(config)
+    with pytest.raises(AisPerfModelError, match=f"^{written_twice}$"):
+        _prepare_without_a_replay(tmp_path, config, trace)
+    assert not (tmp_path / "serving").exists()
 
 
 @pytest.fixture
@@ -751,6 +956,16 @@ def _estimator_on_the_engine_with_a_parquet_file(config, folder):
     return config
 
 
+def _estimator_on_the_engine_with_an_old_parquet_path(config, folder):
+    """State the estimator once for the engine and name one more parquet file by the worker's old path field."""
+    engine = config["engine"]
+    worker = engine["workers"]["aggregated"]
+    engine.update({key: worker["timing"][key] for key in ESTIMATOR_FIELDS})
+    # The timing takes the old path field only next to ``forward_model: fpm``.
+    worker["timing"] = {"forward_model": "fpm", "fpm_parquet_path": str(_copied_forward_data(engine, folder))}
+    return config
+
+
 def _estimator_under_ais_perf_model(config, folder):
     """State the estimator, the data paths and the profile under ``engine.ais_perf_model`` only.
 
@@ -791,6 +1006,10 @@ STATED_OUTSIDE_THE_WORKER_TIMING = {
         _estimator_on_the_engine_with_a_parquet_file,
         COLLECTED_FORWARD_DATA + COPIED_FORWARD_DATA,
     ),
+    "engine fields, old fpm_parquet_path on the worker timing": (
+        _estimator_on_the_engine_with_an_old_parquet_path,
+        COLLECTED_FORWARD_DATA + COPIED_FORWARD_DATA,
+    ),
     "ais_perf_model with paths relative to the config": (
         _estimator_under_ais_perf_model,
         COLLECTED_FORWARD_DATA + COPIED_FORWARD_DATA,
@@ -818,6 +1037,80 @@ def test_forward_samples_are_priced_for_an_estimator_stated_outside_the_worker_t
     case = _prepared_case(request, tmp_path, respell)
     report = _assess(case, forward_evidence_path=_forward_samples(case))
     # The same data prices the samples as for the config onboarding wrote.
+    assert {phase: result["status"] for phase, result in report["forward"]["phases"].items()} == {
+        "prefill": "failed",
+        "decode": "passed",
+    }
+
+
+def _ten_times_slower_forward_data(engine, folder):
+    """Write the forward pass data under the engine's systems path, ten times slower, to ``folder/external``.
+
+    A copy of the collected data prices a pass the same, so it cannot show
+    which file priced it. Return the parquet file that was written.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    (collected,) = Path(engine["systems_paths"][0]).rglob("fpm_forward_perf.parquet")
+    external = folder / "external"
+    external.mkdir()
+    table = pq.read_table(collected)
+    rows = [{**row, "latency_ms": row["latency_ms"] * 10} for row in table.to_pylist()]
+    slower = external / "forward.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), slower)
+    metadata = json.loads(collected.with_suffix(".metadata.json").read_text())
+    metadata["parquet_sha256"] = hashlib.sha256(slower.read_bytes()).hexdigest()
+    _save(external / "forward.metadata.json", metadata)
+    return slower
+
+
+@pytest.mark.parametrize("estimator_stated_on", ["worker timing", "engine"])
+def test_forward_samples_are_priced_from_the_file_of_the_old_fpm_parquet_path_as_replay_is(
+    request, tmp_path, materialized_workload, estimator_stated_on
+):
+    def respell(config, folder):
+        engine = config["engine"]
+        worker = engine["workers"]["aggregated"]
+        if estimator_stated_on == "engine":
+            engine.update({key: worker["timing"][key] for key in ESTIMATOR_FIELDS})
+            worker["timing"] = {"forward_model": "fpm"}
+        worker["timing"]["fpm_parquet_path"] = str(_ten_times_slower_forward_data(engine, folder))
+        return config
+
+    case = _prepared_case(request, tmp_path, respell)
+    assert (case.recipe["status"], case.recipe["issues"]) == ("ready", [])
+    assert _timing_artifacts(case.recipe, tmp_path) == COLLECTED_FORWARD_DATA + COPIED_FORWARD_DATA
+    matched = case.recipe["matched_workload"]
+    source_config = yaml.safe_load(case.prediction_config.read_text())
+    assert yaml.safe_load(Path(matched["prediction_config"]["path"]).read_text())["engine"] == source_config["engine"]
+
+    report = _assess(case, forward_evidence_path=_forward_samples(case))
+    predicted = {phase: result["samples"][0]["predicted_ms"] for phase, result in report["forward"]["phases"].items()}
+    # The collected data prices these two passes at 2.5 ms and 2 + 65 / 1024 ms.
+    assert predicted == {"prefill": pytest.approx(25.0), "decode": pytest.approx(20 + 650 / 1024)}
+    # Replay priced the cold 64-token prefill of the first request from the same file.
+    replayed = json.loads(Path(matched["prediction_report"]["path"]).read_text())["per_request"]
+    assert replayed[0]["ttft_ms"] == pytest.approx(predicted["prefill"])
+
+
+def _forward_data_named_only_by_the_old_parquet_path(config, folder):
+    """Move the forward pass data out of the engine's systems path and name it by the worker's old path field."""
+    engine = config["engine"]
+    (collected,) = Path(engine["systems_paths"][0]).rglob("fpm_forward_perf.parquet")
+    external = folder / "external"
+    external.mkdir()
+    shutil.move(collected, external / "forward.parquet")
+    shutil.move(collected.with_suffix(".metadata.json"), external / "forward.metadata.json")
+    engine["workers"]["aggregated"]["timing"]["fpm_parquet_path"] = str(external / "forward.parquet")
+    return config
+
+
+def test_forward_data_that_only_the_old_fpm_parquet_path_names_is_found(request, tmp_path, materialized_workload):
+    case = _prepared_case(request, tmp_path, _forward_data_named_only_by_the_old_parquet_path)
+    assert (case.recipe["status"], case.recipe["issues"]) == ("ready", [])
+    assert _timing_artifacts(case.recipe, tmp_path) == COPIED_FORWARD_DATA
+    report = _assess(case, forward_evidence_path=_forward_samples(case))
     assert {phase: result["status"] for phase, result in report["forward"]["phases"].items()} == {
         "prefill": "failed",
         "decode": "passed",

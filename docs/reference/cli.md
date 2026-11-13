@@ -231,7 +231,9 @@ output adapters that are not installed leave existing artifacts intact. Errors r
 importing an installed plugin or inside an adapter occur after the known outputs are removed.
 
 For `engine.ais_perf_model`, an entry key that is not a perf-model field is a validation error, so
-existing artifacts stay. In `predict`, an
+existing artifacts stay. A key written twice inside `engine.ais_perf_model` in the configuration
+file is an error when the file is read, with exit code `2`, so existing artifacts stay too. In
+`predict`, an
 [identity key](../perf-model/configuration.md#identity-keys) whose value differs from the engine
 section is found later, when the run builds its workers. With `--overwrite`, the known outputs are
 already removed by then.
@@ -469,6 +471,21 @@ Without `--output`, `migrate` prints the plan and writes nothing: the new
   Run it from the directory where you run the configuration; the plan names
   the working directory it assumed. Absolute paths, `~` paths and the
   `systems_paths` item `default` stay as written.
+- **Symbolic links.** Through a symbolic link, the file that the link names
+  is replaced and the link stays. When the link, every link on the way to the
+  file and that file are in one folder, relative paths are rewritten as
+  above. When one of them is in another folder, the converted config has a
+  name in each of these folders, and a relative path would start at a
+  different folder for each name. `migrate` then writes each relative path as
+  an absolute path, and the note says so:
+  `path 'fpm-data' (relative to the working directory) rewritten as '/srv/run/fpm-data' (an absolute path: the converted config has names in /srv/run and /srv/run/configs, and a relative path would start at a different folder for each name)`.
+  The same holds without `--output` when the configuration file is such a
+  link. `migrate` sees the links on the way from `FILE` to the file, and
+  those from the configuration file when it names the same file. A link
+  elsewhere that names the converted file still starts relative paths at its
+  own folder. To get absolute paths, name that link as the configuration file
+  or as `FILE` when you convert the file; a file that is already converted
+  has nothing left to convert.
 - **Existing files.** When `FILE` exists and is not the configuration file,
   `migrate` needs `--overwrite`. Without it nothing is written and the exit
   code is `2`:
@@ -476,9 +493,7 @@ Without `--output`, `migrate` prints the plan and writes nothing: the new
 - **One step.** `migrate` writes a new file next to `FILE` and moves it into
   place, so it needs permission to create a file in that folder. Without that
   permission it exits `2` with `could not write <FILE>: <reason>`, and the
-  file stays as it was. Other hard links to `FILE` keep the old text. Through
-  a symbolic link, the file that the link names is replaced and the link
-  stays; relative paths are written for the folder of the link as typed.
+  file stays as it was. Other hard links to `FILE` keep the old text.
 - **JSON.** A `FILE` that ends with `.json`, in any letter case, is written as
   JSON. A `.json` configuration converted in place stays JSON. AISimulate
   reads configuration files as YAML. When the JSON text would not be read
@@ -519,6 +534,10 @@ converted file:
 replay configuration differs from the reviewed direct-FPM workload
 ```
 
+Reading the unchanged replay configuration back prints the deprecation
+warning without the `migrate` command; see
+[Limits in this release](../perf-model/configuration.md#limits-in-this-release).
+
 ### `perf-model fetch`
 
 ```bash
@@ -528,9 +547,12 @@ aisimulate perf-model fetch kimi_k3_fpm gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.
 ```
 
 `fetch MANIFEST PROFILE` downloads one [published FPM profile](../perf-model/fpm-self-service/README.md#reuse-a-published-profile)
-and verifies it. It prints the local path and the `systems_paths` line to put
-in an entry. Run it ahead of time for a component that must not download
-data. `MANIFEST` is a manifest file or the ID of a packaged manifest.
+and verifies it. It prints the local folder and the `systems_paths` line to
+put in an entry. The folder is printed as an absolute path with symbolic
+links resolved, also when `--cache-dir` or `$XDG_CACHE_HOME` is relative, so
+the line names it from an entry file in any folder. Run it ahead of time for
+a component that must not download data. `MANIFEST` is a manifest file or the
+ID of a packaged manifest.
 `fetch --list [MANIFEST]` lists profiles instead and takes no `PROFILE`.
 
 | Option | Meaning |
