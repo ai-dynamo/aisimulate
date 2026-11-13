@@ -2468,7 +2468,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
