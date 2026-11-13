@@ -140,6 +140,27 @@ def step_fields(reporter, batch, num_requests: int) -> dict[str, Any]:
     return step
 
 
+def fill_decode_seq_lens(batch, context) -> bool:
+    """Give a decode batch schedule-time ``seq_lens_cpu`` when the producer left it ``None``.
+
+    SGLang 0.5.20 with speculative decoding under the overlap scheduler keeps
+    decode sequence lengths on the device only, and its stock FPM builder
+    iterates ``batch.seq_lens_cpu`` and raises. When the record is emitted the
+    step's tokens are already appended, so the schedule-time length is
+    ``req.seqlen`` minus the tokens this step committed (``accept_lens`` when on
+    the CPU, else one). Returns ``True`` when the attribute was set, so the
+    caller restores ``None`` afterwards and SGLang's own state is unchanged.
+    """
+    mode = getattr(batch, "forward_mode", None)
+    if mode is None or not mode.is_decode() or getattr(batch, "seq_lens_cpu", 0) is not None:
+        return False
+    reqs = list(getattr(batch, "reqs", None) or [])
+    committed = accept_lengths(context[0], len(reqs)) if context is not None else None
+    committed = committed or [1] * len(reqs)
+    batch.seq_lens_cpu = [max(int(getattr(req, "seqlen", 0)) - n, 0) for req, n in zip(reqs, committed, strict=True)]
+    return True
+
+
 def speculative_pairs(batch, pairs: list[tuple[int, int]], step: dict[str, Any]) -> list[tuple[int, int]]:
     """Decode pairs of a speculative step carry the verify width (``1 + k``) as the extend.
 
@@ -226,8 +247,13 @@ def patch_sglang_metrics_reporter(module: ModuleType) -> bool:
 
     def wrapped(self, batch):
         nonlocal diagnostics_failed
-        metrics = build(self, batch)
-        pairs = request_pairs(batch)
+        restore = fill_decode_seq_lens(batch, getattr(self, _STEP_CONTEXT, None))
+        try:
+            metrics = build(self, batch)
+            pairs = request_pairs(batch)
+        finally:
+            if restore:
+                batch.seq_lens_cpu = None
         try:
             # Drain per-category device time even for records without lists.
             step = step_fields(self, batch, len(pairs) if pairs is not None else 0)

@@ -77,6 +77,9 @@ def fake_sglang(monkeypatch):
         def _build_scheduled_request_metrics(self, batch):
             cls = sys.modules["sglang.srt.observability.forward_pass_metrics"].ScheduledRequestMetrics
             if batch.forward_mode.is_decode():
+                if hasattr(batch, "seq_lens_cpu"):  # stock: iterates it, raising on None
+                    lens = [int(sl) for sl in batch.seq_lens_cpu]
+                    return cls(num_decode_requests=len(lens), sum_decode_kv_tokens=sum(lens))
                 return cls(num_decode_requests=len(batch.reqs), sum_decode_kv_tokens=sum(r.seqlen for r in batch.reqs))
             ext = getattr(batch, "extend_lens", None) or [r.extend_input_len for r in batch.reqs]
             pre = getattr(batch, "prefix_lens", None) or [len(r.prefix_indices) for r in batch.reqs]
@@ -439,3 +442,24 @@ def test_record_cli_records_a_live_zmq_stream(tmp_path):
     assert [json.loads(line)["sequence"] for line in out.read_text().splitlines()] == [0, 1, 2]
     summary = json.loads((tmp_path / "fpm.jsonl.summary.json").read_text())
     assert summary["messages"] == 3 and summary["gaps"] == []
+
+
+def test_sglang_hook_survives_speculative_decode_without_cpu_seq_lens(fake_sglang):
+    """SGLang 0.5.20 + NEXTN + overlap: decode batches carry seq_lens_cpu=None at emission."""
+    _, reporter = fake_sglang
+    sglang.patch_sglang_metrics_reporter(reporter)
+    mixin = reporter.SchedulerMetricsReporter(spec=(3, 4))
+    # the step's committed tokens (3 and 2) are already appended to req.seqlen
+    batch = types.SimpleNamespace(
+        forward_mode=_Mode("decode"), reqs=[_Req(seqlen=703), _Req(seqlen=92)], seq_lens_cpu=None
+    )
+    mixin.forward_pass_device_timer.finish(0.02, "target_verify")
+    mixin._emit_forward_pass_metrics(batch, types.SimpleNamespace(accept_lens=_Lens([3, 2])))
+    _, m = mixin.published[-1]
+    assert m.past_kv_lengths == [700, 90] and m.sum_decode_kv_tokens == 790
+    assert m.extend_lengths == [4, 4] and m.spec_accept_lengths == [3, 2]
+    assert batch.seq_lens_cpu is None  # SGLang's own batch state is left as it was
+    # without CPU accept lengths, one token per request is assumed
+    mixin.forward_pass_device_timer.finish(0.02, "target_verify")
+    mixin._emit_forward_pass_metrics(batch, types.SimpleNamespace(accept_lens=_Lens([3, 2], is_cpu=False)))
+    assert mixin.published[-1][1].past_kv_lengths == [702, 91]
