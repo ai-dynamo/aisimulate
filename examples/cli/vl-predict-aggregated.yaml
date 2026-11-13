@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Native SGLang VL prediction: images are encoded on the aggregated worker and the
 # frontend stages come from a host cost table measured on the serving host with
-#   python -m aisimulate.vl.collect --config vl-predict-aggregated.yaml --sglang-python <serving venv python>
+#   python -m aisim.vl.collect --config vl-predict-aggregated.yaml --sglang-python <serving venv python>
 traffic:
   source:
     type: synthetic

@@ -9,24 +9,24 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip(
-    "aisimulate.runner",
-    reason="standalone AISimulate runtime is not installed",
+    "aisim.runner",
+    reason="standalone AISim runtime is not installed",
     exc_type=ImportError,
 )
 
 import yaml
 from pydantic import ValidationError
 
-from aisimulate import main as cli
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.engine import KvCachePredictionConfig
-from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplaySpec
-from aisimulate.sweeper.sample import unroll_sample
+from aisim import main as cli
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.engine import KvCachePredictionConfig
+from aisim.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import ReplayOutputRequirements, ReplaySpec
+from aisim.sweeper.sample import unroll_sample
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -196,9 +196,24 @@ def test_canonical_mtp_host_config_rejects_disaggregated_workers() -> None:
         CorePredictionConfig.model_validate({"engine": _mtp_host_engine(mode="disaggregated")})
 
 
+@pytest.mark.parametrize("canonical_mtp", [False, True])
+def test_host_offload_stays_unsupported_with_an_afd_worker(canonical_mtp) -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine["backend"] = "sglang"
+    engine["workers"]["decode"] = {
+        "type": "afd",
+        "afd": {"n_a_nodes": 1, "n_f_nodes": 1, "tp_a": 1, "a_batch_size": 8},
+    }
+    engine["workers"]["prefill"]["kv_cache"]["host_offload"] = _host_offload()
+    if canonical_mtp:
+        engine["speculation"] = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    with pytest.raises(ValidationError, match="host_offload is supported only for aggregated or disaggregated"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
 @pytest.mark.parametrize("expected", [0.0, 2.0])
 def test_canonical_mtp_native_replay_restores_an_evicted_host_prefix(expected) -> None:
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     engine = _mtp_host_engine(expected=expected)
     worker = engine["workers"]["aggregated"]
@@ -384,7 +399,7 @@ def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
         calls.append(shape)
         return 444_444
 
-    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", estimate)
+    monkeypatch.setattr("aisim.compiler.estimate_kv_bytes_per_token", estimate)
     rank = prediction_to_replay_spec(
         CorePredictionConfig.model_validate({"engine": engine})
     ).backend_deployment.agg_engine_args
@@ -416,7 +431,7 @@ def test_prediction_auto_transfer_geometry_uses_prefill_source_shape(
         calls.append(shape)
         return 10_000 * shape["tp_size"] + shape["pp_size"]
 
-    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", estimate)
+    monkeypatch.setattr("aisim.compiler.estimate_kv_bytes_per_token", estimate)
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
 
     assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
@@ -435,7 +450,7 @@ def test_prediction_transfer_and_cache_geometry_are_independent(monkeypatch) -> 
     engine["workers"]["prefill"]["kv_cache"]["bytes_per_token"] = 111
     engine["workers"]["decode"]["kv_cache"]["bytes_per_token"] = 222
     monkeypatch.setattr(
-        "aisimulate.compiler.estimate_kv_bytes_per_token",
+        "aisim.compiler.estimate_kv_bytes_per_token",
         lambda *_args, **_kwargs: pytest.fail("explicit geometry must not be estimated"),
     )
 
@@ -695,8 +710,8 @@ def test_kvcr_defaults_and_overrides() -> None:
 
 
 def test_kvcr_defaults_match_the_rust_runtime() -> None:
-    from aisimulate import _runtime
-    from aisimulate.config.engine import KvcrConfig
+    from aisim import _runtime
+    from aisim.config.engine import KvcrConfig
 
     # Rust fills the fields an empty `kvcr` block omits; Python must default to the same values.
     role = {
@@ -759,7 +774,7 @@ def test_kvcr_recommendation_is_rejected_not_silently_dropped() -> None:
 
 
 def test_predict_cli_runs_kvcr_through_the_real_runtime(tmp_path, capsys) -> None:
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     assert callable(_runtime.run_replay_json)
     engine = _prediction_engine()
@@ -792,7 +807,7 @@ def test_predict_cli_runs_kvcr_through_the_real_runtime(tmp_path, capsys) -> Non
 def _hinted_replay(*, kvcr: bool) -> dict:
     """Run a ReplaySpec with an authored hint directly on the Rust runtime. Request `a`
     computes four blocks on DP rank 0; `b` extends them on DP rank 1 and names rank 0."""
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     rank = {
         "num_gpu_blocks": 64,
@@ -900,7 +915,7 @@ def test_kvcr_docs_example_validates(monkeypatch) -> None:
     cache.update(extension)
     prediction = CorePredictionConfig.model_validate(config)
     # Validate lowering without downloading the example's gated model metadata.
-    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", lambda *_args, **_kwargs: 256)
+    monkeypatch.setattr("aisim.compiler.estimate_kv_bytes_per_token", lambda *_args, **_kwargs: 256)
     deployment = prediction_to_replay_spec(prediction).backend_deployment
     # The documented values are the defaults in the knob table.
     assert deployment.agg_engine_args["kvcr"] == _kvcr_defaults()
@@ -932,7 +947,7 @@ def test_public_host_offload_rejects_legacy_speculation(depth) -> None:
 def test_native_host_offload_rejects_noncanonical_speculation_before_pricing(
     timing,
 ) -> None:
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     payload = {
         "version": 1,

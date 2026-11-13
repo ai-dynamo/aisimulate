@@ -22,9 +22,9 @@ ENTRYPOINTS = {
     "README.md",
     "DEVELOPMENT.md",
     "CONTRIBUTING.md",
-    "python/aisimulate/README.md",
+    "python/aisim/README.md",
 }
-DOC_ROOTS = ("docs/", "python/aisimulate/docs/")
+DOC_ROOTS = ("docs/", "python/aisim/docs/")
 
 
 def local_links(text: str) -> list[tuple[int, str]]:

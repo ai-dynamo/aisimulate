@@ -3,7 +3,7 @@
 # Native encoder disaggregation: SGLang `--encoder-only` servers are replayed event by event
 # ahead of a `--language-only` aggregated worker. The encoder's CPU preprocessing comes from
 # the `process` stage of a host cost table measured on the encoder host with
-#   python -m aisimulate.vl.collect --config vl-predict-epd-native.yaml --sglang-python <serving venv python>
+#   python -m aisim.vl.collect --config vl-predict-epd-native.yaml --sglang-python <serving venv python>
 traffic:
   source:
     type: synthetic

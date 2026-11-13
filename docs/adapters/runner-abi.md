@@ -6,9 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Runner ABI
 
 Source contracts:
-[`sweeper/replay.py`](../../python/aisimulate/src/aisimulate/sweeper/replay.py),
-[stack discovery](../../python/aisimulate/src/aisimulate/stack.py), and the
-[built-in runner](../../python/aisimulate/src/aisimulate/runner.py).
+[`sweeper/replay.py`](../../python/aisim/src/aisim/sweeper/replay.py),
+[stack discovery](../../python/aisim/src/aisim/stack.py), and the
+[built-in runner](../../python/aisim/src/aisim/runner.py).
 
 ## Required interface
 
@@ -33,7 +33,7 @@ one candidate's requests or caches into another. `close()` releases resources.
 The engine factory lazily imports the compiled runtime in its worker.
 
 Optional factories are selected by entry-point name in
-`aisimulate.runner_factories` (`--stack`). Resolution validates `capabilities`
+`aisim.runner_factories` (`--stack`). Resolution validates `capabilities`
 and `create`; unavailable, duplicate or unloadable optional stacks raise
 `StackNotFoundError`, `DuplicateStackError` or `StackLoadError`. A factory's
 coarse capabilities are checked before runner creation; execution must still
@@ -70,6 +70,17 @@ AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
 analytical EPD and its deferred overlay, cached-prefix tokens, state/grouped
 cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
+`supported_worker_types` defaults to `("monolithic",)`; a runner must explicitly
+include `"afd"` to accept AFD roles. The built-in engine advertises both types.
+Deployment modes are `agg|disagg`, independent of role implementation. Ordinary
+and native AFD deployments retain ReplaySpec API 1. Role-local AFD topology and
+qualification artifacts use their own schema 2; this does not require downstream
+runners to implement AFD or upgrade the common ReplaySpec protocol. The default
+monolithic-only capability rejects AFD roles before execution.
+
+Old `afd`/`afd+pd` deployment modes and development API-2 saved inputs must be
+regenerated. API-version checks remain exact; API-2 inputs are not silently
+converted to API 1.
 
 `supports_generic_speculation` defaults to `False`; the built-in engine factory
 sets it to `True` within the [registered-scheme replay limits](../replay/engine/speculation.md#registered-schemes).

@@ -29,7 +29,7 @@ To use Dynamo Replay or the `dynamo.planner` and `dynamo.router` providers, foll
 [Sweeper integration guide](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/ai-simulate-experimental/sweeper-experimental/dynamo-integration.md).
 That guide owns the Dynamo build, installation, Planner, Router, and replay-composition steps.
 
-With compatible AI Simulate and Dynamo packages installed, run the general search example with the
+With compatible AISim and Dynamo packages installed, run the general search example with the
 explicit Dynamo runner:
 
 ```bash
