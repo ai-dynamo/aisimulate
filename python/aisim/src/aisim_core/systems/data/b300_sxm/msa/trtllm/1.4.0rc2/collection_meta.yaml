@@ -22,9 +22,9 @@ tables:
     rows: 2895
     status: complete
     collections:
-    - collector_ref: ac3df2a90
-      collector_hash: sha256:9f2f7477e7b05361b503b7b851184a11326d86aad8e1ce8c7b9e9bb8718a1a7b
+    - collector_ref: 337be643d
+      collector_hash: sha256:3e85653a10f376a2b9a5b333fe3888a2428667f55c8c114e74b409be32399a25
       case_plan_hash: sha256:463cc7fc38ff69690d76d23ab0807d251c7045a832ebc906683cf02d3b85dca5
-      collected_at: '2026-11-11'
+      collected_at: '2026-11-12'
       rows: 2895
       status: complete
