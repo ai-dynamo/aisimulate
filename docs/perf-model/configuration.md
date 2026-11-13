@@ -872,11 +872,15 @@ concrete-only.
 | `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned`. Regression and learned roles are priced per iteration (see [engine replay timing](#engine-replay-timing)). |
 | `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same five modes; omission inherits the global selection. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
-| `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
-| `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
+| `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Finite, nonnegative and required for `fixed` timing. |
+| `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Finite, nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
 | `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
+
+Fixed timing accepts zero for either phase. Nonfinite values (infinity or NaN)
+are configuration errors, rejected before prediction output is prepared, including
+when `--overwrite` is used.
 
 The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
