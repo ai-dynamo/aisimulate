@@ -50,9 +50,14 @@ from aisim_core.sdk.backends.factory import get_backend
 from aisim_core.sdk.common import DefaultHFModels
 from aisim_core.sdk.config import validate_parallel_size
 from aisim_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls, validate_nextn
+from aisim_core.sdk.errors import InvalidEngineConfigurationError
 from aisim_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 from aisim_core.sdk.models import get_model
-from aisim_core.sdk.models.helpers import resolve_sglang_mla_compute, resolve_trtllm_mla_compute
+from aisim_core.sdk.models.helpers import (
+    resolve_sglang_mla_compute,
+    resolve_trtllm_mla_compute,
+    validate_dense_gemma4_moe_ep,
+)
 from aisim_core.sdk.utils import (
     _download_hf_config,
     _load_local_config,
@@ -346,6 +351,20 @@ class KVCacheEstimator:
             moe_backend=moe_backend,
             moe_kernel_source=moe_kernel_source,
         )
+        # Preflight the Gemma 4 classification and dense expert-parallelism rule
+        # before the perf-DB lookup. Otherwise corrupt expert metadata only
+        # surfaces in get_model() below, and a dense checkpoint with moe_ep_size>1
+        # is rejected there too; either way a failing database lookup raises
+        # first and the caller's naive fallback re-estimates the same
+        # configuration. Metadata that cannot be fetched or parsed at all is not
+        # this gate's concern: the build path below reports it with its own
+        # error type, exactly as it did before this check existed.
+        try:
+            validate_dense_gemma4_moe_ep(model_path, moe_ep_size)
+        except InvalidEngineConfigurationError:
+            raise
+        except Exception:
+            pass
         # A hosted tower is sharded unless dp is asked for, as SGLang lays it out.
         encoder_layout = (
             {"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None or colocated_encoder else {}
@@ -1132,7 +1151,10 @@ def estimate_kv_cache(
     is unsupported (``from_request`` raises) AND ``allow_naive_fallback`` is set,
     :meth:`NaiveKVCacheEstimator.estimate` parses the HF ``config.json`` and
     reserves ``naive_kv_reservation`` of post-weight memory for KV; this requires
-    ``gpu_memory_capacity_bytes_override``.
+    ``gpu_memory_capacity_bytes_override``. ``InvalidEngineConfigurationError``
+    always propagates, even when the fallback is allowed: corrupt or ambiguous
+    checkpoint metadata, and invalid caller controls, must not be re-estimated by
+    a fallback that parses the same metadata.
 
     Args:
         memory_fraction_kind: ``"of_total"`` (vLLM / SGLang) or ``"of_free"``
@@ -1364,6 +1386,13 @@ def estimate_kv_cache(
             encoder_parallel=encoder_parallel,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
+        if isinstance(exc, InvalidEngineConfigurationError):
+            # A corrupt or ambiguous checkpoint (or an invalid caller control)
+            # must not degrade into the naive estimator: it would build a
+            # capacity from the same metadata the native path just rejected.
+            # The typed error is also what the Rust bridge treats as
+            # non-fallback-safe.
+            raise
         if isinstance(exc, NotImplementedError) and (int(cp_size) > 1 or int(dcp_size) > 1):
             # A context-parallel capability rejection must not degrade into the
             # naive estimator, which knows neither knob and would return an

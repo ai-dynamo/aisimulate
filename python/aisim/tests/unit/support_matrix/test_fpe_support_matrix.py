@@ -383,7 +383,7 @@ def test_hopper_fp8_kv_runtime_rejection_requires_exact_build_diagnostic(backend
     "error",
     [
         AssertionError("num_heads 24 should be divisible by tp_size 16 "),
-        AssertionError("dense Gemma 4 variants require moe_ep_size=1, got 8"),
+        ValueError("dense Gemma 4 variants require moe_ep_size=1, got 8"),
         ValueError(
             "Invalid quantized MoE configuration: (moe_intermediate_size=1536 / moe_tp_size=16) "
             "% weight_block_size=128 != 0. "

@@ -2039,6 +2039,120 @@ def test_run_single_disagg_rejects_agg_task():
         t.run_single_disagg(prefill_tp=4, decode_tp=2, decode_batch_size=64)
 
 
+# Gemma 4 mixes dense and routed-MoE checkpoints under one architecture, so
+# ``Task._is_moe`` decides whether the requested dp becomes the attention-DP
+# axis. A dense checkpoint has no routed-expert dimension to shard, so dp must
+# not reach attention: nothing consumes per-rank attention sharding there.
+_GEMMA4_DENSE = "nvidia/Gemma-4-31B-IT-NVFP4"
+_GEMMA4_ROUTED = "nvidia/Gemma-4-26B-A4B-NVFP4"
+
+
+@pytest.mark.parametrize(
+    ("model_path", "dp", "moe_ep", "expected_dp"),
+    [(_GEMMA4_DENSE, 4, 1, 1), (_GEMMA4_ROUTED, 4, 4, 4)],
+)
+def test_run_single_agg_attention_dp_follows_the_gemma4_classification(
+    monkeypatch, model_path, dp, moe_ep, expected_dp
+):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from aisim.sdk import predict
+
+    captured = {}
+
+    def fake_get_model(_model_path, model_config, _backend_name):
+        captured["model_config"] = model_config
+        return MagicMock(name="model")
+
+    monkeypatch.setattr("aisim.sdk.perf_database.get_database_view", lambda *a, **kw: SimpleNamespace(system_spec={}))
+    monkeypatch.setattr("aisim.sdk.backends.factory.get_backend", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("aisim.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr(predict, "predict_agg_worker", lambda **kwargs: _build_fake_summary())
+
+    task = Task(model_path=model_path, system_name="h200_sxm")
+    task.run_single_agg(tp=1, dp=dp, moe_ep=moe_ep, batch_size=8)
+
+    assert captured["model_config"].attention_dp_size == expected_dp
+
+
+@pytest.mark.parametrize(
+    ("model_path", "dp", "moe_ep", "expected_dp"),
+    [(_GEMMA4_DENSE, 4, 1, 1), (_GEMMA4_ROUTED, 4, 4, 4)],
+)
+def test_run_single_disagg_attention_dp_follows_the_gemma4_classification(
+    monkeypatch, model_path, dp, moe_ep, expected_dp
+):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from aisim.sdk import predict
+
+    captured = []
+
+    def fake_get_model(_model_path, model_config, _backend_name):
+        captured.append(model_config)
+        return MagicMock(name="model")
+
+    def _phase_row(role: str) -> dict:
+        return {
+            "model": model_path,
+            "isl": 4000,
+            "osl": 500,
+            "prefix": 0,
+            "concurrency": 1,
+            "bs": 1,
+            "global_bs": 1,
+            "tp": 1,
+            "pp": 1,
+            "dp": dp,
+            "moe_tp": 1,
+            "moe_ep": moe_ep,
+            "parallel": f"tp1pp1dp{dp}",
+            "ttft": 80.0 if role == "prefill" else 0.0,
+            "tpot": 0.0 if role == "prefill" else 25.0,
+            "seq/s": 10.0 if role == "prefill" else 5.0,
+            "tokens/s/user": 0.0 if role == "prefill" else 40.0,
+            "gemm": "fp8",
+            "kvcache": "fp8",
+            "fmha": "fp8",
+            "moe": "fp8",
+            "comm": "half",
+            "memory": 12.3,
+            "backend": "vllm",
+            "version": "0.24.0",
+            "system": "h200_sxm",
+            "power_w": 500.0,
+        }
+
+    monkeypatch.setattr("aisim.sdk.perf_database.get_database_view", lambda *a, **kw: SimpleNamespace(system_spec={}))
+    monkeypatch.setattr("aisim.sdk.backends.factory.get_backend", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("aisim.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr(
+        predict, "predict_disagg_worker", lambda **kwargs: _build_fake_summary(_phase_row(kwargs["role"]))
+    )
+
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path=model_path,
+        prefill_system_name="h200_sxm",
+        decode_model_path=model_path,
+        decode_system_name="h200_sxm",
+    )
+    task.run_single_disagg(
+        prefill_tp=1,
+        prefill_dp=dp,
+        prefill_moe_ep=moe_ep,
+        prefill_batch_size=1,
+        decode_tp=1,
+        decode_dp=dp,
+        decode_moe_ep=moe_ep,
+        decode_batch_size=1,
+    )
+
+    assert [mc.attention_dp_size for mc in captured] == [expected_dp, expected_dp]
+
+
 # ---------------------------------------------------------------------------
 # validate()
 # ---------------------------------------------------------------------------

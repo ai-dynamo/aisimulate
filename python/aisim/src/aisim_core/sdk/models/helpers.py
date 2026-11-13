@@ -19,6 +19,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Optional
 
 from aisim_core.sdk import common, config
+from aisim_core.sdk.errors import InvalidEngineConfigurationError
 from aisim_core.sdk.utils import (
     _get_language_quantization_config,
     _normalize_quant_algo,
@@ -42,7 +43,6 @@ _MOE_MODEL_FAMILIES = {
     "KIMIK3",
     "HYBRIDMOE",
     "QWEN3VL_MOE",
-    "GEMMA4MIX",
     "MINIMAXM3",
     "STEP3P7",
 }
@@ -1472,11 +1472,31 @@ def check_is_moe(model_path: str, model_info: dict | None = None) -> bool:
 
     For NEMOTRONH models, checks if 'E' (MoE layer) is in hybrid_override_pattern..
     E.g., Nemotron_H is not an MoE model, but Nemotron_3 is an MoE model.
+
+    For GEMMA4MIX, checks the parsed expert configuration: the family mixes
+    routed-MoE checkpoints (e.g. gemma-4-26B-A4B) with dense ones (e.g.
+    gemma-4-31B / E2B / E4B, topk=0 and num_experts=None).
     """
     if model_info is None:
         model_info = _get_model_info(model_path)
     family = _architecture_to_model_family(model_info["architecture"])
     if family in _MOE_MODEL_FAMILIES:
+        return True
+    if family == "GEMMA4MIX":
+        # The family name alone must not enable MoE search, or the sweeper
+        # proposes moe_ep>1 shapes that the dense model rejects. A checkpoint
+        # that declares only one of the two expert fields, or routing widths
+        # that cannot describe a routed layer, is corrupt: failing loudly beats
+        # silently building a graph with no routed-expert work. Negative values
+        # are truthy, so a plain presence check would accept them too.
+        num_experts = model_info.get("num_experts")
+        topk = model_info.get("topk")
+        if num_experts in (None, 0) and topk in (None, 0):
+            return False
+        if num_experts is None or topk is None or num_experts < 1 or topk < 1 or topk > num_experts:
+            raise InvalidEngineConfigurationError(
+                f"Gemma 4 checkpoint has inconsistent expert metadata: num_experts={num_experts!r}, topk={topk!r}"
+            )
         return True
     if family == "QWEN35":
         extra_params = model_info.get("extra_params")
@@ -1489,6 +1509,28 @@ def check_is_moe(model_path: str, model_info: dict | None = None) -> bool:
         # 'E' in pattern means MoE layers are present
         return "E" in extra_params.hybrid_override_pattern
     return False
+
+
+def dense_gemma4_moe_ep_error(moe_ep_size: int | None) -> InvalidEngineConfigurationError:
+    """Build the shared diagnostic for expert parallelism on a dense Gemma 4."""
+    return InvalidEngineConfigurationError(f"dense Gemma 4 variants require moe_ep_size=1, got {moe_ep_size}")
+
+
+def validate_dense_gemma4_moe_ep(model_path: str, moe_ep_size: int | None) -> None:
+    """Reject explicit expert parallelism for a dense Gemma 4 checkpoint.
+
+    ``Gemma4MixModel`` enforces the same rule at construction, but the KV-cache
+    estimator resolves the perf database first. Without this pre-database check,
+    a missing database plus ``allow_naive_fallback=True`` would let the naive
+    estimator return a capacity for a configuration the model rejects.
+    """
+    model_info = _get_model_info(model_path)
+    if _architecture_to_model_family(model_info["architecture"]) != "GEMMA4MIX":
+        return
+    if check_is_moe(model_path, model_info=model_info):
+        return
+    if moe_ep_size not in (None, 1):
+        raise dense_gemma4_moe_ep_error(moe_ep_size)
 
 
 def mtp_scale_factor(nextn: int, num_layers: int) -> float:

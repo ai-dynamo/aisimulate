@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -166,3 +167,122 @@ def test_role_context_limits_work_without_shared_model_context(monkeypatch):
 
     assert result == [parallel]
     assert seen == {64_000: True, 128_000: True}
+
+
+def test_dense_gemma4_recommendation_excludes_expert_parallel_shapes():
+    """Regression: dense Gemma 4 must not offer moe_ep>1 candidates.
+
+    Before the classification fix the whole family was treated as MoE, so KV
+    feasibility raised "dense Gemma 4 variants require moe_ep_size=1" for every
+    multi-GPU budget instead of yielding pure-TP candidates.
+    """
+    configs = model_hw.parallel_configs_for(
+        "nvidia/Gemma-4-31B-IT-NVFP4",
+        "gb300",
+        gpu_budget=8,
+        deployment_mode="agg",
+        backend="vllm",
+        max_seq_len=2048 + 128,
+    )
+
+    assert configs
+    assert {(config.shape.moe_tp, config.shape.moe_ep) for config in configs} == {(1, 1)}
+
+
+class _OfflineRunner:
+    def run(self, spec):
+        from aisim.sweeper.replay import ReplayReport
+
+        return ReplayReport(metrics={"output_throughput_tok_s": 10.0, "gpu_hours": 1.0})
+
+    def close(self):
+        pass
+
+
+class _OfflineRunnerFactory:
+    def capabilities(self):
+        from aisim.sweeper.replay import RunnerCapabilities
+
+        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+
+    def create(self, worker_id):
+        return _OfflineRunner()
+
+
+class _OfflinePerfModel:
+    requests: ClassVar[list[dict]] = []
+
+    @classmethod
+    def best_available(cls, request):
+        from aisim_core.sdk import RustForwardPassPerfModel
+
+        payload = request.to_dict()
+        cls.requests.append(payload)
+        return cls(RustForwardPassPerfModel.normalize_config(payload))
+
+    def __init__(self, config):
+        self.config = config
+
+    def diagnostics(self):
+        return {
+            "readiness": "ready",
+            "provenance": {
+                "config": self.config,
+                "selected_systems_root": self.config["systems_paths"][0],
+                "requested_estimation_mode": "fpm_interpolation",
+                "selected_estimation_mode": "fpm_interpolation",
+                "selection_failures": [],
+            },
+        }
+
+    def close(self):
+        pass
+
+
+def test_dense_gemma4_public_recommendation_is_expert_parallel_free(monkeypatch):
+    """The final consumer must also produce only pure-TP dense Gemma 4 shapes.
+
+    The enumeration test above pins shape selection. This one drives the public
+    ``run_recommendation`` path with offline runner/perf-model doubles so every
+    MoE-gated call site reached by a real recommendation is exercised.
+    """
+    from aisim.recommend import run_recommendation
+    from aisim_core.sdk import RustForwardPassPerfModel, perf_database
+
+    monkeypatch.setattr("aisim.supervision.in_supervised_process", lambda: True)
+    monkeypatch.setattr(_OfflinePerfModel, "requests", [])
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", _OfflinePerfModel.best_available)
+    request = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+                "hardware": "gb300",
+                "backend": "vllm",
+                "backend_version": perf_database.get_latest_database_version("gb300", "vllm"),
+                "mode": "aggregated",
+                "context_length": 2048 + 128,
+                "workers": {"aggregated": {}},
+            },
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 2048, "output_tokens": 128},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+            "optimization": {"target": "throughput", "constraints": {"max_candidate_gpus": 8}},
+            "optimizer": {"algorithm": "random", "max_trials": 8, "parallelism": 1},
+        }
+    )
+
+    result = run_recommendation(
+        request,
+        stack="engine",
+        runner_factory=_OfflineRunnerFactory(),
+        show_progress=False,
+    )
+
+    assert result.counts.feasible >= 1
+    assert result.selected_candidates
+    for record in result.candidates:
+        assert record.config.get("moe_tp") == 1
+        assert record.config.get("moe_ep") == 1
+        assert "dense Gemma 4 variants require moe_ep_size" not in (record.reason or "")

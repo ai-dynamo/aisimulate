@@ -33,6 +33,7 @@ pytestmark = pytest.mark.unit
 pytest.importorskip("aisim_core")
 
 from aisim.sdk import memory
+from aisim_core.sdk.errors import InvalidEngineConfigurationError
 from aisim_core.sdk.models.helpers import _apply_model_quant_defaults
 
 _GIB = 1 << 30
@@ -1065,6 +1066,119 @@ def test_estimate_kv_cache_never_falls_back_after_a_context_parallel_capability_
         allow_naive_fallback=True,
     )
     assert out["source"] == "naive_fallback"
+
+
+def test_estimate_kv_cache_never_falls_back_after_corrupt_checkpoint_metadata(monkeypatch):
+    # ``check_is_moe`` raises the typed error for Gemma 4 checkpoints that
+    # declare only one of num_experts/topk. The naive estimator parses the same
+    # HF config, so falling back would return a capacity for a checkpoint the
+    # native path just rejected (and the Rust bridge treats this type as
+    # non-fallback-safe).
+    def _corrupt(*args, **kwargs):
+        raise InvalidEngineConfigurationError(
+            "Gemma 4 checkpoint has inconsistent expert metadata: num_experts=128, topk=0"
+        )
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_corrupt))
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "_load_config", lambda *a, **k: dict(_RAW_UNSUPPORTED))
+    with pytest.raises(InvalidEngineConfigurationError, match="inconsistent expert metadata"):
+        memory.estimate_kv_cache(
+            "nvidia/Gemma-4-31B-IT-NVFP4",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            gpu_memory_capacity_bytes_override=200 * _GIB,
+            allow_naive_fallback=True,
+        )
+
+
+def test_estimate_kv_cache_rejects_corrupt_gemma4_metadata_before_the_database(monkeypatch):
+    # The classifier gate must run before the perf-DB lookup. If it did not, a
+    # failing database plus allow_naive_fallback=True would let the naive
+    # estimator re-parse the same corrupt checkpoint and return a capacity.
+    from aisim_core.sdk import models, perf_database
+    from aisim_core.sdk.models import helpers as model_helpers
+
+    corrupt = dict(models._get_model_info("nvidia/Gemma-4-31B-IT-NVFP4"))
+    corrupt["num_experts"] = 128
+    corrupt["topk"] = 0
+    monkeypatch.setattr(model_helpers, "_get_model_info", lambda *args, **kwargs: corrupt)
+
+    def _unreachable(*args, **kwargs):
+        pytest.fail("corrupt checkpoint metadata must be rejected before the database lookup")
+
+    monkeypatch.setattr(perf_database, "get_database", _unreachable)
+    with pytest.raises(InvalidEngineConfigurationError, match="inconsistent expert metadata"):
+        memory.estimate_kv_cache(
+            "nvidia/Gemma-4-31B-IT-NVFP4",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            gpu_memory_capacity_bytes_override=200 * _GIB,
+            allow_naive_fallback=True,
+        )
+
+
+def test_estimate_kv_cache_keeps_the_naive_fallback_for_a_valid_dense_gemma4_checkpoint(monkeypatch):
+    # The metadata gate must not turn the documented naive fallback into an
+    # error for a well-formed dense checkpoint whose database is unavailable.
+    from aisim_core.sdk import perf_database
+
+    def _missing_database(*args, **kwargs):
+        raise RuntimeError("perf DB not available")
+
+    monkeypatch.setattr(perf_database, "get_database", _missing_database)
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "_load_config", lambda *a, **k: dict(_RAW_UNSUPPORTED))
+
+    out = memory.estimate_kv_cache(
+        "nvidia/Gemma-4-31B-IT-NVFP4",
+        "h200_sxm",
+        "vllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.9,
+        gpu_memory_capacity_bytes_override=200 * _GIB,
+        allow_naive_fallback=True,
+    )
+    assert out["source"] == "naive_fallback"
+
+
+def test_estimate_kv_cache_rejects_dense_gemma4_moe_ep_before_the_database(monkeypatch):
+    # Gemma4MixModel rejects an explicit moe_ep_size>1 for a dense checkpoint,
+    # but that build runs after the perf-DB lookup. Without a pre-database
+    # check, a missing database plus allow_naive_fallback=True would let the
+    # naive estimator accept the same configuration and return a capacity.
+    from aisim_core.sdk import perf_database
+
+    def _unreachable(*args, **kwargs):
+        pytest.fail("dense Gemma 4 with moe_ep_size>1 must be rejected before the database lookup")
+
+    monkeypatch.setattr(perf_database, "get_database", _unreachable)
+    monkeypatch.setattr(
+        memory.NaiveKVCacheEstimator,
+        "from_model_path",
+        classmethod(lambda *args, **kwargs: pytest.fail("naive fallback must not price an unsupported config")),
+    )
+    with pytest.raises(InvalidEngineConfigurationError, match="dense Gemma 4 variants require moe_ep_size=1, got 2"):
+        memory.estimate_kv_cache(
+            "nvidia/Gemma-4-31B-IT-NVFP4",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            gpu_memory_capacity_bytes_override=200 * _GIB,
+            moe_ep_size=2,
+            allow_naive_fallback=True,
+        )
 
 
 def test_estimate_kv_cache_propagates_when_fallback_disabled(monkeypatch):

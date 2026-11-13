@@ -17,6 +17,7 @@ import pytest
 
 from aisim.sdk import common, config, utils
 from aisim.sdk.backends.base_backend import BaseBackend
+from aisim.sdk.errors import InvalidEngineConfigurationError
 from aisim.sdk.models import Gemma4MixModel, HybridMoEModel
 from aisim.sdk.utils import (
     _parse_hf_config_json,
@@ -1250,7 +1251,7 @@ class TestGemma4MixModelBuilder:
             fmha_quant_mode=common.FMHAQuantMode.bfloat16,
             moe_quant_mode=common.MoEQuantMode.bfloat16,
         )
-        with pytest.raises(AssertionError, match="moe_ep_size=1"):
+        with pytest.raises(InvalidEngineConfigurationError, match="moe_ep_size=1"):
             Gemma4MixModel(
                 0,
                 None,
