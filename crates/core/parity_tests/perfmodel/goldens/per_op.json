@@ -1174,19 +1174,19 @@
     },
     "minimax-m25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
@@ -1194,7 +1194,7 @@
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     }
   }
 }

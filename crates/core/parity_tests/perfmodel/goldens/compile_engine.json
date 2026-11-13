@@ -16,15 +16,15 @@
   "post_freeze_pins": {
     "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": {
       "engine": "rust",
@@ -44,11 +44,11 @@
     },
     "imbalance_scale::decode_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "imbalance_scale::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "imbalance_scale::static_ctx": {
       "engine": "rust",
@@ -56,7 +56,7 @@
     },
     "imbalance_scale::static_gen": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "kimi-k25-b200-sglang-isl1024-osl2::decode_step": {
       "engine": "rust",
@@ -92,11 +92,11 @@
     },
     "minimax-m25-b200-sglang-isl1024-osl2::decode_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::static_ctx": {
       "engine": "rust",
@@ -104,15 +104,15 @@
     },
     "minimax-m25-b200-sglang-isl1024-osl2::static_gen": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::decode_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
@@ -120,15 +120,15 @@
     },
     "minimax-m25-b200-vllm-isl1024-osl2::static_gen": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-sampled-prefix::decode_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-sampled-prefix::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m25-b200-vllm-sampled-prefix::static_ctx": {
       "engine": "rust",
@@ -136,15 +136,15 @@
     },
     "minimax-m25-b200-vllm-sampled-prefix::static_gen": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::decode_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
@@ -152,7 +152,7 @@
     },
     "minimax-m27-b200-vllm-isl1024-osl2::static_gen": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2::decode_step": {
       "engine": "rust",
@@ -172,11 +172,11 @@
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::decode_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
@@ -184,7 +184,7 @@
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::static_gen": {
       "engine": "rust",
-      "git_head": "UNCOMMITTED-merge-of-d04f1535-and-f85518b3"
+      "git_head": "74f041b8cd3e4822f9a4ff04da7cbc92dc381cb6"
     },
     "wideep_sglang::decode_step": {
       "engine": "rust",
