@@ -206,14 +206,20 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
         _runtime.run_replay_json(json.dumps(payload))
 
 
-def test_agentic_g2_runs_multi_worker_attention_dp_pd_with_mtp_on_one_shared_pool() -> None:
+def test_agentic_g2_runs_multi_worker_attention_dp_pd_with_mtp_on_one_shared_pool(tmp_path) -> None:
     """Two DP2 prefill workers and one DP2 decode worker share one G2 pool under MTP.
 
     The resumed parent is the third request, so round-robin places it on a prefill
-    rank that never held its prefix: it restores from the shared pool.
+    rank that never held its prefix: it restores from the shared pool. Six output
+    tokens per request make every decode run draft rounds.
     """
     config = _canonical_mtp(_config("agentx-g2-shared-pd.yaml"))
+    source = config["traffic"]["source"]
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(Path(source["paths"][0]).read_text().replace('"out":1', '"out":6'))
+    source["paths"] = [str(trace)]
     prefill = config["engine"]["workers"]["prefill"]
+    prefill["kv_cache"]["capacity"]["blocks"] = 4  # 9 input and 6 output tokens
     decode = config["engine"]["workers"]["decode"] = copy.deepcopy(prefill)
     prefill["parallelism"].update(replicas=2, attention_data=2)
     decode["parallelism"].update(attention_data=2)
@@ -225,6 +231,7 @@ def test_agentic_g2_runs_multi_worker_attention_dp_pd_with_mtp_on_one_shared_poo
         assert lowered["engine"][role]["rank"]["aic_nextn"] == 2
     report = _run(config)
     assert report["completed_requests"] == 4
+    assert report["total_output_tokens"] == 24
     assert [domain["capacity_blocks"] for domain in report["g2_domains"]] == [8]
     restored = _restored(report)
     assert restored["first_admission_g1_reused_input_tokens"] == 0
