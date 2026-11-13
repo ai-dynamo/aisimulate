@@ -26,7 +26,7 @@ jobs:
   prepare:
     name: Build and identify release FPE wheel
     if: github.ref == 'refs/heads/main'
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 30
     container:
       # Same pinned manylinux toolchain as the main FPE producer.
@@ -74,7 +74,7 @@ jobs:
   generate:
     name: Release FPE (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: prepare
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 480
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
