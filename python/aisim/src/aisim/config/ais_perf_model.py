@@ -63,6 +63,7 @@ __all__ = [
     "old_fields_conflict",
     "plan_estimator_keys",
     "reject_repeated_keys",
+    "repeated_key_in",
     "require_stated_value",
     "same_setting",
     "uncovered_config",
@@ -930,6 +931,31 @@ def reject_repeated_keys(text: str, kind: str, source: str | os.PathLike[str]) -
         return
     if outer:
         raise _written_twice(section, source, *outer)
+    repeat = _repeat_below(value)
+    if repeat:
+        raise _written_twice(section, source, *repeat)
+
+
+def repeated_key_in(text: str) -> tuple[str, int, int] | None:
+    """Return ``(key, first line, line)`` for a key that YAML text writes twice in one mapping, else None.
+
+    Every mapping of the text is read, at every depth, by the rule
+    ``reject_repeated_keys`` has for the value of ``ais_perf_model``. Of
+    several repeats, the one whose second writing comes first is returned.
+    Text the YAML reader cannot parse gives None: the reader reports it.
+    """
+    import yaml
+
+    try:
+        return _repeat_below(yaml.compose(text, Loader=yaml.SafeLoader))
+    except (yaml.YAMLError, RecursionError):
+        return None
+
+
+def _repeat_below(value: Any) -> tuple[str, int, int] | None:
+    """Return ``(key, first line, line)`` for the first key written twice in a mapping at or below a YAML node."""
+    import yaml
+
     repeats = []
     # An alias names a node again, and can name the node it is written in, so each node is read once.
     pending, seen = [value], set()
@@ -948,11 +974,13 @@ def reject_repeated_keys(text: str, kind: str, source: str | os.PathLike[str]) -
                     continue
                 key, line = (key_node.tag, key_node.value), key_node.start_mark.line + 1
                 if key in first_lines:
-                    repeats.append((line, first_lines[key], key_node.value))
+                    repeats.append((key_node.start_mark.index, line, first_lines[key], key_node.value))
                 first_lines.setdefault(key, line)
-    if repeats:
-        line, first_line, key = min(repeats)
-        raise _written_twice(section, source, key, first_line, line)
+    if not repeats:
+        return None
+    # The repeat whose second writing comes first in the text.
+    _, line, first_line, key = min(repeats)
+    return key, first_line, line
 
 
 def _written_twice(section: str, source: str | os.PathLike[str], key: str, first_line: int, line: int) -> ValueError:

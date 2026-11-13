@@ -92,7 +92,8 @@ def _add_check_parser(actions: Any) -> None:
         default=[],
         metavar="KEY=VALUE",
         help=(
-            "A value the serving component knows by itself, such as model=NAME; VALUE is read as YAML. "
+            "A value the serving component knows by itself, such as model=NAME; VALUE is read as YAML, "
+            "and a key written twice inside it is an error. "
             "A key the entry does not write is added, and a key it writes must be equal. "
             "Repeat the option for several keys."
         ),
@@ -221,6 +222,8 @@ def _fill_values(items: Sequence[str]) -> dict[str, Any]:
     """Read the ``--fill KEY=VALUE`` options into one mapping."""
     import yaml
 
+    from .config.ais_perf_model import repeated_key_in
+
     fill: dict[str, Any] = {}
     for item in items:
         key, separator, text = item.partition("=")
@@ -232,6 +235,10 @@ def _fill_values(items: Sequence[str]) -> dict[str, Any]:
             fill[key] = yaml.safe_load(text)
         except yaml.YAMLError as exc:
             raise ValueError(f"--fill {key}: the value {text!r} is not valid YAML: {exc}") from exc
+        # The YAML reader keeps the last value of a repeated key, so the first one would be dropped unseen.
+        repeat = repeated_key_in(text)
+        if repeat is not None:
+            raise ValueError(f"--fill {key}: the value writes the key {repeat[0]!r} twice; write it once")
     return fill
 
 
@@ -364,14 +371,31 @@ def _load_config(path: str) -> tuple[dict[str, Any], str]:
         raise ValueError(f"could not read configuration {path}: the file is not valid UTF-8 text ({exc})") from exc
 
 
-def _refuse_to_replace_another_file(args: argparse.Namespace) -> None:
-    """Stop before ``--output`` replaces a file that is not CONFIG itself, unless ``--overwrite`` allows it."""
-    if args.output is None or args.overwrite:
-        return
+class _NameTaken(Exception):
+    """The name of a new output file was taken by another file while the command ran."""
+
+
+def _refuse_to_replace_another_file(args: argparse.Namespace) -> bool:
+    """Stop before ``--output`` replaces a file that is not CONFIG itself, unless ``--overwrite`` allows it.
+
+    Returns whether the write may replace a file: with ``--overwrite``, or when the output is CONFIG
+    itself. A name that is free now gets a new file, and the write does not replace a file that takes
+    the name before it.
+    """
+    if args.output is None:
+        return False
+    if args.overwrite:
+        return True
     # A name that is free is written; a folder or a device is reported by the write itself.
-    if not os.path.isfile(args.output) or os.path.samefile(args.output, args.config):
-        return
-    raise ValueError(f"output file {args.output} exists; pass --overwrite to replace it")
+    if not os.path.isfile(args.output):
+        return False
+    if os.path.samefile(args.output, args.config):
+        return True
+    raise ValueError(_output_exists(args.output))
+
+
+def _output_exists(path: str) -> str:
+    return f"output file {path} exists; pass --overwrite to replace it"
 
 
 def _config_text(path: str, config: Mapping[str, Any]) -> str:
@@ -410,19 +434,32 @@ def _first_difference(written: Any, read_back: Any, where: str = "") -> str:
     return next(_first_difference(item, other, name) for name, item, other in pairs if item != other)
 
 
-def _write_config(path: str, config: Mapping[str, Any]) -> None:
-    """Write the converted config to ``path``; a write that fails leaves a file that exists as it was."""
+def _write_config(path: str, config: Mapping[str, Any], *, replace: bool) -> None:
+    """Write the converted config to ``path``; a write that fails leaves a file that exists as it was.
+
+    ``replace`` says whether a file at ``path`` may be replaced. Without it the config gets a new file,
+    and a file that took the name since the command looked is a usage error.
+    """
     # The text is built before anything is touched, so a config that cannot be written as text changes nothing.
     text = _config_text(path, config)
     target = os.path.realpath(path)  # a config that is reached through a symlink stays a symlink
     if not _can_be_replaced(path, target):
         # A folder, a device, a read-only file or a folder that does not exist. Opening the path itself
         # reports the reason with the path as it was given, and it is the only way to write to a device.
-        with open(path, "w", encoding="utf-8") as stream:
-            stream.write(text)
+        # Without leave to replace a file, the path was no file when the command looked: a file that
+        # has the name now came since, and a name that is free must still be free when it is opened.
+        new = not replace and (os.path.isfile(path) or not os.path.lexists(path))
+        mode = "x" if new else "w"
+        try:
+            with open(path, mode, encoding="utf-8") as stream:
+                stream.write(text)
+        except FileExistsError:
+            raise ValueError(_output_exists(path)) from None
         return
     try:
-        _replace_file(target, text)
+        _replace_file(target, text, replace=replace)
+    except _NameTaken:
+        raise ValueError(_output_exists(path)) from None
     except OSError as exc:
         # The error of the system names the temporary file or no file at all.
         raise OSError(f"could not write {path}: {exc}") from exc
@@ -435,8 +472,11 @@ def _can_be_replaced(path: str, target: str) -> bool:
     return os.path.isdir(os.path.dirname(target))
 
 
-def _replace_file(target: str, text: str) -> None:
-    """Put ``text`` in ``target`` in one step: the file holds the old text or the new text, never a part."""
+def _replace_file(target: str, text: str, *, replace: bool) -> None:
+    """Put ``text`` in ``target`` in one step: the file holds the old text or the new text, never a part.
+
+    Without ``replace`` the target must be a new file: ``_NameTaken`` when a file has the name.
+    """
     # In the folder of the target, so that the move does not cross file systems. The name of the target
     # is not a part of the name: with it, a long name of the target is too long for a file name.
     temporary = os.path.join(os.path.dirname(target), f".{os.urandom(8).hex()}.tmp")
@@ -450,12 +490,43 @@ def _replace_file(target: str, text: str) -> None:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        if replace:
+            os.replace(temporary, target)
+        else:
+            _name_new_file(temporary, target)
     finally:
         if created:
             # After the move there is nothing to remove; before it the unfinished file must not stay behind.
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(temporary)
+
+
+def _name_new_file(temporary: str, target: str) -> None:
+    """Give the finished file the name ``target``, unless a file has that name."""
+    try:
+        # A second name for the finished file: the system refuses a name that is taken, and a reader
+        # sees the whole file or none. The caller removes the first name.
+        os.link(temporary, target)
+    except FileExistsError:
+        raise _NameTaken(target) from None
+    except OSError:
+        # The file system has no hard links. An empty file takes the name first, so that the move
+        # below replaces that file. For a moment a reader sees the empty file.
+        try:
+            placeholder = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise _NameTaken(target) from None
+        try:
+            os.replace(temporary, target)
+        except BaseException:
+            # Also when the command is interrupted. The empty file is removed only while the name
+            # still is that file: another file may have been moved onto it.
+            with contextlib.suppress(OSError):
+                if os.path.samestat(os.fstat(placeholder), os.lstat(target)):
+                    os.unlink(target)
+            raise
+        finally:
+            os.close(placeholder)
 
 
 def _keep_permissions(target: str, temporary: str) -> None:
@@ -529,7 +600,7 @@ def _run_migrate(args: argparse.Namespace) -> int:
     from .config.ais_perf_model_migrate import CannotConvert, MigrationCheckError, migrate_mapping
 
     raw, text = _load_config(args.config)
-    _refuse_to_replace_another_file(args)
+    replace = _refuse_to_replace_another_file(args)
     kind = args.kind or _config_kind(raw, args.config)
     # The mapping holds the last value of a repeated key. Converting it would drop a second
     # ais_perf_model, or a second section next to the one that holds it, without a word.
@@ -572,7 +643,7 @@ def _run_migrate(args: argparse.Namespace) -> int:
                 ais_perf_model=converted[_SECTION_BY_KIND[kind]]["ais_perf_model"], removed=removed, notes=notes
             )
             if args.output is not None:
-                _write_config(args.output, converted)
+                _write_config(args.output, converted, replace=replace)
                 report["output"] = args.output
         else:
             report["status"] = "nothing_to_convert"

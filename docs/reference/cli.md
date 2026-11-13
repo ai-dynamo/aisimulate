@@ -396,7 +396,7 @@ by such a configuration; see
 | Option | Meaning |
 |---|---|
 | `--worker-type T` | Repeatable. Build only these worker types. Required when the input is one config without `worker_type`; without it the command exits `2` and names this option. |
-| `--fill KEY=VALUE` | Repeatable. A value that a component would observe at run time, such as `tp=4`. The value is parsed as YAML. It is added when the entry leaves the key out, and must be equal when the entry writes it. |
+| `--fill KEY=VALUE` | Repeatable. A value that a component would observe at run time, such as `tp=4`. The value is parsed as YAML; a key written twice inside it is an error. It is added when the entry leaves the key out, and must be equal when the entry writes it. |
 | `--workspace DIR` | Folder in which dataset entries are prepared. Default: a temporary directory. |
 
 `check` takes the value of the key, not a whole configuration file. Given a
@@ -491,10 +491,14 @@ Without `--output`, `migrate` prints the plan and writes nothing: the new
   `migrate` needs `--overwrite`. Without it nothing is written and the exit
   code is `2`:
   `output file prediction.new.yaml exists; pass --overwrite to replace it`.
+  A file that takes the name of a new `FILE` while `migrate` runs is not
+  replaced either.
 - **One step.** `migrate` writes a new file next to `FILE` and moves it into
   place, so it needs permission to create a file in that folder. Without that
   permission it exits `2` with `could not write <FILE>: <reason>`, and the
-  file stays as it was. Other hard links to `FILE` keep the old text.
+  file stays as it was. Other hard links to `FILE` keep the old text. On a
+  file system without hard links, a new `FILE` is empty for a moment before
+  the converted text is moved into it.
 - **JSON.** A `FILE` that ends with `.json`, in any letter case, is written as
   JSON. A `.json` configuration converted in place stays JSON. AISim
   reads configuration files as YAML. When the JSON text would not be read

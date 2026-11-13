@@ -425,6 +425,14 @@ def test_check_fill_that_differs_from_a_written_value_fails_the_entry(capsys):
         (["--fill", "=name"], "--fill takes KEY=VALUE, and '=name' has no key or no '='"),
         (["--fill", "tp=1", "--fill", "tp=2"], "--fill sets tp more than once"),
         (["--fill", "tp=[1"], "--fill tp: the value '[1' is not valid YAML"),
+        (
+            ["--fill", "estimator_config={correction: {enabled: true}, correction: {enabled: false}}"],
+            "--fill estimator_config: the value writes the key 'correction' twice; write it once",
+        ),
+        (
+            ["--fill", "estimator_config={correction: {sampling: {bins_per_axis: [6, 6], bins_per_axis: [8, 8]}}}"],
+            "--fill estimator_config: the value writes the key 'bins_per_axis' twice; write it once",
+        ),
     ],
 )
 def test_check_rejects_a_fill_option_it_cannot_read(fill, message, capsys):
@@ -623,6 +631,175 @@ def test_migrate_refuses_to_write_json_that_does_not_read_back_as_the_config(
     assert yaml.safe_load((tmp_path / "converted.yaml").read_text(encoding="utf-8")) == converted
 
 
+OTHER_FILE = "made by another process\n"
+
+
+def _file_appears_during_the_conversion(monkeypatch, output: Path, mode: int = 0o644) -> None:
+    """Make another file take the name ``output`` after the command looked at it and before it writes."""
+    convert = migrate_module.migrate_mapping
+
+    def convert_while_another_process_writes(*args: Any, **options: Any):
+        output.write_text(OTHER_FILE, encoding="utf-8")
+        output.chmod(mode)
+        return convert(*args, **options)
+
+    monkeypatch.setattr(migrate_module, "migrate_mapping", convert_while_another_process_writes)
+
+
+def _without_hard_links(monkeypatch, error: int = errno.EPERM) -> None:
+    def refuse(source: Any, target: Any) -> None:
+        raise OSError(error, os.strerror(error), str(target))
+
+    monkeypatch.setattr(os, "link", refuse)
+
+
+@pytest.mark.parametrize("hard_links", [True, False], ids=["hard links", "a file system without hard links"])
+@pytest.mark.parametrize("mode", [0o644, 0o444], ids=["a file", "a read-only file"])
+def test_migrate_does_not_replace_a_file_that_takes_the_name_of_a_new_output(
+    mode, hard_links, tmp_path, monkeypatch, capsys
+):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    output = tmp_path / "converted.yaml"
+    _file_appears_during_the_conversion(monkeypatch, output, mode)
+    if not hard_links:
+        _without_hard_links(monkeypatch)
+
+    assert _run("migrate", config, "--output", output) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(f"aisim: error: output file {output} exists; pass --overwrite to replace it\n")
+    assert output.read_text(encoding="utf-8") == OTHER_FILE
+    assert stat.S_IMODE(output.stat().st_mode) == mode
+    assert sorted(tmp_path.iterdir()) == [config, output]
+
+
+def test_migrate_does_not_replace_a_file_that_takes_the_name_as_the_new_file_gets_it(tmp_path, monkeypatch, capsys):
+    # The last moment: the converted text is stored and the file is about to get its name.
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    output = tmp_path / "converted.yaml"
+    link = os.link
+
+    def link_after_another_process_writes(source: Any, target: Any) -> None:
+        output.write_text(OTHER_FILE, encoding="utf-8")
+        link(source, target)
+
+    monkeypatch.setattr(os, "link", link_after_another_process_writes)
+
+    assert _run("migrate", config, "--output", output) == 2
+
+    assert capsys.readouterr().err.endswith(f"output file {output} exists; pass --overwrite to replace it\n")
+    assert output.read_text(encoding="utf-8") == OTHER_FILE
+    assert sorted(tmp_path.iterdir()) == [config, output]
+
+
+def test_migrate_without_hard_links_does_not_replace_a_file_that_takes_the_name_as_it_is_claimed(
+    tmp_path, monkeypatch, capsys
+):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    output = tmp_path / "converted.yaml"
+    _without_hard_links(monkeypatch)
+    open_file = os.open
+
+    def open_after_another_process_writes(path: Any, flags: int, *more: Any, **options: Any) -> int:
+        if os.fspath(path) == str(output) and flags & os.O_EXCL:
+            output.write_text(OTHER_FILE, encoding="utf-8")
+        return open_file(path, flags, *more, **options)
+
+    monkeypatch.setattr(os, "open", open_after_another_process_writes)
+
+    assert _run("migrate", config, "--output", output) == 2
+
+    assert capsys.readouterr().err.endswith(f"output file {output} exists; pass --overwrite to replace it\n")
+    assert output.read_text(encoding="utf-8") == OTHER_FILE
+    assert sorted(tmp_path.iterdir()) == [config, output]
+
+
+def test_migrate_names_the_output_as_it_was_given_when_the_file_behind_a_link_is_taken(tmp_path, monkeypatch, capsys):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    (tmp_path / "made").mkdir()
+    link = tmp_path / "link.yaml"
+    link.symlink_to(Path("made", "new.yaml"))
+    _file_appears_during_the_conversion(monkeypatch, tmp_path / "made" / "new.yaml")
+
+    assert _run("migrate", config, "--output", link) == 2
+
+    assert capsys.readouterr().err.endswith(
+        f"aisim: error: output file {link} exists; pass --overwrite to replace it\n"
+    )
+    assert (tmp_path / "made" / "new.yaml").read_text(encoding="utf-8") == OTHER_FILE
+
+
+@pytest.mark.parametrize("error", [errno.EPERM, errno.ENOTSUP, errno.EXDEV], ids=["EPERM", "ENOTSUP", "EXDEV"])
+def test_migrate_writes_a_new_output_on_a_file_system_without_hard_links(error, tmp_path, monkeypatch, capsys):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    assert _run("migrate", config, "--output", tmp_path / "linked.yaml") == 0
+    output = tmp_path / "converted.yaml"
+    _without_hard_links(monkeypatch, error)
+
+    assert _run("migrate", config, "--output", output) == 0
+
+    assert capsys.readouterr().out.splitlines()[-1] == WROTE.format(output)
+    # The same file as the one that got its name through a hard link, with the same permissions.
+    assert output.read_bytes() == (tmp_path / "linked.yaml").read_bytes()
+    assert stat.S_IMODE(output.stat().st_mode) == stat.S_IMODE((tmp_path / "linked.yaml").stat().st_mode)
+    assert sorted(tmp_path.iterdir()) == [config, output, tmp_path / "linked.yaml"]
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError(errno.EIO, "Input/output error"), KeyboardInterrupt()], ids=["error", "interrupt"]
+)
+def test_migrate_without_hard_links_leaves_no_empty_file_when_the_move_fails(failure, tmp_path, monkeypatch, capsys):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    output = tmp_path / "converted.yaml"
+    _without_hard_links(monkeypatch)
+
+    def fail(source: Any, target: Any) -> None:
+        # The empty file has the name by now.
+        assert output.read_bytes() == b""
+        raise failure
+
+    monkeypatch.setattr(os, "replace", fail)
+
+    # The command line turns an interrupt into exit code 130.
+    assert _run("migrate", config, "--output", output) == (130 if isinstance(failure, KeyboardInterrupt) else 2)
+
+    if not isinstance(failure, KeyboardInterrupt):
+        assert f"could not write {output}: " in capsys.readouterr().err
+    assert sorted(tmp_path.iterdir()) == [config]
+
+
+def test_migrate_without_hard_links_keeps_a_file_that_was_moved_onto_the_name_it_claimed(tmp_path, monkeypatch, capsys):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    output = tmp_path / "converted.yaml"
+    _without_hard_links(monkeypatch)
+
+    def fail_after_another_process_moves_a_file_there(source: Any, target: Any) -> None:
+        other = tmp_path / "other.yaml"
+        other.write_text(OTHER_FILE, encoding="utf-8")
+        os.rename(other, output)
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "replace", fail_after_another_process_moves_a_file_there)
+
+    assert _run("migrate", config, "--output", output) == 2
+
+    capsys.readouterr()
+    assert output.read_text(encoding="utf-8") == OTHER_FILE
+    assert sorted(tmp_path.iterdir()) == [config, output]
+
+
+def test_migrate_with_overwrite_replaces_a_file_that_takes_the_name_meanwhile(tmp_path, monkeypatch, capsys):
+    config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
+    output = tmp_path / "converted.yaml"
+    _file_appears_during_the_conversion(monkeypatch, output)
+
+    assert _run("migrate", config, "--output", output, "--overwrite") == 0
+
+    assert capsys.readouterr().out.splitlines()[-1] == WROTE.format(output)
+    assert yaml.safe_load(output.read_text(encoding="utf-8"))["engine"]["ais_perf_model"] == OLD_FIELDS
+
+
 def test_migrate_refuses_to_replace_another_file_unless_overwrite_is_given(tmp_path, capsys):
     config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
     other = tmp_path / "other.yaml"
@@ -739,21 +916,22 @@ def test_migrate_makes_the_new_file_in_the_folder_of_the_file_it_replaces(tmp_pa
 
 def test_migrate_twice_into_one_folder_makes_the_new_files_under_two_names(tmp_path, monkeypatch, capsys):
     config = _write(tmp_path / "config.yaml", _predict(**OLD_FIELDS))
-    moved_from = []
-    replace = os.replace
+    made_as = []
+    link = os.link
 
     def watched(source, target):
-        moved_from.append(source)
-        replace(source, target)
+        made_as.append(source)
+        link(source, target)
 
     with monkeypatch.context() as patch:
         # Two commands that run at the same time in one folder must not make their new file under the same name.
-        patch.setattr(os, "replace", watched)
+        # A new output gets its name through a hard link from the file it was made as.
+        patch.setattr(os, "link", watched)
         assert _run("migrate", config, "--output", tmp_path / "first.yaml") == 0
         assert _run("migrate", config, "--output", tmp_path / "second.yaml") == 0
     capsys.readouterr()
 
-    first, second = moved_from
+    first, second = made_as
     assert first != second
 
 

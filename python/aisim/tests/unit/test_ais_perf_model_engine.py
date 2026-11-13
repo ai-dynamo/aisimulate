@@ -1630,6 +1630,32 @@ def test_text_without_a_repeat_inside_the_value_is_left_to_the_reader(text):
     assert rules.reject_repeated_keys(text, "predict", "predict.yaml") is None
 
 
+@pytest.mark.parametrize(
+    ("text", "repeat"),
+    [
+        ("{a: 1, b: 1, b: 2, a: 2}", ("b", 1, 1)),
+        ("outer:\n  inner: {k: 1}\n  inner: {k: 2}\n", ("inner", 2, 3)),
+        ("- {k: 1}\n- {k: 2}\n", None),
+        ("tp", None),
+        ("", None),
+        ("{a: 1, a: 2", None),
+        ("[" * 100_000, None),
+    ],
+    ids=[
+        "two repeats on one line",
+        "a repeat below the top",
+        "one key in two items",
+        "a word",
+        "nothing",
+        "text that is not YAML",
+        "text nested too deep to read",
+    ],
+)
+def test_repeated_key_in_names_the_repeat_that_comes_first_in_the_text(text, repeat):
+    assert "repeated_key_in" in rules.__all__
+    assert rules.repeated_key_in(text) == repeat
+
+
 def test_mapping_that_an_alias_writes_as_the_section_many_times_is_read_once(monkeypatch):
     looked_for = []
     written = rules._written
