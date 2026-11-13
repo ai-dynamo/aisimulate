@@ -60,7 +60,7 @@ image from the same Dynamo release you intend to validate.
 From the AISim repository root, using the environment above:
 
 ```bash
-cd docs/cli/examples/dynamo-planner
+cd examples/cli/dynamo-planner
 python3 -m aisim predict \
   --stack dynamo \
   --config prediction.yaml \
