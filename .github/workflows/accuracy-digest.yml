@@ -34,7 +34,7 @@ concurrency:
 jobs:
   report:
     if: >-
-      github.repository == 'ai-dynamo/aisimulate' &&
+      github.repository == 'ai-dynamo/aisim' &&
       ((github.event_name == 'workflow_dispatch' &&
         (inputs.mode == 'dry-run' || github.ref == 'refs/heads/main')) ||
        (vars.SLACK_ACCURACY_ENABLED == 'true' && github.ref == 'refs/heads/main' &&

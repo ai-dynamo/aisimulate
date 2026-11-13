@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+from aisim.sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
 try:
     import tomllib
@@ -25,15 +25,15 @@ pytestmark = pytest.mark.timeout(30)
 def _source_checkout_roots() -> tuple[Path, Path]:
     """Return the package and repository roots for source-only contracts."""
     repo_root = Path(__file__).resolve().parents[2]
-    aisimulate_root = repo_root / "python" / "aisimulate"
+    aisim_root = repo_root / "python" / "aisim"
     source_tree_markers = (
-        aisimulate_root / "pyproject.toml",
+        aisim_root / "pyproject.toml",
         repo_root / "crates/core/Cargo.toml",
         repo_root / "Cargo.toml",
     )
     if not all(path.is_file() for path in source_tree_markers):
-        pytest.skip("requires the AISimulate source checkout, not only the wheel")
-    return aisimulate_root, repo_root
+        pytest.skip("requires the AISim source checkout, not only the wheel")
+    return aisim_root, repo_root
 
 
 def _ai_dynamo_distribution_or_skip():
@@ -44,53 +44,53 @@ def _ai_dynamo_distribution_or_skip():
         pytest.skip("cross-repository Dynamo contract runs in integration CI")
 
 
-def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
+def test_aisim_distribution_publishes_aisim_sweeper_package():
     distribution = importlib.metadata.distribution("aisim")
     packaged_files = {str(path) for path in distribution.files or ()}
 
     assert distribution.metadata["Name"] == "aisim"
-    assert importlib.util.find_spec("aisimulate.replay") is not None
-    assert importlib.util.find_spec("aisimulate.sweeper") is not None
-    assert importlib.util.find_spec("aisimulate.afd_artifacts") is not None
-    assert importlib.util.find_spec("aisimulate.replay.__main__") is None
-    assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None
+    assert importlib.util.find_spec("aisim.replay") is not None
+    assert importlib.util.find_spec("aisim.sweeper") is not None
+    assert importlib.util.find_spec("aisim.afd_artifacts") is not None
+    assert importlib.util.find_spec("aisim.replay.__main__") is None
+    assert importlib.util.find_spec("aisim.sweeper.__main__") is None
     # Editable installs expose only their .pth/dist-info records. In wheel-based
     # Planner CI, assert the artifact contains the canonical package and no alias.
-    if any(path.startswith("aisimulate/") for path in packaged_files):
-        assert any(path.startswith("aisimulate/sweeper/") for path in packaged_files)
-        assert any(path.startswith("aisimulate/replay/") for path in packaged_files)
-        assert not any(path.startswith("aisimulate/spica/") for path in packaged_files)
+    if any(path.startswith("aisim/") for path in packaged_files):
+        assert any(path.startswith("aisim/sweeper/") for path in packaged_files)
+        assert any(path.startswith("aisim/replay/") for path in packaged_files)
+        assert not any(path.startswith("aisim/spica/") for path in packaged_files)
         assert not any(path.startswith("sweeper/") for path in packaged_files)
 
 
-def test_aisimulate_native_runtime_imports_from_installed_distribution():
-    runtime_spec = importlib.util.find_spec("aisimulate._runtime")
+def test_aisim_native_runtime_imports_from_installed_distribution():
+    runtime_spec = importlib.util.find_spec("aisim._runtime")
 
     assert runtime_spec is not None
-    runtime = importlib.import_module("aisimulate._runtime")
+    runtime = importlib.import_module("aisim._runtime")
     assert callable(runtime.run_replay_json)
     assert callable(runtime.run_replay_with_artifacts_json)
 
 
-def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
+def test_aisim_exposes_unified_and_aiconfigurator_console_scripts():
     distribution = importlib.metadata.distribution("aisim")
 
     scripts = {entry.name: entry.value for entry in distribution.entry_points if entry.group == "console_scripts"}
     assert scripts == {
-        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
-        "aisim": "aisimulate.supervision:main",
-        "aisimulate": "aisimulate.supervision:main",
+        "aiconfigurator": "aisim.legacy_cli.entrypoint:main",
+        "aisim": "aisim.supervision:main",
+        "aisimulate": "aisim.supervision:main",
     }
 
 
-def test_ai_dynamo_has_no_aisimulate_extra():
+def test_ai_dynamo_has_no_aisim_extra():
     distribution = _ai_dynamo_distribution_or_skip()
 
     extras = set(distribution.metadata.get_all("Provides-Extra", []))
     assert {"sweeper", "simulate", "simulation"}.isdisjoint(extras)
 
 
-def test_aisimulate_has_no_dynamo_or_component_adapter_dependencies():
+def test_aisim_has_no_dynamo_or_component_adapter_dependencies():
     distribution = importlib.metadata.distribution("aisim")
 
     requirements = distribution.requires or []
@@ -108,7 +108,7 @@ def test_importing_sweeper_does_not_import_dynamo():
             sys.executable,
             "-c",
             (
-                "import sys; import aisimulate.sweeper; "
+                "import sys; import aisim.sweeper; "
                 "assert not any(name == 'dynamo' or name.startswith('dynamo.') "
                 "for name in sys.modules)"
             ),
@@ -125,7 +125,7 @@ def test_ai_dynamo_registers_optional_sweeper_providers():
     entry_points = {
         entry_point.name: entry_point.value
         for entry_point in distribution.entry_points
-        if entry_point.group == "aisimulate.sweep_config_providers"
+        if entry_point.group == "aisim.sweep_config_providers"
     }
 
     assert entry_points == {
@@ -160,7 +160,7 @@ def test_ai_dynamo_runner_preserves_independent_sla_bounds(field: str, bound: fl
     assert DynamoReplayRunner._goodput_sla_kwargs(spec) == expected
 
 
-def test_aisimulate_source_versions_are_synchronized():
+def test_aisim_source_versions_are_synchronized():
     root, repo_root = _source_checkout_roots()
     project = tomllib.loads((root / "pyproject.toml").read_text())
     core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())

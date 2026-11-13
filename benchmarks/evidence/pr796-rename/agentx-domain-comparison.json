@@ -1,0 +1,145 @@
+{
+  "cases": 16,
+  "differing_fields": {
+    "/report/agentic_lifecycle_digest": 16,
+    "/report/agentic_graph/source/digest": 8,
+    "/report/agentic_snapshots/*/graph/source/digest": 2004
+  },
+  "examples": {
+    "/report/agentic_lifecycle_digest": [
+      "776a1ec0f3c6b053ed24f4f25f8dcd439147458c86ee2f9bbcad77cf6c21b70d",
+      "e4e75839445631f76343f48544e4832c422adb81d3bb78153ec3eca6dec9e814"
+    ],
+    "/report/agentic_graph/source/digest": [
+      "def7b39fac6002b6d2f5c28e6e21293bcb7bd31e3637e699dc4b80d990ef4d0f",
+      "1dc3c069f7adeb146578721d1ecb0d6ff395e7cdba68d0a97070d1bdf89cf287"
+    ],
+    "/report/agentic_snapshots/*/graph/source/digest": [
+      "def7b39fac6002b6d2f5c28e6e21293bcb7bd31e3637e699dc4b80d990ef4d0f",
+      "1dc3c069f7adeb146578721d1ecb0d6ff395e7cdba68d0a97070d1bdf89cf287"
+    ]
+  },
+  "source_commit": "f5e94a70a3e3698c66738ab99a29efa34bcbc196",
+  "test": "cargo test --locked -p aisim-core --test agentx_qualification snapshot_warmup_and_profile_reports_are_pinned -- --exact",
+  "baseline": "Same merged source with only the lifecycle and two Weka digest domain tags restored to their pre-rename bytes. All 16 original pins pass.",
+  "candidate": "AISim domain tags as approved in PR 796. All original per-case request counts preserved.",
+  "per_request_and_lifecycle_events_identical": true,
+  "old_pins": [
+    "6b28fe341f87b490",
+    "515ff132fcdc6b08",
+    "b89358b190c66046",
+    "1a9c63bc1919b472",
+    "b8aa80a7a5d00b2b",
+    "f3062f253ba53636",
+    "0cbdef689a45e540",
+    "1a03cbac9330a961",
+    "6ee98c82ab648f45",
+    "a01db8613f512a83",
+    "0f7ad48710c5d7c6",
+    "26a20280546a6cc7",
+    "10a719a78e167cd4",
+    "c737d31ab004240b",
+    "720a0b2eb0c2c09b",
+    "126b8310bccd00f3"
+  ],
+  "new_pins": [
+    "6cbb612c534c4835",
+    "223e5df120da3b73",
+    "4a868a5c33ea746b",
+    "727e03e2b6458069",
+    "3836acf6cc08fea7",
+    "5a87dfb36cf47921",
+    "4d3fe50afc4f2048",
+    "e2916a8f8909348f",
+    "f32d45662c04076b",
+    "46193e1206325680",
+    "8a40174c1b270569",
+    "35307eb4e477fbd3",
+    "b4ee47cad4b96929",
+    "b25bb6287a94ebd6",
+    "1c2fdbee5fa71dcf",
+    "03b6b577866b0ec4"
+  ],
+  "outputs": [
+    {
+      "case": "g2-profile-cold-false",
+      "old_output_sha256": "287dce41f1c4575b73a1278f5ac299df46e7bf985654a5d86c1be6840d80b04c",
+      "new_output_sha256": "17ad4c4248bcec5c4b7ab50e8d64d8ab3de495eec8a2069462d88f9a9e6422b2"
+    },
+    {
+      "case": "g2-profile-cold-true",
+      "old_output_sha256": "29e5992f5bc65be84250340b2bc6397aa5f19c9336a611b38afc5aab8a423732",
+      "new_output_sha256": "55f6e4935c44f16f7c415b4e31ac88b57bf0159b8c4640d6471702ab07bad235"
+    },
+    {
+      "case": "g2-profile-false",
+      "old_output_sha256": "3edcfe865d6487018cf86b3a2c9eb56e166ad819c65fe91ce1a8ed959f62c801",
+      "new_output_sha256": "d79a9b6d30475bf230fa3395c58b7c0831530ea10310e6e489bd13eb76933800"
+    },
+    {
+      "case": "g2-profile-true",
+      "old_output_sha256": "8c2b1434df93bd61c3450a8570e11df0fee1eac2d4b26730717074fcdf2a9fbb",
+      "new_output_sha256": "7b759eba97085f5e3ef0a17b9fd440bb8e3f6d5dcd69168b073f0641903fc2f7"
+    },
+    {
+      "case": "g2-snapshot-false",
+      "old_output_sha256": "77673025eab82f0e4adf169cc3132966a84840094c34525b14de1355d72d0eac",
+      "new_output_sha256": "5a9b38d84af46c6ffabed13a3f8ff331f7db6d0dd1a27d9158a7bc1f4be5e182"
+    },
+    {
+      "case": "g2-snapshot-true",
+      "old_output_sha256": "5e198bf271d9f6f1ea0ecfab8480d059b375cdfa7339b6d905aed26476031aa8",
+      "new_output_sha256": "846507df82d5803f842e5825631ee3f2440583e7c12546ed81d3cae98372c87b"
+    },
+    {
+      "case": "g2-warmup-false",
+      "old_output_sha256": "1b5c73f3d2308702ccadc8a43d8853db90e64eb59fa9f488654a7dadaa85f9c7",
+      "new_output_sha256": "72cd1ad291d11118c76c620e61898283a7fd1738039fcc8405e25c12b5c0e306"
+    },
+    {
+      "case": "g2-warmup-true",
+      "old_output_sha256": "bce6ac995efcb5385a740fcf73b0670f8c48ec25e84d17f0ca993c94a6b3fce5",
+      "new_output_sha256": "24a883ef5f897500486d337a0667cb331c0e499c43bef98432d34c923a671fcc"
+    },
+    {
+      "case": "two-plays-profile-cold-false",
+      "old_output_sha256": "664fbeba88609cf4fce1c0f58f2c8874388c0b11480c7900d68e582108eb4aa7",
+      "new_output_sha256": "fc8ae06684534bb45f173ddb00ae0308e772931a20b01c1d202bc5eb001e6624"
+    },
+    {
+      "case": "two-plays-profile-cold-true",
+      "old_output_sha256": "10c020ffd20d5f8073bc42bfc76aaf26c16321a7d736941b900c65dd85d6b931",
+      "new_output_sha256": "8522737ad6252faf8dec3927450c27f7ad7af470d40c955271cc98dcfd308bdc"
+    },
+    {
+      "case": "two-plays-profile-false",
+      "old_output_sha256": "77891de177501c0f9a6fcf5c582fc38809cfb701aaacd41b0b9b624bba45cd06",
+      "new_output_sha256": "9b31124abbc85aa328cfbc5d023cec135527fbd29f6ce40bfca2129202af386a"
+    },
+    {
+      "case": "two-plays-profile-true",
+      "old_output_sha256": "4279797e5cff62562190d2840ed83da17bbdc941a89fda49bb6d5c262a673a32",
+      "new_output_sha256": "3ba6635e45ab08d67d4cea97b9235c56b161159ea207eb7bfa5d99fe48df1711"
+    },
+    {
+      "case": "two-plays-snapshot-false",
+      "old_output_sha256": "d5ee846cfb7123557cea2a692e6eeb6683ddf64c633b6c668708d1307b08e885",
+      "new_output_sha256": "b77dba83fc203348dbf5ffdb87fa43a637d436ac6643ae57f98f7bf0fdaa4b8f"
+    },
+    {
+      "case": "two-plays-snapshot-true",
+      "old_output_sha256": "db4b37e74c013c25702a7b8be41ab9a83df411302a8511daace4d661e4d95fe6",
+      "new_output_sha256": "c9285d20c9024646823fd7e6ccd82db9ee05db4ce7d32053d601f37d028ad2be"
+    },
+    {
+      "case": "two-plays-warmup-false",
+      "old_output_sha256": "3c024c573857f0c70029dccc2fa022ab13597d0831beeaceee9ba408eeb8466b",
+      "new_output_sha256": "a9a93d88fc348cce3f207d5525f19ca763dc6e256f29b831493199866cbb17cc"
+    },
+    {
+      "case": "two-plays-warmup-true",
+      "old_output_sha256": "6ce1020c85ba9b68c8969d3bbeb746d1b8f4d6fd1ec6a33b94e01b41da17042a",
+      "new_output_sha256": "2d6378839bccb0f5e040facd17fe68f6e1d6879638c77c2d2d879ff3c2e77980"
+    }
+  ]
+}

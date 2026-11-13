@@ -160,7 +160,7 @@ pub struct TraceGoodputStats {
 /// External callers construct validated values and cannot mutate their fields:
 ///
 /// ```compile_fail
-/// use aisimulate_core::replay::TracePowerStats;
+/// use aisim_core::replay::TracePowerStats;
 /// let mut power = TracePowerStats::new(Some(500.0), 1.0).unwrap();
 /// power.coverage = 0.1;
 /// ```

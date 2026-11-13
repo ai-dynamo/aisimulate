@@ -118,7 +118,7 @@ have a request observation interval shorter or longer than one hour.
 The default warmup policy repeats saved primer inputs and keeps the original
 snapshot frontier. The opt-in [live trajectory policy](warmup.md#live-trajectory-policy)
 advances the dependency graph during warmup and preserves its surviving frontier.
-Initial sampling retains AISimulate's existing deterministic algorithm unless
+Initial sampling retains AISim's existing deterministic algorithm unless
 reference cuts and the shared sequential cursor are explicitly imported. This is
 functional qualification of profile control, not complete AgentX parity or
 hardware performance accuracy. Long profiles retain lifecycle evidence and can
@@ -136,13 +136,13 @@ From the repository root, first install the current source as described in
 [Use current source](../../getting-started/installation.md#use-current-source):
 
 ```bash
-uv sync --project python/aisimulate --extra dev
+uv sync --project python/aisim --extra dev
 ```
 
 Then run:
 
 ```bash
-python/aisimulate/.venv/bin/aisimulate predict \
+python/aisim/.venv/bin/aisim predict \
   --config examples/cli/agentic-profile.yaml \
   --capture-per-request --capture-telemetry --format json --output-dir /tmp/agentic-profile
 ```
@@ -171,7 +171,7 @@ defined in `src/aiperf/metrics/types/benchmark_duration_metric.py`.
 InferenceX [`4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80`](https://github.com/SemiAnalysisAI/InferenceX/tree/4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80)
 pins that executor under `utils/aiperf` and supplies the AgentX recipe in
 `benchmarks/benchmark_lib.sh` and `benchmarks/runtime_settings.sh`.
-The AISimulate implementation uses its native dependency graph and virtual event
+The AISim implementation uses its native dependency graph and virtual event
 loop; the tests and example workload are locally authored. Source and attribution evidence is retained in the
 [replay evidence record](../../../benchmarks/evidence/accuracy/replay-evidence.md).
 
@@ -179,7 +179,7 @@ Known release differences:
 
 - Upstream AIPerf releases on PyPI (0.12.0 and 0.13.0) resume a turn blocked
   on a join as soon as its children complete, without the turn's own recorded
-  delay. AISimulate follows the pinned fork, which waits for both. Compare
+  delay. AISim follows the pinned fork, which waits for both. Compare
   against a live run only with the matching executor.
 - The Weka import keeps recorded gaps that the fork drops. A joining turn also
   waits its recorded gap after each child ends. A subagent's start offset is
@@ -193,5 +193,5 @@ Known release differences:
 - The fork's per-tree guard shifts again only when its earliest timer lands on
   a request held by a replay barrier. When it lands on a joining turn whose
   children still wait on later timers, the fork leaves that tree idle until its
-  next timer fires. AISimulate shifts again in both cases, as the fork's global
+  next timer fires. AISim shifts again in both cases, as the fork's global
   guard does.

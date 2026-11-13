@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Apply a dev-version suffix to every AISimulate version site, in place.
+"""Apply a dev-version suffix to every AISim version site, in place.
 
 Invoked by nightly CI before `scripts/release/build_release_artifacts.py`. Takes one
 argument -- a PEP 440 suffix like '.dev202609170000001234' -- and rewrites:
-  - [project].version in python/aisimulate/pyproject.toml (PEP 440 form)
+  - [project].version in python/aisim/pyproject.toml (PEP 440 form)
   - [workspace.package].version in Cargo.toml, inherited by the core crate,
     and explicit core versions in historical manifests (SemVer form: dash instead of
-    dot, so '0.14.0-dev.202609170000001234' -- cargo rejects the PEP 440 spelling)
+    dot, so '0.15.0-dev.202609170000001234' -- cargo rejects the PEP 440 spelling)
 
 The suffix is the UTC creation date followed by a ten-digit workflow run
 number; legacy date-only suffixes remain accepted. The crate form keeps the
@@ -26,7 +26,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-PYPROJECT = Path("python/aisimulate/pyproject.toml")
+PYPROJECT = Path("python/aisim/pyproject.toml")
 # Stamp the workspace and historical explicit core versions. Inherited package
 # versions must stay inherited; never stamp a dependency's version in their place.
 CARGO_MANIFESTS = [Path("Cargo.toml"), Path("crates/core/Cargo.toml")]
@@ -68,7 +68,10 @@ def main() -> int:
         raise SystemExit(f"suffix must be .devYYYYMMDD with an optional ten-digit run number, got {args.suffix!r}")
 
     root = Path(args.root).resolve()
-    stamped = [rewrite(root / PYPROJECT, args.suffix)]
+    project = root / PYPROJECT
+    if not project.is_file():
+        project = root / "python/aisimulate/pyproject.toml"
+    stamped = [rewrite(project, args.suffix)]
     for path in CARGO_MANIFESTS:
         manifest = root / path
         package = tomllib.loads(manifest.read_text()).get("package", {})

@@ -64,7 +64,7 @@ Role-domain composition and whole-deployment limits belong to
 [search space](search-space.md#attention-ffn-disaggregation).
 
 ```python
-from aisimulate.sweeper import AFDSearchConfig, enumerate_afd_topologies
+from aisim.sweeper import AFDSearchConfig, enumerate_afd_topologies
 
 domain = enumerate_afd_topologies(
     AFDSearchConfig(
@@ -115,7 +115,7 @@ Memory preflight retains the declaration. Public memory behavior is documented
 Native explicit `num_gpu_blocks` overrides derived capacity; plan buffers are
 added once, and only decode activations use MTP verification width.
 
-[`models/afd.py`](../../python/aisimulate/src/aisimulate_core/sdk/models/afd.py)
+[`models/afd.py`](../../python/aisim/src/aisim_core/sdk/models/afd.py)
 composes both pool plans; [native validation](../../crates/core/src/perfmodel/afd/validation.rs)
 checks matching source identity, ordered layers and operation ownership.
 A owns attention, router, dense FFNs, shared experts, boundary norms,

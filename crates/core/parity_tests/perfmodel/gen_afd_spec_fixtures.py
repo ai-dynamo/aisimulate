@@ -7,8 +7,8 @@
 import json
 from pathlib import Path
 
-import aisimulate_core
-from aisimulate_core.sdk.engine import compile_engine
+import aisim_core
+from aisim_core.sdk.engine import compile_engine
 
 
 def main():
@@ -19,13 +19,13 @@ def main():
         ("moe_hetero_b200_f_sglang", "b200_sxm", "f"),
     ]:
         captured = []
-        original = aisimulate_core.engine_spec_bincode_from_json
+        original = aisim_core.engine_spec_bincode_from_json
 
         def capture(spec):
             captured.append(spec)
             return original(spec)
 
-        aisimulate_core.engine_spec_bincode_from_json = capture
+        aisim_core.engine_spec_bincode_from_json = capture
         try:
             compile_engine(
                 "Qwen/Qwen3-30B-A3B",
@@ -38,7 +38,7 @@ def main():
                 afd_pool_role=role,
             )
         finally:
-            aisimulate_core.engine_spec_bincode_from_json = original
+            aisim_core.engine_spec_bincode_from_json = original
         (output / (name + ".json")).write_text(json.dumps(json.loads(captured[-1]), indent=2, sort_keys=True) + "\n")
 
 
