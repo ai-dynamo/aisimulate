@@ -53,7 +53,7 @@ jobs:
     needs: select
     if: needs.select.outputs.run_comparison == 'true'
     name: Forward Prediction Performance (advisory)
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 45
     defaults:
       run:

@@ -31,7 +31,7 @@ concurrency:
 jobs:
   check:
     name: Check collector data
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 20
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
@@ -116,7 +116,7 @@ jobs:
 
   cross-backend-consistency:
     name: Perf data sanity (informational)
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 25
     continue-on-error: true
     container:
