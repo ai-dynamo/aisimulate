@@ -154,6 +154,10 @@ lowers adapted requests through `to_cli_estimate_kwargs`, and writes returned
 estimates under `estimates`. It never executes commands embedded in the Dynamo
 files.
 
+The JSON output sets each estimate's `summary` to `null`, while preserving its
+serializable metric, metadata, `raw`, and per-operation fields. The public API
+result, including its live summary object, is unchanged.
+
 ## Request groups
 
 | Group | Content |
